@@ -3,6 +3,9 @@ import { onMount } from "svelte";
 import ChatInput from "./lib/components/ChatInput.svelte";
 import ChatPanel from "./lib/components/ChatPanel.svelte";
 import Header from "./lib/components/Header.svelte";
+import PermissionPrompt from "./lib/components/PermissionPrompt.svelte";
+import PermissionLog from "./lib/components/PermissionLog.svelte";
+import { chatStore } from "./lib/chat.svelte.js";
 import { wsClient } from "./lib/ws.svelte.js";
 
 const STORAGE_KEY = "dispatch-theme";
@@ -29,4 +32,13 @@ onMount(() => {
 		<ChatPanel />
 	</div>
 	<ChatInput />
+</div>
+
+<PermissionPrompt
+	pending={chatStore.pendingPermissions}
+	onReply={(id, reply) => chatStore.replyPermission(id, reply)}
+/>
+
+<div class="fixed bottom-24 right-4 w-80 z-10">
+	<PermissionLog entries={chatStore.permissionLog} />
 </div>

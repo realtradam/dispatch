@@ -4,14 +4,19 @@ import {
 	type AgentStatus,
 	createListFilesTool,
 	createReadFileTool,
+	createRunShellTool,
 	createWriteFileTool,
+	loadConfig,
+	configToRuleset,
 } from "@dispatch/core";
+import type { PermissionManager } from "./permission-manager.js";
 
 const SYSTEM_PROMPT = `You are Dispatch, a helpful AI coding assistant. You have access to the following tools for working with files in the current working directory:
 
 - read_file: Read the contents of a file
 - write_file: Write content to a file (creates parent directories if needed)
 - list_files: List files and directories
+- run_shell: Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Use for running tests, builds, git operations, package management, and other development tasks. Do NOT run destructive or irreversible commands unless the user explicitly requests them.
 
 When asked to work with files, use these tools. Always confirm what you did after completing an action. Be concise and helpful.`;
 
@@ -20,6 +25,15 @@ export class AgentManager {
 	private status: AgentStatus = "idle";
 	private messageCount = 0;
 	private eventListeners: Set<(event: AgentEvent) => void> = new Set();
+	private permissionManager: PermissionManager | undefined;
+
+	constructor(permissionManager?: PermissionManager) {
+		this.permissionManager = permissionManager;
+	}
+
+	getPermissionManager(): PermissionManager | undefined {
+		return this.permissionManager;
+	}
 
 	private getOrCreateAgent(): Agent {
 		if (!this.agent) {
@@ -31,7 +45,11 @@ export class AgentManager {
 				createReadFileTool(workingDirectory),
 				createWriteFileTool(workingDirectory),
 				createListFilesTool(workingDirectory),
+				createRunShellTool(workingDirectory),
 			];
+
+			const config = loadConfig(workingDirectory);
+			const ruleset = configToRuleset(config);
 
 			this.agent = new Agent({
 				model,
@@ -40,6 +58,8 @@ export class AgentManager {
 				systemPrompt: SYSTEM_PROMPT,
 				tools,
 				workingDirectory,
+				permissionChecker: this.permissionManager ?? undefined,
+				ruleset,
 			});
 		}
 		return this.agent;

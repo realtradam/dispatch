@@ -40,15 +40,9 @@ async function* makeFullStream(
 	}
 }
 
-interface MockStreamOptions {
-	events: Array<{ type: string; [key: string]: unknown }>;
-	steps?: Array<{ toolResults: Array<{ toolCallId: string; result: unknown }> }>;
-}
-
-function makeMockStreamResult(opts: MockStreamOptions) {
+function makeMockStreamResult(events: Array<{ type: string; [key: string]: unknown }>) {
 	return {
-		fullStream: makeFullStream(opts.events),
-		steps: Promise.resolve(opts.steps ?? []),
+		fullStream: makeFullStream(events),
 	} as ReturnType<typeof import("ai").streamText>;
 }
 
@@ -66,18 +60,16 @@ describe("Agent", () => {
 	it("yields running then idle status events around a simple message", async () => {
 		const { streamText } = await import("ai");
 		vi.mocked(streamText).mockReturnValue(
-			makeMockStreamResult({
-				events: [
-					{ type: "text-delta", textDelta: "Hello!" },
-					{
-						type: "finish",
-						finishReason: "stop",
-						usage: {},
-						providerMetadata: undefined,
-						response: {},
-					},
-				],
-			}),
+			makeMockStreamResult([
+				{ type: "text-delta", textDelta: "Hello!" },
+				{
+					type: "finish",
+					finishReason: "stop",
+					usage: {},
+					providerMetadata: undefined,
+					response: {},
+				},
+			]),
 		);
 
 		const agent = new Agent(makeConfig());
@@ -97,19 +89,17 @@ describe("Agent", () => {
 	it("yields text-delta events", async () => {
 		const { streamText } = await import("ai");
 		vi.mocked(streamText).mockReturnValue(
-			makeMockStreamResult({
-				events: [
-					{ type: "text-delta", textDelta: "Hello" },
-					{ type: "text-delta", textDelta: " world" },
-					{
-						type: "finish",
-						finishReason: "stop",
-						usage: {},
-						providerMetadata: undefined,
-						response: {},
-					},
-				],
-			}),
+			makeMockStreamResult([
+				{ type: "text-delta", textDelta: "Hello" },
+				{ type: "text-delta", textDelta: " world" },
+				{
+					type: "finish",
+					finishReason: "stop",
+					usage: {},
+					providerMetadata: undefined,
+					response: {},
+				},
+			]),
 		);
 
 		const agent = new Agent(makeConfig());
@@ -127,18 +117,16 @@ describe("Agent", () => {
 	it("adds user message and assistant message to history", async () => {
 		const { streamText } = await import("ai");
 		vi.mocked(streamText).mockReturnValue(
-			makeMockStreamResult({
-				events: [
-					{ type: "text-delta", textDelta: "Response" },
-					{
-						type: "finish",
-						finishReason: "stop",
-						usage: {},
-						providerMetadata: undefined,
-						response: {},
-					},
-				],
-			}),
+			makeMockStreamResult([
+				{ type: "text-delta", textDelta: "Response" },
+				{
+					type: "finish",
+					finishReason: "stop",
+					usage: {},
+					providerMetadata: undefined,
+					response: {},
+				},
+			]),
 		);
 
 		const agent = new Agent(makeConfig());
@@ -160,18 +148,16 @@ describe("Agent", () => {
 	it("yields done event with final message", async () => {
 		const { streamText } = await import("ai");
 		vi.mocked(streamText).mockReturnValue(
-			makeMockStreamResult({
-				events: [
-					{ type: "text-delta", textDelta: "Done!" },
-					{
-						type: "finish",
-						finishReason: "stop",
-						usage: {},
-						providerMetadata: undefined,
-						response: {},
-					},
-				],
-			}),
+			makeMockStreamResult([
+				{ type: "text-delta", textDelta: "Done!" },
+				{
+					type: "finish",
+					finishReason: "stop",
+					usage: {},
+					providerMetadata: undefined,
+					response: {},
+				},
+			]),
 		);
 
 		const agent = new Agent(makeConfig());
@@ -190,15 +176,29 @@ describe("Agent", () => {
 
 	it("yields tool-call and tool-result events", async () => {
 		const { streamText } = await import("ai");
-		vi.mocked(streamText).mockReturnValue(
-			makeMockStreamResult({
-				events: [
+
+		// First call: LLM emits a tool-call
+		// Second call (after tool execution): LLM emits text response with no tool calls
+		vi.mocked(streamText)
+			.mockReturnValueOnce(
+				makeMockStreamResult([
 					{
 						type: "tool-call",
 						toolCallId: "tc1",
 						toolName: "read_file",
 						args: { path: "hello.txt" },
 					},
+					{
+						type: "finish",
+						finishReason: "tool-calls",
+						usage: {},
+						providerMetadata: undefined,
+						response: {},
+					},
+				]),
+			)
+			.mockReturnValueOnce(
+				makeMockStreamResult([
 					{ type: "text-delta", textDelta: "Here is the file." },
 					{
 						type: "finish",
@@ -207,14 +207,8 @@ describe("Agent", () => {
 						providerMetadata: undefined,
 						response: {},
 					},
-				],
-				steps: [
-					{
-						toolResults: [{ toolCallId: "tc1", result: "file contents" }],
-					},
-				],
-			}),
-		);
+				]),
+			);
 
 		const toolDef = {
 			name: "read_file",

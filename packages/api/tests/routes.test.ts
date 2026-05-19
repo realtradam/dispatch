@@ -19,6 +19,15 @@ vi.mock("@dispatch/core", () => ({
 			yield { type: "status", status: "idle" } as const;
 		}
 	},
+	PermissionService: class MockPermissionService {
+		ask(_request: unknown, _rulesets: unknown[]) {
+			return Promise.resolve("once");
+		}
+		reply(_id: string, _reply: unknown) {}
+		getPending() {
+			return [];
+		}
+	},
 	createReadFileTool(_wd: string): ToolDefinition {
 		return {
 			name: "read_file",
@@ -42,6 +51,20 @@ vi.mock("@dispatch/core", () => ({
 			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
 			execute: async () => ["file1.ts"],
 		};
+	},
+	createRunShellTool(_wd: string): ToolDefinition {
+		return {
+			name: "run_shell",
+			description: "run shell command",
+			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
+			execute: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+		};
+	},
+	loadConfig(_dir: string) {
+		return { permissions: {} };
+	},
+	configToRuleset(_config: unknown) {
+		return [];
 	},
 }));
 

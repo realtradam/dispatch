@@ -66,51 +66,94 @@ Open a browser, type "read the contents of package.json and summarize it," see t
 
 **Goal:** Agent can run shell commands with directory-scoped permission controls. Usable on real projects.
 
-**Effort:** 1-2 weeks
+**Effort:** 2-3 weeks
 
-### Backend
+### Backend — Permission Engine
 
-- [ ] Shell tool:
-  - `run_shell` — execute arbitrary commands, capture stdout/stderr/exit code
-  - Streaming output for long-running commands
-  - Working directory parameter (defaults to project root)
-- [ ] Directory permission system:
-  - Current working directory + subdirectories: always allowed (read, write, execute)
-  - Auto-allow list loaded from config file
-  - All other directories: prompt user for permission before access
+- [ ] Rule-based permission engine:
+  - Rules: `{ permission, pattern, action }` where action is `allow | deny | ask`
+  - Wildcard glob matching on both permission name and target pattern
+  - Ordered ruleset, last-match-wins (user config overrides defaults)
+  - Default action when no rule matches: `"ask"`
 - [ ] Permission grant types:
-  - Per-request — allow this one operation
-  - Per-session — allow this directory for the rest of the session
-  - Permanent — add to auto-allow list in config
-- [ ] Permission prompt flow:
-  - Agent calls a tool that touches an out-of-scope directory
-  - API holds the request open (agent pauses)
-  - WebSocket pushes a permission prompt to the frontend
-  - User responds (approve/deny/always-allow)
-  - API resolves, agent continues or gets a denial message
-- [ ] Basic config file loading (`dispatch.yaml`) for auto-allow list:
+  - Per-request — allow this one operation (no rule stored)
+  - Per-session — add to in-memory approved set for process lifetime
+  - Permanent — write to `dispatch.yaml` config
+- [ ] Reject cascade: rejecting one pending request auto-rejects all pending requests in that session
+- [ ] Path resolution:
+  - Working directory + all subdirectories: always in-scope (no prompt)
+  - All other paths: `external_directory` permission check
+  - `~` / `$HOME` expansion in config patterns
+
+### Backend — Config Format
+
+- [ ] `dispatch.yaml` permission block supporting per-permission patterns:
   ```yaml
   permissions:
-    auto_allow:
-      - /tmp
-      - ~/.config/dispatch
+    read: allow                          # shorthand: "read:*" = allow
+    edit:
+      "*": ask                           # prompt for edits by default
+      "src/**": allow                    # auto-allow edits inside src/
+      "/tmp/*": allow
+    external_directory:
+      "~/projects/*": allow
+      "/tmp/*": allow
+    bash:
+      "npm test": allow
+      "git commit *": allow
+      "git push *": ask
+      "*": ask                           # prompt for unknown commands
   ```
-- [ ] Apply permission checks to existing file tools (`read_file`, `write_file`) as well
+- [ ] Config hot-reload via chokidar
+
+### Backend — Shell Tool with Tree-Sitter Analysis
+
+- [ ] Dependencies: `web-tree-sitter` (WASM runtime), `tree-sitter-bash` (grammar WASM)
+  - ~2.5 MB total, loaded lazily on first shell command call
+- [ ] `run_shell` tool:
+  - Executes arbitrary commands via `child_process`, captures stdout/stderr/exit code
+  - Streaming output for long-running commands
+  - Configurable timeout (default 2 minutes)
+  - Working directory parameter (defaults to project root)
+- [ ] Tree-sitter static analysis pipeline:
+  1. Parse command string into AST using `tree-sitter-bash`
+  2. Walk all `command` nodes (recurses into pipelines, subshells, `&&`, `if` bodies)
+  3. For file-touching commands (`rm`, `cp`, `mv`, `mkdir`, `touch`, `chmod`, `chown`, `cat`):
+     - Extract path arguments (skip flags like `-rf`)
+     - Resolve to absolute paths, check workspace boundary
+     - If outside workspace → add dir to `external_directory` permission ask
+  4. Normalize command to pattern via `BashArity`:
+     - `git checkout main` → `"git checkout *"` (arity 2)
+     - `npm run dev --watch` → `"npm run dev *"` (arity 3)
+     - Unknown commands → fallback to command name only
+  5. Fire two permission requests:
+     - `external_directory` — for any out-of-workspace paths detected
+     - `bash` — for the command pattern itself
+- [ ] Known gaps (documented, no fix needed for MVP):
+  - `find -exec rm`, `xargs`, `sudo` — can't see through these wrappers
+  - `$(...)` substitution paths — dynamic, skipped (still prompts for the command)
+  - Variable-stored paths — skipped
+  - Parse failure → hard error (no fallback), tool call aborts
+- [ ] Apply permission checks to existing file tools (`read_file`, `write_file`, `list_files`)
 
 ### Frontend
 
 - [ ] Permission prompt modal:
-  - Agent name
-  - Target path
-  - Operation type (read / write / execute)
+  - Agent name and AI's description of the operation
+  - For file ops: target path, operation type (read / write / execute)
+  - For shell commands: `$ command text` display with normalized "always allow" pattern preview
+  - For external directories: directory path and glob pattern
   - Buttons: Approve / Deny / Always Allow
+  - "Always Allow" shows secondary confirmation listing the patterns that will be permanently approved
 - [ ] Permission log panel: scrollable history of grants and denials
 - [ ] Shell output display in chat: stdout/stderr with monospace formatting, exit code indicator
 - [ ] Visual distinction between tool calls (file ops vs shell commands)
 
 ### Done When
 
-Ask the agent to "run the test suite." It executes `npm test` in the project dir (allowed). Then ask it to "check what's in /etc/hosts." Permission prompt appears. You approve. It reads the file and reports back. Next time it tries `/etc/`, it remembers your per-session grant.
+Ask the agent to "run the test suite." It executes `npm test` in the project dir (allowed). Then ask it to "check what's in /etc/hosts." Permission prompt appears showing the target path. You approve. It reads the file and reports back. Next time it tries `/etc/`, it remembers your per-session grant.
+
+Ask the agent to "clean up build artifacts with rm -rf dist." Permission prompt shows `$ rm -rf dist` with "always allow" pattern `"rm *"`. You click "Always Allow." Future `rm` commands auto-approve.
 
 ---
 
@@ -397,7 +440,7 @@ An agent edits a TypeScript file and introduces a type error. You see the error 
 | Phase | Scope | Effort | Cumulative |
 |---|---|---|---|
 | 1. Single Agent + UI | One agent, chat in browser | 2-3w | 2-3w |
-| 2. Shell Permissions | Safe shell access, permission prompts | 1-2w | 3-5w |
+| 2. Shell Permissions | Rule engine, tree-sitter shell analysis, permission prompts | 2-3w | 4-6w |
 | 3. Config + Skills + Models | YAML config, skills dirs, model groups, key fallback | 2-3w | 5-8w |
 | 4. Spawning + Tree | Multi-agent hierarchy, tree UI, user messaging | 2-3w | 7-11w |
 | 5. Sessions | Persistence, fork, resume, model switch | 1-2w | 8-13w |
