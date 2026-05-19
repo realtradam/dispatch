@@ -1,28 +1,49 @@
+import type { ToolDefinition } from "@dispatch/core";
 import { describe, expect, it, vi } from "vitest";
 
 // Mock @dispatch/core's Agent to avoid real LLM calls
-vi.mock("@dispatch/core", async () => {
-	const actual = await vi.importActual<typeof import("@dispatch/core")>("@dispatch/core");
-	return {
-		...actual,
-		Agent: class MockAgent {
-			status = "idle";
-			messages: unknown[] = [];
-			async *run(_message: string) {
-				yield { type: "status", status: "running" } as const;
-				// Simulate some processing time so status stays "running"
-				await new Promise<void>((r) => setTimeout(r, 100));
-				yield { type: "text-delta", delta: "Hello " } as const;
-				yield { type: "text-delta", delta: "world" } as const;
-				yield {
-					type: "done",
-					message: { role: "assistant", content: "Hello world" },
-				} as const;
-				yield { type: "status", status: "idle" } as const;
-			}
-		},
-	};
-});
+vi.mock("@dispatch/core", () => ({
+	Agent: class MockAgent {
+		status = "idle";
+		messages: unknown[] = [];
+		async *run(_message: string) {
+			yield { type: "status", status: "running" } as const;
+			// Simulate some processing time so status stays "running"
+			await new Promise<void>((r) => setTimeout(r, 100));
+			yield { type: "text-delta", delta: "Hello " } as const;
+			yield { type: "text-delta", delta: "world" } as const;
+			yield {
+				type: "done",
+				message: { role: "assistant", content: "Hello world" },
+			} as const;
+			yield { type: "status", status: "idle" } as const;
+		}
+	},
+	createReadFileTool(_wd: string): ToolDefinition {
+		return {
+			name: "read_file",
+			description: "read a file",
+			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
+			execute: async () => "mock file content",
+		};
+	},
+	createWriteFileTool(_wd: string): ToolDefinition {
+		return {
+			name: "write_file",
+			description: "write a file",
+			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
+			execute: async () => true,
+		};
+	},
+	createListFilesTool(_wd: string): ToolDefinition {
+		return {
+			name: "list_files",
+			description: "list files",
+			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
+			execute: async () => ["file1.ts"],
+		};
+	},
+}));
 
 const { app } = await import("../src/app.js");
 

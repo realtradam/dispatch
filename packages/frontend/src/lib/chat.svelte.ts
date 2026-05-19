@@ -9,7 +9,7 @@ function generateId() {
 function makeDebugInfo(overrides: Partial<DebugInfo> = {}): DebugInfo {
 	return {
 		timestamp: new Date().toISOString(),
-		model: "deepseek-v4-flash-free",
+		model: "deepseek-v4-flash",
 		apiBase: config.apiBase,
 		connectionStatus: wsClient.connectionStatus,
 		...overrides,

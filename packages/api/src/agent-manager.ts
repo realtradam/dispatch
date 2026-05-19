@@ -24,7 +24,7 @@ export class AgentManager {
 	private getOrCreateAgent(): Agent {
 		if (!this.agent) {
 			const apiKey = process.env.OPENCODE_API_KEY ?? "";
-			const model = process.env.DISPATCH_MODEL ?? "deepseek-v4-flash-free";
+			const model = process.env.DISPATCH_MODEL ?? "deepseek-v4-flash";
 			const workingDirectory = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
 
 			const tools = [
@@ -36,7 +36,7 @@ export class AgentManager {
 			this.agent = new Agent({
 				model,
 				apiKey,
-				baseURL: "https://opencode.ai/zen/v1",
+				baseURL: "https://opencode.ai/zen/go/v1",
 				systemPrompt: SYSTEM_PROMPT,
 				tools,
 				workingDirectory,
