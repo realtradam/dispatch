@@ -29,6 +29,7 @@ export type AgentStatus = "idle" | "running" | "error";
 export type AgentEvent =
 	| { type: "status"; status: AgentStatus }
 	| { type: "text-delta"; delta: string }
+	| { type: "reasoning-delta"; delta: string }
 	| { type: "tool-call"; toolCall: ToolCall }
 	| { type: "tool-result"; toolResult: ToolResult }
 	| { type: "error"; error: string }
