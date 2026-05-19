@@ -10,7 +10,7 @@ function toggle() {
 }
 </script>
 
-<div class="collapse collapse-arrow bg-base-200 my-1 rounded-lg border border-base-300">
+<div class="collapse collapse-arrow bg-base-200 my-1 rounded-lg border border-base-300 {isExpanded ? 'collapse-open' : ''}">
 	<button
 		type="button"
 		class="collapse-title flex items-center gap-2 text-sm font-medium cursor-pointer w-full text-left"

@@ -66,10 +66,6 @@ function createChatStore() {
 	let currentAssistantId: string | null = null;
 
 	wsClient.onEvent((event) => {
-		const connected = wsClient.connectionStatus === "connected";
-		if (connected !== isConnected) {
-			isConnected = connected;
-		}
 		handleEvent(event);
 	});
 
