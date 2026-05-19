@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Build frontend assets inside a temporary container
+# Output lands in packages/frontend/dist/ on the host (via bind mount)
+#
+# VITE_API_URL can be set to configure the API endpoint for the build.
+# Example: VITE_API_URL=https://api.example.com bin/build-frontend
+
+sudo VITE_API_URL="${VITE_API_URL:-}" \
+  docker compose -f "$PROJECT_DIR/docker-compose.yml" \
+  run --rm \
+  -e VITE_API_URL \
+  frontend bun run --cwd packages/frontend build "$@"
