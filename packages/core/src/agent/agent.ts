@@ -80,6 +80,9 @@ export class Agent {
 				messages: toCoreMessages(this.messages),
 				tools: registry.getAISDKTools(),
 				maxSteps: 10,
+				providerOptions: {
+					openaiCompatible: { reasoningEffort: "max" },
+				},
 			});
 
 			let fullText = "";
@@ -90,6 +93,8 @@ export class Agent {
 				if (event.type === "text-delta") {
 					fullText += event.textDelta;
 					yield { type: "text-delta", delta: event.textDelta };
+				} else if (event.type === "reasoning") {
+					yield { type: "reasoning-delta", delta: event.textDelta };
 				} else if (event.type === "tool-call") {
 					const toolCall: ToolCall = {
 						id: event.toolCallId,

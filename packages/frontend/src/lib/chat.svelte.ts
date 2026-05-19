@@ -1,5 +1,5 @@
 import { config } from "./config.js";
-import type { AgentEvent, ChatMessage, DebugInfo, ToolCallDisplay } from "./types.js";
+import type { AgentEvent, ChatMessage, ContentSegment, DebugInfo } from "./types.js";
 import { wsClient } from "./ws.svelte.js";
 
 function generateId() {
@@ -25,15 +25,20 @@ function formatConversation(msgs: ChatMessage[]): string {
 	for (const msg of msgs) {
 		const role = msg.role === "user" ? "User" : "Assistant";
 		lines.push(`--- ${role} ---`);
-		lines.push(msg.content);
 
-		if (msg.toolCalls && msg.toolCalls.length > 0) {
-			for (const tc of msg.toolCalls) {
-				lines.push(`  [Tool: ${tc.name}]`);
-				lines.push(`  Args: ${JSON.stringify(tc.arguments)}`);
-				if (tc.result !== undefined) {
-					const prefix = tc.isError ? "  Error: " : "  Result: ";
-					lines.push(`${prefix}${tc.result}`);
+		if (msg.thinking) {
+			lines.push(`  [Thinking]: ${msg.thinking}`);
+		}
+
+		for (const seg of msg.content) {
+			if (seg.type === "text") {
+				lines.push(seg.text);
+			} else if (seg.type === "tool-call") {
+				lines.push(`  [Tool: ${seg.name}]`);
+				lines.push(`  Args: ${JSON.stringify(seg.arguments)}`);
+				if (seg.result !== undefined) {
+					const prefix = seg.isError ? "  Error: " : "  Result: ";
+					lines.push(`${prefix}${seg.result}`);
 				}
 			}
 		}
@@ -88,8 +93,8 @@ function createChatStore() {
 			const newMsg: ChatMessage = {
 				id,
 				role: "assistant",
-				content: "",
-				toolCalls: [],
+				content: [],
+				thinking: "",
 				isStreaming: true,
 			};
 			messages = [...messages, newMsg];
@@ -107,15 +112,28 @@ function createChatStore() {
 				}
 				break;
 			}
-			case "text-delta": {
+			case "reasoning-delta": {
+			ensureCurrentAssistantMessage();
+			messages = messages.map((m) => {
+				if (m.id === currentAssistantId) {
+					return { ...m, thinking: (m.thinking ?? "") + event.delta };
+				}
+				return m;
+			});
+			break;
+		}
+		case "text-delta": {
 				ensureCurrentAssistantMessage();
 				messages = messages.map((m) => {
 					if (m.id === currentAssistantId) {
-						return {
-							...m,
-							content: m.content + event.delta,
-							isStreaming: true,
-						};
+						const segments = [...m.content];
+						const last = segments[segments.length - 1];
+						if (last && last.type === "text") {
+							segments[segments.length - 1] = { ...last, text: last.text + event.delta };
+						} else {
+							segments.push({ type: "text", text: event.delta });
+						}
+						return { ...m, content: segments, isStreaming: true };
 					}
 					return m;
 				});
@@ -123,15 +141,19 @@ function createChatStore() {
 			}
 			case "tool-call": {
 				ensureCurrentAssistantMessage();
-				const toolCall: ToolCallDisplay = {
-					id: event.toolCall.id,
-					name: event.toolCall.name,
-					arguments: event.toolCall.arguments,
-					isExpanded: false,
-				};
 				messages = messages.map((m) => {
 					if (m.id === currentAssistantId) {
-						return { ...m, toolCalls: [...(m.toolCalls ?? []), toolCall] };
+						const segments: ContentSegment[] = [
+							...m.content,
+							{
+								type: "tool-call",
+								id: event.toolCall.id,
+								name: event.toolCall.name,
+								arguments: event.toolCall.arguments,
+								isExpanded: false,
+							},
+						];
+						return { ...m, content: segments };
 					}
 					return m;
 				});
@@ -142,15 +164,11 @@ function createChatStore() {
 					if (m.id === currentAssistantId) {
 						return {
 							...m,
-							toolCalls: (m.toolCalls ?? []).map((tc) => {
-								if (tc.id === event.toolResult.toolCallId) {
-									return {
-										...tc,
-										result: event.toolResult.result,
-										isError: event.toolResult.isError,
-									};
+							content: m.content.map((seg) => {
+								if (seg.type === "tool-call" && seg.id === event.toolResult.toolCallId) {
+									return { ...seg, result: event.toolResult.result, isError: event.toolResult.isError };
 								}
-								return tc;
+								return seg;
 							}),
 						};
 					}
@@ -161,11 +179,7 @@ function createChatStore() {
 			case "done": {
 				messages = messages.map((m) => {
 					if (m.id === currentAssistantId) {
-						return {
-							...m,
-							content: event.message.content,
-							isStreaming: false,
-						};
+						return { ...m, isStreaming: false };
 					}
 					return m;
 				});
@@ -176,7 +190,7 @@ function createChatStore() {
 				const errMsg: ChatMessage = {
 					id: generateId(),
 					role: "assistant",
-					content: `Error: ${event.error}`,
+					content: [{ type: "text", text: `Error: ${event.error}` }],
 					isStreaming: false,
 					debugInfo: makeDebugInfo({
 						error: event.error,
@@ -196,7 +210,7 @@ function createChatStore() {
 		const userMsg: ChatMessage = {
 			id: generateId(),
 			role: "user",
-			content: text,
+			content: [{ type: "text", text }],
 		};
 		messages = [...messages, userMsg];
 		currentAssistantId = null;
@@ -213,7 +227,7 @@ function createChatStore() {
 				const errMsg: ChatMessage = {
 					id: generateId(),
 					role: "assistant",
-					content: `Error: Failed to send message (HTTP ${res.status})`,
+					content: [{ type: "text", text: `Error: Failed to send message (HTTP ${res.status})` }],
 					isStreaming: false,
 					debugInfo: makeDebugInfo({
 						error: `POST ${url} returned ${res.status}`,
@@ -229,7 +243,7 @@ function createChatStore() {
 			const errMsg: ChatMessage = {
 				id: generateId(),
 				role: "assistant",
-				content: "Error: Could not reach the server",
+				content: [{ type: "text", text: "Error: Could not reach the server" }],
 				isStreaming: false,
 				debugInfo: makeDebugInfo({
 					error: `POST ${url} failed: ${errorText}`,

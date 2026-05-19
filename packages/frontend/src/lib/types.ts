@@ -19,11 +19,15 @@ export interface DebugInfo {
 	httpBody?: string;
 }
 
+export type ContentSegment =
+	| { type: "text"; text: string }
+	| ({ type: "tool-call" } & ToolCallDisplay);
+
 export interface ChatMessage {
 	id: string;
 	role: "user" | "assistant";
-	content: string;
-	toolCalls?: ToolCallDisplay[];
+	content: ContentSegment[];
+	thinking?: string;
 	isStreaming?: boolean;
 	debugInfo?: DebugInfo;
 }
@@ -33,6 +37,7 @@ export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 export type AgentEvent =
 	| { type: "status"; status: "idle" | "running" | "error" }
 	| { type: "text-delta"; delta: string }
+	| { type: "reasoning-delta"; delta: string }
 	| {
 			type: "tool-call";
 			toolCall: {
