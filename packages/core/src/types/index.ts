@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import type { PermissionChecker, Ruleset } from "../permission/index.js";
 
 // Message types for the agent conversation
 export type MessageRole = "user" | "assistant" | "tool";
@@ -18,6 +19,7 @@ export interface ToolCall {
 
 export interface ToolResult {
 	toolCallId: string;
+	toolName: string;
 	result: string;
 	isError: boolean;
 }
@@ -32,15 +34,21 @@ export type AgentEvent =
 	| { type: "reasoning-delta"; delta: string }
 	| { type: "tool-call"; toolCall: ToolCall }
 	| { type: "tool-result"; toolResult: ToolResult }
+	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" }
 	| { type: "error"; error: string }
 	| { type: "done"; message: ChatMessage };
+
+// Context passed to tool execute functions
+export interface ToolExecuteContext {
+	onOutput?: (data: string, stream: "stdout" | "stderr") => void;
+}
 
 // Tool definition interface
 export interface ToolDefinition {
 	name: string;
 	description: string;
 	parameters: ZodType;
-	execute: (args: Record<string, unknown>) => Promise<string>;
+	execute: (args: Record<string, unknown>, context?: ToolExecuteContext) => Promise<string>;
 }
 
 // Agent configuration
@@ -51,4 +59,6 @@ export interface AgentConfig {
 	systemPrompt: string;
 	tools: ToolDefinition[];
 	workingDirectory: string;
+	permissionChecker?: PermissionChecker;
+	ruleset?: Ruleset;
 }

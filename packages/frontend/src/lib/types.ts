@@ -5,6 +5,7 @@ export interface ToolCallDisplay {
 	result?: string;
 	isError?: boolean;
 	isExpanded: boolean;
+	shellOutput?: { stdout: string; stderr: string };
 }
 
 export interface DebugInfo {
@@ -59,4 +60,24 @@ export type AgentEvent =
 				toolCalls?: unknown[];
 				toolResults?: unknown[];
 			};
-	  };
+	  }
+	| { type: "permission-prompt"; pending: PermissionPrompt[] }
+	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" };
+
+export interface PermissionPrompt {
+	id: string;
+	permission: string;
+	patterns: string[];
+	always: string[];
+	description: string;
+	metadata: Record<string, unknown>;
+}
+
+export interface LogEntry {
+	id: string;
+	permission: string;
+	patterns: string[];
+	action: "once" | "always" | "reject";
+	timestamp: string;
+	description: string;
+}

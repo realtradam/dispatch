@@ -1,5 +1,5 @@
 import { config } from "./config.js";
-import type { AgentEvent, ChatMessage, ContentSegment, DebugInfo } from "./types.js";
+import type { AgentEvent, ChatMessage, ContentSegment, DebugInfo, LogEntry, PermissionPrompt } from "./types.js";
 import { wsClient } from "./ws.svelte.js";
 
 function generateId() {
@@ -69,6 +69,8 @@ function createChatStore() {
 	let agentStatus: "idle" | "running" | "error" = $state("idle");
 	let isConnected = $state(false);
 	let currentAssistantId: string | null = null;
+	let pendingPermissions: PermissionPrompt[] = $state([]);
+	let permissionLog: LogEntry[] = $state([]);
 
 	wsClient.onEvent((event) => {
 		handleEvent(event);
@@ -112,16 +114,16 @@ function createChatStore() {
 				}
 				break;
 			}
-			case "reasoning-delta": {
-			ensureCurrentAssistantMessage();
-			messages = messages.map((m) => {
-				if (m.id === currentAssistantId) {
-					return { ...m, thinking: (m.thinking ?? "") + event.delta };
-				}
-				return m;
-			});
-			break;
-		}
+				case "reasoning-delta": {
+				ensureCurrentAssistantMessage();
+				messages = messages.map((m) => {
+					if (m.id === currentAssistantId) {
+						return { ...m, thinking: (m.thinking ?? "") + event.delta };
+					}
+					return m;
+				});
+				break;
+			}
 		case "text-delta": {
 				ensureCurrentAssistantMessage();
 				messages = messages.map((m) => {
@@ -203,6 +205,37 @@ function createChatStore() {
 				agentStatus = "error";
 				break;
 			}
+			case "permission-prompt": {
+				pendingPermissions = event.pending;
+				break;
+			}
+			case "shell-output": {
+				messages = messages.map((m) => {
+					if (m.id === currentAssistantId) {
+						// Find the last tool-call segment
+						const segments = [...m.content];
+						let found = false;
+						for (let i = segments.length - 1; i >= 0; i--) {
+							const seg = segments[i];
+							if (seg && seg.type === "tool-call") {
+								segments[i] = {
+									...seg,
+									shellOutput: {
+										stdout: (seg.shellOutput?.stdout ?? "") + (event.stream === "stdout" ? event.data : ""),
+										stderr: (seg.shellOutput?.stderr ?? "") + (event.stream === "stderr" ? event.data : ""),
+									},
+								};
+								found = true;
+								break;
+							}
+						}
+						if (!found) return m; // no tool-call segment yet
+						return { ...m, content: segments };
+					}
+					return m;
+				});
+				break;
+			}
 		}
 	}
 
@@ -258,6 +291,27 @@ function createChatStore() {
 		return formatConversation(messages);
 	}
 
+	function replyPermission(id: string, reply: "once" | "always" | "reject") {
+		if (wsClient.connectionStatus !== "connected") {
+			// WebSocket is not connected; skip optimistic removal to avoid losing the prompt
+			return;
+		}
+		const prompt = pendingPermissions.find((p) => p.id === id);
+		wsClient.send({ type: "permission-reply", id, reply });
+		pendingPermissions = pendingPermissions.filter((p) => p.id !== id);
+		if (prompt) {
+			const entry: LogEntry = {
+				id: generateId(),
+				permission: prompt.permission,
+				patterns: prompt.patterns,
+				action: reply,
+				timestamp: new Date().toISOString(),
+				description: prompt.description,
+			};
+			permissionLog = [...permissionLog, entry];
+		}
+	}
+
 	function clear() {
 		messages = [];
 		currentAssistantId = null;
@@ -274,8 +328,15 @@ function createChatStore() {
 		get isConnected() {
 			return isConnected;
 		},
+		get pendingPermissions() {
+			return pendingPermissions;
+		},
+		get permissionLog() {
+			return permissionLog;
+		},
 		sendMessage,
 		handleEvent,
+		replyPermission,
 		copyConversation,
 		clear,
 	};

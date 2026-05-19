@@ -76,6 +76,12 @@ function createWebSocketClient(url: string) {
 		};
 	}
 
+	function send(data: unknown): void {
+		if (ws && ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify(data));
+		}
+	}
+
 	return {
 		get connectionStatus() {
 			return connectionStatus;
@@ -83,6 +89,7 @@ function createWebSocketClient(url: string) {
 		connect,
 		disconnect,
 		onEvent,
+		send,
 	};
 }
 

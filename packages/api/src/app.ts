@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AgentManager } from "./agent-manager.js";
+import { PermissionManager } from "./permission-manager.js";
 
-export const agentManager = new AgentManager();
+export const permissionManager = new PermissionManager();
+export const agentManager = new AgentManager(permissionManager);
 
 export const app = new Hono();
 
