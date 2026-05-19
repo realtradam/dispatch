@@ -1,0 +1,21 @@
+FROM oven/bun:1
+
+WORKDIR /app
+
+# Copy dependency files for layer caching
+COPY package.json bun.lock ./
+COPY packages/core/package.json packages/core/package.json
+COPY packages/api/package.json packages/api/package.json
+COPY packages/frontend/package.json packages/frontend/package.json
+
+# Install dependencies (cached unless package files change)
+RUN bun install
+
+# Source code is volume-mounted at runtime, overriding this copy
+COPY . .
+
+# Dev entrypoint: re-runs bun install to pick up dependency changes, then exec's the command
+COPY docker/entrypoint.dev.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

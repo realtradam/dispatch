@@ -1,0 +1,10 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"declaration": false,
+		"declarationMap": false,
+		"types": ["vite/client"]
+	},
+	"include": ["src/**/*.ts", "src/**/*.svelte", "src/vite-env.d.ts"],
+	"exclude": ["node_modules", "dist"]
+}

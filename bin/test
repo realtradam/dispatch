@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Run the test suite inside the API container
+# Uses the api service since it has access to the full workspace
+sudo docker compose -f "$PROJECT_DIR/docker-compose.yml" \
+  run --rm api bun run test "$@"

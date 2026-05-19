@@ -1,0 +1,24 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: ["bun", "--watch", "packages/api/src/index.ts"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+    environment:
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+      DISPATCH_MODEL: ${DISPATCH_MODEL:-deepseek-v4-flash-free}
+      DISPATCH_WORKING_DIR: /app
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: ["bun", "run", "--cwd", "packages/frontend", "dev", "--", "--host"]
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app

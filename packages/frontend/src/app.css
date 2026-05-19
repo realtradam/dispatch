@@ -1,0 +1,4 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+	themes: light, dark, dracula, night, nord, sunset, cyberpunk, forest, cmyk, coffee, caramellatte;
+}

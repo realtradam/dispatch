@@ -1,0 +1,21 @@
+{
+	"name": "@dispatch/core",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"scripts": {
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"ai": "^4.0.0",
+		"@ai-sdk/openai-compatible": "^0.2.0",
+		"zod": "^3.23.0"
+	},
+	"devDependencies": {
+		"@types/bun": "latest"
+	}
+}
