@@ -17,7 +17,14 @@ function toCoreMessages(messages: ChatMessage[]): CoreMessage[] {
 		if (msg.role === "user") {
 			result.push({ role: "user", content: msg.content });
 		} else if (msg.role === "assistant") {
-			result.push({ role: "assistant", content: msg.content });
+			const parts: Array<{ type: "text"; text: string } | { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }> = [{ type: "text", text: msg.content }];
+			for (const tc of msg.toolCalls ?? []) {
+				parts.push({ type: "tool-call", toolCallId: tc.id, toolName: tc.name, args: tc.arguments });
+			}
+			result.push({ role: "assistant", content: parts });
+			for (const tr of msg.toolResults ?? []) {
+				result.push({ role: "tool", content: [{ type: "tool-result", toolCallId: tr.toolCallId, toolName: "", result: tr.result }] });
+			}
 		}
 	}
 	return result;
@@ -108,12 +115,13 @@ export class Agent {
 				const stepToolResults = step.toolResults as unknown as Array<{
 					toolCallId: string;
 					result: unknown;
+					isError?: boolean;
 				}>;
 				for (const tr of stepToolResults) {
 					const toolResult: ToolResult = {
 						toolCallId: tr.toolCallId,
 						result: typeof tr.result === "string" ? tr.result : JSON.stringify(tr.result),
-						isError: false,
+						isError: tr.isError ?? false,
 					};
 					toolResults.push(toolResult);
 					yield { type: "tool-result", toolResult };

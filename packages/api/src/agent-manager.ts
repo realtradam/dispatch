@@ -69,6 +69,7 @@ export class AgentManager {
 	async processMessage(message: string): Promise<void> {
 		const agent = this.getOrCreateAgent();
 
+		this.status = "running";
 		this.messageCount += 1;
 
 		try {
