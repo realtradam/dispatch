@@ -10,7 +10,7 @@ services:
       - .:/app
     environment:
       OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
-      DISPATCH_MODEL: ${DISPATCH_MODEL:-deepseek-v4-flash-free}
+      DISPATCH_MODEL: ${DISPATCH_MODEL:-deepseek-v4-flash}
       DISPATCH_WORKING_DIR: /app
 
   frontend:

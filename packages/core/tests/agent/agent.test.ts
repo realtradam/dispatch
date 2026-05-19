@@ -4,8 +4,8 @@ import { Agent } from "../../src/agent/agent.js";
 import type { AgentConfig } from "../../src/types/index.js";
 
 // Mock the ai module's streamText
-vi.mock("ai", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("ai")>();
+vi.mock("ai", async () => {
+	const actual = await import("ai");
 	return {
 		...actual,
 		streamText: vi.fn(),
