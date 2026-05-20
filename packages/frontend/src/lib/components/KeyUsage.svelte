@@ -71,6 +71,39 @@
 		}
 	});
 
+	// Merge duplicate Claude entries — all anthropic keys return the same
+	// set of accounts, so collect and deduplicate under one "Claude" card.
+	const claudeAccounts = $derived.by(() => {
+		const seen = new Set<string>();
+		const accounts: Array<{
+			label: string;
+			source: string;
+			subscriptionType?: string;
+			fiveHour?: UsageBucket;
+			sevenDay?: UsageBucket;
+			error?: string;
+		}> = [];
+		const claudeEntries = entries.filter((e) => e.provider === "anthropic");
+		for (const e of claudeEntries) {
+			if (!e.data || e.data.provider !== "anthropic" || !e.data.accounts) continue;
+			for (const acct of e.data.accounts) {
+				if (!seen.has(acct.source)) {
+					seen.add(acct.source);
+					accounts.push(acct);
+				}
+			}
+		}
+		return accounts;
+	});
+
+	const claudeLoading = $derived(
+		entries.some((e) => e.provider === "anthropic" && e.loading),
+	);
+
+	const nonClaudeEntries = $derived(
+		entries.filter((e) => e.provider !== "anthropic"),
+	);
+
 	function progressClass(utilization: number): string {
 		if (utilization > 0.8) return "progress-error";
 		if (utilization >= 0.5) return "progress-warning";
@@ -91,7 +124,75 @@
 		<p class="text-xs text-base-content/50">No keys available.</p>
 	{:else}
 		<div class="flex flex-col gap-3 max-h-96 overflow-y-auto">
-			{#each entries as entry (entry.keyId)}
+			<!-- Claude (all accounts merged under one card) -->
+			{#if claudeLoading}
+				<div class="bg-base-200 rounded-lg p-2">
+					<div class="flex items-center gap-1.5 mb-1.5">
+						<span class="text-xs font-semibold">Claude</span>
+						<span class="badge badge-xs badge-ghost">anthropic</span>
+					</div>
+					<div class="flex items-center gap-1.5 py-1">
+						<span class="loading loading-spinner loading-xs"></span>
+						<span class="text-xs text-base-content/50">Loading...</span>
+					</div>
+				</div>
+			{:else if claudeAccounts.length > 0}
+				<div class="bg-base-200 rounded-lg p-2">
+					<div class="flex items-center gap-1.5 mb-1.5">
+						<span class="text-xs font-semibold">Claude</span>
+						<span class="badge badge-xs badge-ghost">anthropic</span>
+					</div>
+					{#each claudeAccounts as acct, idx (acct.source)}
+						{#if idx > 0}
+							<div class="border-t border-base-300 my-1.5"></div>
+						{/if}
+						<div class="flex flex-col gap-1 pl-1">
+							<div class="flex items-center gap-1">
+								<span class="text-xs font-medium">{acct.label}</span>
+								{#if acct.subscriptionType}
+									<span class="badge badge-xs">{acct.subscriptionType}</span>
+								{/if}
+							</div>
+							{#if acct.error}
+								<p class="text-xs text-error/70">{acct.error}</p>
+							{/if}
+							{#if hasBucketData(acct.fiveHour)}
+								{@const b = acct.fiveHour!}
+								{@const u = b.utilization ?? 0}
+								{@const p = Math.round(u * 100)}
+								<div class="flex flex-col gap-0.5">
+									<div class="flex items-center justify-between">
+										<span class="text-xs text-base-content/50">5-Hour</span>
+										<span class="text-xs font-mono">{p}%</span>
+									</div>
+									<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
+									{#if b.resetsAt}
+										<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
+									{/if}
+								</div>
+							{/if}
+							{#if hasBucketData(acct.sevenDay)}
+								{@const b = acct.sevenDay!}
+								{@const u = b.utilization ?? 0}
+								{@const p = Math.round(u * 100)}
+								<div class="flex flex-col gap-0.5">
+									<div class="flex items-center justify-between">
+										<span class="text-xs text-base-content/50">Weekly</span>
+										<span class="text-xs font-mono">{p}%</span>
+									</div>
+									<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
+									{#if b.resetsAt}
+										<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
+									{/if}
+								</div>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			<!-- Non-Claude keys -->
+			{#each nonClaudeEntries as entry (entry.keyId)}
 				<div class="bg-base-200 rounded-lg p-2">
 					<div class="flex items-center gap-1.5 mb-1.5">
 						<span class="text-xs font-semibold">{entry.keyId}</span>
@@ -109,60 +210,6 @@
 
 					{:else if !entry.data}
 						<p class="text-xs text-base-content/50">No data.</p>
-
-					{:else if entry.data.provider === "anthropic"}
-						<!-- Render each Claude account -->
-						{#if entry.data.accounts}
-							{#each entry.data.accounts as acct, idx (acct.source)}
-								{#if idx > 0}
-									<div class="border-t border-base-300 my-1.5"></div>
-								{/if}
-								<div class="flex flex-col gap-1 pl-1">
-									<div class="flex items-center gap-1">
-										<span class="text-xs font-medium">{acct.label}</span>
-										{#if acct.subscriptionType}
-											<span class="badge badge-xs">{acct.subscriptionType}</span>
-										{/if}
-									</div>
-
-									{#if acct.error}
-										<p class="text-xs text-error/70">{acct.error}</p>
-									{/if}
-
-									{#if hasBucketData(acct.fiveHour)}
-										{@const b = acct.fiveHour!}
-										{@const u = b.utilization ?? 0}
-										{@const p = Math.round(u * 100)}
-										<div class="flex flex-col gap-0.5">
-											<div class="flex items-center justify-between">
-												<span class="text-xs text-base-content/50">5-Hour</span>
-												<span class="text-xs font-mono">{p}%</span>
-											</div>
-											<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
-											{#if b.resetsAt}
-												<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
-											{/if}
-										</div>
-									{/if}
-
-									{#if hasBucketData(acct.sevenDay)}
-										{@const b = acct.sevenDay!}
-										{@const u = b.utilization ?? 0}
-										{@const p = Math.round(u * 100)}
-										<div class="flex flex-col gap-0.5">
-											<div class="flex items-center justify-between">
-												<span class="text-xs text-base-content/50">Weekly</span>
-												<span class="text-xs font-mono">{p}%</span>
-											</div>
-											<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
-											{#if b.resetsAt}
-												<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
-											{/if}
-										</div>
-									{/if}
-								</div>
-							{/each}
-						{/if}
 
 					{:else if entry.data.provider === "opencode-go"}
 						{#if entry.data.unavailable}

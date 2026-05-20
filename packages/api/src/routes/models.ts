@@ -7,6 +7,8 @@ import {
 	fetchCopilotUsage,
 	fetchOpencodeUsage,
 	getAccountUsage,
+	getAnthropicHeaders,
+	refreshAccountCredentialsAsync,
 	validateAccountCredentials,
 } from "@dispatch/core";
 import { Hono } from "hono";
@@ -332,4 +334,47 @@ modelsRoutes.get("/key-usage", async (c) => {
 		const message = err instanceof Error ? err.message : String(err);
 		return c.json({ error: `failed to fetch usage: ${message}` }, 502);
 	}
+});
+
+// Wake all Claude accounts by sending "hi" to haiku
+modelsRoutes.post("/wake", async (c) => {
+	const accounts = discoverClaudeAccounts();
+	if (accounts.length === 0) {
+		return c.json({ error: "no Claude accounts available" }, 502);
+	}
+
+	const results: Array<{ label: string; ok: boolean; error?: string }> = [];
+
+	for (const acct of accounts) {
+		try {
+			const creds = await refreshAccountCredentialsAsync(acct);
+			if (!creds) {
+				results.push({ label: acct.label, ok: false, error: "token refresh failed" });
+				continue;
+			}
+
+			const res = await fetch("https://api.anthropic.com/v1/messages", {
+				method: "POST",
+				headers: {
+					...getAnthropicHeaders(creds.accessToken),
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					model: "claude-3-5-haiku-20241022",
+					max_tokens: 16,
+					messages: [{ role: "user", content: "hi" }],
+				}),
+			});
+
+			results.push({ label: acct.label, ok: res.ok });
+		} catch (err) {
+			results.push({
+				label: acct.label,
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	return c.json({ results });
 });
