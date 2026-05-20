@@ -11,7 +11,7 @@ const isUser = $derived(message.role === "user");
 <div class="chat {isUser ? 'chat-end' : 'chat-start'} mb-2">
 	<div class="chat-bubble {isUser ? 'chat-bubble-primary' : 'chat-bubble-secondary'} max-w-[80%] break-words">
 		{#if message.thinking}
-			<div class="collapse collapse-arrow mb-2">
+			<div class="collapse collapse-arrow mb-2 p-1">
 				<input type="checkbox" />
 				<div class="collapse-title text-sm opacity-60 italic py-0 pl-0 pr-8 min-h-0">Thinking...</div>
 				<div class="collapse-content text-sm opacity-60 italic p-0">
