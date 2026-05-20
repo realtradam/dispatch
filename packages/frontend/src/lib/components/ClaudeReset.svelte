@@ -4,63 +4,9 @@
 	// Map of hour (0-23) → scheduled wake timestamp (ms)
 	let schedule = $state<Record<number, number>>({});
 
-	// Active timeout IDs keyed by hour
-	const timeoutIds: Record<number, ReturnType<typeof setTimeout>> = {};
-
 	function formatHour(h: number): string {
 		const display = h % 12;
 		return display === 0 ? "12" : String(display);
-	}
-
-	function loadSchedule(): Record<number, number> {
-		try {
-			const raw = localStorage.getItem("claude-reset-schedule");
-			if (!raw) return {};
-			return JSON.parse(raw) as Record<number, number>;
-		} catch {
-			return {};
-		}
-	}
-
-	function saveSchedule(s: Record<number, number>): void {
-		try {
-			localStorage.setItem("claude-reset-schedule", JSON.stringify(s));
-		} catch {
-			// localStorage unavailable — ignore
-		}
-	}
-
-	async function triggerWake(hour: number): Promise<void> {
-		try {
-			await fetch(`${apiBase}/models/wake`, { method: "POST" });
-		} catch {
-			// Ignore network errors
-		}
-		// Remove this hour from the schedule
-		const updated = { ...schedule };
-		delete updated[hour];
-		schedule = updated;
-		saveSchedule(schedule);
-	}
-
-	function scheduleTimeout(hour: number, ts: number): void {
-		const delay = ts - Date.now();
-		if (delay <= 0) {
-			// Already past — fire immediately
-			void triggerWake(hour);
-			return;
-		}
-		const id = setTimeout(() => {
-			void triggerWake(hour);
-		}, delay);
-		timeoutIds[hour] = id;
-	}
-
-	function clearHourTimeout(hour: number): void {
-		if (timeoutIds[hour] !== undefined) {
-			clearTimeout(timeoutIds[hour]);
-			delete timeoutIds[hour];
-		}
 	}
 
 	function nextOccurrenceAt15(hour: number): number {
@@ -73,50 +19,69 @@
 		return target.getTime();
 	}
 
+	async function loadFromServer(): Promise<void> {
+		try {
+			const res = await fetch(`${apiBase}/models/wake-schedule`);
+			if (!res.ok) return;
+			const data = (await res.json()) as { schedule: Record<string, number> };
+			const parsed: Record<number, number> = {};
+			for (const [k, v] of Object.entries(data.schedule)) {
+				parsed[Number(k)] = v;
+			}
+			schedule = parsed;
+		} catch {
+			// Network error — leave schedule empty
+		}
+	}
+
+	async function parseScheduleResponse(res: Response): Promise<void> {
+		const data = (await res.json()) as { schedule: Record<string, number> };
+		const parsed: Record<number, number> = {};
+		for (const [k, v] of Object.entries(data.schedule)) {
+			parsed[Number(k)] = v;
+		}
+		schedule = parsed;
+	}
+
+	async function toggleOnServer(hour: number, ts: number): Promise<void> {
+		try {
+			const res = await fetch(`${apiBase}/models/wake-schedule/toggle`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ hour, timestamp: ts }),
+			});
+			if (!res.ok) return;
+			await parseScheduleResponse(res);
+		} catch {
+			// Network error — keep local state
+		}
+	}
+
+	async function removeFromServer(hour: number): Promise<void> {
+		try {
+			const res = await fetch(`${apiBase}/models/wake-schedule/toggle`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ hour }),
+			});
+			if (!res.ok) return;
+			await parseScheduleResponse(res);
+		} catch {
+			// Network error — keep local state
+		}
+	}
+
 	function toggleHour(hour: number): void {
 		if (schedule[hour] !== undefined) {
-			// Deschedule
-			clearHourTimeout(hour);
-			const updated = { ...schedule };
-			delete updated[hour];
-			schedule = updated;
-			saveSchedule(schedule);
+			void removeFromServer(hour);
 		} else {
-			// Schedule
 			const ts = nextOccurrenceAt15(hour);
-			schedule = { ...schedule, [hour]: ts };
-			saveSchedule(schedule);
-			scheduleTimeout(hour, ts);
+			void toggleOnServer(hour, ts);
 		}
 	}
 
 	$effect(() => {
-		// Load persisted schedule on mount
-		const loaded = loadSchedule();
-		const now = Date.now();
-		const cleaned: Record<number, number> = {};
-
-		for (const [k, ts] of Object.entries(loaded)) {
-			const hour = Number(k);
-			if (ts >= now) {
-				cleaned[hour] = ts;
-			}
-		}
-
-		schedule = cleaned;
-		saveSchedule(cleaned);
-
-		// Register timeouts for all future entries
-		for (const [k, ts] of Object.entries(cleaned)) {
-			scheduleTimeout(Number(k), ts);
-		}
-
-		// Cleanup on destroy
-		return () => {
-			for (const id of Object.values(timeoutIds)) {
-				clearTimeout(id);
-			}
-		};
+		void loadFromServer();
 	});
 
 	// Compute "faded" hours: the 4 hours after each scheduled block
@@ -161,8 +126,14 @@
 		return base;
 	}
 
-	function formatWakeTime(ts: number): string {
-		return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	function formatAmPm(hour24: number): string {
+		const h = hour24 % 12;
+		const ampm = hour24 < 12 ? "AM" : "PM";
+		return `${h === 0 ? "12" : String(h)}:00 ${ampm}`;
+	}
+
+	function resetHour(wakeHour: number): number {
+		return (wakeHour + 5) % 24;
 	}
 
 	const scheduledHours = $derived(
@@ -228,7 +199,7 @@
 			{#each scheduledHours as hour}
 				<div class="flex items-center gap-1.5 text-xs text-base-content/70">
 					<span class="badge badge-xs badge-primary">{formatHour(hour)}:15</span>
-					<span>Wake scheduled for {formatWakeTime(schedule[hour] ?? 0)}</span>
+					<span>Reset at {formatAmPm(resetHour(hour))}</span>
 				</div>
 			{/each}
 		</div>
