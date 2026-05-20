@@ -4,7 +4,6 @@ export interface ToolCallDisplay {
 	arguments: Record<string, unknown>;
 	result?: string;
 	isError?: boolean;
-	isExpanded: boolean;
 	shellOutput?: { stdout: string; stderr: string };
 }
 
@@ -26,7 +25,7 @@ export type ContentSegment =
 
 export interface ChatMessage {
 	id: string;
-	role: "user" | "assistant";
+	role: "user" | "assistant" | "system";
 	content: ContentSegment[];
 	thinking?: string;
 	isStreaming?: boolean;
@@ -80,6 +79,25 @@ export interface PermissionPrompt {
 	always: string[];
 	description: string;
 	metadata: Record<string, unknown>;
+}
+
+export interface ModelOverride {
+	keyId: string;
+	modelId: string;
+}
+
+export interface KeyInfo {
+	id: string;
+	provider: string;
+	status: "active" | "exhausted";
+	lastError: string | null;
+	exhaustedAt: number | null;
+}
+
+export interface ModelInfo {
+	id: string;
+	provider: string;
+	tags: string[];
 }
 
 export interface LogEntry {

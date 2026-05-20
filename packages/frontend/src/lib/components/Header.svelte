@@ -30,7 +30,7 @@ async function handleCopy() {
 	</div>
 	<div class="navbar-end flex items-center gap-3">
 		<span class="text-xs text-base-content/60 hidden sm:block">
-			DeepSeek V4 Flash via OpenCode Go
+			{chatStore.activeModelId ?? "Default Model"}
 		</span>
 		<button
 			type="button"

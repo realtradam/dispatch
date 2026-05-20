@@ -56,6 +56,8 @@ export interface ToolDefinition {
 
 // ─── Agent Configuration ─────────────────────────────────────────
 
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "max";
+
 export interface AgentConfig {
 	model: string;
 	apiKey: string;
@@ -65,6 +67,11 @@ export interface AgentConfig {
 	workingDirectory: string;
 	permissionChecker?: PermissionChecker;
 	ruleset?: Ruleset;
+	reasoningEffort?: ReasoningEffort;
+	provider?: string;
+	claudeCredentials?: {
+		accessToken: string;
+	};
 }
 
 // ─── Config Types (dispatch.toml) ────────────────────────────────
@@ -95,8 +102,10 @@ export interface ModelDefinition {
 export interface KeyDefinition {
 	id: string;
 	provider: string;
-	env: string;
+	env?: string;
 	base_url: string;
+	/** For "anthropic" provider: path to credentials file (default: ~/.claude/.credentials.json) */
+	credentials_file?: string;
 }
 
 // ─── Model Resolution ────────────────────────────────────────────

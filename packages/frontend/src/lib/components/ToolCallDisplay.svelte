@@ -3,7 +3,7 @@ import type { ToolCallDisplay } from "../types.js";
 
 const { toolCall }: { toolCall: ToolCallDisplay } = $props();
 
-let isExpanded = $state(toolCall.isExpanded);
+let isExpanded = $state(false);
 
 function toggle() {
 	isExpanded = !isExpanded;

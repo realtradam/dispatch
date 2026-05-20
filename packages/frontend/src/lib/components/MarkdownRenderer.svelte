@@ -92,9 +92,10 @@
 
 		const promise = (async () => {
 			try {
-				// Vite resolves this template literal at build time into a glob
-				// over all matching language modules, so each is a separate chunk.
-				const mod = await import(`highlight.js/lib/languages/${name}`);
+				// Dynamic import for languages not in the hot set above.
+				// @vite-ignore: the variable `name` is intentionally dynamic;
+				// missing modules are caught by the try/catch below.
+				const mod = await import(/* @vite-ignore */ `highlight.js/lib/languages/${name}`);
 				hljs.registerLanguage(name, mod.default);
 				return true;
 			} catch {

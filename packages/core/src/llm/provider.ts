@@ -1,18 +1,8 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { wrapLanguageModel } from "ai";
 import type { LanguageModelV1Middleware, LanguageModelV1Prompt } from "ai";
 
-/**
- * Normalize messages for interleaved reasoning providers (DeepSeek).
- * Extracts { type: "reasoning" } / { type: "redacted-reasoning" } parts from
- * assistant message content arrays and moves them into
- * providerMetadata.openaiCompatible.reasoning_content so
- * @ai-sdk/openai-compatible serializes them correctly for the API.
- *
- * IMPORTANT: The messages in params.prompt are already in LanguageModelV1Prompt
- * format (post-conversion by the AI SDK). They use `providerMetadata`, NOT
- * `providerOptions` — that conversion happens before the middleware runs.
- */
 function normalizeMessages(msgs: unknown[]): unknown[] {
 	return msgs.map((msg: unknown) => {
 		const message = msg as Record<string, unknown>;
@@ -45,7 +35,35 @@ function normalizeMessages(msgs: unknown[]): unknown[] {
 	});
 }
 
-export function createProvider(config: { apiKey: string; baseURL: string }) {
+export interface ProviderConfig {
+	apiKey: string;
+	baseURL: string;
+	provider?: string;
+	claudeCredentials?: {
+		accessToken: string;
+	};
+}
+
+const MCP_PREFIX = "mcp_";
+
+function prefixToolName(name: string): string {
+	return `${MCP_PREFIX}${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+}
+
+function unprefixToolName(name: string): string {
+	if (name.startsWith(MCP_PREFIX)) {
+		const rest = name.slice(MCP_PREFIX.length);
+		return `${rest.charAt(0).toLowerCase()}${rest.slice(1)}`;
+	}
+	return name;
+}
+
+export function createProvider(config: ProviderConfig) {
+	if (config.provider === "anthropic") {
+		return createAnthropicProvider(config);
+	}
+
+	// Default: OpenAI-compatible provider
 	const provider = createOpenAICompatible({
 		name: "opencode-zen",
 		apiKey: config.apiKey,
@@ -72,3 +90,34 @@ export function createProvider(config: { apiKey: string; baseURL: string }) {
 		});
 	};
 }
+
+function createAnthropicProvider(config: ProviderConfig) {
+	const accessToken = config.claudeCredentials?.accessToken ?? config.apiKey;
+
+	const customFetch = Object.assign(
+		async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const headers = new Headers(init?.headers);
+			headers.delete("x-api-key");
+			headers.set("authorization", `Bearer ${accessToken}`);
+			return globalThis.fetch(url, { ...init, headers });
+		},
+		{ preconnect: globalThis.fetch.preconnect?.bind(globalThis.fetch) },
+	);
+
+	const anthropic = createAnthropic({
+		apiKey: "sk-ant-oauth-placeholder",
+		baseURL: config.baseURL || "https://api.anthropic.com/v1",
+		headers: {
+			"anthropic-dangerous-direct-browser-access": "true",
+			"x-app": "cli",
+			"user-agent": "claude-cli/2.1.112 (external, sdk-cli)",
+		},
+		fetch: customFetch as typeof globalThis.fetch,
+	});
+
+	return (modelId: string) => {
+		return anthropic(modelId);
+	};
+}
+
+export { prefixToolName, unprefixToolName };

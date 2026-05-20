@@ -11,5 +11,5 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 OPENCODE_API_KEY="$(gopass show -o projects/ai-api/opencode_go_key)"
 
 # Start all services
-sudo OPENCODE_API_KEY="$OPENCODE_API_KEY" \
+OPENCODE_API_KEY="$OPENCODE_API_KEY" \
   docker compose -f "$PROJECT_DIR/docker-compose.yml" up "$@"

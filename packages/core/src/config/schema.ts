@@ -126,11 +126,33 @@ function validateKey(raw: unknown, path: string, errors: ConfigError[]): KeyDefi
 		errors.push({ path, message: "must be an object" });
 		return null;
 	}
-	for (const field of ["id", "provider", "env", "base_url"] as const) {
-		if (typeof raw[field] !== "string") {
-			errors.push({ path: `${path}.${field}`, message: "must be a string" });
-			return null;
-		}
+	if (typeof raw["id"] !== "string") {
+		errors.push({ path: `${path}.id`, message: "must be a string" });
+		return null;
+	}
+	if (typeof raw["provider"] !== "string") {
+		errors.push({ path: `${path}.provider`, message: "must be a string" });
+		return null;
+	}
+	if (typeof raw["base_url"] !== "string") {
+		errors.push({ path: `${path}.base_url`, message: "must be a string" });
+		return null;
+	}
+
+	// "anthropic" provider uses credentials_file instead of env
+	if (raw["provider"] === "anthropic") {
+		return {
+			id: raw["id"] as string,
+			provider: raw["provider"] as string,
+			base_url: raw["base_url"] as string,
+			...(typeof raw["credentials_file"] === "string" ? { credentials_file: raw["credentials_file"] } as Pick<KeyDefinition, "credentials_file"> : {}),
+		};
+	}
+
+	// Other providers require env
+	if (typeof raw["env"] !== "string") {
+		errors.push({ path: `${path}.env`, message: "must be a string" });
+		return null;
 	}
 	return {
 		id: raw["id"] as string,

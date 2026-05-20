@@ -16,13 +16,23 @@ function makeDebugInfo(overrides: Partial<DebugInfo> = {}): DebugInfo {
 	};
 }
 
-function formatConversation(msgs: ChatMessage[]): string {
+function formatConversation(msgs: ChatMessage[], activeModelId: string | null): string {
 	const lines: string[] = [];
 	lines.push("=== Dispatch Conversation ===");
 	lines.push(`Exported: ${new Date().toISOString()}`);
+	lines.push(`Active Model: ${activeModelId ?? "default"}`);
 	lines.push("");
 
 	for (const msg of msgs) {
+		if (msg.role === "system") {
+			lines.push(`--- System ---`);
+			for (const seg of msg.content) {
+				if (seg.type === "text") lines.push(seg.text);
+			}
+			lines.push("");
+			continue;
+		}
+
 		const role = msg.role === "user" ? "User" : "Assistant";
 		lines.push(`--- ${role} ---`);
 
@@ -67,6 +77,9 @@ function formatConversation(msgs: ChatMessage[]): string {
 function createChatStore() {
 	let messages: ChatMessage[] = $state([]);
 	let agentStatus: "idle" | "running" | "error" = $state("idle");
+	let activeKeyId: string | null = $state(null);
+	let activeModelId: string | null = $state(null);
+	let reasoningEffort: string = $state("max");
 	let isConnected = $state(false);
 	let currentAssistantId: string | null = null;
 	let pendingPermissions: PermissionPrompt[] = $state([]);
@@ -147,16 +160,15 @@ function createChatStore() {
 				ensureCurrentAssistantMessage();
 				messages = messages.map((m) => {
 					if (m.id === currentAssistantId) {
-						const segments: ContentSegment[] = [
-							...m.content,
-							{
-								type: "tool-call",
-								id: event.toolCall.id,
-								name: event.toolCall.name,
-								arguments: event.toolCall.arguments,
-								isExpanded: false,
-							},
-						];
+					const segments: ContentSegment[] = [
+						...m.content,
+						{
+							type: "tool-call",
+							id: event.toolCall.id,
+							name: event.toolCall.name,
+							arguments: event.toolCall.arguments,
+						},
+					];
 						return { ...m, content: segments };
 					}
 					return m;
@@ -266,7 +278,11 @@ function createChatStore() {
 			const res = await fetch(url, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ message: text }),
+				body: JSON.stringify({ 
+					message: text,
+					...(activeKeyId && activeModelId ? { keyId: activeKeyId, modelId: activeModelId } : {}),
+					reasoningEffort,
+				}),
 			});
 			if (!res.ok) {
 				const body = await res.text();
@@ -301,7 +317,35 @@ function createChatStore() {
 	}
 
 	function copyConversation(): string {
-		return formatConversation(messages);
+		return formatConversation(messages, activeModelId);
+	}
+
+	function changeModel(keyId: string, modelId: string) {
+		const previousModel = activeModelId;
+		activeKeyId = keyId;
+		activeModelId = modelId;
+
+		if (previousModel && previousModel !== modelId) {
+			const systemMsg: ChatMessage = {
+				id: generateId(),
+				role: "system",
+				content: [{ type: "text", text: `Model changed from ${previousModel} to ${modelId}` }],
+			};
+			messages = [...messages, systemMsg];
+		} else if (!previousModel) {
+			const systemMsg: ChatMessage = {
+				id: generateId(),
+				role: "system",
+				content: [{ type: "text", text: `Model set to ${modelId}` }],
+			};
+			messages = [...messages, systemMsg];
+		}
+	}
+
+	function setKey(keyId: string) {
+		activeKeyId = keyId;
+		// Clear model when key changes since available models depend on the key
+		activeModelId = null;
 	}
 
 	function replyPermission(id: string, reply: "once" | "always" | "reject") {
@@ -358,6 +402,12 @@ function createChatStore() {
 		replyPermission,
 		copyConversation,
 		clear,
+		changeModel,
+		setKey,
+		get activeKeyId() { return activeKeyId; },
+		get activeModelId() { return activeModelId; },
+		get reasoningEffort() { return reasoningEffort; },
+		set reasoningEffort(value: string) { reasoningEffort = value; },
 	};
 }
 

@@ -26,3 +26,6 @@ export { parseSkillFile, loadSkills, resolveSkillsForAgent, getSkillByName, crea
 
 // Models
 export { ModelRegistry, ModelResolver } from "./models/index.js";
+
+// Credentials
+export * from "./credentials/index.js";
