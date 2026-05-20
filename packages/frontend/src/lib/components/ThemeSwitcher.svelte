@@ -1,16 +1,8 @@
 <script lang="ts">
 const THEMES = [
-	"light",
-	"dark",
-	"dracula",
-	"night",
-	"nord",
-	"sunset",
-	"cyberpunk",
-	"forest",
-	"cmyk",
-	"coffee",
-	"caramellatte",
+	"light", "dark", "dracula", "night", "nord", "sunset",
+	"cyberpunk", "forest", "cmyk", "coffee", "caramellatte",
+	"garden", "luxury",
 ] as const;
 
 const STORAGE_KEY = "dispatch-theme";
@@ -21,6 +13,12 @@ let currentTheme = $state(
 	(typeof localStorage !== "undefined" && localStorage.getItem(STORAGE_KEY)) || "dark",
 );
 
+let dialogEl: HTMLDialogElement | undefined = $state();
+
+$effect(() => {
+	if (dialogEl && !dialogEl.open) dialogEl.showModal();
+});
+
 function selectTheme(theme: string) {
 	currentTheme = theme;
 	document.documentElement.setAttribute("data-theme", theme);
@@ -29,37 +27,22 @@ function selectTheme(theme: string) {
 }
 </script>
 
-<!-- Backdrop -->
-<div
-	class="fixed inset-0 z-40 bg-black/40"
-	role="button"
-	tabindex="0"
-	onclick={onclose}
-	onkeydown={(e) => e.key === "Escape" && onclose()}
-	aria-label="Close theme switcher"
-></div>
-
-<!-- Modal -->
-<div
-	class="fixed top-16 right-4 z-50 bg-base-100 border border-base-300 rounded-xl shadow-xl p-4 w-56"
-	role="dialog"
-	aria-label="Theme switcher"
->
-	<p class="text-sm font-semibold mb-3 text-base-content">Select Theme</p>
-	<ul class="space-y-1">
-		{#each THEMES as theme}
-			<li>
-				<button
-					type="button"
-					class="w-full text-left px-3 py-1.5 rounded-lg text-sm capitalize hover:bg-base-200 transition-colors {currentTheme ===
-					theme
-						? 'bg-primary text-primary-content'
-						: ''}"
-					onclick={() => selectTheme(theme)}
-				>
-					{theme}
-				</button>
-			</li>
-		{/each}
-	</ul>
-</div>
+<dialog class="modal" bind:this={dialogEl} oncancel={onclose}>
+	<div class="modal-box w-56">
+		<h3 class="text-sm font-semibold mb-3">Select Theme</h3>
+		<ul class="menu menu-sm">
+			{#each THEMES as theme}
+				<li>
+					<button
+						type="button"
+						class="capitalize {currentTheme === theme ? 'menu-active' : ''}"
+						onclick={() => selectTheme(theme)}
+					>
+						{theme}
+					</button>
+				</li>
+			{/each}
+		</ul>
+	</div>
+	<form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>

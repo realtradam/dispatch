@@ -5,13 +5,6 @@ import ChatMessageComponent from "./ChatMessage.svelte";
 
 let messagesEl: HTMLDivElement | undefined;
 
-const statusColor = $derived(
-	wsClient.connectionStatus === "connected"
-		? "bg-success"
-		: wsClient.connectionStatus === "connecting"
-			? "bg-warning"
-			: "bg-error",
-);
 
 $effect(() => {
 	// Trigger on messages change to scroll
@@ -26,7 +19,7 @@ $effect(() => {
 	<!-- Status bar -->
 	<div class="flex items-center gap-3 px-4 py-2 bg-base-200 border-b border-base-300 text-xs">
 		<span class="flex items-center gap-1.5">
-			<span class="w-2 h-2 rounded-full {statusColor}"></span>
+			<span class="status status-sm {wsClient.connectionStatus === 'connected' ? 'status-success' : wsClient.connectionStatus === 'connecting' ? 'status-warning' : 'status-error'}"></span>
 			<span class="capitalize text-base-content/70">{wsClient.connectionStatus}</span>
 		</span>
 		<span class="text-base-content/50">|</span>

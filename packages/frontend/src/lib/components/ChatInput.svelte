@@ -30,7 +30,7 @@ function submit() {
 		bind:value={inputValue}
 		type="text"
 		placeholder={isDisabled ? "Agent is running..." : "Type a message..."}
-		class="input input-bordered flex-1"
+		class="input flex-1"
 		disabled={isDisabled}
 		onkeydown={handleKeydown}
 	/>

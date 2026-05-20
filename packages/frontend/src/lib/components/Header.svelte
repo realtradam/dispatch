@@ -23,10 +23,10 @@ async function handleCopy() {
 </script>
 
 <header class="navbar bg-base-200 border-b border-base-300 px-4 min-h-14 flex-shrink-0">
-	<div class="flex-1">
+	<div class="navbar-start">
 		<span class="text-xl font-bold tracking-tight">Dispatch</span>
 	</div>
-	<div class="flex-none flex items-center gap-3">
+	<div class="navbar-end flex items-center gap-3">
 		<span class="text-xs text-base-content/60 hidden sm:block">
 			DeepSeek V4 Flash via OpenCode Go
 		</span>
