@@ -9,7 +9,7 @@ const isUser = $derived(message.role === "user");
 </script>
 
 <div class="chat chat-start mb-2">
-	<div class="chat-bubble {isUser ? 'chat-bubble-primary' : 'chat-bubble-secondary'} max-w-[80%] break-words">
+	<div class="chat-bubble max-w-[80%] break-words {isUser ? 'chat-bubble-primary' : 'bg-transparent'}">
 		{#if message.thinking}
 			<div class="collapse collapse-arrow mb-2 p-1">
 				<input type="checkbox" />
