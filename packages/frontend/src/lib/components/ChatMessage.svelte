@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { ChatMessage } from "../types.js";
+import MarkdownRenderer from "./MarkdownRenderer.svelte";
 import ToolCallDisplay from "./ToolCallDisplay.svelte";
 
 const { message }: { message: ChatMessage } = $props();
@@ -10,14 +11,17 @@ const isUser = $derived(message.role === "user");
 <div class="chat {isUser ? 'chat-end' : 'chat-start'} mb-2">
 	<div class="chat-bubble {isUser ? 'chat-bubble-primary' : 'chat-bubble-secondary'} max-w-[80%] break-words">
 		{#if message.thinking}
-			<details class="mb-2">
-				<summary class="cursor-pointer text-sm text-base-content/60 italic">Thinking...</summary>
-				<p class="text-sm text-base-content/60 italic mt-1 whitespace-pre-wrap">{message.thinking}</p>
-			</details>
+			<div class="collapse collapse-arrow mb-2">
+				<input type="checkbox" />
+				<div class="collapse-title text-sm opacity-60 italic p-0 min-h-0">Thinking...</div>
+				<div class="collapse-content text-sm opacity-60 italic p-0">
+					<p class="whitespace-pre-wrap mt-1">{message.thinking}</p>
+				</div>
+			</div>
 		{/if}
 		{#each message.content as segment, i (segment.type === "tool-call" ? segment.id : i)}
 			{#if segment.type === "text"}
-				<span>{segment.text}</span>
+				<MarkdownRenderer text={segment.text} streaming={message.isStreaming} />
 			{:else if segment.type === "tool-call"}
 				<ToolCallDisplay toolCall={segment} />
 			{/if}

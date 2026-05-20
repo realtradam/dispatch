@@ -26,7 +26,7 @@ onMount(() => {
 });
 </script>
 
-<div class="flex flex-col h-screen overflow-hidden bg-base-100 text-base-content">
+<div class="flex flex-col h-screen overflow-hidden">
 	<Header />
 	<div class="flex-1 overflow-hidden">
 		<ChatPanel />
