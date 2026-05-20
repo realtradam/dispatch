@@ -8,9 +8,9 @@ services:
       - "3000:3000"
     volumes:
       - .:/app
+    env_file:
+      - .env.dispatch
     environment:
-      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
-      DISPATCH_MODEL: ${DISPATCH_MODEL:-deepseek-v4-flash}
       DISPATCH_WORKING_DIR: /app
 
   frontend:

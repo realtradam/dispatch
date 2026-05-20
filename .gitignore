@@ -2,6 +2,7 @@ node_modules/
 dist/
 build/
 .env
+.env.dispatch
 *.db
 *.sqlite
 .DS_Store

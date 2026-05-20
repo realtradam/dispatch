@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLIENT_ID="Ov23li8tweQw6odWQebz"
+ENV_FILE="$(cd "$(dirname "$0")/.." && pwd)/.env.dispatch"
+
+# Parse form-encoded key=value pairs
+parse() {
+  local key="$1" data="$2"
+  local val
+  val=$(echo "$data" | sed -n "s/.*${key}=\([^&]*\).*/\1/p")
+  python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" <<< "$val"
+}
+
+echo "=== GitHub Copilot OAuth ==="
+echo ""
+
+# Step 1: Request device code
+echo "Requesting device code..."
+RESP=$(curl -s https://github.com/login/device/code \
+  -d "client_id=$CLIENT_ID" \
+  -d "scope=read:user")
+
+DEVICE_CODE=$(parse "device_code" "$RESP")
+
+if [ -z "$DEVICE_CODE" ]; then
+  echo "Failed to get device code: $RESP"
+  exit 1
+fi
+
+USER_CODE=$(parse "user_code" "$RESP")
+VERIF_URI=$(parse "verification_uri" "$RESP")
+INTERVAL=$(parse "interval" "$RESP")
+INTERVAL=${INTERVAL:-5}
+
+echo ""
+echo "Open this URL and enter the code:"
+echo "  $VERIF_URI"
+echo "  Code: $USER_CODE"
+echo ""
+echo "Waiting for you to authorize..."
+
+# Step 2: Poll for access token
+TOKEN=""
+ATTEMPTS=0
+while [ -z "$TOKEN" ] && [ $ATTEMPTS -lt 60 ]; do
+  sleep "$INTERVAL"
+  ATTEMPTS=$((ATTEMPTS + 1))
+
+  TOKEN_RESP=$(curl -s https://github.com/login/oauth/access_token \
+    -d "client_id=$CLIENT_ID" \
+    -d "device_code=$DEVICE_CODE" \
+    -d "grant_type=urn:ietf:params:oauth:grant-type:device_code")
+
+  TOKEN=$(parse "access_token" "$TOKEN_RESP" || true)
+  ERROR=$(parse "error" "$TOKEN_RESP" || true)
+
+  if [ "$ERROR" = "authorization_pending" ]; then
+    continue
+  elif [ "$ERROR" = "slow_down" ]; then
+    INTERVAL=$((INTERVAL + 5))
+    continue
+  elif [ -n "$ERROR" ]; then
+    echo "Error: $ERROR"
+    exit 1
+  fi
+done
+
+if [ -z "$TOKEN" ]; then
+  echo "Timed out waiting for authorization."
+  exit 1
+fi
+
+# Step 3: Write to .env.dispatch
+mkdir -p "$(dirname "$ENV_FILE")"
+if [ -f "$ENV_FILE" ] && grep -q "^COPILOT_TOKEN=" "$ENV_FILE" 2>/dev/null; then
+  sed -i "s/^COPILOT_TOKEN=.*/COPILOT_TOKEN=$TOKEN/" "$ENV_FILE"
+else
+  echo "COPILOT_TOKEN=$TOKEN" >> "$ENV_FILE"
+fi
+
+echo ""
+echo "Token saved to .env.dispatch"
+echo "Ready — run: docker compose up"

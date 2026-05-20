@@ -92,12 +92,12 @@ onMount(() => {
 
 		<!-- Right sidebar — slides in/out while chat smoothly resizes -->
 		<div
-			class="shrink-0 overflow-hidden border-l border-base-300 transition-[width] duration-300 ease-out"
+			class="shrink-0 overflow-x-hidden transition-[width] duration-300 ease-out relative"
 			class:w-80={sidebarOpen}
 			class:w-0={!sidebarOpen}
 		>
 			<div
-				class="w-80 overflow-y-auto bg-base-100 px-2 py-2 flex flex-col gap-2 h-full transition-transform duration-300 ease-out"
+				class="w-80 absolute inset-0 overflow-y-auto bg-base-100 border-l border-base-300 px-2 py-2 flex flex-col gap-2 transition-transform duration-300 ease-out"
 				style="transform: translateX({sidebarOpen ? '0' : '100%'})"
 			>
 				<div class="collapse collapse-arrow bg-base-200">
