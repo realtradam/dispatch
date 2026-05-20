@@ -1,13 +1,15 @@
-import { Hono } from "hono";
 import type { ModelRegistry, ModelResolver } from "@dispatch/core";
 import {
+	ANTHROPIC_MODELS_FALLBACK,
 	type ClaudeAccount,
 	discoverClaudeAccounts,
-	validateAccountCredentials,
 	fetchAnthropicModels,
-	ANTHROPIC_MODELS_FALLBACK,
+	fetchCopilotUsage,
+	fetchOpencodeUsage,
 	getAccountUsage,
+	validateAccountCredentials,
 } from "@dispatch/core";
+import { Hono } from "hono";
 
 let getRegistry: () => ModelRegistry | null = () => null;
 let getResolver: () => ModelResolver | null = () => null;
@@ -103,9 +105,7 @@ modelsRoutes.get("/available", async (c) => {
 	if (key.definition.provider === "anthropic") {
 		const credFile = key.definition.credentials_file;
 		const accounts = discoverClaudeAccounts();
-		const account = credFile
-			? accounts.find((a) => a.source === credFile)
-			: accounts[0];
+		const account = credFile ? accounts.find((a) => a.source === credFile) : accounts[0];
 
 		if (!account) {
 			return c.json({ error: "no Claude credentials found" }, 500);
@@ -113,7 +113,13 @@ modelsRoutes.get("/available", async (c) => {
 
 		const profile = await validateAccountCredentials(account);
 		if (!profile) {
-			return c.json({ error: "Claude credentials are invalid or expired", details: "Run `claude` to re-authenticate." }, 401);
+			return c.json(
+				{
+					error: "Claude credentials are invalid or expired",
+					details: "Run `claude` to re-authenticate.",
+				},
+				401,
+			);
 		}
 
 		const creds = account.credentials;
@@ -152,7 +158,10 @@ modelsRoutes.get("/available", async (c) => {
 
 	if (!response.ok) {
 		const text = await response.text().catch(() => "");
-		return c.json({ error: "provider API returned error", status: response.status, details: text }, 502);
+		return c.json(
+			{ error: "provider API returned error", status: response.status, details: text },
+			502,
+		);
 	}
 
 	let data: { data: { id: string }[] };
@@ -224,4 +233,98 @@ modelsRoutes.get("/claude-usage", async (c) => {
 	}
 
 	return c.json(report);
+});
+
+// Get usage for a specific key by ID
+modelsRoutes.get("/key-usage", async (c) => {
+	const keyId = c.req.query("keyId");
+	if (!keyId) {
+		return c.json({ error: "keyId query parameter is required" }, 400);
+	}
+
+	const registry = getRegistry();
+	if (!registry) {
+		return c.json({ error: "registry not available" }, 502);
+	}
+
+	const keys = registry.getKeys();
+	const key = keys.find((k) => k.definition.id === keyId);
+	if (!key) {
+		return c.json({ error: `key not found: ${keyId}` }, 404);
+	}
+
+	const provider = key.definition.provider;
+
+	try {
+		if (provider === "anthropic") {
+			const accounts = discoverClaudeAccounts();
+			let account: ClaudeAccount | undefined;
+			if (key.definition.credentials_file) {
+				account = accounts.find((a) => a.source === key.definition.credentials_file);
+			}
+			if (!account) {
+				account = accounts[0];
+			}
+			if (!account) {
+				return c.json({ error: "no Claude accounts available" }, 502);
+			}
+			const report = await getAccountUsage(account);
+			if (!report) {
+				return c.json({ error: "failed to fetch usage data" }, 502);
+			}
+			return c.json({
+				provider: "anthropic",
+				fiveHour: report.fiveHour,
+				sevenDay: report.sevenDay,
+			});
+		} else if (provider === "opencode-go") {
+			// Cookie-based HTML scraper. Uses OPENCODE_COOKIE env var plus
+			// OPENCODE_WS1_ID / OPENCODE_WS2_ID (keyed by the key's numeric suffix).
+			const report = await fetchOpencodeUsage(key.definition.id);
+			if (report) {
+				return c.json({
+					provider: "opencode-go",
+					fiveHour: report.fiveHour,
+					weekly: report.weekly,
+					monthly: report.monthly,
+				});
+			}
+			// Fall back: show limits info with link to console
+			return c.json({
+				provider: "opencode-go",
+				unavailable: true,
+				consoleUrl: "https://opencode.ai/auth",
+				limits: {
+					fiveHour: "$12",
+					weekly: "$30",
+					monthly: "$60",
+				},
+			});
+		} else if (provider === "github-copilot") {
+			if (!key.definition.env) {
+				return c.json({ error: "no env var configured for this key" }, 502);
+			}
+			const token = process.env[key.definition.env];
+			if (!token) {
+				return c.json({ error: `env var ${key.definition.env} not set` }, 502);
+			}
+			const report = await fetchCopilotUsage(token, key.definition.base_url);
+			if (!report) {
+				return c.json({ error: "failed to fetch usage data" }, 502);
+			}
+			return c.json({
+				provider: "github-copilot",
+				tokensConsumed: report.tokensConsumed,
+				tokensRemaining: report.tokensRemaining,
+				percentUsed: report.percentUsed,
+				resetAt: report.resetAt,
+				plan: report.plan,
+			});
+		} else {
+			return c.json({ error: "usage tracking not supported for this provider" }, 400);
+		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return c.json({ error: `failed to fetch usage: ${message}` }, 502);
+	}
 });

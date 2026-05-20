@@ -108,3 +108,35 @@ export interface LogEntry {
 	timestamp: string;
 	description: string;
 }
+
+export interface UsageBucket {
+	utilization?: number;
+	resetsAt?: number;
+}
+
+export interface ClaudeUsageData {
+	provider: "anthropic";
+	fiveHour?: UsageBucket;
+	sevenDay?: UsageBucket;
+}
+
+export interface OpencodeUsageData {
+	provider: "opencode-go";
+	unavailable?: boolean;
+	consoleUrl?: string;
+	limits?: { fiveHour?: string; weekly?: string; monthly?: string };
+	fiveHour?: UsageBucket;
+	weekly?: UsageBucket;
+	monthly?: UsageBucket;
+}
+
+export interface CopilotUsageData {
+	provider: "github-copilot";
+	tokensConsumed?: number;
+	tokensRemaining?: number;
+	percentUsed?: number;
+	resetAt?: number;
+	plan?: string;
+}
+
+export type KeyUsageData = ClaudeUsageData | OpencodeUsageData | CopilotUsageData;
