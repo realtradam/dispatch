@@ -1,5 +1,5 @@
 import { config } from "./config.js";
-import type { AgentEvent, ChatMessage, ContentSegment, DebugInfo, LogEntry, PermissionPrompt } from "./types.js";
+import type { AgentEvent, ChatMessage, ContentSegment, DebugInfo, LogEntry, PermissionPrompt, TaskItem } from "./types.js";
 import { wsClient } from "./ws.svelte.js";
 
 function generateId() {
@@ -71,6 +71,8 @@ function createChatStore() {
 	let currentAssistantId: string | null = null;
 	let pendingPermissions: PermissionPrompt[] = $state([]);
 	let permissionLog: LogEntry[] = $state([]);
+	let tasks: TaskItem[] = $state([]);
+	let configReloaded = $state(false);
 
 	wsClient.onEvent((event) => {
 		handleEvent(event);
@@ -209,6 +211,17 @@ function createChatStore() {
 				pendingPermissions = event.pending;
 				break;
 			}
+			case "task-list-update": {
+				tasks = event.tasks;
+				break;
+			}
+			case "config-reload": {
+				configReloaded = true;
+				setTimeout(() => {
+					configReloaded = false;
+				}, 2500);
+				break;
+			}
 			case "shell-output": {
 				messages = messages.map((m) => {
 					if (m.id === currentAssistantId) {
@@ -333,6 +346,12 @@ function createChatStore() {
 		},
 		get permissionLog() {
 			return permissionLog;
+		},
+		get tasks() {
+			return tasks;
+		},
+		get configReloaded() {
+			return configReloaded;
 		},
 		sendMessage,
 		handleEvent,

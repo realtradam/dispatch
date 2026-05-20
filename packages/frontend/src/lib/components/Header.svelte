@@ -2,6 +2,8 @@
 import { chatStore } from "../chat.svelte.js";
 import ThemeSwitcher from "./ThemeSwitcher.svelte";
 
+const { onToggleSidebar }: { onToggleSidebar: () => void } = $props();
+
 let showThemeSwitcher = $state(false);
 let copyLabel = $state("Copy");
 
@@ -45,6 +47,14 @@ async function handleCopy() {
 			aria-label="Switch theme"
 		>
 			Theme
+		</button>
+		<button
+			type="button"
+			class="btn btn-ghost btn-sm"
+			onclick={onToggleSidebar}
+			aria-label="Toggle sidebar"
+		>
+			☰ Sidebar
 		</button>
 	</div>
 </header>

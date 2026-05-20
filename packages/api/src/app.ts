@@ -2,6 +2,9 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AgentManager } from "./agent-manager.js";
 import { PermissionManager } from "./permission-manager.js";
+import { configRoutes } from "./routes/config.js";
+import { skillsRoutes } from "./routes/skills.js";
+import { modelsRoutes } from "./routes/models.js";
 
 export const permissionManager = new PermissionManager();
 export const agentManager = new AgentManager(permissionManager);
@@ -46,3 +49,7 @@ app.post("/chat", async (c) => {
 
 	return c.json({ status: "ok" });
 });
+
+app.route("/config", configRoutes);
+app.route("/skills", skillsRoutes);
+app.route("/models", modelsRoutes);
