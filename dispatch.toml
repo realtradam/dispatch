@@ -2,13 +2,21 @@
 # Keys reference env var names in .env.dispatch
 
 # ─── Fallback Order (highest priority first) ────────────────────
-# Exhaust opencode-1 first, then opencode-2, then copilot.
+# Exhaust claude-max first, then opencode-1, then opencode-2, then copilot.
 # When all keys are exhausted the agent enters wait-for-refresh.
 # Must be declared BEFORE any [[keys]] / [[models]] blocks.
 
-fallback = ["opencode-1", "opencode-2", "copilot"]
+fallback = ["claude-max", "opencode-1", "opencode-2", "copilot"]
 
 # ─── API Keys ───────────────────────────────────────────────────
+
+[[keys]]
+id = "claude-max"
+provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+# No env needed — credentials read from ~/.claude/.credentials.json
+# Optional: specify a specific credentials file for multi-account:
+# credentials_file = "/home/tradam/.claude/.credentials-2.json"
 
 [[keys]]
 id = "opencode-1"
@@ -29,6 +37,16 @@ env = "COPILOT_TOKEN"
 base_url = "https://api.githubcopilot.com"
 
 # ─── Models ─────────────────────────────────────────────────────
+
+[[models]]
+id = "claude-sonnet-4-20250514"
+provider = "anthropic"
+tags = ["heavy", "coding", "review"]
+
+[[models]]
+id = "claude-opus-4-20250514"
+provider = "anthropic"
+tags = ["heavy", "coding", "review"]
 
 [[models]]
 id = "deepseek-v4-pro"

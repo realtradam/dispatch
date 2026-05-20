@@ -8,6 +8,7 @@ services:
       - "3000:3000"
     volumes:
       - .:/app
+      - ~/.claude:/root/.claude
     env_file:
       - .env.dispatch
     environment:

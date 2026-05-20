@@ -1,0 +1,18 @@
+export {
+	type ClaudeCredentials,
+	type ClaudeAccount,
+	type ClaudeUsageBucket,
+	type ClaudeUsageReport,
+	type ClaudeProfile,
+	ANTHROPIC_MODELS_FALLBACK,
+	fetchAnthropicModels,
+	discoverClaudeAccounts,
+	refreshAccountCredentials,
+	refreshAccountCredentialsAsync,
+	validateAccountCredentials,
+	buildBillingHeaderValue,
+	getAnthropicBetas,
+	getAnthropicHeaders,
+	getAccountUsage,
+	SYSTEM_IDENTITY,
+} from "./claude.js";

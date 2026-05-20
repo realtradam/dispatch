@@ -87,16 +87,15 @@ function createTestStore(wsSend?: (data: unknown) => void) {
 				ensureCurrentAssistantMessage();
 				messages = messages.map((m) => {
 					if (m.id === currentAssistantId) {
-						const segments: ContentSegment[] = [
-							...m.content,
-							{
-								type: "tool-call",
-								id: event.toolCall.id,
-								name: event.toolCall.name,
-								arguments: event.toolCall.arguments,
-								isExpanded: false,
-							},
-						];
+					const segments: ContentSegment[] = [
+						...m.content,
+						{
+							type: "tool-call",
+							id: event.toolCall.id,
+							name: event.toolCall.name,
+							arguments: event.toolCall.arguments,
+						},
+					];
 						return { ...m, content: segments };
 					}
 					return m;

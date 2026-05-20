@@ -6,8 +6,20 @@ import ToolCallDisplay from "./ToolCallDisplay.svelte";
 const { message }: { message: ChatMessage } = $props();
 
 const isUser = $derived(message.role === "user");
+const isSystem = $derived(message.role === "system");
 </script>
 
+{#if isSystem}
+	<div class="flex justify-center my-2">
+		<div class="badge badge-ghost gap-1 text-xs opacity-60">
+			{#each message.content as segment}
+				{#if segment.type === "text"}
+					{segment.text}
+				{/if}
+			{/each}
+		</div>
+	</div>
+{:else}
 <div class="chat chat-start mb-2">
 	<div class="chat-bubble max-w-[80%] break-words {isUser ? 'chat-bubble-primary' : 'bg-transparent'}">
 		{#if message.thinking}
@@ -31,3 +43,4 @@ const isUser = $derived(message.role === "user");
 		{/if}
 	</div>
 </div>
+{/if}

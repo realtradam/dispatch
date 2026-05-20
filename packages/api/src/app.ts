@@ -33,7 +33,7 @@ app.get("/status", (c) => {
 });
 
 app.post("/chat", async (c) => {
-	const body = await c.req.json<{ message?: unknown }>();
+	const body = await c.req.json<{ message?: unknown; keyId?: unknown; modelId?: unknown; reasoningEffort?: unknown }>();
 	const message = body.message;
 
 	if (typeof message !== "string" || message.trim() === "") {
@@ -44,8 +44,15 @@ app.post("/chat", async (c) => {
 		return c.json({ error: "agent is already running" }, 409);
 	}
 
+	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
+	const modelId = typeof body.modelId === "string" ? body.modelId : undefined;
+	const validEfforts = ["none", "low", "medium", "high", "max"];
+	const reasoningEffort = typeof body.reasoningEffort === "string" && validEfforts.includes(body.reasoningEffort)
+		? (body.reasoningEffort as "none" | "low" | "medium" | "high" | "max")
+		: undefined;
+
 	// Non-blocking — let the agent run in the background
-	agentManager.processMessage(message).catch(console.error);
+	agentManager.processMessage(message, keyId, modelId, reasoningEffort).catch(console.error);
 
 	return c.json({ status: "ok" });
 });

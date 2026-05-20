@@ -2,9 +2,10 @@ import type { CoreMessage } from "ai";
 import { streamText } from "ai";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { realpathSync } from "node:fs";
-import { createProvider } from "../llm/provider.js";
+import { createProvider, prefixToolName, unprefixToolName } from "../llm/provider.js";
 import { createToolRegistry } from "../tools/registry.js";
 import { analyzeCommand } from "../tools/shell-analyze.js";
+import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
 import type {
 	AgentConfig,
 	AgentEvent,
@@ -14,7 +15,7 @@ import type {
 	ToolResult,
 } from "../types/index.js";
 
-function toCoreMessages(messages: ChatMessage[]): CoreMessage[] {
+function toCoreMessages(messages: ChatMessage[], isAnthropic?: boolean): CoreMessage[] {
 	const result: CoreMessage[] = [];
 	for (const msg of messages) {
 		if (msg.role === "user") {
@@ -22,11 +23,13 @@ function toCoreMessages(messages: ChatMessage[]): CoreMessage[] {
 		} else if (msg.role === "assistant") {
 			const parts: Array<{ type: "text"; text: string } | { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }> = [{ type: "text", text: msg.content }];
 			for (const tc of msg.toolCalls ?? []) {
-				parts.push({ type: "tool-call", toolCallId: tc.id, toolName: tc.name, args: tc.arguments });
+				const toolName = isAnthropic ? prefixToolName(tc.name) : tc.name;
+				parts.push({ type: "tool-call", toolCallId: tc.id, toolName, args: tc.arguments });
 			}
 			result.push({ role: "assistant", content: parts });
 			for (const tr of msg.toolResults ?? []) {
-				result.push({ role: "tool", content: [{ type: "tool-result", toolCallId: tr.toolCallId, toolName: tr.toolName, result: tr.result }] });
+				const toolName = isAnthropic ? prefixToolName(tr.toolName) : tr.toolName;
+				result.push({ role: "tool", content: [{ type: "tool-result", toolCallId: tr.toolCallId, toolName, result: tr.result }] });
 			}
 		}
 	}
@@ -191,17 +194,35 @@ export class Agent {
 		}
 	}
 
-	async *run(userMessage: string): AsyncGenerator<AgentEvent> {
+	async *run(userMessage: string, options?: { reasoningEffort?: "none" | "low" | "medium" | "high" | "max" }): AsyncGenerator<AgentEvent> {
 		this.status = "running";
 		yield { type: "status", status: "running" };
 
 		this.messages.push({ role: "user", content: userMessage });
 
 		const registry = createToolRegistry(this.config.tools);
+		const isAnthropic = this.config.provider === "anthropic";
 		const providerFactory = createProvider({
 			apiKey: this.config.apiKey,
 			baseURL: this.config.baseURL,
+			provider: this.config.provider,
+			claudeCredentials: this.config.claudeCredentials,
 		});
+
+		// For Anthropic provider, prefix tool names and build full system prompt
+		const aiTools = registry.getAISDKTools();
+		const tools = isAnthropic
+			? Object.fromEntries(
+				Object.entries(aiTools).map(([name, tool]) => [prefixToolName(name), tool]),
+			)
+			: aiTools;
+
+		// Build system prompt
+		let systemPrompt = this.config.systemPrompt;
+		if (isAnthropic) {
+			const billingHeader = buildBillingHeaderValue(this.messages);
+			systemPrompt = `${billingHeader}\n${SYSTEM_IDENTITY}\n\n${systemPrompt}`;
+		}
 
 		try {
 			// Track the final assistant message across all steps
@@ -214,15 +235,25 @@ export class Agent {
 			const stepMessages: ChatMessage[] = [...this.messages];
 
 			for (let step = 0; step < MAX_STEPS; step++) {
-				const result = streamText({
+				const effort = options?.reasoningEffort ?? this.config.reasoningEffort ?? "max";
+
+				// Build stream text options
+				const streamOptions: Parameters<typeof streamText>[0] = {
 					model: providerFactory(this.config.model),
-					system: this.config.systemPrompt,
-					messages: toCoreMessages(stepMessages),
-					tools: registry.getAISDKTools(),
-					providerOptions: {
-						openaiCompatible: { reasoningEffort: "max" },
-					},
-				});
+					system: systemPrompt,
+					messages: toCoreMessages(stepMessages, isAnthropic),
+					tools,
+				};
+
+				if (isAnthropic && effort !== "none") {
+					const budgetTokens = effort === "max" ? 16000 : effort === "high" ? 10000 : effort === "medium" ? 5000 : effort === "low" ? 2000 : 0;
+					streamOptions.providerOptions = { anthropic: { thinking: { type: "enabled" as const, budgetTokens } } };
+					streamOptions.maxTokens = budgetTokens + 8000;
+				} else if (!isAnthropic && effort !== "none") {
+					streamOptions.providerOptions = { openaiCompatible: { reasoningEffort: effort } };
+				}
+
+				const result = streamText(streamOptions);
 
 				let stepText = "";
 				const stepToolCalls: ToolCall[] = [];
@@ -235,9 +266,11 @@ export class Agent {
 					} else if (event.type === "reasoning") {
 						yield { type: "reasoning-delta", delta: event.textDelta };
 					} else if (event.type === "tool-call") {
+						const rawName = event.toolName;
+						const toolName = isAnthropic ? unprefixToolName(rawName) : rawName;
 						const toolCall: ToolCall = {
 							id: event.toolCallId,
-							name: event.toolName,
+							name: toolName,
 							arguments: event.args as Record<string, unknown>,
 						};
 						stepToolCalls.push(toolCall);
