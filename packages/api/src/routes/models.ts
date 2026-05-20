@@ -258,24 +258,29 @@ modelsRoutes.get("/key-usage", async (c) => {
 	try {
 		if (provider === "anthropic") {
 			const accounts = discoverClaudeAccounts();
-			let account: ClaudeAccount | undefined;
-			if (key.definition.credentials_file) {
-				account = accounts.find((a) => a.source === key.definition.credentials_file);
-			}
-			if (!account) {
-				account = accounts[0];
-			}
-			if (!account) {
+			if (accounts.length === 0) {
 				return c.json({ error: "no Claude accounts available" }, 502);
 			}
-			const report = await getAccountUsage(account);
-			if (!report) {
-				return c.json({ error: "failed to fetch usage data" }, 502);
-			}
+			// Fetch usage for all discovered accounts
+			const accountResults = await Promise.all(
+				accounts.map(async (acct) => {
+					const report = await getAccountUsage(acct);
+					return {
+						label: acct.label,
+						source: acct.source,
+						subscriptionType: acct.credentials.subscriptionType,
+						fiveHour: report?.fiveHour,
+						sevenDay: report?.sevenDay,
+						error: report ? undefined : "failed to fetch",
+					};
+				}),
+			);
 			return c.json({
 				provider: "anthropic",
-				fiveHour: report.fiveHour,
-				sevenDay: report.sevenDay,
+				accounts: accountResults,
+				// Legacy single-account fields (first account)
+				fiveHour: accountResults[0]?.fiveHour,
+				sevenDay: accountResults[0]?.sevenDay,
 			});
 		} else if (provider === "opencode-go") {
 			// Cookie-based HTML scraper. Uses OPENCODE_COOKIE env var plus

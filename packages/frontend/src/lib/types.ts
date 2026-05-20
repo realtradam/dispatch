@@ -114,8 +114,18 @@ export interface UsageBucket {
 	resetsAt?: number;
 }
 
+export interface ClaudeAccountUsage {
+	label: string;
+	source: string;
+	subscriptionType?: string;
+	fiveHour?: UsageBucket;
+	sevenDay?: UsageBucket;
+	error?: string;
+}
+
 export interface ClaudeUsageData {
 	provider: "anthropic";
+	accounts?: ClaudeAccountUsage[];
 	fiveHour?: UsageBucket;
 	sevenDay?: UsageBucket;
 }
