@@ -5,6 +5,7 @@
 	import SkillsBrowser from "./SkillsBrowser.svelte";
 	import PermissionLog from "./PermissionLog.svelte";
 	import KeyUsage from "./KeyUsage.svelte";
+	import ClaudeReset from "./ClaudeReset.svelte";
 	import type { TaskItem, LogEntry, KeyInfo, ModelInfo } from "../types.js";
 
 	const {
@@ -25,7 +26,7 @@
 
 	let selected = $state("Tasks");
 
-	const options = ["Key Usage", "Model Status", "Tasks", "Config", "Skills", "Permission Log"];
+	const options = ["Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Permission Log"];
 </script>
 
 <div class="bg-base-200 rounded-lg p-3">
@@ -41,6 +42,8 @@
 	<div class="mt-2">
 		{#if selected === "Key Usage"}
 			<KeyUsage {keys} {apiBase} />
+		{:else if selected === "Claude Reset"}
+			<ClaudeReset {apiBase} />
 		{:else if selected === "Model Status"}
 			<ModelStatus {models} {keys} {tags} />
 		{:else if selected === "Tasks"}

@@ -6,17 +6,21 @@
 # When all keys are exhausted the agent enters wait-for-refresh.
 # Must be declared BEFORE any [[keys]] / [[models]] blocks.
 
-fallback = ["claude-max", "opencode-1", "opencode-2", "copilot"]
+fallback = ["claude-pro", "claude-max", "opencode-1", "opencode-2", "copilot"]
 
 # ─── API Keys ───────────────────────────────────────────────────
+
+[[keys]]
+id = "claude-pro"
+provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+# Reads from ~/.claude/.credentials.json (default)
 
 [[keys]]
 id = "claude-max"
 provider = "anthropic"
 base_url = "https://api.anthropic.com/v1"
-# No env needed — credentials read from ~/.claude/.credentials.json
-# Optional: specify a specific credentials file for multi-account:
-# credentials_file = "/home/tradam/.claude/.credentials-2.json"
+credentials_file = "/root/.claude/.credentials-2.json"
 
 [[keys]]
 id = "opencode-1"
