@@ -429,7 +429,9 @@ async function fetchClaudeUsage(accessToken: string): Promise<ClaudeUsageReport 
 		const parseBucket = (bucket: unknown): ClaudeUsageBucket | undefined => {
 			if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) return undefined;
 			const b = bucket as Record<string, unknown>;
-			const utilization = typeof b.utilization === "number" ? b.utilization : undefined;
+			// API returns utilization as 0-100 percentage; normalize to 0-1 fraction
+			const rawUtil = typeof b.utilization === "number" ? b.utilization : undefined;
+			const utilization = rawUtil !== undefined ? rawUtil / 100 : undefined;
 			const resetsAt = typeof b.resets_at === "string" ? Date.parse(b.resets_at as string) : undefined;
 			if (utilization === undefined && resetsAt === undefined) return undefined;
 			return { utilization, resetsAt };
