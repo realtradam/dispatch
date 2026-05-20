@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Marked } from "marked";
 	import { markedHighlight } from "marked-highlight";
+	import DOMPurify from "dompurify";
 	import hljs from "highlight.js/lib/core";
 	// Hot set — matches roughly what ChatGPT preloads. Registered eagerly so
 	// common code blocks highlight on first paint without a network roundtrip.
@@ -71,7 +72,6 @@
 		svg: "xml",
 		md: "markdown",
 		mdx: "markdown",
-		dockerfile: "dockerfile",
 		golang: "go",
 		rs: "rust",
 		kt: "kotlin",
@@ -159,8 +159,8 @@
 		const myToken = ++renderToken;
 		(async () => {
 			try {
-				const result = (await md.parse(src)) as string;
-				if (myToken === renderToken) html = result;
+				const raw = (await md.parse(src)) as string;
+				if (myToken === renderToken) html = DOMPurify.sanitize(raw);
 			} catch {
 				// swallow — keeps last successful render visible
 			}

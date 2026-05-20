@@ -13,7 +13,7 @@ const isUser = $derived(message.role === "user");
 		{#if message.thinking}
 			<div class="collapse collapse-arrow mb-2">
 				<input type="checkbox" />
-				<div class="collapse-title text-sm opacity-60 italic p-0 min-h-0">Thinking...</div>
+				<div class="collapse-title text-sm opacity-60 italic py-0 pl-0 pr-8 min-h-0">Thinking...</div>
 				<div class="collapse-content text-sm opacity-60 italic p-0">
 					<p class="whitespace-pre-wrap mt-1">{message.thinking}</p>
 				</div>
