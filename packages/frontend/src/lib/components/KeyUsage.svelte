@@ -14,52 +14,61 @@
 		provider: string;
 		data: KeyUsageData | null;
 		error: string | null;
+		loading: boolean;
 	}
 
 	let entries = $state<KeyUsageEntry[]>([]);
-	let loading = $state(true);
 
-	async function fetchAll() {
-		loading = true;
-		const results: KeyUsageEntry[] = [];
-
-		for (const key of keys) {
-			try {
-				const res = await fetch(
-					`${apiBase}/models/key-usage?keyId=${encodeURIComponent(key.id)}`,
-				);
-				if (!res.ok) {
-					const data = await res.json().catch(() => ({}));
-					results.push({
-						keyId: key.id,
-						provider: key.provider,
-						data: null,
-						error: data.error ?? `HTTP ${res.status}`,
-					});
-				} else {
-					results.push({
-						keyId: key.id,
-						provider: key.provider,
-						data: await res.json(),
-						error: null,
-					});
-				}
-			} catch (e) {
-				results.push({
-					keyId: key.id,
-					provider: key.provider,
+	async function fetchOne(key: KeyInfo) {
+		try {
+			const res = await fetch(
+				`${apiBase}/models/key-usage?keyId=${encodeURIComponent(key.id)}`,
+			);
+			if (!res.ok) {
+				const data = await res.json().catch(() => ({}));
+				updateEntry(key.id, {
 					data: null,
-					error: e instanceof Error ? e.message : "Failed to fetch",
+					error: data.error ?? `HTTP ${res.status}`,
+					loading: false,
+				});
+			} else {
+				updateEntry(key.id, {
+					data: await res.json(),
+					error: null,
+					loading: false,
 				});
 			}
+		} catch (e) {
+			updateEntry(key.id, {
+				data: null,
+				error: e instanceof Error ? e.message : "Failed to fetch",
+				loading: false,
+			});
 		}
+	}
 
-		entries = results;
-		loading = false;
+	function updateEntry(
+		keyId: string,
+		patch: { data?: KeyUsageData | null; error?: string | null; loading?: boolean },
+	) {
+		entries = entries.map((e) =>
+			e.keyId === keyId ? { ...e, ...patch } : e,
+		);
 	}
 
 	$effect(() => {
-		fetchAll();
+		// Initialize all entries as loading
+		entries = keys.map((k) => ({
+			keyId: k.id,
+			provider: k.provider,
+			data: null,
+			error: null,
+			loading: true,
+		}));
+		// Fire all fetches in parallel
+		for (const key of keys) {
+			fetchOne(key);
+		}
 	});
 
 	function progressClass(utilization: number): string {
@@ -80,23 +89,22 @@
 <div class="flex flex-col gap-3">
 	{#if keys.length === 0}
 		<p class="text-xs text-base-content/50">No keys available.</p>
-	{:else if loading}
-		<div class="flex items-center gap-2 py-2">
-			<span class="loading loading-spinner loading-sm"></span>
-			<span class="text-xs text-base-content/50">Loading usage data...</span>
-		</div>
 	{:else}
 		<div class="flex flex-col gap-3 max-h-96 overflow-y-auto">
 			{#each entries as entry (entry.keyId)}
-				<div
-					class="bg-base-200 rounded-lg p-2"
-				>
+				<div class="bg-base-200 rounded-lg p-2">
 					<div class="flex items-center gap-1.5 mb-1.5">
 						<span class="text-xs font-semibold">{entry.keyId}</span>
 						<span class="badge badge-xs badge-ghost">{entry.provider}</span>
 					</div>
 
-					{#if entry.error}
+					{#if entry.loading}
+						<div class="flex items-center gap-1.5 py-1">
+							<span class="loading loading-spinner loading-xs"></span>
+							<span class="text-xs text-base-content/50">Loading...</span>
+						</div>
+
+					{:else if entry.error}
 						<div role="alert" class="text-xs text-error/80">{entry.error}</div>
 
 					{:else if !entry.data}
@@ -105,7 +113,10 @@
 					{:else if entry.data.provider === "anthropic"}
 						<!-- Render each Claude account -->
 						{#if entry.data.accounts}
-							{#each entry.data.accounts as acct (acct.source)}
+							{#each entry.data.accounts as acct, idx (acct.source)}
+								{#if idx > 0}
+									<div class="border-t border-base-300 my-1.5"></div>
+								{/if}
 								<div class="flex flex-col gap-1 pl-1">
 									<div class="flex items-center gap-1">
 										<span class="text-xs font-medium">{acct.label}</span>
