@@ -1,25 +1,12 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parse } from "smol-toml";
 import type { PermissionRule, Ruleset } from "../permission/index.js";
+import type { DispatchConfig } from "../types/index.js";
+import { validateConfig } from "./schema.js";
 
-// Strip inline comments that appear outside of quoted strings.
-// Handles both single- and double-quoted values.
-function stripInlineComment(line: string): string {
-	// Walk character by character; track whether we're inside quotes.
-	let inQuote: string | null = null;
-	for (let i = 0; i < line.length; i++) {
-		const ch = line[i];
-		if (inQuote) {
-			if (ch === inQuote) inQuote = null;
-		} else if (ch === '"' || ch === "'") {
-			inQuote = ch;
-		} else if (ch === "#") {
-			return line.slice(0, i).trimEnd();
-		}
-	}
-	return line;
-}
+const DEFAULT_CONFIG: DispatchConfig = { permissions: {} };
 
 const VALID_ACTIONS = new Set(["allow", "deny", "ask"]);
 
@@ -29,89 +16,27 @@ function validateAction(raw: string): "allow" | "deny" | "ask" {
 	return "ask";
 }
 
-export interface DispatchConfig {
-	permissions: Record<string, string | Record<string, string>>;
-}
-
-// Load dispatch.yaml from the given directory
+// Load dispatch.toml from the given directory
 export function loadConfig(dir: string): DispatchConfig {
-	const yamlPath = join(dir, "dispatch.yaml");
+	const tomlPath = join(dir, "dispatch.toml");
+	let raw: unknown;
 	try {
-		const content = readFileSync(yamlPath, "utf-8");
-		return parseYaml(content);
-	} catch {
-		return { permissions: {} };
-	}
-}
-
-function expandHome(value: string): string {
-	const home = homedir();
-	return value.replace(/^\$HOME(?=[\/\\]|$)/, home).replace(/^~(?=[\/\\]|$)/, home);
-}
-
-function stripQuotes(s: string): string {
-	if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-		return s.slice(1, -1);
-	}
-	return s;
-}
-
-// Parse simple YAML for the permissions structure
-function parseYaml(content: string): DispatchConfig {
-	const permissions: Record<string, string | Record<string, string>> = {};
-	const lines = content.split("\n");
-
-	let inPermissions = false;
-	let currentKey: string | null = null;
-
-	for (const raw of lines) {
-		// Skip comments and blank lines
-		const trimmed = raw.trimEnd();
-		const stripped = trimmed.trimStart();
-		if (stripped === "" || stripped.startsWith("#")) continue;
-
-		const indent = trimmed.length - stripped.length;
-
-		if (indent === 0) {
-			// Top-level key
-			inPermissions = stripped.startsWith("permissions:");
-			currentKey = null;
-			continue;
+		const content = readFileSync(tomlPath, "utf-8");
+		raw = parse(content);
+	} catch (err: unknown) {
+		if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
+			// File doesn't exist — return empty default
+			return DEFAULT_CONFIG;
 		}
-
-		if (!inPermissions) continue;
-
-		if (indent === 2) {
-			// permission key line: "  key: value" or "  key:"
-			const colonIdx = stripped.indexOf(":");
-			if (colonIdx === -1) continue;
-			const key = stripQuotes(stripped.slice(0, colonIdx).trim());
-			const valueRaw = stripInlineComment(stripped.slice(colonIdx + 1).trim()).trim();
-			if (valueRaw === "" || valueRaw === null) {
-				// nested map follows
-				currentKey = key;
-				permissions[currentKey] = {};
-			} else {
-				// inline value
-				const value = stripQuotes(valueRaw);
-				permissions[key] = value;
-				currentKey = null;
-			}
-			continue;
-		}
-
-		if (indent >= 4 && currentKey !== null) {
-			// sub-key line: "    "pattern": action"
-			const colonIdx = stripped.indexOf(":");
-			if (colonIdx === -1) continue;
-			const pattern = expandHome(stripQuotes(stripped.slice(0, colonIdx).trim()));
-			const actionRaw = stripQuotes(stripInlineComment(stripped.slice(colonIdx + 1).trim()).trim());
-			const action = validateAction(actionRaw);
-			(permissions[currentKey] as Record<string, string>)[pattern] = action;
-		}
+		console.warn(`dispatch: failed to parse dispatch.toml: ${err instanceof Error ? err.message : String(err)}`);
+		throw err;
 	}
 
-	return { permissions };
+	const { config, errors } = validateConfig(raw);
+	for (const e of errors) {
+		console.warn(`dispatch: config warning at ${e.path}: ${e.message}`);
+	}
+	return config;
 }
 
 // Convert the config's permission block to a Ruleset
@@ -126,8 +51,8 @@ export function configToRuleset(config: DispatchConfig): Ruleset {
 		} else {
 			for (const [rawPattern, rawAction] of Object.entries(value)) {
 				const pattern = rawPattern
-					.replace(/^\$HOME(?=[\/\\]|$)/, home)
-					.replace(/^~(?=[\/\\]|$)/, home);
+					.replace(/^\$HOME(?=[/\\]|$)/, home)
+					.replace(/^~(?=[/\\]|$)/, home);
 				const action = validateAction(rawAction);
 				rules.push({ permission, pattern, action });
 			}

@@ -65,6 +65,49 @@ vi.mock("@dispatch/core", () => ({
 	configToRuleset(_config: unknown) {
 		return [];
 	},
+	validateConfig(_config: unknown) {
+		return { config: _config, errors: [] };
+	},
+	createConfigWatcher(_dir: string, _onChange: unknown) {
+		return { close() {} };
+	},
+	loadSkills(_dir: string) {
+		return { skills: [], mappings: [] };
+	},
+	createSkillsWatcher(_dir: string, _onChange: unknown) {
+		return { close() {} };
+	},
+	ModelRegistry: class MockModelRegistry {
+		getModels() { return []; }
+		getKeys() { return []; }
+		getModelsByTag(_tag: string) { return []; }
+		getAllTags() { return []; }
+		hasAvailableKey(_provider: string) { return false; }
+		allKeysExhausted() { return true; }
+		markKeyExhausted() {}
+		markKeyActive() {}
+		updateConfig() {}
+	},
+	ModelResolver: class MockModelResolver {
+		resolve(_tag: string) { return null; }
+		waitForKey() { return Promise.resolve(null); }
+	},
+	TaskList: class MockTaskList {
+		getTasks() { return []; }
+		getTask() { return undefined; }
+		addTask() { return { id: "task-1", title: "", description: "", status: "pending" }; }
+		updateTask() { return undefined; }
+		removeTask() { return false; }
+		onChange(_cb: unknown) { return () => {}; }
+	},
+	createTaskListTool(_taskList: unknown) {
+		return {
+			name: "task_list",
+			description: "task list",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
 }));
 
 // Import after mock is defined (Vitest hoists vi.mock automatically)

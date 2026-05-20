@@ -1,7 +1,8 @@
 import type { ZodType } from "zod";
 import type { PermissionChecker, Ruleset } from "../permission/index.js";
 
-// Message types for the agent conversation
+// ─── Message Types ───────────────────────────────────────────────
+
 export type MessageRole = "user" | "assistant" | "tool";
 
 export interface ChatMessage {
@@ -24,10 +25,10 @@ export interface ToolResult {
 	isError: boolean;
 }
 
-// Agent status
-export type AgentStatus = "idle" | "running" | "error";
+// ─── Agent Status & Events ───────────────────────────────────────
 
-// Agent events emitted during execution (for WebSocket streaming)
+export type AgentStatus = "idle" | "running" | "error" | "waiting_for_key";
+
 export type AgentEvent =
 	| { type: "status"; status: AgentStatus }
 	| { type: "text-delta"; delta: string }
@@ -36,14 +37,16 @@ export type AgentEvent =
 	| { type: "tool-result"; toolResult: ToolResult }
 	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" }
 	| { type: "error"; error: string }
-	| { type: "done"; message: ChatMessage };
+	| { type: "done"; message: ChatMessage }
+	| { type: "task-list-update"; tasks: TaskItem[] }
+	| { type: "config-reload" };
 
-// Context passed to tool execute functions
+// ─── Tool Types ──────────────────────────────────────────────────
+
 export interface ToolExecuteContext {
 	onOutput?: (data: string, stream: "stdout" | "stderr") => void;
 }
 
-// Tool definition interface
 export interface ToolDefinition {
 	name: string;
 	description: string;
@@ -51,7 +54,8 @@ export interface ToolDefinition {
 	execute: (args: Record<string, unknown>, context?: ToolExecuteContext) => Promise<string>;
 }
 
-// Agent configuration
+// ─── Agent Configuration ─────────────────────────────────────────
+
 export interface AgentConfig {
 	model: string;
 	apiKey: string;
@@ -61,4 +65,92 @@ export interface AgentConfig {
 	workingDirectory: string;
 	permissionChecker?: PermissionChecker;
 	ruleset?: Ruleset;
+}
+
+// ─── Config Types (dispatch.toml) ────────────────────────────────
+
+export interface DispatchConfig {
+	agents?: Record<string, AgentTemplate>;
+	models?: ModelDefinition[];
+	keys?: KeyDefinition[];
+	fallback?: string[];
+	permissions: Record<string, string | Record<string, string>>;
+}
+
+export interface AgentTemplate {
+	name: string;
+	description: string;
+	system_prompt: string;
+	tools: string[];
+	permissions: Record<string, string | Record<string, string>>;
+	model_tag: string;
+}
+
+export interface ModelDefinition {
+	id: string;
+	provider: string;
+	tags: string[];
+}
+
+export interface KeyDefinition {
+	id: string;
+	provider: string;
+	env: string;
+	base_url: string;
+}
+
+// ─── Model Resolution ────────────────────────────────────────────
+
+export interface ResolvedModel {
+	model: ModelDefinition;
+	key: KeyDefinition;
+}
+
+export type KeyStatus = "active" | "exhausted";
+
+export interface KeyState {
+	definition: KeyDefinition;
+	status: KeyStatus;
+	lastError?: string;
+	exhaustedAt?: number;
+}
+
+// ─── Skills Types ────────────────────────────────────────────────
+
+export type SkillScope = "global" | "project";
+export type SkillDirectory = "default" | "agents" | "project";
+
+export interface SkillDefinition {
+	name: string;
+	description: string;
+	tags: string[];
+	content: string;
+	scope: SkillScope;
+	source: string;
+	directory: SkillDirectory;
+}
+
+export interface AgentSkillMapping {
+	agentType: string;
+	isOrchestrator: boolean;
+	skills: string[];
+	scope: SkillScope;
+}
+
+// ─── Task List Types ─────────────────────────────────────────────
+
+export type TaskStatus = "pending" | "in_progress" | "done" | "blocked";
+
+export interface TaskItem {
+	id: string;
+	title: string;
+	description: string;
+	status: TaskStatus;
+}
+
+// ─── Config Validation ───────────────────────────────────────────
+
+export interface ConfigError {
+	path: string;
+	message: string;
 }

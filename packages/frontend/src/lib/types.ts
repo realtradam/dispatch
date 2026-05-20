@@ -52,6 +52,8 @@ export type AgentEvent =
 			toolResult: { toolCallId: string; result: string; isError: boolean };
 	  }
 	| { type: "error"; error: string }
+	| { type: "task-list-update"; tasks: TaskItem[] }
+	| { type: "config-reload" }
 	| {
 			type: "done";
 			message: {
@@ -63,6 +65,13 @@ export type AgentEvent =
 	  }
 	| { type: "permission-prompt"; pending: PermissionPrompt[] }
 	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" };
+
+export interface TaskItem {
+	id: string;
+	title: string;
+	description: string;
+	status: "pending" | "in_progress" | "done" | "blocked";
+}
 
 export interface PermissionPrompt {
 	id: string;
