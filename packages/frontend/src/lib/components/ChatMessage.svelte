@@ -8,7 +8,7 @@ const { message }: { message: ChatMessage } = $props();
 const isUser = $derived(message.role === "user");
 </script>
 
-<div class="chat {isUser ? 'chat-end' : 'chat-start'} mb-2">
+<div class="chat chat-start mb-2">
 	<div class="chat-bubble {isUser ? 'chat-bubble-primary' : 'chat-bubble-secondary'} max-w-[80%] break-words">
 		{#if message.thinking}
 			<div class="collapse collapse-arrow mb-2 p-1">
