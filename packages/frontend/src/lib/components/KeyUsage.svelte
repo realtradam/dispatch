@@ -69,6 +69,16 @@
 		for (const key of keys) {
 			fetchOne(key);
 		}
+
+		// Refresh every 90s
+		const interval = setInterval(() => {
+			for (const key of keys) {
+				updateEntry(key.id, { loading: true });
+				fetchOne(key);
+			}
+		}, 90_000);
+
+		return () => clearInterval(interval);
 	});
 
 	// Merge duplicate Claude entries — all anthropic keys return the same
