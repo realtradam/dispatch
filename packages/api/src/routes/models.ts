@@ -336,11 +336,14 @@ modelsRoutes.get("/key-usage", async (c) => {
 	}
 });
 
-// Wake all Claude accounts by sending "hi" to haiku
-modelsRoutes.post("/wake", async (c) => {
+// ─── Shared wake function ─────────────────────────────────────
+
+async function wakeAllClaudeAccounts(): Promise<
+	Array<{ label: string; ok: boolean; error?: string }>
+> {
 	const accounts = discoverClaudeAccounts();
 	if (accounts.length === 0) {
-		return c.json({ error: "no Claude accounts available" }, 502);
+		return [{ label: "(none)", ok: false, error: "no Claude accounts available" }];
 	}
 
 	const results: Array<{ label: string; ok: boolean; error?: string }> = [];
@@ -376,5 +379,75 @@ modelsRoutes.post("/wake", async (c) => {
 		}
 	}
 
+	return results;
+}
+
+modelsRoutes.post("/wake", async (c) => {
+	const results = await wakeAllClaudeAccounts();
 	return c.json({ results });
+});
+
+// ─── Wake scheduler (runs on backend, survives frontend close) ─
+
+type WakeSchedule = Record<number, number>; // hour → target timestamp (ms)
+
+let wakeSchedule: WakeSchedule = {};
+
+// HMR-safe: clear previous tick before starting a new one
+(globalThis as Record<string, unknown>)._dispatchWakeTimer ??= undefined;
+const timerKey = "_dispatchWakeTimer";
+
+async function schedulerTick(): Promise<void> {
+	const now = Date.now();
+	const hours = Object.keys(wakeSchedule).map(Number);
+
+	for (const hour of hours) {
+		const ts = wakeSchedule[hour];
+		if (ts !== undefined && ts <= now) {
+			// Delete BEFORE wake to prevent duplicate triggers
+			delete wakeSchedule[hour];
+			wakeAllClaudeAccounts().catch(() => {});
+		}
+	}
+
+	// Schedule next tick
+	if (Object.keys(wakeSchedule).length > 0) {
+		(globalThis as Record<string, unknown>)[timerKey] = setTimeout(schedulerTick, 30_000);
+	}
+}
+
+export function startWakeScheduler(): void {
+	// Clear any previous interval (HMR-safe)
+	const prev = (globalThis as Record<string, unknown>)[timerKey];
+	if (typeof prev === "number") clearTimeout(prev);
+	schedulerTick();
+}
+
+modelsRoutes.post("/wake-schedule/toggle", async (c) => {
+	const body = await c.req.json<{ hour?: number; timestamp?: number }>();
+	const hour = body.hour;
+	if (typeof hour !== "number" || !Number.isFinite(hour) || hour < 0 || hour > 23) {
+		return c.json({ error: "hour must be a number 0-23" }, 400);
+	}
+
+	if (wakeSchedule[hour] !== undefined) {
+		// Delete
+		delete wakeSchedule[hour];
+	} else {
+		// Add — require a future timestamp
+		const ts = body.timestamp;
+		if (typeof ts !== "number" || ts <= Date.now()) {
+			return c.json({ error: "timestamp must be a future Unix ms value" }, 400);
+		}
+		wakeSchedule[hour] = ts;
+	}
+
+	// Restart the tick loop (handles empty → non-empty or vice versa)
+	startWakeScheduler();
+
+	return c.json({ schedule: wakeSchedule });
+});
+
+modelsRoutes.get("/wake-schedule", (c) => {
+	return c.json({ schedule: wakeSchedule });
 });
