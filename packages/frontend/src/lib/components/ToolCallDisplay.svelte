@@ -43,10 +43,10 @@ const shellResult = $derived(
 );
 </script>
 
-<div class="collapse collapse-arrow bg-base-200 text-base-content my-1 rounded-lg border border-base-300 {isExpanded ? 'collapse-open' : ''}">
+<div class="collapse collapse-arrow mb-2 p-1 opacity-60 {isExpanded ? 'collapse-open' : ''}">
 	<button
 		type="button"
-		class="collapse-title flex items-center gap-2 text-sm font-medium cursor-pointer w-full text-left"
+		class="collapse-title flex items-center gap-2 text-sm italic cursor-pointer w-full text-left"
 		onclick={toggle}
 		aria-expanded={isExpanded}
 	>
