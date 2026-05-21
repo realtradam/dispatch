@@ -39,7 +39,8 @@ export type AgentEvent =
 	| { type: "error"; error: string }
 	| { type: "done"; message: ChatMessage }
 	| { type: "task-list-update"; tasks: TaskItem[] }
-	| { type: "config-reload" };
+	| { type: "config-reload" }
+	| { type: "tab-created"; id: string; title: string };
 
 // ─── Tool Types ──────────────────────────────────────────────────
 

@@ -95,7 +95,7 @@ function createTabStore() {
 		activeTabId = id;
 
 		// Auto-check default skills for injection with the first message
-		autoCheckDefaultSkills();
+		void autoCheckDefaultSkills();
 
 		return tab;
 	}
@@ -133,9 +133,9 @@ function createTabStore() {
 		tabs = tabs.map((t) => (t.id === id ? { ...t, ...patch } : t));
 	}
 
-	function ensureAssistantMessage(tabId: string): ChatMessage {
+	function ensureAssistantMessage(tabId: string): ChatMessage | null {
 		const tab = getTabById(tabId);
-		if (!tab) throw new Error(`Tab not found: ${tabId}`);
+		if (!tab) return null;
 
 		if (tab.currentAssistantId) {
 			const existing = tab.messages.find((m) => m.id === tab.currentAssistantId);
@@ -331,6 +331,26 @@ function createTabStore() {
 						return { ...m, content: segments };
 					}),
 				);
+				break;
+			}
+			case "tab-created": {
+				const newTabEvent = event as AgentEvent & { id: string; title: string };
+				// Only add if we don't already have this tab
+				if (!getTabById(newTabEvent.id)) {
+					const tab: Tab = {
+						id: newTabEvent.id,
+						title: newTabEvent.title,
+						messages: [],
+						agentStatus: "running",
+						keyId: null,
+						modelId: null,
+						reasoningEffort: "max",
+						currentAssistantId: null,
+						tasks: [],
+						injectedSkills: [],
+					};
+					tabs = [...tabs, tab];
+				}
 				break;
 			}
 		}
@@ -543,10 +563,20 @@ function createTabStore() {
 	function copyConversation(): string {
 		const tab = getActiveTab();
 		if (!tab) return "";
+
+		const enabledTools = Object.entries(appSettings.savedToolPerms)
+			.filter(([, v]) => v)
+			.map(([k]) => k);
+
 		const lines: string[] = [
 			"=== Dispatch Conversation ===",
+			`Tab ID: ${tab.id}`,
 			`Tab: ${tab.title}`,
 			`Model: ${tab.modelId ?? "default"}`,
+			`Tools: ${enabledTools.length > 0 ? enabledTools.join(", ") : "none"}`,
+			`Injected Skills: ${tab.injectedSkills.length > 0 ? tab.injectedSkills.join(", ") : "none"}`,
+			`Total tabs: ${tabs.length}`,
+			`All tab IDs: ${tabs.map((t) => t.id).join(", ")}`,
 			"",
 		];
 		for (const msg of tab.messages) {

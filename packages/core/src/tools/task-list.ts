@@ -60,24 +60,19 @@ export class TaskList {
 
 export function createTaskListTool(taskList: TaskList): ToolDefinition {
 	return {
-		name: "task_list",
+		name: "todo",
 		description:
-			"Manages a task list for tracking work items. The agent can add tasks, update their status, list all tasks, or get details on a specific task.",
+			"Manage a todo list for planning and tracking work. Add items, update their status, list all items, or get details on a specific item.",
 		parameters: z.object({
-			action: z
-				.enum(["add", "update", "list", "get", "remove"])
-				.describe("The action to perform"),
+			action: z.enum(["add", "update", "list", "get", "remove"]).describe("The action to perform"),
 			title: z.string().optional().describe("Task title (required for 'add')"),
 			description: z
 				.string()
 				.optional()
 				.describe("Task description (for 'add', defaults to empty)"),
-			task_id: z
-				.string()
-				.optional()
-				.describe("Task ID (required for 'update', 'get', 'remove')"),
+			task_id: z.string().optional().describe("Task ID (required for 'update', 'get', 'remove')"),
 			status: z
-				.enum(["pending", "in_progress", "done", "blocked"])
+				.enum(["pending", "in_progress", "done"])
 				.optional()
 				.describe("New status (required for 'update')"),
 		}),

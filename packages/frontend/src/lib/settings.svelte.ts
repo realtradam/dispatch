@@ -7,12 +7,14 @@ let toolPerms = $state<Record<string, boolean>>({
 	read: true,
 	edit: false,
 	bash: false,
+	summon: false,
 	external_directory: false,
 });
 let savedToolPerms = $state<Record<string, boolean>>({
 	read: true,
 	edit: false,
 	bash: false,
+	summon: false,
 	external_directory: false,
 });
 let skillChecks = $state<Record<string, boolean>>({});

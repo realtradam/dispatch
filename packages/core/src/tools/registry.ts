@@ -18,15 +18,14 @@ export function createToolRegistry(tools: ToolDefinition[]) {
 			const result: Record<string, ReturnType<typeof tool>> = {};
 			for (const [name, def] of toolMap) {
 				const schema = def.parameters;
+				// Do NOT pass execute here — agent.ts handles tool execution
+				// manually via executeToolWithStreaming. Passing execute would
+				// cause the AI SDK to auto-execute tools AND agent.ts to execute
+				// them again, resulting in double execution.
 				const t = tool({
 					description: def.description,
 					parameters: schema instanceof z.ZodObject ? schema : z.object({}),
-					execute: async (args) => {
-						return def.execute(args as Record<string, unknown>);
-					},
 				});
-				// The AI SDK tool() overloads cause type narrowing issues when
-				// execute is provided. The runtime value is correct.
 				result[name] = t as unknown as ReturnType<typeof tool>;
 			}
 			return result;

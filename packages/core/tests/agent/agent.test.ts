@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { Agent } from "../../src/agent/agent.js";
 import type { AgentConfig } from "../../src/types/index.js";
+
+// Mock bun:sqlite to avoid Bun-only import in vitest/Node
+vi.mock("../../src/db/index.js", () => ({
+	getDatabase: vi.fn(() => ({})),
+}));
+
+// Mock the credentials module that depends on the DB
+vi.mock("../../src/credentials/claude.js", () => ({
+	buildBillingHeaderValue: vi.fn(() => ""),
+	SYSTEM_IDENTITY: "You are a test agent.",
+}));
 
 // Mock the ai module's streamText
 vi.mock("ai", async () => {
@@ -19,6 +29,8 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
 		modelId: _model,
 	})),
 }));
+
+const { Agent } = await import("../../src/agent/agent.js");
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 	return {
