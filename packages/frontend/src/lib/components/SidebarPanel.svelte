@@ -109,7 +109,7 @@
 				{:else if panel.selected === "Claude Reset"}
 					<ClaudeReset {apiBase} />
 				{:else if panel.selected === "Model Status"}
-					<ModelStatus {models} {keys} {tags} />
+					<ModelStatus {models} {keys} {tags} {apiBase} />
 				{:else if panel.selected === "Tasks"}
 					<TaskListPanel {tasks} />
 				{:else if panel.selected === "Config"}

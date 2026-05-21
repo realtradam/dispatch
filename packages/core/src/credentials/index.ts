@@ -7,6 +7,7 @@ export {
 	type ClaudeUsageBucket,
 	type ClaudeUsageReport,
 	discoverClaudeAccounts,
+	getClaudeAccountsFromDB,
 	fetchAnthropicModels,
 	getAccountUsage,
 	getAnthropicBetas,
@@ -25,3 +26,19 @@ export {
 	type OpencodeUsageBucket,
 	type OpencodeUsageReport,
 } from "./opencode.js";
+export {
+	type StoredCredential,
+	importCredentialsFromFile,
+	getStoredCredentials,
+	updateStoredTokens,
+	deleteStoredCredentials,
+	listStoredCredentials,
+} from "./store.js";
+export {
+	type StoredApiKey,
+	setApiKey,
+	getApiKey,
+	resolveApiKey,
+	deleteApiKey,
+	listApiKeys,
+} from "./api-keys.js";

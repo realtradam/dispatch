@@ -20,9 +20,10 @@ import {
 	TaskList,
 	createTaskListTool,
 	type ClaudeAccount,
-	discoverClaudeAccounts,
+	getClaudeAccountsFromDB,
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
+	resolveApiKey,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
 import { setConfigGetter } from "./routes/config.js";
@@ -124,7 +125,7 @@ export class AgentManager {
 
 	private _refreshClaudeAccounts(): void {
 		try {
-			this.claudeAccounts = discoverClaudeAccounts();
+			this.claudeAccounts = getClaudeAccountsFromDB();
 			if (this.claudeAccounts.length > 0) {
 				console.log(`dispatch: discovered ${this.claudeAccounts.length} Claude account(s)`);
 			}
@@ -187,8 +188,8 @@ export class AgentManager {
 			const ruleset = configToRuleset(this.config);
 
 			// Try to resolve model from registry, fall back to env vars
-			let apiKey = process.env.OPENCODE_API_KEY ?? "";
-			let model = process.env.DISPATCH_MODEL ?? "deepseek-v4-flash";
+			let apiKey = "";
+			let model = "deepseek-v4-flash";
 			let baseURL = "https://opencode.ai/zen/go/v1";
 			let provider: string | undefined;
 			let claudeCredentials: { accessToken: string } | undefined;
@@ -203,9 +204,8 @@ export class AgentManager {
 					if (key.provider === "anthropic") {
 						// Anthropic provider: resolve credentials from Claude accounts
 						const credFile = key.credentials_file;
-						const account = credFile
-							? this.claudeAccounts.find((a) => a.source === credFile)
-							: this.claudeAccounts[0];
+						const account = this.claudeAccounts.find((a) => a.id === effectiveKeyId)
+							?? (credFile ? this.claudeAccounts.find((a) => a.source === credFile) : this.claudeAccounts[0]);
 						if (account) {
 							const creds = refreshAccountCredentials(account);
 							if (creds && creds.expiresAt > Date.now() + 60_000) {
@@ -247,7 +247,7 @@ export class AgentManager {
 						}
 					} else {
 						// Standard key: resolve from env var
-						const envKey = key.env ? process.env[key.env] : undefined;
+						const envKey = resolveApiKey(key.id);
 						if (envKey) {
 							apiKey = envKey;
 							baseURL = key.base_url;
@@ -284,9 +284,8 @@ export class AgentManager {
 					// Check if resolved key is anthropic
 					if (resolved.key.provider === "anthropic") {
 						const credFile = resolved.key.credentials_file;
-						const account = credFile
-							? this.claudeAccounts.find((a) => a.source === credFile)
-							: this.claudeAccounts[0];
+						const account = this.claudeAccounts.find((a) => a.id === resolved.key.id)
+							?? (credFile ? this.claudeAccounts.find((a) => a.source === credFile) : this.claudeAccounts[0]);
 						if (account) {
 							let creds = refreshAccountCredentials(account);
 							if (!creds || creds.expiresAt <= Date.now() + 60_000) {
@@ -304,14 +303,14 @@ export class AgentManager {
 							console.warn(`dispatch: no Claude credentials found for key "${resolved.key.id}"`);
 						}
 					} else {
-						const envKey = process.env[resolved.key.env!];
+						const envKey = resolveApiKey(resolved.key.id);
 						if (envKey) {
 							apiKey = envKey;
 						} else {
-							console.warn(`dispatch: env var "${resolved.key.env}" not set for key "${resolved.key.id}", falling back to env vars`);
-							model = process.env.DISPATCH_MODEL ?? "deepseek-v4-flash";
+							console.warn(`dispatch: env var not set for key "${resolved.key.id}", falling back to defaults`);
+							model = "deepseek-v4-flash";
 							baseURL = "https://opencode.ai/zen/go/v1";
-							apiKey = process.env.OPENCODE_API_KEY ?? "";
+							apiKey = "";
 						}
 					}
 				} else {

@@ -149,16 +149,12 @@ function validateKey(raw: unknown, path: string, errors: ConfigError[]): KeyDefi
 		};
 	}
 
-	// Other providers require env
-	if (typeof raw["env"] !== "string") {
-		errors.push({ path: `${path}.env`, message: "must be a string" });
-		return null;
-	}
+	// Other providers: env is optional (keys can be stored in DB)
 	return {
 		id: raw["id"] as string,
 		provider: raw["provider"] as string,
-		env: raw["env"] as string,
 		base_url: raw["base_url"] as string,
+		...(typeof raw["env"] === "string" ? { env: raw["env"] } : {}),
 	};
 }
 

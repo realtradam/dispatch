@@ -1,16 +1,20 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ModelRegistry, ModelResolver } from "@dispatch/core";
 import {
 	ANTHROPIC_MODELS_FALLBACK,
 	type ClaudeAccount,
-	discoverClaudeAccounts,
 	fetchAnthropicModels,
+	getClaudeAccountsFromDB,
 	fetchCopilotUsage,
 	fetchOpencodeUsage,
 	getAccountUsage,
 	getAnthropicHeaders,
+	getDatabase,
+	importCredentialsFromFile,
+	listApiKeys,
+	listStoredCredentials,
 	refreshAccountCredentialsAsync,
+	resolveApiKey,
+	setApiKey,
 	validateAccountCredentials,
 } from "@dispatch/core";
 import { Hono } from "hono";
@@ -29,6 +33,11 @@ export function setModelsGetter(
 
 export function setAccountsGetter(getter: () => ClaudeAccount[]): void {
 	getAccounts = getter;
+}
+
+/** Load Claude accounts from the database. */
+function resolveClaudeAccounts(): ClaudeAccount[] {
+	return getClaudeAccountsFromDB();
 }
 
 export const modelsRoutes = new Hono();
@@ -108,8 +117,9 @@ modelsRoutes.get("/available", async (c) => {
 	// Anthropic provider: validate credentials and fetch models dynamically
 	if (key.definition.provider === "anthropic") {
 		const credFile = key.definition.credentials_file;
-		const accounts = discoverClaudeAccounts();
-		const account = credFile ? accounts.find((a) => a.source === credFile) : accounts[0];
+		const accounts = resolveClaudeAccounts();
+		const account = accounts.find((a) => a.id === keyId)
+			?? (credFile ? accounts.find((a) => a.source === credFile) : accounts[0]);
 
 		if (!account) {
 			return c.json({ error: "no Claude credentials found" }, 500);
@@ -139,9 +149,9 @@ modelsRoutes.get("/available", async (c) => {
 		});
 	}
 
-	const apiKeyValue = key.definition.env ? process.env[key.definition.env] : undefined;
+	const apiKeyValue = resolveApiKey(keyId!);
 	if (!apiKeyValue) {
-		return c.json({ error: `env var not set: ${key.definition.env}` }, 500);
+		return c.json({ error: `no API key found for ${keyId}` }, 500);
 	}
 
 	const baseUrl = key.definition.base_url.replace(/\/+$/, "");
@@ -181,7 +191,7 @@ modelsRoutes.get("/available", async (c) => {
 
 // List available Claude accounts with validated credentials
 modelsRoutes.get("/claude-accounts", async (c) => {
-	const candidates = discoverClaudeAccounts();
+	const candidates = resolveClaudeAccounts();
 
 	// Validate each account's credentials; only include ones with a working token
 	const validated: Array<{
@@ -214,7 +224,7 @@ modelsRoutes.get("/claude-accounts", async (c) => {
 modelsRoutes.get("/claude-usage", async (c) => {
 	const accountId = c.req.query("accountId");
 	const accounts = getAccounts();
-	const accountAccounts = discoverClaudeAccounts();
+	const accountAccounts = resolveClaudeAccounts();
 	const allAccounts = accounts.length > 0 ? accounts : accountAccounts;
 
 	let account: ClaudeAccount | undefined;
@@ -261,12 +271,15 @@ modelsRoutes.get("/key-usage", async (c) => {
 
 	try {
 		if (provider === "anthropic") {
-			const allAccounts = discoverClaudeAccounts();
+			const allAccounts = resolveClaudeAccounts();
 			const credFile = key.definition.credentials_file;
-			// Only show the account matching this key's credentials_file
-			const accounts = credFile
-				? allAccounts.filter((a) => a.source === credFile)
-				: allAccounts.slice(0, 1); // no credentials_file → default account only
+			// Match by key ID (DB accounts) or source file (file accounts)
+			const accounts = allAccounts.filter(
+				(a) => a.id === keyId || (credFile && a.source === credFile),
+			);
+			if (accounts.length === 0 && allAccounts[0]) {
+				accounts.push(allAccounts[0]);
+			}
 			if (accounts.length === 0) {
 				return c.json({ error: "no Claude accounts available" }, 502);
 			}
@@ -315,12 +328,9 @@ modelsRoutes.get("/key-usage", async (c) => {
 				},
 			});
 		} else if (provider === "github-copilot") {
-			if (!key.definition.env) {
-				return c.json({ error: "no env var configured for this key" }, 502);
-			}
-			const token = process.env[key.definition.env];
+			const token = resolveApiKey(keyId);
 			if (!token) {
-				return c.json({ error: `env var ${key.definition.env} not set` }, 502);
+				return c.json({ error: `no API key found for ${keyId}` }, 502);
 			}
 			const report = await fetchCopilotUsage(token, key.definition.base_url);
 			if (!report) {
@@ -343,29 +353,106 @@ modelsRoutes.get("/key-usage", async (c) => {
 	}
 });
 
+// ─── API key management ───────────────────────────────────────
+
+modelsRoutes.post("/set-api-key", async (c) => {
+	const body = await c.req.json<{ keyId?: string; apiKey?: string }>();
+	if (typeof body.keyId !== "string" || !body.keyId) {
+		return c.json({ error: "keyId is required" }, 400);
+	}
+	if (typeof body.apiKey !== "string" || !body.apiKey) {
+		return c.json({ error: "apiKey is required" }, 400);
+	}
+
+	const registry = getRegistry();
+	if (!registry) {
+		return c.json({ error: "registry not available" }, 502);
+	}
+
+	const keys = registry.getKeys();
+	const key = keys.find((k) => k.definition.id === body.keyId);
+	if (!key) {
+		return c.json({ error: `key not found: ${body.keyId}` }, 404);
+	}
+
+	setApiKey(body.keyId, key.definition.provider, body.apiKey);
+	return c.json({ success: true, keyId: body.keyId });
+});
+
+modelsRoutes.get("/api-keys-status", (c) => {
+	const stored = listApiKeys();
+	return c.json({ keys: stored });
+});
+
+// ─── Credential import ────────────────────────────────────────
+
+modelsRoutes.post("/import-credentials", async (c) => {
+	const body = await c.req.json<{ keyId?: string }>();
+	const keyId = body.keyId;
+	if (typeof keyId !== "string" || !keyId) {
+		return c.json({ error: "keyId is required" }, 400);
+	}
+
+	const registry = getRegistry();
+	if (!registry) {
+		return c.json({ error: "registry not available" }, 502);
+	}
+
+	const keys = registry.getKeys();
+	const key = keys.find((k) => k.definition.id === keyId);
+	if (!key) {
+		return c.json({ error: `key not found: ${keyId}` }, 404);
+	}
+
+	if (key.definition.provider !== "anthropic") {
+		return c.json({ error: "credential import is only supported for anthropic keys" }, 400);
+	}
+
+	const credFile = key.definition.credentials_file;
+	if (!credFile) {
+		return c.json({ error: "no credentials_file configured for this key" }, 400);
+	}
+
+	const result = importCredentialsFromFile(keyId, key.definition.provider, credFile);
+	if (!result.success) {
+		return c.json({ error: result.error ?? "import failed" }, 400);
+	}
+
+	return c.json({ success: true, keyId });
+});
+
+modelsRoutes.get("/credentials-status", (c) => {
+	const stored = listStoredCredentials();
+	const status = stored.map((cred) => ({
+		keyId: cred.keyId,
+		provider: cred.provider,
+		subscriptionType: cred.subscriptionType,
+		sourceFile: cred.sourceFile,
+		importedAt: cred.importedAt,
+		updatedAt: cred.updatedAt,
+		expired: cred.expiresAt < Date.now(),
+	}));
+	return c.json({ credentials: status });
+});
+
 // ─── Shared wake function ─────────────────────────────────────
 
 async function wakeAllClaudeAccounts(): Promise<
 	Array<{ label: string; ok: boolean; error?: string }>
 > {
 	// Only wake accounts referenced by configured anthropic keys
-	const allAccounts = discoverClaudeAccounts();
+	const allAccounts = resolveClaudeAccounts();
 	const registry = getRegistry();
-	const configuredCredFiles = new Set<string>();
+	const configuredKeyIds = new Set<string>();
 	if (registry) {
 		for (const ks of registry.getKeys()) {
 			if (ks.definition.provider === "anthropic") {
-				if (ks.definition.credentials_file) {
-					configuredCredFiles.add(ks.definition.credentials_file);
-				} else if (allAccounts[0]) {
-					// Key without explicit credentials_file uses default account
-					configuredCredFiles.add(allAccounts[0].source);
-				}
+				configuredKeyIds.add(ks.definition.id);
 			}
 		}
 	}
-	const accounts = configuredCredFiles.size > 0
-		? allAccounts.filter((a) => configuredCredFiles.has(a.source))
+	const accounts = configuredKeyIds.size > 0
+		? allAccounts.filter((a) => configuredKeyIds.has(a.id))
 		: allAccounts;
 	if (accounts.length === 0) {
 		return [{ label: "(none)", ok: false, error: "no Claude accounts available" }];
@@ -421,8 +508,6 @@ interface PendingRetry {
 	nextRetryAt: number; // timestamp for next retry attempt
 }
 
-const SCHEDULE_FILE = join(process.cwd(), ".wake-schedule.json");
-
 function nextOccurrenceAt15(hour: number): number {
 	const now = new Date();
 	const target = new Date(now);
@@ -433,47 +518,44 @@ function nextOccurrenceAt15(hour: number): number {
 	return target.getTime();
 }
 
-function loadScheduleFromDisk(): WakeSchedule {
+function loadScheduleFromDB(): WakeSchedule {
 	try {
-		if (existsSync(SCHEDULE_FILE)) {
-			const raw = readFileSync(SCHEDULE_FILE, "utf-8");
-			const parsed = JSON.parse(raw) as Record<string, number>;
-			const schedule: WakeSchedule = {};
-			let needsPersist = false;
-			for (const [key, value] of Object.entries(parsed)) {
-				const hour = Number(key);
-				if (value > Date.now()) {
-					schedule[hour] = value;
-				} else {
-					// Timestamp has passed — recompute for next occurrence
-					schedule[hour] = nextOccurrenceAt15(hour);
-					needsPersist = true;
-				}
+		const db = getDatabase();
+		const rows = db.query("SELECT hour, next_wake_at FROM wake_schedule").all() as Array<{ hour: number; next_wake_at: number }>;
+		const schedule: WakeSchedule = {};
+		let needsUpdate = false;
+		for (const row of rows) {
+			if (row.next_wake_at > Date.now()) {
+				schedule[row.hour] = row.next_wake_at;
+			} else {
+				schedule[row.hour] = nextOccurrenceAt15(row.hour);
+				needsUpdate = true;
 			}
-			if (needsPersist) {
-				try {
-					writeFileSync(SCHEDULE_FILE, JSON.stringify(schedule), "utf-8");
-				} catch {
-					// Ignore write errors
-				}
-			}
-			return schedule;
+		}
+		if (needsUpdate) {
+			persistSchedule(schedule);
+		}
+		return schedule;
+	} catch {
+		return {};
+	}
+}
+
+function persistSchedule(scheduleToSave?: WakeSchedule): void {
+	try {
+		const db = getDatabase();
+		const data = scheduleToSave ?? wakeSchedule;
+		db.run("DELETE FROM wake_schedule");
+		const insert = db.query("INSERT INTO wake_schedule (hour, next_wake_at) VALUES ($hour, $nextWakeAt)");
+		for (const [hour, nextWakeAt] of Object.entries(data)) {
+			insert.run({ $hour: Number(hour), $nextWakeAt: nextWakeAt });
 		}
 	} catch {
-		// File doesn't exist or is corrupt — start fresh
-	}
-	return {};
-}
-
-function persistSchedule(): void {
-	try {
-		writeFileSync(SCHEDULE_FILE, JSON.stringify(wakeSchedule), "utf-8");
-	} catch {
-		// Ignore write errors
+		// Ignore DB errors
 	}
 }
 
-let wakeSchedule: WakeSchedule = loadScheduleFromDisk();
+let wakeSchedule: WakeSchedule = loadScheduleFromDB();
 let pendingRetries: PendingRetry[] = [];
 
 // HMR-safe: clear previous tick before starting a new one

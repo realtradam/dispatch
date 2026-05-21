@@ -17,32 +17,8 @@
 		loading: boolean;
 	}
 
-	// localStorage-backed cache: survives page refreshes
-	const CACHE_STORAGE_KEY = "dispatch-key-usage-cache";
-
-	function loadPersistedCache(): Map<string, KeyUsageData> {
-		try {
-			const raw = localStorage.getItem(CACHE_STORAGE_KEY);
-			if (raw) {
-				const parsed = JSON.parse(raw) as Record<string, KeyUsageData>;
-				return new Map(Object.entries(parsed));
-			}
-		} catch {
-			// Ignore parse errors
-		}
-		return new Map();
-	}
-
-	function persistCache(cache: Map<string, KeyUsageData>): void {
-		try {
-			const obj = Object.fromEntries(cache.entries());
-			localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(obj));
-		} catch {
-			// Ignore storage errors (e.g. quota exceeded)
-		}
-	}
-
-	const usageCache = loadPersistedCache();
+	// In-memory cache for the current session (backend DB is the persistent cache)
+	const usageCache = new Map<string, KeyUsageData>();
 
 	function buildEntries(keyList: KeyInfo[]): KeyUsageEntry[] {
 		return keyList.map((k) => {
@@ -73,7 +49,6 @@
 			} else {
 				const fresh = await res.json() as KeyUsageData;
 				usageCache.set(key.id, fresh);
-				persistCache(usageCache);
 				updateEntry(key.id, {
 					data: fresh,
 					error: null,
@@ -206,6 +181,18 @@
 		}).join(" ");
 	}
 
+	// Cycle durations in ms
+	const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
+	const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000;
+	const THIRTY_DAY_MS = 30 * 24 * 60 * 60 * 1000;
+
+	function cycleElapsedPct(resetsAt: number | undefined, cycleDurationMs: number): number {
+		if (!resetsAt) return -1;
+		const timeRemaining = resetsAt - Date.now();
+		const elapsed = cycleDurationMs - timeRemaining;
+		return Math.max(0, Math.min(100, Math.round((elapsed / cycleDurationMs) * 100)));
+	}
+
 	function hasBucketData(bucket: UsageBucket | undefined): boolean {
 		return bucket !== undefined && bucket.utilization !== undefined;
 	}
@@ -255,34 +242,46 @@
 								{@const b = acct.fiveHour!}
 								{@const u = b.utilization ?? 0}
 								{@const p = Math.round(u * 100)}
+								{@const tp = cycleElapsedPct(b.resetsAt, FIVE_HOUR_MS)}
 								<div class="flex flex-col gap-0.5">
 									<div class="flex items-center justify-between">
 										<span class="text-xs text-base-content/50">5-Hour</span>
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
-									<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
-									{#if b.resetsAt}
-										<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
-									{/if}
-								</div>
-							{/if}
-							{#if hasBucketData(acct.sevenDay)}
+									<div class="relative w-full h-2">
+										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										{#if tp >= 0}
+											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
+										{/if}
+									</div>
+								{#if b.resetsAt}
+									<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
+								{/if}
+							</div>
+						{/if}
+						{#if hasBucketData(acct.sevenDay)}
 								{@const b = acct.sevenDay!}
 								{@const u = b.utilization ?? 0}
 								{@const p = Math.round(u * 100)}
+								{@const tp = cycleElapsedPct(b.resetsAt, SEVEN_DAY_MS)}
 								<div class="flex flex-col gap-0.5">
 									<div class="flex items-center justify-between">
 										<span class="text-xs text-base-content/50">Weekly</span>
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
-									<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
-									{#if b.resetsAt}
-										<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
-									{/if}
-								</div>
-							{/if}
-						</div>
-					{/each}
+									<div class="relative w-full h-2">
+										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										{#if tp >= 0}
+											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
+										{/if}
+									</div>
+								{#if b.resetsAt}
+									<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/each}
 			{/if}
 				</div>
 		{/if}
@@ -323,48 +322,66 @@
 								{@const b = entry.data.fiveHour!}
 								{@const u = b.utilization ?? 0}
 								{@const p = Math.round(u * 100)}
+								{@const tp = cycleElapsedPct(b.resetsAt, FIVE_HOUR_MS)}
 								<div class="flex flex-col gap-0.5">
 									<div class="flex items-center justify-between">
 										<span class="text-xs text-base-content/50">5-Hour</span>
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
-									<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
-									{#if b.resetsAt}
-										<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
-									{/if}
-								</div>
-							{/if}
-							{#if hasBucketData(entry.data.weekly)}
+									<div class="relative w-full h-2">
+										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										{#if tp >= 0}
+											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
+										{/if}
+									</div>
+								{#if b.resetsAt}
+									<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
+								{/if}
+							</div>
+						{/if}
+						{#if hasBucketData(entry.data.weekly)}
 								{@const b = entry.data.weekly!}
 								{@const u = b.utilization ?? 0}
 								{@const p = Math.round(u * 100)}
+								{@const tp = cycleElapsedPct(b.resetsAt, SEVEN_DAY_MS)}
 								<div class="flex flex-col gap-0.5">
 									<div class="flex items-center justify-between">
 										<span class="text-xs text-base-content/50">Weekly</span>
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
-									<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
-									{#if b.resetsAt}
-										<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
-									{/if}
-								</div>
-							{/if}
-							{#if hasBucketData(entry.data.monthly)}
+									<div class="relative w-full h-2">
+										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										{#if tp >= 0}
+											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
+										{/if}
+									</div>
+								{#if b.resetsAt}
+									<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
+								{/if}
+							</div>
+						{/if}
+						{#if hasBucketData(entry.data.monthly)}
 								{@const b = entry.data.monthly!}
 								{@const u = b.utilization ?? 0}
 								{@const p = Math.round(u * 100)}
+								{@const tp = cycleElapsedPct(b.resetsAt, THIRTY_DAY_MS)}
 								<div class="flex flex-col gap-0.5">
 									<div class="flex items-center justify-between">
 										<span class="text-xs text-base-content/50">Monthly</span>
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
-									<progress class="progress w-full h-2 {progressClass(u)}" value={p} max="100"></progress>
-									{#if b.resetsAt}
-										<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
-									{/if}
-								</div>
-							{/if}
+									<div class="relative w-full h-2">
+										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										{#if tp >= 0}
+											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
+										{/if}
+									</div>
+								{#if b.resetsAt}
+									<span class="text-xs text-base-content/40">Resets: {formatDate(b.resetsAt)}</span>
+								{/if}
+							</div>
 						{/if}
+					{/if}
 
 					{:else if entry.data.provider === "github-copilot"}
 						{@const p = Math.round(entry.data.percentUsed ?? 0)}

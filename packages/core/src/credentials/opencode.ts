@@ -1,3 +1,5 @@
+import { resolveApiKey } from "./api-keys.js";
+
 // ─── OpenCode Usage Tracking ──────────────────────────────────
 // OpenCode has no public usage API. We scrape usage from the
 // SolidStart SSR-rendered workspace page using a session cookie.
@@ -16,14 +18,14 @@ export interface OpencodeUsageReport {
 }
 
 function getWorkspaceId(keyId: string): string | undefined {
-	// Match ai-usage convention: opencode-1 → OPENCODE_WS1_ID, opencode-2 → OPENCODE_WS2_ID
+	// Check DB for workspace ID: stored as "opencode-ws1", "opencode-ws2", or "opencode-ws"
 	const match = keyId.match(/opencode-(\d+)$/i);
 	if (match) {
 		const num = match[1];
-		const specific = process.env[`OPENCODE_WS${num}_ID`];
+		const specific = resolveApiKey(`opencode-ws${num}`);
 		if (specific) return specific;
 	}
-	return process.env.OPENCODE_WS_ID;
+	return resolveApiKey("opencode-ws") ?? undefined;
 }
 
 function parseOcDouble(html: string, key: string): number {
@@ -71,7 +73,7 @@ function parseOcBucket(
 export async function fetchOpencodeUsage(
 	keyId: string,
 ): Promise<OpencodeUsageReport | null> {
-	const cookie = process.env.OPENCODE_COOKIE;
+	const cookie = resolveApiKey("opencode-cookie");
 	const wsId = getWorkspaceId(keyId);
 
 	if (!cookie || !wsId) {

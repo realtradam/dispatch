@@ -1,4 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync } from "node:fs";
+import { getStoredCredentials, updateStoredTokens, listStoredCredentials } from "./store.js";
+import { getDatabase } from "../db/index.js";
 import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -144,6 +146,34 @@ function buildAccountLabels(accounts: ClaudeAccount[]): void {
 	}
 }
 
+/**
+ * Load Claude accounts from the SQLite database.
+ * Returns accounts for all stored anthropic credentials.
+ * This is the preferred path — file-based discovery is the fallback.
+ */
+export function getClaudeAccountsFromDB(): ClaudeAccount[] {
+	const stored = listStoredCredentials();
+	const accounts: ClaudeAccount[] = [];
+
+	for (const cred of stored) {
+		if (cred.provider !== "anthropic") continue;
+		accounts.push({
+			id: cred.keyId,
+			label: "",
+			source: `db:${cred.keyId}`,
+			credentials: {
+				accessToken: cred.accessToken,
+				refreshToken: cred.refreshToken,
+				expiresAt: cred.expiresAt,
+				subscriptionType: cred.subscriptionType ?? undefined,
+			},
+		});
+	}
+
+	buildAccountLabels(accounts);
+	return accounts;
+}
+
 export function discoverClaudeAccounts(): ClaudeAccount[] {
 	const accounts: ClaudeAccount[] = [];
 
@@ -194,10 +224,22 @@ export function refreshAccountCredentials(account: ClaudeAccount): ClaudeCredent
 		return cached.creds;
 	}
 
-	// Re-read from file to pick up external updates
-	const onDisk = readCredentialsFile(account.source);
-	if (onDisk) {
-		account.credentials = onDisk;
+	// Re-read credentials: from DB for DB-backed accounts, from file otherwise
+	if (account.source.startsWith("db:")) {
+		const stored = getStoredCredentials(account.id);
+		if (stored) {
+			account.credentials = {
+				accessToken: stored.accessToken,
+				refreshToken: stored.refreshToken,
+				expiresAt: stored.expiresAt,
+				subscriptionType: stored.subscriptionType ?? undefined,
+			};
+		}
+	} else {
+		const onDisk = readCredentialsFile(account.source);
+		if (onDisk) {
+			account.credentials = onDisk;
+		}
 	}
 
 	if (account.credentials.expiresAt > now + 60_000) {
@@ -222,10 +264,22 @@ export async function refreshAccountCredentialsAsync(account: ClaudeAccount): Pr
 		return cached.creds;
 	}
 
-	// Re-read from file
-	const onDisk = readCredentialsFile(account.source);
-	if (onDisk) {
-		account.credentials = onDisk;
+	// Re-read credentials: from DB for DB-backed accounts, from file otherwise
+	if (account.source.startsWith("db:")) {
+		const stored = getStoredCredentials(account.id);
+		if (stored) {
+			account.credentials = {
+				accessToken: stored.accessToken,
+				refreshToken: stored.refreshToken,
+				expiresAt: stored.expiresAt,
+				subscriptionType: stored.subscriptionType ?? undefined,
+			};
+		}
+	} else {
+		const onDisk = readCredentialsFile(account.source);
+		if (onDisk) {
+			account.credentials = onDisk;
+		}
 	}
 
 	if (account.credentials.expiresAt > now + 60_000) {
@@ -238,7 +292,12 @@ export async function refreshAccountCredentialsAsync(account: ClaudeAccount): Pr
 		const refreshed = await refreshViaOAuth(account.credentials.refreshToken);
 		if (refreshed && refreshed.expiresAt > now + 60_000) {
 			account.credentials = refreshed;
-			writeCredentialsFile(account.source, refreshed);
+			// Update DB if this is a DB-backed account, otherwise write to file
+			if (account.source.startsWith("db:")) {
+				updateStoredTokens(account.id, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+			} else {
+				writeCredentialsFile(account.source, refreshed);
+			}
 			accountCacheMap.set(account.id, { creds: refreshed, cachedAt: now });
 			return refreshed;
 		}
@@ -458,15 +517,46 @@ async function fetchClaudeUsage(accessToken: string): Promise<ClaudeUsageReport 
 	}
 }
 
-const usageCacheMap = new Map<string, ClaudeUsageReport>();
+function getCachedUsage(keyId: string): ClaudeUsageReport | null {
+	try {
+		const db = getDatabase();
+		const row = db.query(
+			"SELECT report_json FROM usage_cache WHERE key_id = $keyId",
+		).get({ $keyId: keyId }) as { report_json: string } | null;
+		if (!row) return null;
+		return JSON.parse(row.report_json) as ClaudeUsageReport;
+	} catch {
+		return null;
+	}
+}
+
+function setCachedUsage(keyId: string, provider: string, report: ClaudeUsageReport): void {
+	try {
+		const db = getDatabase();
+		db.query(
+			`INSERT INTO usage_cache (key_id, provider, cached_at, report_json)
+			 VALUES ($keyId, $provider, $cachedAt, $reportJson)
+			 ON CONFLICT(key_id) DO UPDATE SET
+			   cached_at = $cachedAt,
+			   report_json = $reportJson`,
+		).run({
+			$keyId: keyId,
+			$provider: provider,
+			$cachedAt: Date.now(),
+			$reportJson: JSON.stringify(report),
+		});
+	} catch {
+		// Ignore DB errors
+	}
+}
 
 export async function getAccountUsage(account: ClaudeAccount): Promise<ClaudeUsageReport | null> {
 	const creds = await refreshAccountCredentialsAsync(account);
-	if (!creds) return usageCacheMap.get(account.id) ?? null;
+	if (!creds) return getCachedUsage(account.id);
 	const report = await fetchClaudeUsage(creds.accessToken);
 	if (report) {
-		usageCacheMap.set(account.id, report);
+		setCachedUsage(account.id, "anthropic", report);
 		return report;
 	}
-	return usageCacheMap.get(account.id) ?? null;
+	return getCachedUsage(account.id);
 }

@@ -8,10 +8,14 @@ services:
       - "3000:3000"
     volumes:
       - .:/app
-      - ~/.claude:/root/.claude
+      - ${HOME}/.claude:/home/${HOST_USER:-dispatch}/.claude
+      - ${HOME}/.local/share/dispatch:/home/${HOST_USER:-dispatch}/.local/share/dispatch
     env_file:
       - .env.dispatch
     environment:
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+      HOST_USER: ${HOST_USER:-dispatch}
       DISPATCH_WORKING_DIR: /app
 
   frontend:
@@ -23,3 +27,7 @@ services:
       - "5173:5173"
     volumes:
       - .:/app
+    environment:
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+      HOST_USER: ${HOST_USER:-dispatch}
