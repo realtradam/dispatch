@@ -4,7 +4,7 @@ import { AgentManager } from "./agent-manager.js";
 import { PermissionManager } from "./permission-manager.js";
 import { configRoutes } from "./routes/config.js";
 import { skillsRoutes } from "./routes/skills.js";
-import { modelsRoutes } from "./routes/models.js";
+import { modelsRoutes, startWakeScheduler } from "./routes/models.js";
 
 export const permissionManager = new PermissionManager();
 export const agentManager = new AgentManager(permissionManager);
@@ -60,3 +60,6 @@ app.post("/chat", async (c) => {
 app.route("/config", configRoutes);
 app.route("/skills", skillsRoutes);
 app.route("/models", modelsRoutes);
+
+// Start the wake scheduler on boot (restores persisted schedule)
+startWakeScheduler();
