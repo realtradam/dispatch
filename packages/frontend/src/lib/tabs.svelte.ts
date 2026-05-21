@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { appSettings } from "./settings.svelte.js";
 import type { AgentEvent, ChatMessage, ContentSegment, DebugInfo, LogEntry, PermissionPrompt, TaskItem } from "./types.js";
 import { wsClient } from "./ws.svelte.js";
 
@@ -333,6 +334,38 @@ function createTabStore() {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ title: titleText }),
 			}).catch(() => {});
+		}
+
+		// Save settings to DB before sending (bakes in on send)
+		const settingsSaves: Promise<unknown>[] = [];
+
+		if (appSettings.systemPrompt !== appSettings.savedSystemPrompt) {
+			appSettings.savedSystemPrompt = appSettings.systemPrompt;
+			settingsSaves.push(
+				fetch(`${config.apiBase}/tabs/settings/system_prompt`, {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ value: appSettings.systemPrompt }),
+				}).catch(() => {}),
+			);
+		}
+
+		if (appSettings.toolPermsDirty) {
+			const perms = appSettings.toolPerms;
+			appSettings.savedToolPerms = { ...perms };
+			for (const [id, enabled] of Object.entries(perms)) {
+				settingsSaves.push(
+					fetch(`${config.apiBase}/tabs/settings/perm_${id}`, {
+						method: "PUT",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ value: enabled ? "allow" : "ask" }),
+					}).catch(() => {}),
+				);
+			}
+		}
+
+		if (settingsSaves.length > 0) {
+			await Promise.all(settingsSaves);
 		}
 
 		try {

@@ -32,15 +32,26 @@ import { setSkillsGetter } from "./routes/skills.js";
 import { setModelsGetter, setAccountsGetter } from "./routes/models.js";
 import { setTabsAgentManager } from "./routes/tabs.js";
 
-const SYSTEM_PROMPT = `You are Dispatch, a helpful AI coding assistant. You have access to the following tools for working with files in the current working directory:
+const TOOL_DESCRIPTIONS: Record<string, string> = {
+	read_file: "Read the contents of a file",
+	list_files: "List files and directories",
+	write_file: "Write content to a file (creates parent directories if needed)",
+	run_shell: "Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Use for running tests, builds, git operations, package management, and other development tasks. Do NOT run destructive or irreversible commands unless the user explicitly requests them.",
+	task_list: "Manage a task list for tracking work items.",
+};
 
-- read_file: Read the contents of a file
-- write_file: Write content to a file (creates parent directories if needed)
-- list_files: List files and directories
-- run_shell: Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Use for running tests, builds, git operations, package management, and other development tasks. Do NOT run destructive or irreversible commands unless the user explicitly requests them.
-- task_list: Manage a task list for tracking work items.
+const DEFAULT_SYSTEM_PROMPT = "You are Dispatch, a helpful AI coding assistant. Be concise and helpful.";
 
-When asked to work with files, use these tools. Always confirm what you did after completing an action. Be concise and helpful.`;
+function buildSystemPrompt(toolNames: string[], basePrompt?: string): string {
+	const base = basePrompt || DEFAULT_SYSTEM_PROMPT;
+	const toolList = toolNames
+		.filter((name) => TOOL_DESCRIPTIONS[name])
+		.map((name) => `- ${name}: ${TOOL_DESCRIPTIONS[name]}`)
+		.join("\n");
+
+	if (!toolList) return base;
+	return `${base}\n\nYou have access to the following tools:\n\n${toolList}\n\nWhen asked to work with files, use these tools. Always confirm what you did after completing an action.`;
+}
 
 interface TabAgent {
 	agent: Agent | null;
@@ -199,7 +210,8 @@ export class AgentManager {
 		const permRead = getSetting("perm_read") !== "ask";
 		const permEdit = getSetting("perm_edit") === "allow";
 		const permBash = getSetting("perm_bash") === "allow";
-		const permKey = `${permRead}:${permEdit}:${permBash}`;
+		const sysPrompt = getSetting("system_prompt") ?? "";
+		const permKey = `${permRead}:${permEdit}:${permBash}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
@@ -213,12 +225,20 @@ export class AgentManager {
 			const workingDirectory = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
 
 			// Build tools list based on permission settings
-			const tools = [
-				...(permRead ? [createReadFileTool(workingDirectory), createListFilesTool(workingDirectory)] : []),
-				...(permEdit ? [createWriteFileTool(workingDirectory)] : []),
-				...(permBash ? [createRunShellTool(workingDirectory)] : []),
-				createTaskListTool(tabAgent.taskList),
-			];
+			const toolEntries: Array<{ name: string; tool: ReturnType<typeof createReadFileTool> }> = [];
+			if (permRead) {
+				toolEntries.push({ name: "read_file", tool: createReadFileTool(workingDirectory) });
+				toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
+			}
+			if (permEdit) {
+				toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
+			}
+			if (permBash) {
+				toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory) });
+			}
+			toolEntries.push({ name: "task_list", tool: createTaskListTool(tabAgent.taskList) });
+			const tools = toolEntries.map((e) => e.tool);
+			const toolNames = toolEntries.map((e) => e.name);
 			tabAgent._lastPermKey = permKey;
 
 			const ruleset = configToRuleset(this.config);
@@ -309,11 +329,12 @@ export class AgentManager {
 				tabAgent.modelId = null;
 			}
 
+			const customSystemPrompt = getSetting("system_prompt") || undefined;
 			tabAgent.agent = new Agent({
 				model,
 				apiKey,
 				baseURL,
-				systemPrompt: SYSTEM_PROMPT,
+				systemPrompt: buildSystemPrompt(toolNames, customSystemPrompt),
 				tools,
 				workingDirectory,
 				permissionChecker: this.permissionManager ?? undefined,

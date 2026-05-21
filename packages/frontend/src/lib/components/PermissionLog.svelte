@@ -1,5 +1,7 @@
 <script lang="ts">
+import { onMount } from "svelte";
 import type { LogEntry } from "../types.js";
+import { appSettings } from "../settings.svelte.js";
 
 const { entries, apiBase = "" }: { entries: LogEntry[]; apiBase?: string } = $props();
 
@@ -16,46 +18,41 @@ const toolPermissions: ToolPermission[] = [
 	{ id: "external_directory", label: "External directories", description: "Allow access to files outside the workspace" },
 ];
 
-let permStates = $state<Record<string, boolean>>({
-	read: true,
-	edit: false,
-	bash: false,
-	external_directory: false,
-});
-
 async function loadPermissions(): Promise<void> {
+	const loaded: Record<string, boolean> = { ...appSettings.toolPerms };
 	for (const perm of toolPermissions) {
 		try {
 			const res = await fetch(`${apiBase}/tabs/settings/perm_${perm.id}`);
 			if (res.ok) {
 				const data = await res.json() as { value: string | null };
 				if (data.value !== null) {
-					permStates[perm.id] = data.value === "allow";
+					loaded[perm.id] = data.value === "allow";
 				}
 			}
 		} catch {
 			// ignore
 		}
 	}
+	appSettings.toolPerms = { ...loaded };
+	appSettings.savedToolPerms = { ...loaded };
 }
 
-async function togglePermission(id: string): Promise<void> {
-	permStates[id] = !permStates[id];
-	const value = permStates[id] ? "allow" : "ask";
-	fetch(`${apiBase}/tabs/settings/perm_${id}`, {
-		method: "PUT",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ value }),
-	}).catch(() => {});
+function togglePermission(id: string): void {
+	appSettings.toolPerms = { ...appSettings.toolPerms, [id]: !appSettings.toolPerms[id] };
 }
 
-$effect(() => {
-	void loadPermissions();
+function resetPermissions(): void {
+	appSettings.toolPerms = { ...appSettings.savedToolPerms };
+}
+
+onMount(() => {
+	loadPermissions();
 });
 </script>
 
 <div class="flex flex-col gap-3">
 	<div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Tool Permissions</div>
+	<p class="text-xs text-base-content/40">Changes are applied when you send your next message.</p>
 
 	<div class="flex flex-col gap-1.5">
 		{#each toolPermissions as perm (perm.id)}
@@ -63,7 +60,7 @@ $effect(() => {
 				<input
 					type="checkbox"
 					class="checkbox checkbox-sm rounded-sm mt-0.5"
-					checked={permStates[perm.id]}
+					checked={appSettings.toolPerms[perm.id]}
 					onchange={() => togglePermission(perm.id)}
 				/>
 				<div class="flex flex-col">
@@ -73,6 +70,14 @@ $effect(() => {
 			</label>
 		{/each}
 	</div>
+
+	<button
+		class="btn btn-sm btn-ghost w-full"
+		disabled={!appSettings.toolPermsDirty}
+		onclick={resetPermissions}
+	>
+		Reset
+	</button>
 
 	<p class="text-xs text-base-content/40">Warning: changing tool access will reset the AI's prompt cache for active conversations, which may increase usage costs.</p>
 
