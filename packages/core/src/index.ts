@@ -29,3 +29,6 @@ export { ModelRegistry, ModelResolver } from "./models/index.js";
 
 // Credentials
 export * from "./credentials/index.js";
+
+// Database
+export { getDatabase, closeDatabase, getDatabasePath } from "./db/index.js";
