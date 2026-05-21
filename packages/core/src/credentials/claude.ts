@@ -462,8 +462,15 @@ async function fetchClaudeUsage(accessToken: string): Promise<ClaudeUsageReport 
 	}
 }
 
+const usageCacheMap = new Map<string, ClaudeUsageReport>();
+
 export async function getAccountUsage(account: ClaudeAccount): Promise<ClaudeUsageReport | null> {
 	const creds = await refreshAccountCredentialsAsync(account);
-	if (!creds) return null;
-	return fetchClaudeUsage(creds.accessToken);
+	if (!creds) return usageCacheMap.get(account.id) ?? null;
+	const report = await fetchClaudeUsage(creds.accessToken);
+	if (report) {
+		usageCacheMap.set(account.id, report);
+		return report;
+	}
+	return usageCacheMap.get(account.id) ?? null;
 }
