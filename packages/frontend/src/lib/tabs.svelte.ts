@@ -1,6 +1,14 @@
 import { config } from "./config.js";
 import { appSettings } from "./settings.svelte.js";
-import type { AgentEvent, ChatMessage, ContentSegment, DebugInfo, LogEntry, PermissionPrompt, TaskItem } from "./types.js";
+import type {
+	AgentEvent,
+	ChatMessage,
+	ContentSegment,
+	DebugInfo,
+	LogEntry,
+	PermissionPrompt,
+	TaskItem,
+} from "./types.js";
 import { wsClient } from "./ws.svelte.js";
 
 function generateId() {
@@ -25,6 +33,7 @@ export interface Tab {
 	reasoningEffort: string;
 	currentAssistantId: string | null;
 	tasks: TaskItem[];
+	injectedSkills: string[];
 }
 
 function createTabStore() {
@@ -80,9 +89,14 @@ function createTabStore() {
 			reasoningEffort: "max",
 			currentAssistantId: null,
 			tasks: [],
+			injectedSkills: [],
 		};
 		tabs = [...tabs, tab];
 		activeTabId = id;
+
+		// Auto-check default skills for injection with the first message
+		autoCheckDefaultSkills();
+
 		return tab;
 	}
 
@@ -108,7 +122,7 @@ function createTabStore() {
 		// If we closed the active tab, switch to the last remaining or create a new one
 		if (activeTabId === id) {
 			if (tabs.length > 0) {
-				activeTabId = tabs[tabs.length - 1]!.id;
+				activeTabId = tabs[tabs.length - 1]?.id;
 			} else {
 				await createNewTab();
 			}
@@ -229,7 +243,11 @@ function createTabStore() {
 							...m,
 							content: m.content.map((seg) => {
 								if (seg.type === "tool-call" && seg.id === event.toolResult.toolCallId) {
-									return { ...seg, result: event.toolResult.result, isError: event.toolResult.isError };
+									return {
+										...seg,
+										result: event.toolResult.result,
+										isError: event.toolResult.isError,
+									};
 								}
 								return seg;
 							}),
@@ -243,9 +261,7 @@ function createTabStore() {
 				const tab5 = getTabById(tabId);
 				if (!tab5) break;
 				updateMessages(tabId, (msgs) =>
-					msgs.map((m) =>
-						m.id === tab5.currentAssistantId ? { ...m, isStreaming: false } : m,
-					),
+					msgs.map((m) => (m.id === tab5.currentAssistantId ? { ...m, isStreaming: false } : m)),
 				);
 				updateTab(tabId, { currentAssistantId: null });
 				break;
@@ -282,7 +298,9 @@ function createTabStore() {
 			}
 			case "config-reload": {
 				configReloaded = true;
-				setTimeout(() => { configReloaded = false; }, 2500);
+				setTimeout(() => {
+					configReloaded = false;
+				}, 2500);
 				break;
 			}
 			case "shell-output": {
@@ -299,8 +317,12 @@ function createTabStore() {
 								segments[i] = {
 									...seg,
 									shellOutput: {
-										stdout: (seg.shellOutput?.stdout ?? "") + (event.stream === "stdout" ? event.data : ""),
-										stderr: (seg.shellOutput?.stderr ?? "") + (event.stream === "stderr" ? event.data : ""),
+										stdout:
+											(seg.shellOutput?.stdout ?? "") +
+											(event.stream === "stdout" ? event.data : ""),
+										stderr:
+											(seg.shellOutput?.stderr ?? "") +
+											(event.stream === "stderr" ? event.data : ""),
 									},
 								};
 								break;
@@ -314,9 +336,74 @@ function createTabStore() {
 		}
 	}
 
+	async function autoCheckDefaultSkills(): Promise<void> {
+		try {
+			const res = await fetch(`${config.apiBase}/skills`);
+			if (!res.ok) return;
+			const data = (await res.json()) as {
+				skills?: Array<{
+					name: string;
+					scope: string;
+					directory: string;
+				}>;
+			};
+			const defaultSkills = (data.skills ?? []).filter((s) => s.directory === "default");
+			if (defaultSkills.length === 0) return;
+			const checks: Record<string, boolean> = { ...appSettings.skillChecks };
+			for (const skill of defaultSkills) {
+				checks[`${skill.scope}:${skill.name}`] = true;
+			}
+			appSettings.skillChecks = checks;
+		} catch {
+			// Silently ignore — skills will still be available for manual checking
+		}
+	}
+
+	async function fetchSkillContent(scope: string, name: string): Promise<string | null> {
+		try {
+			const res = await fetch(
+				`${config.apiBase}/skills/${encodeURIComponent(name)}?scope=${scope}`,
+			);
+			if (!res.ok) return null;
+			const data = (await res.json()) as { content?: string };
+			return data.content ?? null;
+		} catch {
+			return null;
+		}
+	}
+
 	async function sendMessage(text: string): Promise<void> {
 		const tab = getActiveTab();
 		if (!tab) return;
+
+		// Fetch content for checked skills and build the message to send
+		let messageToSend = text;
+		const checkedKeys = Object.entries(appSettings.skillChecks)
+			.filter(([, v]) => v)
+			.map(([k]) => k);
+
+		if (checkedKeys.length > 0) {
+			const skillSections: string[] = [];
+			for (const key of checkedKeys) {
+				const [scope, ...nameParts] = key.split(":");
+				const name = nameParts.join(":");
+				if (!scope || !name) continue;
+				const content = await fetchSkillContent(scope, name);
+				if (content) {
+					skillSections.push(`<skill name="${name}">\n${content}\n</skill>`);
+				}
+			}
+			if (skillSections.length > 0) {
+				messageToSend = `[The following skills have been activated for this message]\n\n${skillSections.join("\n\n")}\n\n---\n\n${text}`;
+			}
+
+			// Track injected skills on the tab
+			const newInjected = [...new Set([...tab.injectedSkills, ...checkedKeys])];
+			updateTab(tab.id, { injectedSkills: newInjected });
+
+			// Clear all checks
+			appSettings.skillChecks = {};
+		}
 
 		const userMsg: ChatMessage = {
 			id: generateId(),
@@ -327,7 +414,7 @@ function createTabStore() {
 
 		// Generate title from first user message
 		if (tab.messages.length === 0 || (tab.messages.length === 1 && tab.title === "New Tab")) {
-			const titleText = text.length > 50 ? text.slice(0, 47) + "..." : text;
+			const titleText = text.length > 50 ? `${text.slice(0, 47)}...` : text;
 			updateTab(tab.id, { title: titleText });
 			fetch(`${config.apiBase}/tabs/${tab.id}`, {
 				method: "PATCH",
@@ -374,7 +461,7 @@ function createTabStore() {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					tabId: tab.id,
-					message: text,
+					message: messageToSend,
 					...(tab.keyId ? { keyId: tab.keyId } : {}),
 					...(tab.modelId ? { modelId: tab.modelId } : {}),
 					reasoningEffort: tab.reasoningEffort,
@@ -387,7 +474,11 @@ function createTabStore() {
 					role: "assistant",
 					content: [{ type: "text", text: `Error: Failed to send message (HTTP ${res.status})` }],
 					isStreaming: false,
-					debugInfo: makeDebugInfo({ error: `HTTP ${res.status}`, httpStatus: res.status, httpBody: body }),
+					debugInfo: makeDebugInfo({
+						error: `HTTP ${res.status}`,
+						httpStatus: res.status,
+						httpBody: body,
+					}),
 				};
 				updateTab(tab.id, { messages: [...(getTabById(tab.id)?.messages ?? []), errMsg] });
 			}
@@ -435,21 +526,29 @@ function createTabStore() {
 		wsClient.send({ type: "permission-reply", id, reply });
 		pendingPermissions = pendingPermissions.filter((p) => p.id !== id);
 		if (prompt) {
-			permissionLog = [...permissionLog, {
-				id: generateId(),
-				permission: prompt.permission,
-				patterns: prompt.patterns,
-				action: reply,
-				timestamp: new Date().toISOString(),
-				description: prompt.description,
-			}];
+			permissionLog = [
+				...permissionLog,
+				{
+					id: generateId(),
+					permission: prompt.permission,
+					patterns: prompt.patterns,
+					action: reply,
+					timestamp: new Date().toISOString(),
+					description: prompt.description,
+				},
+			];
 		}
 	}
 
 	function copyConversation(): string {
 		const tab = getActiveTab();
 		if (!tab) return "";
-		const lines: string[] = ["=== Dispatch Conversation ===", `Tab: ${tab.title}`, `Model: ${tab.modelId ?? "default"}`, ""];
+		const lines: string[] = [
+			"=== Dispatch Conversation ===",
+			`Tab: ${tab.title}`,
+			`Model: ${tab.modelId ?? "default"}`,
+			"",
+		];
 		for (const msg of tab.messages) {
 			const role = msg.role === "user" ? "User" : msg.role === "system" ? "System" : "Assistant";
 			lines.push(`--- ${role} ---`);
@@ -467,13 +566,27 @@ function createTabStore() {
 	}
 
 	return {
-		get tabs() { return tabs; },
-		get activeTabId() { return activeTabId; },
-		get activeTab() { return getActiveTab(); },
-		get isConnected() { return isConnected; },
-		get pendingPermissions() { return pendingPermissions; },
-		get permissionLog() { return permissionLog; },
-		get configReloaded() { return configReloaded; },
+		get tabs() {
+			return tabs;
+		},
+		get activeTabId() {
+			return activeTabId;
+		},
+		get activeTab() {
+			return getActiveTab();
+		},
+		get isConnected() {
+			return isConnected;
+		},
+		get pendingPermissions() {
+			return pendingPermissions;
+		},
+		get permissionLog() {
+			return permissionLog;
+		},
+		get configReloaded() {
+			return configReloaded;
+		},
 		createNewTab,
 		switchTab,
 		closeTab,

@@ -40,7 +40,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	task_list: "Manage a task list for tracking work items.",
 };
 
-const DEFAULT_SYSTEM_PROMPT = "You are Dispatch, a helpful AI coding assistant. Be concise and helpful.";
+const DEFAULT_SYSTEM_PROMPT = "You are Dispatch, an agent designed to help with any task that the user asks for. Be helpful and concise.";
 
 function buildSystemPrompt(toolNames: string[], basePrompt?: string): string {
 	const base = basePrompt || DEFAULT_SYSTEM_PROMPT;

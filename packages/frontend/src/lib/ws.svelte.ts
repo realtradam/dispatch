@@ -9,7 +9,7 @@ function createWebSocketClient(url: string) {
 	let reconnectDelay = 1000;
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let manualDisconnect = false;
-	const callbacks: EventCallback[] = [];
+	const callbacks = new Set<EventCallback>();
 
 	function connect() {
 		if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -69,16 +69,15 @@ function createWebSocketClient(url: string) {
 	}
 
 	function onEvent(callback: EventCallback) {
-		callbacks.push(callback);
+		callbacks.add(callback);
 		return () => {
-			const idx = callbacks.indexOf(callback);
-			if (idx !== -1) callbacks.splice(idx, 1);
+			callbacks.delete(callback);
 		};
 	}
 
 	/** Remove all registered event callbacks (used for HMR safety). */
 	function clearCallbacks() {
-		callbacks.length = 0;
+		callbacks.clear();
 	}
 
 	function send(data: unknown): void {
