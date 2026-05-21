@@ -24,6 +24,7 @@ import {
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
 	resolveApiKey,
+	getSetting,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
 import { setConfigGetter } from "./routes/config.js";
@@ -47,6 +48,7 @@ interface TabAgent {
 	keyId: string | null;
 	modelId: string | null;
 	taskList: TaskList;
+	_lastPermKey?: string;
 }
 
 export class AgentManager {
@@ -193,10 +195,16 @@ export class AgentManager {
 		const effectiveKeyId = keyId ?? tabAgent.keyId;
 		const effectiveModelId = modelId ?? tabAgent.modelId;
 
-		// If the override differs from what the current agent was built with, invalidate the cache
+		// Read tool permission settings from DB (default: read=allow, edit=ask, bash=ask)
+		const permRead = getSetting("perm_read") !== "ask";
+		const permEdit = getSetting("perm_edit") === "allow";
+		const permBash = getSetting("perm_bash") === "allow";
+		const permKey = `${permRead}:${permEdit}:${permBash}`;
+
+		// If the override differs or permissions changed, invalidate the cached agent
 		if (
 			tabAgent.agent &&
-			(effectiveKeyId !== tabAgent.keyId || effectiveModelId !== tabAgent.modelId)
+			(effectiveKeyId !== tabAgent.keyId || effectiveModelId !== tabAgent.modelId || permKey !== tabAgent._lastPermKey)
 		) {
 			tabAgent.agent = null;
 		}
@@ -204,13 +212,14 @@ export class AgentManager {
 		if (!tabAgent.agent) {
 			const workingDirectory = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
 
+			// Build tools list based on permission settings
 			const tools = [
-				createReadFileTool(workingDirectory),
-				createWriteFileTool(workingDirectory),
-				createListFilesTool(workingDirectory),
-				createRunShellTool(workingDirectory),
+				...(permRead ? [createReadFileTool(workingDirectory), createListFilesTool(workingDirectory)] : []),
+				...(permEdit ? [createWriteFileTool(workingDirectory)] : []),
+				...(permBash ? [createRunShellTool(workingDirectory)] : []),
 				createTaskListTool(tabAgent.taskList),
 			];
+			tabAgent._lastPermKey = permKey;
 
 			const ruleset = configToRuleset(this.config);
 

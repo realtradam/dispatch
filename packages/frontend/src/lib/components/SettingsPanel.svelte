@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { KeyInfo } from "../types.js";
+	import { appSettings } from "../settings.svelte.js";
 
 	const {
 		keys = [],
@@ -13,23 +14,42 @@
 	let titleModelId = $state<string | null>(null);
 	let availableModels = $state<string[]>([]);
 	let loadingModels = $state(false);
-	let saving = $state(false);
-	let saved = $state(false);
+	let autoExpandThinking = $state(appSettings.autoExpandThinking);
 
 	async function loadSettings(): Promise<void> {
 		try {
 			const res = await fetch(`${apiBase}/tabs/settings/title-model`);
-			if (!res.ok) return;
-			const data = await res.json() as { keyId: string | null; modelId: string | null };
-			titleKeyId = data.keyId;
-			if (titleKeyId) {
-				await loadModelsForKey(titleKeyId);
+			if (res.ok) {
+				const data = await res.json() as { keyId: string | null; modelId: string | null };
+				titleKeyId = data.keyId;
+				if (titleKeyId) {
+					await loadModelsForKey(titleKeyId);
+				}
+				titleModelId = data.modelId;
 			}
-			// Set model AFTER options are loaded so the select can match the value
-			titleModelId = data.modelId;
 		} catch {
 			// ignore
 		}
+		try {
+			const res = await fetch(`${apiBase}/tabs/settings/auto-expand-thinking`);
+			if (res.ok) {
+				const data = await res.json() as { value: string | null };
+				autoExpandThinking = data.value === "true";
+				appSettings.autoExpandThinking = autoExpandThinking;
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	async function toggleAutoExpand(): Promise<void> {
+		autoExpandThinking = !autoExpandThinking;
+		appSettings.autoExpandThinking = autoExpandThinking;
+		fetch(`${apiBase}/tabs/settings/auto-expand-thinking`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ value: String(autoExpandThinking) }),
+		}).catch(() => {});
 	}
 
 	async function loadModelsForKey(keyId: string): Promise<void> {
@@ -46,6 +66,14 @@
 		}
 	}
 
+	function saveTitleModel(): void {
+		fetch(`${apiBase}/tabs/settings/title-model`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ keyId: titleKeyId, modelId: titleModelId }),
+		}).catch(() => {});
+	}
+
 	async function onKeyChange(e: Event): Promise<void> {
 		const select = e.target as HTMLSelectElement;
 		titleKeyId = select.value || null;
@@ -54,28 +82,13 @@
 		if (titleKeyId) {
 			await loadModelsForKey(titleKeyId);
 		}
+		saveTitleModel();
 	}
 
 	async function onModelChange(e: Event): Promise<void> {
 		const select = e.target as HTMLSelectElement;
 		titleModelId = select.value || null;
-	}
-
-	async function saveSettings(): Promise<void> {
-		saving = true;
-		try {
-			await fetch(`${apiBase}/tabs/settings/title-model`, {
-				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ keyId: titleKeyId, modelId: titleModelId }),
-			});
-			saved = true;
-			setTimeout(() => { saved = false; }, 2000);
-		} catch {
-			// ignore
-		} finally {
-			saving = false;
-		}
+		saveTitleModel();
 	}
 
 	$effect(() => {
@@ -111,18 +124,17 @@
 			{/each}
 		</select>
 
-		<button
-			class="btn btn-sm btn-primary w-full mt-1"
-			disabled={saving || !titleKeyId || !titleModelId}
-			onclick={saveSettings}
-		>
-			{#if saving}
-				<span class="loading loading-spinner loading-xs"></span>
-			{:else if saved}
-				Saved
-			{:else}
-				Save
-			{/if}
-		</button>
+		<div class="divider my-0"></div>
+
+		<p class="text-xs text-base-content/70">Chat</p>
+		<label class="flex items-center gap-2 cursor-pointer">
+			<input
+				type="checkbox"
+				class="checkbox checkbox-sm rounded-sm"
+				checked={autoExpandThinking}
+				onchange={toggleAutoExpand}
+			/>
+			<span class="text-xs text-base-content/70">Auto-expand thinking</span>
+		</label>
 	</div>
 </div>

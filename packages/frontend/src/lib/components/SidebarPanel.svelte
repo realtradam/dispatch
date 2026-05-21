@@ -40,9 +40,9 @@
 	}
 
 	let nextId = 0;
-	let panels = $state<Panel[]>([{ id: nextId++, selected: "Current Model" }]);
+	let panels = $state<Panel[]>([{ id: nextId++, selected: "Model Choice" }]);
 
-	const viewOptions = ["Select a view", "Current Model", "Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Permission Log", "Settings"];
+	const viewOptions = ["Select a view", "Model Choice", "Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Permissions", "Settings"];
 
 	function addPanel() {
 		panels = [...panels, { id: nextId++, selected: "Select a view" }];
@@ -91,7 +91,7 @@
 			</div>
 
 			<div class={contentClass(panel.selected)}>
-				{#if panel.selected === "Current Model"}
+				{#if panel.selected === "Model Choice"}
 					<ModelSelector
 						{keys}
 						{activeKeyId}
@@ -113,8 +113,8 @@
 					<ConfigPanel {apiBase} />
 				{:else if panel.selected === "Skills"}
 					<SkillsBrowser {apiBase} />
-				{:else if panel.selected === "Permission Log"}
-					<PermissionLog entries={permissionLog} />
+				{:else if panel.selected === "Permissions"}
+					<PermissionLog entries={permissionLog} {apiBase} />
 				{:else if panel.selected === "Settings"}
 					<SettingsPanel {keys} {apiBase} />
 				{/if}

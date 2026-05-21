@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { ChatMessage } from "../types.js";
+import { appSettings } from "../settings.svelte.js";
 import MarkdownRenderer from "./MarkdownRenderer.svelte";
 import ToolCallDisplay from "./ToolCallDisplay.svelte";
 
@@ -24,7 +25,7 @@ const isSystem = $derived(message.role === "system");
 	<div class="chat-bubble max-w-[80%] break-words {isUser ? 'chat-bubble-primary' : 'bg-transparent'}">
 		{#if message.thinking}
 			<div class="collapse collapse-arrow mb-2 p-1">
-				<input type="checkbox" />
+				<input type="checkbox" checked={appSettings.autoExpandThinking} />
 				<div class="collapse-title text-sm opacity-60 italic py-0 pl-0 pr-8 min-h-0">Thinking...</div>
 				<div class="collapse-content text-sm opacity-60 italic p-0">
 					<p class="whitespace-pre-wrap mt-1">{message.thinking}</p>
@@ -39,7 +40,7 @@ const isSystem = $derived(message.role === "system");
 			{/if}
 		{/each}
 		{#if message.isStreaming}
-			<span class="inline-block w-2 h-4 bg-current animate-pulse ml-0.5 align-middle">▌</span>
+			<span class="inline-block w-1.5 h-4 bg-current animate-pulse ml-0.5 align-middle rounded-sm"></span>
 		{/if}
 	</div>
 </div>

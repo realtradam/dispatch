@@ -29,9 +29,8 @@ function submit() {
 		bind:this={inputEl}
 		bind:value={inputValue}
 		type="text"
-		placeholder={isDisabled ? "Agent is running..." : "Type a message..."}
+		placeholder="Type a message..."
 		class="input flex-1"
-		disabled={isDisabled}
 		onkeydown={handleKeydown}
 	/>
 	<button
