@@ -37,46 +37,69 @@
 		onReasoningChange: (effort: string) => void;
 	} = $props();
 
-	let selected = $state("Current Model");
+	interface Panel {
+		id: number;
+		selected: string;
+	}
 
-	const options = ["Current Model", "Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Permission Log"];
+	let nextId = 0;
+	let panels = $state<Panel[]>([{ id: nextId++, selected: "Current Model" }]);
+
+	const viewOptions = ["Select a view", "Current Model", "Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Permission Log"];
+
+	function addPanel() {
+		panels = [...panels, { id: nextId++, selected: "Select a view" }];
+	}
 </script>
 
-<div class="bg-base-200 rounded-lg p-3 flex flex-col min-h-0">
-	<select
-		class="select select-bordered select-sm w-full"
-		bind:value={selected}
-	>
-		{#each options as option}
-			<option value={option}>{option}</option>
-		{/each}
-	</select>
+<div class="flex flex-col gap-2 flex-1 min-h-0">
+	{#each panels as panel, idx (panel.id)}
+		<div class="bg-base-200 rounded-lg p-3 flex flex-col min-h-0 {idx > 0 ? 'flex-1' : 'flex-1'}">
+			<select
+				class="select select-bordered select-sm w-full"
+				value={panel.selected}
+				onchange={(e) => {
+					panels = panels.map((p) =>
+						p.id === panel.id ? { ...p, selected: e.currentTarget.value } : p,
+					);
+				}}
+			>
+				{#each viewOptions as option}
+					<option value={option} disabled={option === "Select a view"}>{option}</option>
+				{/each}
+			</select>
 
-	<div class="mt-2 flex-1 min-h-0">
-		{#if selected === "Current Model"}
-			<ModelSelector
-				{keys}
-				{activeKeyId}
-				{activeModelId}
-				{reasoningEffort}
-				{onKeyChange}
-				{onModelChange}
-				{onReasoningChange}
-			/>
-		{:else if selected === "Key Usage"}
-			<KeyUsage {keys} {apiBase} />
-		{:else if selected === "Claude Reset"}
-			<ClaudeReset {apiBase} />
-		{:else if selected === "Model Status"}
-			<ModelStatus {models} {keys} {tags} />
-		{:else if selected === "Tasks"}
-			<TaskListPanel {tasks} />
-		{:else if selected === "Config"}
-			<ConfigPanel {apiBase} />
-		{:else if selected === "Skills"}
-			<SkillsBrowser {apiBase} />
-		{:else if selected === "Permission Log"}
-			<PermissionLog entries={permissionLog} />
-		{/if}
-	</div>
+			<div class="mt-2 flex-1 min-h-0 overflow-y-auto">
+				{#if panel.selected === "Current Model"}
+					<ModelSelector
+						{keys}
+						{activeKeyId}
+						{activeModelId}
+						{reasoningEffort}
+						{onKeyChange}
+						{onModelChange}
+						{onReasoningChange}
+					/>
+				{:else if panel.selected === "Key Usage"}
+					<KeyUsage {keys} {apiBase} />
+				{:else if panel.selected === "Claude Reset"}
+					<ClaudeReset {apiBase} />
+				{:else if panel.selected === "Model Status"}
+					<ModelStatus {models} {keys} {tags} />
+				{:else if panel.selected === "Tasks"}
+					<TaskListPanel {tasks} />
+				{:else if panel.selected === "Config"}
+					<ConfigPanel {apiBase} />
+				{:else if panel.selected === "Skills"}
+					<SkillsBrowser {apiBase} />
+				{:else if panel.selected === "Permission Log"}
+					<PermissionLog entries={permissionLog} />
+				{/if}
+			</div>
+		</div>
+	{/each}
+
+	<button type="button" class="btn btn-sm btn-ghost w-full" onclick={addPanel}>
+		+
+	</button>
 </div>
