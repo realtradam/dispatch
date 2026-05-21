@@ -97,14 +97,7 @@ onMount(() => {
 				onModelChange={(keyId, modelId) => chatStore.changeModel(keyId, modelId)}
 				onReasoningChange={(effort) => { chatStore.reasoningEffort = effort; }}
 			/>
-					models={modelsData.models}
-					keys={modelsData.keys}
-					tags={modelsData.tags}
-					tasks={chatStore.tasks}
-					permissionLog={chatStore.permissionLog}
-					apiBase={config.apiBase}
-				/>
-			</div>
+		</div>
 		</div>
 	</div>
 </div>
