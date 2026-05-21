@@ -4,7 +4,6 @@ import ChatInput from "./lib/components/ChatInput.svelte";
 import ChatPanel from "./lib/components/ChatPanel.svelte";
 import Header from "./lib/components/Header.svelte";
 import PermissionPrompt from "./lib/components/PermissionPrompt.svelte";
-import ModelSelector from "./lib/components/ModelSelector.svelte";
 import SidebarPanel from "./lib/components/SidebarPanel.svelte";
 import HotReloadIndicator from "./lib/components/HotReloadIndicator.svelte";
 import { chatStore } from "./lib/chat.svelte.js";
@@ -80,21 +79,24 @@ onMount(() => {
 			class:w-80={sidebarOpen}
 			class:w-0={!sidebarOpen}
 		>
-			<div
-				class="w-80 flex-1 min-h-0 overflow-y-auto bg-base-100 border-l border-base-300 px-2 py-2 flex flex-col gap-2 [&>*]:shrink-0 transition-transform duration-300 ease-out"
-				style="transform: translateX({sidebarOpen ? '0' : '100%'})"
-			>
-				<ModelSelector
-					keys={modelsData.keys}
-					activeKeyId={chatStore.activeKeyId}
-					activeModelId={chatStore.activeModelId}
-					reasoningEffort={chatStore.reasoningEffort}
-					onKeyChange={(keyId) => chatStore.setKey(keyId)}
-					onModelChange={(keyId, modelId) => chatStore.changeModel(keyId, modelId)}
-					onReasoningChange={(effort) => { chatStore.reasoningEffort = effort; }}
-				/>
-
-				<SidebarPanel
+		<div
+			class="w-80 flex-1 min-h-0 overflow-y-auto bg-base-100 border-l border-base-300 px-2 py-2 flex flex-col gap-2 [&>*]:shrink-0 transition-transform duration-300 ease-out"
+			style="transform: translateX({sidebarOpen ? '0' : '100%'})"
+		>
+			<SidebarPanel
+				models={modelsData.models}
+				keys={modelsData.keys}
+				tags={modelsData.tags}
+				tasks={chatStore.tasks}
+				permissionLog={chatStore.permissionLog}
+				apiBase={config.apiBase}
+				activeKeyId={chatStore.activeKeyId}
+				activeModelId={chatStore.activeModelId}
+				reasoningEffort={chatStore.reasoningEffort}
+				onKeyChange={(keyId) => chatStore.setKey(keyId)}
+				onModelChange={(keyId, modelId) => chatStore.changeModel(keyId, modelId)}
+				onReasoningChange={(effort) => { chatStore.reasoningEffort = effort; }}
+			/>
 					models={modelsData.models}
 					keys={modelsData.keys}
 					tags={modelsData.tags}
