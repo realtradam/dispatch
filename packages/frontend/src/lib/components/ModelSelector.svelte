@@ -44,16 +44,19 @@
 	function selectKey(keyId: string) {
 		showKeyModal = false;
 		onKeyChange(keyId);
+		// Immediately open model selection for the new key
+		openModelModal(keyId);
 	}
 
-	async function openModelModal() {
-		if (!activeKeyId) return;
+	async function openModelModal(keyIdOverride?: string) {
+		const keyId = keyIdOverride ?? activeKeyId;
+		if (!keyId) return;
 		showModelModal = true;
 		modelError = null;
 
 		// Check session cache
-		if (modelCache.has(activeKeyId)) {
-			availableModels = modelCache.get(activeKeyId)!;
+		if (modelCache.has(keyId)) {
+			availableModels = modelCache.get(keyId)!;
 			loadingModels = false;
 			return;
 		}
@@ -63,7 +66,7 @@
 
 		try {
 			const res = await fetch(
-				`${config.apiBase}/models/available?keyId=${encodeURIComponent(activeKeyId)}`,
+				`${config.apiBase}/models/available?keyId=${encodeURIComponent(keyId)}`,
 			);
 			if (!res.ok) {
 				const data = await res.json().catch(() => ({}));
@@ -73,7 +76,7 @@
 			const data = await res.json();
 			availableModels = data.models ?? [];
 			// Cache for session
-			modelCache.set(activeKeyId, availableModels);
+			modelCache.set(keyId, availableModels);
 		} catch (err) {
 			modelError = err instanceof Error ? err.message : "Failed to fetch models";
 		} finally {
@@ -99,7 +102,7 @@
 
 	<div class="flex items-center justify-between mt-2">
 		<span class="text-sm font-medium">Model</span>
-		<button class="btn btn-sm btn-outline" onclick={openModelModal} disabled={!activeKeyId}>
+		<button class="btn btn-sm btn-outline" onclick={() => openModelModal()} disabled={!activeKeyId}>
 			{activeModelId ?? "Select Model"}
 		</button>
 	</div>

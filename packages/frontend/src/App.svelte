@@ -66,7 +66,7 @@ onMount(() => {
 <div class="flex flex-col h-screen overflow-hidden">
 	<Header onToggleSidebar={() => sidebarOpen = !sidebarOpen} />
 
-	<div class="flex flex-1 overflow-hidden">
+	<div class="flex flex-1 overflow-hidden relative">
 		<!-- Main chat area -->
 		<div class="flex flex-col flex-1 min-w-0 overflow-hidden">
 			<TabBar />
@@ -76,9 +76,11 @@ onMount(() => {
 			<ChatInput />
 		</div>
 
-		<!-- Right sidebar -->
+		<!-- Right sidebar: overlay on small screens, inline on large -->
 		<div
-			class="shrink-0 overflow-x-hidden flex flex-col transition-[width] duration-300 ease-out relative"
+			class="shrink-0 overflow-x-hidden flex flex-col transition-[width] duration-300 ease-out
+				sm:relative sm:z-auto
+				absolute right-0 top-0 bottom-0 z-30"
 			class:w-80={sidebarOpen}
 			class:w-0={!sidebarOpen}
 		>
@@ -108,6 +110,15 @@ onMount(() => {
 		</div>
 	</div>
 </div>
+
+<!-- Backdrop for sidebar on small screens -->
+{#if sidebarOpen}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="fixed inset-0 bg-black/30 z-20 sm:hidden"
+		onclick={() => sidebarOpen = false}
+	></div>
+{/if}
 
 <!-- Fixed overlay elements -->
 <PermissionPrompt

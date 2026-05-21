@@ -21,8 +21,8 @@ const isSystem = $derived(message.role === "system");
 		</div>
 	</div>
 {:else}
-<div class="chat chat-start mb-2">
-	<div class="chat-bubble max-w-[80%] break-words {isUser ? 'chat-bubble-primary' : 'bg-transparent'}">
+<div class="chat chat-start mb-2 [&>.chat-bubble]:max-w-full">
+	<div class="chat-bubble break-words {isUser ? 'chat-bubble-primary w-fit' : 'bg-transparent w-full'}">
 		{#if message.thinking}
 			<div class="collapse collapse-arrow mb-2 p-1">
 				<input type="checkbox" checked={appSettings.autoExpandThinking} />
