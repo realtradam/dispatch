@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ModelRegistry, ModelResolver } from "@dispatch/core";
 import {
 	ANTHROPIC_MODELS_FALLBACK,
@@ -259,11 +261,16 @@ modelsRoutes.get("/key-usage", async (c) => {
 
 	try {
 		if (provider === "anthropic") {
-			const accounts = discoverClaudeAccounts();
+			const allAccounts = discoverClaudeAccounts();
+			const credFile = key.definition.credentials_file;
+			// Only show the account matching this key's credentials_file
+			const accounts = credFile
+				? allAccounts.filter((a) => a.source === credFile)
+				: allAccounts.slice(0, 1); // no credentials_file → default account only
 			if (accounts.length === 0) {
 				return c.json({ error: "no Claude accounts available" }, 502);
 			}
-			// Fetch usage for all discovered accounts
+			// Fetch usage for matched accounts
 			const accountResults = await Promise.all(
 				accounts.map(async (acct) => {
 					const report = await getAccountUsage(acct);
@@ -341,7 +348,25 @@ modelsRoutes.get("/key-usage", async (c) => {
 async function wakeAllClaudeAccounts(): Promise<
 	Array<{ label: string; ok: boolean; error?: string }>
 > {
-	const accounts = discoverClaudeAccounts();
+	// Only wake accounts referenced by configured anthropic keys
+	const allAccounts = discoverClaudeAccounts();
+	const registry = getRegistry();
+	const configuredCredFiles = new Set<string>();
+	if (registry) {
+		for (const ks of registry.getKeys()) {
+			if (ks.definition.provider === "anthropic") {
+				if (ks.definition.credentials_file) {
+					configuredCredFiles.add(ks.definition.credentials_file);
+				} else if (allAccounts[0]) {
+					// Key without explicit credentials_file uses default account
+					configuredCredFiles.add(allAccounts[0].source);
+				}
+			}
+		}
+	}
+	const accounts = configuredCredFiles.size > 0
+		? allAccounts.filter((a) => configuredCredFiles.has(a.source))
+		: allAccounts;
 	if (accounts.length === 0) {
 		return [{ label: "(none)", ok: false, error: "no Claude accounts available" }];
 	}
@@ -389,37 +414,147 @@ modelsRoutes.post("/wake", async (c) => {
 
 // ─── Wake scheduler (runs on backend, survives frontend close) ─
 
-type WakeSchedule = Record<number, number>; // hour → target timestamp (ms)
+type WakeSchedule = Record<number, number>; // hour → next wake timestamp (ms)
 
-let wakeSchedule: WakeSchedule = {};
+interface PendingRetry {
+	retriesLeft: number; // starts at 6 (5 min × 6 = 30 min)
+	nextRetryAt: number; // timestamp for next retry attempt
+}
+
+const SCHEDULE_FILE = join(process.cwd(), ".wake-schedule.json");
+
+function nextOccurrenceAt15(hour: number): number {
+	const now = new Date();
+	const target = new Date(now);
+	target.setHours(hour, 15, 0, 0);
+	if (target.getTime() <= Date.now()) {
+		target.setDate(target.getDate() + 1);
+	}
+	return target.getTime();
+}
+
+function loadScheduleFromDisk(): WakeSchedule {
+	try {
+		if (existsSync(SCHEDULE_FILE)) {
+			const raw = readFileSync(SCHEDULE_FILE, "utf-8");
+			const parsed = JSON.parse(raw) as Record<string, number>;
+			const schedule: WakeSchedule = {};
+			let needsPersist = false;
+			for (const [key, value] of Object.entries(parsed)) {
+				const hour = Number(key);
+				if (value > Date.now()) {
+					schedule[hour] = value;
+				} else {
+					// Timestamp has passed — recompute for next occurrence
+					schedule[hour] = nextOccurrenceAt15(hour);
+					needsPersist = true;
+				}
+			}
+			if (needsPersist) {
+				try {
+					writeFileSync(SCHEDULE_FILE, JSON.stringify(schedule), "utf-8");
+				} catch {
+					// Ignore write errors
+				}
+			}
+			return schedule;
+		}
+	} catch {
+		// File doesn't exist or is corrupt — start fresh
+	}
+	return {};
+}
+
+function persistSchedule(): void {
+	try {
+		writeFileSync(SCHEDULE_FILE, JSON.stringify(wakeSchedule), "utf-8");
+	} catch {
+		// Ignore write errors
+	}
+}
+
+let wakeSchedule: WakeSchedule = loadScheduleFromDisk();
+let pendingRetries: PendingRetry[] = [];
 
 // HMR-safe: clear previous tick before starting a new one
 (globalThis as Record<string, unknown>)._dispatchWakeTimer ??= undefined;
 const timerKey = "_dispatchWakeTimer";
+let isTickRunning = false;
 
 async function schedulerTick(): Promise<void> {
-	const now = Date.now();
-	const hours = Object.keys(wakeSchedule).map(Number);
+	// Prevent concurrent tick execution (e.g. toggle called mid-tick)
+	if (isTickRunning) return;
+	isTickRunning = true;
 
-	for (const hour of hours) {
-		const ts = wakeSchedule[hour];
-		if (ts !== undefined && ts <= now) {
-			// Delete BEFORE wake to prevent duplicate triggers
-			delete wakeSchedule[hour];
-			wakeAllClaudeAccounts().catch(() => {});
+	try {
+		const now = Date.now();
+		const hours = Object.keys(wakeSchedule).map(Number);
+
+		for (const hour of hours) {
+			const ts = wakeSchedule[hour];
+			if (ts !== undefined && ts <= now) {
+				// Reschedule for next day (recurring daily)
+				wakeSchedule[hour] = nextOccurrenceAt15(hour);
+				persistSchedule();
+
+				// Wake accounts and track failures for retry
+				try {
+					const results = await wakeAllClaudeAccounts();
+					const anyFailed = results.some((r) => !r.ok);
+					if (anyFailed) {
+						pendingRetries.push({
+							retriesLeft: 6,
+							nextRetryAt: now + 5 * 60 * 1000,
+						});
+					}
+				} catch {
+					// Total failure — schedule retry
+					pendingRetries.push({
+						retriesLeft: 6,
+						nextRetryAt: now + 5 * 60 * 1000,
+					});
+				}
+			}
 		}
-	}
 
-	// Schedule next tick
-	if (Object.keys(wakeSchedule).length > 0) {
-		(globalThis as Record<string, unknown>)[timerKey] = setTimeout(schedulerTick, 30_000);
+		// Process pending retries (iterate backwards for safe splicing)
+		for (let i = pendingRetries.length - 1; i >= 0; i--) {
+			const retry = pendingRetries[i];
+			if (!retry || retry.nextRetryAt > now) continue;
+
+			try {
+				const results = await wakeAllClaudeAccounts();
+				const anyFailed = results.some((r) => !r.ok);
+				if (!anyFailed || retry.retriesLeft <= 1) {
+					// All succeeded or out of retries — remove
+					pendingRetries.splice(i, 1);
+				} else {
+					retry.retriesLeft--;
+					retry.nextRetryAt = now + 5 * 60 * 1000;
+				}
+			} catch {
+				if (retry.retriesLeft <= 1) {
+					pendingRetries.splice(i, 1);
+				} else {
+					retry.retriesLeft--;
+					retry.nextRetryAt = now + 5 * 60 * 1000;
+				}
+			}
+		}
+
+		// Schedule next tick while there's work to monitor
+		if (Object.keys(wakeSchedule).length > 0 || pendingRetries.length > 0) {
+			(globalThis as Record<string, unknown>)[timerKey] = setTimeout(schedulerTick, 30_000);
+		}
+	} finally {
+		isTickRunning = false;
 	}
 }
 
 export function startWakeScheduler(): void {
-	// Clear any previous interval (HMR-safe)
+	// Clear any previous timer (HMR-safe — works with Bun's Timer objects)
 	const prev = (globalThis as Record<string, unknown>)[timerKey];
-	if (typeof prev === "number") clearTimeout(prev);
+	if (prev != null) clearTimeout(prev as ReturnType<typeof setTimeout>);
 	schedulerTick();
 }
 
@@ -442,7 +577,8 @@ modelsRoutes.post("/wake-schedule/toggle", async (c) => {
 		wakeSchedule[hour] = ts;
 	}
 
-	// Restart the tick loop (handles empty → non-empty or vice versa)
+	// Persist and restart the tick loop
+	persistSchedule();
 	startWakeScheduler();
 
 	return c.json({ schedule: wakeSchedule });

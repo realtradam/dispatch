@@ -137,14 +137,10 @@ async function refreshViaOAuth(refreshToken: string): Promise<ClaudeCredentials 
 }
 
 function buildAccountLabels(accounts: ClaudeAccount[]): void {
-	const counts = new Map<string, number>();
 	for (const acct of accounts) {
-		const base = acct.credentials.subscriptionType
+		acct.label = acct.credentials.subscriptionType
 			? `Claude ${acct.credentials.subscriptionType.charAt(0).toUpperCase() + acct.credentials.subscriptionType.slice(1)}`
 			: "Claude";
-		const count = (counts.get(base) ?? 0) + 1;
-		counts.set(base, count);
-		acct.label = count > 1 ? `${base} ${count}` : base;
 	}
 }
 

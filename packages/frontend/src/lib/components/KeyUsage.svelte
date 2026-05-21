@@ -17,8 +17,45 @@
 		loading: boolean;
 	}
 
-	// Module-level cache survives remounts during the same page session
-	const usageCache = new Map<string, KeyUsageData>();
+	// localStorage-backed cache: survives page refreshes
+	const CACHE_STORAGE_KEY = "dispatch-key-usage-cache";
+
+	function loadPersistedCache(): Map<string, KeyUsageData> {
+		try {
+			const raw = localStorage.getItem(CACHE_STORAGE_KEY);
+			if (raw) {
+				const parsed = JSON.parse(raw) as Record<string, KeyUsageData>;
+				return new Map(Object.entries(parsed));
+			}
+		} catch {
+			// Ignore parse errors
+		}
+		return new Map();
+	}
+
+	function persistCache(cache: Map<string, KeyUsageData>): void {
+		try {
+			const obj = Object.fromEntries(cache.entries());
+			localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(obj));
+		} catch {
+			// Ignore storage errors (e.g. quota exceeded)
+		}
+	}
+
+	const usageCache = loadPersistedCache();
+
+	function buildEntries(keyList: KeyInfo[]): KeyUsageEntry[] {
+		return keyList.map((k) => {
+			const cached = usageCache.get(k.id);
+			return {
+				keyId: k.id,
+				provider: k.provider,
+				data: cached ?? null,
+				error: null,
+				loading: true, // always show spinner during refresh
+			};
+		});
+	}
 
 	let entries = $state<KeyUsageEntry[]>([]);
 
@@ -36,6 +73,7 @@
 			} else {
 				const fresh = await res.json() as KeyUsageData;
 				usageCache.set(key.id, fresh);
+				persistCache(usageCache);
 				updateEntry(key.id, {
 					data: fresh,
 					error: null,
@@ -59,26 +97,23 @@
 		);
 	}
 
+	// Sync entries with keys reactively — runs before DOM update so
+	// cached data renders on first paint without a flash of empty state.
+	$effect.pre(() => {
+		entries = buildEntries(keys);
+	});
+
+	// Fetch data and set up 90s auto-refresh
 	$effect(() => {
-		// Show cached data immediately if available, then refresh in background
-		entries = keys.map((k) => {
-			const cached = usageCache.get(k.id);
-			return {
-				keyId: k.id,
-				provider: k.provider,
-				data: cached ?? null,
-				error: null,
-				loading: true,
-			};
-		});
+		const currentKeys = keys;
 		// Fire all fetches in parallel
-		for (const key of keys) {
+		for (const key of currentKeys) {
 			fetchOne(key);
 		}
 
 		// Refresh every 90s
 		const interval = setInterval(() => {
-			for (const key of keys) {
+			for (const key of currentKeys) {
 				updateEntry(key.id, { loading: true });
 				fetchOne(key);
 			}
@@ -114,6 +149,9 @@
 
 	const claudeLoading = $derived(
 		entries.some((e) => e.provider === "anthropic" && e.loading),
+	);
+	const claudeError = $derived(
+		entries.find((e) => e.provider === "anthropic" && e.error)?.error ?? null,
 	);
 
 	const nonClaudeEntries = $derived(
@@ -160,6 +198,14 @@
 		});
 	}
 
+	function formatKeyId(id: string): string {
+		if (/^github-copilot/i.test(id)) return "Copilot";
+		return id.split("-").map((part) => {
+			if (part.toLowerCase() === "opencode") return "OpenCode";
+			return part.charAt(0).toUpperCase() + part.slice(1);
+		}).join(" ");
+	}
+
 	function hasBucketData(bucket: UsageBucket | undefined): boolean {
 		return bucket !== undefined && bucket.utilization !== undefined;
 	}
@@ -171,7 +217,7 @@
 	{:else}
 		<div class="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto">
 			<!-- Claude (all accounts merged under one card) -->
-			{#if claudeAccounts.length > 0 || claudeLoading}
+			{#if claudeAccounts.length > 0 || claudeLoading || claudeError}
 				<div class="bg-base-200 rounded-lg p-2">
 					<div class="flex items-center gap-1.5 mb-1.5">
 						<span class="text-xs font-semibold">Claude</span>
@@ -181,12 +227,17 @@
 						{/if}
 					</div>
 
-					{#if claudeAccounts.length === 0 && claudeLoading}
-						<div class="flex items-center gap-1.5 py-1">
-							<span class="text-xs text-base-content/50">Loading...</span>
-						</div>
-					{:else}
-					{#each claudeAccounts as acct, idx (acct.source)}
+				{#if claudeAccounts.length === 0 && claudeLoading}
+					<div class="flex items-center gap-1.5 py-1">
+						<span class="text-xs text-base-content/50">Loading...</span>
+					</div>
+				{:else if claudeAccounts.length === 0 && claudeError}
+					<div role="alert" class="text-xs text-error/80">{claudeError}</div>
+				{:else}
+				{#if claudeError}
+					<div role="alert" class="text-xs text-error/80 mb-1">{claudeError}</div>
+				{/if}
+				{#each claudeAccounts as acct, idx (acct.source)}
 						{#if idx > 0}
 							<div class="border-t border-base-300 my-1.5"></div>
 						{/if}
@@ -240,26 +291,26 @@
 			{#each nonClaudeEntries as entry (entry.keyId)}
 				<div class="bg-base-200 rounded-lg p-2">
 					<div class="flex items-center gap-1.5 mb-1.5">
-						<span class="text-xs font-semibold">{entry.keyId}</span>
+						<span class="text-xs font-semibold">{formatKeyId(entry.keyId)}</span>
 						<span class="badge badge-xs badge-ghost">{entry.provider}</span>
 						{#if entry.loading}
 							<span class="loading loading-spinner loading-xs"></span>
 						{/if}
 					</div>
 
-					{#if entry.loading}
+					{#if entry.loading && !entry.data}
 						<div class="flex items-center gap-1.5 py-1">
 							<span class="loading loading-spinner loading-xs"></span>
 							<span class="text-xs text-base-content/50">Loading...</span>
 						</div>
+					{:else}
+						{#if entry.error}
+							<div role="alert" class="text-xs text-error/80 mb-1">{entry.error}</div>
+						{/if}
+						{#if !entry.data}
+							<p class="text-xs text-base-content/50">No data.</p>
 
-					{:else if entry.error}
-						<div role="alert" class="text-xs text-error/80">{entry.error}</div>
-
-					{:else if !entry.data}
-						<p class="text-xs text-base-content/50">No data.</p>
-
-					{:else if entry.data.provider === "opencode-go"}
+						{:else if entry.data.provider === "opencode-go"}
 						{#if entry.data.unavailable}
 							<p class="text-xs text-base-content/70">Check console for usage.</p>
 							{#if entry.data.consoleUrl}
@@ -335,7 +386,8 @@
 								<span class="text-xs text-base-content/40">Resets: {formatDate(entry.data.resetAt)}</span>
 							{/if}
 						</div>
-					{/if}
+				{/if}
+				{/if}
 				</div>
 			{/each}
 		</div>
