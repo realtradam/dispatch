@@ -10,6 +10,7 @@ import {
 	getMessagesForTab,
 	getSetting,
 	setSetting,
+	deleteSetting,
 } from "@dispatch/core";
 
 export const tabsRoutes = new Hono();
@@ -41,9 +42,15 @@ tabsRoutes.get("/settings/title-model", (c) => {
 });
 
 tabsRoutes.put("/settings/title-model", async (c) => {
-	const body = await c.req.json<{ keyId?: string; modelId?: string }>();
-	if (body.keyId) setSetting("title_model_key_id", body.keyId);
-	if (body.modelId) setSetting("title_model_id", body.modelId);
+	const body = await c.req.json<{ keyId?: string | null; modelId?: string | null }>();
+	if (body.keyId !== undefined) {
+		if (body.keyId) setSetting("title_model_key_id", body.keyId);
+		else deleteSetting("title_model_key_id");
+	}
+	if (body.modelId !== undefined) {
+		if (body.modelId) setSetting("title_model_id", body.modelId);
+		else deleteSetting("title_model_id");
+	}
 	return c.json({ success: true });
 });
 
@@ -70,6 +77,24 @@ tabsRoutes.patch("/:id", async (c) => {
 	if (body.status !== undefined) updateTabStatus(id, body.status);
 	const tab = getTab(id);
 	return c.json(tab);
+});
+
+// ─── Settings ─────────────────────────────────────────────────
+
+tabsRoutes.get("/settings/:key", (c) => {
+	const key = c.req.param("key");
+	const value = getSetting(key);
+	return c.json({ value });
+});
+
+tabsRoutes.put("/settings/:key", async (c) => {
+	const key = c.req.param("key");
+	const body = await c.req.json<{ value?: string }>();
+	if (typeof body.value !== "string") {
+		return c.json({ error: "value is required" }, 400);
+	}
+	setSetting(key, body.value);
+	return c.json({ success: true });
 });
 
 tabsRoutes.delete("/:id", (c) => {
