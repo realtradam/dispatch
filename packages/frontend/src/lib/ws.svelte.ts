@@ -76,6 +76,11 @@ function createWebSocketClient(url: string) {
 		};
 	}
 
+	/** Remove all registered event callbacks (used for HMR safety). */
+	function clearCallbacks() {
+		callbacks.length = 0;
+	}
+
 	function send(data: unknown): void {
 		if (ws && ws.readyState === WebSocket.OPEN) {
 			ws.send(JSON.stringify(data));
@@ -89,6 +94,7 @@ function createWebSocketClient(url: string) {
 		connect,
 		disconnect,
 		onEvent,
+		clearCallbacks,
 		send,
 	};
 }

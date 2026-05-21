@@ -13,12 +13,8 @@ app.get(
 
 		return {
 			onOpen(_event, ws) {
-				// Send current status immediately
-				ws.send(JSON.stringify({ type: "status", status: agentManager.getStatus() }));
-
-				// Send current task list state
-				const tasks = agentManager.getTaskList().getTasks();
-				ws.send(JSON.stringify({ type: "task-list-update", tasks }));
+				// Send current statuses immediately
+				ws.send(JSON.stringify({ type: "statuses", statuses: agentManager.getAllStatuses() }));
 
 				// Send any pending permission prompts
 				const pending = permissionManager.getPending();
