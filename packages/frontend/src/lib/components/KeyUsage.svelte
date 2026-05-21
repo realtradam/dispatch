@@ -124,7 +124,9 @@
 		const diff = ts - Date.now();
 		const days = Math.floor(diff / 86400000);
 		const d = new Date(ts);
-		const dateStr = d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" });
+		const dateStr = d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" })
+			+ " "
+			+ d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
 
 		if (diff <= 0) {
 			return d.toLocaleString();
