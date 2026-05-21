@@ -78,36 +78,97 @@ vi.mock("@dispatch/core", () => ({
 		return { close() {} };
 	},
 	ModelRegistry: class MockModelRegistry {
-		getModels() { return []; }
-		getKeys() { return []; }
-		getModelsByTag(_tag: string) { return []; }
-		getAllTags() { return []; }
-		hasAvailableKey(_provider: string) { return false; }
-		allKeysExhausted() { return true; }
+		getModels() {
+			return [];
+		}
+		getKeys() {
+			return [];
+		}
+		getModelsByTag(_tag: string) {
+			return [];
+		}
+		getAllTags() {
+			return [];
+		}
+		hasAvailableKey(_provider: string) {
+			return false;
+		}
+		allKeysExhausted() {
+			return true;
+		}
 		markKeyExhausted() {}
 		markKeyActive() {}
 		updateConfig() {}
 	},
 	ModelResolver: class MockModelResolver {
-		resolve(_tag: string) { return null; }
-		waitForKey() { return Promise.resolve(null); }
+		resolve(_tag: string) {
+			return null;
+		}
+		waitForKey() {
+			return Promise.resolve(null);
+		}
 	},
 	TaskList: class MockTaskList {
-		getTasks() { return []; }
-		getTask() { return undefined; }
-		addTask() { return { id: "task-1", title: "", description: "", status: "pending" }; }
-		updateTask() { return undefined; }
-		removeTask() { return false; }
-		onChange(_cb: unknown) { return () => {}; }
+		getTasks() {
+			return [];
+		}
+		getTask() {
+			return undefined;
+		}
+		addTask() {
+			return { id: "task-1", title: "", description: "", status: "pending" };
+		}
+		updateTask() {
+			return undefined;
+		}
+		removeTask() {
+			return false;
+		}
+		onChange(_cb: unknown) {
+			return () => {};
+		}
 	},
 	createTaskListTool(_taskList: unknown) {
 		return {
-			name: "task_list",
-			description: "task list",
+			name: "todo",
+			description: "todo",
 			parameters: { _type: "z.ZodObject", shape: {} },
 			execute: async () => "mock",
 		};
 	},
+	createSummonTool(_wd: string, _callbacks: unknown) {
+		return {
+			name: "summon",
+			description: "summon",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
+	createRetrieveTool(_callbacks: unknown) {
+		return {
+			name: "retrieve",
+			description: "retrieve",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
+	createTab() {},
+	getClaudeAccountsFromDB() {
+		return [];
+	},
+	refreshAccountCredentials() {
+		return null;
+	},
+	refreshAccountCredentialsAsync() {
+		return Promise.resolve(null);
+	},
+	resolveApiKey() {
+		return null;
+	},
+	getSetting(_key: string) {
+		return null;
+	},
+	appendMessage() {},
 }));
 
 // Import after mock is defined (Vitest hoists vi.mock automatically)
@@ -131,13 +192,13 @@ describe("AgentManager", () => {
 			events.push(event);
 		});
 
-		await manager.processMessage("test");
+		await manager.processMessage("tab-1", "test");
 
 		expect(events.length).toBeGreaterThan(0);
-		expect(events[0]).toEqual({ type: "status", status: "running" });
+		expect(events[0]).toMatchObject({ type: "status", status: "running" });
 
 		const lastEvent = events[events.length - 1];
-		expect(lastEvent).toEqual({ type: "status", status: "idle" });
+		expect(lastEvent).toMatchObject({ type: "status", status: "idle" });
 
 		const doneEvent = events.find((e) => e.type === "done");
 		expect(doneEvent).toBeDefined();
@@ -150,7 +211,7 @@ describe("AgentManager", () => {
 			events.push(event);
 		});
 
-		await manager.processMessage("hello");
+		await manager.processMessage("tab-1", "hello");
 
 		const textDeltas = events.filter((e) => e.type === "text-delta");
 		expect(textDeltas.length).toBeGreaterThan(0);
@@ -158,15 +219,15 @@ describe("AgentManager", () => {
 
 	it("messageCount increments after processMessage", async () => {
 		const manager = new AgentManager();
-		await manager.processMessage("hello");
+		await manager.processMessage("tab-1", "hello");
 		expect(manager.getMessageCount()).toBe(1);
-		await manager.processMessage("world");
+		await manager.processMessage("tab-1", "world");
 		expect(manager.getMessageCount()).toBe(2);
 	});
 
 	it("status returns to idle after processMessage completes", async () => {
 		const manager = new AgentManager();
-		await manager.processMessage("test");
+		await manager.processMessage("tab-1", "test");
 		expect(manager.getStatus()).toBe("idle");
 	});
 
@@ -178,7 +239,7 @@ describe("AgentManager", () => {
 		});
 
 		unsubscribe();
-		await manager.processMessage("test");
+		await manager.processMessage("tab-1", "test");
 
 		expect(events.length).toBe(0);
 	});
@@ -191,7 +252,7 @@ describe("AgentManager", () => {
 		manager.onEvent(listener1);
 		manager.onEvent(listener2);
 
-		await manager.processMessage("test");
+		await manager.processMessage("tab-1", "test");
 
 		expect(listener1).toHaveBeenCalled();
 		expect(listener2).toHaveBeenCalled();

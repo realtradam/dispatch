@@ -1,64 +1,76 @@
 <script lang="ts">
-	import ModelSelector from "./ModelSelector.svelte";
-	import ModelStatus from "./ModelStatus.svelte";
-	import TaskListPanel from "./TaskListPanel.svelte";
-	import ConfigPanel from "./ConfigPanel.svelte";
-	import SkillsBrowser from "./SkillsBrowser.svelte";
-	import PermissionLog from "./PermissionLog.svelte";
-	import KeyUsage from "./KeyUsage.svelte";
-	import ClaudeReset from "./ClaudeReset.svelte";
-	import SettingsPanel from "./SettingsPanel.svelte";
-	import SystemPromptPanel from "./SystemPromptPanel.svelte";
-	import type { TaskItem, LogEntry, KeyInfo } from "../types.js";
+import type { KeyInfo, LogEntry, TaskItem } from "../types.js";
+import ClaudeReset from "./ClaudeReset.svelte";
+import ConfigPanel from "./ConfigPanel.svelte";
+import KeyUsage from "./KeyUsage.svelte";
+import ModelSelector from "./ModelSelector.svelte";
+import ModelStatus from "./ModelStatus.svelte";
+import SettingsPanel from "./SettingsPanel.svelte";
+import SkillsBrowser from "./SkillsBrowser.svelte";
+import SystemPromptPanel from "./SystemPromptPanel.svelte";
+import TaskListPanel from "./TaskListPanel.svelte";
+import ToolPermissions from "./ToolPermissions.svelte";
 
-	const {
-		keys = [],
-		tasks = [],
-		permissionLog = [],
-		apiBase = "",
-		activeKeyId = null,
-		activeModelId = null,
-		reasoningEffort = "max",
-		onKeyChange,
-		onModelChange,
-		onReasoningChange,
-	}: {
-		keys?: KeyInfo[];
-		tasks?: TaskItem[];
-		permissionLog?: LogEntry[];
-		apiBase?: string;
-		activeKeyId?: string | null;
-		activeModelId?: string | null;
-		reasoningEffort?: string;
-		onKeyChange: (keyId: string) => void;
-		onModelChange: (keyId: string, modelId: string) => void;
-		onReasoningChange: (effort: string) => void;
-	} = $props();
+const {
+	keys = [],
+	tasks = [],
+	permissionLog = [],
+	apiBase = "",
+	activeKeyId = null,
+	activeModelId = null,
+	reasoningEffort = "max",
+	onKeyChange,
+	onModelChange,
+	onReasoningChange,
+}: {
+	keys?: KeyInfo[];
+	tasks?: TaskItem[];
+	permissionLog?: LogEntry[];
+	apiBase?: string;
+	activeKeyId?: string | null;
+	activeModelId?: string | null;
+	reasoningEffort?: string;
+	onKeyChange: (keyId: string) => void;
+	onModelChange: (keyId: string, modelId: string) => void;
+	onReasoningChange: (effort: string) => void;
+} = $props();
 
-	interface Panel {
-		id: number;
-		selected: string;
-	}
+interface Panel {
+	id: number;
+	selected: string;
+}
 
-	let nextId = 0;
-	let panels = $state<Panel[]>([{ id: nextId++, selected: "Model Choice" }]);
+let nextId = 0;
+let panels = $state<Panel[]>([{ id: nextId++, selected: "Model Choice" }]);
 
-	const viewOptions = ["Select a view", "Model Choice", "Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Tools", "System Prompt", "Settings"];
+const viewOptions = [
+	"Select a view",
+	"Model Choice",
+	"Key Usage",
+	"Claude Reset",
+	"Model Status",
+	"Tasks",
+	"Config",
+	"Skills",
+	"Tools",
+	"System Prompt",
+	"Settings",
+];
 
-	function addPanel() {
-		panels = [...panels, { id: nextId++, selected: "Select a view" }];
-	}
+function addPanel() {
+	panels = [...panels, { id: nextId++, selected: "Select a view" }];
+}
 
-	function panelClass(selected: string): string {
-		const base = "bg-base-200 rounded-lg p-3 flex flex-col min-h-0";
-		const fill = selected === "Key Usage" || selected === "Claude Reset" || selected === "Tasks";
-		return fill ? base + " flex-1" : base;
-	}
+function panelClass(selected: string): string {
+	const base = "bg-base-200 rounded-lg p-3 flex flex-col min-h-0";
+	const fill = selected === "Key Usage" || selected === "Claude Reset" || selected === "Tasks";
+	return fill ? base + " flex-1" : base;
+}
 
-	function contentClass(selected: string): string {
-		const fill = selected === "Key Usage" || selected === "Claude Reset" || selected === "Tasks";
-		return fill ? "mt-2 flex-1 min-h-0" : "mt-2";
-	}
+function contentClass(selected: string): string {
+	const fill = selected === "Key Usage" || selected === "Claude Reset" || selected === "Tasks";
+	return fill ? "mt-2 flex-1 min-h-0" : "mt-2";
+}
 </script>
 
 <div class="flex flex-col gap-2">
@@ -115,7 +127,7 @@
 				{:else if panel.selected === "Skills"}
 					<SkillsBrowser {apiBase} />
 				{:else if panel.selected === "Tools"}
-					<PermissionLog entries={permissionLog} {apiBase} />
+					<ToolPermissions entries={permissionLog} {apiBase} />
 				{:else if panel.selected === "System Prompt"}
 				<SystemPromptPanel {apiBase} />
 			{:else if panel.selected === "Settings"}

@@ -3,6 +3,16 @@ import type { AgentEvent, ConnectionStatus } from "./types.js";
 
 type EventCallback = (event: AgentEvent) => void;
 
+// Close any stale WebSocket from HMR reloads
+if (import.meta.hot) {
+	import.meta.hot.dispose((data: Record<string, unknown>) => {
+		const old = data._ws as WebSocket | undefined;
+		if (old && old.readyState === WebSocket.OPEN) {
+			old.close();
+		}
+	});
+}
+
 function createWebSocketClient(url: string) {
 	let connectionStatus: ConnectionStatus = $state("disconnected");
 	let ws: WebSocket | null = null;
@@ -18,6 +28,11 @@ function createWebSocketClient(url: string) {
 		manualDisconnect = false;
 		connectionStatus = "connecting";
 		ws = new WebSocket(url);
+
+		// Store ref for HMR cleanup
+		if (import.meta.hot) {
+			import.meta.hot.data._ws = ws;
+		}
 
 		ws.onopen = () => {
 			connectionStatus = "connected";

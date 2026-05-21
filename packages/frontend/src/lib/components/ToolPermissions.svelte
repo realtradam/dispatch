@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
-import type { LogEntry } from "../types.js";
 import { appSettings } from "../settings.svelte.js";
+import type { LogEntry } from "../types.js";
 
 const { entries, apiBase = "" }: { entries: LogEntry[]; apiBase?: string } = $props();
 
@@ -13,9 +13,22 @@ interface ToolPermission {
 
 const toolPermissions: ToolPermission[] = [
 	{ id: "read", label: "Read files", description: "Allow the AI to read files in the workspace" },
-	{ id: "edit", label: "Edit files", description: "Allow the AI to write/edit files in the workspace" },
+	{
+		id: "edit",
+		label: "Edit files",
+		description: "Allow the AI to write/edit files in the workspace",
+	},
 	{ id: "bash", label: "Run commands", description: "Allow the AI to execute shell commands" },
-	{ id: "external_directory", label: "External directories", description: "Allow access to files outside the workspace" },
+	{
+		id: "summon",
+		label: "Summon agents",
+		description: "Allow the AI to spawn child agents to work on tasks",
+	},
+	{
+		id: "external_directory",
+		label: "External directories",
+		description: "Allow access to files outside the workspace",
+	},
 ];
 
 async function loadPermissions(): Promise<void> {
@@ -24,7 +37,7 @@ async function loadPermissions(): Promise<void> {
 		try {
 			const res = await fetch(`${apiBase}/tabs/settings/perm_${perm.id}`);
 			if (res.ok) {
-				const data = await res.json() as { value: string | null };
+				const data = (await res.json()) as { value: string | null };
 				if (data.value !== null) {
 					loaded[perm.id] = data.value === "allow";
 				}

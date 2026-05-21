@@ -63,13 +63,14 @@ export type AgentEvent =
 			};
 	  }
 	| { type: "permission-prompt"; pending: PermissionPrompt[] }
-	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" };
+	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" }
+	| { type: "tab-created"; id: string; title: string };
 
 export interface TaskItem {
 	id: string;
 	title: string;
 	description: string;
-	status: "pending" | "in_progress" | "done" | "blocked";
+	status: "pending" | "in_progress" | "done";
 }
 
 export interface PermissionPrompt {

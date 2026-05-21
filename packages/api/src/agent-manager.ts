@@ -1,46 +1,94 @@
 import {
 	Agent,
 	type AgentEvent,
-	type AgentStatus,
-	type DispatchConfig,
 	type AgentSkillMapping,
-	type SkillDefinition,
+	type AgentStatus,
+	appendMessage,
+	type ClaudeAccount,
+	configToRuleset,
+	createConfigWatcher,
 	createListFilesTool,
 	createReadFileTool,
+	createRetrieveTool,
 	createRunShellTool,
-	createWriteFileTool,
-	loadConfig,
-	configToRuleset,
-	validateConfig,
-	createConfigWatcher,
-	loadSkills,
 	createSkillsWatcher,
-	ModelRegistry,
-	TaskList,
+	createSummonTool,
 	createTaskListTool,
-	type ClaudeAccount,
-	appendMessage,
+	createWriteFileTool,
+	type DispatchConfig,
 	getClaudeAccountsFromDB,
+	getSetting,
+	loadConfig,
+	loadSkills,
+	ModelRegistry,
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
 	resolveApiKey,
-	getSetting,
+	type SkillDefinition,
+	TaskList,
+	validateConfig,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
 import { setConfigGetter } from "./routes/config.js";
+import { setAccountsGetter, setModelsGetter } from "./routes/models.js";
 import { setSkillsGetter } from "./routes/skills.js";
-import { setModelsGetter, setAccountsGetter } from "./routes/models.js";
 import { setTabsAgentManager } from "./routes/tabs.js";
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
 	read_file: "Read the contents of a file",
 	list_files: "List files and directories",
 	write_file: "Write content to a file (creates parent directories if needed)",
-	run_shell: "Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Use for running tests, builds, git operations, package management, and other development tasks. Do NOT run destructive or irreversible commands unless the user explicitly requests them.",
-	task_list: "Manage a task list for tracking work items.",
+	run_shell:
+		"Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Use for running tests, builds, git operations, package management, and other development tasks. Do NOT run destructive or irreversible commands unless the user explicitly requests them.",
+	todo: "Manage a todo list for planning and tracking work. Actions: add, update, list, get, remove. Statuses: pending, in_progress, done.",
+	summon:
+		"Spawn a child agent to work on a task independently. Returns an agent_id immediately (non-blocking). Use retrieve to collect the result later.",
+	retrieve:
+		"Wait for a child agent to finish and get its result (blocking). Pass the agent_id from summon.",
 };
 
-const DEFAULT_SYSTEM_PROMPT = "You are Dispatch, an agent designed to help with any task that the user asks for. Be helpful and concise.";
+const DEFAULT_SYSTEM_PROMPT =
+	"You are Dispatch, an agent designed to help with any task that the user asks for. Be helpful and concise.";
+
+const TODO_GUIDANCE = `
+## Todo List
+
+The user can see your todo list in real-time. Use it to communicate your plan and progress.
+
+### When to use
+- Tasks that require 3 or more steps
+- When the user provides multiple things to do
+- Complex work that benefits from planning before starting
+- After receiving new instructions, capture them as todos immediately
+
+### When NOT to use
+- Single, straightforward tasks that need no tracking
+- Purely conversational or informational responses
+- Anything completable in under 3 trivial steps
+
+### State management
+- Only ONE item should be "in_progress" at a time. Finish current work before starting the next item.
+- Mark items "done" IMMEDIATELY after completing them. Do not batch completions.
+- When starting work on an item, mark it "in_progress" first.
+- Add new items as you discover sub-tasks during execution.
+
+### Examples
+
+User: "Run the build and fix any type errors"
+Good approach:
+1. Add todo: "Run the build" -> mark in_progress -> run build -> mark done
+2. If 5 errors found, add 5 todos for each error
+3. Work through each one sequentially, marking in_progress then done
+
+User: "What does the git status command do?"
+No todo needed — this is a simple informational question.
+
+User: "Rename the function getUser to fetchUser across the project"
+Good approach:
+1. Add todo: "Search for all occurrences of getUser"
+2. After searching, add a todo per file that needs changes
+3. Work through each file sequentially
+`.trim();
 
 function buildSystemPrompt(toolNames: string[], basePrompt?: string): string {
 	const base = basePrompt || DEFAULT_SYSTEM_PROMPT;
@@ -50,7 +98,13 @@ function buildSystemPrompt(toolNames: string[], basePrompt?: string): string {
 		.join("\n");
 
 	if (!toolList) return base;
-	return `${base}\n\nYou have access to the following tools:\n\n${toolList}\n\nWhen asked to work with files, use these tools. Always confirm what you did after completing an action.`;
+
+	const hasTodo = toolNames.includes("todo");
+	let prompt = `${base}\n\nYou have access to the following tools:\n\n${toolList}\n\nWhen asked to work with files, use these tools. Always confirm what you did after completing an action.`;
+	if (hasTodo) {
+		prompt += `\n\n${TODO_GUIDANCE}`;
+	}
+	return prompt;
 }
 
 interface TabAgent {
@@ -60,6 +114,21 @@ interface TabAgent {
 	modelId: string | null;
 	taskList: TaskList;
 	_lastPermKey?: string;
+	/** Abort controller for cancelling a running agent. */
+	abortController?: AbortController;
+	/** For child agents: resolves when the agent finishes its task. */
+	completionResolve?: (
+		result: { status: "done"; result: string } | { status: "error"; error: string },
+	) => void;
+	completionPromise?: Promise<
+		{ status: "done"; result: string } | { status: "error"; error: string }
+	>;
+	/** Accumulated final text output from the child agent. */
+	finalOutput?: string;
+	/** Tools whitelist for child agents (set by summon). */
+	toolsOverride?: string[];
+	/** Working directory override for child agents. */
+	workingDirectoryOverride?: string;
 }
 
 export class AgentManager {
@@ -103,9 +172,7 @@ export class AgentManager {
 		// Wire route getters
 		setConfigGetter(() => this.config);
 		setSkillsGetter(() => this.skillsData);
-		setModelsGetter(
-			() => this.modelRegistry,
-		);
+		setModelsGetter(() => this.modelRegistry);
 		setAccountsGetter(() => this.claudeAccounts);
 		setTabsAgentManager(() => this);
 
@@ -150,7 +217,9 @@ export class AgentManager {
 				console.log(`dispatch: discovered ${this.claudeAccounts.length} Claude account(s)`);
 			}
 		} catch (err) {
-			console.warn(`dispatch: failed to discover Claude accounts: ${err instanceof Error ? err.message : String(err)}`);
+			console.warn(
+				`dispatch: failed to discover Claude accounts: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 	}
 
@@ -199,44 +268,121 @@ export class AgentManager {
 		return tabAgent;
 	}
 
-	private async getOrCreateAgentForTab(tabId: string, keyId?: string, modelId?: string): Promise<Agent> {
+	private async getOrCreateAgentForTab(
+		tabId: string,
+		keyId?: string,
+		modelId?: string,
+	): Promise<Agent> {
 		const tabAgent = this._getOrCreateTabAgent(tabId);
 
 		// Determine effective override: use provided values, or fall back to stored per-tab values
 		const effectiveKeyId = keyId ?? tabAgent.keyId;
 		const effectiveModelId = modelId ?? tabAgent.modelId;
 
-		// Read tool permission settings from DB (default: read=allow, edit=ask, bash=ask)
+		// Read tool permission settings from DB (default: read=allow, edit=ask, bash=ask, summon=ask)
 		const permRead = getSetting("perm_read") !== "ask";
 		const permEdit = getSetting("perm_edit") === "allow";
 		const permBash = getSetting("perm_bash") === "allow";
+		const permSummon = getSetting("perm_summon") === "allow";
 		const sysPrompt = getSetting("system_prompt") ?? "";
-		const permKey = `${permRead}:${permEdit}:${permBash}:${sysPrompt}`;
+		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
 			tabAgent.agent &&
-			(effectiveKeyId !== tabAgent.keyId || effectiveModelId !== tabAgent.modelId || permKey !== tabAgent._lastPermKey)
+			(effectiveKeyId !== tabAgent.keyId ||
+				effectiveModelId !== tabAgent.modelId ||
+				permKey !== tabAgent._lastPermKey)
 		) {
 			tabAgent.agent = null;
 		}
 
 		if (!tabAgent.agent) {
-			const workingDirectory = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
+			const defaultWorkDir = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
+			const workingDirectory = tabAgent.workingDirectoryOverride ?? defaultWorkDir;
 
-			// Build tools list based on permission settings
+			// Build tools list — child agents use their toolsOverride whitelist,
+			// parent agents use permission settings from DB
 			const toolEntries: Array<{ name: string; tool: ReturnType<typeof createReadFileTool> }> = [];
-			if (permRead) {
-				toolEntries.push({ name: "read_file", tool: createReadFileTool(workingDirectory) });
-				toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
+
+			if (tabAgent.toolsOverride) {
+				// Child agent: use explicit tool whitelist
+				const allowed = new Set(tabAgent.toolsOverride);
+				if (allowed.has("read_file")) {
+					toolEntries.push({ name: "read_file", tool: createReadFileTool(workingDirectory) });
+					// list_files is bundled with read access
+					if (allowed.has("list_files")) {
+						toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
+					}
+				}
+				if (allowed.has("list_files") && !allowed.has("read_file")) {
+					toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
+				}
+				if (allowed.has("write_file")) {
+					toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
+				}
+				if (allowed.has("run_shell")) {
+					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory) });
+				}
+				if (allowed.has("todo")) {
+					toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
+				}
+				if (allowed.has("summon")) {
+					const childParentAllowedTools = new Set(toolEntries.map((e) => e.name));
+					toolEntries.push({
+						name: "summon",
+						tool: createSummonTool(workingDirectory, {
+							spawn: (opts) =>
+								this.spawnChildAgent({
+									...opts,
+									parentKeyId: tabAgent.keyId,
+									parentModelId: tabAgent.modelId,
+									parentAllowedTools: childParentAllowedTools,
+								}),
+						}),
+					});
+				}
+				if (allowed.has("retrieve")) {
+					toolEntries.push({
+						name: "retrieve",
+						tool: createRetrieveTool({ getResult: (id) => this.getChildResult(id) }),
+					});
+				}
+			} else {
+				// Parent agent: use permission settings from DB
+				if (permRead) {
+					toolEntries.push({ name: "read_file", tool: createReadFileTool(workingDirectory) });
+					toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
+				}
+				if (permEdit) {
+					toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
+				}
+				if (permBash) {
+					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory) });
+				}
+				toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
+				if (permSummon) {
+					// Capture parent's allowed tool names for child permission enforcement
+					const parentAllowedTools = new Set(toolEntries.map((e) => e.name));
+					toolEntries.push({
+						name: "summon",
+						tool: createSummonTool(workingDirectory, {
+							spawn: (opts) =>
+								this.spawnChildAgent({
+									...opts,
+									parentKeyId: tabAgent.keyId,
+									parentModelId: tabAgent.modelId,
+									parentAllowedTools,
+								}),
+						}),
+					});
+					toolEntries.push({
+						name: "retrieve",
+						tool: createRetrieveTool({ getResult: (id) => this.getChildResult(id) }),
+					});
+				}
 			}
-			if (permEdit) {
-				toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
-			}
-			if (permBash) {
-				toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory) });
-			}
-			toolEntries.push({ name: "task_list", tool: createTaskListTool(tabAgent.taskList) });
+
 			const tools = toolEntries.map((e) => e.tool);
 			const toolNames = toolEntries.map((e) => e.name);
 			tabAgent._lastPermKey = permKey;
@@ -254,14 +400,19 @@ export class AgentManager {
 
 			if (effectiveKeyId && effectiveModelId && this.modelRegistry) {
 				// Direct override: look up the key by id in the registry
-				const keyState = this.modelRegistry.getKeys().find((k) => k.definition.id === effectiveKeyId);
+				const keyState = this.modelRegistry
+					.getKeys()
+					.find((k) => k.definition.id === effectiveKeyId);
 				if (keyState) {
 					const key = keyState.definition;
 					if (key.provider === "anthropic") {
 						// Anthropic provider: resolve credentials from Claude accounts
 						const credFile = key.credentials_file;
-						const account = this.claudeAccounts.find((a) => a.id === effectiveKeyId)
-							?? (credFile ? this.claudeAccounts.find((a) => a.source === credFile) : this.claudeAccounts[0]);
+						const account =
+							this.claudeAccounts.find((a) => a.id === effectiveKeyId) ??
+							(credFile
+								? this.claudeAccounts.find((a) => a.source === credFile)
+								: this.claudeAccounts[0]);
 						if (account) {
 							const creds = refreshAccountCredentials(account);
 							if (creds && creds.expiresAt > Date.now() + 60_000) {
@@ -287,7 +438,9 @@ export class AgentManager {
 									tabAgent.modelId = effectiveModelId;
 									useOverride = true;
 								} else {
-									console.warn(`dispatch: unable to refresh Claude credentials for "${account.label}" — using stale token`);
+									console.warn(
+										`dispatch: unable to refresh Claude credentials for "${account.label}" — using stale token`,
+									);
 									claudeCredentials = { accessToken: account.credentials.accessToken };
 									apiKey = account.credentials.accessToken;
 									baseURL = key.base_url;
@@ -312,7 +465,9 @@ export class AgentManager {
 							tabAgent.modelId = effectiveModelId;
 							useOverride = true;
 						} else {
-							console.warn(`dispatch: env var "${key.env}" not set for key "${key.id}", falling back to env vars`);
+							console.warn(
+								`dispatch: env var "${key.env}" not set for key "${key.id}", falling back to env vars`,
+							);
 							tabAgent.keyId = effectiveKeyId;
 							tabAgent.modelId = effectiveModelId;
 							useOverride = true;
@@ -387,8 +542,11 @@ export class AgentManager {
 	stopTab(tabId: string): void {
 		const tabAgent = this.tabAgents.get(tabId);
 		if (tabAgent) {
+			tabAgent.abortController?.abort();
 			tabAgent.status = "idle";
 			tabAgent.agent = null;
+			// Resolve any pending completion promise so retrieve doesn't hang
+			tabAgent.completionResolve?.({ status: "error", error: "Agent was stopped." });
 		}
 	}
 
@@ -397,8 +555,113 @@ export class AgentManager {
 		this.tabAgents.delete(tabId);
 	}
 
-	async processMessage(tabId: string, message: string, keyId?: string, modelId?: string, reasoningEffort?: "none" | "low" | "medium" | "high" | "max"): Promise<void> {
+	/**
+	 * Spawn a child agent in a new tab. Returns the tab ID (agent_id).
+	 * The child runs asynchronously — use getChildResult to await completion.
+	 */
+	async spawnChildAgent(options: {
+		task: string;
+		tools: string[];
+		workingDirectory?: string;
+		parentKeyId?: string | null;
+		parentModelId?: string | null;
+		parentAllowedTools?: Set<string>;
+	}): Promise<string> {
+		const tabId = crypto.randomUUID();
+		const title = options.task.length > 50 ? `${options.task.slice(0, 47)}...` : options.task;
+
+		// Validate working directory is within the parent's workspace
+		const defaultWorkDir = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
+		if (options.workingDirectory) {
+			const { resolve } = await import("node:path");
+			const resolved = resolve(options.workingDirectory);
+			const parentDir = resolve(defaultWorkDir);
+			if (!resolved.startsWith(`${parentDir}/`) && resolved !== parentDir) {
+				throw new Error(
+					`Working directory "${options.workingDirectory}" is outside the workspace "${parentDir}".`,
+				);
+			}
+		}
+
+		// Intersect requested tools with parent's allowed tools to prevent privilege escalation
+		let childTools = options.tools;
+		if (options.parentAllowedTools) {
+			childTools = options.tools.filter((t) => options.parentAllowedTools!.has(t));
+		}
+
+		// Create the tab agent entry with overrides
 		const tabAgent = this._getOrCreateTabAgent(tabId);
+		tabAgent.toolsOverride = childTools;
+		tabAgent.workingDirectoryOverride = options.workingDirectory;
+		tabAgent.keyId = options.parentKeyId ?? null;
+		tabAgent.modelId = options.parentModelId ?? null;
+		tabAgent.finalOutput = "";
+
+		// Set up completion tracking
+		tabAgent.completionPromise = new Promise((resolve) => {
+			tabAgent.completionResolve = resolve;
+		});
+
+		// Create tab in DB
+		try {
+			const { createTab } = await import("@dispatch/core");
+			createTab(tabId, title);
+		} catch {
+			// Continue even if DB fails
+		}
+
+		// Notify the frontend about the new tab
+		this.emit({ type: "tab-created", id: tabId, title }, tabId);
+
+		// Start the child agent in the background
+		this.processMessage(
+			tabId,
+			options.task,
+			options.parentKeyId ?? undefined,
+			options.parentModelId ?? undefined,
+		).catch((err) => {
+			const errorMsg = err instanceof Error ? err.message : String(err);
+			tabAgent.completionResolve?.({ status: "error", error: errorMsg });
+		});
+
+		return tabId;
+	}
+
+	/**
+	 * Wait for a child agent to finish and return its result.
+	 * Blocks until the child completes or errors.
+	 */
+	async getChildResult(
+		agentId: string,
+	): Promise<{ status: "done"; result: string } | { status: "error"; error: string }> {
+		const tabAgent = this.tabAgents.get(agentId);
+		if (!tabAgent) {
+			return { status: "error", error: `No agent found with id '${agentId}'` };
+		}
+
+		if (!tabAgent.completionPromise) {
+			// Not a child agent or already completed
+			if (tabAgent.status === "idle") {
+				return { status: "done", result: tabAgent.finalOutput ?? "(no output)" };
+			}
+			return {
+				status: "error",
+				error: "Agent has no completion tracking. It may not have been spawned via summon.",
+			};
+		}
+
+		return tabAgent.completionPromise;
+	}
+
+	async processMessage(
+		tabId: string,
+		message: string,
+		keyId?: string,
+		modelId?: string,
+		reasoningEffort?: "none" | "low" | "medium" | "high" | "max",
+	): Promise<void> {
+		const tabAgent = this._getOrCreateTabAgent(tabId);
+		tabAgent.abortController = new AbortController();
 		tabAgent.status = "running";
 		this.messageCount += 1;
 
@@ -406,13 +669,31 @@ export class AgentManager {
 			const agent = await this.getOrCreateAgentForTab(tabId, keyId, modelId);
 
 			// Persist user message to DB
-			appendMessage(tabId, crypto.randomUUID(), "user", JSON.stringify([{ type: "text", text: message }]));
+			appendMessage(
+				tabId,
+				crypto.randomUUID(),
+				"user",
+				JSON.stringify([{ type: "text", text: message }]),
+			);
 
+			let allOutput = "";
 			let assistantText = "";
 			let assistantThinking = "";
-			const assistantToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown>; result?: string; isError?: boolean }> = [];
+			const assistantToolCalls: Array<{
+				id: string;
+				name: string;
+				arguments: Record<string, unknown>;
+				result?: string;
+				isError?: boolean;
+			}> = [];
 
-			for await (const event of agent.run(message, reasoningEffort ? { reasoningEffort } : undefined)) {
+			for await (const event of agent.run(
+				message,
+				reasoningEffort ? { reasoningEffort } : undefined,
+			)) {
+				// Stop processing if the tab was aborted (closed/stopped)
+				if (tabAgent.abortController?.signal.aborted) break;
+
 				if (event.type === "status") {
 					tabAgent.status = event.status;
 				}
@@ -421,13 +702,21 @@ export class AgentManager {
 				// Accumulate content for DB persistence
 				if (event.type === "text-delta") {
 					assistantText += event.delta;
+					allOutput += event.delta;
 				} else if (event.type === "reasoning-delta") {
 					assistantThinking += event.delta;
 				} else if (event.type === "tool-call") {
-					assistantToolCalls.push({ id: event.toolCall.id, name: event.toolCall.name, arguments: event.toolCall.arguments });
+					assistantToolCalls.push({
+						id: event.toolCall.id,
+						name: event.toolCall.name,
+						arguments: event.toolCall.arguments,
+					});
 				} else if (event.type === "tool-result") {
 					const tc = assistantToolCalls.find((t) => t.id === event.toolResult.toolCallId);
-					if (tc) { tc.result = event.toolResult.result; tc.isError = event.toolResult.isError; }
+					if (tc) {
+						tc.result = event.toolResult.result;
+						tc.isError = event.toolResult.isError;
+					}
 				} else if (event.type === "done") {
 					// Persist assistant message to DB
 					const contentSegments: Array<Record<string, unknown>> = [];
@@ -436,7 +725,13 @@ export class AgentManager {
 						contentSegments.push({ type: "tool-call", ...tc });
 					}
 					if (contentSegments.length > 0) {
-						appendMessage(tabId, crypto.randomUUID(), "assistant", JSON.stringify(contentSegments), assistantThinking || undefined);
+						appendMessage(
+							tabId,
+							crypto.randomUUID(),
+							"assistant",
+							JSON.stringify(contentSegments),
+							assistantThinking || undefined,
+						);
 					}
 					// Reset for next turn
 					assistantText = "";
@@ -444,11 +739,15 @@ export class AgentManager {
 					assistantToolCalls.length = 0;
 				}
 			}
+			// Resolve completion promise for child agents
+			tabAgent.finalOutput = allOutput;
+			tabAgent.completionResolve?.({ status: "done", result: allOutput || "(no output)" });
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
 			tabAgent.status = "error";
 			this.emit({ type: "error", error: errorMsg }, tabId);
 			this.emit({ type: "status", status: "error" }, tabId);
+			tabAgent.completionResolve?.({ status: "error", error: errorMsg });
 		}
 	}
 

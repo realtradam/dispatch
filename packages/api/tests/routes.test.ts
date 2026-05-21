@@ -79,36 +79,97 @@ vi.mock("@dispatch/core", () => ({
 		return { close() {} };
 	},
 	ModelRegistry: class MockModelRegistry {
-		getModels() { return []; }
-		getKeys() { return []; }
-		getModelsByTag(_tag: string) { return []; }
-		getAllTags() { return []; }
-		hasAvailableKey(_provider: string) { return false; }
-		allKeysExhausted() { return true; }
+		getModels() {
+			return [];
+		}
+		getKeys() {
+			return [];
+		}
+		getModelsByTag(_tag: string) {
+			return [];
+		}
+		getAllTags() {
+			return [];
+		}
+		hasAvailableKey(_provider: string) {
+			return false;
+		}
+		allKeysExhausted() {
+			return true;
+		}
 		markKeyExhausted() {}
 		markKeyActive() {}
 		updateConfig() {}
 	},
 	ModelResolver: class MockModelResolver {
-		resolve(_tag: string) { return null; }
-		waitForKey() { return Promise.resolve(null); }
+		resolve(_tag: string) {
+			return null;
+		}
+		waitForKey() {
+			return Promise.resolve(null);
+		}
 	},
 	TaskList: class MockTaskList {
-		getTasks() { return []; }
-		getTask() { return undefined; }
-		addTask() { return { id: "task-1", title: "", description: "", status: "pending" }; }
-		updateTask() { return undefined; }
-		removeTask() { return false; }
-		onChange(_cb: unknown) { return () => {}; }
+		getTasks() {
+			return [];
+		}
+		getTask() {
+			return undefined;
+		}
+		addTask() {
+			return { id: "task-1", title: "", description: "", status: "pending" };
+		}
+		updateTask() {
+			return undefined;
+		}
+		removeTask() {
+			return false;
+		}
+		onChange(_cb: unknown) {
+			return () => {};
+		}
 	},
 	createTaskListTool(_taskList: unknown) {
 		return {
-			name: "task_list",
-			description: "task list",
+			name: "todo",
+			description: "todo",
 			parameters: { _type: "z.ZodObject", shape: {} },
 			execute: async () => "mock",
 		};
 	},
+	createSummonTool(_wd: string, _callbacks: unknown) {
+		return {
+			name: "summon",
+			description: "summon",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
+	createRetrieveTool(_callbacks: unknown) {
+		return {
+			name: "retrieve",
+			description: "retrieve",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
+	createTab() {},
+	getClaudeAccountsFromDB() {
+		return [];
+	},
+	refreshAccountCredentials() {
+		return null;
+	},
+	refreshAccountCredentialsAsync() {
+		return Promise.resolve(null);
+	},
+	resolveApiKey() {
+		return null;
+	},
+	getSetting(_key: string) {
+		return null;
+	},
+	appendMessage() {},
 }));
 
 const { app } = await import("../src/app.js");
@@ -137,7 +198,7 @@ describe("POST /chat", () => {
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ message: "hello world" }),
+			body: JSON.stringify({ tabId: "tab-1", message: "hello world" }),
 		});
 		expect(res.status).toBe(200);
 		const body = await res.json();
@@ -148,7 +209,7 @@ describe("POST /chat", () => {
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ message: "" }),
+			body: JSON.stringify({ tabId: "tab-1", message: "" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -157,7 +218,7 @@ describe("POST /chat", () => {
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ message: "   " }),
+			body: JSON.stringify({ tabId: "tab-1", message: "   " }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -166,7 +227,16 @@ describe("POST /chat", () => {
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({}),
+			body: JSON.stringify({ tabId: "tab-1" }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 400 with missing tabId", async () => {
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message: "hello" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -176,7 +246,7 @@ describe("POST /chat", () => {
 		await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ message: "first message" }),
+			body: JSON.stringify({ tabId: "tab-2", message: "first message" }),
 		});
 
 		// Small delay to let the async generator start and emit "running" status
@@ -186,7 +256,7 @@ describe("POST /chat", () => {
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ message: "second message" }),
+			body: JSON.stringify({ tabId: "tab-2", message: "second message" }),
 		});
 		expect(res.status).toBe(409);
 	});

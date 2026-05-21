@@ -2,38 +2,58 @@
 
 // Agent & LLM
 export { Agent } from "./agent/agent.js";
-export { createProvider } from "./llm/provider.js";
-
-// Tools
-export { createListFilesTool } from "./tools/list-files.js";
-export { createRunShellTool } from "./tools/run-shell.js";
-export { analyzeCommand } from "./tools/shell-analyze.js";
-export { prefix as bashArityPrefix } from "./tools/bash-arity.js";
-export { createReadFileTool } from "./tools/read-file.js";
-export { createToolRegistry } from "./tools/registry.js";
-export { createWriteFileTool } from "./tools/write-file.js";
-export { TaskList, createTaskListTool } from "./tools/task-list.js";
-
-// Types & Permissions
-export * from "./types/index.js";
-export * from "./permission/index.js";
-
 // Config
-export { loadConfig, configToRuleset, validateConfig, createConfigWatcher } from "./config/index.js";
-
-// Skills
-export { parseSkillFile, loadSkills, resolveSkillsForAgent, getSkillByName, createSkillsWatcher } from "./skills/index.js";
-
-// Models
-export { ModelRegistry } from "./models/index.js";
-
+export {
+	configToRuleset,
+	createConfigWatcher,
+	loadConfig,
+	validateConfig,
+} from "./config/index.js";
 // Credentials
 export * from "./credentials/index.js";
-
 // Database
-export { getDatabase, closeDatabase, getDatabasePath } from "./db/index.js";
-
+export { closeDatabase, getDatabase, getDatabasePath } from "./db/index.js";
+export {
+	appendMessage,
+	clearMessagesForTab,
+	getMessagesForTab,
+	type MessageRow,
+	updateMessage,
+} from "./db/messages.js";
+export { deleteSetting, getSetting, setSetting } from "./db/settings.js";
 // Tabs & Messages
-export { type TabRow, createTab, getTab, listOpenTabs, updateTabTitle, updateTabModel, updateTabStatus, archiveTab } from "./db/tabs.js";
-export { type MessageRow, appendMessage, updateMessage, getMessagesForTab, clearMessagesForTab } from "./db/messages.js";
-export { getSetting, setSetting, deleteSetting } from "./db/settings.js";
+export {
+	archiveTab,
+	createTab,
+	getTab,
+	listOpenTabs,
+	type TabRow,
+	updateTabModel,
+	updateTabStatus,
+	updateTabTitle,
+} from "./db/tabs.js";
+export { createProvider } from "./llm/provider.js";
+// Models
+export { ModelRegistry } from "./models/index.js";
+export * from "./permission/index.js";
+// Skills
+export {
+	createSkillsWatcher,
+	getSkillByName,
+	loadSkills,
+	parseSkillFile,
+	resolveSkillsForAgent,
+} from "./skills/index.js";
+export { prefix as bashArityPrefix } from "./tools/bash-arity.js";
+// Tools
+export { createListFilesTool } from "./tools/list-files.js";
+export { createReadFileTool } from "./tools/read-file.js";
+export { createToolRegistry } from "./tools/registry.js";
+export { createRetrieveTool, type RetrieveCallbacks } from "./tools/retrieve.js";
+export { createRunShellTool } from "./tools/run-shell.js";
+export { analyzeCommand } from "./tools/shell-analyze.js";
+export { createSummonTool, type SummonCallbacks } from "./tools/summon.js";
+export { createTaskListTool, TaskList } from "./tools/task-list.js";
+export { createWriteFileTool } from "./tools/write-file.js";
+// Types & Permissions
+export * from "./types/index.js";
