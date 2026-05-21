@@ -121,6 +121,12 @@
 	}
 
 	function formatDate(ts: number): string {
+		const diff = ts - Date.now();
+		if (diff > 0 && diff < 48 * 60 * 60 * 1000) {
+			const hours = Math.floor(diff / 3600000);
+			const minutes = Math.floor((diff % 3600000) / 60000);
+			return `in ${hours}:${String(minutes).padStart(2, "0")}`;
+		}
 		return new Date(ts).toLocaleString();
 	}
 
