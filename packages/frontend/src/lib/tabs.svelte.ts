@@ -334,7 +334,12 @@ function createTabStore() {
 				break;
 			}
 			case "tab-created": {
-				const newTabEvent = event as AgentEvent & { id: string; title: string };
+				const newTabEvent = event as AgentEvent & {
+					id: string;
+					title: string;
+					keyId: string | null;
+					modelId: string | null;
+				};
 				// Only add if we don't already have this tab
 				if (!getTabById(newTabEvent.id)) {
 					const tab: Tab = {
@@ -342,8 +347,8 @@ function createTabStore() {
 						title: newTabEvent.title,
 						messages: [],
 						agentStatus: "running",
-						keyId: null,
-						modelId: null,
+						keyId: newTabEvent.keyId ?? null,
+						modelId: newTabEvent.modelId ?? null,
 						reasoningEffort: "max",
 						currentAssistantId: null,
 						tasks: [],

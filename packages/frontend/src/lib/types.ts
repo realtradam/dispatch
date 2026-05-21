@@ -64,7 +64,13 @@ export type AgentEvent =
 	  }
 	| { type: "permission-prompt"; pending: PermissionPrompt[] }
 	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" }
-	| { type: "tab-created"; id: string; title: string };
+	| {
+			type: "tab-created";
+			id: string;
+			title: string;
+			keyId: string | null;
+			modelId: string | null;
+	  };
 
 export interface TaskItem {
 	id: string;
