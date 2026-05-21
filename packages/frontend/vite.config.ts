@@ -6,6 +6,7 @@ export default defineConfig({
 	plugins: [tailwindcss(), svelte()],
 	server: {
 		port: 5173,
+		allowedHosts: true,
 	},
 	test: {
 		include: ["tests/**/*.test.ts"],

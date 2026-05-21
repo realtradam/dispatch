@@ -34,6 +34,10 @@ export interface Tab {
 	currentAssistantId: string | null;
 	tasks: TaskItem[];
 	injectedSkills: string[];
+	/** null = user-owned tab, string = spawned by that tab */
+	parentTabId: string | null;
+	/** Persistent tabs stay until manually closed. Temp tabs disappear when agent finishes. */
+	persistent: boolean;
 }
 
 function createTabStore() {
@@ -90,6 +94,8 @@ function createTabStore() {
 			currentAssistantId: null,
 			tasks: [],
 			injectedSkills: [],
+			parentTabId: null,
+			persistent: true,
 		};
 		tabs = [...tabs, tab];
 		activeTabId = id;
@@ -103,6 +109,83 @@ function createTabStore() {
 	function switchTab(id: string): void {
 		if (tabs.some((t) => t.id === id)) {
 			activeTabId = id;
+		}
+	}
+
+	function promoteTab(id: string): void {
+		const tab = getTabById(id);
+		if (!tab) return;
+		updateTab(id, { persistent: true });
+		switchTab(id);
+	}
+
+	async function openAgentTab(agentId: string): Promise<void> {
+		const tab = getTabById(agentId);
+		if (tab) {
+			updateTab(agentId, { persistent: true });
+			switchTab(agentId);
+			return;
+		}
+
+		// Tab not found locally — try to fetch from backend
+		try {
+			const tabRes = await fetch(`${config.apiBase}/tabs/${agentId}`);
+			if (!tabRes.ok) return; // 404 or other error — tab doesn't exist
+			const tabData = (await tabRes.json()) as {
+				id: string;
+				title: string;
+				keyId?: string | null;
+				modelId?: string | null;
+				status?: string;
+				parentTabId?: string | null;
+			};
+
+			const messagesRes = await fetch(`${config.apiBase}/tabs/${agentId}/messages`);
+			const messagesData = messagesRes.ok
+				? ((await messagesRes.json()) as {
+						messages: Array<{
+							id?: string;
+							role: string;
+							contentJson: string;
+							thinking: string | null;
+						}>;
+					})
+				: { messages: [] };
+
+			const chatMessages: ChatMessage[] = messagesData.messages.flatMap((m) => {
+				try {
+					return [
+						{
+							id: m.id ?? generateId(),
+							role: m.role as ChatMessage["role"],
+							content: JSON.parse(m.contentJson) as ContentSegment[],
+							thinking: m.thinking ?? undefined,
+							isStreaming: false,
+						},
+					];
+				} catch {
+					return [];
+				}
+			});
+
+			const newTab: Tab = {
+				id: agentId,
+				title: tabData.title,
+				messages: chatMessages,
+				agentStatus: "idle",
+				keyId: tabData.keyId ?? null,
+				modelId: tabData.modelId ?? null,
+				reasoningEffort: "max",
+				currentAssistantId: null,
+				tasks: [],
+				injectedSkills: [],
+				parentTabId: tabData.parentTabId ?? null,
+				persistent: true,
+			};
+			tabs = [...tabs, newTab];
+			activeTabId = agentId;
+		} catch (err) {
+			console.error("openAgentTab failed:", err);
 		}
 	}
 
@@ -122,7 +205,11 @@ function createTabStore() {
 		// If we closed the active tab, switch to the last remaining or create a new one
 		if (activeTabId === id) {
 			if (tabs.length > 0) {
-				activeTabId = tabs[tabs.length - 1]?.id;
+				const fallback = tabs[tabs.length - 1];
+				if (fallback && !fallback.persistent) {
+					updateTab(fallback.id, { persistent: true });
+				}
+				activeTabId = fallback?.id;
 			} else {
 				await createNewTab();
 			}
@@ -172,6 +259,10 @@ function createTabStore() {
 					updateTab(tabId, { agentStatus: event.status });
 					if (event.status === "idle" || event.status === "error") {
 						updateTab(tabId, { currentAssistantId: null });
+						const tab = getTabById(tabId);
+						if (tab && !tab.persistent && tabId !== activeTabId) {
+							tabs = tabs.filter((t) => t.id !== tabId);
+						}
 					}
 				}
 				break;
@@ -339,6 +430,7 @@ function createTabStore() {
 					title: string;
 					keyId: string | null;
 					modelId: string | null;
+					parentTabId: string | null;
 				};
 				// Only add if we don't already have this tab
 				if (!getTabById(newTabEvent.id)) {
@@ -353,6 +445,8 @@ function createTabStore() {
 						currentAssistantId: null,
 						tasks: [],
 						injectedSkills: [],
+						parentTabId: newTabEvent.parentTabId ?? null,
+						persistent: newTabEvent.parentTabId == null,
 					};
 					tabs = [...tabs, tab];
 				}
@@ -630,6 +724,8 @@ function createTabStore() {
 		setKey,
 		replyPermission,
 		copyConversation,
+		promoteTab,
+		openAgentTab,
 	};
 }
 

@@ -70,6 +70,7 @@ export type AgentEvent =
 			title: string;
 			keyId: string | null;
 			modelId: string | null;
+			parentTabId: string | null;
 	  };
 
 export interface TaskItem {

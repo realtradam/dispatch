@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 
 /**
  * Returns the directory for persistent Dispatch data, following XDG Base
@@ -75,16 +75,23 @@ export function getDatabase(): Database {
 	)`);
 
 	_db.run(`CREATE TABLE IF NOT EXISTS tabs (
-		id          TEXT PRIMARY KEY,
-		title       TEXT NOT NULL,
-		key_id      TEXT,
-		model_id    TEXT,
-		status      TEXT NOT NULL DEFAULT 'idle',
-		is_open     INTEGER NOT NULL DEFAULT 1,
-		position    INTEGER NOT NULL DEFAULT 0,
-		created_at  INTEGER NOT NULL,
-		updated_at  INTEGER NOT NULL
+		id             TEXT PRIMARY KEY,
+		title          TEXT NOT NULL,
+		key_id         TEXT,
+		model_id       TEXT,
+		parent_tab_id  TEXT,
+		status         TEXT NOT NULL DEFAULT 'idle',
+		is_open        INTEGER NOT NULL DEFAULT 1,
+		position       INTEGER NOT NULL DEFAULT 0,
+		created_at     INTEGER NOT NULL,
+		updated_at     INTEGER NOT NULL
 	)`);
+
+	try {
+		_db.run("ALTER TABLE tabs ADD COLUMN parent_tab_id TEXT");
+	} catch {
+		// Column already exists — ignore
+	}
 
 	_db.run(`CREATE TABLE IF NOT EXISTS messages (
 		id           TEXT PRIMARY KEY,

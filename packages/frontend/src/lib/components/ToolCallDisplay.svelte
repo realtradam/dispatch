@@ -1,4 +1,5 @@
 <script lang="ts">
+import { tabStore } from "../tabs.svelte.js";
 import type { ToolCallDisplay } from "../types.js";
 
 const { toolCall }: { toolCall: ToolCallDisplay } = $props();
@@ -41,17 +42,33 @@ const isShell = $derived(toolCall.name === "run_shell");
 const shellResult = $derived(
 	isShell && toolCall.result !== undefined ? parseShellResult(toolCall.result) : null,
 );
+
+const summonAgentId = $derived.by(() => {
+	if (toolCall.name !== "summon" || !toolCall.result) return null;
+	const match = toolCall.result.match(/agent_id:\s*([a-f0-9-]+)/);
+	return match ? match[1] : null;
+});
 </script>
 
 <div class="collapse collapse-arrow mb-2 p-1 opacity-60 {isExpanded ? 'collapse-open' : ''}">
-	<button
-		type="button"
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
 		class="collapse-title flex items-center gap-2 text-sm italic cursor-pointer w-full text-left"
 		onclick={toggle}
+		role="button"
+		tabindex="0"
+		onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(); }}
 		aria-expanded={isExpanded}
 	>
 		<span class="badge badge-neutral badge-sm">tool</span>
 		<span class="font-mono">{toolCall.name}</span>
+	{#if summonAgentId !== null}
+		<button
+			type="button"
+			class="btn btn-xs btn-ghost"
+			onclick={(e) => { e.stopPropagation(); tabStore.openAgentTab(summonAgentId!); }}
+		>Open Tab</button>
+	{/if}
 		{#if toolCall.result !== undefined}
 			{#if isShell && shellResult !== null}
 				<span class="badge badge-sm ml-auto {shellResult.exitCode === 0 ? 'badge-success' : 'badge-error'}">
@@ -65,7 +82,7 @@ const shellResult = $derived(
 		{:else}
 			<span class="badge badge-warning badge-sm ml-auto">pending</span>
 		{/if}
-	</button>
+	</div>
 
 	<div class="collapse-content text-xs">
 		<div class="mt-2">
