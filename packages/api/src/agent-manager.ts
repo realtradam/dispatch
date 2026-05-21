@@ -611,7 +611,10 @@ export class AgentManager {
 		}
 
 		// Notify the frontend about the new tab
-		this.emit({ type: "tab-created", id: tabId, title }, tabId);
+		this.emit(
+			{ type: "tab-created", id: tabId, title, keyId: tabAgent.keyId, modelId: tabAgent.modelId },
+			tabId,
+		);
 
 		// Start the child agent in the background
 		this.processMessage(

@@ -40,7 +40,13 @@ export type AgentEvent =
 	| { type: "done"; message: ChatMessage }
 	| { type: "task-list-update"; tasks: TaskItem[] }
 	| { type: "config-reload" }
-	| { type: "tab-created"; id: string; title: string };
+	| {
+			type: "tab-created";
+			id: string;
+			title: string;
+			keyId: string | null;
+			modelId: string | null;
+	  };
 
 // ─── Tool Types ──────────────────────────────────────────────────
 
