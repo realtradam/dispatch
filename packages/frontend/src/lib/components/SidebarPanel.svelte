@@ -7,6 +7,7 @@
 	import PermissionLog from "./PermissionLog.svelte";
 	import KeyUsage from "./KeyUsage.svelte";
 	import ClaudeReset from "./ClaudeReset.svelte";
+	import SettingsPanel from "./SettingsPanel.svelte";
 	import type { TaskItem, LogEntry, KeyInfo } from "../types.js";
 
 	const {
@@ -41,7 +42,7 @@
 	let nextId = 0;
 	let panels = $state<Panel[]>([{ id: nextId++, selected: "Current Model" }]);
 
-	const viewOptions = ["Select a view", "Current Model", "Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Permission Log"];
+	const viewOptions = ["Select a view", "Current Model", "Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Permission Log", "Settings"];
 
 	function addPanel() {
 		panels = [...panels, { id: nextId++, selected: "Select a view" }];
@@ -114,6 +115,8 @@
 					<SkillsBrowser {apiBase} />
 				{:else if panel.selected === "Permission Log"}
 					<PermissionLog entries={permissionLog} />
+				{:else if panel.selected === "Settings"}
+					<SettingsPanel {keys} {apiBase} />
 				{/if}
 			</div>
 		</div>

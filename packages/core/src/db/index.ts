@@ -74,6 +74,35 @@ export function getDatabase(): Database {
 		updated_at  INTEGER NOT NULL
 	)`);
 
+	_db.run(`CREATE TABLE IF NOT EXISTS tabs (
+		id          TEXT PRIMARY KEY,
+		title       TEXT NOT NULL,
+		key_id      TEXT,
+		model_id    TEXT,
+		status      TEXT NOT NULL DEFAULT 'idle',
+		is_open     INTEGER NOT NULL DEFAULT 1,
+		position    INTEGER NOT NULL DEFAULT 0,
+		created_at  INTEGER NOT NULL,
+		updated_at  INTEGER NOT NULL
+	)`);
+
+	_db.run(`CREATE TABLE IF NOT EXISTS messages (
+		id           TEXT PRIMARY KEY,
+		tab_id       TEXT NOT NULL REFERENCES tabs(id),
+		seq          INTEGER NOT NULL,
+		role         TEXT NOT NULL,
+		content_json TEXT NOT NULL,
+		thinking     TEXT,
+		created_at   INTEGER NOT NULL
+	)`);
+
+	_db.run(`CREATE INDEX IF NOT EXISTS idx_messages_tab ON messages(tab_id, seq)`);
+
+	_db.run(`CREATE TABLE IF NOT EXISTS settings (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`);
+
 	return _db;
 }
 

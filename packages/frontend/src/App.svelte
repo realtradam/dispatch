@@ -3,10 +3,11 @@ import { onMount } from "svelte";
 import ChatInput from "./lib/components/ChatInput.svelte";
 import ChatPanel from "./lib/components/ChatPanel.svelte";
 import Header from "./lib/components/Header.svelte";
+import TabBar from "./lib/components/TabBar.svelte";
 import PermissionPrompt from "./lib/components/PermissionPrompt.svelte";
 import SidebarPanel from "./lib/components/SidebarPanel.svelte";
 import HotReloadIndicator from "./lib/components/HotReloadIndicator.svelte";
-import { chatStore } from "./lib/chat.svelte.js";
+import { tabStore } from "./lib/tabs.svelte.js";
 import { wsClient } from "./lib/ws.svelte.js";
 import { config } from "./lib/config.js";
 import type { KeyInfo } from "./lib/types.js";
@@ -33,7 +34,7 @@ async function fetchModels() {
 }
 
 $effect(() => {
-	if (chatStore.configReloaded) {
+	if (tabStore.configReloaded) {
 		fetchModels();
 	}
 });
@@ -51,6 +52,11 @@ onMount(() => {
 	// Initial models fetch
 	fetchModels();
 
+	// Create initial tab
+	if (tabStore.tabs.length === 0) {
+		tabStore.createNewTab();
+	}
+
 	return () => {
 		wsClient.disconnect();
 	};
@@ -63,13 +69,14 @@ onMount(() => {
 	<div class="flex flex-1 overflow-hidden">
 		<!-- Main chat area -->
 		<div class="flex flex-col flex-1 min-w-0 overflow-hidden">
+			<TabBar />
 			<div class="flex-1 overflow-hidden">
 				<ChatPanel />
 			</div>
 			<ChatInput />
 		</div>
 
-		<!-- Right sidebar — slides in/out while chat smoothly resizes -->
+		<!-- Right sidebar -->
 		<div
 			class="shrink-0 overflow-x-hidden flex flex-col transition-[width] duration-300 ease-out relative"
 			class:w-80={sidebarOpen}
@@ -81,15 +88,21 @@ onMount(() => {
 		>
 		<SidebarPanel
 			keys={modelsData.keys}
-				tasks={chatStore.tasks}
-				permissionLog={chatStore.permissionLog}
+				tasks={tabStore.activeTab?.tasks ?? []}
+				permissionLog={tabStore.permissionLog}
 				apiBase={config.apiBase}
-				activeKeyId={chatStore.activeKeyId}
-				activeModelId={chatStore.activeModelId}
-				reasoningEffort={chatStore.reasoningEffort}
-				onKeyChange={(keyId) => chatStore.setKey(keyId)}
-				onModelChange={(keyId, modelId) => chatStore.changeModel(keyId, modelId)}
-				onReasoningChange={(effort) => { chatStore.reasoningEffort = effort; }}
+				activeKeyId={tabStore.activeTab?.keyId ?? null}
+				activeModelId={tabStore.activeTab?.modelId ?? null}
+				reasoningEffort={tabStore.activeTab?.reasoningEffort ?? "max"}
+				onKeyChange={(keyId) => tabStore.setKey(keyId)}
+				onModelChange={(keyId, modelId) => tabStore.changeModel(keyId, modelId)}
+				onReasoningChange={(effort) => {
+					const tab = tabStore.activeTab;
+					if (tab) {
+						// Update reasoning effort for active tab
+						tabStore.tabs.find(t => t.id === tab.id)!.reasoningEffort = effort;
+					}
+				}}
 			/>
 		</div>
 		</div>
@@ -98,11 +111,11 @@ onMount(() => {
 
 <!-- Fixed overlay elements -->
 <PermissionPrompt
-	pending={chatStore.pendingPermissions}
-	onReply={(id, reply) => chatStore.replyPermission(id, reply)}
+	pending={tabStore.pendingPermissions}
+	onReply={(id, reply) => tabStore.replyPermission(id, reply)}
 />
 
 <!-- Hot reload indicator fixed top-right -->
 <div class="fixed top-4 right-4 z-50">
-	<HotReloadIndicator active={chatStore.configReloaded} />
+	<HotReloadIndicator active={tabStore.configReloaded} />
 </div>

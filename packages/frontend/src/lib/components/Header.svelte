@@ -1,5 +1,6 @@
 <script lang="ts">
-import { chatStore } from "../chat.svelte.js";
+import { tabStore } from "../tabs.svelte.js";
+import { wsClient } from "../ws.svelte.js";
 import ThemeSwitcher from "./ThemeSwitcher.svelte";
 
 const { onToggleSidebar }: { onToggleSidebar: () => void } = $props();
@@ -12,7 +13,7 @@ function resetCopyLabel() {
 }
 
 async function handleCopy() {
-	const text = chatStore.copyConversation();
+	const text = tabStore.copyConversation();
 	try {
 		await navigator.clipboard.writeText(text);
 		copyLabel = "Copied";
@@ -29,8 +30,9 @@ async function handleCopy() {
 		<span class="text-xl font-bold tracking-tight">Dispatch</span>
 	</div>
 	<div class="navbar-end flex items-center gap-3">
-		<span class="text-xs text-base-content/60 hidden sm:block">
-			{chatStore.activeModelId ?? "Default Model"}
+		<span class="flex items-center gap-1.5 text-xs text-base-content/60">
+			<span class="status status-sm {wsClient.connectionStatus === 'connected' ? 'status-success' : wsClient.connectionStatus === 'connecting' ? 'status-warning' : 'status-error'}"></span>
+			<span class="capitalize">{wsClient.connectionStatus}</span>
 		</span>
 		<button
 			type="button"
@@ -54,7 +56,7 @@ async function handleCopy() {
 			onclick={onToggleSidebar}
 			aria-label="Toggle sidebar"
 		>
-			☰ Sidebar
+			Sidebar
 		</button>
 	</div>
 </header>

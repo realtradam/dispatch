@@ -32,3 +32,8 @@ export * from "./credentials/index.js";
 
 // Database
 export { getDatabase, closeDatabase, getDatabasePath } from "./db/index.js";
+
+// Tabs & Messages
+export { type TabRow, createTab, getTab, listOpenTabs, updateTabTitle, updateTabModel, updateTabStatus, archiveTab } from "./db/tabs.js";
+export { type MessageRow, appendMessage, updateMessage, getMessagesForTab, clearMessagesForTab } from "./db/messages.js";
+export { getSetting, setSetting, deleteSetting } from "./db/settings.js";

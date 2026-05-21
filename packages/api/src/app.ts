@@ -5,6 +5,7 @@ import { PermissionManager } from "./permission-manager.js";
 import { configRoutes } from "./routes/config.js";
 import { skillsRoutes } from "./routes/skills.js";
 import { modelsRoutes, startWakeScheduler } from "./routes/models.js";
+import { tabsRoutes } from "./routes/tabs.js";
 
 export const permissionManager = new PermissionManager();
 export const agentManager = new AgentManager(permissionManager);
@@ -17,7 +18,7 @@ app.use(
 		origin: "http://localhost:5173",
 		credentials: true,
 		allowHeaders: ["Content-Type", "Authorization"],
-		allowMethods: ["GET", "POST", "OPTIONS"],
+		allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
 	}),
 );
 
@@ -29,19 +30,24 @@ app.get("/status", (c) => {
 	return c.json({
 		status: agentManager.getStatus(),
 		messageCount: agentManager.getMessageCount(),
+		statuses: agentManager.getAllStatuses(),
 	});
 });
 
 app.post("/chat", async (c) => {
-	const body = await c.req.json<{ message?: unknown; keyId?: unknown; modelId?: unknown; reasoningEffort?: unknown }>();
-	const message = body.message;
+	const body = await c.req.json<{ tabId?: unknown; message?: unknown; keyId?: unknown; modelId?: unknown; reasoningEffort?: unknown }>();
+	const { tabId, message } = body;
+
+	if (typeof tabId !== "string" || tabId.trim() === "") {
+		return c.json({ error: "tabId must be a non-empty string" }, 400);
+	}
 
 	if (typeof message !== "string" || message.trim() === "") {
 		return c.json({ error: "message must be a non-empty string" }, 400);
 	}
 
-	if (agentManager.getStatus() === "running") {
-		return c.json({ error: "agent is already running" }, 409);
+	if (agentManager.getTabStatus(tabId) === "running") {
+		return c.json({ error: "agent is already running for this tab" }, 409);
 	}
 
 	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
@@ -52,7 +58,7 @@ app.post("/chat", async (c) => {
 		: undefined;
 
 	// Non-blocking — let the agent run in the background
-	agentManager.processMessage(message, keyId, modelId, reasoningEffort).catch(console.error);
+	agentManager.processMessage(tabId, message, keyId, modelId, reasoningEffort).catch(console.error);
 
 	return c.json({ status: "ok" });
 });
@@ -60,6 +66,7 @@ app.post("/chat", async (c) => {
 app.route("/config", configRoutes);
 app.route("/skills", skillsRoutes);
 app.route("/models", modelsRoutes);
+app.route("/tabs", tabsRoutes);
 
 // Start the wake scheduler on boot (restores persisted schedule)
 startWakeScheduler();

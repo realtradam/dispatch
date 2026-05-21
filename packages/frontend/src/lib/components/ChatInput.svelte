@@ -1,9 +1,9 @@
 <script lang="ts">
-import { chatStore } from "../chat.svelte.js";
+import { tabStore } from "../tabs.svelte.js";
 
 let inputEl: HTMLInputElement | undefined;
 let inputValue = $state("");
-const isDisabled = $derived(chatStore.agentStatus === "running");
+const isDisabled = $derived((tabStore.activeTab?.agentStatus ?? "idle") === "running");
 
 $effect(() => {
 	inputEl?.focus();
@@ -20,7 +20,7 @@ function submit() {
 	const text = inputValue.trim();
 	if (!text || isDisabled) return;
 	inputValue = "";
-	chatStore.sendMessage(text);
+	tabStore.sendMessage(text);
 }
 </script>
 

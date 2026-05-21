@@ -19,6 +19,7 @@ import {
 	TaskList,
 	createTaskListTool,
 	type ClaudeAccount,
+	appendMessage,
 	getClaudeAccountsFromDB,
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
@@ -28,6 +29,7 @@ import type { PermissionManager } from "./permission-manager.js";
 import { setConfigGetter } from "./routes/config.js";
 import { setSkillsGetter } from "./routes/skills.js";
 import { setModelsGetter, setAccountsGetter } from "./routes/models.js";
+import { setTabsAgentManager } from "./routes/tabs.js";
 
 const SYSTEM_PROMPT = `You are Dispatch, a helpful AI coding assistant. You have access to the following tools for working with files in the current working directory:
 
@@ -39,20 +41,23 @@ const SYSTEM_PROMPT = `You are Dispatch, a helpful AI coding assistant. You have
 
 When asked to work with files, use these tools. Always confirm what you did after completing an action. Be concise and helpful.`;
 
-export class AgentManager {
-	private agent: Agent | null = null;
-	private status: AgentStatus = "idle";
-	private messageCount = 0;
-	private eventListeners: Set<(event: AgentEvent) => void> = new Set();
-	private permissionManager: PermissionManager | undefined;
+interface TabAgent {
+	agent: Agent | null;
+	status: AgentStatus;
+	keyId: string | null;
+	modelId: string | null;
+	taskList: TaskList;
+}
 
-	activeModelId: string | null = null;
-	activeKeyId: string | null = null;
+export class AgentManager {
+	private tabAgents: Map<string, TabAgent> = new Map();
+	private messageCount = 0;
+	private eventListeners: Set<(event: AgentEvent & { tabId: string }) => void> = new Set();
+	private permissionManager: PermissionManager | undefined;
 
 	private config: DispatchConfig;
 	private skillsData: { skills: SkillDefinition[]; mappings: AgentSkillMapping[] };
 	private modelRegistry: ModelRegistry | null = null;
-	private taskList: TaskList;
 
 	private configWatcher: { close(): void } | null = null;
 	private skillsWatcher: { close(): void } | null = null;
@@ -89,12 +94,7 @@ export class AgentManager {
 			() => this.modelRegistry,
 		);
 		setAccountsGetter(() => this.claudeAccounts);
-
-		// Set up task list
-		this.taskList = new TaskList();
-		this.taskList.onChange((tasks) => {
-			this.emit({ type: "task-list-update", tasks });
-		});
+		setTabsAgentManager(() => this);
 
 		// Set up hot-reload watchers
 		this.configWatcher = createConfigWatcher(workingDirectory, (newConfig) => {
@@ -107,16 +107,26 @@ export class AgentManager {
 			}
 			// Update model registry with new config
 			this._initModelRegistry(newConfig);
-			// Invalidate cached agent so next message uses updated config
-			this.agent = null;
-			this.emit({ type: "config-reload" });
+			// Invalidate cached agents so next message uses updated config
+			for (const tabAgent of this.tabAgents.values()) {
+				tabAgent.agent = null;
+			}
+			// Emit config-reload to all tabs
+			for (const tabId of this.tabAgents.keys()) {
+				this.emit({ type: "config-reload" }, tabId);
+			}
 		});
 
 		this.skillsWatcher = createSkillsWatcher(workingDirectory, (result) => {
 			this.skillsData = result;
-			// Invalidate cached agent so next message uses updated skills
-			this.agent = null;
-			this.emit({ type: "config-reload" });
+			// Invalidate cached agents so next message uses updated skills
+			for (const tabAgent of this.tabAgents.values()) {
+				tabAgent.agent = null;
+			}
+			// Emit config-reload to all tabs
+			for (const tabId of this.tabAgents.keys()) {
+				this.emit({ type: "config-reload" }, tabId);
+			}
 		});
 	}
 
@@ -147,28 +157,51 @@ export class AgentManager {
 		return this.permissionManager;
 	}
 
-	getTaskList(): TaskList {
-		return this.taskList;
+	/** Get the TaskList for a specific tab (creates the tab entry if missing). */
+	getTaskList(tabId: string): TaskList {
+		return this._getOrCreateTabAgent(tabId).taskList;
 	}
 
 	getClaudeAccounts(): ClaudeAccount[] {
 		return this.claudeAccounts;
 	}
 
-	private async getOrCreateAgent(keyId?: string, modelId?: string): Promise<Agent> {
-		// Determine effective override: use provided values, or fall back to stored active values
-		const effectiveKeyId = keyId ?? this.activeKeyId ?? undefined;
-		const effectiveModelId = modelId ?? this.activeModelId ?? undefined;
+	/** Get or create the TabAgent entry for a tab (without creating an Agent). */
+	private _getOrCreateTabAgent(tabId: string): TabAgent {
+		let tabAgent = this.tabAgents.get(tabId);
+		if (!tabAgent) {
+			const taskList = new TaskList();
+			taskList.onChange((tasks) => {
+				this.emit({ type: "task-list-update", tasks }, tabId);
+			});
+			tabAgent = {
+				agent: null,
+				status: "idle",
+				keyId: null,
+				modelId: null,
+				taskList,
+			};
+			this.tabAgents.set(tabId, tabAgent);
+		}
+		return tabAgent;
+	}
+
+	private async getOrCreateAgentForTab(tabId: string, keyId?: string, modelId?: string): Promise<Agent> {
+		const tabAgent = this._getOrCreateTabAgent(tabId);
+
+		// Determine effective override: use provided values, or fall back to stored per-tab values
+		const effectiveKeyId = keyId ?? tabAgent.keyId;
+		const effectiveModelId = modelId ?? tabAgent.modelId;
 
 		// If the override differs from what the current agent was built with, invalidate the cache
 		if (
-			this.agent &&
-			(effectiveKeyId !== this.activeKeyId || effectiveModelId !== this.activeModelId)
+			tabAgent.agent &&
+			(effectiveKeyId !== tabAgent.keyId || effectiveModelId !== tabAgent.modelId)
 		) {
-			this.agent = null;
+			tabAgent.agent = null;
 		}
 
-		if (!this.agent) {
+		if (!tabAgent.agent) {
 			const workingDirectory = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
 
 			const tools = [
@@ -176,7 +209,7 @@ export class AgentManager {
 				createWriteFileTool(workingDirectory),
 				createListFilesTool(workingDirectory),
 				createRunShellTool(workingDirectory),
-				createTaskListTool(this.taskList),
+				createTaskListTool(tabAgent.taskList),
 			];
 
 			const ruleset = configToRuleset(this.config);
@@ -208,8 +241,8 @@ export class AgentManager {
 								baseURL = key.base_url;
 								model = effectiveModelId;
 								provider = "anthropic";
-								this.activeKeyId = effectiveKeyId;
-								this.activeModelId = effectiveModelId;
+								tabAgent.keyId = effectiveKeyId;
+								tabAgent.modelId = effectiveModelId;
 								useOverride = true;
 							} else {
 								// Token expired — await the async refresh
@@ -221,8 +254,8 @@ export class AgentManager {
 									baseURL = key.base_url;
 									model = effectiveModelId;
 									provider = "anthropic";
-									this.activeKeyId = effectiveKeyId;
-									this.activeModelId = effectiveModelId;
+									tabAgent.keyId = effectiveKeyId;
+									tabAgent.modelId = effectiveModelId;
 									useOverride = true;
 								} else {
 									console.warn(`dispatch: unable to refresh Claude credentials for "${account.label}" — using stale token`);
@@ -231,8 +264,8 @@ export class AgentManager {
 									baseURL = key.base_url;
 									model = effectiveModelId;
 									provider = "anthropic";
-									this.activeKeyId = effectiveKeyId;
-									this.activeModelId = effectiveModelId;
+									tabAgent.keyId = effectiveKeyId;
+									tabAgent.modelId = effectiveModelId;
 									useOverride = true;
 								}
 							}
@@ -246,13 +279,13 @@ export class AgentManager {
 							apiKey = envKey;
 							baseURL = key.base_url;
 							model = effectiveModelId;
-							this.activeKeyId = effectiveKeyId;
-							this.activeModelId = effectiveModelId;
+							tabAgent.keyId = effectiveKeyId;
+							tabAgent.modelId = effectiveModelId;
 							useOverride = true;
 						} else {
 							console.warn(`dispatch: env var "${key.env}" not set for key "${key.id}", falling back to env vars`);
-							this.activeKeyId = effectiveKeyId;
-							this.activeModelId = effectiveModelId;
+							tabAgent.keyId = effectiveKeyId;
+							tabAgent.modelId = effectiveModelId;
 							useOverride = true;
 						}
 					}
@@ -263,11 +296,11 @@ export class AgentManager {
 
 			if (!useOverride) {
 				// Clear any previous override when falling back to default resolution
-				this.activeKeyId = null;
-				this.activeModelId = null;
+				tabAgent.keyId = null;
+				tabAgent.modelId = null;
 			}
 
-			this.agent = new Agent({
+			tabAgent.agent = new Agent({
 				model,
 				apiKey,
 				baseURL,
@@ -280,45 +313,112 @@ export class AgentManager {
 				...(claudeCredentials ? { claudeCredentials } : {}),
 			});
 		}
-		return this.agent;
+		return tabAgent.agent;
 	}
 
+	getTabStatus(tabId: string): AgentStatus {
+		return this.tabAgents.get(tabId)?.status ?? "idle";
+	}
+
+	getAllStatuses(): Record<string, AgentStatus> {
+		const result: Record<string, AgentStatus> = {};
+		for (const [tabId, tabAgent] of this.tabAgents.entries()) {
+			result[tabId] = tabAgent.status;
+		}
+		return result;
+	}
+
+	/** @deprecated Use getTabStatus(tabId) instead */
 	getStatus(): AgentStatus {
-		return this.status;
+		// Return running if any tab is running, otherwise idle
+		for (const tabAgent of this.tabAgents.values()) {
+			if (tabAgent.status === "running") return "running";
+		}
+		return "idle";
 	}
 
 	getMessageCount(): number {
 		return this.messageCount;
 	}
 
-	onEvent(listener: (event: AgentEvent) => void): () => void {
+	onEvent(listener: (event: AgentEvent & { tabId: string }) => void): () => void {
 		this.eventListeners.add(listener);
 		return () => {
 			this.eventListeners.delete(listener);
 		};
 	}
 
-	private emit(event: AgentEvent): void {
+	private emit(event: AgentEvent, tabId: string): void {
 		for (const listener of this.eventListeners) {
-			listener(event);
+			listener({ ...event, tabId } as AgentEvent & { tabId: string });
 		}
 	}
 
-	async processMessage(message: string, keyId?: string, modelId?: string, reasoningEffort?: "none" | "low" | "medium" | "high" | "max"): Promise<void> {
-		this.status = "running";
+	stopTab(tabId: string): void {
+		const tabAgent = this.tabAgents.get(tabId);
+		if (tabAgent) {
+			tabAgent.status = "idle";
+			tabAgent.agent = null;
+		}
+	}
+
+	deleteTab(tabId: string): void {
+		this.stopTab(tabId);
+		this.tabAgents.delete(tabId);
+	}
+
+	async processMessage(tabId: string, message: string, keyId?: string, modelId?: string, reasoningEffort?: "none" | "low" | "medium" | "high" | "max"): Promise<void> {
+		const tabAgent = this._getOrCreateTabAgent(tabId);
+		tabAgent.status = "running";
 		this.messageCount += 1;
 
 		try {
-			const agent = await this.getOrCreateAgent(keyId, modelId);
+			const agent = await this.getOrCreateAgentForTab(tabId, keyId, modelId);
+
+			// Persist user message to DB
+			appendMessage(tabId, crypto.randomUUID(), "user", JSON.stringify([{ type: "text", text: message }]));
+
+			let assistantText = "";
+			let assistantThinking = "";
+			const assistantToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown>; result?: string; isError?: boolean }> = [];
+
 			for await (const event of agent.run(message, reasoningEffort ? { reasoningEffort } : undefined)) {
-				this.status = event.type === "status" ? event.status : this.status;
-				this.emit(event);
+				if (event.type === "status") {
+					tabAgent.status = event.status;
+				}
+				this.emit(event, tabId);
+
+				// Accumulate content for DB persistence
+				if (event.type === "text-delta") {
+					assistantText += event.delta;
+				} else if (event.type === "reasoning-delta") {
+					assistantThinking += event.delta;
+				} else if (event.type === "tool-call") {
+					assistantToolCalls.push({ id: event.toolCall.id, name: event.toolCall.name, arguments: event.toolCall.arguments });
+				} else if (event.type === "tool-result") {
+					const tc = assistantToolCalls.find((t) => t.id === event.toolResult.toolCallId);
+					if (tc) { tc.result = event.toolResult.result; tc.isError = event.toolResult.isError; }
+				} else if (event.type === "done") {
+					// Persist assistant message to DB
+					const contentSegments: Array<Record<string, unknown>> = [];
+					if (assistantText) contentSegments.push({ type: "text", text: assistantText });
+					for (const tc of assistantToolCalls) {
+						contentSegments.push({ type: "tool-call", ...tc });
+					}
+					if (contentSegments.length > 0) {
+						appendMessage(tabId, crypto.randomUUID(), "assistant", JSON.stringify(contentSegments), assistantThinking || undefined);
+					}
+					// Reset for next turn
+					assistantText = "";
+					assistantThinking = "";
+					assistantToolCalls.length = 0;
+				}
 			}
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
-			this.status = "error";
-			this.emit({ type: "error", error: errorMsg });
-			this.emit({ type: "status", status: "error" });
+			tabAgent.status = "error";
+			this.emit({ type: "error", error: errorMsg }, tabId);
+			this.emit({ type: "status", status: "error" }, tabId);
 		}
 	}
 
