@@ -52,24 +52,37 @@
 	}
 </script>
 
-<div class="flex flex-col gap-2 flex-1 min-h-0">
+<div class="flex flex-col gap-2">
 	{#each panels as panel, idx (panel.id)}
-		<div class="bg-base-200 rounded-lg p-3 flex flex-col min-h-0 {idx > 0 ? 'flex-1' : 'flex-1'}">
-			<select
-				class="select select-bordered select-sm w-full"
-				value={panel.selected}
-				onchange={(e) => {
-					panels = panels.map((p) =>
-						p.id === panel.id ? { ...p, selected: e.currentTarget.value } : p,
-					);
-				}}
-			>
-				{#each viewOptions as option}
-					<option value={option} disabled={option === "Select a view"}>{option}</option>
-				{/each}
-			</select>
+		<div class="bg-base-200 rounded-lg p-3 flex flex-col">
+			<div class="flex items-center gap-1">
+				<select
+					class="select select-bordered select-sm flex-1"
+					value={panel.selected}
+					onchange={(e) => {
+						panels = panels.map((p) =>
+							p.id === panel.id ? { ...p, selected: e.currentTarget.value } : p,
+						);
+					}}
+				>
+					{#each viewOptions as option}
+						<option value={option} disabled={option === "Select a view"}>{option}</option>
+					{/each}
+				</select>
+				{#if idx > 0}
+					<button
+						type="button"
+						class="btn btn-sm btn-ghost btn-square shrink-0"
+						onclick={() => {
+							panels = panels.filter((p) => p.id !== panel.id);
+						}}
+					>
+						✕
+					</button>
+				{/if}
+			</div>
 
-			<div class="mt-2 flex-1 min-h-0 overflow-y-auto">
+			<div class="mt-2">
 				{#if panel.selected === "Current Model"}
 					<ModelSelector
 						{keys}
