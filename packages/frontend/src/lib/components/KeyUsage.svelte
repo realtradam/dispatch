@@ -122,12 +122,34 @@
 
 	function formatDate(ts: number): string {
 		const diff = ts - Date.now();
-		if (diff > 0 && diff < 48 * 60 * 60 * 1000) {
+		const days = Math.floor(diff / 86400000);
+		const d = new Date(ts);
+		const dateStr = d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" });
+
+		if (diff <= 0) {
+			return d.toLocaleString();
+		}
+		if (diff < 48 * 60 * 60 * 1000) {
 			const hours = Math.floor(diff / 3600000);
 			const minutes = Math.floor((diff % 3600000) / 60000);
 			return `in ${hours}:${String(minutes).padStart(2, "0")}`;
 		}
-		return new Date(ts).toLocaleString();
+		if (days <= 30) {
+			const weeks = Math.floor(days / 7);
+			const remDays = days % 7;
+			if (weeks > 0 && remDays > 0) {
+				return `in ${weeks}w ${remDays}d (${dateStr})`;
+			}
+			if (weeks > 0) {
+				return `in ${weeks} week${weeks > 1 ? "s" : ""} (${dateStr})`;
+			}
+			return `in ${days} day${days > 1 ? "s" : ""} (${dateStr})`;
+		}
+		return d.toLocaleDateString("en-US", {
+			month: "2-digit",
+			day: "2-digit",
+			year: "numeric",
+		});
 	}
 
 	function hasBucketData(bucket: UsageBucket | undefined): boolean {
