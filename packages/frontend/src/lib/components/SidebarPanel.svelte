@@ -29,7 +29,7 @@
 	const options = ["Key Usage", "Claude Reset", "Model Status", "Tasks", "Config", "Skills", "Permission Log"];
 </script>
 
-<div class="bg-base-200 rounded-lg p-3">
+<div class="bg-base-200 rounded-lg p-3 flex flex-col min-h-0">
 	<select
 		class="select select-bordered select-sm w-full"
 		bind:value={selected}
@@ -39,7 +39,7 @@
 		{/each}
 	</select>
 
-	<div class="mt-2">
+	<div class="mt-2 flex-1 min-h-0">
 		{#if selected === "Key Usage"}
 			<KeyUsage {keys} {apiBase} />
 		{:else if selected === "Claude Reset"}

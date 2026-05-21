@@ -159,11 +159,11 @@
 	}
 </script>
 
-<div class="flex flex-col gap-3">
+<div class="flex flex-col gap-3 flex-1 min-h-0">
 	{#if keys.length === 0}
 		<p class="text-xs text-base-content/50">No keys available.</p>
 	{:else}
-		<div class="flex flex-col gap-3 max-h-96 overflow-y-auto">
+		<div class="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto">
 			<!-- Claude (all accounts merged under one card) -->
 			{#if claudeLoading}
 				<div class="bg-base-200 rounded-lg p-2">
