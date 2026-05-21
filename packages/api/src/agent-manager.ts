@@ -338,6 +338,7 @@ export class AgentManager {
 									parentKeyId: tabAgent.keyId,
 									parentModelId: tabAgent.modelId,
 									parentAllowedTools: childParentAllowedTools,
+									parentTabId: tabId,
 								}),
 						}),
 					});
@@ -373,6 +374,7 @@ export class AgentManager {
 									parentKeyId: tabAgent.keyId,
 									parentModelId: tabAgent.modelId,
 									parentAllowedTools,
+									parentTabId: tabId,
 								}),
 						}),
 					});
@@ -566,6 +568,7 @@ export class AgentManager {
 		parentKeyId?: string | null;
 		parentModelId?: string | null;
 		parentAllowedTools?: Set<string>;
+		parentTabId?: string;
 	}): Promise<string> {
 		const tabId = crypto.randomUUID();
 		const title = options.task.length > 50 ? `${options.task.slice(0, 47)}...` : options.task;
@@ -605,14 +608,25 @@ export class AgentManager {
 		// Create tab in DB
 		try {
 			const { createTab } = await import("@dispatch/core");
-			createTab(tabId, title);
+			createTab(tabId, title, {
+				keyId: tabAgent.keyId,
+				modelId: tabAgent.modelId,
+				parentTabId: options.parentTabId,
+			});
 		} catch {
 			// Continue even if DB fails
 		}
 
 		// Notify the frontend about the new tab
 		this.emit(
-			{ type: "tab-created", id: tabId, title, keyId: tabAgent.keyId, modelId: tabAgent.modelId },
+			{
+				type: "tab-created",
+				id: tabId,
+				title,
+				keyId: tabAgent.keyId,
+				modelId: tabAgent.modelId,
+				parentTabId: options.parentTabId ?? null,
+			},
 			tabId,
 		);
 
@@ -668,6 +682,18 @@ export class AgentManager {
 		tabAgent.status = "running";
 		this.messageCount += 1;
 
+		let allOutput = "";
+		let assistantText = "";
+		let assistantThinking = "";
+		const assistantToolCalls: Array<{
+			id: string;
+			name: string;
+			arguments: Record<string, unknown>;
+			result?: string;
+			isError?: boolean;
+		}> = [];
+		let processError: string | null = null;
+
 		try {
 			const agent = await this.getOrCreateAgentForTab(tabId, keyId, modelId);
 
@@ -678,17 +704,6 @@ export class AgentManager {
 				"user",
 				JSON.stringify([{ type: "text", text: message }]),
 			);
-
-			let allOutput = "";
-			let assistantText = "";
-			let assistantThinking = "";
-			const assistantToolCalls: Array<{
-				id: string;
-				name: string;
-				arguments: Record<string, unknown>;
-				result?: string;
-				isError?: boolean;
-			}> = [];
 
 			for await (const event of agent.run(
 				message,
@@ -742,15 +757,38 @@ export class AgentManager {
 					assistantToolCalls.length = 0;
 				}
 			}
-			// Resolve completion promise for child agents
-			tabAgent.finalOutput = allOutput;
-			tabAgent.completionResolve?.({ status: "done", result: allOutput || "(no output)" });
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
+			processError = errorMsg;
 			tabAgent.status = "error";
 			this.emit({ type: "error", error: errorMsg }, tabId);
 			this.emit({ type: "status", status: "error" }, tabId);
-			tabAgent.completionResolve?.({ status: "error", error: errorMsg });
+		} finally {
+			// Flush any accumulated assistant content that wasn't saved by a done event
+			// (happens when the agent is aborted mid-stream or throws an error)
+			if (assistantText || assistantToolCalls.length > 0) {
+				const contentSegments: Array<Record<string, unknown>> = [];
+				if (assistantText) contentSegments.push({ type: "text", text: assistantText });
+				for (const tc of assistantToolCalls) {
+					contentSegments.push({ type: "tool-call", ...tc });
+				}
+				if (contentSegments.length > 0) {
+					appendMessage(
+						tabId,
+						crypto.randomUUID(),
+						"assistant",
+						JSON.stringify(contentSegments),
+						assistantThinking || undefined,
+					);
+				}
+			}
+			// Resolve completion promise for child agents
+			if (processError === null) {
+				tabAgent.finalOutput = allOutput;
+				tabAgent.completionResolve?.({ status: "done", result: allOutput || "(no output)" });
+			} else {
+				tabAgent.completionResolve?.({ status: "error", error: processError });
+			}
 		}
 	}
 
