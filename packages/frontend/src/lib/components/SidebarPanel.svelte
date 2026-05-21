@@ -7,12 +7,10 @@
 	import PermissionLog from "./PermissionLog.svelte";
 	import KeyUsage from "./KeyUsage.svelte";
 	import ClaudeReset from "./ClaudeReset.svelte";
-	import type { TaskItem, LogEntry, KeyInfo, ModelInfo } from "../types.js";
+	import type { TaskItem, LogEntry, KeyInfo } from "../types.js";
 
 	const {
-		models = [],
 		keys = [],
-		tags = [],
 		tasks = [],
 		permissionLog = [],
 		apiBase = "",
@@ -23,9 +21,7 @@
 		onModelChange,
 		onReasoningChange,
 	}: {
-		models?: ModelInfo[];
 		keys?: KeyInfo[];
-		tags?: string[];
 		tasks?: TaskItem[];
 		permissionLog?: LogEntry[];
 		apiBase?: string;
@@ -109,7 +105,7 @@
 				{:else if panel.selected === "Claude Reset"}
 					<ClaudeReset {apiBase} />
 				{:else if panel.selected === "Model Status"}
-					<ModelStatus {models} {keys} {tags} {apiBase} />
+					<ModelStatus {keys} {apiBase} />
 				{:else if panel.selected === "Tasks"}
 					<TaskListPanel {tasks} />
 				{:else if panel.selected === "Config"}

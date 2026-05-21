@@ -94,12 +94,6 @@ export interface KeyInfo {
 	exhaustedAt: number | null;
 }
 
-export interface ModelInfo {
-	id: string;
-	provider: string;
-	tags: string[];
-}
-
 export interface LogEntry {
 	id: string;
 	permission: string;

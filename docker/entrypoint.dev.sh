@@ -40,8 +40,10 @@ if [ -d /app/node_modules ]; then
     chown -R "$HOST_UID:$HOST_GID" /app/node_modules
 fi
 
-# Install/update dependencies as the target user
-su -s /bin/bash - "$USER_NAME" -c "export HOME=$USER_HOME && cd /app && bun install"
+# Install/update dependencies as the target user (skip with SKIP_INSTALL=1)
+if [ "${SKIP_INSTALL:-}" != "1" ]; then
+    su -s /bin/bash - "$USER_NAME" -c "export HOME=$USER_HOME && cd /app && bun install"
+fi
 
 # Execute the main command as the target user
 exec su -s /bin/bash - "$USER_NAME" -c "export HOME=$USER_HOME && cd /app && exec $*"

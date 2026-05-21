@@ -7,12 +7,6 @@
 		exhaustedAt: number | null;
 	}
 
-	interface ModelInfo {
-		id: string;
-		provider: string;
-		tags: string[];
-	}
-
 	interface CredentialStatus {
 		keyId: string;
 		provider: string;
@@ -23,15 +17,11 @@
 	}
 
 	const {
-		models = [],
 		keys = [],
-		tags = [],
 		currentModel,
 		apiBase = "",
 	}: {
-		models?: ModelInfo[];
 		keys?: KeyInfo[];
-		tags?: string[];
 		currentModel?: string;
 		apiBase?: string;
 	} = $props();
@@ -41,8 +31,6 @@
 	const allActive = $derived(totalKeys > 0 && activeKeys === totalKeys);
 	const allExhausted = $derived(totalKeys > 0 && activeKeys === 0);
 	const someExhausted = $derived(totalKeys > 0 && activeKeys < totalKeys && activeKeys > 0);
-
-	const uniqueTags = $derived([...new Set(tags)]);
 
 	let credentialStatus = $state<Record<string, CredentialStatus>>({});
 	let importingKey = $state<string | null>(null);
@@ -158,7 +146,7 @@
 </script>
 
 <div class="flex flex-col gap-3">
-	{#if models.length === 0 && keys.length === 0}
+	{#if keys.length === 0}
 		<p class="text-xs text-base-content/50">
 			No models configured. Using environment defaults.
 		</p>
@@ -188,18 +176,6 @@
 			<div class="flex flex-col gap-0.5">
 				<p class="text-xs text-base-content/50 uppercase tracking-wide">Current Model</p>
 				<p class="text-sm font-mono font-semibold text-primary">{currentModel}</p>
-			</div>
-		{/if}
-
-		<!-- Tags -->
-		{#if uniqueTags.length > 0}
-			<div class="flex flex-col gap-1">
-				<p class="text-xs text-base-content/50 uppercase tracking-wide">Tags</p>
-				<div class="flex flex-wrap gap-1">
-					{#each uniqueTags as tag (tag)}
-						<span class="badge badge-outline badge-xs">{tag}</span>
-					{/each}
-				</div>
 			</div>
 		{/if}
 

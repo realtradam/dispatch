@@ -77,26 +77,8 @@ export interface AgentConfig {
 // ─── Config Types (dispatch.toml) ────────────────────────────────
 
 export interface DispatchConfig {
-	agents?: Record<string, AgentTemplate>;
-	models?: ModelDefinition[];
 	keys?: KeyDefinition[];
-	fallback?: string[];
 	permissions: Record<string, string | Record<string, string>>;
-}
-
-export interface AgentTemplate {
-	name: string;
-	description: string;
-	system_prompt: string;
-	tools: string[];
-	permissions: Record<string, string | Record<string, string>>;
-	model_tag: string;
-}
-
-export interface ModelDefinition {
-	id: string;
-	provider: string;
-	tags: string[];
 }
 
 export interface KeyDefinition {
@@ -106,13 +88,6 @@ export interface KeyDefinition {
 	base_url: string;
 	/** For "anthropic" provider: path to credentials file (default: ~/.claude/.credentials.json) */
 	credentials_file?: string;
-}
-
-// ─── Model Resolution ────────────────────────────────────────────
-
-export interface ResolvedModel {
-	model: ModelDefinition;
-	key: KeyDefinition;
 }
 
 export type KeyStatus = "active" | "exhausted";

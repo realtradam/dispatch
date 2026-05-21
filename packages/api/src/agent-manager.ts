@@ -16,7 +16,6 @@ import {
 	loadSkills,
 	createSkillsWatcher,
 	ModelRegistry,
-	ModelResolver,
 	TaskList,
 	createTaskListTool,
 	type ClaudeAccount,
@@ -53,7 +52,6 @@ export class AgentManager {
 	private config: DispatchConfig;
 	private skillsData: { skills: SkillDefinition[]; mappings: AgentSkillMapping[] };
 	private modelRegistry: ModelRegistry | null = null;
-	private modelResolver: ModelResolver | null = null;
 	private taskList: TaskList;
 
 	private configWatcher: { close(): void } | null = null;
@@ -89,7 +87,6 @@ export class AgentManager {
 		setSkillsGetter(() => this.skillsData);
 		setModelsGetter(
 			() => this.modelRegistry,
-			() => this.modelResolver,
 		);
 		setAccountsGetter(() => this.claudeAccounts);
 
@@ -135,17 +132,14 @@ export class AgentManager {
 	}
 
 	private _initModelRegistry(config: DispatchConfig): void {
-		if (config.models && config.keys) {
+		if (config.keys) {
 			if (this.modelRegistry) {
-				this.modelRegistry.updateConfig(config.models, config.keys, config.fallback ?? []);
+				this.modelRegistry.updateConfig(config.keys);
 			} else {
-				this.modelRegistry = new ModelRegistry(config.models, config.keys, config.fallback ?? []);
-				this.modelResolver = new ModelResolver(this.modelRegistry);
+				this.modelRegistry = new ModelRegistry(config.keys);
 			}
 		} else {
-			// Models/keys removed from config — clear the registry
 			this.modelRegistry = null;
-			this.modelResolver = null;
 		}
 	}
 
@@ -263,7 +257,7 @@ export class AgentManager {
 						}
 					}
 				} else {
-					console.warn(`dispatch: key "${effectiveKeyId}" not found in model registry, falling back to tag-based resolution`);
+					console.warn(`dispatch: key "${effectiveKeyId}" not found in model registry`);
 				}
 			}
 
@@ -271,51 +265,6 @@ export class AgentManager {
 				// Clear any previous override when falling back to default resolution
 				this.activeKeyId = null;
 				this.activeModelId = null;
-			}
-
-			if (!useOverride && this.modelRegistry && this.modelResolver) {
-				// Try to get model_tag from default agent template, fall back to "heavy"
-				const defaultAgent = this.config.agents?.["default"];
-				const tag = defaultAgent?.model_tag ?? "heavy";
-				const resolved = this.modelResolver.resolve(tag);
-				if (resolved) {
-					model = resolved.model.id;
-					baseURL = resolved.key.base_url;
-					// Check if resolved key is anthropic
-					if (resolved.key.provider === "anthropic") {
-						const credFile = resolved.key.credentials_file;
-						const account = this.claudeAccounts.find((a) => a.id === resolved.key.id)
-							?? (credFile ? this.claudeAccounts.find((a) => a.source === credFile) : this.claudeAccounts[0]);
-						if (account) {
-							let creds = refreshAccountCredentials(account);
-							if (!creds || creds.expiresAt <= Date.now() + 60_000) {
-								creds = await refreshAccountCredentialsAsync(account);
-								if (creds) account.credentials = creds;
-							}
-							if (creds) {
-								claudeCredentials = { accessToken: creds.accessToken };
-								apiKey = creds.accessToken;
-								provider = "anthropic";
-							} else {
-								console.warn(`dispatch: no valid Claude credentials for key "${resolved.key.id}"`);
-							}
-						} else {
-							console.warn(`dispatch: no Claude credentials found for key "${resolved.key.id}"`);
-						}
-					} else {
-						const envKey = resolveApiKey(resolved.key.id);
-						if (envKey) {
-							apiKey = envKey;
-						} else {
-							console.warn(`dispatch: env var not set for key "${resolved.key.id}", falling back to defaults`);
-							model = "deepseek-v4-flash";
-							baseURL = "https://opencode.ai/zen/go/v1";
-							apiKey = "";
-						}
-					}
-				} else {
-					console.warn(`dispatch: could not resolve model for tag "${tag}", falling back to env vars`);
-				}
 			}
 
 			this.agent = new Agent({

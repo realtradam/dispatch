@@ -9,14 +9,12 @@ import HotReloadIndicator from "./lib/components/HotReloadIndicator.svelte";
 import { chatStore } from "./lib/chat.svelte.js";
 import { wsClient } from "./lib/ws.svelte.js";
 import { config } from "./lib/config.js";
-import type { KeyInfo, ModelInfo } from "./lib/types.js";
+import type { KeyInfo } from "./lib/types.js";
 
 const STORAGE_KEY = "dispatch-theme";
 
-let modelsData = $state<{ models: ModelInfo[]; keys: KeyInfo[]; tags: string[] }>({
-	models: [],
+let modelsData = $state<{ keys: KeyInfo[] }>({
 	keys: [],
-	tags: [],
 });
 
 let sidebarOpen = $state(true);
@@ -27,9 +25,7 @@ async function fetchModels() {
 		if (!res.ok) return;
 		const data = await res.json();
 		modelsData = {
-			models: data.models ?? [],
 			keys: data.keys ?? [],
-			tags: data.tags ? (Array.isArray(data.tags) ? data.tags : Object.keys(data.tags)) : [],
 		};
 	} catch {
 		// ignore fetch errors
@@ -83,10 +79,8 @@ onMount(() => {
 			class="w-80 flex-1 min-h-0 overflow-y-auto bg-base-100 border-l border-base-300 px-2 py-2 flex flex-col gap-2 [&>*]:shrink-0 transition-transform duration-300 ease-out"
 			style="transform: translateX({sidebarOpen ? '0' : '100%'})"
 		>
-			<SidebarPanel
-				models={modelsData.models}
-				keys={modelsData.keys}
-				tags={modelsData.tags}
+		<SidebarPanel
+			keys={modelsData.keys}
 				tasks={chatStore.tasks}
 				permissionLog={chatStore.permissionLog}
 				apiBase={config.apiBase}

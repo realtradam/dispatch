@@ -27,7 +27,11 @@ services:
       - "5173:5173"
     volumes:
       - .:/app
+    depends_on:
+      api:
+        condition: service_started
     environment:
       HOST_UID: ${HOST_UID:-1000}
       HOST_GID: ${HOST_GID:-1000}
       HOST_USER: ${HOST_USER:-dispatch}
+      SKIP_INSTALL: "1"
