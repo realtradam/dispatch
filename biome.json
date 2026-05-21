@@ -47,6 +47,6 @@
 		}
 	],
 	"files": {
-		"includes": ["**", "!**/node_modules", "!**/dist", "!**/build"]
+		"includes": ["**", "!**/node_modules", "!**/dist", "!**/build", "!references/**"]
 	}
 }

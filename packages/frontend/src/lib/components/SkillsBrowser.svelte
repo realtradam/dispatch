@@ -1,4 +1,7 @@
 <script lang="ts">
+import { appSettings } from "../settings.svelte.js";
+import { tabStore } from "../tabs.svelte.js";
+
 interface Skill {
 	name: string;
 	description: string;
@@ -7,16 +10,9 @@ interface Skill {
 	directory: "default" | "agents" | "project";
 }
 
-interface SkillMapping {
-	agentType: string;
-	isOrchestrator: boolean;
-	skills: string[];
-	scope: string;
-}
-
 interface SkillsResponse {
 	skills: Skill[];
-	mappings: SkillMapping[];
+	mappings: unknown[];
 }
 
 interface SkillDetail extends Skill {
@@ -27,11 +23,11 @@ interface SkillDetail extends Skill {
 const { apiBase }: { apiBase: string } = $props();
 
 let skills = $state<Skill[]>([]);
-let mappings = $state<SkillMapping[]>([]);
 let loading = $state(false);
 let error = $state<string | null>(null);
-let expandedSkills = $state<Record<string, SkillDetail | null>>({});
-let loadingSkill = $state<Record<string, boolean>>({});
+let expandedSkill = $state<string | null>(null);
+let expandedDetail = $state<SkillDetail | null>(null);
+let loadingDetail = $state(false);
 
 async function fetchSkills() {
 	loading = true;
@@ -41,7 +37,6 @@ async function fetchSkills() {
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const data: SkillsResponse = await res.json();
 		skills = data.skills ?? [];
-		mappings = data.mappings ?? [];
 	} catch (e) {
 		error = e instanceof Error ? e.message : "Failed to fetch skills";
 	} finally {
@@ -49,27 +44,47 @@ async function fetchSkills() {
 	}
 }
 
-async function toggleSkill(skill: Skill) {
-	const key = `${skill.scope}:${skill.name}`;
-	if (expandedSkills[key] !== undefined) {
-		const updated = { ...expandedSkills };
-		delete updated[key];
-		expandedSkills = updated;
+function skillKey(skill: Skill): string {
+	return `${skill.scope}:${skill.name}`;
+}
+
+function isChecked(skill: Skill): boolean {
+	return appSettings.skillChecks[skillKey(skill)] === true;
+}
+
+function isInjected(skill: Skill): boolean {
+	return tabStore.activeTab?.injectedSkills.includes(skillKey(skill)) ?? false;
+}
+
+function toggleCheck(skill: Skill): void {
+	const key = skillKey(skill);
+	appSettings.skillChecks = { ...appSettings.skillChecks, [key]: !isChecked(skill) };
+}
+
+function resetChecks(): void {
+	appSettings.skillChecks = {};
+}
+
+async function toggleExpand(skill: Skill) {
+	const key = skillKey(skill);
+	if (expandedSkill === key) {
+		expandedSkill = null;
+		expandedDetail = null;
 		return;
 	}
-	if (loadingSkill[key]) return;
-	loadingSkill = { ...loadingSkill, [key]: true };
+	expandedSkill = key;
+	expandedDetail = null;
+	loadingDetail = true;
 	try {
-		const res = await fetch(`${apiBase}/skills/${encodeURIComponent(skill.name)}?scope=${skill.scope}`);
+		const res = await fetch(
+			`${apiBase}/skills/${encodeURIComponent(skill.name)}?scope=${skill.scope}`,
+		);
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		const data: SkillDetail = await res.json();
-		expandedSkills = { ...expandedSkills, [key]: data };
-	} catch (_e) {
-		expandedSkills = { ...expandedSkills, [key]: null };
+		expandedDetail = await res.json();
+	} catch {
+		expandedDetail = null;
 	} finally {
-		const updated = { ...loadingSkill };
-		delete updated[key];
-		loadingSkill = updated;
+		loadingDetail = false;
 	}
 }
 
@@ -77,158 +92,99 @@ $effect(() => {
 	fetchSkills();
 });
 
-const globalSkills = $derived(skills.filter((s) => s.scope === "global"));
-const projectSkills = $derived(skills.filter((s) => s.scope === "project"));
-
-function skillsByDirectory(list: Skill[], dir: "default" | "agents" | "project") {
-	return list.filter((s) => s.directory === dir);
-}
-
-function getMappingsForScope(scope: string) {
-	return mappings.filter((m) => m.scope === scope);
-}
+const checkedCount = $derived(Object.values(appSettings.skillChecks).filter((v) => v).length);
 </script>
 
-<details class="collapse collapse-arrow bg-base-200 mt-4">
-	<summary class="collapse-title text-sm font-medium flex items-center gap-2">
-		<span>Skills</span>
+<div class="flex flex-col gap-3">
+	<div class="flex items-center gap-2">
+		<div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Skills</div>
 		{#if !loading}
 			<span class="badge badge-sm badge-neutral">{skills.length}</span>
 		{/if}
+		{#if checkedCount > 0}
+			<span class="badge badge-sm badge-primary">{checkedCount} queued</span>
+		{/if}
 		<button
 			class="btn btn-xs btn-ghost ml-auto"
-			onclick={(e) => { e.stopPropagation(); fetchSkills(); }}
+			onclick={fetchSkills}
 			title="Refresh skills"
 		>
-			↺ Refresh
+			Refresh
 		</button>
-	</summary>
-	<div class="collapse-content text-xs">
-		{#if loading}
-			<div class="flex items-center gap-2 py-2 text-base-content/60">
-				<span class="loading loading-spinner loading-xs"></span>
-				Loading skills...
-			</div>
-		{:else if error}
-			<div class="alert alert-error text-xs py-2">{error}</div>
-		{:else if skills.length === 0}
-			<p class="text-base-content/50 italic py-2">
-				No skills found. Create a <code class="font-mono">.skills/default/</code> directory to get started.
-			</p>
-		{:else}
-			{#snippet skillItem(skill: Skill)}
-				{@const key = `${skill.scope}:${skill.name}`}
-				{@const isExpanded = key in expandedSkills}
-				{@const detail = expandedSkills[key]}
-				{@const isLoading = loadingSkill[key]}
-				<div class="border-b border-base-300 last:border-0 py-1">
-					<div class="flex items-start gap-1 flex-wrap">
-						<button
-							class="font-mono text-primary hover:underline text-left"
-							onclick={() => toggleSkill(skill)}
-						>
-							{skill.name}
-						</button>
-						{#if isLoading}
-							<span class="loading loading-spinner loading-xs text-base-content/40"></span>
-						{/if}
-						{#each skill.tags as tag}
-							<span class="badge badge-xs badge-outline">{tag}</span>
-						{/each}
-					</div>
-					{#if skill.description}
-						<p class="text-base-content/60 truncate max-w-xs">{skill.description}</p>
-					{/if}
-					{#if isExpanded}
-						<div class="mt-2 bg-base-300 rounded p-2">
-							{#if detail}
-								<pre class="whitespace-pre-wrap font-mono text-xs overflow-x-auto max-h-60 overflow-y-auto">{detail.content}</pre>
+	</div>
+
+	<p class="text-xs text-base-content/40">Check skills to inject with your next message.</p>
+
+	{#if loading}
+		<div class="flex items-center gap-2 py-2 text-base-content/60">
+			<span class="loading loading-spinner loading-xs"></span>
+			Loading skills...
+		</div>
+	{:else if error}
+		<div class="alert alert-error text-xs py-2">{error}</div>
+	{:else if skills.length === 0}
+		<p class="text-base-content/50 italic py-2">
+			No skills found. Create <code class="font-mono">.skills/</code> directories to get started.
+		</p>
+	{:else}
+		<div class="flex flex-col gap-0.5">
+			{#each skills as skill (skillKey(skill))}
+				{@const key = skillKey(skill)}
+				{@const checked = isChecked(skill)}
+				{@const injected = isInjected(skill)}
+				<div
+					class="rounded p-1.5 transition-colors {injected ? 'bg-primary/10 border border-primary/20' : 'hover:bg-base-200'}"
+				>
+					<label class="flex items-start gap-2 cursor-pointer">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm checkbox-primary rounded-sm mt-0.5"
+							checked={checked}
+							onchange={() => toggleCheck(skill)}
+						/>
+						<div class="flex-1 min-w-0">
+							<div class="flex items-center gap-1.5 flex-wrap">
+								<button
+									class="font-mono text-xs text-left hover:underline {injected ? 'text-primary font-semibold' : 'text-base-content'}"
+									onclick={() => toggleExpand(skill)}
+								>
+									{skill.name}
+								</button>
+								<span class="badge badge-xs {skill.scope === 'global' ? 'badge-info' : 'badge-warning'}">{skill.scope}</span>
+								{#if injected}
+									<span class="badge badge-xs badge-primary">active</span>
+								{/if}
+								{#each skill.tags as tag}
+									<span class="badge badge-xs badge-outline">{tag}</span>
+								{/each}
+							</div>
+							{#if skill.description}
+								<p class="text-xs text-base-content/50 truncate">{skill.description}</p>
+							{/if}
+						</div>
+					</label>
+
+					{#if expandedSkill === key}
+						<div class="mt-2 ml-6 bg-base-300 rounded p-2">
+							{#if loadingDetail}
+								<span class="loading loading-spinner loading-xs text-base-content/40"></span>
+							{:else if expandedDetail}
+								<pre class="whitespace-pre-wrap font-mono text-xs overflow-x-auto max-h-60 overflow-y-auto">{expandedDetail.content}</pre>
 							{:else}
 								<p class="text-error text-xs">Failed to load skill content.</p>
 							{/if}
-							<button
-								class="btn btn-xs btn-ghost mt-1"
-								onclick={() => toggleSkill(skill)}
-							>
-								Close
-							</button>
 						</div>
 					{/if}
 				</div>
-			{/snippet}
+			{/each}
+		</div>
+	{/if}
 
-			{#snippet scopeSection(label: string, scopeSkills: Skill[], scope: string)}
-				{#if scopeSkills.length > 0}
-					{@const defaultSkills = skillsByDirectory(scopeSkills, "default")}
-					{@const agentSkills = skillsByDirectory(scopeSkills, "agents")}
-					{@const projectDirSkills = skillsByDirectory(scopeSkills, "project")}
-					{@const scopeMappings = getMappingsForScope(scope)}
-					<div class="mb-3">
-						<div class="flex items-center gap-1 mb-1">
-							<span class="font-semibold text-base-content/80">{label}</span>
-							<span class="badge badge-xs {scope === 'global' ? 'badge-info' : 'badge-warning'}">{scope}</span>
-						</div>
-
-						{#if defaultSkills.length > 0}
-							<div class="ml-2 mb-2">
-								<div class="text-base-content/50 mb-1">default/</div>
-								<div class="ml-2">
-									{#each defaultSkills as skill}
-										{@render skillItem(skill)}
-									{/each}
-								</div>
-							</div>
-						{/if}
-
-						{#if agentSkills.length > 0 || scopeMappings.length > 0}
-							<div class="ml-2 mb-2">
-								<div class="text-base-content/50 mb-1">agents/</div>
-								<div class="ml-2">
-									{#if scopeMappings.length > 0}
-										{#each scopeMappings as mapping}
-											<div class="py-1 border-b border-base-300 last:border-0">
-												<div class="flex items-center gap-1 flex-wrap">
-													<span class="font-mono text-secondary">{mapping.agentType}</span>
-													{#if mapping.isOrchestrator}
-														<span class="badge badge-xs badge-accent">(orchestrator)</span>
-													{/if}
-													<span class="text-base-content/40">→</span>
-													{#each mapping.skills as skillName}
-														{@const mappedSkill = agentSkills.find((s) => s.name === skillName)}
-														{#if mappedSkill}
-															{@render skillItem(mappedSkill)}
-														{:else}
-															<span class="font-mono text-base-content/60">{skillName}</span>
-														{/if}
-													{/each}
-												</div>
-											</div>
-										{/each}
-									{:else}
-										{#each agentSkills as skill}
-											{@render skillItem(skill)}
-										{/each}
-									{/if}
-								</div>
-							</div>
-						{/if}
-
-						{#if projectDirSkills.length > 0}
-							<div class="ml-2 mb-2">
-								<div class="text-base-content/50 mb-1">project/</div>
-								<div class="ml-2">
-									{#each projectDirSkills as skill}
-										{@render skillItem(skill)}
-									{/each}
-								</div>
-							</div>
-						{/if}
-					</div>
-				{/if}
-			{/snippet}
-
-			{@render scopeSection("Global", globalSkills, "global")}
-			{@render scopeSection("Project", projectSkills, "project")}
-		{/if}
-	</div>
-</details>
+	<button
+		class="btn btn-sm btn-ghost w-full"
+		disabled={!appSettings.skillChecksDirty}
+		onclick={resetChecks}
+	>
+		Reset
+	</button>
+</div>
