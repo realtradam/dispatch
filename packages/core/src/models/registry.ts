@@ -1,25 +1,20 @@
-import type { KeyDefinition, KeyState, ModelDefinition } from "../types/index.js";
+import type { KeyDefinition, KeyState } from "../types/index.js";
 
 export class ModelRegistry {
-	private models: ModelDefinition[];
 	private keyStates: Map<string, KeyState>;
-	private fallbackOrder: string[];
+	private keyOrder: string[];
 
-	constructor(models: ModelDefinition[], keys: KeyDefinition[], fallbackOrder: string[]) {
-		this.models = [];
+	constructor(keys: KeyDefinition[]) {
 		this.keyStates = new Map();
-		this.fallbackOrder = [];
-		this._initConfig(models, keys, fallbackOrder, new Map());
+		this.keyOrder = [];
+		this._initConfig(keys, new Map());
 	}
 
 	private _initConfig(
-		models: ModelDefinition[],
 		keys: KeyDefinition[],
-		fallbackOrder: string[],
 		existingStates: Map<string, KeyState>,
 	): void {
-		this.models = [...models];
-		this.fallbackOrder = this._buildFallbackOrder(keys, fallbackOrder);
+		this.keyOrder = keys.map((k) => k.id);
 
 		const newStates = new Map<string, KeyState>();
 		for (const key of keys) {
@@ -34,49 +29,10 @@ export class ModelRegistry {
 		this.keyStates = newStates;
 	}
 
-	private _buildFallbackOrder(keys: KeyDefinition[], fallbackOrder: string[]): string[] {
-		const ordered: string[] = [];
-		const keyIds = new Set(keys.map((k) => k.id));
-
-		// Add keys from fallbackOrder first (if they exist)
-		for (const id of fallbackOrder) {
-			if (keyIds.has(id) && !ordered.includes(id)) {
-				ordered.push(id);
-			}
-		}
-
-		// Append remaining keys not in fallbackOrder
-		for (const key of keys) {
-			if (!ordered.includes(key.id)) {
-				ordered.push(key.id);
-			}
-		}
-
-		return ordered;
-	}
-
-	getModels(): ModelDefinition[] {
-		return [...this.models];
-	}
-
 	getKeys(): KeyState[] {
-		return this.fallbackOrder
+		return this.keyOrder
 			.map((id) => this.keyStates.get(id))
 			.filter((state): state is KeyState => state !== undefined);
-	}
-
-	getModelsByTag(tag: string): ModelDefinition[] {
-		return this.models.filter((m) => m.tags.includes(tag));
-	}
-
-	getAllTags(): string[] {
-		const tags = new Set<string>();
-		for (const model of this.models) {
-			for (const tag of model.tags) {
-				tags.add(tag);
-			}
-		}
-		return [...tags];
 	}
 
 	markKeyExhausted(keyId: string, error?: string): void {
@@ -118,13 +74,13 @@ export class ModelRegistry {
 		return true;
 	}
 
-	updateConfig(models: ModelDefinition[], keys: KeyDefinition[], fallbackOrder: string[]): void {
-		this._initConfig(models, keys, fallbackOrder, this.keyStates);
+	updateConfig(keys: KeyDefinition[]): void {
+		this._initConfig(keys, this.keyStates);
 	}
 
 	// Internal: get ordered key states for a specific provider
 	getOrderedKeysForProvider(provider: string): KeyState[] {
-		return this.fallbackOrder
+		return this.keyOrder
 			.map((id) => this.keyStates.get(id))
 			.filter(
 				(state): state is KeyState =>

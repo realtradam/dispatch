@@ -25,7 +25,7 @@ export { loadConfig, configToRuleset, validateConfig, createConfigWatcher } from
 export { parseSkillFile, loadSkills, resolveSkillsForAgent, getSkillByName, createSkillsWatcher } from "./skills/index.js";
 
 // Models
-export { ModelRegistry, ModelResolver } from "./models/index.js";
+export { ModelRegistry } from "./models/index.js";
 
 // Credentials
 export * from "./credentials/index.js";

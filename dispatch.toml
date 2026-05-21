@@ -1,9 +1,6 @@
-# Dispatch — Model & Key Configuration
+# Dispatch — Key & Permission Configuration
 # Credentials and API keys are stored in the SQLite database.
 # Use the Model Status panel to import credentials, or run bin/import-credentials.ts.
-
-# ─── Fallback Order (highest priority first) ────────────────────
-fallback = ["claude-pro", "claude-max", "opencode-1", "opencode-2", "copilot"]
 
 # ─── API Keys ───────────────────────────────────────────────────
 
@@ -33,47 +30,6 @@ base_url = "https://opencode.ai/zen/go/v1"
 id = "copilot"
 provider = "github-copilot"
 base_url = "https://api.githubcopilot.com"
-
-# ─── Models ─────────────────────────────────────────────────────
-
-[[models]]
-id = "claude-sonnet-4-20250514"
-provider = "anthropic"
-tags = ["heavy", "coding", "review"]
-
-[[models]]
-id = "claude-opus-4-20250514"
-provider = "anthropic"
-tags = ["heavy", "coding", "review"]
-
-[[models]]
-id = "deepseek-v4-pro"
-provider = "opencode-go"
-tags = ["heavy", "coding"]
-
-[[models]]
-id = "deepseek-v4-flash"
-provider = "opencode-go"
-tags = ["light", "quick"]
-
-[[models]]
-id = "gpt-4o"
-provider = "github-copilot"
-tags = ["heavy", "coding"]
-
-[[models]]
-id = "claude-3.5-sonnet"
-provider = "github-copilot"
-tags = ["heavy", "coding", "review"]
-
-# ─── Agent Templates ─────────────────────────────────────────────
-
-[agents.default]
-name = "Dispatch"
-description = "Default coding assistant"
-system_prompt = "You are a helpful AI coding assistant."
-tools = ["read_file", "write_file", "list_files", "run_shell", "task_list"]
-model_tag = "heavy"
 
 # ─── Permissions ─────────────────────────────────────────────────
 
