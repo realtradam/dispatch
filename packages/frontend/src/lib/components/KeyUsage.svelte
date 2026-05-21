@@ -17,6 +17,9 @@
 		loading: boolean;
 	}
 
+	// Module-level cache survives remounts during the same page session
+	const usageCache = new Map<string, KeyUsageData>();
+
 	let entries = $state<KeyUsageEntry[]>([]);
 
 	async function fetchOne(key: KeyInfo) {
@@ -27,20 +30,20 @@
 			if (!res.ok) {
 				const data = await res.json().catch(() => ({}));
 				updateEntry(key.id, {
-					data: null,
 					error: data.error ?? `HTTP ${res.status}`,
 					loading: false,
 				});
 			} else {
+				const fresh = await res.json() as KeyUsageData;
+				usageCache.set(key.id, fresh);
 				updateEntry(key.id, {
-					data: await res.json(),
+					data: fresh,
 					error: null,
 					loading: false,
 				});
 			}
 		} catch (e) {
 			updateEntry(key.id, {
-				data: null,
 				error: e instanceof Error ? e.message : "Failed to fetch",
 				loading: false,
 			});
@@ -57,14 +60,17 @@
 	}
 
 	$effect(() => {
-		// Initialize all entries as loading
-		entries = keys.map((k) => ({
-			keyId: k.id,
-			provider: k.provider,
-			data: null,
-			error: null,
-			loading: true,
-		}));
+		// Show cached data immediately if available, then refresh in background
+		entries = keys.map((k) => {
+			const cached = usageCache.get(k.id);
+			return {
+				keyId: k.id,
+				provider: k.provider,
+				data: cached ?? null,
+				error: null,
+				loading: true,
+			};
+		});
 		// Fire all fetches in parallel
 		for (const key of keys) {
 			fetchOne(key);
@@ -165,23 +171,21 @@
 	{:else}
 		<div class="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto">
 			<!-- Claude (all accounts merged under one card) -->
-			{#if claudeLoading}
+			{#if claudeAccounts.length > 0 || claudeLoading}
 				<div class="bg-base-200 rounded-lg p-2">
 					<div class="flex items-center gap-1.5 mb-1.5">
 						<span class="text-xs font-semibold">Claude</span>
 						<span class="badge badge-xs badge-ghost">anthropic</span>
+						{#if claudeLoading}
+							<span class="loading loading-spinner loading-xs"></span>
+						{/if}
 					</div>
-					<div class="flex items-center gap-1.5 py-1">
-						<span class="loading loading-spinner loading-xs"></span>
-						<span class="text-xs text-base-content/50">Loading...</span>
-					</div>
-				</div>
-			{:else if claudeAccounts.length > 0}
-				<div class="bg-base-200 rounded-lg p-2">
-					<div class="flex items-center gap-1.5 mb-1.5">
-						<span class="text-xs font-semibold">Claude</span>
-						<span class="badge badge-xs badge-ghost">anthropic</span>
-					</div>
+
+					{#if claudeAccounts.length === 0 && claudeLoading}
+						<div class="flex items-center gap-1.5 py-1">
+							<span class="text-xs text-base-content/50">Loading...</span>
+						</div>
+					{:else}
 					{#each claudeAccounts as acct, idx (acct.source)}
 						{#if idx > 0}
 							<div class="border-t border-base-300 my-1.5"></div>
@@ -228,8 +232,9 @@
 							{/if}
 						</div>
 					{/each}
-				</div>
 			{/if}
+				</div>
+		{/if}
 
 			<!-- Non-Claude keys -->
 			{#each nonClaudeEntries as entry (entry.keyId)}
@@ -237,6 +242,9 @@
 					<div class="flex items-center gap-1.5 mb-1.5">
 						<span class="text-xs font-semibold">{entry.keyId}</span>
 						<span class="badge badge-xs badge-ghost">{entry.provider}</span>
+						{#if entry.loading}
+							<span class="loading loading-spinner loading-xs"></span>
+						{/if}
 					</div>
 
 					{#if entry.loading}
