@@ -30,16 +30,14 @@ export function parseSkillFile(
 			try {
 				const frontmatter = parse(tomlSource);
 
-				if (typeof frontmatter["name"] === "string") {
-					name = frontmatter["name"];
+				if (typeof frontmatter.name === "string") {
+					name = frontmatter.name;
 				}
-				if (typeof frontmatter["description"] === "string") {
-					description = frontmatter["description"];
+				if (typeof frontmatter.description === "string") {
+					description = frontmatter.description;
 				}
-				if (Array.isArray(frontmatter["tags"])) {
-					tags = (frontmatter["tags"] as unknown[]).filter(
-						(t): t is string => typeof t === "string",
-					);
+				if (Array.isArray(frontmatter.tags)) {
+					tags = (frontmatter.tags as unknown[]).filter((t): t is string => typeof t === "string");
 				}
 			} catch {
 				// Malformed TOML — fall through with defaults

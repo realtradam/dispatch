@@ -4,6 +4,8 @@ import {
 	type AgentSkillMapping,
 	type AgentStatus,
 	appendMessage,
+	BackgroundShellStore,
+	BackgroundTranscriptStore,
 	type ClaudeAccount,
 	configToRuleset,
 	createConfigWatcher,
@@ -11,8 +13,6 @@ import {
 	createReadFileTool,
 	createRetrieveTool,
 	createRunShellTool,
-	BackgroundShellStore,
-	BackgroundTranscriptStore,
 	createSkillsWatcher,
 	createSummonTool,
 	createTaskListTool,
@@ -298,13 +298,15 @@ export class AgentManager {
 		const effectiveKeyId = keyId ?? tabAgent.keyId;
 		const effectiveModelId = modelId ?? tabAgent.modelId;
 
-		// Read tool permission settings from DB (default: read=allow, edit=ask, bash=ask, summon=ask)
+		// Read tool permission settings from DB (default: read=allow, edit=ask, bash=ask, summon=ask, web=ask, youtube=ask)
 		const permRead = getSetting("perm_read") !== "ask";
 		const permEdit = getSetting("perm_edit") === "allow";
 		const permBash = getSetting("perm_bash") === "allow";
 		const permSummon = getSetting("perm_summon") === "allow";
+		const permWebSearch = getSetting("perm_web_search") === "allow";
+		const permYoutubeTranscribe = getSetting("perm_youtube_transcribe") === "allow";
 		const sysPrompt = getSetting("system_prompt") ?? "";
-		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${sysPrompt}`;
+		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permWebSearch}:${permYoutubeTranscribe}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
@@ -358,13 +360,19 @@ export class AgentManager {
 					toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
 				}
 				if (allowed.has("run_shell")) {
-					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory, tabAgent.shellStore) });
+					toolEntries.push({
+						name: "run_shell",
+						tool: createRunShellTool(workingDirectory, tabAgent.shellStore),
+					});
 				}
 				if (allowed.has("web_search")) {
 					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
 				}
 				if (allowed.has("youtube_transcribe")) {
-					toolEntries.push({ name: "youtube_transcribe", tool: createYoutubeTranscribeTool(tabAgent.transcriptStore) });
+					toolEntries.push({
+						name: "youtube_transcribe",
+						tool: createYoutubeTranscribeTool(tabAgent.transcriptStore),
+					});
 				}
 				if (allowed.has("todo")) {
 					toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
@@ -408,10 +416,20 @@ export class AgentManager {
 					toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
 				}
 				if (permBash) {
-					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory, tabAgent.shellStore) });
+					toolEntries.push({
+						name: "run_shell",
+						tool: createRunShellTool(workingDirectory, tabAgent.shellStore),
+					});
 				}
-				toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
-				toolEntries.push({ name: "youtube_transcribe", tool: createYoutubeTranscribeTool(tabAgent.transcriptStore) });
+				if (permWebSearch) {
+					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				}
+				if (permYoutubeTranscribe) {
+					toolEntries.push({
+						name: "youtube_transcribe",
+						tool: createYoutubeTranscribeTool(tabAgent.transcriptStore),
+					});
+				}
 				toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
 				if (permSummon) {
 					// Capture parent's allowed tool names for child permission enforcement
@@ -544,25 +562,25 @@ export class AgentManager {
 				tabAgent.modelId = null;
 			}
 
-		const customSystemPrompt = getSetting("system_prompt") || undefined;
-		tabAgent.agent = new Agent(
-			{
-				model,
-				apiKey,
-				baseURL,
-				systemPrompt: buildSystemPrompt(toolNames, customSystemPrompt),
-				tools,
-				workingDirectory,
-				permissionChecker: this.permissionManager ?? undefined,
-				ruleset,
-				provider,
-				...(claudeCredentials ? { claudeCredentials } : {}),
-			},
-			{
-				dequeueMessages: () => this.dequeueMessages(tabId),
-				waitForQueuedMessage: () => this.waitForQueuedMessage(tabId),
-			},
-		);
+			const customSystemPrompt = getSetting("system_prompt") || undefined;
+			tabAgent.agent = new Agent(
+				{
+					model,
+					apiKey,
+					baseURL,
+					systemPrompt: buildSystemPrompt(toolNames, customSystemPrompt),
+					tools,
+					workingDirectory,
+					permissionChecker: this.permissionManager ?? undefined,
+					ruleset,
+					provider,
+					...(claudeCredentials ? { claudeCredentials } : {}),
+				},
+				{
+					dequeueMessages: () => this.dequeueMessages(tabId),
+					waitForQueuedMessage: () => this.waitForQueuedMessage(tabId),
+				},
+			);
 		}
 		return tabAgent.agent;
 	}
@@ -672,7 +690,7 @@ export class AgentManager {
 		// Intersect requested tools with parent's allowed tools to prevent privilege escalation
 		let childTools = options.tools;
 		if (options.parentAllowedTools) {
-			childTools = options.tools.filter((t) => options.parentAllowedTools!.has(t));
+			childTools = options.tools.filter((t) => options.parentAllowedTools?.has(t));
 		}
 
 		// Create the tab agent entry with overrides
@@ -931,10 +949,7 @@ export class AgentManager {
 		const messages = [...tabAgent.messageQueue];
 		tabAgent.messageQueue = [];
 		if (messages.length > 0) {
-			this.emit(
-				{ type: "message-consumed", tabId, messageIds: messages.map((m) => m.id) },
-				tabId,
-			);
+			this.emit({ type: "message-consumed", tabId, messageIds: messages.map((m) => m.id) }, tabId);
 		}
 		return messages;
 	}
@@ -951,7 +966,7 @@ export class AgentManager {
 		});
 		const cancel = () => {
 			if (listener) {
-				tabAgent.queueListeners = tabAgent.queueListeners.filter(l => l !== listener);
+				tabAgent.queueListeners = tabAgent.queueListeners.filter((l) => l !== listener);
 				listener = null;
 			}
 		};

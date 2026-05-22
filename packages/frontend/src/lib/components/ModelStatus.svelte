@@ -48,8 +48,6 @@ let keyModalError = $state<string | null>(null);
 let keyModalSaving = $state(false);
 let removingKey = $state<string | null>(null);
 
-
-
 async function loadCredentialStatus(): Promise<void> {
 	try {
 		const res = await fetch(`${apiBase}/models/credentials-status`);
@@ -173,7 +171,7 @@ function timeAgo(ts: number | null): string {
 
 function truncate(str: string | null, max: number): string {
 	if (!str) return "";
-	return str.length > max ? str.slice(0, max) + "..." : str;
+	return str.length > max ? `${str.slice(0, max)}...` : str;
 }
 </script>
 

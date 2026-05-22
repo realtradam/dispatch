@@ -70,7 +70,9 @@ export function createWebSearchTool(): ToolDefinition {
 				return `Error: Firecrawl returned HTTP ${response.status} ${response.statusText}${text ? `: ${text}` : ""}`;
 			}
 
-			let json: { data?: Array<{ title?: string; url?: string; description?: string; markdown?: string }> };
+			let json: {
+				data?: Array<{ title?: string; url?: string; description?: string; markdown?: string }>;
+			};
 			try {
 				json = await response.json();
 			} catch {
@@ -96,7 +98,7 @@ export function createWebSearchTool(): ToolDefinition {
 
 			let output = parts.join("\n\n---\n\n");
 			if (output.length > MAX_OUTPUT_CHARS) {
-				output = output.slice(0, MAX_OUTPUT_CHARS) + "\n\n[Output truncated]";
+				output = `${output.slice(0, MAX_OUTPUT_CHARS)}\n\n[Output truncated]`;
 			}
 			return output;
 		},

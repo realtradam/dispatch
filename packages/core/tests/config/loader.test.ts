@@ -27,14 +27,14 @@ describe("loadConfig", () => {
 	it("parses simple string permissions", () => {
 		writeToml(`[permissions]\nread = "allow"\nedit = "deny"\n`);
 		const config = loadConfig(TMP);
-		expect(config.permissions["read"]).toBe("allow");
-		expect(config.permissions["edit"]).toBe("deny");
+		expect(config.permissions.read).toBe("allow");
+		expect(config.permissions.edit).toBe("deny");
 	});
 
 	it("parses nested pattern permissions", () => {
 		writeToml(`[permissions.bash]\n"npm test" = "allow"\n"*" = "ask"\n`);
 		const config = loadConfig(TMP);
-		const bash = config.permissions["bash"] as Record<string, string>;
+		const bash = config.permissions.bash as Record<string, string>;
 		expect(bash["npm test"]).toBe("allow");
 		expect(bash["*"]).toBe("ask");
 	});
@@ -42,27 +42,27 @@ describe("loadConfig", () => {
 	it("ignores comment lines", () => {
 		writeToml(`# this is a comment\n[permissions]\n# another comment\nread = "allow"\n`);
 		const config = loadConfig(TMP);
-		expect(config.permissions["read"]).toBe("allow");
+		expect(config.permissions.read).toBe("allow");
 	});
 
 	it("handles ~ expansion in nested keys", () => {
 		writeToml(`[permissions.read]\n"~/projects/*" = "allow"\n`);
 		const config = loadConfig(TMP);
-		const read = config.permissions["read"] as Record<string, string>;
+		const read = config.permissions.read as Record<string, string>;
 		expect(read["~/projects/*"]).toBe("allow");
 	});
 
 	it("handles $HOME expansion in nested keys", () => {
 		writeToml(`[permissions.read]\n"$HOME/docs/*" = "allow"\n`);
 		const config = loadConfig(TMP);
-		const read = config.permissions["read"] as Record<string, string>;
+		const read = config.permissions.read as Record<string, string>;
 		expect(read["$HOME/docs/*"]).toBe("allow");
 	});
 
 	it("parses quoted keys", () => {
 		writeToml(`[permissions.bash]\n"git commit *" = "allow"\n"rm *" = "deny"\n`);
 		const config = loadConfig(TMP);
-		const bash = config.permissions["bash"] as Record<string, string>;
+		const bash = config.permissions.bash as Record<string, string>;
 		expect(bash["git commit *"]).toBe("allow");
 		expect(bash["rm *"]).toBe("deny");
 	});
@@ -72,11 +72,11 @@ describe("loadConfig", () => {
 			`[permissions]\nread = "allow"\n\n[permissions.edit]\n"*" = "ask"\n"src/**" = "allow"\n\n[permissions.bash]\n"npm test" = "allow"\n"*" = "ask"\n`,
 		);
 		const config = loadConfig(TMP);
-		expect(config.permissions["read"]).toBe("allow");
-		const edit = config.permissions["edit"] as Record<string, string>;
+		expect(config.permissions.read).toBe("allow");
+		const edit = config.permissions.edit as Record<string, string>;
 		expect(edit["*"]).toBe("ask");
 		expect(edit["src/**"]).toBe("allow");
-		const bash = config.permissions["bash"] as Record<string, string>;
+		const bash = config.permissions.bash as Record<string, string>;
 		expect(bash["npm test"]).toBe("allow");
 		expect(bash["*"]).toBe("ask");
 	});
@@ -84,14 +84,14 @@ describe("loadConfig", () => {
 	it("preserves # inside quoted string keys", () => {
 		writeToml(`[permissions.bash]\n"file#1" = "allow"\n`);
 		const config = loadConfig(TMP);
-		const bash = config.permissions["bash"] as Record<string, string>;
+		const bash = config.permissions.bash as Record<string, string>;
 		expect(bash["file#1"]).toBe("allow");
 	});
 
 	it("strips inline comments on table headers", () => {
 		writeToml(`[permissions.bash] # scripts\n"*" = "allow"\n`);
 		const config = loadConfig(TMP);
-		const bash = config.permissions["bash"] as Record<string, string>;
+		const bash = config.permissions.bash as Record<string, string>;
 		expect(bash["*"]).toBe("allow");
 	});
 
@@ -100,7 +100,7 @@ describe("loadConfig", () => {
 		const pattern = `~${sep}projects${sep}*`;
 		writeToml(`[permissions.read]\n"${pattern}" = "allow"\n`);
 		const config = loadConfig(TMP);
-		const read = config.permissions["read"] as Record<string, string>;
+		const read = config.permissions.read as Record<string, string>;
 		expect(read[pattern]).toBe("allow");
 	});
 

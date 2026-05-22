@@ -10,6 +10,15 @@ import SkillsBrowser from "./SkillsBrowser.svelte";
 import TaskListPanel from "./TaskListPanel.svelte";
 import ToolPermissions from "./ToolPermissions.svelte";
 
+interface AgentInfo {
+	slug: string;
+	scope: string;
+	skills: string[];
+	tools: string[];
+	models: Array<{ key_id: string; model_id: string }>;
+	cwd?: string;
+}
+
 const {
 	keys = [],
 	tasks = [],
@@ -23,7 +32,7 @@ const {
 	onKeyChange,
 	onModelChange,
 	onReasoningChange,
-	onAgentChange = (_agent: any) => {},
+	onAgentChange = (_agent: AgentInfo | null) => {},
 	onWorkingDirectoryChange = (_dir: string | null) => {},
 	onAddKey = () => {},
 }: {
@@ -39,7 +48,7 @@ const {
 	onKeyChange: (keyId: string) => void;
 	onModelChange: (keyId: string, modelId: string) => void;
 	onReasoningChange: (effort: string) => void;
-	onAgentChange?: (agent: any) => void;
+	onAgentChange?: (agent: AgentInfo | null) => void;
 	onWorkingDirectoryChange?: (dir: string | null) => void;
 	onAddKey?: () => void;
 } = $props();
@@ -72,7 +81,7 @@ function addPanel() {
 function panelClass(selected: string): string {
 	const base = "bg-base-200 rounded-lg p-3 flex flex-col min-h-0";
 	const fill = selected === "Key Usage" || selected === "Claude Reset" || selected === "Tasks";
-	return fill ? base + " flex-1" : base;
+	return fill ? `${base} flex-1` : base;
 }
 
 function contentClass(selected: string): string {

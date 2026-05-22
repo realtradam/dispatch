@@ -188,4 +188,6 @@ export interface AgentDefinition {
 	slug: string;
 	/** Default working directory for this agent (optional, absolute path) */
 	cwd?: string;
+	/** Whether this agent is a subagent (hidden from Chat Settings) */
+	is_subagent?: boolean;
 }

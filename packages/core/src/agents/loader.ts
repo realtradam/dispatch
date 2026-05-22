@@ -112,6 +112,10 @@ export function saveAgent(agent: AgentDefinition): void {
 		tomlContent.cwd = agent.cwd;
 	}
 
+	if (agent.is_subagent) {
+		tomlContent.is_subagent = true;
+	}
+
 	// smol-toml handles [[models]] array-of-tables
 	if (agent.models.length > 0) {
 		tomlContent.models = agent.models.map((m) => ({
@@ -202,6 +206,7 @@ function loadAgentsFromDir(dir: string, scope: string): AgentDefinition[] {
 				scope,
 				slug,
 				...(typeof parsed.cwd === "string" && parsed.cwd ? { cwd: parsed.cwd } : {}),
+				...(parsed.is_subagent === true ? { is_subagent: true } : {}),
 			});
 		} catch {
 			// Skip unparseable files

@@ -48,7 +48,7 @@ async function runTransform(prompt: unknown[]): Promise<unknown[]> {
 		}
 	)._middleware;
 
-	const result = await middleware[0]!.transformParams({
+	const result = await middleware[0]?.transformParams({
 		type: "stream",
 		params: { prompt },
 	});
@@ -75,7 +75,7 @@ describe("createProvider middleware", () => {
 		)._middleware;
 
 		const params = { prompt: [], temperature: 0.5 };
-		const result = (await middleware[0]!.transformParams({
+		const result = (await middleware[0]?.transformParams({
 			type: "generate",
 			params,
 		})) as Record<string, unknown>;
@@ -130,7 +130,7 @@ describe("createProvider middleware", () => {
 		// Content unchanged
 		const content = msg.content as Array<Record<string, unknown>>;
 		expect(content).toHaveLength(1);
-		expect(content[0]!.type).toBe("text");
+		expect(content[0]?.type).toBe("text");
 
 		// reasoning_content always set, even empty
 		const pm = msg.providerMetadata as Record<string, unknown>;

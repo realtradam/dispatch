@@ -24,6 +24,7 @@ const modelCache = new Map();
 		scope: string;
 		slug: string;
 		cwd?: string;
+		is_subagent?: boolean;
 	}
 
 	interface DirEntry {
@@ -65,6 +66,7 @@ const modelCache = new Map();
 	let formSkills = $state<Set<string>>(new Set());
 	let formTools = $state<Set<string>>(new Set());
 	let formModels = $state<AgentModelEntry[]>([]);
+	let formIsSubagent = $state(false);
 
 	// Model selection modal state
 	let modelModalIndex = $state<number | null>(null);
@@ -121,6 +123,7 @@ const modelCache = new Map();
 		formSkills = new Set();
 		formTools = new Set();
 		formModels = [];
+		formIsSubagent = false;
 		editing = true;
 		// Allow the effect to skip the initial population
 		setTimeout(() => { formReady = true; }, 0);
@@ -136,6 +139,7 @@ const modelCache = new Map();
 		formSkills = new Set(agent.skills);
 		formTools = new Set(agent.tools);
 		formModels = agent.models.map((m) => ({ ...m }));
+		formIsSubagent = agent.is_subagent ?? false;
 		editing = true;
 		// Allow the effect to skip the initial population
 		setTimeout(() => { formReady = true; }, 0);
@@ -260,6 +264,7 @@ const modelCache = new Map();
 			scope: formScope,
 			slug: editingSlug ?? slugify(formName.trim()),
 			...(formCwd.trim() ? { cwd: formCwd.trim() } : {}),
+			...(formIsSubagent ? { is_subagent: true } : {}),
 		};
 
 		saving = true;
@@ -317,7 +322,8 @@ const modelCache = new Map();
 	// Auto-save with debounce whenever form fields change
 	$effect(() => {
 		// Read all reactive form fields to subscribe
-		const _ = [formName, formDescription, formScope, formCwd, formSkills, formTools, formModels];
+		// noinspection: intentionally unused — reading these values subscribes the effect to them
+		void [formName, formDescription, formScope, formCwd, formSkills, formTools, formModels, formIsSubagent];
 		if (!formReady || !editing) return;
 		if (debounceTimer) clearTimeout(debounceTimer);
 		debounceTimer = setTimeout(() => {
@@ -418,6 +424,21 @@ const modelCache = new Map();
 							placeholder="What does this agent do?"
 							bind:value={formDescription}
 						/>
+					</div>
+
+					<!-- Is Subagent -->
+					<div class="form-control">
+						<label class="label cursor-pointer justify-start gap-3 py-1">
+							<input
+								type="checkbox"
+								class="checkbox checkbox-sm rounded-sm"
+								bind:checked={formIsSubagent}
+							/>
+							<div>
+								<span class="label-text font-semibold">Is Subagent</span>
+								<p class="text-xs text-base-content/50">Subagents are hidden from Chat Settings and can only be used by other agents.</p>
+							</div>
+						</label>
 					</div>
 
 					<!-- Scope -->

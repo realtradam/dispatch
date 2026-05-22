@@ -186,16 +186,17 @@ onMount(() => {
 		<div class="bg-base-100 rounded-lg p-4 w-80 flex flex-col gap-3 shadow-xl">
 			<h3 class="text-sm font-semibold">Add New Key</h3>
 			<div class="flex flex-col gap-1">
-				<label class="text-xs text-base-content/60">Provider</label>
-				<select class="select select-bordered select-sm w-full" bind:value={addKeyProvider}>
+				<label class="text-xs text-base-content/60" for="add-key-provider">Provider</label>
+				<select id="add-key-provider" class="select select-bordered select-sm w-full" bind:value={addKeyProvider}>
 					<option value="anthropic">Anthropic</option>
 					<option value="opencode-go">OpenCode</option>
 					<option value="github-copilot">GitHub Copilot</option>
 				</select>
 			</div>
 			<div class="flex flex-col gap-1">
-				<label class="text-xs text-base-content/60">Key ID</label>
+				<label class="text-xs text-base-content/60" for="add-key-id">Key ID</label>
 				<input
+					id="add-key-id"
 					type="text"
 					class="input input-bordered input-sm w-full"
 					placeholder="e.g. claude-max, copilot-2"

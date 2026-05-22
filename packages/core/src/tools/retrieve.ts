@@ -28,29 +28,33 @@ export function createRetrieveTool(callbacks: RetrieveCallbacks): ToolDefinition
 		parameters: z.object({
 			agent_id: z.string().describe("The agent_id returned by a previous summon call."),
 		}),
-		execute: async (args: Record<string, unknown>, context?: ToolExecuteContext): Promise<string> => {
+		execute: async (
+			args: Record<string, unknown>,
+			context?: ToolExecuteContext,
+		): Promise<string> => {
 			const agentId = args.agent_id as string;
 			const queueCallbacks = context?.queueCallbacks;
 
 			try {
 				let outcome: { status: "done"; result: string } | { status: "error"; error: string };
 
-			if (queueCallbacks) {
-				const childPromise = callbacks.getResult(agentId);
-				const { promise: queuePromise, cancel: cancelQueueWait } = queueCallbacks.waitForQueuedMessage();
-				const queueSignal = queuePromise.then(() => "QUEUE_INTERRUPT" as const);
+				if (queueCallbacks) {
+					const childPromise = callbacks.getResult(agentId);
+					const { promise: queuePromise, cancel: cancelQueueWait } =
+						queueCallbacks.waitForQueuedMessage();
+					const queueSignal = queuePromise.then(() => "QUEUE_INTERRUPT" as const);
 
-				const raceResult = await Promise.race([childPromise, queueSignal]);
+					const raceResult = await Promise.race([childPromise, queueSignal]);
 
-				if (raceResult === "QUEUE_INTERRUPT") {
-					const queuedMsgs = queueCallbacks.dequeueMessages();
-					const userMessages = queuedMsgs.map((m) => m.message).join("\n---\n");
-					return `The subagent (agent_id: ${agentId}) has not completed its task yet. You will need to call retrieve with this agent_id again later to get the result.\n\n[USER INTERRUPT]\nThe user has sent you message(s) while you were working. You MUST address these before continuing with your current task:\n\n${userMessages}`;
-				}
+					if (raceResult === "QUEUE_INTERRUPT") {
+						const queuedMsgs = queueCallbacks.dequeueMessages();
+						const userMessages = queuedMsgs.map((m) => m.message).join("\n---\n");
+						return `The subagent (agent_id: ${agentId}) has not completed its task yet. You will need to call retrieve with this agent_id again later to get the result.\n\n[USER INTERRUPT]\nThe user has sent you message(s) while you were working. You MUST address these before continuing with your current task:\n\n${userMessages}`;
+					}
 
-				// Child finished first — clean up the queue listener
-				cancelQueueWait();
-				outcome = raceResult;
+					// Child finished first — clean up the queue listener
+					cancelQueueWait();
+					outcome = raceResult;
 				} else {
 					outcome = await callbacks.getResult(agentId);
 				}
