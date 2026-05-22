@@ -1,201 +1,197 @@
 <script lang="ts">
-	import type { KeyInfo, KeyUsageData, UsageBucket } from "../types.js";
+import type { KeyInfo, KeyUsageData, UsageBucket } from "../types.js";
 
-	const {
-		keys = [],
-		apiBase = "",
-	}: {
-		keys?: KeyInfo[];
-		apiBase?: string;
-	} = $props();
+const {
+	keys = [],
+	apiBase = "",
+}: {
+	keys?: KeyInfo[];
+	apiBase?: string;
+} = $props();
 
-	interface KeyUsageEntry {
-		keyId: string;
-		provider: string;
-		data: KeyUsageData | null;
-		error: string | null;
-		loading: boolean;
-	}
+interface KeyUsageEntry {
+	keyId: string;
+	provider: string;
+	data: KeyUsageData | null;
+	error: string | null;
+	loading: boolean;
+}
 
-	// In-memory cache for the current session (backend DB is the persistent cache)
-	const usageCache = new Map<string, KeyUsageData>();
+// In-memory cache for the current session (backend DB is the persistent cache)
+const usageCache = new Map<string, KeyUsageData>();
 
-	function buildEntries(keyList: KeyInfo[]): KeyUsageEntry[] {
-		return keyList.map((k) => {
-			const cached = usageCache.get(k.id);
-			return {
-				keyId: k.id,
-				provider: k.provider,
-				data: cached ?? null,
-				error: null,
-				loading: true, // always show spinner during refresh
-			};
-		});
-	}
+function buildEntries(keyList: KeyInfo[]): KeyUsageEntry[] {
+	return keyList.map((k) => {
+		const cached = usageCache.get(k.id);
+		return {
+			keyId: k.id,
+			provider: k.provider,
+			data: cached ?? null,
+			error: null,
+			loading: true, // always show spinner during refresh
+		};
+	});
+}
 
-	let entries = $state<KeyUsageEntry[]>([]);
+let entries = $state<KeyUsageEntry[]>([]);
 
-	async function fetchOne(key: KeyInfo) {
-		try {
-			const res = await fetch(
-				`${apiBase}/models/key-usage?keyId=${encodeURIComponent(key.id)}`,
-			);
-			if (!res.ok) {
-				const data = await res.json().catch(() => ({}));
-				updateEntry(key.id, {
-					error: data.error ?? `HTTP ${res.status}`,
-					loading: false,
-				});
-			} else {
-				const fresh = await res.json() as KeyUsageData;
-				usageCache.set(key.id, fresh);
-				updateEntry(key.id, {
-					data: fresh,
-					error: null,
-					loading: false,
-				});
-			}
-		} catch (e) {
+async function fetchOne(key: KeyInfo) {
+	try {
+		const res = await fetch(`${apiBase}/models/key-usage?keyId=${encodeURIComponent(key.id)}`);
+		if (!res.ok) {
+			const data = await res.json().catch(() => ({}));
 			updateEntry(key.id, {
-				error: e instanceof Error ? e.message : "Failed to fetch",
+				error: data.error ?? `HTTP ${res.status}`,
+				loading: false,
+			});
+		} else {
+			const fresh = (await res.json()) as KeyUsageData;
+			usageCache.set(key.id, fresh);
+			updateEntry(key.id, {
+				data: fresh,
+				error: null,
 				loading: false,
 			});
 		}
-	}
-
-	function updateEntry(
-		keyId: string,
-		patch: { data?: KeyUsageData | null; error?: string | null; loading?: boolean },
-	) {
-		entries = entries.map((e) =>
-			e.keyId === keyId ? { ...e, ...patch } : e,
-		);
-	}
-
-	// Sync entries with keys reactively — runs before DOM update so
-	// cached data renders on first paint without a flash of empty state.
-	$effect.pre(() => {
-		entries = buildEntries(keys);
-	});
-
-	// Fetch data and set up 90s auto-refresh
-	$effect(() => {
-		const currentKeys = keys;
-		// Fire all fetches in parallel
-		for (const key of currentKeys) {
-			fetchOne(key);
-		}
-
-		// Refresh every 90s
-		const interval = setInterval(() => {
-			for (const key of currentKeys) {
-				updateEntry(key.id, { loading: true });
-				fetchOne(key);
-			}
-		}, 90_000);
-
-		return () => clearInterval(interval);
-	});
-
-	// Merge duplicate Claude entries — all anthropic keys return the same
-	// set of accounts, so collect and deduplicate under one "Claude" card.
-	const claudeAccounts = $derived.by(() => {
-		const seen = new Set<string>();
-		const accounts: Array<{
-			label: string;
-			source: string;
-			subscriptionType?: string;
-			fiveHour?: UsageBucket;
-			sevenDay?: UsageBucket;
-			error?: string;
-		}> = [];
-		const claudeEntries = entries.filter((e) => e.provider === "anthropic");
-		for (const e of claudeEntries) {
-			if (!e.data || e.data.provider !== "anthropic" || !e.data.accounts) continue;
-			for (const acct of e.data.accounts) {
-				if (!seen.has(acct.source)) {
-					seen.add(acct.source);
-					accounts.push(acct);
-				}
-			}
-		}
-		return accounts;
-	});
-
-	const claudeLoading = $derived(
-		entries.some((e) => e.provider === "anthropic" && e.loading),
-	);
-	const claudeError = $derived(
-		entries.find((e) => e.provider === "anthropic" && e.error)?.error ?? null,
-	);
-
-	const nonClaudeEntries = $derived(
-		entries.filter((e) => e.provider !== "anthropic"),
-	);
-
-	function progressClass(utilization: number): string {
-		if (utilization > 0.8) return "progress-error";
-		if (utilization >= 0.5) return "progress-warning";
-		return "progress-success";
-	}
-
-	function formatDate(ts: number): string {
-		const diff = ts - Date.now();
-		const days = Math.floor(diff / 86400000);
-		const d = new Date(ts);
-		const dateStr = d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" })
-			+ " "
-			+ d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
-
-		if (diff <= 0) {
-			return d.toLocaleString();
-		}
-		if (diff < 48 * 60 * 60 * 1000) {
-			const hours = Math.floor(diff / 3600000);
-			const minutes = Math.floor((diff % 3600000) / 60000);
-			return `in ${hours}:${String(minutes).padStart(2, "0")}`;
-		}
-		if (days <= 30) {
-			const weeks = Math.floor(days / 7);
-			const remDays = days % 7;
-			if (weeks > 0 && remDays > 0) {
-				return `in ${weeks}w ${remDays}d (${dateStr})`;
-			}
-			if (weeks > 0) {
-				return `in ${weeks} week${weeks > 1 ? "s" : ""} (${dateStr})`;
-			}
-			return `in ${days} day${days > 1 ? "s" : ""} (${dateStr})`;
-		}
-		return d.toLocaleDateString("en-US", {
-			month: "2-digit",
-			day: "2-digit",
-			year: "numeric",
+	} catch (e) {
+		updateEntry(key.id, {
+			error: e instanceof Error ? e.message : "Failed to fetch",
+			loading: false,
 		});
 	}
+}
 
-	function formatKeyId(id: string): string {
-		if (/^github-copilot/i.test(id)) return "Copilot";
-		return id.split("-").map((part) => {
+function updateEntry(
+	keyId: string,
+	patch: { data?: KeyUsageData | null; error?: string | null; loading?: boolean },
+) {
+	entries = entries.map((e) => (e.keyId === keyId ? { ...e, ...patch } : e));
+}
+
+// Sync entries with keys reactively — runs before DOM update so
+// cached data renders on first paint without a flash of empty state.
+$effect.pre(() => {
+	entries = buildEntries(keys);
+});
+
+// Fetch data and set up 90s auto-refresh
+$effect(() => {
+	const currentKeys = keys;
+	// Fire all fetches in parallel
+	for (const key of currentKeys) {
+		fetchOne(key);
+	}
+
+	// Refresh every 90s
+	const interval = setInterval(() => {
+		for (const key of currentKeys) {
+			updateEntry(key.id, { loading: true });
+			fetchOne(key);
+		}
+	}, 90_000);
+
+	return () => clearInterval(interval);
+});
+
+// Merge duplicate Claude entries — all anthropic keys return the same
+// set of accounts, so collect and deduplicate under one "Claude" card.
+const claudeAccounts = $derived.by(() => {
+	const seen = new Set<string>();
+	const accounts: Array<{
+		label: string;
+		source: string;
+		subscriptionType?: string;
+		fiveHour?: UsageBucket;
+		sevenDay?: UsageBucket;
+		error?: string;
+	}> = [];
+	const claudeEntries = entries.filter((e) => e.provider === "anthropic");
+	for (const e of claudeEntries) {
+		if (!e.data || e.data.provider !== "anthropic" || !e.data.accounts) continue;
+		for (const acct of e.data.accounts) {
+			if (!seen.has(acct.source)) {
+				seen.add(acct.source);
+				accounts.push(acct);
+			}
+		}
+	}
+	return accounts;
+});
+
+const claudeLoading = $derived(entries.some((e) => e.provider === "anthropic" && e.loading));
+const claudeError = $derived(
+	entries.find((e) => e.provider === "anthropic" && e.error)?.error ?? null,
+);
+
+const nonClaudeEntries = $derived(entries.filter((e) => e.provider !== "anthropic"));
+
+function progressClass(utilization: number): string {
+	if (utilization > 0.8) return "progress-error";
+	if (utilization >= 0.5) return "progress-warning";
+	return "progress-success";
+}
+
+function formatDate(ts: number): string {
+	const diff = ts - Date.now();
+	const days = Math.floor(diff / 86400000);
+	const d = new Date(ts);
+	const dateStr =
+		d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" }) +
+		" " +
+		d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+
+	if (diff <= 0) {
+		return d.toLocaleString();
+	}
+	if (diff < 48 * 60 * 60 * 1000) {
+		const hours = Math.floor(diff / 3600000);
+		const minutes = Math.floor((diff % 3600000) / 60000);
+		return `in ${hours}:${String(minutes).padStart(2, "0")}`;
+	}
+	if (days <= 30) {
+		const weeks = Math.floor(days / 7);
+		const remDays = days % 7;
+		if (weeks > 0 && remDays > 0) {
+			return `in ${weeks}w ${remDays}d (${dateStr})`;
+		}
+		if (weeks > 0) {
+			return `in ${weeks} week${weeks > 1 ? "s" : ""} (${dateStr})`;
+		}
+		return `in ${days} day${days > 1 ? "s" : ""} (${dateStr})`;
+	}
+	return d.toLocaleDateString("en-US", {
+		month: "2-digit",
+		day: "2-digit",
+		year: "numeric",
+	});
+}
+
+function formatKeyId(id: string): string {
+	if (/^github-copilot/i.test(id)) return "Copilot";
+	return id
+		.split("-")
+		.map((part) => {
 			if (part.toLowerCase() === "opencode") return "OpenCode";
 			return part.charAt(0).toUpperCase() + part.slice(1);
-		}).join(" ");
-	}
+		})
+		.join(" ");
+}
 
-	// Cycle durations in ms
-	const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
-	const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000;
-	const THIRTY_DAY_MS = 30 * 24 * 60 * 60 * 1000;
+// Cycle durations in ms
+const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
+const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000;
+const THIRTY_DAY_MS = 30 * 24 * 60 * 60 * 1000;
 
-	function cycleElapsedPct(resetsAt: number | undefined, cycleDurationMs: number): number {
-		if (!resetsAt) return -1;
-		const timeRemaining = resetsAt - Date.now();
-		const elapsed = cycleDurationMs - timeRemaining;
-		return Math.max(0, Math.min(100, Math.round((elapsed / cycleDurationMs) * 100)));
-	}
+function cycleElapsedPct(resetsAt: number | undefined, cycleDurationMs: number): number {
+	if (!resetsAt) return -1;
+	const timeRemaining = resetsAt - Date.now();
+	const elapsed = cycleDurationMs - timeRemaining;
+	return Math.max(0, Math.min(100, Math.round((elapsed / cycleDurationMs) * 100)));
+}
 
-	function hasBucketData(bucket: UsageBucket | undefined): boolean {
-		return bucket !== undefined && bucket.utilization !== undefined;
-	}
+function hasBucketData(bucket: UsageBucket | undefined): boolean {
+	return bucket !== undefined && bucket.utilization !== undefined;
+}
 </script>
 
 <div class="flex flex-col gap-3 flex-1 min-h-0">

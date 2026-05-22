@@ -1,23 +1,26 @@
-import { Hono } from "hono";
 import {
-	createTab,
-	getTab,
-	listOpenTabs,
-	updateTabTitle,
-	updateTabModel,
-	updateTabStatus,
 	archiveTab,
+	createTab,
+	deleteSetting,
 	getMessagesForTab,
 	getSetting,
+	getTab,
+	listOpenTabs,
 	setSetting,
-	deleteSetting,
+	updateTabModel,
+	updateTabStatus,
+	updateTabTitle,
 } from "@dispatch/core";
+import { Hono } from "hono";
 
 export const tabsRoutes = new Hono();
 
-let getAgentManager: () => { stopTab(id: string): void; deleteTab(id: string): void } | null = () => null;
+let getAgentManager: () => { stopTab(id: string): void; deleteTab(id: string): void } | null = () =>
+	null;
 
-export function setTabsAgentManager(getter: () => { stopTab(id: string): void; deleteTab(id: string): void } | null): void {
+export function setTabsAgentManager(
+	getter: () => { stopTab(id: string): void; deleteTab(id: string): void } | null,
+): void {
 	getAgentManager = getter;
 }
 
@@ -69,7 +72,12 @@ tabsRoutes.get("/:id/messages", (c) => {
 
 tabsRoutes.patch("/:id", async (c) => {
 	const id = c.req.param("id");
-	const body = await c.req.json<{ title?: string; keyId?: string; modelId?: string; status?: string }>();
+	const body = await c.req.json<{
+		title?: string;
+		keyId?: string;
+		modelId?: string;
+		status?: string;
+	}>();
 	if (body.title !== undefined) updateTabTitle(id, body.title);
 	if (body.keyId !== undefined || body.modelId !== undefined) {
 		updateTabModel(id, body.keyId ?? null, body.modelId ?? null);

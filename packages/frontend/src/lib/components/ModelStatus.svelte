@@ -1,148 +1,154 @@
 <script lang="ts">
-	interface KeyInfo {
-		id: string;
-		provider: string;
-		status: "active" | "exhausted";
-		lastError: string | null;
-		exhaustedAt: number | null;
-	}
+interface KeyInfo {
+	id: string;
+	provider: string;
+	status: "active" | "exhausted";
+	lastError: string | null;
+	exhaustedAt: number | null;
+}
 
-	interface CredentialStatus {
-		keyId: string;
-		provider: string;
-		subscriptionType: string | null;
-		importedAt: number;
-		updatedAt: number;
-		expired: boolean;
-	}
+interface CredentialStatus {
+	keyId: string;
+	provider: string;
+	subscriptionType: string | null;
+	importedAt: number;
+	updatedAt: number;
+	expired: boolean;
+}
 
-	const {
-		keys = [],
-		currentModel,
-		apiBase = "",
-	}: {
-		keys?: KeyInfo[];
-		currentModel?: string;
-		apiBase?: string;
-	} = $props();
+const {
+	keys = [],
+	currentModel,
+	apiBase = "",
+}: {
+	keys?: KeyInfo[];
+	currentModel?: string;
+	apiBase?: string;
+} = $props();
 
-	const activeKeys = $derived(keys.filter((k) => k.status === "active").length);
-	const totalKeys = $derived(keys.length);
-	const allActive = $derived(totalKeys > 0 && activeKeys === totalKeys);
-	const allExhausted = $derived(totalKeys > 0 && activeKeys === 0);
-	const someExhausted = $derived(totalKeys > 0 && activeKeys < totalKeys && activeKeys > 0);
+const activeKeys = $derived(keys.filter((k) => k.status === "active").length);
+const totalKeys = $derived(keys.length);
+const allActive = $derived(totalKeys > 0 && activeKeys === totalKeys);
+const allExhausted = $derived(totalKeys > 0 && activeKeys === 0);
+const someExhausted = $derived(totalKeys > 0 && activeKeys < totalKeys && activeKeys > 0);
 
-	let credentialStatus = $state<Record<string, CredentialStatus>>({});
-	let importingKey = $state<string | null>(null);
-	let importError = $state<string | null>(null);
-	let importSuccess = $state<string | null>(null);
+let credentialStatus = $state<Record<string, CredentialStatus>>({});
+let importingKey = $state<string | null>(null);
+let importError = $state<string | null>(null);
+let importSuccess = $state<string | null>(null);
 
-	let apiKeyStatus = $state<Record<string, { keyId: string; provider: string; importedAt: number; updatedAt: number }>>({});
-	let showKeyModal = $state<string | null>(null); // keyId or null
-	let keyModalValue = $state("");
-	let keyModalError = $state<string | null>(null);
-	let keyModalSaving = $state(false);
+let apiKeyStatus = $state<
+	Record<string, { keyId: string; provider: string; importedAt: number; updatedAt: number }>
+>({});
+let showKeyModal = $state<string | null>(null); // keyId or null
+let keyModalValue = $state("");
+let keyModalError = $state<string | null>(null);
+let keyModalSaving = $state(false);
 
-	async function loadCredentialStatus(): Promise<void> {
-		try {
-			const res = await fetch(`${apiBase}/models/credentials-status`);
-			if (!res.ok) return;
-			const data = await res.json() as { credentials: CredentialStatus[] };
-			const map: Record<string, CredentialStatus> = {};
-			for (const cred of data.credentials) {
-				map[cred.keyId] = cred;
-			}
-			credentialStatus = map;
-		} catch {
-			// ignore
+async function loadCredentialStatus(): Promise<void> {
+	try {
+		const res = await fetch(`${apiBase}/models/credentials-status`);
+		if (!res.ok) return;
+		const data = (await res.json()) as { credentials: CredentialStatus[] };
+		const map: Record<string, CredentialStatus> = {};
+		for (const cred of data.credentials) {
+			map[cred.keyId] = cred;
 		}
+		credentialStatus = map;
+	} catch {
+		// ignore
 	}
+}
 
-	async function importCredentials(keyId: string): Promise<void> {
-		importingKey = keyId;
-		importError = null;
-		importSuccess = null;
-		try {
-			const res = await fetch(`${apiBase}/models/import-credentials`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ keyId }),
-			});
-			const data = await res.json() as { success?: boolean; error?: string };
-			if (!res.ok || !data.success) {
-				importError = data.error ?? "Import failed";
-			} else {
-				importSuccess = keyId;
-				await loadCredentialStatus();
-				setTimeout(() => { importSuccess = null; }, 3000);
-			}
-		} catch (e) {
-			importError = e instanceof Error ? e.message : "Network error";
-		} finally {
-			importingKey = null;
+async function importCredentials(keyId: string): Promise<void> {
+	importingKey = keyId;
+	importError = null;
+	importSuccess = null;
+	try {
+		const res = await fetch(`${apiBase}/models/import-credentials`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ keyId }),
+		});
+		const data = (await res.json()) as { success?: boolean; error?: string };
+		if (!res.ok || !data.success) {
+			importError = data.error ?? "Import failed";
+		} else {
+			importSuccess = keyId;
+			await loadCredentialStatus();
+			setTimeout(() => {
+				importSuccess = null;
+			}, 3000);
 		}
+	} catch (e) {
+		importError = e instanceof Error ? e.message : "Network error";
+	} finally {
+		importingKey = null;
 	}
+}
 
-	async function loadApiKeyStatus(): Promise<void> {
-		try {
-			const res = await fetch(`${apiBase}/models/api-keys-status`);
-			if (!res.ok) return;
-			const data = await res.json() as { keys: Array<{ keyId: string; provider: string; importedAt: number; updatedAt: number }> };
-			const map: Record<string, typeof data.keys[0]> = {};
-			for (const k of data.keys) {
-				map[k.keyId] = k;
-			}
-			apiKeyStatus = map;
-		} catch {
-			// ignore
+async function loadApiKeyStatus(): Promise<void> {
+	try {
+		const res = await fetch(`${apiBase}/models/api-keys-status`);
+		if (!res.ok) return;
+		const data = (await res.json()) as {
+			keys: Array<{ keyId: string; provider: string; importedAt: number; updatedAt: number }>;
+		};
+		const map: Record<string, (typeof data.keys)[0]> = {};
+		for (const k of data.keys) {
+			map[k.keyId] = k;
 		}
+		apiKeyStatus = map;
+	} catch {
+		// ignore
 	}
+}
 
-	async function saveApiKey(): Promise<void> {
-		if (!showKeyModal || !keyModalValue.trim()) return;
-		keyModalSaving = true;
-		keyModalError = null;
-		try {
-			const res = await fetch(`${apiBase}/models/set-api-key`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ keyId: showKeyModal, apiKey: keyModalValue.trim() }),
-			});
-			const data = await res.json() as { success?: boolean; error?: string };
-			if (!res.ok || !data.success) {
-				keyModalError = data.error ?? "Failed to save";
-			} else {
-				showKeyModal = null;
-				keyModalValue = "";
-				await loadApiKeyStatus();
-			}
-		} catch (e) {
-			keyModalError = e instanceof Error ? e.message : "Network error";
-		} finally {
-			keyModalSaving = false;
+async function saveApiKey(): Promise<void> {
+	if (!showKeyModal || !keyModalValue.trim()) return;
+	keyModalSaving = true;
+	keyModalError = null;
+	try {
+		const res = await fetch(`${apiBase}/models/set-api-key`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ keyId: showKeyModal, apiKey: keyModalValue.trim() }),
+		});
+		const data = (await res.json()) as { success?: boolean; error?: string };
+		if (!res.ok || !data.success) {
+			keyModalError = data.error ?? "Failed to save";
+		} else {
+			showKeyModal = null;
+			keyModalValue = "";
+			await loadApiKeyStatus();
 		}
+	} catch (e) {
+		keyModalError = e instanceof Error ? e.message : "Network error";
+	} finally {
+		keyModalSaving = false;
 	}
+}
 
-	$effect(() => {
-		void loadCredentialStatus();
-		void loadApiKeyStatus();
-	});
+$effect(() => {
+	void loadCredentialStatus();
+	void loadApiKeyStatus();
+});
 
-	function timeAgo(ts: number | null): string {
-		if (ts === null) return "";
-		const diffMs = Date.now() - ts;
-		const diffSec = Math.floor(diffMs / 1000);
-		if (diffSec < 60) return `${diffSec}s ago`;
-		const diffMin = Math.floor(diffSec / 60);
-		if (diffMin < 60) return `${diffMin}m ago`;
-		const diffHr = Math.floor(diffMin / 60);
-		return `${diffHr}h ago`;
-	}
+function timeAgo(ts: number | null): string {
+	if (ts === null) return "";
+	const diffMs = Date.now() - ts;
+	const diffSec = Math.floor(diffMs / 1000);
+	if (diffSec < 60) return `${diffSec}s ago`;
+	const diffMin = Math.floor(diffSec / 60);
+	if (diffMin < 60) return `${diffMin}m ago`;
+	const diffHr = Math.floor(diffMin / 60);
+	return `${diffHr}h ago`;
+}
 
-	function truncate(str: string | null, max: number): string {
-		if (!str) return "";
-		return str.length > max ? str.slice(0, max) + "..." : str;
-	}
+function truncate(str: string | null, max: number): string {
+	if (!str) return "";
+	return str.length > max ? str.slice(0, max) + "..." : str;
+}
 </script>
 
 <div class="flex flex-col gap-3">

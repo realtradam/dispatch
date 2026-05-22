@@ -1,6 +1,6 @@
-import { parse } from "smol-toml";
 import * as path from "node:path";
-import type { SkillDefinition, SkillScope, SkillDirectory } from "../types/index.js";
+import { parse } from "smol-toml";
+import type { SkillDefinition, SkillDirectory, SkillScope } from "../types/index.js";
 
 const FRONTMATTER_DELIMITER = "+++";
 

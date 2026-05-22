@@ -24,13 +24,13 @@ function submit() {
 }
 </script>
 
-<div class="flex items-center gap-2 p-3 border-t border-base-300 bg-base-100">
+<div class="flex items-center gap-2 p-3">
 	<input
 		bind:this={inputEl}
 		bind:value={inputValue}
 		type="text"
 		placeholder="Type a message..."
-		class="input flex-1"
+		class="input input-ghost flex-1"
 		onkeydown={handleKeydown}
 	/>
 	<button

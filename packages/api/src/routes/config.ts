@@ -1,5 +1,5 @@
-import { Hono } from "hono";
 import type { DispatchConfig } from "@dispatch/core";
+import { Hono } from "hono";
 
 let getConfig: () => DispatchConfig = () => ({ permissions: {} });
 

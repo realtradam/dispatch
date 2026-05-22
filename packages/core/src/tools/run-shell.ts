@@ -11,12 +11,12 @@ export function createRunShellTool(workingDirectory: string): ToolDefinition {
 			"Execute a shell command in the working directory. Returns stdout, stderr, and exit code. Use for running tests, builds, git operations, package management, and other development tasks.",
 		parameters: z.object({
 			command: z.string().describe("The shell command to execute"),
-			timeout: z
-				.number()
-				.optional()
-				.describe("Timeout in milliseconds (default 2 minutes)"),
+			timeout: z.number().optional().describe("Timeout in milliseconds (default 2 minutes)"),
 		}),
-		execute: async (args: Record<string, unknown>, context?: ToolExecuteContext): Promise<string> => {
+		execute: async (
+			args: Record<string, unknown>,
+			context?: ToolExecuteContext,
+		): Promise<string> => {
 			const command = args.command as string;
 			const timeout = (args.timeout as number | undefined) ?? DEFAULT_TIMEOUT;
 
@@ -68,7 +68,5 @@ export function createRunShellTool(workingDirectory: string): ToolDefinition {
 }
 
 function getShell(): [string, string[]] {
-	return process.platform === "win32"
-		? ["powershell", ["-Command"]]
-		: ["bash", ["-c"]];
+	return process.platform === "win32" ? ["powershell", ["-Command"]] : ["bash", ["-c"]];
 }

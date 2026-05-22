@@ -1,46 +1,46 @@
 <script lang="ts">
-	import { untrack } from "svelte";
-	import { tabStore } from "../tabs.svelte.js";
-	import ChatMessageComponent from "./ChatMessage.svelte";
+import { untrack } from "svelte";
+import { tabStore } from "../tabs.svelte.js";
+import ChatMessageComponent from "./ChatMessage.svelte";
 
-	let messagesEl: HTMLDivElement | undefined;
-	let userScrolledUp = $state(false);
-	let isAutoScrolling = false;
+let messagesEl: HTMLDivElement | undefined;
+let userScrolledUp = $state(false);
+let isAutoScrolling = false;
 
-	const messages = $derived(tabStore.activeTab?.messages ?? []);
+const messages = $derived(tabStore.activeTab?.messages ?? []);
 
-	function isNearBottom(el: HTMLElement): boolean {
-		return el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-	}
+function isNearBottom(el: HTMLElement): boolean {
+	return el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+}
 
-	function scrollToBottom(animate = false) {
-		if (!messagesEl) return;
-		messagesEl.scrollTo({
-			top: messagesEl.scrollHeight,
-			behavior: animate ? "smooth" : "instant",
+function scrollToBottom(animate = false) {
+	if (!messagesEl) return;
+	messagesEl.scrollTo({
+		top: messagesEl.scrollHeight,
+		behavior: animate ? "smooth" : "instant",
+	});
+}
+
+function handleScroll() {
+	if (!messagesEl || isAutoScrolling) return;
+	userScrolledUp = !isNearBottom(messagesEl);
+}
+
+function resumeAutoScroll() {
+	userScrolledUp = false;
+	isAutoScrolling = true;
+	scrollToBottom(true);
+}
+
+$effect(() => {
+	const count = messages.length;
+	void count;
+	if (messagesEl) {
+		untrack(() => {
+			if (!userScrolledUp) scrollToBottom(false);
 		});
 	}
-
-	function handleScroll() {
-		if (!messagesEl || isAutoScrolling) return;
-		userScrolledUp = !isNearBottom(messagesEl);
-	}
-
-	function resumeAutoScroll() {
-		userScrolledUp = false;
-		isAutoScrolling = true;
-		scrollToBottom(true);
-	}
-
-	$effect(() => {
-		const count = messages.length;
-		void count;
-		if (messagesEl) {
-			untrack(() => {
-				if (!userScrolledUp) scrollToBottom(false);
-			});
-		}
-	});
+});
 </script>
 
 <div class="flex flex-col h-full">
@@ -67,12 +67,12 @@
 		<!-- Scroll-to-bottom button -->
 		<button
 			type="button"
-			class="absolute bottom-0 left-1/2 -translate-x-1/2 mb-4 btn btn-circle btn-sm shadow-lg transition-opacity duration-200 {userScrolledUp ? 'opacity-100' : 'opacity-0 pointer-events-none'}"
+			class="absolute bottom-0 left-1/2 -translate-x-1/2 mb-4 btn btn-sm px-8 rounded-lg shadow-lg transition-opacity duration-200 {userScrolledUp ? 'opacity-100' : 'opacity-0 pointer-events-none'}"
 			onclick={resumeAutoScroll}
 			aria-label="Scroll to bottom"
 			tabindex={userScrolledUp ? 0 : -1}
 		>
-			↓
+			&#x25BC;
 		</button>
 	</div>
 </div>

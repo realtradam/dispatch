@@ -1,6 +1,6 @@
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import * as BashArity from "./bash-arity.js";
 
 // Commands that touch files — triggers external_directory check.
@@ -12,9 +12,27 @@ import * as BashArity from "./bash-arity.js";
 //   - `cd` state changes: we don't track cwd mutations across pipeline stages
 //   - Interpreter escapes: `python -c "open('/etc/passwd')"`, `node -e "..."` bypass this entirely
 const FILE_COMMANDS = new Set([
-	"rm", "cp", "mv", "mkdir", "touch", "chmod", "chown",
-	"cat", "ls", "find", "grep",
-	"head", "tail", "less", "more", "wc", "diff", "file", "stat", "du", "df",
+	"rm",
+	"cp",
+	"mv",
+	"mkdir",
+	"touch",
+	"chmod",
+	"chown",
+	"cat",
+	"ls",
+	"find",
+	"grep",
+	"head",
+	"tail",
+	"less",
+	"more",
+	"wc",
+	"diff",
+	"file",
+	"stat",
+	"du",
+	"df",
 ]);
 
 // Lazy-initialized parser
@@ -142,6 +160,7 @@ function isInsideWorkspace(filePath: string, wd: string): boolean {
 	// rel === "" means filePath IS the workspace root — that is inside.
 	// If relative path starts with "../" or is ".." exactly, or is an absolute path
 	// (on Windows when drives differ), the file is outside the workspace.
-	const isOutside = rel.startsWith(`..${sep}`) || rel.startsWith("../") || rel === ".." || isAbsolute(rel);
+	const isOutside =
+		rel.startsWith(`..${sep}`) || rel.startsWith("../") || rel === ".." || isAbsolute(rel);
 	return !isOutside;
 }

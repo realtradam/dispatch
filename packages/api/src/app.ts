@@ -2,9 +2,10 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AgentManager } from "./agent-manager.js";
 import { PermissionManager } from "./permission-manager.js";
+import { agentsRoutes } from "./routes/agents.js";
 import { configRoutes } from "./routes/config.js";
-import { skillsRoutes } from "./routes/skills.js";
 import { modelsRoutes, startWakeScheduler } from "./routes/models.js";
+import { skillsRoutes } from "./routes/skills.js";
 import { tabsRoutes } from "./routes/tabs.js";
 
 export const permissionManager = new PermissionManager();
@@ -35,7 +36,14 @@ app.get("/status", (c) => {
 });
 
 app.post("/chat", async (c) => {
-	const body = await c.req.json<{ tabId?: unknown; message?: unknown; keyId?: unknown; modelId?: unknown; reasoningEffort?: unknown }>();
+	const body = await c.req.json<{
+		tabId?: unknown;
+		message?: unknown;
+		keyId?: unknown;
+		modelId?: unknown;
+		reasoningEffort?: unknown;
+		workingDirectory?: unknown;
+	}>();
 	const { tabId, message } = body;
 
 	if (typeof tabId !== "string" || tabId.trim() === "") {
@@ -52,13 +60,15 @@ app.post("/chat", async (c) => {
 
 	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
 	const modelId = typeof body.modelId === "string" ? body.modelId : undefined;
+	const workingDirectory = typeof body.workingDirectory === "string" ? body.workingDirectory : undefined;
 	const validEfforts = ["none", "low", "medium", "high", "max"];
-	const reasoningEffort = typeof body.reasoningEffort === "string" && validEfforts.includes(body.reasoningEffort)
-		? (body.reasoningEffort as "none" | "low" | "medium" | "high" | "max")
-		: undefined;
+	const reasoningEffort =
+		typeof body.reasoningEffort === "string" && validEfforts.includes(body.reasoningEffort)
+			? (body.reasoningEffort as "none" | "low" | "medium" | "high" | "max")
+			: undefined;
 
 	// Non-blocking — let the agent run in the background
-	agentManager.processMessage(tabId, message, keyId, modelId, reasoningEffort).catch(console.error);
+	agentManager.processMessage(tabId, message, keyId, modelId, reasoningEffort, workingDirectory).catch(console.error);
 
 	return c.json({ status: "ok" });
 });
@@ -67,6 +77,7 @@ app.route("/config", configRoutes);
 app.route("/skills", skillsRoutes);
 app.route("/models", modelsRoutes);
 app.route("/tabs", tabsRoutes);
+app.route("/agents", agentsRoutes);
 
 // Start the wake scheduler on boot (restores persisted schedule)
 startWakeScheduler();

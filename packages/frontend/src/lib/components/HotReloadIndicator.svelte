@@ -1,26 +1,26 @@
 <script lang="ts">
-	const { active }: { active: boolean } = $props();
+const { active }: { active: boolean } = $props();
 
-	let visible = $state(false);
-	let timer: ReturnType<typeof setTimeout> | null = null;
+let visible = $state(false);
+let timer: ReturnType<typeof setTimeout> | null = null;
 
-	$effect(() => {
-		if (active) {
-			visible = true;
-			if (timer !== null) clearTimeout(timer);
-			timer = setTimeout(() => {
-				visible = false;
-				timer = null;
-			}, 2000);
-		}
-		return () => {
-			if (timer !== null) {
-				clearTimeout(timer);
-				timer = null;
-			}
+$effect(() => {
+	if (active) {
+		visible = true;
+		if (timer !== null) clearTimeout(timer);
+		timer = setTimeout(() => {
 			visible = false;
-		};
-	});
+			timer = null;
+		}, 2000);
+	}
+	return () => {
+		if (timer !== null) {
+			clearTimeout(timer);
+			timer = null;
+		}
+		visible = false;
+	};
+});
 </script>
 
 {#if visible}

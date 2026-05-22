@@ -2,7 +2,9 @@ import { getDatabase } from "./index.js";
 
 export function getSetting(key: string): string | null {
 	const db = getDatabase();
-	const row = db.query("SELECT value FROM settings WHERE key = $key").get({ $key: key }) as { value: string } | null;
+	const row = db.query("SELECT value FROM settings WHERE key = $key").get({ $key: key }) as {
+		value: string;
+	} | null;
 	return row?.value ?? null;
 }
 

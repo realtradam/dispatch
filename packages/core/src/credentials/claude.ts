@@ -1,9 +1,16 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync } from "node:fs";
-import { getStoredCredentials, updateStoredTokens, listStoredCredentials } from "./store.js";
-import { getDatabase } from "../db/index.js";
-import { dirname, join, basename } from "node:path";
-import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { getDatabase } from "../db/index.js";
+import { getStoredCredentials, listStoredCredentials, updateStoredTokens } from "./store.js";
 
 export interface ClaudeCredentials {
 	accessToken: string;
@@ -41,7 +48,10 @@ function parseCredentialsFile(raw: string): ClaudeCredentials | null {
 	const data = (parsed as Record<string, unknown>).claudeAiOauth ?? parsed;
 	const creds = data as Record<string, unknown>;
 
-	if ((creds as Record<string, unknown>).mcpOAuth && !(creds as Record<string, unknown>).accessToken) {
+	if (
+		(creds as Record<string, unknown>).mcpOAuth &&
+		!(creds as Record<string, unknown>).accessToken
+	) {
 		return null;
 	}
 
@@ -57,7 +67,8 @@ function parseCredentialsFile(raw: string): ClaudeCredentials | null {
 		accessToken: creds.accessToken as string,
 		refreshToken: creds.refreshToken as string,
 		expiresAt: creds.expiresAt as number,
-		subscriptionType: typeof creds.subscriptionType === "string" ? creds.subscriptionType : undefined,
+		subscriptionType:
+			typeof creds.subscriptionType === "string" ? creds.subscriptionType : undefined,
 	};
 }
 
@@ -122,7 +133,7 @@ async function refreshViaOAuth(refreshToken: string): Promise<ClaudeCredentials 
 			return null;
 		}
 
-		const data = await response.json() as Record<string, unknown>;
+		const data = (await response.json()) as Record<string, unknown>;
 		if (!data.access_token || typeof data.access_token !== "string") {
 			return null;
 		}
@@ -131,7 +142,8 @@ async function refreshViaOAuth(refreshToken: string): Promise<ClaudeCredentials 
 			accessToken: data.access_token as string,
 			refreshToken: (data.refresh_token as string) ?? refreshToken,
 			expiresAt: Date.now() + ((data.expires_in as number) ?? 36_000) * 1000,
-			subscriptionType: typeof data.subscriptionType === "string" ? data.subscriptionType : undefined,
+			subscriptionType:
+				typeof data.subscriptionType === "string" ? data.subscriptionType : undefined,
 		};
 	} catch {
 		return null;
@@ -220,7 +232,11 @@ export function discoverClaudeAccounts(): ClaudeAccount[] {
 export function refreshAccountCredentials(account: ClaudeAccount): ClaudeCredentials | null {
 	const cached = accountCacheMap.get(account.id);
 	const now = Date.now();
-	if (cached && now - cached.cachedAt < CREDENTIAL_CACHE_TTL_MS && cached.creds.expiresAt > now + 60_000) {
+	if (
+		cached &&
+		now - cached.cachedAt < CREDENTIAL_CACHE_TTL_MS &&
+		cached.creds.expiresAt > now + 60_000
+	) {
 		return cached.creds;
 	}
 
@@ -257,10 +273,16 @@ export function refreshAccountCredentials(account: ClaudeAccount): ClaudeCredent
 	return null;
 }
 
-export async function refreshAccountCredentialsAsync(account: ClaudeAccount): Promise<ClaudeCredentials | null> {
+export async function refreshAccountCredentialsAsync(
+	account: ClaudeAccount,
+): Promise<ClaudeCredentials | null> {
 	const cached = accountCacheMap.get(account.id);
 	const now = Date.now();
-	if (cached && now - cached.cachedAt < CREDENTIAL_CACHE_TTL_MS && cached.creds.expiresAt > now + 60_000) {
+	if (
+		cached &&
+		now - cached.cachedAt < CREDENTIAL_CACHE_TTL_MS &&
+		cached.creds.expiresAt > now + 60_000
+	) {
 		return cached.creds;
 	}
 
@@ -294,7 +316,12 @@ export async function refreshAccountCredentialsAsync(account: ClaudeAccount): Pr
 			account.credentials = refreshed;
 			// Update DB if this is a DB-backed account, otherwise write to file
 			if (account.source.startsWith("db:")) {
-				updateStoredTokens(account.id, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+				updateStoredTokens(
+					account.id,
+					refreshed.accessToken,
+					refreshed.refreshToken,
+					refreshed.expiresAt,
+				);
 			} else {
 				writeCredentialsFile(account.source, refreshed);
 			}
@@ -323,14 +350,14 @@ function computeCch(messageText: string): string {
 }
 
 function computeVersionSuffix(messageText: string, version: string): string {
-	const sampled = [4, 7, 20]
-		.map((i) => (i < messageText.length ? messageText[i] : "0"))
-		.join("");
+	const sampled = [4, 7, 20].map((i) => (i < messageText.length ? messageText[i] : "0")).join("");
 	const input = `${BILLING_SALT}${sampled}${version}`;
 	return createHash("sha256").update(input).digest("hex").slice(0, 3);
 }
 
-export function buildBillingHeaderValue(messages: Array<{ role: string; content: string }>): string {
+export function buildBillingHeaderValue(
+	messages: Array<{ role: string; content: string }>,
+): string {
 	const text = extractFirstUserMessageText(messages);
 	const version = process.env.ANTHROPIC_CLI_VERSION ?? CC_VERSION;
 	const suffix = computeVersionSuffix(text, version);
@@ -404,11 +431,16 @@ export async function fetchAnthropicModels(accessToken: string): Promise<string[
 			return [];
 		}
 
-		const data = (await response.json()) as { data?: Array<{ id: string }>; models?: Array<{ id: string }> };
+		const data = (await response.json()) as {
+			data?: Array<{ id: string }>;
+			models?: Array<{ id: string }>;
+		};
 		const entries = data.data ?? data.models ?? [];
 		return entries.map((m) => m.id).filter(Boolean);
 	} catch (err) {
-		console.warn(`dispatch: failed to fetch Anthropic models: ${err instanceof Error ? err.message : String(err)}`);
+		console.warn(
+			`dispatch: failed to fetch Anthropic models: ${err instanceof Error ? err.message : String(err)}`,
+		);
 		return [];
 	}
 }
@@ -434,7 +466,9 @@ export interface ClaudeProfile {
  * Validate that Claude credentials are usable by hitting the OAuth profile endpoint.
  * Returns the profile info if valid, or null if the token is dead.
  */
-export async function validateAccountCredentials(account: ClaudeAccount): Promise<ClaudeProfile | null> {
+export async function validateAccountCredentials(
+	account: ClaudeAccount,
+): Promise<ClaudeProfile | null> {
 	const creds = await refreshAccountCredentialsAsync(account);
 	if (!creds) return null;
 
@@ -487,7 +521,8 @@ async function fetchClaudeUsage(accessToken: string): Promise<ClaudeUsageReport 
 			// API returns utilization as 0-100 percentage; normalize to 0-1 fraction
 			const rawUtil = typeof b.utilization === "number" ? b.utilization : undefined;
 			const utilization = rawUtil !== undefined ? rawUtil / 100 : undefined;
-			const resetsAt = typeof b.resets_at === "string" ? Date.parse(b.resets_at as string) : undefined;
+			const resetsAt =
+				typeof b.resets_at === "string" ? Date.parse(b.resets_at as string) : undefined;
 			if (utilization === undefined && resetsAt === undefined) return undefined;
 			return { utilization, resetsAt };
 		};
@@ -503,9 +538,13 @@ async function fetchClaudeUsage(accessToken: string): Promise<ClaudeUsageReport 
 
 		// Try to extract identity
 		const accountId =
-			typeof data.account_id === "string" ? data.account_id :
-			typeof data.user_id === "string" ? data.user_id :
-			typeof data.org_id === "string" ? data.org_id : undefined;
+			typeof data.account_id === "string"
+				? data.account_id
+				: typeof data.user_id === "string"
+					? data.user_id
+					: typeof data.org_id === "string"
+						? data.org_id
+						: undefined;
 		if (accountId) report.accountId = accountId;
 
 		const email = typeof data.email === "string" ? data.email : undefined;
@@ -520,9 +559,9 @@ async function fetchClaudeUsage(accessToken: string): Promise<ClaudeUsageReport 
 function getCachedUsage(keyId: string): ClaudeUsageReport | null {
 	try {
 		const db = getDatabase();
-		const row = db.query(
-			"SELECT report_json FROM usage_cache WHERE key_id = $keyId",
-		).get({ $keyId: keyId }) as { report_json: string } | null;
+		const row = db
+			.query("SELECT report_json FROM usage_cache WHERE key_id = $keyId")
+			.get({ $keyId: keyId }) as { report_json: string } | null;
 		if (!row) return null;
 		return JSON.parse(row.report_json) as ClaudeUsageReport;
 	} catch {

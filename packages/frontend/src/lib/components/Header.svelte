@@ -1,4 +1,5 @@
 <script lang="ts">
+import { router } from "../router.svelte.js";
 import { tabStore } from "../tabs.svelte.js";
 import { wsClient } from "../ws.svelte.js";
 import ThemeSwitcher from "./ThemeSwitcher.svelte";
@@ -27,7 +28,7 @@ async function handleCopy() {
 
 <header class="navbar bg-base-200 border-b border-base-300 px-4 min-h-14 flex-shrink-0">
 	<div class="navbar-start">
-		<span class="text-xl font-bold tracking-tight">Dispatch</span>
+		<button class="text-xl font-bold tracking-tight btn btn-ghost px-0" onclick={() => router.navigate("dashboard")}>Dispatch</button>
 	</div>
 	<div class="navbar-end flex items-center gap-3">
 		<span class="flex items-center gap-1.5 text-xs text-base-content/60">

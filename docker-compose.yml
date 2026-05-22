@@ -10,6 +10,8 @@ services:
       - .:/app
       - ${HOME}/.claude:/home/${HOST_USER:-dispatch}/.claude
       - ${HOME}/.local/share/dispatch:/home/${HOST_USER:-dispatch}/.local/share/dispatch
+      - ${HOME}/.skills:/home/${HOST_USER:-dispatch}/.skills
+      - ${HOME}/.config/dispatch:/home/${HOST_USER:-dispatch}/.config/dispatch
     env_file:
       - .env.dispatch
     environment:

@@ -1,6 +1,6 @@
 <script lang="ts">
-import type { ChatMessage } from "../types.js";
 import { appSettings } from "../settings.svelte.js";
+import type { ChatMessage } from "../types.js";
 import MarkdownRenderer from "./MarkdownRenderer.svelte";
 import ToolCallDisplay from "./ToolCallDisplay.svelte";
 

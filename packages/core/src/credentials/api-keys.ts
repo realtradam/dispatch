@@ -33,9 +33,9 @@ export function setApiKey(keyId: string, provider: string, apiKey: string): void
  */
 export function getApiKey(keyId: string): string | null {
 	const db = getDatabase();
-	const row = db.query(
-		"SELECT api_key FROM api_keys WHERE key_id = $keyId",
-	).get({ $keyId: keyId }) as { api_key: string } | null;
+	const row = db
+		.query("SELECT api_key FROM api_keys WHERE key_id = $keyId")
+		.get({ $keyId: keyId }) as { api_key: string } | null;
 	return row?.api_key ?? null;
 }
 
@@ -57,11 +57,16 @@ export function deleteApiKey(keyId: string): void {
 /**
  * List all stored API keys with metadata (key value excluded for security).
  */
-export function listApiKeys(): Array<{ keyId: string; provider: string; importedAt: number; updatedAt: number }> {
+export function listApiKeys(): Array<{
+	keyId: string;
+	provider: string;
+	importedAt: number;
+	updatedAt: number;
+}> {
 	const db = getDatabase();
-	const rows = db.query(
-		"SELECT key_id, provider, imported_at, updated_at FROM api_keys ORDER BY key_id",
-	).all() as Array<Record<string, unknown>>;
+	const rows = db
+		.query("SELECT key_id, provider, imported_at, updated_at FROM api_keys ORDER BY key_id")
+		.all() as Array<Record<string, unknown>>;
 	return rows.map((row) => ({
 		keyId: row.key_id as string,
 		provider: row.provider as string,

@@ -10,10 +10,7 @@ export class ModelRegistry {
 		this._initConfig(keys, new Map());
 	}
 
-	private _initConfig(
-		keys: KeyDefinition[],
-		existingStates: Map<string, KeyState>,
-	): void {
+	private _initConfig(keys: KeyDefinition[], existingStates: Map<string, KeyState>): void {
 		this.keyOrder = keys.map((k) => k.id);
 
 		const newStates = new Map<string, KeyState>();
@@ -83,8 +80,7 @@ export class ModelRegistry {
 		return this.keyOrder
 			.map((id) => this.keyStates.get(id))
 			.filter(
-				(state): state is KeyState =>
-					state !== undefined && state.definition.provider === provider,
+				(state): state is KeyState => state !== undefined && state.definition.provider === provider,
 			);
 	}
 }

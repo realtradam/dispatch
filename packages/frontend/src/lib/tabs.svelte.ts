@@ -38,6 +38,12 @@ export interface Tab {
 	parentTabId: string | null;
 	/** Persistent tabs stay until manually closed. Temp tabs disappear when agent finishes. */
 	persistent: boolean;
+	/** Slug of the selected agent, or null for manual mode */
+	agentSlug: string | null;
+	/** Scope of the selected agent */
+	agentScope: string | null;
+	/** Custom working directory override for this tab */
+	workingDirectory: string | null;
 }
 
 function createTabStore() {
@@ -96,12 +102,18 @@ function createTabStore() {
 			injectedSkills: [],
 			parentTabId: null,
 			persistent: true,
+			agentSlug: null,
+			agentScope: null,
+			workingDirectory: null,
 		};
 		tabs = [...tabs, tab];
 		activeTabId = id;
 
-		// Auto-check default skills for injection with the first message
-		void autoCheckDefaultSkills();
+		// Auto-check default skills then apply default agent (sequential to avoid race)
+		void (async () => {
+			await autoCheckDefaultSkills();
+			await autoSelectDefaultAgent(id);
+		})();
 
 		return tab;
 	}
@@ -181,6 +193,9 @@ function createTabStore() {
 				injectedSkills: [],
 				parentTabId: tabData.parentTabId ?? null,
 				persistent: true,
+				agentSlug: null,
+				agentScope: null,
+				workingDirectory: null,
 			};
 			tabs = [...tabs, newTab];
 			activeTabId = agentId;
@@ -209,7 +224,7 @@ function createTabStore() {
 				if (fallback && !fallback.persistent) {
 					updateTab(fallback.id, { persistent: true });
 				}
-				activeTabId = fallback?.id;
+				activeTabId = fallback?.id ?? null;
 			} else {
 				await createNewTab();
 			}
@@ -447,6 +462,9 @@ function createTabStore() {
 						injectedSkills: [],
 						parentTabId: newTabEvent.parentTabId ?? null,
 						persistent: newTabEvent.parentTabId == null,
+						agentSlug: null,
+						agentScope: null,
+						workingDirectory: null,
 					};
 					tabs = [...tabs, tab];
 				}
@@ -475,6 +493,73 @@ function createTabStore() {
 			appSettings.skillChecks = checks;
 		} catch {
 			// Silently ignore — skills will still be available for manual checking
+		}
+	}
+
+	async function autoSelectDefaultAgent(tabId: string): Promise<void> {
+		try {
+			const res = await fetch(`${config.apiBase}/agents`);
+			if (!res.ok) return;
+			const data = (await res.json()) as {
+				agents?: Array<{
+					slug: string;
+					scope: string;
+					name: string;
+					skills: string[];
+					tools: string[];
+					models: Array<{ key_id: string; model_id: string }>;
+					cwd?: string;
+				}>;
+			};
+			const agents = data.agents ?? [];
+			const defaultAgent = agents.find((a: { slug: string; scope: string }) => a.slug === "default" && a.scope === "global");
+			if (!defaultAgent) return;
+
+			const tab = getTabById(tabId);
+			if (!tab) return;
+
+			// Apply the default agent
+			const firstModel = defaultAgent.models[0];
+			const patch: Partial<Tab> = {
+				agentSlug: defaultAgent.slug,
+				agentScope: defaultAgent.scope,
+				workingDirectory: defaultAgent.cwd || null,
+			};
+			if (firstModel) {
+				patch.keyId = firstModel.key_id;
+				patch.modelId = firstModel.model_id;
+			}
+			updateTab(tabId, patch);
+
+			// Merge the agent's skills into existing checked skills
+			if (defaultAgent.skills.length > 0) {
+				const checks: Record<string, boolean> = { ...appSettings.skillChecks };
+				for (const skillKey of defaultAgent.skills) {
+					checks[skillKey] = true;
+				}
+				appSettings.skillChecks = checks;
+			}
+
+			// Apply tool permissions
+			const perms: Record<string, boolean> = {};
+			for (const key of Object.keys(appSettings.toolPerms)) {
+				perms[key] = false;
+			}
+			for (const tool of defaultAgent.tools) {
+				perms[tool] = true;
+			}
+			appSettings.toolPerms = perms;
+
+			// Persist to backend
+			if (firstModel) {
+				fetch(`${config.apiBase}/tabs/${tabId}`, {
+					method: "PATCH",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ keyId: firstModel.key_id, modelId: firstModel.model_id }),
+				}).catch(() => {});
+			}
+		} catch {
+			// Silently ignore
 		}
 	}
 
@@ -584,6 +669,7 @@ function createTabStore() {
 					...(tab.keyId ? { keyId: tab.keyId } : {}),
 					...(tab.modelId ? { modelId: tab.modelId } : {}),
 					reasoningEffort: tab.reasoningEffort,
+					...(tab.workingDirectory ? { workingDirectory: tab.workingDirectory } : {}),
 				}),
 			});
 			if (!res.ok) {
@@ -636,6 +722,71 @@ function createTabStore() {
 			method: "PATCH",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ keyId, modelId: null }),
+		}).catch(() => {});
+	}
+
+	function setWorkingDirectory(dir: string | null): void {
+		const tab = getActiveTab();
+		if (!tab) return;
+		updateTab(tab.id, { workingDirectory: dir || null });
+	}
+
+	function setAgent(
+		agent: {
+			slug: string;
+			scope: string;
+			skills: string[];
+			tools: string[];
+			models: Array<{ key_id: string; model_id: string }>;
+			cwd?: string;
+		} | null,
+	): void {
+		const tab = getActiveTab();
+		if (!tab) return;
+
+		if (!agent) {
+			// Switch back to manual mode — clear agent
+			updateTab(tab.id, { agentSlug: null, agentScope: null });
+			return;
+		}
+
+		// Apply agent's first model as the active key+model
+		const firstModel = agent.models[0];
+		const patch: Partial<Tab> = {
+			agentSlug: agent.slug,
+			agentScope: agent.scope,
+			workingDirectory: agent.cwd || null,
+		};
+		if (firstModel) {
+			patch.keyId = firstModel.key_id;
+			patch.modelId = firstModel.model_id;
+		}
+		updateTab(tab.id, patch);
+
+		// Reset and apply the agent's skills (don't accumulate from previous agents)
+		const checks: Record<string, boolean> = {};
+		for (const skillKey of agent.skills) {
+			checks[skillKey] = true;
+		}
+		appSettings.skillChecks = checks;
+
+		// Always reset tool permissions to agent's allowlist (even if empty)
+		const perms: Record<string, boolean> = {};
+		for (const key of Object.keys(appSettings.toolPerms)) {
+			perms[key] = false;
+		}
+		for (const tool of agent.tools) {
+			perms[tool] = true;
+		}
+		appSettings.toolPerms = perms;
+
+		// Persist to backend
+		fetch(`${config.apiBase}/tabs/${tab.id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				...(firstModel ? { keyId: firstModel.key_id, modelId: firstModel.model_id } : {}),
+			}),
 		}).catch(() => {});
 	}
 
@@ -722,10 +873,12 @@ function createTabStore() {
 		sendMessage,
 		changeModel,
 		setKey,
+		setAgent,
 		replyPermission,
 		copyConversation,
 		promoteTab,
 		openAgentTab,
+		setWorkingDirectory,
 	};
 }
 

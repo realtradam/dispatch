@@ -10,14 +10,30 @@ export interface MessageRow {
 	createdAt: number;
 }
 
-export function appendMessage(tabId: string, id: string, role: string, contentJson: string, thinking?: string): void {
+export function appendMessage(
+	tabId: string,
+	id: string,
+	role: string,
+	contentJson: string,
+	thinking?: string,
+): void {
 	const db = getDatabase();
-	const maxSeq = db.query("SELECT COALESCE(MAX(seq), -1) as max_seq FROM messages WHERE tab_id = $tabId").get({ $tabId: tabId }) as { max_seq: number };
+	const maxSeq = db
+		.query("SELECT COALESCE(MAX(seq), -1) as max_seq FROM messages WHERE tab_id = $tabId")
+		.get({ $tabId: tabId }) as { max_seq: number };
 	const seq = (maxSeq?.max_seq ?? -1) + 1;
 	db.query(
 		`INSERT INTO messages (id, tab_id, seq, role, content_json, thinking, created_at)
 		 VALUES ($id, $tabId, $seq, $role, $contentJson, $thinking, $now)`,
-	).run({ $id: id, $tabId: tabId, $seq: seq, $role: role, $contentJson: contentJson, $thinking: thinking ?? null, $now: Date.now() });
+	).run({
+		$id: id,
+		$tabId: tabId,
+		$seq: seq,
+		$role: role,
+		$contentJson: contentJson,
+		$thinking: thinking ?? null,
+		$now: Date.now(),
+	});
 }
 
 export function updateMessage(id: string, contentJson: string, thinking?: string): void {
@@ -29,7 +45,9 @@ export function updateMessage(id: string, contentJson: string, thinking?: string
 
 export function getMessagesForTab(tabId: string): MessageRow[] {
 	const db = getDatabase();
-	const rows = db.query("SELECT * FROM messages WHERE tab_id = $tabId ORDER BY seq ASC").all({ $tabId: tabId }) as Array<Record<string, unknown>>;
+	const rows = db
+		.query("SELECT * FROM messages WHERE tab_id = $tabId ORDER BY seq ASC")
+		.all({ $tabId: tabId }) as Array<Record<string, unknown>>;
 	return rows.map((row) => ({
 		id: row.id as string,
 		tabId: row.tab_id as string,

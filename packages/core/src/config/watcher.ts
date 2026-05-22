@@ -1,5 +1,5 @@
-import { watch } from "chokidar";
 import { join } from "node:path";
+import { watch } from "chokidar";
 import type { DispatchConfig } from "../types/index.js";
 import { loadConfig } from "./loader.js";
 
@@ -26,7 +26,9 @@ export function createConfigWatcher(
 				const config = loadConfig(dir);
 				onChange(config);
 			} catch (err) {
-				console.warn(`dispatch: retaining last known config due to parse error: ${err instanceof Error ? err.message : String(err)}`);
+				console.warn(
+					`dispatch: retaining last known config due to parse error: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			}
 		}, 300);
 	};
@@ -36,7 +38,9 @@ export function createConfigWatcher(
 	watcher.on("unlink", handleChange);
 
 	watcher.on("error", (err) => {
-		console.warn(`dispatch: config watcher error: ${err instanceof Error ? err.message : String(err)}`);
+		console.warn(
+			`dispatch: config watcher error: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	});
 
 	return {
@@ -46,7 +50,9 @@ export function createConfigWatcher(
 				debounceTimer = null;
 			}
 			watcher.close().catch((err) => {
-				console.warn(`dispatch: error closing config watcher: ${err instanceof Error ? err.message : String(err)}`);
+				console.warn(
+					`dispatch: error closing config watcher: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			});
 		},
 	};

@@ -1,6 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
 import { getDatabase } from "../db/index.js";
 import type { ClaudeCredentials } from "./claude.js";
-import { existsSync, readFileSync } from "node:fs";
 
 export interface StoredCredential {
 	keyId: string;
@@ -41,7 +41,8 @@ function parseCredentialsFile(raw: string): ClaudeCredentials | null {
 		accessToken: creds.accessToken as string,
 		refreshToken: creds.refreshToken as string,
 		expiresAt: creds.expiresAt as number,
-		subscriptionType: typeof creds.subscriptionType === "string" ? creds.subscriptionType : undefined,
+		subscriptionType:
+			typeof creds.subscriptionType === "string" ? creds.subscriptionType : undefined,
 	};
 }
 
@@ -62,7 +63,10 @@ export function importCredentialsFromFile(
 	try {
 		raw = readFileSync(filePath, "utf-8").trim();
 	} catch (e) {
-		return { success: false, error: `Failed to read file: ${e instanceof Error ? e.message : String(e)}` };
+		return {
+			success: false,
+			error: `Failed to read file: ${e instanceof Error ? e.message : String(e)}`,
+		};
 	}
 
 	if (!raw) {
@@ -106,9 +110,11 @@ export function importCredentialsFromFile(
  */
 export function getStoredCredentials(keyId: string): StoredCredential | null {
 	const db = getDatabase();
-	const row = db.query(
-		"SELECT key_id, provider, access_token, refresh_token, expires_at, subscription_type, source_file, imported_at, updated_at FROM credentials WHERE key_id = $keyId",
-	).get({ $keyId: keyId }) as Record<string, unknown> | null;
+	const row = db
+		.query(
+			"SELECT key_id, provider, access_token, refresh_token, expires_at, subscription_type, source_file, imported_at, updated_at FROM credentials WHERE key_id = $keyId",
+		)
+		.get({ $keyId: keyId }) as Record<string, unknown> | null;
 
 	if (!row) return null;
 
@@ -159,9 +165,11 @@ export function deleteStoredCredentials(keyId: string): void {
  */
 export function listStoredCredentials(): StoredCredential[] {
 	const db = getDatabase();
-	const rows = db.query(
-		"SELECT key_id, provider, access_token, refresh_token, expires_at, subscription_type, source_file, imported_at, updated_at FROM credentials ORDER BY key_id",
-	).all() as Array<Record<string, unknown>>;
+	const rows = db
+		.query(
+			"SELECT key_id, provider, access_token, refresh_token, expires_at, subscription_type, source_file, imported_at, updated_at FROM credentials ORDER BY key_id",
+		)
+		.all() as Array<Record<string, unknown>>;
 
 	return rows.map((row) => ({
 		keyId: row.key_id as string,
