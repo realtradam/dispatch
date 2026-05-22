@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PACKAGING_DIR="$(dirname "$SCRIPT_DIR")/packaging"
+
+PKG=$(ls -t "$PACKAGING_DIR"/dispatch-[0-9]*-x86_64.pkg.tar.zst 2>/dev/null | head -1)
+
+if [ -z "$PKG" ]; then
+	echo "No package found. Run bin/build-pkg first." >&2
+	exit 1
+fi
+
+echo "Installing $PKG"
+yay -U "$PKG" "$@"

@@ -1,0 +1,131 @@
+# Maintainer: dispatch
+pkgname=dispatch
+pkgver=0.0.1
+pkgrel=1
+pkgdesc='AI Agent Dispatch Interface'
+arch=('x86_64')
+url='https://github.com/anomalyco/dispatch'
+license=('MIT')
+depends=('electron' 'bun')
+makedepends=()
+install=dispatch.install
+backup=('etc/dispatch/dispatch-api.conf')
+source=(
+	'dispatch-api.service'
+	'dispatch-api.conf'
+	'dispatch-electron-wrapper.sh'
+	'dispatch-api-wrapper.sh'
+	'dispatch.desktop'
+	'dispatch.svg'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+_projectdir="${startdir}/.."
+
+prepare() {
+	mkdir -p "${srcdir}/dispatch-${pkgver}"
+	# Copy project files into the src build directory (use -a to preserve symlinks)
+	cp -a \
+		"${_projectdir}/packages" \
+		"${_projectdir}/package.json" \
+		"${_projectdir}/bun.lock" \
+		"${_projectdir}/tsconfig.base.json" \
+		"${srcdir}/dispatch-${pkgver}/"
+
+	# Copy dispatch.toml if it exists
+	if [ -f "${_projectdir}/dispatch.toml" ]; then
+		cp "${_projectdir}/dispatch.toml" "${srcdir}/dispatch-${pkgver}/"
+	fi
+}
+
+build() {
+	cd "${srcdir}/dispatch-${pkgver}"
+
+	# Install all deps (including devDependencies needed for vite build)
+	bun install --frozen-lockfile
+
+	# Build the frontend with production API port
+	VITE_API_URL="http://localhost:18390" bun run --cwd packages/frontend build
+
+	# Reinstall with production only to slim down node_modules for packaging
+	rm -rf node_modules
+	bun install --frozen-lockfile --production
+}
+
+package() {
+	cd "${srcdir}/dispatch-${pkgver}"
+
+	local optdir="${pkgdir}/opt/dispatch"
+
+	# --- Application files ---
+
+	# API package (full source)
+	install -dm755 "${optdir}/packages/api"
+	cp -a packages/api/. "${optdir}/packages/api/"
+
+	# Core package (full source)
+	install -dm755 "${optdir}/packages/core"
+	cp -a packages/core/. "${optdir}/packages/core/"
+
+	# Frontend: built dist only
+	install -dm755 "${optdir}/packages/frontend/dist"
+	cp -a packages/frontend/dist/. "${optdir}/packages/frontend/dist/"
+
+	# Frontend: electron launcher files
+	install -dm755 "${optdir}/packages/frontend/electron"
+	cp -a packages/frontend/electron/. "${optdir}/packages/frontend/electron/"
+
+	# Frontend: package.json (needed for workspace resolution)
+	install -Dm644 packages/frontend/package.json "${optdir}/packages/frontend/package.json"
+
+	# Runtime node_modules (preserve symlinks for bun workspaces)
+	install -dm755 "${optdir}/node_modules"
+	cp -a node_modules/. "${optdir}/node_modules/"
+
+	# Root manifest and lockfile
+	install -Dm644 package.json "${optdir}/package.json"
+	install -Dm644 bun.lock     "${optdir}/bun.lock"
+
+	# Default config (if present)
+	if [ -f dispatch.toml ]; then
+		install -Dm644 dispatch.toml "${optdir}/dispatch.toml"
+	fi
+
+	# --- systemd service ---
+	install -Dm644 \
+		"${srcdir}/dispatch-api.service" \
+		"${pkgdir}/usr/lib/systemd/system/dispatch-api.service"
+
+	# --- Environment config (preserved across upgrades via backup=()) ---
+	install -Dm644 \
+		"${srcdir}/dispatch-api.conf" \
+		"${pkgdir}/etc/dispatch/dispatch-api.conf"
+
+	# --- Wrapper scripts ---
+	install -Dm755 \
+		"${srcdir}/dispatch-electron-wrapper.sh" \
+		"${pkgdir}/usr/bin/dispatch"
+
+	install -Dm755 \
+		"${srcdir}/dispatch-api-wrapper.sh" \
+		"${pkgdir}/usr/bin/dispatch-api"
+
+	# --- Desktop integration ---
+	install -Dm644 \
+		"${srcdir}/dispatch.desktop" \
+		"${pkgdir}/usr/share/applications/dispatch.desktop"
+
+	install -Dm644 \
+		"${srcdir}/dispatch.svg" \
+		"${pkgdir}/usr/share/icons/hicolor/scalable/apps/dispatch.svg"
+
+	# --- sysusers: create the 'dispatch' system user ---
+	install -Dm644 /dev/null "${pkgdir}/usr/lib/sysusers.d/dispatch.conf"
+	echo 'u dispatch - "Dispatch API" /var/lib/dispatch' > "${pkgdir}/usr/lib/sysusers.d/dispatch.conf"
+
+	# --- License ---
+	if [ -f "${_projectdir}/LICENSE" ]; then
+		install -Dm644 "${_projectdir}/LICENSE" \
+			"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+	fi
+}
