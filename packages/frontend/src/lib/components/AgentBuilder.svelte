@@ -62,6 +62,7 @@ const modelCache = new Map();
 	let formScope = $state("global");
 	let formCwd = $state("");
 	let cwdExists = $state<boolean | null>(null);
+	let cwdResolved = $state<string | null>(null);
 	let cwdCheckTimer: ReturnType<typeof setTimeout> | null = null;
 	let formSkills = $state<Set<string>>(new Set());
 	let formTools = $state<Set<string>>(new Set());
@@ -301,6 +302,7 @@ const modelCache = new Map();
 		const cwd = formCwd;
 		if (!cwd.trim()) {
 			cwdExists = null;
+			cwdResolved = null;
 			return;
 		}
 		if (cwdCheckTimer) clearTimeout(cwdCheckTimer);
@@ -312,9 +314,11 @@ const modelCache = new Map();
 				if (res.ok) {
 					const data = await res.json();
 					cwdExists = data.exists ?? false;
+					cwdResolved = data.resolved ?? null;
 				}
 			} catch {
 				cwdExists = null;
+				cwdResolved = null;
 			}
 		}, 300);
 	});
@@ -479,8 +483,12 @@ const modelCache = new Map();
 						</div>
 						{#if cwdExists === false && formCwd.trim()}
 							<span class="text-xs text-warning">Directory will be created automatically on first message.</span>
-						{:else}
-							<span class="text-xs text-base-content/50">Absolute path. Leave empty to use the project root.</span>
+						{/if}
+						{#if cwdResolved && formCwd.trim() && cwdResolved !== formCwd.trim()}
+							<span class="text-xs text-base-content/50 font-mono">{cwdResolved}</span>
+						{/if}
+						{#if !formCwd.trim()}
+							<span class="text-xs text-base-content/50">Absolute or relative path. Relative paths resolve against the parent agent's working directory, or the project root.</span>
 						{/if}
 					</div>
 

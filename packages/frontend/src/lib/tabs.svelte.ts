@@ -462,6 +462,7 @@ function createTabStore() {
 					keyId: string | null;
 					modelId: string | null;
 					parentTabId: string | null;
+					workingDirectory: string | null;
 				};
 				// Only add if we don't already have this tab
 				if (!getTabById(newTabEvent.id)) {
@@ -480,7 +481,7 @@ function createTabStore() {
 						persistent: newTabEvent.parentTabId == null,
 						agentSlug: null,
 						agentScope: null,
-						workingDirectory: null,
+						workingDirectory: newTabEvent.workingDirectory ?? null,
 						queuedMessages: [],
 					};
 					tabs = [...tabs, tab];
