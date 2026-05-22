@@ -1,7 +1,7 @@
-export { parseSkillFile } from "./parser.js";
 export {
+	createSkillsWatcher,
+	getSkillByName,
 	loadSkills,
 	resolveSkillsForAgent,
-	getSkillByName,
-	createSkillsWatcher,
 } from "./loader.js";
+export { parseSkillFile } from "./parser.js";

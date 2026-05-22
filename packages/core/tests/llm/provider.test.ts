@@ -31,16 +31,21 @@ const { createProvider } = await import("../../src/llm/provider.js");
 
 // A helper that runs the middleware's transformParams on a prompt
 // and returns the resulting normalized prompt.
-async function runTransform(
-	prompt: unknown[],
-): Promise<unknown[]> {
+async function runTransform(prompt: unknown[]): Promise<unknown[]> {
 	const wrappedModel = createProvider({
 		apiKey: "test-key",
 		baseURL: "https://example.com/v1",
 	})("test-model");
 
 	const middleware = (
-		(wrappedModel as unknown) as { _middleware: Array<{ transformParams: (args: { type: string; params: Record<string, unknown> }) => Promise<unknown> }> }
+		wrappedModel as unknown as {
+			_middleware: Array<{
+				transformParams: (args: {
+					type: string;
+					params: Record<string, unknown>;
+				}) => Promise<unknown>;
+			}>;
+		}
 	)._middleware;
 
 	const result = await middleware[0]!.transformParams({
@@ -59,7 +64,14 @@ describe("createProvider middleware", () => {
 		})("test-model");
 
 		const middleware = (
-			(wrappedModel as unknown) as { _middleware: Array<{ transformParams: (args: { type: string; params: Record<string, unknown> }) => Promise<unknown> }> }
+			wrappedModel as unknown as {
+				_middleware: Array<{
+					transformParams: (args: {
+						type: string;
+						params: Record<string, unknown>;
+					}) => Promise<unknown>;
+				}>;
+			}
 		)._middleware;
 
 		const params = { prompt: [], temperature: 0.5 };
@@ -108,9 +120,7 @@ describe("createProvider middleware", () => {
 		const prompt = [
 			{
 				role: "assistant",
-				content: [
-					{ type: "text", text: "Hello!" },
-				],
+				content: [{ type: "text", text: "Hello!" }],
 			},
 		];
 
@@ -141,9 +151,7 @@ describe("createProvider middleware", () => {
 	});
 
 	it("does not modify system messages", async () => {
-		const prompt = [
-			{ role: "system", content: "You are a helpful assistant." },
-		];
+		const prompt = [{ role: "system", content: "You are a helpful assistant." }];
 
 		const normalized = await runTransform(prompt);
 		expect(normalized).toEqual(prompt);
@@ -274,11 +282,17 @@ describe("createProvider middleware", () => {
 		const normalized = await runTransform(prompt);
 
 		const msg1 = normalized[0] as Record<string, unknown>;
-		const compat1 = (msg1.providerMetadata as Record<string, unknown>).openaiCompatible as Record<string, unknown>;
+		const compat1 = (msg1.providerMetadata as Record<string, unknown>).openaiCompatible as Record<
+			string,
+			unknown
+		>;
 		expect(compat1.reasoning_content).toBe("First thought.");
 
 		const msg2 = normalized[1] as Record<string, unknown>;
-		const compat2 = (msg2.providerMetadata as Record<string, unknown>).openaiCompatible as Record<string, unknown>;
+		const compat2 = (msg2.providerMetadata as Record<string, unknown>).openaiCompatible as Record<
+			string,
+			unknown
+		>;
 		expect(compat2.reasoning_content).toBe("Second thought.");
 	});
 });

@@ -1,7 +1,7 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { wrapLanguageModel } from "ai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModelV1Middleware, LanguageModelV1Prompt } from "ai";
+import { wrapLanguageModel } from "ai";
 
 function normalizeMessages(msgs: unknown[]): unknown[] {
 	return msgs.map((msg: unknown) => {
@@ -19,7 +19,10 @@ function normalizeMessages(msgs: unknown[]): unknown[] {
 		);
 
 		const existingMetadata = (message.providerMetadata ?? {}) as Record<string, unknown>;
-		const existingOpenAICompat = (existingMetadata.openaiCompatible ?? {}) as Record<string, unknown>;
+		const existingOpenAICompat = (existingMetadata.openaiCompatible ?? {}) as Record<
+			string,
+			unknown
+		>;
 
 		return {
 			...message,

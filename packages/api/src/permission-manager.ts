@@ -1,7 +1,7 @@
 import {
-	PermissionService,
 	type PermissionReply,
 	type PermissionRequest,
+	PermissionService,
 	type Ruleset,
 } from "@dispatch/core";
 

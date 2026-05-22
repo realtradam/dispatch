@@ -3,8 +3,6 @@ import { onMount } from "svelte";
 import { appSettings } from "../settings.svelte.js";
 import type { LogEntry } from "../types.js";
 
-const { entries, apiBase = "" }: { entries: LogEntry[]; apiBase?: string } = $props();
-
 interface ToolPermission {
 	id: string;
 	label: string;
@@ -24,12 +22,29 @@ const toolPermissions: ToolPermission[] = [
 		label: "Summon agents",
 		description: "Allow the AI to spawn child agents to work on tasks",
 	},
-	{
-		id: "external_directory",
-		label: "External directories",
-		description: "Allow access to files outside the workspace",
-	},
 ];
+
+const {
+	entries = [],
+	apiBase = "",
+	checkedTools = null,
+	onToolToggle = null,
+}: {
+	entries?: LogEntry[];
+	apiBase?: string;
+	/** External checked set (agent builder mode). When null, uses appSettings. */
+	checkedTools?: Set<string> | null;
+	/** Callback when a tool is toggled in external mode. */
+	onToolToggle?: ((id: string, checked: boolean) => void) | null;
+} = $props();
+
+/** Whether we're in external (agent builder) mode */
+const externalMode = $derived(checkedTools !== null && onToolToggle !== null);
+
+function isChecked(id: string): boolean {
+	if (externalMode) return checkedTools!.has(id);
+	return appSettings.toolPerms[id] === true;
+}
 
 async function loadPermissions(): Promise<void> {
 	const loaded: Record<string, boolean> = { ...appSettings.toolPerms };
@@ -51,6 +66,10 @@ async function loadPermissions(): Promise<void> {
 }
 
 function togglePermission(id: string): void {
+	if (externalMode) {
+		onToolToggle!(id, !checkedTools!.has(id));
+		return;
+	}
 	appSettings.toolPerms = { ...appSettings.toolPerms, [id]: !appSettings.toolPerms[id] };
 }
 
@@ -59,13 +78,17 @@ function resetPermissions(): void {
 }
 
 onMount(() => {
-	loadPermissions();
+	if (!externalMode) {
+		loadPermissions();
+	}
 });
 </script>
 
 <div class="flex flex-col gap-3">
 	<div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Tool Permissions</div>
-	<p class="text-xs text-base-content/40">Changes are applied when you send your next message.</p>
+	{#if !externalMode}
+		<p class="text-xs text-base-content/40">Changes are applied when you send your next message.</p>
+	{/if}
 
 	<div class="flex flex-col gap-1.5">
 		{#each toolPermissions as perm (perm.id)}
@@ -73,7 +96,7 @@ onMount(() => {
 				<input
 					type="checkbox"
 					class="checkbox checkbox-sm rounded-sm mt-0.5"
-					checked={appSettings.toolPerms[perm.id]}
+					checked={isChecked(perm.id)}
 					onchange={() => togglePermission(perm.id)}
 				/>
 				<div class="flex flex-col">
@@ -84,35 +107,37 @@ onMount(() => {
 		{/each}
 	</div>
 
-	<button
-		class="btn btn-sm btn-ghost w-full"
-		disabled={!appSettings.toolPermsDirty}
-		onclick={resetPermissions}
-	>
-		Reset
-	</button>
+	{#if !externalMode}
+		<button
+			class="btn btn-sm btn-ghost w-full"
+			disabled={!appSettings.toolPermsDirty}
+			onclick={resetPermissions}
+		>
+			Reset
+		</button>
 
-	<p class="text-xs text-base-content/40">Warning: changing tool access will reset the AI's prompt cache for active conversations, which may increase usage costs.</p>
+		<p class="text-xs text-base-content/40">Warning: changing tool access will reset the AI's prompt cache for active conversations, which may increase usage costs.</p>
 
-	<!-- Permission Log -->
-	{#if entries.length > 0}
-		<div class="collapse collapse-arrow bg-base-200 mt-2">
-			<input type="checkbox" />
-			<div class="collapse-title text-sm font-medium py-2 min-h-0">
-				Log ({entries.length})
+		<!-- Permission Log -->
+		{#if entries.length > 0}
+			<div class="collapse collapse-arrow bg-base-200 mt-2">
+				<input type="checkbox" />
+				<div class="collapse-title text-sm font-medium py-2 min-h-0">
+					Log ({entries.length})
+				</div>
+				<div class="collapse-content text-xs max-h-40 overflow-y-auto">
+					{#each entries as entry (entry.id)}
+						<div class="flex items-center gap-2 py-1 border-b border-base-300">
+							<span class="badge badge-sm {entry.action === 'reject' ? 'badge-error' : 'badge-success'}">
+								{entry.action}
+							</span>
+							<span class="text-base-content/70">{entry.permission}</span>
+							<span class="text-base-content/50 ml-auto text-xs">{entry.timestamp}</span>
+						</div>
+						<p class="text-base-content/60 pl-2 pb-1">{entry.description}</p>
+					{/each}
+				</div>
 			</div>
-			<div class="collapse-content text-xs max-h-40 overflow-y-auto">
-				{#each entries as entry (entry.id)}
-					<div class="flex items-center gap-2 py-1 border-b border-base-300">
-						<span class="badge badge-sm {entry.action === 'reject' ? 'badge-error' : 'badge-success'}">
-							{entry.action}
-						</span>
-						<span class="text-base-content/70">{entry.permission}</span>
-						<span class="text-base-content/50 ml-auto text-xs">{entry.timestamp}</span>
-					</div>
-					<p class="text-base-content/60 pl-2 pb-1">{entry.description}</p>
-				{/each}
-			</div>
-		</div>
+		{/if}
 	{/if}
 </div>

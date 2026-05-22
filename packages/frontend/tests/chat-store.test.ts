@@ -87,15 +87,15 @@ function createTestStore(wsSend?: (data: unknown) => void) {
 				ensureCurrentAssistantMessage();
 				messages = messages.map((m) => {
 					if (m.id === currentAssistantId) {
-					const segments: ContentSegment[] = [
-						...m.content,
-						{
-							type: "tool-call",
-							id: event.toolCall.id,
-							name: event.toolCall.name,
-							arguments: event.toolCall.arguments,
-						},
-					];
+						const segments: ContentSegment[] = [
+							...m.content,
+							{
+								type: "tool-call",
+								id: event.toolCall.id,
+								name: event.toolCall.name,
+								arguments: event.toolCall.arguments,
+							},
+						];
 						return { ...m, content: segments };
 					}
 					return m;
@@ -109,7 +109,11 @@ function createTestStore(wsSend?: (data: unknown) => void) {
 							...m,
 							content: m.content.map((seg) => {
 								if (seg.type === "tool-call" && seg.id === event.toolResult.toolCallId) {
-									return { ...seg, result: event.toolResult.result, isError: event.toolResult.isError };
+									return {
+										...seg,
+										result: event.toolResult.result,
+										isError: event.toolResult.isError,
+									};
 								}
 								return seg;
 							}),
@@ -338,7 +342,9 @@ describe("chat store logic", () => {
 	it("error event adds an error message and sets status to error", () => {
 		store.handleEvent({ type: "error", error: "something went wrong" });
 		expect(store.messages).toHaveLength(1);
-		expect(store.messages[0]?.content).toEqual([{ type: "text", text: "Error: something went wrong" }]);
+		expect(store.messages[0]?.content).toEqual([
+			{ type: "text", text: "Error: something went wrong" },
+		]);
 		expect(store.agentStatus).toBe("error");
 	});
 
@@ -529,7 +535,9 @@ describe("permission log", () => {
 });
 
 // Shell output parsing logic (mirrors ToolCallDisplay logic)
-function parseShellResult(result: string): { stdout: string; stderr: string; exitCode: number } | null {
+function parseShellResult(
+	result: string,
+): { stdout: string; stderr: string; exitCode: number } | null {
 	try {
 		const parsed = JSON.parse(result) as unknown;
 		if (

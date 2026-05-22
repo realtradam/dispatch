@@ -1,94 +1,101 @@
 <script lang="ts">
-	interface AgentTemplate {
-		name: string;
-		description?: string;
-		model_tag?: string;
-		tools?: string[];
+interface AgentTemplate {
+	name: string;
+	description?: string;
+	model_tag?: string;
+	tools?: string[];
+}
+
+interface ModelEntry {
+	id: string;
+	provider?: string;
+	tags?: string[];
+}
+
+interface KeyEntry {
+	id: string;
+	provider?: string;
+	status?: string;
+	lastError?: string;
+	exhaustedAt?: string;
+}
+
+interface ConfigData {
+	agents?: Record<string, AgentTemplate>;
+	models?: Record<string, { provider?: string; tags?: string[] }>;
+	keys?: Record<string, { env?: string }>;
+	fallback?: string[];
+	permissions?: Record<string, unknown>;
+}
+
+interface ModelsData {
+	models?: ModelEntry[];
+	tags?: Record<string, string[]>;
+	keys?: KeyEntry[];
+}
+
+const { apiBase }: { apiBase: string } = $props();
+
+let configData = $state<ConfigData | null>(null);
+let modelsData = $state<ModelsData | null>(null);
+let error = $state<string | null>(null);
+let loading = $state(false);
+
+async function fetchData() {
+	loading = true;
+	error = null;
+	try {
+		const [configRes, modelsRes] = await Promise.all([
+			fetch(`${apiBase}/config`),
+			fetch(`${apiBase}/models`),
+		]);
+		if (!configRes.ok) throw new Error(`/config returned ${configRes.status}`);
+		if (!modelsRes.ok) throw new Error(`/models returned ${modelsRes.status}`);
+		const configJson = await configRes.json();
+		const modelsJson = await modelsRes.json();
+		configData = configJson.config ?? configJson;
+		modelsData = modelsJson;
+	} catch (e) {
+		error = e instanceof Error ? e.message : String(e);
+	} finally {
+		loading = false;
 	}
+}
 
-	interface ModelEntry {
-		id: string;
-		provider?: string;
-		tags?: string[];
+$effect(() => {
+	fetchData();
+});
+
+const modelCount = $derived(modelsData?.models?.length ?? 0);
+const keyCount = $derived(modelsData?.keys?.length ?? 0);
+
+function formatDate(iso: string | undefined): string {
+	if (!iso) return "";
+	try {
+		return new Date(iso).toLocaleString();
+	} catch {
+		return iso;
 	}
+}
 
-	interface KeyEntry {
-		id: string;
-		provider?: string;
-		status?: string;
-		lastError?: string;
-		exhaustedAt?: string;
-	}
+function permissionEntries(
+	permissions: Record<string, unknown>,
+): Array<{ name: string; value: unknown }> {
+	return Object.entries(permissions).map(([name, value]) => ({ name, value }));
+}
 
-	interface ConfigData {
-		agents?: Record<string, AgentTemplate>;
-		models?: Record<string, { provider?: string; tags?: string[] }>;
-		keys?: Record<string, { env?: string }>;
-		fallback?: string[];
-		permissions?: Record<string, unknown>;
-	}
+function isSimpleRule(value: unknown): value is { action: string } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"action" in value &&
+		Object.keys(value).length === 1
+	);
+}
 
-	interface ModelsData {
-		models?: ModelEntry[];
-		tags?: Record<string, string[]>;
-		keys?: KeyEntry[];
-	}
-
-	const { apiBase }: { apiBase: string } = $props();
-
-	let configData = $state<ConfigData | null>(null);
-	let modelsData = $state<ModelsData | null>(null);
-	let error = $state<string | null>(null);
-	let loading = $state(false);
-
-	async function fetchData() {
-		loading = true;
-		error = null;
-		try {
-			const [configRes, modelsRes] = await Promise.all([
-				fetch(`${apiBase}/config`),
-				fetch(`${apiBase}/models`),
-			]);
-			if (!configRes.ok) throw new Error(`/config returned ${configRes.status}`);
-			if (!modelsRes.ok) throw new Error(`/models returned ${modelsRes.status}`);
-			const configJson = await configRes.json();
-			const modelsJson = await modelsRes.json();
-			configData = configJson.config ?? configJson;
-			modelsData = modelsJson;
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		} finally {
-			loading = false;
-		}
-	}
-
-	$effect(() => {
-		fetchData();
-	});
-
-	const modelCount = $derived(modelsData?.models?.length ?? 0);
-	const keyCount = $derived(modelsData?.keys?.length ?? 0);
-
-	function formatDate(iso: string | undefined): string {
-		if (!iso) return "";
-		try {
-			return new Date(iso).toLocaleString();
-		} catch {
-			return iso;
-		}
-	}
-
-	function permissionEntries(permissions: Record<string, unknown>): Array<{ name: string; value: unknown }> {
-		return Object.entries(permissions).map(([name, value]) => ({ name, value }));
-	}
-
-	function isSimpleRule(value: unknown): value is { action: string } {
-		return typeof value === "object" && value !== null && "action" in value && Object.keys(value).length === 1;
-	}
-
-	function isPatternRule(value: unknown): value is Record<string, { action: string }> {
-		return typeof value === "object" && value !== null && !("action" in value);
-	}
+function isPatternRule(value: unknown): value is Record<string, { action: string }> {
+	return typeof value === "object" && value !== null && !("action" in value);
+}
 </script>
 
 <details class="collapse collapse-arrow bg-base-200 mt-2">

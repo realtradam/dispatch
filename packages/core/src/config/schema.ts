@@ -1,8 +1,4 @@
-import type {
-	ConfigError,
-	DispatchConfig,
-	KeyDefinition,
-} from "../types/index.js";
+import type { ConfigError, DispatchConfig, KeyDefinition } from "../types/index.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -33,19 +29,28 @@ function validatePermissions(
 	const result: Record<string, string | Record<string, string>> = {};
 	for (const [key, value] of Object.entries(raw)) {
 		if (!isPermissionsValue(value)) {
-			errors.push({ path: `${path}.${key}`, message: "must be a string or a flat string-keyed object" });
+			errors.push({
+				path: `${path}.${key}`,
+				message: "must be a string or a flat string-keyed object",
+			});
 			continue;
 		}
 		if (typeof value === "string") {
 			if (!isValidAction(value)) {
-				errors.push({ path: `${path}.${key}`, message: `invalid action "${value}"; must be "allow", "deny", or "ask"` });
+				errors.push({
+					path: `${path}.${key}`,
+					message: `invalid action "${value}"; must be "allow", "deny", or "ask"`,
+				});
 				continue;
 			}
 		} else {
 			let hasError = false;
 			for (const [pattern, action] of Object.entries(value)) {
 				if (!isValidAction(action)) {
-					errors.push({ path: `${path}.${key}.${pattern}`, message: `invalid action "${action}"; must be "allow", "deny", or "ask"` });
+					errors.push({
+						path: `${path}.${key}.${pattern}`,
+						message: `invalid action "${action}"; must be "allow", "deny", or "ask"`,
+					});
 					hasError = true;
 				}
 			}
@@ -80,7 +85,9 @@ function validateKey(raw: unknown, path: string, errors: ConfigError[]): KeyDefi
 			id: raw["id"] as string,
 			provider: raw["provider"] as string,
 			base_url: raw["base_url"] as string,
-			...(typeof raw["credentials_file"] === "string" ? { credentials_file: raw["credentials_file"] } as Pick<KeyDefinition, "credentials_file"> : {}),
+			...(typeof raw["credentials_file"] === "string"
+				? ({ credentials_file: raw["credentials_file"] } as Pick<KeyDefinition, "credentials_file">)
+				: {}),
 		};
 	}
 

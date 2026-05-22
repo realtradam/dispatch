@@ -25,12 +25,13 @@ const activeUserTabId = $derived(
 <!-- Top row: user tabs -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="overflow-x-auto bg-base-200 flex-shrink-0"
+	class="overflow-x-auto bg-base-200 flex-shrink-0 {hasSubagentTabs ? '' : 'rounded-br-lg'}"
 	ondblclick={(e) => { if (e.target === e.currentTarget) tabStore.createNewTab(); }}
 >
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		role="tablist"
+		tabindex="0"
 		class="tabs tabs-lift min-w-max"
 		ondblclick={(e) => { if (e.target === e.currentTarget) tabStore.createNewTab(); }}
 	>
@@ -72,7 +73,7 @@ const activeUserTabId = $derived(
 
 <!-- Bottom row: subagent tabs (hidden when empty) -->
 {#if hasSubagentTabs}
-	<div class="overflow-x-auto bg-base-200 flex-shrink-0 border-t border-base-300">
+	<div class="overflow-x-auto bg-base-200 flex-shrink-0 border-t border-base-300 rounded-br-lg">
 		<div
 			role="tablist"
 			class="tabs tabs-lift tabs-xs min-w-max"

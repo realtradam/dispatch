@@ -1,16 +1,18 @@
 <script lang="ts">
 import { onMount } from "svelte";
+import AgentBuilder from "./lib/components/AgentBuilder.svelte";
 import ChatInput from "./lib/components/ChatInput.svelte";
 import ChatPanel from "./lib/components/ChatPanel.svelte";
 import Header from "./lib/components/Header.svelte";
-import TabBar from "./lib/components/TabBar.svelte";
+import HotReloadIndicator from "./lib/components/HotReloadIndicator.svelte";
 import PermissionPrompt from "./lib/components/PermissionPrompt.svelte";
 import SidebarPanel from "./lib/components/SidebarPanel.svelte";
-import HotReloadIndicator from "./lib/components/HotReloadIndicator.svelte";
-import { tabStore } from "./lib/tabs.svelte.js";
-import { wsClient } from "./lib/ws.svelte.js";
+import TabBar from "./lib/components/TabBar.svelte";
 import { config } from "./lib/config.js";
+import { router } from "./lib/router.svelte.js";
+import { tabStore } from "./lib/tabs.svelte.js";
 import type { KeyInfo } from "./lib/types.js";
+import { wsClient } from "./lib/ws.svelte.js";
 
 const STORAGE_KEY = "dispatch-theme";
 
@@ -66,6 +68,7 @@ onMount(() => {
 <div class="flex flex-col h-screen overflow-hidden">
 	<Header onToggleSidebar={() => sidebarOpen = !sidebarOpen} />
 
+	{#if router.page === "dashboard"}
 	<div class="flex flex-1 overflow-hidden relative">
 		<!-- Main chat area -->
 		<div class="flex flex-col flex-1 min-w-0 overflow-hidden">
@@ -85,7 +88,7 @@ onMount(() => {
 			class:w-0={!sidebarOpen}
 		>
 		<div
-			class="w-80 flex-1 min-h-0 overflow-y-auto bg-base-100 border-l border-base-300 px-2 py-2 flex flex-col gap-2 [&>*]:shrink-0 transition-transform duration-300 ease-out"
+			class="w-80 flex-1 min-h-0 overflow-y-auto bg-base-100 px-2 py-2 flex flex-col gap-2 [&>*]:shrink-0 transition-transform duration-300 ease-out"
 			style="transform: translateX({sidebarOpen ? '0' : '100%'})"
 		>
 		<SidebarPanel
@@ -96,6 +99,8 @@ onMount(() => {
 				activeKeyId={tabStore.activeTab?.keyId ?? null}
 				activeModelId={tabStore.activeTab?.modelId ?? null}
 				reasoningEffort={tabStore.activeTab?.reasoningEffort ?? "max"}
+				activeAgentSlug={tabStore.activeTab?.agentSlug ?? null}
+				workingDirectory={tabStore.activeTab?.workingDirectory ?? null}
 				onKeyChange={(keyId) => tabStore.setKey(keyId)}
 				onModelChange={(keyId, modelId) => tabStore.changeModel(keyId, modelId)}
 				onReasoningChange={(effort) => {
@@ -105,10 +110,15 @@ onMount(() => {
 						tabStore.tabs.find(t => t.id === tab.id)!.reasoningEffort = effort;
 					}
 				}}
+				onAgentChange={(agent) => tabStore.setAgent(agent)}
+				onWorkingDirectoryChange={(dir) => tabStore.setWorkingDirectory(dir)}
 			/>
 		</div>
 		</div>
 	</div>
+	{:else if router.page === "agent-builder"}
+	<AgentBuilder keys={modelsData.keys} />
+	{/if}
 </div>
 
 <!-- Backdrop for sidebar on small screens -->
@@ -116,7 +126,11 @@ onMount(() => {
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="fixed inset-0 bg-black/30 z-20 sm:hidden"
+		role="button"
+		tabindex="0"
 		onclick={() => sidebarOpen = false}
+		onkeydown={(e) => { if (e.key === 'Escape' || e.key === 'Enter') sidebarOpen = false; }}
+		aria-label="Close sidebar"
 	></div>
 {/if}
 

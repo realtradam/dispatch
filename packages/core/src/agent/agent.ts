@@ -1,11 +1,11 @@
+import { realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { CoreMessage } from "ai";
 import { streamText } from "ai";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { realpathSync } from "node:fs";
+import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
 import { createProvider, prefixToolName, unprefixToolName } from "../llm/provider.js";
 import { createToolRegistry } from "../tools/registry.js";
 import { analyzeCommand } from "../tools/shell-analyze.js";
-import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
 import type {
 	AgentConfig,
 	AgentEvent,
@@ -21,7 +21,10 @@ function toCoreMessages(messages: ChatMessage[], isAnthropic?: boolean): CoreMes
 		if (msg.role === "user") {
 			result.push({ role: "user", content: msg.content });
 		} else if (msg.role === "assistant") {
-			const parts: Array<{ type: "text"; text: string } | { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }> = [{ type: "text", text: msg.content }];
+			const parts: Array<
+				| { type: "text"; text: string }
+				| { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }
+			> = [{ type: "text", text: msg.content }];
 			for (const tc of msg.toolCalls ?? []) {
 				const toolName = isAnthropic ? prefixToolName(tc.name) : tc.name;
 				parts.push({ type: "tool-call", toolCallId: tc.id, toolName, args: tc.arguments });
@@ -29,7 +32,12 @@ function toCoreMessages(messages: ChatMessage[], isAnthropic?: boolean): CoreMes
 			result.push({ role: "assistant", content: parts });
 			for (const tr of msg.toolResults ?? []) {
 				const toolName = isAnthropic ? prefixToolName(tr.toolName) : tr.toolName;
-				result.push({ role: "tool", content: [{ type: "tool-result", toolCallId: tr.toolCallId, toolName, result: tr.result }] });
+				result.push({
+					role: "tool",
+					content: [
+						{ type: "tool-result", toolCallId: tr.toolCallId, toolName, result: tr.result },
+					],
+				});
 			}
 		}
 	}
@@ -76,7 +84,12 @@ export class Agent {
 		const registry = createToolRegistry(this.config.tools);
 		const tool = registry.getTool(tc.name);
 		if (!tool) {
-			return { toolCallId: tc.id, toolName: tc.name, result: `Unknown tool: ${tc.name}`, isError: true };
+			return {
+				toolCallId: tc.id,
+				toolName: tc.name,
+				result: `Unknown tool: ${tc.name}`,
+				isError: true,
+			};
 		}
 
 		// Permission check for shell commands — only prompt for external directory access.
@@ -133,7 +146,8 @@ export class Agent {
 
 			// Check if outside workspace
 			const rel = relative(this.config.workingDirectory, resolvedPath);
-			const isOutside = rel.startsWith("../") || rel.startsWith("..\\") || rel === ".." || isAbsolute(rel);
+			const isOutside =
+				rel.startsWith("../") || rel.startsWith("..\\") || rel === ".." || isAbsolute(rel);
 
 			if (isOutside) {
 				const permissionType =
@@ -194,7 +208,10 @@ export class Agent {
 		}
 	}
 
-	async *run(userMessage: string, options?: { reasoningEffort?: "none" | "low" | "medium" | "high" | "max" }): AsyncGenerator<AgentEvent> {
+	async *run(
+		userMessage: string,
+		options?: { reasoningEffort?: "none" | "low" | "medium" | "high" | "max" },
+	): AsyncGenerator<AgentEvent> {
 		this.status = "running";
 		yield { type: "status", status: "running" };
 
@@ -213,8 +230,8 @@ export class Agent {
 		const aiTools = registry.getAISDKTools();
 		const tools = isAnthropic
 			? Object.fromEntries(
-				Object.entries(aiTools).map(([name, tool]) => [prefixToolName(name), tool]),
-			)
+					Object.entries(aiTools).map(([name, tool]) => [prefixToolName(name), tool]),
+				)
 			: aiTools;
 
 		// Build system prompt
@@ -246,8 +263,19 @@ export class Agent {
 				};
 
 				if (isAnthropic && effort !== "none") {
-					const budgetTokens = effort === "max" ? 16000 : effort === "high" ? 10000 : effort === "medium" ? 5000 : effort === "low" ? 2000 : 0;
-					streamOptions.providerOptions = { anthropic: { thinking: { type: "enabled" as const, budgetTokens } } };
+					const budgetTokens =
+						effort === "max"
+							? 16000
+							: effort === "high"
+								? 10000
+								: effort === "medium"
+									? 5000
+									: effort === "low"
+										? 2000
+										: 0;
+					streamOptions.providerOptions = {
+						anthropic: { thinking: { type: "enabled" as const, budgetTokens } },
+					};
 					streamOptions.maxTokens = budgetTokens + 8000;
 				} else if (!isAnthropic && effort !== "none") {
 					streamOptions.providerOptions = { openaiCompatible: { reasoningEffort: effort } };
@@ -258,31 +286,64 @@ export class Agent {
 				let stepText = "";
 				const stepToolCalls: ToolCall[] = [];
 
-				for await (const event of result.fullStream) {
-					if (event.type === "text-delta") {
-						stepText += event.textDelta;
-						finalText += event.textDelta;
-						yield { type: "text-delta", delta: event.textDelta };
-					} else if (event.type === "reasoning") {
-						yield { type: "reasoning-delta", delta: event.textDelta };
-					} else if (event.type === "tool-call") {
-						const rawName = event.toolName;
-						const toolName = isAnthropic ? unprefixToolName(rawName) : rawName;
-						const toolCall: ToolCall = {
-							id: event.toolCallId,
-							name: toolName,
-							arguments: event.args as Record<string, unknown>,
-						};
-						stepToolCalls.push(toolCall);
-						allToolCalls.push(toolCall);
-						yield { type: "tool-call", toolCall };
-					} else if (event.type === "error") {
-						const errorMsg = formatError(event.error, this.config);
-						yield { type: "error", error: errorMsg };
-						this.status = "error";
-						yield { type: "status", status: "error" };
-						return;
+				try {
+					for await (const event of result.fullStream) {
+						if (event.type === "text-delta") {
+							stepText += event.textDelta;
+							finalText += event.textDelta;
+							yield { type: "text-delta", delta: event.textDelta };
+						} else if (event.type === "reasoning") {
+							yield { type: "reasoning-delta", delta: event.textDelta };
+						} else if (event.type === "tool-call") {
+							const rawName = event.toolName;
+							const toolName = isAnthropic ? unprefixToolName(rawName) : rawName;
+							const toolCall: ToolCall = {
+								id: event.toolCallId,
+								name: toolName,
+								arguments: event.args as Record<string, unknown>,
+							};
+							stepToolCalls.push(toolCall);
+							allToolCalls.push(toolCall);
+							yield { type: "tool-call", toolCall };
+						} else if (event.type === "error") {
+							const errorMsg = formatError(event.error, this.config);
+							yield { type: "error", error: errorMsg };
+							this.status = "error";
+							yield { type: "status", status: "error" };
+							return;
+						}
 					}
+				} catch (streamErr) {
+					const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+					const unavailMatch = errMsg.match(
+						/tried to call unavailable tool '([^']+)'/i,
+					);
+					if (!unavailMatch) throw streamErr;
+
+					// Model tried to call an unavailable tool.
+					// Add a synthetic tool call + error result for the bad tool.
+					const badToolName = unavailMatch[1];
+					const fakeId = `unavail_${crypto.randomUUID().slice(0, 8)}`;
+					const availableTools = Object.keys(aiTools).join(", ");
+					const errorResult = `Tool "${badToolName}" is not available. Available tools: ${availableTools}. Please use only available tools.`;
+
+					const badToolCall: ToolCall = {
+						id: fakeId,
+						name: badToolName,
+						arguments: {},
+					};
+					stepToolCalls.push(badToolCall);
+					allToolCalls.push(badToolCall);
+					yield { type: "tool-call", toolCall: badToolCall };
+
+					const badToolResult: ToolResult = {
+						toolCallId: fakeId,
+						toolName: badToolName,
+						result: errorResult,
+						isError: true,
+					};
+					allToolResults.push(badToolResult);
+					yield { type: "tool-result", toolResult: badToolResult };
 				}
 
 				// No tool calls means the agent is done
@@ -304,7 +365,17 @@ export class Agent {
 
 				// Execute tool calls manually
 				const stepToolResults: ToolResult[] = [];
+				// Track tool calls that already have results (e.g. synthetic unavailable-tool errors)
+				const alreadyResolved = new Set(allToolResults.map((r) => r.toolCallId));
+
 				for (const tc of stepToolCalls) {
+					// Skip execution for tool calls that already have synthetic results
+					if (alreadyResolved.has(tc.id)) {
+						const existing = allToolResults.find((r) => r.toolCallId === tc.id);
+						if (existing) stepToolResults.push(existing);
+						continue;
+					}
+
 					const shellOutputQueue: Array<{ data: string; stream: "stdout" | "stderr" }> = [];
 
 					const execPromise = this.executeToolWithStreaming(tc, shellOutputQueue);
@@ -321,7 +392,9 @@ export class Agent {
 						}
 						const raceResult = await Promise.race([
 							execPromise.then((r) => ({ done: true as const, value: r })),
-							new Promise<{ done: false }>((resolve) => setImmediate(() => resolve({ done: false }))),
+							new Promise<{ done: false }>((resolve) =>
+								setImmediate(() => resolve({ done: false })),
+							),
 						]);
 						if (raceResult.done) {
 							toolResult = raceResult.value;

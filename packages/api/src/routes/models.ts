@@ -3,11 +3,11 @@ import {
 	ANTHROPIC_MODELS_FALLBACK,
 	type ClaudeAccount,
 	fetchAnthropicModels,
-	getClaudeAccountsFromDB,
 	fetchCopilotUsage,
 	fetchOpencodeUsage,
 	getAccountUsage,
 	getAnthropicHeaders,
+	getClaudeAccountsFromDB,
 	getDatabase,
 	importCredentialsFromFile,
 	listApiKeys,
@@ -22,9 +22,7 @@ import { Hono } from "hono";
 let getRegistry: () => ModelRegistry | null = () => null;
 let getAccounts: () => ClaudeAccount[] = () => [];
 
-export function setModelsGetter(
-	registryGetter: () => ModelRegistry | null,
-): void {
+export function setModelsGetter(registryGetter: () => ModelRegistry | null): void {
 	getRegistry = registryGetter;
 }
 
@@ -80,8 +78,9 @@ modelsRoutes.get("/available", async (c) => {
 	if (key.definition.provider === "anthropic") {
 		const credFile = key.definition.credentials_file;
 		const accounts = resolveClaudeAccounts();
-		const account = accounts.find((a) => a.id === keyId)
-			?? (credFile ? accounts.find((a) => a.source === credFile) : accounts[0]);
+		const account =
+			accounts.find((a) => a.id === keyId) ??
+			(credFile ? accounts.find((a) => a.source === credFile) : accounts[0]);
 
 		if (!account) {
 			return c.json({ error: "no Claude credentials found" }, 500);
@@ -413,9 +412,8 @@ async function wakeAllClaudeAccounts(): Promise<
 			}
 		}
 	}
-	const accounts = configuredKeyIds.size > 0
-		? allAccounts.filter((a) => configuredKeyIds.has(a.id))
-		: allAccounts;
+	const accounts =
+		configuredKeyIds.size > 0 ? allAccounts.filter((a) => configuredKeyIds.has(a.id)) : allAccounts;
 	if (accounts.length === 0) {
 		return [{ label: "(none)", ok: false, error: "no Claude accounts available" }];
 	}
@@ -483,7 +481,10 @@ function nextOccurrenceAt15(hour: number): number {
 function loadScheduleFromDB(): WakeSchedule {
 	try {
 		const db = getDatabase();
-		const rows = db.query("SELECT hour, next_wake_at FROM wake_schedule").all() as Array<{ hour: number; next_wake_at: number }>;
+		const rows = db.query("SELECT hour, next_wake_at FROM wake_schedule").all() as Array<{
+			hour: number;
+			next_wake_at: number;
+		}>;
 		const schedule: WakeSchedule = {};
 		let needsUpdate = false;
 		for (const row of rows) {
@@ -508,7 +509,9 @@ function persistSchedule(scheduleToSave?: WakeSchedule): void {
 		const db = getDatabase();
 		const data = scheduleToSave ?? wakeSchedule;
 		db.run("DELETE FROM wake_schedule");
-		const insert = db.query("INSERT INTO wake_schedule (hour, next_wake_at) VALUES ($hour, $nextWakeAt)");
+		const insert = db.query(
+			"INSERT INTO wake_schedule (hour, next_wake_at) VALUES ($hour, $nextWakeAt)",
+		);
 		for (const [hour, nextWakeAt] of Object.entries(data)) {
 			insert.run({ $hour: Number(hour), $nextWakeAt: nextWakeAt });
 		}
@@ -517,8 +520,8 @@ function persistSchedule(scheduleToSave?: WakeSchedule): void {
 	}
 }
 
-let wakeSchedule: WakeSchedule = loadScheduleFromDB();
-let pendingRetries: PendingRetry[] = [];
+const wakeSchedule: WakeSchedule = loadScheduleFromDB();
+const pendingRetries: PendingRetry[] = [];
 
 // HMR-safe: clear previous tick before starting a new one
 (globalThis as Record<string, unknown>)._dispatchWakeTimer ??= undefined;

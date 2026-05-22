@@ -1,7 +1,7 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { configToRuleset, loadConfig } from "../../src/config/loader.js";
 
 const TMP = join("/tmp/opencode", "dispatch-config-test");

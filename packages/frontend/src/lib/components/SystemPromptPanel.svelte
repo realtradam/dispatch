@@ -1,42 +1,42 @@
 <script lang="ts">
-	import { onMount } from "svelte";
-	import { appSettings } from "../settings.svelte.js";
+import { onMount } from "svelte";
+import { appSettings } from "../settings.svelte.js";
 
-	const {
-		apiBase = "",
-	}: {
-		apiBase?: string;
-	} = $props();
+const {
+	apiBase = "",
+}: {
+	apiBase?: string;
+} = $props();
 
-	const DEFAULT_PROMPT = "You are Dispatch, a helpful AI coding assistant. Be concise and helpful.";
+const DEFAULT_PROMPT = "You are Dispatch, a helpful AI coding assistant. Be concise and helpful.";
 
-	async function loadPrompt(): Promise<void> {
-		try {
-			const res = await fetch(`${apiBase}/tabs/settings/system_prompt`);
-			if (res.ok) {
-				const data = await res.json() as { value: string | null };
-				const value = data.value ?? DEFAULT_PROMPT;
-				appSettings.systemPrompt = value;
-				appSettings.savedSystemPrompt = value;
-			}
-		} catch {
-			// ignore
+async function loadPrompt(): Promise<void> {
+	try {
+		const res = await fetch(`${apiBase}/tabs/settings/system_prompt`);
+		if (res.ok) {
+			const data = (await res.json()) as { value: string | null };
+			const value = data.value ?? DEFAULT_PROMPT;
+			appSettings.systemPrompt = value;
+			appSettings.savedSystemPrompt = value;
 		}
+	} catch {
+		// ignore
 	}
+}
 
-	function resetPrompt(): void {
-		appSettings.systemPrompt = appSettings.savedSystemPrompt;
+function resetPrompt(): void {
+	appSettings.systemPrompt = appSettings.savedSystemPrompt;
+}
+
+const isDirty = $derived(appSettings.systemPrompt !== appSettings.savedSystemPrompt);
+
+onMount(() => {
+	if (!appSettings.systemPrompt) {
+		appSettings.systemPrompt = DEFAULT_PROMPT;
+		appSettings.savedSystemPrompt = DEFAULT_PROMPT;
 	}
-
-	const isDirty = $derived(appSettings.systemPrompt !== appSettings.savedSystemPrompt);
-
-	onMount(() => {
-		if (!appSettings.systemPrompt) {
-			appSettings.systemPrompt = DEFAULT_PROMPT;
-			appSettings.savedSystemPrompt = DEFAULT_PROMPT;
-		}
-		loadPrompt();
-	});
+	loadPrompt();
+});
 </script>
 
 <div class="flex flex-col gap-3 flex-1 min-h-0">

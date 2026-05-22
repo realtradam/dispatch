@@ -1,31 +1,57 @@
 @import "tailwindcss";
 @import "highlight.js/styles/atom-one-dark.min.css";
 @plugin "daisyui" {
-	themes: light, dark, dracula, night, nord, sunset, cyberpunk, forest, cmyk, coffee, caramellatte, garden, luxury;
+	themes:
+		light, dark, dracula, night, nord, sunset, cyberpunk, forest, cmyk, coffee, caramellatte,
+		garden, luxury;
 }
 
 .markdown-body {
 	& p {
 		margin-block: 0.5em;
-		&:first-child { margin-block-start: 0; }
-		&:last-child { margin-block-end: 0; }
+		&:first-child {
+			margin-block-start: 0;
+		}
+		&:last-child {
+			margin-block-end: 0;
+		}
 	}
-	& h1, & h2, & h3, & h4, & h5, & h6 {
+	& h1,
+	& h2,
+	& h3,
+	& h4,
+	& h5,
+	& h6 {
 		font-weight: 600;
 		line-height: 1.25;
 		margin-block: 0.75em 0.25em;
-		&:first-child { margin-block-start: 0; }
+		&:first-child {
+			margin-block-start: 0;
+		}
 	}
-	& h1 { font-size: 1.4em; }
-	& h2 { font-size: 1.2em; }
-	& h3 { font-size: 1.1em; }
-	& ul, & ol {
+	& h1 {
+		font-size: 1.4em;
+	}
+	& h2 {
+		font-size: 1.2em;
+	}
+	& h3 {
+		font-size: 1.1em;
+	}
+	& ul,
+	& ol {
 		padding-inline-start: 1.5em;
 		margin-block: 0.5em;
 	}
-	& ul { list-style-type: disc; }
-	& ol { list-style-type: decimal; }
-	& li { margin-block: 0.15em; }
+	& ul {
+		list-style-type: disc;
+	}
+	& ol {
+		list-style-type: decimal;
+	}
+	& li {
+		margin-block: 0.15em;
+	}
 	& pre {
 		overflow-x: auto;
 		border-radius: var(--radius-box);
@@ -54,16 +80,21 @@
 	& a {
 		color: oklch(var(--color-primary));
 		text-decoration: underline;
-		&:hover { opacity: 0.8; }
+		&:hover {
+			opacity: 0.8;
+		}
 	}
-	& strong { font-weight: 600; }
+	& strong {
+		font-weight: 600;
+	}
 	& table {
 		width: 100%;
 		border-collapse: collapse;
 		margin-block: 0.5em;
 		font-size: 0.875em;
 	}
-	& th, & td {
+	& th,
+	& td {
 		border: 1px solid oklch(var(--color-base-content) / 0.15);
 		padding: 0.4em 0.75em;
 		text-align: start;

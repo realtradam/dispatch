@@ -1,8 +1,18 @@
 <script lang="ts">
 const THEMES = [
-	"light", "dark", "dracula", "night", "nord", "sunset",
-	"cyberpunk", "forest", "cmyk", "coffee", "caramellatte",
-	"garden", "luxury",
+	"light",
+	"dark",
+	"dracula",
+	"night",
+	"nord",
+	"sunset",
+	"cyberpunk",
+	"forest",
+	"cmyk",
+	"coffee",
+	"caramellatte",
+	"garden",
+	"luxury",
 ] as const;
 
 const STORAGE_KEY = "dispatch-theme";

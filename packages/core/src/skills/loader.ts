@@ -1,89 +1,58 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
 import chokidar from "chokidar";
-import type { SkillDefinition, AgentSkillMapping, SkillScope } from "../types/index.js";
+import type { AgentSkillMapping, SkillDefinition, SkillScope } from "../types/index.js";
 import { parseSkillFile } from "./parser.js";
 
 // ─── Internal Helpers ────────────────────────────────────────────
 
-function loadSkillsFromDir(
-	dir: string,
-	scope: SkillScope,
-): SkillDefinition[] {
-	if (!fs.existsSync(dir)) {
-		return [];
-	}
+/**
+ * Recursively scan a directory for .md skill files.
+ * The `directory` field on each skill is the relative path from `baseDir` to the file's parent.
+ * Skips the `agents/` subdirectory (handled separately).
+ */
+function scanSkillsRecursive(baseDir: string, scope: SkillScope): SkillDefinition[] {
+	if (!fs.existsSync(baseDir)) return [];
 
 	const results: SkillDefinition[] = [];
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return [];
-	}
 
-	for (const entry of entries) {
-		if (!entry.isFile() || !entry.name.endsWith(".md")) {
-			continue;
-		}
-		const filePath = path.join(dir, entry.name);
+	function walk(dir: string) {
+		let entries: fs.Dirent[];
 		try {
-			const content = fs.readFileSync(filePath, "utf-8");
-			const skill = parseSkillFile(
-				filePath,
-				content,
-				scope,
-				// We'll set directory based on the parent dir segment — caller sets it
-				"default",
-			);
-			results.push(skill);
+			entries = fs.readdirSync(dir, { withFileTypes: true });
 		} catch {
-			// Skip unreadable files
+			return;
+		}
+
+		for (const entry of entries) {
+			const fullPath = path.join(dir, entry.name);
+
+			if (entry.isDirectory()) {
+				// Skip agents/ at the top level (handled by loadAgentMappings)
+				const relFromBase = path.relative(baseDir, fullPath);
+				if (relFromBase === "agents") continue;
+				walk(fullPath);
+			} else if (entry.isFile() && entry.name.endsWith(".md")) {
+				const relDir = path.relative(baseDir, dir);
+				// relDir is "" for root, "general" for general/, "general/webapps" for nested
+				const directory = relDir === "." ? "" : relDir;
+				try {
+					const content = fs.readFileSync(fullPath, "utf-8");
+					const skill = parseSkillFile(fullPath, content, scope, directory);
+					results.push(skill);
+				} catch {
+					// Skip unreadable files
+				}
+			}
 		}
 	}
 
+	walk(baseDir);
 	return results;
 }
 
-function loadSkillsFromDirWithDirectory(
-	dir: string,
-	scope: SkillScope,
-	directory: SkillDefinition["directory"],
-): SkillDefinition[] {
-	if (!fs.existsSync(dir)) {
-		return [];
-	}
-
-	const results: SkillDefinition[] = [];
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return [];
-	}
-
-	for (const entry of entries) {
-		if (!entry.isFile() || !entry.name.endsWith(".md")) {
-			continue;
-		}
-		const filePath = path.join(dir, entry.name);
-		try {
-			const content = fs.readFileSync(filePath, "utf-8");
-			const skill = parseSkillFile(filePath, content, scope, directory);
-			results.push(skill);
-		} catch {
-			// Skip unreadable files
-		}
-	}
-
-	return results;
-}
-
-function loadAgentMappings(
-	agentsDir: string,
-	scope: SkillScope,
-): AgentSkillMapping[] {
+function loadAgentMappings(agentsDir: string, scope: SkillScope): AgentSkillMapping[] {
 	if (!fs.existsSync(agentsDir)) {
 		return [];
 	}
@@ -141,43 +110,15 @@ export function loadSkills(projectDir: string): {
 	const skills: SkillDefinition[] = [];
 	const mappings: AgentSkillMapping[] = [];
 
-	// 1. Global default/
-	skills.push(
-		...loadSkillsFromDirWithDirectory(
-			path.join(globalBase, "default"),
-			"global",
-			"default",
-		),
-	);
+	// 1. Scan all global skills recursively (skipping agents/)
+	skills.push(...scanSkillsRecursive(globalBase, "global"));
 
-	// 2. Project default/
-	skills.push(
-		...loadSkillsFromDirWithDirectory(
-			path.join(projectBase, "default"),
-			"project",
-			"default",
-		),
-	);
+	// 2. Scan all project skills recursively (skipping agents/)
+	skills.push(...scanSkillsRecursive(projectBase, "project"));
 
 	// 3. Agent mappings — global then project
 	mappings.push(...loadAgentMappings(path.join(globalBase, "agents"), "global"));
 	mappings.push(...loadAgentMappings(path.join(projectBase, "agents"), "project"));
-
-	// 4. Project/ skills (manually activated)
-	skills.push(
-		...loadSkillsFromDirWithDirectory(
-			path.join(globalBase, "project"),
-			"global",
-			"project",
-		),
-	);
-	skills.push(
-		...loadSkillsFromDirWithDirectory(
-			path.join(projectBase, "project"),
-			"project",
-			"project",
-		),
-	);
 
 	return { skills, mappings };
 }
@@ -305,6 +246,3 @@ export function createSkillsWatcher(
 		},
 	};
 }
-
-// Keep loadSkillsFromDir exported for potential testing use
-export { loadSkillsFromDir };

@@ -7,7 +7,6 @@ import ModelSelector from "./ModelSelector.svelte";
 import ModelStatus from "./ModelStatus.svelte";
 import SettingsPanel from "./SettingsPanel.svelte";
 import SkillsBrowser from "./SkillsBrowser.svelte";
-import SystemPromptPanel from "./SystemPromptPanel.svelte";
 import TaskListPanel from "./TaskListPanel.svelte";
 import ToolPermissions from "./ToolPermissions.svelte";
 
@@ -19,9 +18,13 @@ const {
 	activeKeyId = null,
 	activeModelId = null,
 	reasoningEffort = "max",
+	activeAgentSlug = null as string | null,
+	workingDirectory = null as string | null,
 	onKeyChange,
 	onModelChange,
 	onReasoningChange,
+	onAgentChange = (_agent: any) => {},
+	onWorkingDirectoryChange = (_dir: string | null) => {},
 }: {
 	keys?: KeyInfo[];
 	tasks?: TaskItem[];
@@ -30,9 +33,13 @@ const {
 	activeKeyId?: string | null;
 	activeModelId?: string | null;
 	reasoningEffort?: string;
+	activeAgentSlug?: string | null;
+	workingDirectory?: string | null;
 	onKeyChange: (keyId: string) => void;
 	onModelChange: (keyId: string, modelId: string) => void;
 	onReasoningChange: (effort: string) => void;
+	onAgentChange?: (agent: any) => void;
+	onWorkingDirectoryChange?: (dir: string | null) => void;
 } = $props();
 
 interface Panel {
@@ -41,11 +48,11 @@ interface Panel {
 }
 
 let nextId = 0;
-let panels = $state<Panel[]>([{ id: nextId++, selected: "Model Choice" }]);
+let panels = $state<Panel[]>([{ id: nextId++, selected: "Chat Settings" }]);
 
 const viewOptions = [
 	"Select a view",
-	"Model Choice",
+	"Chat Settings",
 	"Key Usage",
 	"Claude Reset",
 	"Model Status",
@@ -53,7 +60,6 @@ const viewOptions = [
 	"Config",
 	"Skills",
 	"Tools",
-	"System Prompt",
 	"Settings",
 ];
 
@@ -104,16 +110,20 @@ function contentClass(selected: string): string {
 			</div>
 
 			<div class={contentClass(panel.selected)}>
-				{#if panel.selected === "Model Choice"}
-					<ModelSelector
-						{keys}
-						{activeKeyId}
-						{activeModelId}
-						{reasoningEffort}
-						{onKeyChange}
-						{onModelChange}
-						{onReasoningChange}
-					/>
+				{#if panel.selected === "Chat Settings"}
+			<ModelSelector
+				{keys}
+				{activeKeyId}
+				{activeModelId}
+				{reasoningEffort}
+				{onKeyChange}
+				{onModelChange}
+				{onReasoningChange}
+				{activeAgentSlug}
+				{onAgentChange}
+				{workingDirectory}
+				{onWorkingDirectoryChange}
+			/>
 				{:else if panel.selected === "Key Usage"}
 					<KeyUsage {keys} {apiBase} />
 				{:else if panel.selected === "Claude Reset"}
@@ -128,16 +138,14 @@ function contentClass(selected: string): string {
 					<SkillsBrowser {apiBase} />
 				{:else if panel.selected === "Tools"}
 					<ToolPermissions entries={permissionLog} {apiBase} />
-				{:else if panel.selected === "System Prompt"}
-				<SystemPromptPanel {apiBase} />
-			{:else if panel.selected === "Settings"}
+				{:else if panel.selected === "Settings"}
 					<SettingsPanel {keys} {apiBase} />
 				{/if}
 			</div>
 		</div>
 	{/each}
 
-	<button type="button" class="btn btn-sm btn-ghost w-full" onclick={addPanel}>
+	<button type="button" class="btn bg-base-200 hover:bg-base-300 border-none w-full text-lg" onclick={addPanel}>
 		+
 	</button>
 </div>

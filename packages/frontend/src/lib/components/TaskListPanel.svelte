@@ -29,17 +29,6 @@ function isChecked(status: TaskItem["status"]): boolean {
 function isIndeterminate(status: TaskItem["status"]): boolean {
 	return status === "in_progress";
 }
-
-function statusLabel(status: TaskItem["status"]): string {
-	switch (status) {
-		case "pending":
-			return "Pending";
-		case "in_progress":
-			return "In progress";
-		case "done":
-			return "Done";
-	}
-}
 </script>
 
 <div class="flex flex-col gap-2">

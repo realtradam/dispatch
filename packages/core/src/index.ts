@@ -2,6 +2,7 @@
 
 // Agent & LLM
 export { Agent } from "./agent/agent.js";
+export { deleteAgent, getAgentDirs, loadAgents, saveAgent } from "./agents/index.js";
 // Config
 export {
 	configToRuleset,

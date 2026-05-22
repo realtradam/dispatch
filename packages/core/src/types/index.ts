@@ -110,7 +110,7 @@ export interface KeyState {
 // ─── Skills Types ────────────────────────────────────────────────
 
 export type SkillScope = "global" | "project";
-export type SkillDirectory = "default" | "agents" | "project";
+export type SkillDirectory = string;
 
 export interface SkillDefinition {
 	name: string;
@@ -145,4 +145,30 @@ export interface TaskItem {
 export interface ConfigError {
 	path: string;
 	message: string;
+}
+
+// ─── Agent Definition Types ──────────────────────────────────────
+
+export interface AgentModelEntry {
+	key_id: string;
+	model_id: string;
+}
+
+export interface AgentDefinition {
+	/** Human-readable name */
+	name: string;
+	/** Short description of what this agent does */
+	description: string;
+	/** Skills to auto-include, as "scope:name" strings */
+	skills: string[];
+	/** Allowed tools (allowlist) */
+	tools: string[];
+	/** Key+model fallback hierarchy, tried in order */
+	models: AgentModelEntry[];
+	/** Where the TOML was loaded from: "global" or a directory path */
+	scope: string;
+	/** The slug (filename without .toml) */
+	slug: string;
+	/** Default working directory for this agent (optional, absolute path) */
+	cwd?: string;
 }

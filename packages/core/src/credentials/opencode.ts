@@ -70,9 +70,7 @@ function parseOcBucket(
 	return { utilization, resetsAt };
 }
 
-export async function fetchOpencodeUsage(
-	keyId: string,
-): Promise<OpencodeUsageReport | null> {
+export async function fetchOpencodeUsage(keyId: string): Promise<OpencodeUsageReport | null> {
 	const cookie = resolveApiKey("opencode-cookie");
 	const wsId = getWorkspaceId(keyId);
 
@@ -96,10 +94,7 @@ export async function fetchOpencodeUsage(
 		const html = await response.text();
 
 		// Auth redirect check
-		if (
-			html.includes("/auth/authorize") ||
-			html.includes('window.location="/auth/authorize"')
-		) {
+		if (html.includes("/auth/authorize") || html.includes('window.location="/auth/authorize"')) {
 			return null;
 		}
 

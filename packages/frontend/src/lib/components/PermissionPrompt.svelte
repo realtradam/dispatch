@@ -1,7 +1,10 @@
 <script lang="ts">
 import type { PermissionPrompt } from "../types.js";
 
-const { pending, onReply }: {
+const {
+	pending,
+	onReply,
+}: {
 	pending: PermissionPrompt[];
 	onReply: (id: string, reply: "once" | "always" | "reject") => void;
 } = $props();

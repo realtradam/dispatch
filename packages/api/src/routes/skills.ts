@@ -1,9 +1,14 @@
-import { Hono } from "hono";
 import type { AgentSkillMapping, SkillDefinition, SkillScope } from "@dispatch/core";
+import { Hono } from "hono";
 
-let getSkills: () => { skills: SkillDefinition[]; mappings: AgentSkillMapping[] } = () => ({ skills: [], mappings: [] });
+let getSkills: () => { skills: SkillDefinition[]; mappings: AgentSkillMapping[] } = () => ({
+	skills: [],
+	mappings: [],
+});
 
-export function setSkillsGetter(getter: () => { skills: SkillDefinition[]; mappings: AgentSkillMapping[] }): void {
+export function setSkillsGetter(
+	getter: () => { skills: SkillDefinition[]; mappings: AgentSkillMapping[] },
+): void {
 	getSkills = getter;
 }
 

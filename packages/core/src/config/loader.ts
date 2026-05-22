@@ -28,7 +28,9 @@ export function loadConfig(dir: string): DispatchConfig {
 			// File doesn't exist — return empty default
 			return DEFAULT_CONFIG;
 		}
-		console.warn(`dispatch: failed to parse dispatch.toml: ${err instanceof Error ? err.message : String(err)}`);
+		console.warn(
+			`dispatch: failed to parse dispatch.toml: ${err instanceof Error ? err.message : String(err)}`,
+		);
 		throw err;
 	}
 

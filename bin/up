@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Force GPG to use terminal-based pinentry (required for SSH sessions)
-export GPG_TTY=$(tty)
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
-# Load secrets from gopass
-OPENCODE_API_KEY="$(gopass show -o projects/ai-api/opencode_go_key)"
 
 # Pass host user identity so the container runs as the same UID/GID
 export HOST_UID="$(id -u)"
@@ -16,5 +10,4 @@ export HOST_GID="$(id -g)"
 export HOST_USER="$(whoami)"
 
 # Start all services
-OPENCODE_API_KEY="$OPENCODE_API_KEY" \
-  docker compose -f "$PROJECT_DIR/docker-compose.yml" up "$@"
+docker compose -f "$PROJECT_DIR/docker-compose.yml" up "$@"

@@ -1,10 +1,22 @@
-<script module>
-	const modelCache = new Map<string, string[]>();
+<script module lang="ts">
+const modelCache = new Map<string, string[]>();
 </script>
 
 <script lang="ts">
 	import type { KeyInfo } from "../types.js";
 	import { config } from "../config.js";
+	import { router } from "../router.svelte.js";
+
+	interface AgentInfo {
+		name: string;
+		slug: string;
+		scope: string;
+		description: string;
+		skills: string[];
+		tools: string[];
+		models: Array<{ key_id: string; model_id: string }>;
+		cwd?: string;
+	}
 
 	// Moves an element to document.body so modals escape the sidebar's
 	// transform stacking context and cover the full viewport.
@@ -22,17 +34,25 @@
 		activeKeyId = null,
 		activeModelId = null,
 		reasoningEffort = "max",
+		activeAgentSlug = null,
+		workingDirectory = null,
 		onKeyChange,
 		onModelChange,
 		onReasoningChange,
+		onAgentChange = (_agent: AgentInfo | null) => {},
+		onWorkingDirectoryChange = (_dir: string | null) => {},
 	}: {
 		keys?: KeyInfo[];
 		activeKeyId?: string | null;
 		activeModelId?: string | null;
 		reasoningEffort?: string;
+		activeAgentSlug?: string | null;
+		workingDirectory?: string | null;
 		onKeyChange: (keyId: string) => void;
 		onModelChange: (keyId: string, modelId: string) => void;
 		onReasoningChange: (effort: string) => void;
+		onAgentChange?: (agent: AgentInfo | null) => void;
+		onWorkingDirectoryChange?: (dir: string | null) => void;
 	} = $props();
 
 	let showKeyModal = $state(false);
@@ -40,6 +60,56 @@
 	let availableModels = $state<string[]>([]);
 	let loadingModels = $state(false);
 	let modelError = $state<string | null>(null);
+
+	let cwdExists = $state<boolean | null>(null);
+	let cwdCheckTimer: ReturnType<typeof setTimeout> | null = null;
+
+	$effect(() => {
+		const cwd = workingDirectory;
+		if (!cwd) {
+			cwdExists = null;
+			return;
+		}
+		cwdExists = null;
+		if (cwdCheckTimer) clearTimeout(cwdCheckTimer);
+		cwdCheckTimer = setTimeout(async () => {
+			try {
+				const res = await fetch(
+					`${config.apiBase}/agents/check-dir?path=${encodeURIComponent(cwd)}`,
+				);
+				if (res.ok) {
+					const data = await res.json();
+					cwdExists = data.exists ?? false;
+				}
+			} catch {
+				cwdExists = null;
+			}
+		}, 300);
+	});
+
+	let modeOverride = $state<"manual" | "agent" | null>(null);
+	let mode = $derived(modeOverride ?? (activeAgentSlug ? "agent" : "manual"));
+	let agents = $state<AgentInfo[]>([]);
+	let loadingAgents = $state(false);
+
+	$effect(() => {
+		fetchAgents();
+	});
+
+	async function fetchAgents() {
+		loadingAgents = true;
+		try {
+			const res = await fetch(`${config.apiBase}/agents`);
+			if (res.ok) {
+				const data = await res.json();
+				agents = data.agents ?? [];
+			}
+		} catch {
+			/* ignore */
+		} finally {
+			loadingAgents = false;
+		}
+	}
 
 	function selectKey(keyId: string) {
 		showKeyModal = false;
@@ -93,35 +163,119 @@
 </script>
 
 <div class="bg-base-200 rounded-lg p-3">
-	<div class="flex items-center justify-between">
-		<span class="text-sm font-medium">Key</span>
-		<button class="btn btn-sm btn-outline" onclick={() => (showKeyModal = true)}>
-			{activeKeyId ?? "Select Key"}
-		</button>
-	</div>
-
-	<div class="flex items-center justify-between mt-2">
-		<span class="text-sm font-medium">Model</span>
-		<button class="btn btn-sm btn-outline" onclick={() => openModelModal()} disabled={!activeKeyId}>
-			{activeModelId ?? "Select Model"}
-		</button>
-	</div>
-
-	{#if activeModelId}
-		<div class="flex items-center justify-between mt-2">
-			<span class="text-sm font-medium">Thinking</span>
-			<select
-				class="select select-bordered select-sm"
-				value={reasoningEffort}
-				onchange={(e) => onReasoningChange(e.currentTarget.value)}
-			>
-				<option value="none">Off</option>
-				<option value="low">Low</option>
-				<option value="medium">Medium</option>
-				<option value="high">High</option>
-				<option value="max">Max</option>
-			</select>
+	<!-- Working Directory -->
+	<div class="form-control mb-3">
+		<label class="label py-0" for="cwd-input">
+			<span class="label-text text-xs font-semibold">Working Directory</span>
+		</label>
+		<div class="flex items-center gap-1.5 mt-1">
+			<input
+				id="cwd-input"
+				type="text"
+				class="input input-bordered input-sm font-mono text-xs flex-1"
+				placeholder="default (project root)"
+				value={workingDirectory ?? ""}
+				oninput={(e) => {
+					const val = e.currentTarget.value.trim();
+					onWorkingDirectoryChange(val || null);
+				}}
+			/>
+			{#if workingDirectory}
+				{#if cwdExists === true}
+					<span class="text-success text-sm" title="Directory exists">&#x2714;</span>
+				{:else if cwdExists === false}
+					<span class="text-warning text-sm" title="Will be created">&#x2716;</span>
+				{:else}
+					<span class="loading loading-spinner loading-xs"></span>
+				{/if}
+			{/if}
 		</div>
+	</div>
+
+	<!-- Toggle -->
+	<div class="flex items-center gap-2 mb-3">
+		<button
+			class="btn btn-xs {mode === 'manual' ? 'btn-primary' : 'btn-ghost'}"
+			onclick={() => { modeOverride = "manual"; onAgentChange(null); }}
+		>
+			Manual
+		</button>
+		<button
+			class="btn btn-xs {mode === 'agent' ? 'btn-primary' : 'btn-ghost'}"
+			onclick={() => { modeOverride = "agent"; fetchAgents(); }}
+		>
+			Agent
+		</button>
+	</div>
+
+	{#if mode === "manual"}
+		<div class="flex items-center justify-between">
+			<span class="text-sm font-medium">Key</span>
+			<button class="btn btn-sm btn-outline" onclick={() => (showKeyModal = true)}>
+				{activeKeyId ?? "Select Key"}
+			</button>
+		</div>
+
+		<div class="flex items-center justify-between mt-2">
+			<span class="text-sm font-medium">Model</span>
+			<button class="btn btn-sm btn-outline" onclick={() => openModelModal()} disabled={!activeKeyId}>
+				{activeModelId ?? "Select Model"}
+			</button>
+		</div>
+
+		{#if activeModelId}
+			<div class="flex items-center justify-between mt-2">
+				<span class="text-sm font-medium">Thinking</span>
+				<select
+					class="select select-bordered select-sm"
+					value={reasoningEffort}
+					onchange={(e) => onReasoningChange(e.currentTarget.value)}
+				>
+					<option value="none">Off</option>
+					<option value="low">Low</option>
+					<option value="medium">Medium</option>
+					<option value="high">High</option>
+					<option value="max">Max</option>
+				</select>
+			</div>
+		{/if}
+	{:else}
+		<!-- Agent selection UI -->
+		{#if loadingAgents}
+			<div class="flex items-center gap-2 py-2 text-base-content/60">
+				<span class="loading loading-spinner loading-xs"></span>
+				Loading agents...
+			</div>
+		{:else if agents.length === 0}
+			<p class="text-base-content/50 text-sm py-2">No agents configured.</p>
+		{:else}
+			<div class="flex flex-col gap-1.5">
+				{#each agents as agent (agent.slug + ":" + agent.scope)}
+					<button
+						class="w-full text-left rounded-lg px-3 py-2 transition-colors {activeAgentSlug === agent.slug ? 'bg-primary text-primary-content' : 'bg-base-300 hover:bg-base-200'}"
+						onclick={() => onAgentChange(agent)}
+					>
+						<div class="flex items-center justify-between gap-2">
+							<span class="font-medium text-sm">{agent.name}</span>
+							<div class="flex gap-1 shrink-0">
+								<span class="badge badge-xs">{agent.models.length} model{agent.models.length !== 1 ? 's' : ''}</span>
+								<span class="badge badge-xs badge-outline">{agent.scope === "global" ? "global" : "project"}</span>
+							</div>
+						</div>
+						{#if agent.description}
+							<p class="text-xs opacity-60 mt-0.5">{agent.description}</p>
+						{/if}
+					</button>
+				{/each}
+			</div>
+		{/if}
+		<button
+			type="button"
+			class="btn btn-outline btn-sm w-full mt-2 hover:bg-base-300 hover:border-base-300 text-base-content/60"
+			onclick={() => router.navigate("agent-builder")}
+		>
+			Agent Settings
+		</button>
 	{/if}
 </div>
 

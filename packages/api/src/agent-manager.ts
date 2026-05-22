@@ -299,7 +299,24 @@ export class AgentManager {
 
 		if (!tabAgent.agent) {
 			const defaultWorkDir = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
-			const workingDirectory = tabAgent.workingDirectoryOverride ?? defaultWorkDir;
+			let workingDirectory = tabAgent.workingDirectoryOverride ?? defaultWorkDir;
+
+			// Expand ~ to home directory
+			if (workingDirectory === "~" || workingDirectory.startsWith("~/")) {
+				const { homedir } = await import("node:os");
+				const { join } = await import("node:path");
+				workingDirectory = join(homedir(), workingDirectory.slice(1));
+			}
+
+			// Auto-create the working directory if it doesn't exist
+			try {
+				const { mkdirSync, existsSync } = await import("node:fs");
+				if (!existsSync(workingDirectory)) {
+					mkdirSync(workingDirectory, { recursive: true });
+				}
+			} catch {
+				// Ignore — tool execution will surface the error naturally
+			}
 
 			// Build tools list — child agents use their toolsOverride whitelist,
 			// parent agents use permission settings from DB
@@ -573,15 +590,34 @@ export class AgentManager {
 		const tabId = crypto.randomUUID();
 		const title = options.task.length > 50 ? `${options.task.slice(0, 47)}...` : options.task;
 
-		// Validate working directory is within the parent's workspace
+		// Validate working directory is within the parent agent's effective CWD
 		const defaultWorkDir = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
+		let parentEffectiveDir = options.parentTabId
+			? (this.tabAgents.get(options.parentTabId)?.workingDirectoryOverride ?? defaultWorkDir)
+			: defaultWorkDir;
+
+		// Expand ~ in parent dir
+		if (parentEffectiveDir === "~" || parentEffectiveDir.startsWith("~/")) {
+			const { homedir } = await import("node:os");
+			const { join } = await import("node:path");
+			parentEffectiveDir = join(homedir(), parentEffectiveDir.slice(1));
+		}
+
 		if (options.workingDirectory) {
-			const { resolve } = await import("node:path");
-			const resolved = resolve(options.workingDirectory);
-			const parentDir = resolve(defaultWorkDir);
-			if (!resolved.startsWith(`${parentDir}/`) && resolved !== parentDir) {
+			const { isAbsolute, relative, resolve, join } = await import("node:path");
+			// Expand ~ in child working directory
+			let childDir = options.workingDirectory;
+			if (childDir === "~" || childDir.startsWith("~/")) {
+				const { homedir } = await import("node:os");
+				childDir = join(homedir(), childDir.slice(1));
+			}
+			const parentDir = resolve(parentEffectiveDir);
+			const resolved = resolve(parentDir, childDir);
+			const rel = relative(parentDir, resolved);
+			const isOutside = rel.startsWith("..") || isAbsolute(rel);
+			if (isOutside) {
 				throw new Error(
-					`Working directory "${options.workingDirectory}" is outside the workspace "${parentDir}".`,
+					`Working directory "${options.workingDirectory}" is outside the parent's working directory "${parentDir}".`,
 				);
 			}
 		}
@@ -676,8 +712,19 @@ export class AgentManager {
 		keyId?: string,
 		modelId?: string,
 		reasoningEffort?: "none" | "low" | "medium" | "high" | "max",
+		workingDirectory?: string,
 	): Promise<void> {
 		const tabAgent = this._getOrCreateTabAgent(tabId);
+
+		// Apply working directory override from frontend if provided
+		if (workingDirectory !== undefined) {
+			const prevDir = tabAgent.workingDirectoryOverride;
+			tabAgent.workingDirectoryOverride = workingDirectory || undefined;
+			// Invalidate cached agent if working directory changed
+			if (prevDir !== tabAgent.workingDirectoryOverride) {
+				tabAgent.agent = null;
+			}
+		}
 		tabAgent.abortController = new AbortController();
 		tabAgent.status = "running";
 		this.messageCount += 1;

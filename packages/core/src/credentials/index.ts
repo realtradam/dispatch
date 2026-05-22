@@ -1,4 +1,12 @@
 export {
+	deleteApiKey,
+	getApiKey,
+	listApiKeys,
+	resolveApiKey,
+	type StoredApiKey,
+	setApiKey,
+} from "./api-keys.js";
+export {
 	ANTHROPIC_MODELS_FALLBACK,
 	buildBillingHeaderValue,
 	type ClaudeAccount,
@@ -7,11 +15,11 @@ export {
 	type ClaudeUsageBucket,
 	type ClaudeUsageReport,
 	discoverClaudeAccounts,
-	getClaudeAccountsFromDB,
 	fetchAnthropicModels,
 	getAccountUsage,
 	getAnthropicBetas,
 	getAnthropicHeaders,
+	getClaudeAccountsFromDB,
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
 	SYSTEM_IDENTITY,
@@ -27,18 +35,10 @@ export {
 	type OpencodeUsageReport,
 } from "./opencode.js";
 export {
-	type StoredCredential,
-	importCredentialsFromFile,
-	getStoredCredentials,
-	updateStoredTokens,
 	deleteStoredCredentials,
+	getStoredCredentials,
+	importCredentialsFromFile,
 	listStoredCredentials,
+	type StoredCredential,
+	updateStoredTokens,
 } from "./store.js";
-export {
-	type StoredApiKey,
-	setApiKey,
-	getApiKey,
-	resolveApiKey,
-	deleteApiKey,
-	listApiKeys,
-} from "./api-keys.js";

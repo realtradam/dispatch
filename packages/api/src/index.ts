@@ -1,6 +1,6 @@
+import type { PermissionReply } from "@dispatch/core";
 import { createBunWebSocket } from "hono/bun";
 import { agentManager, app, permissionManager } from "./app.js";
-import type { PermissionReply } from "@dispatch/core";
 
 const { upgradeWebSocket, websocket } = createBunWebSocket();
 
@@ -41,7 +41,11 @@ app.get(
 						id?: string;
 						reply?: string;
 					};
-					if (message.type === "permission-reply" && typeof message.id === "string" && typeof message.reply === "string") {
+					if (
+						message.type === "permission-reply" &&
+						typeof message.id === "string" &&
+						typeof message.reply === "string"
+					) {
 						const validReplies: PermissionReply[] = ["once", "always", "reject"];
 						if (validReplies.includes(message.reply as PermissionReply)) {
 							permissionManager.reply(message.id, message.reply as PermissionReply);
