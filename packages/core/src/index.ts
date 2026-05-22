@@ -51,10 +51,12 @@ export { createListFilesTool } from "./tools/list-files.js";
 export { createReadFileTool } from "./tools/read-file.js";
 export { createToolRegistry } from "./tools/registry.js";
 export { createRetrieveTool, type RetrieveCallbacks } from "./tools/retrieve.js";
-export { createRunShellTool } from "./tools/run-shell.js";
+export { BackgroundShellStore, createRunShellTool } from "./tools/run-shell.js";
 export { analyzeCommand } from "./tools/shell-analyze.js";
 export { createSummonTool, type SummonCallbacks } from "./tools/summon.js";
 export { createTaskListTool, TaskList } from "./tools/task-list.js";
+export { createWebSearchTool } from "./tools/web-search.js";
 export { createWriteFileTool } from "./tools/write-file.js";
+export { createYoutubeTranscribeTool } from "./tools/youtube-transcribe.js";
 // Types & Permissions
 export * from "./types/index.js";

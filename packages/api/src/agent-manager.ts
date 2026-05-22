@@ -11,10 +11,13 @@ import {
 	createReadFileTool,
 	createRetrieveTool,
 	createRunShellTool,
+	BackgroundShellStore,
 	createSkillsWatcher,
 	createSummonTool,
 	createTaskListTool,
+	createWebSearchTool,
 	createWriteFileTool,
+	createYoutubeTranscribeTool,
 	type DispatchConfig,
 	getClaudeAccountsFromDB,
 	getSetting,
@@ -46,6 +49,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 		"Spawn a child agent to work on a task independently. Returns an agent_id immediately (non-blocking). Use retrieve to collect the result later.",
 	retrieve:
 		"Wait for a child agent to finish and get its result (blocking). Pass the agent_id from summon.",
+	web_search: "Search the web and optionally scrape full page content from results.",
+	youtube_transcribe: "Fetch the transcript/subtitles for a YouTube video.",
 };
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -134,6 +139,8 @@ interface TabAgent {
 	messageQueue: QueuedMessage[];
 	/** Callbacks to wake up blocking tools waiting for queued messages. */
 	queueListeners: Array<() => void>;
+	/** Store for shell commands backgrounded due to user interrupt. */
+	shellStore: BackgroundShellStore;
 }
 
 export class AgentManager {
@@ -269,6 +276,7 @@ export class AgentManager {
 				taskList,
 				messageQueue: [],
 				queueListeners: [],
+				shellStore: new BackgroundShellStore(),
 			};
 			this.tabAgents.set(tabId, tabAgent);
 		}
@@ -346,7 +354,13 @@ export class AgentManager {
 					toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
 				}
 				if (allowed.has("run_shell")) {
-					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory) });
+					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory, tabAgent.shellStore) });
+				}
+				if (allowed.has("web_search")) {
+					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				}
+				if (allowed.has("youtube_transcribe")) {
+					toolEntries.push({ name: "youtube_transcribe", tool: createYoutubeTranscribeTool() });
 				}
 				if (allowed.has("todo")) {
 					toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
@@ -370,7 +384,12 @@ export class AgentManager {
 				if (allowed.has("retrieve")) {
 					toolEntries.push({
 						name: "retrieve",
-						tool: createRetrieveTool({ getResult: (id) => this.getChildResult(id) }),
+						tool: createRetrieveTool({
+							getResult: (id) =>
+								tabAgent.shellStore.has(id)
+									? tabAgent.shellStore.getResult(id)
+									: this.getChildResult(id),
+						}),
 					});
 				}
 			} else {
@@ -383,8 +402,10 @@ export class AgentManager {
 					toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
 				}
 				if (permBash) {
-					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory) });
+					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory, tabAgent.shellStore) });
 				}
+				toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				toolEntries.push({ name: "youtube_transcribe", tool: createYoutubeTranscribeTool() });
 				toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
 				if (permSummon) {
 					// Capture parent's allowed tool names for child permission enforcement
@@ -404,7 +425,12 @@ export class AgentManager {
 					});
 					toolEntries.push({
 						name: "retrieve",
-						tool: createRetrieveTool({ getResult: (id) => this.getChildResult(id) }),
+						tool: createRetrieveTool({
+							getResult: (id) =>
+								tabAgent.shellStore.has(id)
+									? tabAgent.shellStore.getResult(id)
+									: this.getChildResult(id),
+						}),
 					});
 				}
 			}

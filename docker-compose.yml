@@ -4,8 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     command: ["bun", "--watch", "packages/api/src/index.ts"]
-    ports:
-      - "3000:3000"
+    network_mode: host
     volumes:
       - .:/app
       - ${HOME}/.claude:/home/${HOST_USER:-dispatch}/.claude
@@ -25,8 +24,7 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     command: ["bun", "run", "--cwd", "packages/frontend", "dev", "--", "--host"]
-    ports:
-      - "5173:5173"
+    network_mode: host
     volumes:
       - .:/app
     depends_on:

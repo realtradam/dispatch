@@ -196,11 +196,12 @@ export class Agent {
 		});
 
 			const rawResult = await execPromise;
+			const resultStr = typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult);
 			return {
 				toolCallId: tc.id,
 				toolName: tc.name,
-				result: typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult),
-				isError: false,
+				result: resultStr,
+				isError: resultStr.startsWith("Error:"),
 			};
 		} catch (err) {
 			return {
@@ -326,7 +327,7 @@ export class Agent {
 
 					// Model tried to call an unavailable tool.
 					// Add a synthetic tool call + error result for the bad tool.
-					const badToolName = unavailMatch[1];
+					const badToolName = unavailMatch[1] as string;
 					const fakeId = `unavail_${crypto.randomUUID().slice(0, 8)}`;
 					const availableTools = Object.keys(aiTools).join(", ");
 					const errorResult = `Tool "${badToolName}" is not available. Available tools: ${availableTools}. Please use only available tools.`;
