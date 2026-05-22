@@ -41,9 +41,7 @@ function formatTime(seconds: number): string {
 
 function formatTranscript(data: TranscriptResponse): string {
 	const segments = data.segments ?? [];
-	const segmentsText = segments
-		.map((seg) => `[${formatTime(seg.start)}] ${seg.text}`)
-		.join("\n");
+	const segmentsText = segments.map((seg) => `[${formatTime(seg.start)}] ${seg.text}`).join("\n");
 
 	const output = [
 		`Video ID: ${data.video_id}`,
@@ -58,7 +56,7 @@ function formatTranscript(data: TranscriptResponse): string {
 	].join("\n");
 
 	return output.length > MAX_OUTPUT_CHARS
-		? output.slice(0, MAX_OUTPUT_CHARS) + "\n\n[Transcript truncated]"
+		? `${output.slice(0, MAX_OUTPUT_CHARS)}\n\n[Transcript truncated]`
 		: output;
 }
 

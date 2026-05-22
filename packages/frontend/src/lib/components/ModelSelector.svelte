@@ -16,6 +16,7 @@ const modelCache = new Map<string, string[]>();
 		tools: string[];
 		models: Array<{ key_id: string; model_id: string }>;
 		cwd?: string;
+		is_subagent?: boolean;
 	}
 
 	// Moves an element to document.body so modals escape the sidebar's
@@ -90,6 +91,7 @@ const modelCache = new Map<string, string[]>();
 	let modeOverride = $state<"manual" | "agent" | null>(null);
 	let mode = $derived(modeOverride ?? (activeAgentSlug ? "agent" : "manual"));
 	let agents = $state<AgentInfo[]>([]);
+	let visibleAgents = $derived(agents.filter((a) => !a.is_subagent));
 	let loadingAgents = $state(false);
 
 	$effect(() => {
@@ -206,8 +208,8 @@ const modelCache = new Map<string, string[]>();
 				modeOverride = "agent";
 				await fetchAgents();
 				// Re-apply the active agent's settings (including cwd)
-				const current = agents.find(a => a.slug === activeAgentSlug);
-				const agentToApply = current ?? agents[0] ?? null;
+				const current = visibleAgents.find(a => a.slug === activeAgentSlug);
+				const agentToApply = current ?? visibleAgents[0] ?? null;
 				if (agentToApply) {
 					onAgentChange(agentToApply);
 					// Force-update the input since the prop may not change (already set)
@@ -258,11 +260,11 @@ const modelCache = new Map<string, string[]>();
 				<span class="loading loading-spinner loading-xs"></span>
 				Loading agents...
 			</div>
-		{:else if agents.length === 0}
+		{:else if visibleAgents.length === 0}
 			<p class="text-base-content/50 text-sm py-2">No agents configured.</p>
 		{:else}
 			<div class="flex flex-col gap-1.5">
-				{#each agents as agent (agent.slug + ":" + agent.scope)}
+				{#each visibleAgents as agent (agent.slug + ":" + agent.scope)}
 					<button
 						class="w-full text-left rounded-lg px-3 py-2 transition-colors {activeAgentSlug === agent.slug ? 'bg-primary text-primary-content' : 'bg-base-300 hover:bg-base-200'}"
 						onclick={() => {

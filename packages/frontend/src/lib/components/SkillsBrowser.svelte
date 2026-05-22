@@ -77,7 +77,7 @@ function dirKey(group: DirGroup): string {
 function isChecked(skill: Skill): boolean {
 	const key = skillKey(skill);
 	if (externalMode) {
-		return checkedSkills!.has(key);
+		return checkedSkills?.has(key) ?? false;
 	}
 	return appSettings.skillChecks[key] === true;
 }
@@ -90,7 +90,7 @@ function isInjected(skill: Skill): boolean {
 function toggleCheck(skill: Skill): void {
 	const key = skillKey(skill);
 	if (externalMode) {
-		onSkillToggle!(key, !checkedSkills!.has(key));
+		onSkillToggle?.(key, !checkedSkills?.has(key));
 		return;
 	}
 	appSettings.skillChecks = { ...appSettings.skillChecks, [key]: !isChecked(skill) };
@@ -156,7 +156,7 @@ $effect(() => {
 
 const checkedCount = $derived(
 	externalMode
-		? checkedSkills!.size
+		? (checkedSkills?.size ?? 0)
 		: Object.values(appSettings.skillChecks).filter((v) => v).length,
 );
 

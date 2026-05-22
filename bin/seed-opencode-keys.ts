@@ -2,7 +2,7 @@
 /**
  * Seed API keys from environment variables into the SQLite database.
  */
-import { setApiKey, getDatabasePath } from "../packages/core/src/index.js";
+import { getDatabasePath, setApiKey } from "../packages/core/src/index.js";
 
 console.log(`Database: ${getDatabasePath()}\n`);
 

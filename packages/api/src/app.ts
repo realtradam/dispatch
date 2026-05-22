@@ -63,7 +63,8 @@ app.post("/chat", async (c) => {
 
 	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
 	const modelId = typeof body.modelId === "string" ? body.modelId : undefined;
-	const workingDirectory = typeof body.workingDirectory === "string" ? body.workingDirectory : undefined;
+	const workingDirectory =
+		typeof body.workingDirectory === "string" ? body.workingDirectory : undefined;
 	const validEfforts = ["none", "low", "medium", "high", "max"];
 	const reasoningEffort =
 		typeof body.reasoningEffort === "string" && validEfforts.includes(body.reasoningEffort)
@@ -71,7 +72,9 @@ app.post("/chat", async (c) => {
 			: undefined;
 
 	// Non-blocking — let the agent run in the background
-	agentManager.processMessage(tabId, message, keyId, modelId, reasoningEffort, workingDirectory).catch(console.error);
+	agentManager
+		.processMessage(tabId, message, keyId, modelId, reasoningEffort, workingDirectory)
+		.catch(console.error);
 
 	return c.json({ status: "ok" });
 });

@@ -66,37 +66,37 @@ function validateKey(raw: unknown, path: string, errors: ConfigError[]): KeyDefi
 		errors.push({ path, message: "must be an object" });
 		return null;
 	}
-	if (typeof raw["id"] !== "string") {
+	if (typeof raw.id !== "string") {
 		errors.push({ path: `${path}.id`, message: "must be a string" });
 		return null;
 	}
-	if (typeof raw["provider"] !== "string") {
+	if (typeof raw.provider !== "string") {
 		errors.push({ path: `${path}.provider`, message: "must be a string" });
 		return null;
 	}
-	if (typeof raw["base_url"] !== "string") {
+	if (typeof raw.base_url !== "string") {
 		errors.push({ path: `${path}.base_url`, message: "must be a string" });
 		return null;
 	}
 
 	// "anthropic" provider uses credentials_file instead of env
-	if (raw["provider"] === "anthropic") {
+	if (raw.provider === "anthropic") {
 		return {
-			id: raw["id"] as string,
-			provider: raw["provider"] as string,
-			base_url: raw["base_url"] as string,
-			...(typeof raw["credentials_file"] === "string"
-				? ({ credentials_file: raw["credentials_file"] } as Pick<KeyDefinition, "credentials_file">)
+			id: raw.id as string,
+			provider: raw.provider as string,
+			base_url: raw.base_url as string,
+			...(typeof raw.credentials_file === "string"
+				? ({ credentials_file: raw.credentials_file } as Pick<KeyDefinition, "credentials_file">)
 				: {}),
 		};
 	}
 
 	// Other providers: env is optional (keys can be stored in DB)
 	return {
-		id: raw["id"] as string,
-		provider: raw["provider"] as string,
-		base_url: raw["base_url"] as string,
-		...(typeof raw["env"] === "string" ? { env: raw["env"] } : {}),
+		id: raw.id as string,
+		provider: raw.provider as string,
+		base_url: raw.base_url as string,
+		...(typeof raw.env === "string" ? { env: raw.env } : {}),
 	};
 }
 
@@ -109,17 +109,17 @@ export function validateConfig(raw: unknown): { config: DispatchConfig; errors: 
 	}
 
 	// permissions (required, but can be empty)
-	const permissions = validatePermissions(raw["permissions"] ?? {}, "permissions", errors);
+	const permissions = validatePermissions(raw.permissions ?? {}, "permissions", errors);
 
 	// keys (optional)
 	let keys: KeyDefinition[] | undefined;
-	if (raw["keys"] !== undefined) {
-		if (!Array.isArray(raw["keys"])) {
+	if (raw.keys !== undefined) {
+		if (!Array.isArray(raw.keys)) {
 			errors.push({ path: "keys", message: "must be an array" });
 		} else {
 			keys = [];
-			for (let i = 0; i < raw["keys"].length; i++) {
-				const key = validateKey(raw["keys"][i], `keys[${i}]`, errors);
+			for (let i = 0; i < raw.keys.length; i++) {
+				const key = validateKey(raw.keys[i], `keys[${i}]`, errors);
 				if (key) keys.push(key);
 			}
 		}

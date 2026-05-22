@@ -169,6 +169,38 @@ vi.mock("@dispatch/core", () => ({
 		return null;
 	},
 	appendMessage() {},
+	BackgroundShellStore: class MockBackgroundShellStore {
+		has() {
+			return false;
+		}
+		getResult() {
+			return Promise.resolve({ status: "error", error: "not found" });
+		}
+	},
+	BackgroundTranscriptStore: class MockBackgroundTranscriptStore {
+		has() {
+			return false;
+		}
+		getResult() {
+			return Promise.resolve({ status: "error", error: "not found" });
+		}
+	},
+	createWebSearchTool() {
+		return {
+			name: "web_search",
+			description: "web search",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
+	createYoutubeTranscribeTool() {
+		return {
+			name: "youtube_transcribe",
+			description: "youtube transcribe",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
 }));
 
 // Import after mock is defined (Vitest hoists vi.mock automatically)

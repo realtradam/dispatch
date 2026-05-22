@@ -25,14 +25,18 @@ function saveBackendUrl(): void {
 	config.setApiBase(trimmed);
 	backendUrl = trimmed;
 	backendUrlSaved = true;
-	setTimeout(() => { backendUrlSaved = false; }, 2000);
+	setTimeout(() => {
+		backendUrlSaved = false;
+	}, 2000);
 }
 
 function resetBackendUrl(): void {
 	config.setApiBase(config.defaultApiBase);
 	backendUrl = config.defaultApiBase;
 	backendUrlSaved = true;
-	setTimeout(() => { backendUrlSaved = false; }, 2000);
+	setTimeout(() => {
+		backendUrlSaved = false;
+	}, 2000);
 }
 
 async function loadSettings(): Promise<void> {

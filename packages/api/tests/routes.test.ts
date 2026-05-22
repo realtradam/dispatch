@@ -170,6 +170,38 @@ vi.mock("@dispatch/core", () => ({
 		return null;
 	},
 	appendMessage() {},
+	BackgroundShellStore: class MockBackgroundShellStore {
+		has() {
+			return false;
+		}
+		getResult() {
+			return Promise.resolve({ status: "error", error: "not found" });
+		}
+	},
+	BackgroundTranscriptStore: class MockBackgroundTranscriptStore {
+		has() {
+			return false;
+		}
+		getResult() {
+			return Promise.resolve({ status: "error", error: "not found" });
+		}
+	},
+	createWebSearchTool() {
+		return {
+			name: "web_search",
+			description: "web search",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
+	createYoutubeTranscribeTool() {
+		return {
+			name: "youtube_transcribe",
+			description: "youtube transcribe",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
 }));
 
 const { app } = await import("../src/app.js");
@@ -241,7 +273,7 @@ describe("POST /chat", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("returns 409 when agent is already running", async () => {
+	it("queues message when agent is already running", async () => {
 		// Start a message (non-blocking)
 		await app.request("/chat", {
 			method: "POST",
@@ -252,12 +284,15 @@ describe("POST /chat", () => {
 		// Small delay to let the async generator start and emit "running" status
 		await new Promise<void>((r) => setTimeout(r, 20));
 
-		// Immediately send a second — agent should be running
+		// Send a second — agent should queue it
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ tabId: "tab-2", message: "second message" }),
 		});
-		expect(res.status).toBe(409);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.status).toBe("queued");
+		expect(typeof body.messageId).toBe("string");
 	});
 });

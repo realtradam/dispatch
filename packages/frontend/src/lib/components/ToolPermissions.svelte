@@ -22,6 +22,16 @@ const toolPermissions: ToolPermission[] = [
 		label: "Summon agents",
 		description: "Allow the AI to spawn child agents to work on tasks",
 	},
+	{
+		id: "web_search",
+		label: "Web search",
+		description: "Allow the AI to search the web via Firecrawl",
+	},
+	{
+		id: "youtube_transcribe",
+		label: "YouTube transcripts",
+		description: "Allow the AI to fetch YouTube video transcripts",
+	},
 ];
 
 const {
@@ -42,7 +52,7 @@ const {
 const externalMode = $derived(checkedTools !== null && onToolToggle !== null);
 
 function isChecked(id: string): boolean {
-	if (externalMode) return checkedTools!.has(id);
+	if (externalMode) return checkedTools?.has(id) ?? false;
 	return appSettings.toolPerms[id] === true;
 }
 
@@ -67,7 +77,7 @@ async function loadPermissions(): Promise<void> {
 
 function togglePermission(id: string): void {
 	if (externalMode) {
-		onToolToggle!(id, !checkedTools!.has(id));
+		onToolToggle?.(id, !checkedTools?.has(id));
 		return;
 	}
 	appSettings.toolPerms = { ...appSettings.toolPerms, [id]: !appSettings.toolPerms[id] };

@@ -465,24 +465,24 @@ function createTabStore() {
 				};
 				// Only add if we don't already have this tab
 				if (!getTabById(newTabEvent.id)) {
-				const tab: Tab = {
-					id: newTabEvent.id,
-					title: newTabEvent.title,
-					messages: [],
-					agentStatus: "running",
-					keyId: newTabEvent.keyId ?? null,
-					modelId: newTabEvent.modelId ?? null,
-					reasoningEffort: "max",
-					currentAssistantId: null,
-					tasks: [],
-					injectedSkills: [],
-					parentTabId: newTabEvent.parentTabId ?? null,
-					persistent: newTabEvent.parentTabId == null,
-					agentSlug: null,
-					agentScope: null,
-					workingDirectory: null,
-					queuedMessages: [],
-				};
+					const tab: Tab = {
+						id: newTabEvent.id,
+						title: newTabEvent.title,
+						messages: [],
+						agentStatus: "running",
+						keyId: newTabEvent.keyId ?? null,
+						modelId: newTabEvent.modelId ?? null,
+						reasoningEffort: "max",
+						currentAssistantId: null,
+						tasks: [],
+						injectedSkills: [],
+						parentTabId: newTabEvent.parentTabId ?? null,
+						persistent: newTabEvent.parentTabId == null,
+						agentSlug: null,
+						agentScope: null,
+						workingDirectory: null,
+						queuedMessages: [],
+					};
 					tabs = [...tabs, tab];
 				}
 				break;
@@ -506,8 +506,7 @@ function createTabStore() {
 					// Also add as a user chat message if not already present
 					const tabAfterQm = getTabById(tabId);
 					const existingMsg = tabAfterQm?.messages.find(
-						(m) =>
-							m.id === `queued-${mqEvent.messageId}` || m.id === mqEvent.messageId,
+						(m) => m.id === `queued-${mqEvent.messageId}` || m.id === mqEvent.messageId,
 					);
 					if (!existingMsg) {
 						const userMsg: ChatMessage = {
@@ -557,15 +556,13 @@ function createTabStore() {
 
 					// Mark the current assistant message as done streaming
 					const result = rest.map((m) =>
-						m.id === currentAssistantId
-							? { ...m, isStreaming: false }
-							: m,
+						m.id === currentAssistantId ? { ...m, isStreaming: false } : m,
 					);
 
 					// Insert consumed messages right after the current assistant message
 					let insertIdx = result.length;
 					for (let i = result.length - 1; i >= 0; i--) {
-						if (result[i].id === currentAssistantId) {
+						if (result[i]?.id === currentAssistantId) {
 							insertIdx = i + 1;
 							break;
 						}
@@ -633,7 +630,9 @@ function createTabStore() {
 				}>;
 			};
 			const agents = data.agents ?? [];
-			const defaultAgent = agents.find((a: { slug: string; scope: string }) => a.slug === "default" && a.scope === "global");
+			const defaultAgent = agents.find(
+				(a: { slug: string; scope: string }) => a.slug === "default" && a.scope === "global",
+			);
 			if (!defaultAgent) return;
 
 			const tab = getTabById(tabId);
@@ -747,10 +746,13 @@ function createTabStore() {
 			queueId = generateId();
 			userMsg.id = `queued-${queueId}`;
 			// Pre-populate queuedMessages so WS event finds it immediately
-			tab.queuedMessages = [...tab.queuedMessages, { id: queueId, message: text, timestamp: Date.now() }];
+			tab.queuedMessages = [
+				...tab.queuedMessages,
+				{ id: queueId, message: text, timestamp: Date.now() },
+			];
 		}
 
-		updateTab(tab.id, { messages: [...tab.messages, userMsg] });		// Generate title from first user message
+		updateTab(tab.id, { messages: [...tab.messages, userMsg] }); // Generate title from first user message
 		if (tab.messages.length === 0 || (tab.messages.length === 1 && tab.title === "New Tab")) {
 			const titleText = text.length > 50 ? `${text.slice(0, 47)}...` : text;
 			updateTab(tab.id, { title: titleText });
@@ -818,9 +820,7 @@ function createTabStore() {
 						});
 					}
 					updateMessages(tab.id, (msgs) =>
-						msgs.map((m) =>
-							m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m,
-						),
+						msgs.map((m) => (m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m)),
 					);
 				}
 				const errMsg: ChatMessage = {
@@ -858,9 +858,7 @@ function createTabStore() {
 						}
 						// Restore the message to a normal (non-queued) ID
 						updateMessages(tab.id, (msgs) =>
-							msgs.map((m) =>
-								m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m,
-							),
+							msgs.map((m) => (m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m)),
 						);
 					}
 				}
@@ -875,9 +873,7 @@ function createTabStore() {
 					});
 				}
 				updateMessages(tab.id, (msgs) =>
-					msgs.map((m) =>
-						m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m,
-					),
+					msgs.map((m) => (m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m)),
 				);
 			}
 			const errMsg: ChatMessage = {

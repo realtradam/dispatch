@@ -112,7 +112,7 @@ modelsRoutes.get("/available", async (c) => {
 		});
 	}
 
-	const apiKeyValue = resolveApiKey(keyId!);
+	const apiKeyValue = resolveApiKey(keyId);
 	if (!apiKeyValue) {
 		return c.json({ error: `no API key found for ${keyId}` }, 500);
 	}
@@ -420,10 +420,7 @@ modelsRoutes.post("/add-key", async (c) => {
 
 	// Validate provider
 	if (!VALID_PROVIDERS.includes(body.provider as SupportedProvider)) {
-		return c.json(
-			{ error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` },
-			400,
-		);
+		return c.json({ error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` }, 400);
 	}
 	const provider = body.provider as SupportedProvider;
 	const base_url = PROVIDER_BASE_URLS[provider];
@@ -452,7 +449,7 @@ modelsRoutes.post("/add-key", async (c) => {
 	newBlock += "\n";
 
 	// Insert before the # ─── Permissions section if it exists, otherwise at end
-	const permissionsMarker = /\n# [─\-]+ Permissions/;
+	const permissionsMarker = /\n# [─-]+ Permissions/;
 	let newContent: string;
 	const permMatch = permissionsMarker.exec(tomlContent);
 	if (permMatch) {
@@ -509,7 +506,8 @@ modelsRoutes.post("/remove-key", async (c) => {
 		return c.json({ error: `key "${id}" not found in dispatch.toml` }, 404);
 	}
 
-	const newContent = tomlContent.slice(0, match.index) + tomlContent.slice(match.index + match[0].length);
+	const newContent =
+		tomlContent.slice(0, match.index) + tomlContent.slice(match.index + match[0].length);
 
 	try {
 		writeFileSync(tomlPath, newContent, "utf-8");

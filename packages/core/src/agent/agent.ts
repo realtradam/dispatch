@@ -188,12 +188,12 @@ export class Agent {
 		}
 
 		try {
-		const execPromise = tool.execute(tc.arguments, {
-			onOutput: (data: string, stream: "stdout" | "stderr") => {
-				shellOutputQueue.push({ data, stream });
-			},
-			queueCallbacks: this.queueCallbacks,
-		});
+			const execPromise = tool.execute(tc.arguments, {
+				onOutput: (data: string, stream: "stdout" | "stderr") => {
+					shellOutputQueue.push({ data, stream });
+				},
+				queueCallbacks: this.queueCallbacks,
+			});
 
 			const rawResult = await execPromise;
 			const resultStr = typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult);
@@ -320,9 +320,7 @@ export class Agent {
 					}
 				} catch (streamErr) {
 					const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
-					const unavailMatch = errMsg.match(
-						/tried to call unavailable tool '([^']+)'/i,
-					);
+					const unavailMatch = errMsg.match(/tried to call unavailable tool '([^']+)'/i);
 					if (!unavailMatch) throw streamErr;
 
 					// Model tried to call an unavailable tool.
@@ -391,8 +389,8 @@ export class Agent {
 					let toolResult: ToolResult | undefined;
 					while (toolResult === undefined) {
 						if (shellOutputQueue.length > 0) {
-							const item = shellOutputQueue.shift()!;
-							yield { type: "shell-output", data: item.data, stream: item.stream };
+							const item = shellOutputQueue.shift();
+							if (item) yield { type: "shell-output", data: item.data, stream: item.stream };
 							continue;
 						}
 						const raceResult = await Promise.race([
@@ -406,30 +404,28 @@ export class Agent {
 						}
 					}
 
-				// Drain any remaining shell output emitted before we read the result
-				while (shellOutputQueue.length > 0) {
-					const item = shellOutputQueue.shift()!;
-					yield { type: "shell-output", data: item.data, stream: item.stream };
-				}
-
-				// Check for queued user messages and append them to the tool result
-				let finalToolResult = toolResult;
-				if (this.queueCallbacks) {
-					const queuedMsgs = this.queueCallbacks.dequeueMessages();
-					if (queuedMsgs.length > 0) {
-						const userMessages = queuedMsgs
-							.map((m) => m.message)
-							.join("\n---\n");
-						finalToolResult = {
-							...toolResult,
-							result: `${toolResult.result}\n\n[USER INTERRUPT]\nThe user has sent you message(s) while you were working. You MUST address these before continuing with your current task:\n\n${userMessages}`,
-						};
+					// Drain any remaining shell output emitted before we read the result
+					while (shellOutputQueue.length > 0) {
+						const item = shellOutputQueue.shift();
+						if (item) yield { type: "shell-output", data: item.data, stream: item.stream };
 					}
-				}
 
-				stepToolResults.push(finalToolResult);
-				allToolResults.push(finalToolResult);
-				yield { type: "tool-result", toolResult: finalToolResult };
+					// Check for queued user messages and append them to the tool result
+					let finalToolResult = toolResult;
+					if (this.queueCallbacks) {
+						const queuedMsgs = this.queueCallbacks.dequeueMessages();
+						if (queuedMsgs.length > 0) {
+							const userMessages = queuedMsgs.map((m) => m.message).join("\n---\n");
+							finalToolResult = {
+								...toolResult,
+								result: `${toolResult.result}\n\n[USER INTERRUPT]\nThe user has sent you message(s) while you were working. You MUST address these before continuing with your current task:\n\n${userMessages}`,
+							};
+						}
+					}
+
+					stepToolResults.push(finalToolResult);
+					allToolResults.push(finalToolResult);
+					yield { type: "tool-result", toolResult: finalToolResult };
 				}
 
 				// Add tool results back to step messages so LLM can see them
@@ -451,29 +447,29 @@ export class Agent {
 				}
 			}
 
-		const assistantMessage: ChatMessage = {
-			role: "assistant",
-			content: finalText,
-			toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
-			toolResults: allToolResults.length > 0 ? allToolResults : undefined,
-		};
-		this.messages.push(assistantMessage);
+			const assistantMessage: ChatMessage = {
+				role: "assistant",
+				content: finalText,
+				toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+				toolResults: allToolResults.length > 0 ? allToolResults : undefined,
+			};
+			this.messages.push(assistantMessage);
 
-		// Drain any remaining queued messages that arrived after the last tool call
-		if (this.queueCallbacks) {
-			const remaining = this.queueCallbacks.dequeueMessages();
-			if (remaining.length > 0) {
-				// These messages arrived too late to be injected into a tool result.
-				// Append them as a user message to the conversation so they're not lost.
-				const userMessages = remaining.map(m => m.message).join("\n---\n");
-				this.messages.push({
-					role: "user",
-					content: userMessages,
-				});
+			// Drain any remaining queued messages that arrived after the last tool call
+			if (this.queueCallbacks) {
+				const remaining = this.queueCallbacks.dequeueMessages();
+				if (remaining.length > 0) {
+					// These messages arrived too late to be injected into a tool result.
+					// Append them as a user message to the conversation so they're not lost.
+					const userMessages = remaining.map((m) => m.message).join("\n---\n");
+					this.messages.push({
+						role: "user",
+						content: userMessages,
+					});
+				}
 			}
-		}
 
-		yield { type: "done", message: assistantMessage };
+			yield { type: "done", message: assistantMessage };
 		} catch (err) {
 			const errorMsg = formatError(err, this.config);
 			yield { type: "error", error: errorMsg };

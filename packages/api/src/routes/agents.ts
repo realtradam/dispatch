@@ -56,6 +56,7 @@ agentsRoutes.post("/", async (c) => {
 			scope: body.scope,
 			slug: body.slug,
 			...(body.cwd ? { cwd: body.cwd } : {}),
+			...(body.is_subagent ? { is_subagent: true } : {}),
 		};
 		saveAgent(agent);
 		return c.json({ ok: true, agent });

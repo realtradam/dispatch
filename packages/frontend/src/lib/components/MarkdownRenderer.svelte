@@ -88,7 +88,7 @@ const loadCache = new Map<string, Promise<boolean>>();
 async function ensureLanguage(lang: string): Promise<boolean> {
 	const name = normalizeLang(lang);
 	if (hljs.getLanguage(name)) return true;
-	if (loadCache.has(name)) return loadCache.get(name)!;
+	if (loadCache.has(name)) return loadCache.get(name) ?? false;
 
 	const promise = (async () => {
 		try {
