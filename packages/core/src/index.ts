@@ -57,6 +57,6 @@ export { createSummonTool, type SummonCallbacks } from "./tools/summon.js";
 export { createTaskListTool, TaskList } from "./tools/task-list.js";
 export { createWebSearchTool } from "./tools/web-search.js";
 export { createWriteFileTool } from "./tools/write-file.js";
-export { createYoutubeTranscribeTool } from "./tools/youtube-transcribe.js";
+export { BackgroundTranscriptStore, createYoutubeTranscribeTool } from "./tools/youtube-transcribe.js";
 // Types & Permissions
 export * from "./types/index.js";
