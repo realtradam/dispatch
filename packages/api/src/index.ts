@@ -72,6 +72,7 @@ export { app };
 
 export default {
 	port: Number(process.env.PORT) || 3000,
+	idleTimeout: 60,
 	fetch: app.fetch,
 	websocket,
 };

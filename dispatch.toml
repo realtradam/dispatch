@@ -25,12 +25,6 @@ base_url = "https://opencode.ai/zen/go/v1"
 id = "opencode-2"
 provider = "opencode-go"
 base_url = "https://opencode.ai/zen/go/v1"
-
-[[keys]]
-id = "copilot"
-provider = "github-copilot"
-base_url = "https://api.githubcopilot.com"
-
 # ─── Permissions ─────────────────────────────────────────────────
 
 [permissions]

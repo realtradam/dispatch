@@ -307,10 +307,15 @@ function hasBucketData(bucket: UsageBucket | undefined): boolean {
 
 						{:else if entry.data.provider === "opencode-go"}
 						{#if entry.data.unavailable}
-							<p class="text-xs text-base-content/70">Check console for usage.</p>
+							<p class="text-xs text-base-content/70">Usage data not available. Set OPENCODE_COOKIE env var to enable.</p>
+							{#if entry.data.limits}
+								<div class="text-xs text-base-content/50 mt-1">
+									Limits: {entry.data.limits.fiveHour}/5h &middot; {entry.data.limits.weekly}/wk &middot; {entry.data.limits.monthly}/mo
+								</div>
+							{/if}
 							{#if entry.data.consoleUrl}
-								<a href={entry.data.consoleUrl} target="_blank" rel="noopener noreferrer" class="link link-primary text-xs">
-									Open console
+								<a href={entry.data.consoleUrl} target="_blank" rel="noopener noreferrer" class="link link-primary text-xs mt-1">
+									View usage on opencode.ai
 								</a>
 							{/if}
 						{:else}

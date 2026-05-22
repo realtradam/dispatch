@@ -29,6 +29,8 @@ export function createSummonTool(
 			"  - todo: Track work items",
 			"  - summon: Spawn its own child agents (enables nesting)",
 			"  - retrieve: Collect results from its children (required if summon is given)",
+			"  - web_search: Search the web",
+			"  - youtube_transcribe: Fetch YouTube video transcripts",
 			"",
 			"If tools is omitted, the child gets read_file, list_files, and todo only (read-only by default).",
 		].join("\n"),
@@ -48,6 +50,8 @@ export function createSummonTool(
 						"todo",
 						"summon",
 						"retrieve",
+						"web_search",
+						"youtube_transcribe",
 					]),
 				)
 				.optional()

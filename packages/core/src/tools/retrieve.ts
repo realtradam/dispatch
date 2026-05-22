@@ -11,15 +11,19 @@ export function createRetrieveTool(callbacks: RetrieveCallbacks): ToolDefinition
 	return {
 		name: "retrieve",
 		description: [
-			"Wait for a child agent to finish and retrieve its result. This tool BLOCKS until the child completes.",
+			"Wait for a child agent or backgrounded shell command to finish and retrieve its result. This tool BLOCKS until completion.",
 			"",
-			"Pass the agent_id returned by the summon tool. Once the child finishes, its final output is returned.",
-			"If the child encountered an error, the error message is returned instead.",
+			"Pass the ID returned by summon (agent_id) or by an interrupted run_shell (job_id). Once it finishes, the output is returned.",
+			"If an error occurred, the error message is returned instead.",
 			"",
 			"Typical usage:",
 			'  1. summon({ task: "...", tools: [...] })  -> get agent_id',
 			"  2. ... do other work or summon more agents ...",
 			'  3. retrieve({ agent_id: "..." })  -> blocks until done, returns result',
+			"",
+			"Also used for backgrounded shell commands:",
+			"  If run_shell is interrupted by a user message, it returns a job_id (run_shell_...).",
+			'  Use retrieve({ agent_id: "run_shell_..." }) to get the final output when ready.',
 		].join("\n"),
 		parameters: z.object({
 			agent_id: z.string().describe("The agent_id returned by a previous summon call."),
