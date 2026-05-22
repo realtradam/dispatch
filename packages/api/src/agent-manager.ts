@@ -329,6 +329,15 @@ export class AgentManager {
 				workingDirectory = join(homedir(), workingDirectory.slice(1));
 			}
 
+			// Resolve relative paths against the default working directory
+			// (e.g. subagent cwd "./subtask" resolves relative to the parent's effective dir)
+			{
+				const { isAbsolute, resolve } = await import("node:path");
+				if (!isAbsolute(workingDirectory)) {
+					workingDirectory = resolve(defaultWorkDir, workingDirectory);
+				}
+			}
+
 			// Auto-create the working directory if it doesn't exist
 			try {
 				const { mkdirSync, existsSync } = await import("node:fs");
@@ -668,6 +677,8 @@ export class AgentManager {
 			parentEffectiveDir = join(homedir(), parentEffectiveDir.slice(1));
 		}
 
+		// Resolve and validate child working directory against parent's effective dir
+		let resolvedWorkingDirectory = options.workingDirectory;
 		if (options.workingDirectory) {
 			const { isAbsolute, relative, resolve, join } = await import("node:path");
 			// Expand ~ in child working directory
@@ -685,6 +696,9 @@ export class AgentManager {
 					`Working directory "${options.workingDirectory}" is outside the parent's working directory "${parentDir}".`,
 				);
 			}
+			// Store the resolved absolute path so downstream code doesn't
+			// re-resolve against the wrong base directory
+			resolvedWorkingDirectory = resolved;
 		}
 
 		// Intersect requested tools with parent's allowed tools to prevent privilege escalation
@@ -696,7 +710,7 @@ export class AgentManager {
 		// Create the tab agent entry with overrides
 		const tabAgent = this._getOrCreateTabAgent(tabId);
 		tabAgent.toolsOverride = childTools;
-		tabAgent.workingDirectoryOverride = options.workingDirectory;
+		tabAgent.workingDirectoryOverride = resolvedWorkingDirectory;
 		tabAgent.keyId = options.parentKeyId ?? null;
 		tabAgent.modelId = options.parentModelId ?? null;
 		tabAgent.finalOutput = "";
@@ -727,6 +741,7 @@ export class AgentManager {
 				keyId: tabAgent.keyId,
 				modelId: tabAgent.modelId,
 				parentTabId: options.parentTabId ?? null,
+				workingDirectory: resolvedWorkingDirectory ?? null,
 			},
 			tabId,
 		);

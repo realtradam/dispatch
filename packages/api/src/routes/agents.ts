@@ -99,11 +99,16 @@ agentsRoutes.get("/check-dir", (c) => {
 	if (dirPath === "~" || dirPath.startsWith("~/")) {
 		dirPath = path.join(os.homedir(), dirPath.slice(1));
 	}
+	// Resolve relative paths against the project root
+	if (!path.isAbsolute(dirPath)) {
+		const projectDir = process.env.DISPATCH_WORKING_DIR || process.cwd();
+		dirPath = path.resolve(projectDir, dirPath);
+	}
 	try {
 		const stat = fs.statSync(dirPath);
-		return c.json({ exists: stat.isDirectory() });
+		return c.json({ exists: stat.isDirectory(), resolved: dirPath });
 	} catch {
-		return c.json({ exists: false });
+		return c.json({ exists: false, resolved: dirPath });
 	}
 });
 
