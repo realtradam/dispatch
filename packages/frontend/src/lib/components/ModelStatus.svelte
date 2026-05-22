@@ -20,10 +20,12 @@ const {
 	keys = [],
 	currentModel,
 	apiBase = "",
+	onAddKey = () => {},
 }: {
 	keys?: KeyInfo[];
 	currentModel?: string;
 	apiBase?: string;
+	onAddKey?: () => void;
 } = $props();
 
 const activeKeys = $derived(keys.filter((k) => k.status === "active").length);
@@ -44,6 +46,9 @@ let showKeyModal = $state<string | null>(null); // keyId or null
 let keyModalValue = $state("");
 let keyModalError = $state<string | null>(null);
 let keyModalSaving = $state(false);
+let removingKey = $state<string | null>(null);
+
+
 
 async function loadCredentialStatus(): Promise<void> {
 	try {
@@ -129,6 +134,27 @@ async function saveApiKey(): Promise<void> {
 	}
 }
 
+async function removeKey(keyId: string): Promise<void> {
+	if (!confirm(`Remove key "${keyId}" from config?`)) return;
+	removingKey = keyId;
+	try {
+		const res = await fetch(`${apiBase}/models/remove-key`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ id: keyId }),
+		});
+		const data = (await res.json()) as { success?: boolean; error?: string };
+		if (res.ok && data.success) {
+			await new Promise((r) => setTimeout(r, 500));
+			window.location.reload();
+		}
+	} catch {
+		// ignore
+	} finally {
+		removingKey = null;
+	}
+}
+
 $effect(() => {
 	void loadCredentialStatus();
 	void loadApiKeyStatus();
@@ -209,8 +235,21 @@ function truncate(str: string | null, max: number): string {
 								>
 									{key.status}
 								</span>
-								<span class="text-xs font-mono">{key.id}</span>
+								<span class="text-xs font-mono flex-1">{key.id}</span>
 								<span class="text-xs text-base-content/40">{key.provider}</span>
+								<button
+									type="button"
+									class="btn btn-xs btn-ghost btn-square text-base-content/30 hover:text-error"
+									disabled={removingKey === key.id}
+									onclick={() => removeKey(key.id)}
+									title="Remove key"
+								>
+									{#if removingKey === key.id}
+										<span class="loading loading-spinner loading-xs"></span>
+									{:else}
+										✕
+									{/if}
+								</button>
 							</div>
 							{#if key.status === "exhausted"}
 								<div class="pl-2 flex flex-col gap-0.5">
@@ -270,6 +309,13 @@ function truncate(str: string | null, max: number): string {
 			</div>
 		{/if}
 	{/if}
+	<button
+		type="button"
+		class="btn btn-sm btn-primary btn-outline w-full mt-2"
+		onclick={onAddKey}
+	>
+		+ Add New Key
+	</button>
 <!-- Import Key Modal -->
 {#if showKeyModal}
 	<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog">
@@ -308,4 +354,5 @@ function truncate(str: string | null, max: number): string {
 		</div>
 	</div>
 {/if}
+
 </div>

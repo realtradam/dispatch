@@ -1,4 +1,5 @@
 <script lang="ts">
+import { config } from "../config.js";
 import { appSettings } from "../settings.svelte.js";
 import type { KeyInfo } from "../types.js";
 
@@ -15,6 +16,24 @@ let titleModelId = $state<string | null>(null);
 let availableModels = $state<string[]>([]);
 let loadingModels = $state(false);
 let autoExpandThinking = $state(appSettings.autoExpandThinking);
+let backendUrl = $state(config.apiBase);
+let backendUrlSaved = $state(false);
+
+function saveBackendUrl(): void {
+	const trimmed = backendUrl.trim().replace(/\/+$/, "");
+	if (!trimmed) return;
+	config.setApiBase(trimmed);
+	backendUrl = trimmed;
+	backendUrlSaved = true;
+	setTimeout(() => { backendUrlSaved = false; }, 2000);
+}
+
+function resetBackendUrl(): void {
+	config.setApiBase(config.defaultApiBase);
+	backendUrl = config.defaultApiBase;
+	backendUrlSaved = true;
+	setTimeout(() => { backendUrlSaved = false; }, 2000);
+}
 
 async function loadSettings(): Promise<void> {
 	try {
@@ -143,5 +162,32 @@ $effect(() => {
 			/>
 			<span class="text-xs text-base-content/70">Auto-expand thinking</span>
 		</label>
+
+		<div class="divider my-0"></div>
+
+		<p class="text-xs text-base-content/70">Backend URL</p>
+		<p class="text-xs text-base-content/40">API server address. Default: {config.defaultApiBase}</p>
+		<div class="flex gap-1">
+			<input
+				type="text"
+				class="input input-bordered input-sm flex-1"
+				bind:value={backendUrl}
+				placeholder={config.defaultApiBase}
+			/>
+			<button type="button" class="btn btn-sm btn-primary" onclick={saveBackendUrl}>
+				Save
+			</button>
+		</div>
+		<button
+			type="button"
+			class="btn btn-xs btn-ghost btn-outline w-full"
+			disabled={config.apiBase === config.defaultApiBase}
+			onclick={resetBackendUrl}
+		>
+			Reset to default
+		</button>
+		{#if backendUrlSaved}
+			<p class="text-xs text-success">Saved. Reload the page to apply.</p>
+		{/if}
 	</div>
 </div>

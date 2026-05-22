@@ -3,7 +3,7 @@ post_install() {
 	echo "==> Dispatch has been installed."
 	echo "    Edit /etc/dispatch/dispatch-api.conf to configure the API."
 	echo "    Then enable and start the service:"
-	echo "      systemctl enable --now dispatch-api"
+	echo "      systemctl --user enable --now dispatch-api"
 	echo ""
 }
 
@@ -11,6 +11,6 @@ post_upgrade() {
 	echo ""
 	echo "==> Dispatch has been upgraded."
 	echo "    You may need to restart the service:"
-	echo "      systemctl restart dispatch-api"
+	echo "      systemctl --user restart dispatch-api"
 	echo ""
 }

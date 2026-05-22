@@ -1,12 +1,8 @@
 [Unit]
 Description=Dispatch API Backend
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
-User=dispatch
-Group=dispatch
 WorkingDirectory=/opt/dispatch
 ExecStart=/usr/bin/bun packages/api/src/index.ts
 EnvironmentFile=-/etc/dispatch/dispatch-api.conf
@@ -15,19 +11,5 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
-# Data directory: systemd creates /var/lib/dispatch owned by dispatch:dispatch
-StateDirectory=dispatch
-
-# Tell the app to store its SQLite DB under /var/lib/dispatch/
-Environment=XDG_DATA_HOME=/var/lib
-
-# Security hardening
-ProtectSystem=strict
-ProtectHome=true
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

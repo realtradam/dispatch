@@ -91,10 +91,10 @@ package() {
 		install -Dm644 dispatch.toml "${optdir}/dispatch.toml"
 	fi
 
-	# --- systemd service ---
+	# --- systemd user service ---
 	install -Dm644 \
 		"${srcdir}/dispatch-api.service" \
-		"${pkgdir}/usr/lib/systemd/system/dispatch-api.service"
+		"${pkgdir}/usr/lib/systemd/user/dispatch-api.service"
 
 	# --- Environment config (preserved across upgrades via backup=()) ---
 	install -Dm644 \
@@ -118,10 +118,6 @@ package() {
 	install -Dm644 \
 		"${srcdir}/dispatch.svg" \
 		"${pkgdir}/usr/share/icons/hicolor/scalable/apps/dispatch.svg"
-
-	# --- sysusers: create the 'dispatch' system user ---
-	install -Dm644 /dev/null "${pkgdir}/usr/lib/sysusers.d/dispatch.conf"
-	echo 'u dispatch - "Dispatch API" /var/lib/dispatch' > "${pkgdir}/usr/lib/sysusers.d/dispatch.conf"
 
 	# --- License ---
 	if [ -f "${_projectdir}/LICENSE" ]; then
