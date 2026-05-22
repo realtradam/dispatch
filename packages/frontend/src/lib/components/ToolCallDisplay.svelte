@@ -70,7 +70,9 @@ const summonAgentId = $derived.by(() => {
 		>Open Tab</button>
 	{/if}
 		{#if toolCall.result !== undefined}
-			{#if isShell && shellResult !== null}
+			{#if toolCall.result.includes("[USER INTERRUPT]")}
+				<span class="badge badge-info badge-sm ml-auto">interrupted</span>
+			{:else if isShell && shellResult !== null}
 				<span class="badge badge-sm ml-auto {shellResult.exitCode === 0 ? 'badge-success' : 'badge-error'}">
 					exit {shellResult.exitCode}
 				</span>

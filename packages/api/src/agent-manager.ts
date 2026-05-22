@@ -12,6 +12,7 @@ import {
 	createRetrieveTool,
 	createRunShellTool,
 	BackgroundShellStore,
+	BackgroundTranscriptStore,
 	createSkillsWatcher,
 	createSummonTool,
 	createTaskListTool,
@@ -141,6 +142,8 @@ interface TabAgent {
 	queueListeners: Array<() => void>;
 	/** Store for shell commands backgrounded due to user interrupt. */
 	shellStore: BackgroundShellStore;
+	/** Store for transcript requests backgrounded due to user interrupt. */
+	transcriptStore: BackgroundTranscriptStore;
 }
 
 export class AgentManager {
@@ -277,6 +280,7 @@ export class AgentManager {
 				messageQueue: [],
 				queueListeners: [],
 				shellStore: new BackgroundShellStore(),
+				transcriptStore: new BackgroundTranscriptStore(),
 			};
 			this.tabAgents.set(tabId, tabAgent);
 		}
@@ -360,7 +364,7 @@ export class AgentManager {
 					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
 				}
 				if (allowed.has("youtube_transcribe")) {
-					toolEntries.push({ name: "youtube_transcribe", tool: createYoutubeTranscribeTool() });
+					toolEntries.push({ name: "youtube_transcribe", tool: createYoutubeTranscribeTool(tabAgent.transcriptStore) });
 				}
 				if (allowed.has("todo")) {
 					toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
@@ -388,7 +392,9 @@ export class AgentManager {
 							getResult: (id) =>
 								tabAgent.shellStore.has(id)
 									? tabAgent.shellStore.getResult(id)
-									: this.getChildResult(id),
+									: tabAgent.transcriptStore.has(id)
+										? tabAgent.transcriptStore.getResult(id)
+										: this.getChildResult(id),
 						}),
 					});
 				}
@@ -405,7 +411,7 @@ export class AgentManager {
 					toolEntries.push({ name: "run_shell", tool: createRunShellTool(workingDirectory, tabAgent.shellStore) });
 				}
 				toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
-				toolEntries.push({ name: "youtube_transcribe", tool: createYoutubeTranscribeTool() });
+				toolEntries.push({ name: "youtube_transcribe", tool: createYoutubeTranscribeTool(tabAgent.transcriptStore) });
 				toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
 				if (permSummon) {
 					// Capture parent's allowed tool names for child permission enforcement
@@ -429,7 +435,9 @@ export class AgentManager {
 							getResult: (id) =>
 								tabAgent.shellStore.has(id)
 									? tabAgent.shellStore.getResult(id)
-									: this.getChildResult(id),
+									: tabAgent.transcriptStore.has(id)
+										? tabAgent.transcriptStore.getResult(id)
+										: this.getChildResult(id),
 						}),
 					});
 				}
