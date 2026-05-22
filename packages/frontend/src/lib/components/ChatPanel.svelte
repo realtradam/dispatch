@@ -8,6 +8,7 @@ let userScrolledUp = $state(false);
 let isAutoScrolling = false;
 
 const messages = $derived(tabStore.activeTab?.messages ?? []);
+const activeTabId = $derived(tabStore.activeTab?.id);
 
 function isNearBottom(el: HTMLElement): boolean {
 	return el.scrollHeight - el.scrollTop - el.clientHeight < 64;
@@ -60,7 +61,7 @@ $effect(() => {
 				</div>
 			{/if}
 			{#each messages as message (message.id)}
-				<ChatMessageComponent {message} />
+				<ChatMessageComponent {message} tabId={activeTabId} />
 			{/each}
 		</div>
 

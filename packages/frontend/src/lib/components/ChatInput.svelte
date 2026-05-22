@@ -3,7 +3,6 @@ import { tabStore } from "../tabs.svelte.js";
 
 let inputEl: HTMLInputElement | undefined;
 let inputValue = $state("");
-const isDisabled = $derived((tabStore.activeTab?.agentStatus ?? "idle") === "running");
 
 $effect(() => {
 	inputEl?.focus();
@@ -18,7 +17,7 @@ function handleKeydown(e: KeyboardEvent) {
 
 function submit() {
 	const text = inputValue.trim();
-	if (!text || isDisabled) return;
+	if (!text) return;
 	inputValue = "";
 	tabStore.sendMessage(text);
 }
@@ -36,7 +35,7 @@ function submit() {
 	<button
 		type="button"
 		class="btn btn-primary"
-		disabled={isDisabled || !inputValue.trim()}
+		disabled={!inputValue.trim()}
 		onclick={submit}
 	>
 		Send

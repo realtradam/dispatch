@@ -1,5 +1,15 @@
 const STORAGE_KEY = "dispatch-api-url";
-const DEFAULT_API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+
+function getDefaultApiBase(): string {
+	if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+	// Derive from current page hostname so it works over Tailscale/LAN
+	if (typeof window !== "undefined" && window.location.hostname !== "localhost") {
+		return `http://${window.location.hostname}:3000`;
+	}
+	return "http://localhost:3000";
+}
+
+const DEFAULT_API_BASE = getDefaultApiBase();
 
 function loadApiBase(): string {
 	if (typeof localStorage !== "undefined") {

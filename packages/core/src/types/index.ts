@@ -47,12 +47,16 @@ export type AgentEvent =
 			keyId: string | null;
 			modelId: string | null;
 			parentTabId: string | null;
-	  };
+	  }
+	| { type: "message-queued"; tabId: string; messageId: string; message: string }
+	| { type: "message-consumed"; tabId: string; messageIds: string[] }
+	| { type: "message-cancelled"; tabId: string; messageId: string };
 
 // ─── Tool Types ──────────────────────────────────────────────────
 
 export interface ToolExecuteContext {
 	onOutput?: (data: string, stream: "stdout" | "stderr") => void;
+	queueCallbacks?: QueueCallbacks;
 }
 
 export interface ToolDefinition {
@@ -145,6 +149,19 @@ export interface TaskItem {
 export interface ConfigError {
 	path: string;
 	message: string;
+}
+
+// ─── Message Queue Types ─────────────────────────────────────────
+
+export interface QueuedMessage {
+	id: string;
+	message: string;
+	timestamp: number;
+}
+
+export interface QueueCallbacks {
+	dequeueMessages: () => QueuedMessage[];
+	waitForQueuedMessage: () => { promise: Promise<void>; cancel: () => void };
 }
 
 // ─── Agent Definition Types ──────────────────────────────────────

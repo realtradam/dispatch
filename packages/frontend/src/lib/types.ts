@@ -71,7 +71,10 @@ export type AgentEvent =
 			keyId: string | null;
 			modelId: string | null;
 			parentTabId: string | null;
-	  };
+	  }
+	| { type: "message-queued"; tabId: string; messageId: string; message: string }
+	| { type: "message-consumed"; tabId: string; messageIds: string[] }
+	| { type: "message-cancelled"; tabId: string; messageId: string };
 
 export interface TaskItem {
 	id: string;
@@ -100,6 +103,12 @@ export interface KeyInfo {
 	status: "active" | "exhausted";
 	lastError: string | null;
 	exhaustedAt: number | null;
+}
+
+export interface QueuedMessage {
+	id: string;
+	message: string;
+	timestamp: number;
 }
 
 export interface LogEntry {

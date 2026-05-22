@@ -1,13 +1,26 @@
 <script lang="ts">
 import { appSettings } from "../settings.svelte.js";
+import { tabStore } from "../tabs.svelte.js";
 import type { ChatMessage } from "../types.js";
 import MarkdownRenderer from "./MarkdownRenderer.svelte";
 import ToolCallDisplay from "./ToolCallDisplay.svelte";
 
-const { message }: { message: ChatMessage } = $props();
+const { message, tabId }: { message: ChatMessage; tabId?: string } = $props();
 
 const isUser = $derived(message.role === "user");
 const isSystem = $derived(message.role === "system");
+
+// Check if this message is queued: its id starts with "queued-"
+const queuedMessageId = $derived(
+	isUser && message.id.startsWith("queued-") ? message.id.slice("queued-".length) : null,
+);
+const isQueued = $derived(queuedMessageId !== null);
+
+function cancelQueued() {
+	if (tabId && queuedMessageId) {
+		void tabStore.cancelQueuedMessage(tabId, queuedMessageId);
+	}
+}
 </script>
 
 {#if isSystem}
@@ -21,7 +34,7 @@ const isSystem = $derived(message.role === "system");
 		</div>
 	</div>
 {:else}
-<div class="chat chat-start mb-2 [&>.chat-bubble]:max-w-full">
+<div class="chat chat-start mb-2 [&>.chat-bubble]:max-w-full {isQueued ? 'opacity-60' : ''}">
 	<div class="chat-bubble break-words {isUser ? 'chat-bubble-primary w-fit' : 'bg-transparent w-full'}">
 		{#if message.thinking}
 			<div class="collapse collapse-arrow mb-2 p-1">
@@ -43,5 +56,17 @@ const isSystem = $derived(message.role === "system");
 			<span class="inline-block w-1.5 h-4 bg-current animate-pulse ml-0.5 align-middle rounded-sm"></span>
 		{/if}
 	</div>
+	{#if isQueued}
+		<div class="flex items-center gap-1 mt-0.5 ml-1">
+			<span class="badge badge-ghost badge-xs text-base-content/40">queued</span>
+			<button
+				class="btn btn-xs btn-ghost text-base-content/40 hover:text-error px-1 min-h-0 h-auto"
+				onclick={cancelQueued}
+				title="Cancel queued message"
+			>
+				✕
+			</button>
+		</div>
+	{/if}
 </div>
 {/if}

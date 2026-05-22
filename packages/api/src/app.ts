@@ -16,7 +16,7 @@ export const app = new Hono();
 app.use(
 	"*",
 	cors({
-		origin: "http://localhost:5173",
+		origin: (origin) => origin || "*",
 		credentials: true,
 		allowHeaders: ["Content-Type", "Authorization"],
 		allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
@@ -43,6 +43,7 @@ app.post("/chat", async (c) => {
 		modelId?: unknown;
 		reasoningEffort?: unknown;
 		workingDirectory?: unknown;
+		queueId?: unknown;
 	}>();
 	const { tabId, message } = body;
 
@@ -55,7 +56,9 @@ app.post("/chat", async (c) => {
 	}
 
 	if (agentManager.getTabStatus(tabId) === "running") {
-		return c.json({ error: "agent is already running for this tab" }, 409);
+		const queueId = typeof body.queueId === "string" ? body.queueId : undefined;
+		const { messageId } = agentManager.queueMessage(tabId, message, queueId);
+		return c.json({ status: "queued", messageId });
 	}
 
 	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
@@ -74,6 +77,18 @@ app.post("/chat", async (c) => {
 });
 
 app.route("/config", configRoutes);
+
+app.post("/chat/cancel", async (c) => {
+	const body = await c.req.json();
+	if (typeof body.tabId !== "string" || typeof body.messageId !== "string") {
+		return c.json({ error: "tabId and messageId are required strings" }, 400);
+	}
+	const tabId = body.tabId;
+	const messageId = body.messageId;
+	const cancelled = agentManager.cancelQueuedMessage(tabId, messageId);
+	return c.json({ success: cancelled });
+});
+
 app.route("/skills", skillsRoutes);
 app.route("/models", modelsRoutes);
 app.route("/tabs", tabsRoutes);
