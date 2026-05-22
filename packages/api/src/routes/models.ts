@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import type { ModelRegistry } from "@dispatch/core";
 import {
 	ANTHROPIC_MODELS_FALLBACK,
@@ -394,6 +396,128 @@ modelsRoutes.get("/credentials-status", (c) => {
 		expired: cred.expiresAt < Date.now(),
 	}));
 	return c.json({ credentials: status });
+});
+
+// ─── Add key to dispatch.toml ─────────────────────────────────
+
+const VALID_PROVIDERS = ["anthropic", "opencode-go", "github-copilot"] as const;
+type SupportedProvider = (typeof VALID_PROVIDERS)[number];
+
+const PROVIDER_BASE_URLS: Record<SupportedProvider, string> = {
+	anthropic: "https://api.anthropic.com/v1",
+	"opencode-go": "https://opencode.ai/zen/go/v1",
+	"github-copilot": "https://api.githubcopilot.com",
+};
+
+modelsRoutes.post("/add-key", async (c) => {
+	const body = await c.req.json<{ id?: unknown; provider?: unknown }>();
+
+	// Validate id
+	if (typeof body.id !== "string" || !body.id.trim() || !/^[a-zA-Z0-9_-]+$/.test(body.id.trim())) {
+		return c.json({ error: "id must contain only letters, numbers, dashes, and underscores" }, 400);
+	}
+	const id = body.id.trim();
+
+	// Validate provider
+	if (!VALID_PROVIDERS.includes(body.provider as SupportedProvider)) {
+		return c.json(
+			{ error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` },
+			400,
+		);
+	}
+	const provider = body.provider as SupportedProvider;
+	const base_url = PROVIDER_BASE_URLS[provider];
+
+	// Read current dispatch.toml
+	const tomlPath = `${process.cwd()}/dispatch.toml`;
+	let tomlContent: string;
+	try {
+		tomlContent = readFileSync(tomlPath, "utf-8");
+	} catch (err) {
+		return c.json({ error: `failed to read dispatch.toml: ${String(err)}` }, 500);
+	}
+
+	// Check for duplicate key id
+	const idPattern = new RegExp(`^\\s*id\\s*=\\s*["']?${id}["']?\\s*$`, "m");
+	if (idPattern.test(tomlContent)) {
+		return c.json({ error: `key with id "${id}" already exists` }, 409);
+	}
+
+	// Build the new [[keys]] block
+	let newBlock = `\n[[keys]]\nid = "${id}"\nprovider = "${provider}"\nbase_url = "${base_url}"`;
+	if (provider === "anthropic") {
+		const credPath = `${homedir()}/.claude/.credentials-${id}.json`;
+		newBlock += `\ncredentials_file = "${credPath}"`;
+	}
+	newBlock += "\n";
+
+	// Insert before the # ─── Permissions section if it exists, otherwise at end
+	const permissionsMarker = /\n# [─\-]+ Permissions/;
+	let newContent: string;
+	const permMatch = permissionsMarker.exec(tomlContent);
+	if (permMatch) {
+		const insertAt = permMatch.index;
+		newContent = tomlContent.slice(0, insertAt) + newBlock + tomlContent.slice(insertAt);
+	} else {
+		newContent = tomlContent + newBlock;
+	}
+
+	try {
+		writeFileSync(tomlPath, newContent, "utf-8");
+	} catch (err) {
+		return c.json({ error: `failed to write dispatch.toml: ${String(err)}` }, 500);
+	}
+
+	const key: { id: string; provider: string; base_url: string; credentials_file?: string } = {
+		id,
+		provider,
+		base_url,
+	};
+	if (provider === "anthropic") {
+		key.credentials_file = `${homedir()}/.claude/.credentials-${id}.json`;
+	}
+
+	return c.json({ success: true, key });
+});
+
+// ─── Remove key from dispatch.toml ────────────────────────────
+
+modelsRoutes.post("/remove-key", async (c) => {
+	const body = await c.req.json<{ id?: unknown }>();
+
+	if (typeof body.id !== "string" || !body.id.trim()) {
+		return c.json({ error: "id is required" }, 400);
+	}
+	const id = body.id.trim();
+
+	const tomlPath = `${process.cwd()}/dispatch.toml`;
+	let tomlContent: string;
+	try {
+		tomlContent = readFileSync(tomlPath, "utf-8");
+	} catch (err) {
+		return c.json({ error: `failed to read dispatch.toml: ${String(err)}` }, 500);
+	}
+
+	// Match the [[keys]] block containing this id and remove it.
+	// A block starts with [[keys]] and ends at the next [[...]] header, # ─── section marker, or EOF.
+	const blockPattern = new RegExp(
+		`\\n?\\[\\[keys\\]\\]\\n(?:[^\\[#]|#(?! [─\\-]))*?id\\s*=\\s*"${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^\\[#]*(?:\\n(?=\\[|# [─\\-])|$)`,
+		"s",
+	);
+	const match = blockPattern.exec(tomlContent);
+	if (!match) {
+		return c.json({ error: `key "${id}" not found in dispatch.toml` }, 404);
+	}
+
+	const newContent = tomlContent.slice(0, match.index) + tomlContent.slice(match.index + match[0].length);
+
+	try {
+		writeFileSync(tomlPath, newContent, "utf-8");
+	} catch (err) {
+		return c.json({ error: `failed to write dispatch.toml: ${String(err)}` }, 500);
+	}
+
+	return c.json({ success: true });
 });
 
 // ─── Shared wake function ─────────────────────────────────────

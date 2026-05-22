@@ -25,6 +25,7 @@ const {
 	onReasoningChange,
 	onAgentChange = (_agent: any) => {},
 	onWorkingDirectoryChange = (_dir: string | null) => {},
+	onAddKey = () => {},
 }: {
 	keys?: KeyInfo[];
 	tasks?: TaskItem[];
@@ -40,6 +41,7 @@ const {
 	onReasoningChange: (effort: string) => void;
 	onAgentChange?: (agent: any) => void;
 	onWorkingDirectoryChange?: (dir: string | null) => void;
+	onAddKey?: () => void;
 } = $props();
 
 interface Panel {
@@ -129,7 +131,7 @@ function contentClass(selected: string): string {
 				{:else if panel.selected === "Claude Reset"}
 					<ClaudeReset {apiBase} />
 				{:else if panel.selected === "Model Status"}
-					<ModelStatus {keys} {apiBase} />
+					<ModelStatus {keys} {apiBase} {onAddKey} />
 				{:else if panel.selected === "Tasks"}
 					<TaskListPanel {tasks} />
 				{:else if panel.selected === "Config"}

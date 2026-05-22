@@ -8,13 +8,13 @@
 id = "claude-pro"
 provider = "anthropic"
 base_url = "https://api.anthropic.com/v1"
-credentials_file = "/home/tradam/.claude/.credentials-1.json"
+credentials_file = "/home/tradam/.claude/.credentials-pro.json"
 
 [[keys]]
 id = "claude-max"
 provider = "anthropic"
 base_url = "https://api.anthropic.com/v1"
-credentials_file = "/home/tradam/.claude/.credentials-2.json"
+credentials_file = "/home/tradam/.claude/.credentials-max.json"
 
 [[keys]]
 id = "opencode-1"

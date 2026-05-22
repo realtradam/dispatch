@@ -35,10 +35,8 @@ if [ -d "$USER_HOME/.claude" ]; then
     chown -R "$HOST_UID:$HOST_GID" "$USER_HOME/.claude" 2>/dev/null || true
 fi
 
-# Ensure node_modules is writable (created as root during build)
-if [ -d /app/node_modules ]; then
-    chown -R "$HOST_UID:$HOST_GID" /app/node_modules
-fi
+# Ensure all node_modules are writable (created as root during build)
+find /app -name node_modules -type d -maxdepth 3 -exec chown -R "$HOST_UID:$HOST_GID" {} + 2>/dev/null || true
 
 # Install/update dependencies as the target user (skip with SKIP_INSTALL=1)
 if [ "${SKIP_INSTALL:-}" != "1" ]; then

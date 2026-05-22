@@ -22,6 +22,40 @@ let modelsData = $state<{ keys: KeyInfo[] }>({
 
 let sidebarOpen = $state(true);
 
+// Add Key modal state (rendered at page level to escape sidebar transform)
+let showAddKeyModal = $state(false);
+let addKeyProvider = $state("anthropic");
+let addKeyId = $state("");
+let addKeyError = $state<string | null>(null);
+let addKeySaving = $state(false);
+
+async function addNewKey(): Promise<void> {
+	if (!addKeyId.trim()) return;
+	addKeySaving = true;
+	addKeyError = null;
+	try {
+		const res = await fetch(`${config.apiBase}/models/add-key`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ id: addKeyId.trim(), provider: addKeyProvider }),
+		});
+		const data = (await res.json()) as { success?: boolean; error?: string };
+		if (!res.ok || !data.success) {
+			addKeyError = data.error ?? "Failed to add key";
+		} else {
+			showAddKeyModal = false;
+			addKeyId = "";
+			addKeyProvider = "anthropic";
+			await new Promise((r) => setTimeout(r, 500));
+			window.location.reload();
+		}
+	} catch (e) {
+		addKeyError = e instanceof Error ? e.message : "Network error";
+	} finally {
+		addKeySaving = false;
+	}
+}
+
 async function fetchModels() {
 	try {
 		const res = await fetch(`${config.apiBase}/models`);
@@ -112,6 +146,7 @@ onMount(() => {
 				}}
 				onAgentChange={(agent) => tabStore.setAgent(agent)}
 				onWorkingDirectoryChange={(dir) => tabStore.setWorkingDirectory(dir)}
+			onAddKey={() => { showAddKeyModal = true; addKeyId = ""; addKeyProvider = "anthropic"; addKeyError = null; }}
 			/>
 		</div>
 		</div>
@@ -144,3 +179,48 @@ onMount(() => {
 <div class="fixed top-4 right-4 z-50">
 	<HotReloadIndicator active={tabStore.configReloaded} />
 </div>
+
+<!-- Add New Key Modal (page-level to escape sidebar transform) -->
+{#if showAddKeyModal}
+	<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog">
+		<div class="bg-base-100 rounded-lg p-4 w-80 flex flex-col gap-3 shadow-xl">
+			<h3 class="text-sm font-semibold">Add New Key</h3>
+			<div class="flex flex-col gap-1">
+				<label class="text-xs text-base-content/60">Provider</label>
+				<select class="select select-bordered select-sm w-full" bind:value={addKeyProvider}>
+					<option value="anthropic">Anthropic</option>
+					<option value="opencode-go">OpenCode</option>
+					<option value="github-copilot">GitHub Copilot</option>
+				</select>
+			</div>
+			<div class="flex flex-col gap-1">
+				<label class="text-xs text-base-content/60">Key ID</label>
+				<input
+					type="text"
+					class="input input-bordered input-sm w-full"
+					placeholder="e.g. claude-max, copilot-2"
+					bind:value={addKeyId}
+				/>
+				<p class="text-xs text-base-content/40">Unique identifier for this key</p>
+			</div>
+			{#if addKeyError}
+				<p class="text-xs text-error">{addKeyError}</p>
+			{/if}
+			<div class="flex justify-end gap-2">
+				<button type="button" class="btn btn-sm btn-ghost"
+					onclick={() => { showAddKeyModal = false; }}>
+					Cancel
+				</button>
+				<button type="button" class="btn btn-sm btn-primary"
+					disabled={!addKeyId.trim() || addKeySaving}
+					onclick={addNewKey}>
+					{#if addKeySaving}
+						<span class="loading loading-spinner loading-xs"></span>
+					{:else}
+						Add Key
+					{/if}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
