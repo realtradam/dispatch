@@ -175,7 +175,7 @@ const modelCache = new Map<string, string[]>();
 				class="input input-bordered input-sm font-mono text-xs flex-1"
 				placeholder="default (project root)"
 				value={workingDirectory ?? ""}
-				oninput={(e) => {
+				onchange={(e) => {
 					const val = e.currentTarget.value.trim();
 					onWorkingDirectoryChange(val || null);
 				}}
@@ -202,7 +202,19 @@ const modelCache = new Map<string, string[]>();
 		</button>
 		<button
 			class="btn btn-xs {mode === 'agent' ? 'btn-primary' : 'btn-ghost'}"
-			onclick={() => { modeOverride = "agent"; fetchAgents(); }}
+			onclick={async () => {
+				modeOverride = "agent";
+				await fetchAgents();
+				// Re-apply the active agent's settings (including cwd)
+				const current = agents.find(a => a.slug === activeAgentSlug);
+				const agentToApply = current ?? agents[0] ?? null;
+				if (agentToApply) {
+					onAgentChange(agentToApply);
+					// Force-update the input since the prop may not change (already set)
+					const cwdEl = document.getElementById("cwd-input") as HTMLInputElement | null;
+					if (cwdEl) cwdEl.value = agentToApply.cwd ?? "";
+				}
+			}}
 		>
 			Agent
 		</button>
@@ -253,7 +265,11 @@ const modelCache = new Map<string, string[]>();
 				{#each agents as agent (agent.slug + ":" + agent.scope)}
 					<button
 						class="w-full text-left rounded-lg px-3 py-2 transition-colors {activeAgentSlug === agent.slug ? 'bg-primary text-primary-content' : 'bg-base-300 hover:bg-base-200'}"
-						onclick={() => onAgentChange(agent)}
+						onclick={() => {
+							onAgentChange(agent);
+							const cwdEl = document.getElementById("cwd-input") as HTMLInputElement | null;
+							if (cwdEl) cwdEl.value = agent.cwd ?? "";
+						}}
 					>
 						<div class="flex items-center justify-between gap-2">
 							<span class="font-medium text-sm">{agent.name}</span>

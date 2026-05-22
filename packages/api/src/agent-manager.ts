@@ -21,6 +21,7 @@ import {
 	loadConfig,
 	loadSkills,
 	ModelRegistry,
+	type QueuedMessage,
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
 	resolveApiKey,
@@ -129,6 +130,10 @@ interface TabAgent {
 	toolsOverride?: string[];
 	/** Working directory override for child agents. */
 	workingDirectoryOverride?: string;
+	/** Queue of messages sent while the agent is running. */
+	messageQueue: QueuedMessage[];
+	/** Callbacks to wake up blocking tools waiting for queued messages. */
+	queueListeners: Array<() => void>;
 }
 
 export class AgentManager {
@@ -262,6 +267,8 @@ export class AgentManager {
 				keyId: null,
 				modelId: null,
 				taskList,
+				messageQueue: [],
+				queueListeners: [],
 			};
 			this.tabAgents.set(tabId, tabAgent);
 		}
@@ -503,8 +510,9 @@ export class AgentManager {
 				tabAgent.modelId = null;
 			}
 
-			const customSystemPrompt = getSetting("system_prompt") || undefined;
-			tabAgent.agent = new Agent({
+		const customSystemPrompt = getSetting("system_prompt") || undefined;
+		tabAgent.agent = new Agent(
+			{
 				model,
 				apiKey,
 				baseURL,
@@ -515,7 +523,12 @@ export class AgentManager {
 				ruleset,
 				provider,
 				...(claudeCredentials ? { claudeCredentials } : {}),
-			});
+			},
+			{
+				dequeueMessages: () => this.dequeueMessages(tabId),
+				waitForQueuedMessage: () => this.waitForQueuedMessage(tabId),
+			},
+		);
 		}
 		return tabAgent.agent;
 	}
@@ -744,6 +757,19 @@ export class AgentManager {
 		try {
 			const agent = await this.getOrCreateAgentForTab(tabId, keyId, modelId);
 
+			// Ensure tab exists in DB (frontend may have failed to create it)
+			try {
+				const { getDatabase } = await import("@dispatch/core");
+				const db = getDatabase();
+				const exists = db.query("SELECT 1 FROM tabs WHERE id = $id").get({ $id: tabId });
+				if (!exists) {
+					const { createTab } = await import("@dispatch/core");
+					createTab(tabId, "New Tab", { keyId: keyId ?? null, modelId: modelId ?? null });
+				}
+			} catch {
+				// Best-effort — if this fails, appendMessage will throw and we'll catch it below
+			}
+
 			// Persist user message to DB
 			appendMessage(
 				tabId,
@@ -805,6 +831,7 @@ export class AgentManager {
 				}
 			}
 		} catch (err) {
+			console.error(`[dispatch] processMessage error for tab ${tabId}:`, err);
 			const errorMsg = err instanceof Error ? err.message : String(err);
 			processError = errorMsg;
 			tabAgent.status = "error";
@@ -837,6 +864,64 @@ export class AgentManager {
 				tabAgent.completionResolve?.({ status: "error", error: processError });
 			}
 		}
+	}
+
+	queueMessage(tabId: string, message: string, clientId?: string): { messageId: string } {
+		const tabAgent = this.tabAgents.get(tabId);
+		if (!tabAgent) throw new Error("Tab not found");
+		const id = clientId || crypto.randomUUID();
+		const queued: QueuedMessage = { id, message, timestamp: Date.now() };
+		tabAgent.messageQueue.push(queued);
+		// Wake up any blocking tools waiting for queue
+		for (const listener of tabAgent.queueListeners) {
+			listener();
+		}
+		tabAgent.queueListeners = [];
+		this.emit({ type: "message-queued", tabId, messageId: id, message }, tabId);
+		return { messageId: id };
+	}
+
+	cancelQueuedMessage(tabId: string, messageId: string): boolean {
+		const tabAgent = this.tabAgents.get(tabId);
+		if (!tabAgent) return false;
+		const idx = tabAgent.messageQueue.findIndex((m) => m.id === messageId);
+		if (idx === -1) return false;
+		tabAgent.messageQueue.splice(idx, 1);
+		this.emit({ type: "message-cancelled", tabId, messageId }, tabId);
+		return true;
+	}
+
+	dequeueMessages(tabId: string): QueuedMessage[] {
+		const tabAgent = this.tabAgents.get(tabId);
+		if (!tabAgent) return [];
+		const messages = [...tabAgent.messageQueue];
+		tabAgent.messageQueue = [];
+		if (messages.length > 0) {
+			this.emit(
+				{ type: "message-consumed", tabId, messageIds: messages.map((m) => m.id) },
+				tabId,
+			);
+		}
+		return messages;
+	}
+
+	waitForQueuedMessage(tabId: string): { promise: Promise<void>; cancel: () => void } {
+		const tabAgent = this.tabAgents.get(tabId);
+		if (!tabAgent) return { promise: Promise.resolve(), cancel: () => {} };
+		if (tabAgent.messageQueue.length > 0) return { promise: Promise.resolve(), cancel: () => {} };
+
+		let listener: (() => void) | null = null;
+		const promise = new Promise<void>((resolve) => {
+			listener = resolve;
+			tabAgent.queueListeners.push(resolve);
+		});
+		const cancel = () => {
+			if (listener) {
+				tabAgent.queueListeners = tabAgent.queueListeners.filter(l => l !== listener);
+				listener = null;
+			}
+		};
+		return { promise, cancel };
 	}
 
 	destroy(): void {
