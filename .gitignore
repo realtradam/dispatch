@@ -8,3 +8,9 @@ build/
 .DS_Store
 .skills/
 references/
+
+# Packaging build artifacts
+packaging/src/
+packaging/pkg/
+packaging/*.pkg.tar.zst
+packages/frontend/release/

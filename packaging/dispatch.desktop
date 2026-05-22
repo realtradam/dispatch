@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Dispatch
+Comment=AI Agent Dispatch Interface
+Exec=/usr/bin/dispatch %U
+Icon=dispatch
+Terminal=false
+Type=Application
+Categories=Development;Utility;
+StartupWMClass=Dispatch

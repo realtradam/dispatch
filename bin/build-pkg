@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PACKAGING_DIR="$(dirname "$SCRIPT_DIR")/packaging"
+
+cd "$PACKAGING_DIR"
+makepkg -fd "$@"
