@@ -38,6 +38,7 @@ export type AgentEvent =
 	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" }
 	| { type: "error"; error: string; statusCode?: number }
 	| { type: "notice"; message: string }
+	| { type: "model-changed"; keyId: string; modelId: string }
 	| { type: "done"; message: ChatMessage }
 	| { type: "task-list-update"; tasks: TaskItem[] }
 	| { type: "config-reload" }

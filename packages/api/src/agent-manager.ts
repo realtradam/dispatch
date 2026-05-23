@@ -984,6 +984,10 @@ export class AgentManager {
 						`Falling back to "${nextEntry.key_id}" (model: ${nextEntry.model_id})...`;
 					console.warn(`[dispatch] ${fallbackMsg}`);
 					this.emit({ type: "notice", message: fallbackMsg }, tabId);
+					this.emit(
+						{ type: "model-changed", keyId: nextEntry.key_id, modelId: nextEntry.model_id },
+						tabId,
+					);
 					tabAgent.agent = null;
 					continue;
 				}

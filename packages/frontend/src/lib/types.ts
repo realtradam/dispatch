@@ -53,6 +53,7 @@ export type AgentEvent =
 	  }
 	| { type: "error"; error: string }
 	| { type: "notice"; message: string }
+	| { type: "model-changed"; keyId: string; modelId: string }
 	| { type: "task-list-update"; tasks: TaskItem[] }
 	| { type: "config-reload" }
 	| {

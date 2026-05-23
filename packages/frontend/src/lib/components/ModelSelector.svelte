@@ -61,6 +61,7 @@ const modelCache = new Map<string, string[]>();
 	let availableModels = $state<string[]>([]);
 	let loadingModels = $state(false);
 	let modelError = $state<string | null>(null);
+	let sliderDragging = $state<number | null>(null);
 
 	let cwdExists = $state<boolean | null>(null);
 	let cwdCheckTimer: ReturnType<typeof setTimeout> | null = null;
@@ -265,28 +266,80 @@ const modelCache = new Map<string, string[]>();
 		{:else}
 			<div class="flex flex-col gap-1.5">
 				{#each visibleAgents as agent (agent.slug + ":" + agent.scope)}
-					<button
-						class="w-full text-left rounded-lg px-3 py-2 transition-colors {activeAgentSlug === agent.slug ? 'bg-primary text-primary-content' : 'bg-base-300 hover:bg-base-200'}"
+					{@const isActive = activeAgentSlug === agent.slug}
+					{@const hasMultipleModels = agent.models.length > 1}
+					{@const currentIdx = isActive
+						? agent.models.findIndex(
+								(m) => m.key_id === activeKeyId && m.model_id === activeModelId,
+							)
+						: -1}
+					<div
+						role="button"
+						tabindex="0"
+						class="w-full text-left rounded-lg px-3 py-2 transition-colors {isActive ? 'bg-primary text-primary-content' : 'bg-base-300 hover:bg-base-200'}"
 						onclick={() => {
+							// Only switch agent — don't reset the slider position
 							onAgentChange(agent);
 							const cwdEl = document.getElementById("cwd-input") as HTMLInputElement | null;
 							if (cwdEl) cwdEl.value = agent.cwd ?? "";
+						}}
+						onkeydown={(e) => {
+							if (e.key === "Enter" || e.key === " ") {
+								e.preventDefault();
+								onAgentChange(agent);
+								const cwdEl = document.getElementById("cwd-input") as HTMLInputElement | null;
+								if (cwdEl) cwdEl.value = agent.cwd ?? "";
+							}
 						}}
 					>
 						<div class="flex items-center justify-between gap-2">
 							<span class="font-medium text-sm">{agent.name}</span>
 							<div class="flex gap-1 shrink-0">
-								<span class="badge badge-xs">{agent.models.length} model{agent.models.length !== 1 ? 's' : ''}</span>
+								<span class="badge badge-xs">{agent.models.length} model{agent.models.length !== 1 ? "s" : ""}</span>
 								<span class="badge badge-xs badge-outline">{agent.scope === "global" ? "global" : "project"}</span>
 							</div>
 						</div>
 						{#if agent.description}
 							<p class="text-xs opacity-60 mt-0.5">{agent.description}</p>
 						{/if}
-					</button>
+						{#if isActive && hasMultipleModels}
+							{@const displayIdx = sliderDragging !== null ? sliderDragging : (currentIdx >= 0 ? currentIdx : 0)}
+							{@const displayModel = agent.models[displayIdx]}
+							<div class="mt-2 pt-2 border-t border-primary-content/20">
+								<div class="text-xs font-semibold mb-1 truncate">
+									{displayModel ? `${displayModel.key_id} / ${displayModel.model_id}` : `${activeKeyId} / ${activeModelId}`}
+								</div>
+								<input
+									type="range"
+									min="0"
+									max={agent.models.length - 1}
+									value={currentIdx >= 0 ? currentIdx : 0}
+									class="range range-xs"
+									step="1"
+									oninput={(e) => {
+										sliderDragging = Number(e.currentTarget.value);
+									}}
+									onchange={(e) => {
+										const idx = Number(e.currentTarget.value);
+										const m = agent.models[idx];
+										if (m) onModelChange(m.key_id, m.model_id);
+										sliderDragging = null;
+									}}
+									onclick={(e) => e.stopPropagation()}
+									onkeydown={(e) => e.stopPropagation()}
+								/>
+								<div class="flex w-full justify-between px-0.5 text-xs opacity-50 mt-0.5">
+									{#each agent.models as _, i}
+										<span>{i + 1}</span>
+									{/each}
+								</div>
+							</div>
+						{/if}
+					</div>
 				{/each}
 			</div>
 		{/if}
+
 		<button
 			type="button"
 			class="btn btn-outline btn-sm w-full mt-2 hover:bg-base-300 hover:border-base-300 text-base-content/60"

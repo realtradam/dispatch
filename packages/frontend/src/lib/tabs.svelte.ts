@@ -431,6 +431,15 @@ function createTabStore() {
 				}
 				break;
 			}
+			case "model-changed": {
+				if (tabId) {
+					updateTab(tabId, {
+						keyId: event.keyId,
+						modelId: event.modelId,
+					});
+				}
+				break;
+			}
 			case "permission-prompt": {
 				pendingPermissions = event.pending;
 				break;
