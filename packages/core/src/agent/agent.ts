@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { CoreMessage } from "ai";
+import type { CoreMessage, LanguageModelV1 } from "ai";
 import { streamText } from "ai";
 import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
 import { createProvider, prefixToolName, unprefixToolName } from "../llm/provider.js";
@@ -260,28 +260,40 @@ export class Agent {
 				const effort = options?.reasoningEffort ?? this.config.reasoningEffort ?? "max";
 
 				// Build stream text options
+				const rawModel = providerFactory(this.config.model);
+				const model = rawModel as unknown as LanguageModelV1;
 				const streamOptions: Parameters<typeof streamText>[0] = {
-					model: providerFactory(this.config.model),
+					model,
 					system: systemPrompt,
 					messages: toCoreMessages(stepMessages, isAnthropic),
 					tools,
 				};
 
 				if (isAnthropic && effort !== "none") {
-					const budgetTokens =
-						effort === "max"
-							? 16000
-							: effort === "high"
-								? 10000
-								: effort === "medium"
-									? 5000
-									: effort === "low"
-										? 2000
-										: 0;
-					streamOptions.providerOptions = {
-						anthropic: { thinking: { type: "enabled" as const, budgetTokens } },
-					};
-					streamOptions.maxTokens = budgetTokens + 8000;
+					const modelId = this.config.model;
+					const isOpus47 = modelId === "claude-opus-4-7";
+
+					if (isOpus47) {
+						// Opus 4.7 only supports adaptive thinking
+						streamOptions.providerOptions = {
+							anthropic: { thinking: { type: "adaptive" as const } },
+						};
+					} else {
+						const budgetTokens =
+							effort === "max"
+								? 16000
+								: effort === "high"
+									? 10000
+									: effort === "medium"
+										? 5000
+										: effort === "low"
+											? 2000
+											: 0;
+						streamOptions.providerOptions = {
+							anthropic: { thinking: { type: "enabled" as const, budgetTokens } },
+						};
+						streamOptions.maxTokens = budgetTokens + 8000;
+					}
 				} else if (!isAnthropic && effort !== "none") {
 					streamOptions.providerOptions = { openaiCompatible: { reasoningEffort: effort } };
 				}

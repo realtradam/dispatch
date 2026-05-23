@@ -190,7 +190,7 @@ onMount(() => {
 				<select id="add-key-provider" class="select select-bordered select-sm w-full" bind:value={addKeyProvider}>
 					<option value="anthropic">Anthropic</option>
 					<option value="opencode-go">OpenCode</option>
-					<option value="github-copilot">GitHub Copilot</option>
+					<option value="google">Google (Gemini)</option>
 				</select>
 			</div>
 			<div class="flex flex-col gap-1">

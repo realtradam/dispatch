@@ -40,10 +40,14 @@ export function getApiKey(keyId: string): string | null {
 }
 
 /**
- * Resolve an API key from the database. Returns null if not found.
+ * Resolve an API key from the database, with env var fallback.
+ * Pass the env var name (e.g. "GOOGLE_API_KEY") to check process.env as well.
  */
-export function resolveApiKey(keyId: string): string | null {
-	return getApiKey(keyId);
+export function resolveApiKey(keyId: string, envVar?: string): string | null {
+	const dbKey = getApiKey(keyId);
+	if (dbKey) return dbKey;
+	if (envVar) return process.env[envVar] ?? null;
+	return null;
 }
 
 /**

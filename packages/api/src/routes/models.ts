@@ -6,6 +6,7 @@ import {
 	type ClaudeAccount,
 	fetchAnthropicModels,
 	fetchCopilotUsage,
+	fetchGoogleUsage,
 	fetchOpencodeUsage,
 	getAccountUsage,
 	getAnthropicHeaders,
@@ -112,7 +113,7 @@ modelsRoutes.get("/available", async (c) => {
 		});
 	}
 
-	const apiKeyValue = resolveApiKey(keyId);
+	const apiKeyValue = resolveApiKey(keyId, key.definition.env);
 	if (!apiKeyValue) {
 		return c.json({ error: `no API key found for ${keyId}` }, 500);
 	}
@@ -148,7 +149,7 @@ modelsRoutes.get("/available", async (c) => {
 		return c.json({ error: "failed to parse provider response", details: String(err) }, 502);
 	}
 
-	const models = data.data.map((m) => m.id);
+	const models = data.data.map((m) => m.id.replace(/^models\//, ""));
 	return c.json({ models });
 });
 
@@ -291,7 +292,7 @@ modelsRoutes.get("/key-usage", async (c) => {
 				},
 			});
 		} else if (provider === "github-copilot") {
-			const token = resolveApiKey(keyId);
+			const token = resolveApiKey(keyId, key.definition.env);
 			if (!token) {
 				return c.json({ error: `no API key found for ${keyId}` }, 502);
 			}
@@ -306,6 +307,21 @@ modelsRoutes.get("/key-usage", async (c) => {
 				percentUsed: report.percentUsed,
 				resetAt: report.resetAt,
 				plan: report.plan,
+			});
+		} else if (provider === "google") {
+			const token = resolveApiKey(keyId, key.definition.env);
+			if (!token) {
+				return c.json({ error: `no API key found for ${keyId}. Set GOOGLE_API_KEY env var.` }, 502);
+			}
+			const report = await fetchGoogleUsage(token, key.definition.base_url);
+			if (!report) {
+				return c.json({ error: "failed to fetch Google usage data" }, 502);
+			}
+			return c.json({
+				provider: "google",
+				models: report.models,
+				currentUsage: report.currentUsage,
+				weeklyUsage: report.weeklyUsage,
 			});
 		} else {
 			return c.json({ error: "usage tracking not supported for this provider" }, 400);
@@ -400,13 +416,13 @@ modelsRoutes.get("/credentials-status", (c) => {
 
 // ─── Add key to dispatch.toml ─────────────────────────────────
 
-const VALID_PROVIDERS = ["anthropic", "opencode-go", "github-copilot"] as const;
+const VALID_PROVIDERS = ["anthropic", "opencode-go", "google"] as const;
 type SupportedProvider = (typeof VALID_PROVIDERS)[number];
 
 const PROVIDER_BASE_URLS: Record<SupportedProvider, string> = {
 	anthropic: "https://api.anthropic.com/v1",
 	"opencode-go": "https://opencode.ai/zen/go/v1",
-	"github-copilot": "https://api.githubcopilot.com",
+	google: "https://generativelanguage.googleapis.com/v1beta/openai",
 };
 
 modelsRoutes.post("/add-key", async (c) => {
@@ -445,6 +461,12 @@ modelsRoutes.post("/add-key", async (c) => {
 	if (provider === "anthropic") {
 		const credPath = `${homedir()}/.claude/.credentials-${id}.json`;
 		newBlock += `\ncredentials_file = "${credPath}"`;
+	} else {
+		const envVar =
+			provider === "google"
+				? "GOOGLE_API_KEY"
+				: `DISPATCH_${id.toUpperCase().replace(/-/g, "_")}_KEY`;
+		newBlock += `\nenv = "${envVar}"`;
 	}
 	newBlock += "\n";
 
