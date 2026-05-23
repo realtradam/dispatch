@@ -26,7 +26,7 @@ async function handleCopy() {
 }
 </script>
 
-<header class="navbar bg-base-200 border-b border-base-300 px-4 min-h-14 flex-shrink-0">
+<header class="navbar bg-base-200 px-4 min-h-14 flex-shrink-0">
 	<div class="navbar-start">
 		<button class="text-xl font-bold tracking-tight btn btn-ghost px-0" onclick={() => router.navigate("dashboard")}>Dispatch</button>
 	</div>

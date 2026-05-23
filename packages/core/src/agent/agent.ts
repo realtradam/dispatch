@@ -311,8 +311,15 @@ export class Agent {
 							allToolCalls.push(toolCall);
 							yield { type: "tool-call", toolCall };
 						} else if (event.type === "error") {
+							const errRecord = event.error as unknown as Record<string, unknown>;
+							const statusCode =
+								typeof errRecord.statusCode === "number" ? errRecord.statusCode : undefined;
 							const errorMsg = formatError(event.error, this.config);
-							yield { type: "error", error: errorMsg };
+							yield {
+								type: "error",
+								error: errorMsg,
+								...(statusCode !== undefined ? { statusCode } : {}),
+							};
 							this.status = "error";
 							yield { type: "status", status: "error" };
 							return;
@@ -471,8 +478,11 @@ export class Agent {
 
 			yield { type: "done", message: assistantMessage };
 		} catch (err) {
+			const errRecord = err as unknown as Record<string, unknown>;
+			const statusCode =
+				typeof errRecord.statusCode === "number" ? errRecord.statusCode : undefined;
 			const errorMsg = formatError(err, this.config);
-			yield { type: "error", error: errorMsg };
+			yield { type: "error", error: errorMsg, ...(statusCode !== undefined ? { statusCode } : {}) };
 			this.status = "error";
 			yield { type: "status", status: "error" };
 			return;

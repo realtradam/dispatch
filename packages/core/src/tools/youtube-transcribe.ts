@@ -141,16 +141,35 @@ export function createYoutubeTranscribeTool(
 		].join("\n"),
 		parameters: z.object({
 			url: z.string().describe("The YouTube video URL to fetch the transcript for."),
+			background: z
+				.boolean()
+				.optional()
+				.describe(
+					"If true, the transcription request starts in the background and a job_id is returned immediately. Use the retrieve tool with the job_id to get the transcript later.",
+				),
 		}),
 		execute: async (
 			args: Record<string, unknown>,
 			context?: ToolExecuteContext,
 		): Promise<string> => {
 			const url = args.url as string;
+			const background = (args.background as boolean | undefined) ?? false;
 			const queueCallbacks = context?.queueCallbacks;
 
 			try {
 				const pollPromise = pollUntilReady(url);
+
+				// If background mode requested, register immediately and return job ID
+				if (background && transcriptStore) {
+					const jobId = transcriptStore.register(url, pollPromise);
+					return [
+						`Transcript request started in background.`,
+						`job_id: ${jobId}`,
+						`url: ${url}`,
+						``,
+						`Use the retrieve tool with this job_id to get the transcript when ready.`,
+					].join("\n");
+				}
 
 				if (queueCallbacks && transcriptStore) {
 					const { promise: queuePromise, cancel: cancelQueueWait } =

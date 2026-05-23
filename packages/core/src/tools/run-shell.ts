@@ -54,6 +54,12 @@ export function createRunShellTool(
 		parameters: z.object({
 			command: z.string().describe("The shell command to execute"),
 			timeout: z.number().optional().describe("Timeout in milliseconds (default 2 minutes)"),
+			background: z
+				.boolean()
+				.optional()
+				.describe(
+					"If true, the command starts in the background and a job_id is returned immediately. Use the retrieve tool with the job_id to get the result later.",
+				),
 		}),
 		execute: async (
 			args: Record<string, unknown>,
@@ -61,6 +67,7 @@ export function createRunShellTool(
 		): Promise<string> => {
 			const command = args.command as string;
 			const timeout = (args.timeout as number | undefined) ?? DEFAULT_TIMEOUT;
+			const background = (args.background as boolean | undefined) ?? false;
 
 			const [shell, shellArgs] = getShell();
 			const child = spawn(shell, [...shellArgs, command], {
@@ -98,6 +105,23 @@ export function createRunShellTool(
 					resolve({ stdout, stderr, exitCode: 1, error: err.message });
 				});
 			});
+
+			// If background mode requested, register immediately and return job ID
+			if (background && shellStore) {
+				const jobId = shellStore.register({
+					command,
+					stdout,
+					stderr,
+					completion: completionPromise,
+				});
+				return [
+					`Command started in background.`,
+					`job_id: ${jobId}`,
+					`command: ${command}`,
+					``,
+					`Use the retrieve tool with this job_id to get the result when ready.`,
+				].join("\n");
+			}
 
 			const queueCallbacks = context?.queueCallbacks;
 
