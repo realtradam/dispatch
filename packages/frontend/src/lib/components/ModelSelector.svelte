@@ -62,6 +62,7 @@ const modelCache = new Map<string, string[]>();
 	let loadingModels = $state(false);
 	let modelError = $state<string | null>(null);
 	let sliderDragging = $state<number | null>(null);
+	let modelSearch = $state("");
 
 	let cwdExists = $state<boolean | null>(null);
 	let cwdCheckTimer: ReturnType<typeof setTimeout> | null = null;
@@ -126,6 +127,7 @@ const modelCache = new Map<string, string[]>();
 		if (!keyId) return;
 		showModelModal = true;
 		modelError = null;
+		modelSearch = "";
 
 		// Check session cache
 		if (modelCache.has(keyId)) {
@@ -393,17 +395,39 @@ const modelCache = new Map<string, string[]>();
 					<span>{modelError}</span>
 				</div>
 			{:else}
-				<div class="mt-4 flex flex-col gap-1 max-h-96 overflow-y-auto">
-					{#each availableModels as model}
-						<button
-							class="btn {model === activeModelId
-								? 'btn-primary'
-								: 'btn-ghost'} justify-start font-mono text-base"
-							onclick={() => selectModel(model)}
-						>
-							{model}
-						</button>
-					{/each}
+				{@const search = modelSearch.toLowerCase().trim()}
+				{@const searchRegex = search
+					? new RegExp(
+							search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "[ _-]"),
+						)
+					: null}
+				{@const filteredModels = searchRegex
+					? availableModels.filter((m) => searchRegex.test(m.toLowerCase()))
+					: availableModels}
+				<div class="mt-4 flex flex-col gap-1">
+					<input
+						type="text"
+						class="input input-bordered input-sm w-full"
+						placeholder="Filter models..."
+						bind:value={modelSearch}
+					/>
+					<div class="mt-2 max-h-96 overflow-y-auto flex flex-col gap-1">
+						{#each filteredModels as model}
+							<button
+								class="btn {model === activeModelId
+									? 'btn-primary'
+									: 'btn-ghost'} justify-start font-mono text-base"
+								onclick={() => selectModel(model)}
+							>
+								{model}
+							</button>
+						{/each}
+						{#if filteredModels.length === 0}
+							<p class="text-xs text-base-content/50 py-2 text-center">
+								{search ? 'No models match your search.' : 'No models available.'}
+							</p>
+						{/if}
+					</div>
 				</div>
 			{/if}
 			<div class="modal-action">

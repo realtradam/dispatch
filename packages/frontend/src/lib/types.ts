@@ -163,4 +163,23 @@ export interface CopilotUsageData {
 	plan?: string;
 }
 
-export type KeyUsageData = ClaudeUsageData | OpencodeUsageData | CopilotUsageData;
+export interface GoogleUsageData {
+	provider: "google";
+	models?: Array<{
+		name: string;
+		inputTokenLimit: number;
+		outputTokenLimit: number;
+		rpm: number;
+		requestsPerDay: number;
+	}>;
+	currentUsage?: {
+		percentUsed: number;
+		resetsAt?: string;
+	};
+	weeklyUsage?: {
+		percentUsed: number;
+		resetsAt?: string;
+	};
+}
+
+export type KeyUsageData = ClaudeUsageData | OpencodeUsageData | CopilotUsageData | GoogleUsageData;

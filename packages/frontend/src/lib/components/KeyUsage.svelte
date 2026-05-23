@@ -404,6 +404,59 @@ function hasBucketData(bucket: UsageBucket | undefined): boolean {
 								<span class="text-xs text-base-content/40">Resets: {formatDate(entry.data.resetAt)}</span>
 							{/if}
 						</div>
+					{:else if entry.data.provider === "google"}
+						<div class="flex flex-col gap-0.5 pl-1">
+							<!-- Cookie-scraped usage from gemini.google.com -->
+							{#if entry.data.currentUsage}
+								{@const u = entry.data.currentUsage}
+								<div class="flex flex-col gap-0.5">
+									<div class="flex items-center justify-between">
+										<span class="text-xs text-base-content/50">Current</span>
+										<span class="text-xs font-mono">{u.percentUsed}%</span>
+									</div>
+									<progress class="progress w-full h-2 {progressClass(u.percentUsed / 100)}" value={u.percentUsed} max="100"></progress>
+									{#if u.resetsAt}
+										<span class="text-xs text-base-content/40">Resets: {u.resetsAt}</span>
+									{/if}
+								</div>
+							{/if}
+							{#if entry.data.weeklyUsage}
+								{@const w = entry.data.weeklyUsage}
+								<div class="flex flex-col gap-0.5">
+									<div class="flex items-center justify-between">
+										<span class="text-xs text-base-content/50">Weekly</span>
+										<span class="text-xs font-mono">{w.percentUsed}%</span>
+									</div>
+									<progress class="progress w-full h-2 {progressClass(w.percentUsed / 100)}" value={w.percentUsed} max="100"></progress>
+									{#if w.resetsAt}
+										<span class="text-xs text-base-content/40">Resets: {w.resetsAt}</span>
+									{/if}
+								</div>
+							{/if}
+							<!-- API key rate limits -->
+							{#if !entry.data.currentUsage && entry.data.models && entry.data.models.length > 0}
+								{@const m = entry.data.models[0]}
+								<div class="flex items-center justify-between">
+									<span class="text-xs text-base-content/50">Models</span>
+									<span class="text-xs font-mono">{entry.data.models.length} available</span>
+								</div>
+								{#if m.rpm > 0}
+									<div class="flex items-center justify-between">
+										<span class="text-xs text-base-content/50">RPM</span>
+										<span class="text-xs font-mono">{m.rpm}</span>
+									</div>
+								{/if}
+								{#if m.requestsPerDay > 0}
+									<div class="flex items-center justify-between">
+										<span class="text-xs text-base-content/50">RPD</span>
+										<span class="text-xs font-mono">{m.requestsPerDay.toLocaleString()}</span>
+									</div>
+								{/if}
+								{#if !entry.data.currentUsage}
+									<p class="text-xs text-base-content/40 mt-0.5">Set GEMINI_COOKIE (__Secure-1PSID) for usage %</p>
+								{/if}
+							{/if}
+						</div>
 				{/if}
 				{/if}
 				</div>

@@ -548,7 +548,7 @@ export class AgentManager {
 						}
 					} else {
 						// Standard key: resolve from env var
-						const envKey = resolveApiKey(key.id);
+						const envKey = resolveApiKey(key.id, key.env);
 						if (envKey) {
 							apiKey = envKey;
 							baseURL = key.base_url;

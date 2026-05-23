@@ -11,7 +11,7 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@ai-sdk/anthropic": "1.2.12",
+		"@ai-sdk/anthropic": "^3.0.0",
 		"@ai-sdk/openai-compatible": "^0.2.0",
 		"ai": "^4.0.0",
 		"chokidar": "^5.0.0",

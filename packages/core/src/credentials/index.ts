@@ -30,6 +30,10 @@ export {
 	fetchCopilotUsage,
 } from "./copilot.js";
 export {
+	fetchGoogleUsage,
+	type GoogleUsageReport,
+} from "./google.js";
+export {
 	fetchOpencodeUsage,
 	type OpencodeUsageBucket,
 	type OpencodeUsageReport,
