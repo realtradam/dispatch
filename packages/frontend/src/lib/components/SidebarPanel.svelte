@@ -80,17 +80,17 @@ function addPanel() {
 
 function panelClass(selected: string): string {
 	const base = "bg-base-200 rounded-lg p-3 flex flex-col min-h-0";
-	const fill = selected === "Key Usage" || selected === "Claude Reset" || selected === "Tasks";
+	const fill = selected === "Key Usage" || selected === "Tasks";
 	return fill ? `${base} flex-1` : base;
 }
 
 function contentClass(selected: string): string {
-	const fill = selected === "Key Usage" || selected === "Claude Reset" || selected === "Tasks";
+	const fill = selected === "Key Usage" || selected === "Tasks";
 	return fill ? "mt-2 flex-1 min-h-0" : "mt-2";
 }
 </script>
 
-<div class="flex flex-col gap-2">
+<div class="flex flex-col gap-2 min-h-0">
 	{#each panels as panel, idx (panel.id)}
 		<div class={panelClass(panel.selected)}>
 			<div class="flex items-center gap-1">
