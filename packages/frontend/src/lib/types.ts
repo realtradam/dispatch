@@ -10,6 +10,7 @@ export interface ToolCallDisplay {
 export interface DebugInfo {
 	timestamp: string;
 	error?: string;
+	notice?: string;
 	model?: string;
 	apiBase?: string;
 	connectionStatus?: string;
@@ -51,6 +52,7 @@ export type AgentEvent =
 			toolResult: { toolCallId: string; result: string; isError: boolean };
 	  }
 	| { type: "error"; error: string }
+	| { type: "notice"; message: string }
 	| { type: "task-list-update"; tasks: TaskItem[] }
 	| { type: "config-reload" }
 	| {

@@ -63,6 +63,7 @@ app.post("/chat", async (c) => {
 
 	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
 	const modelId = typeof body.modelId === "string" ? body.modelId : undefined;
+	const agentModels = Array.isArray(body.agentModels) ? body.agentModels : undefined;
 	const workingDirectory =
 		typeof body.workingDirectory === "string" ? body.workingDirectory : undefined;
 	const validEfforts = ["none", "low", "medium", "high", "max"];
@@ -73,7 +74,7 @@ app.post("/chat", async (c) => {
 
 	// Non-blocking — let the agent run in the background
 	agentManager
-		.processMessage(tabId, message, keyId, modelId, reasoningEffort, workingDirectory)
+		.processMessage(tabId, message, keyId, modelId, reasoningEffort, workingDirectory, agentModels)
 		.catch(console.error);
 
 	return c.json({ status: "ok" });

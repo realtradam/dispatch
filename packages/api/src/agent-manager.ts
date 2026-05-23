@@ -44,14 +44,15 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	list_files: "List files and directories",
 	write_file: "Write content to a file (creates parent directories if needed)",
 	run_shell:
-		"Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Use for running tests, builds, git operations, package management, and other development tasks. Do NOT run destructive or irreversible commands unless the user explicitly requests them.",
+		"Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Set background=true to run in the background and get a job_id for later retrieval. Do NOT run destructive or irreversible commands unless the user explicitly requests them.",
 	todo: "Manage a todo list for planning and tracking work. Actions: add, update, list, get, remove. Statuses: pending, in_progress, done.",
 	summon:
-		"Spawn a child agent to work on a task independently. Returns an agent_id immediately (non-blocking). Use retrieve to collect the result later.",
+		"Spawn a child agent to work on a task independently. By default blocks until the child finishes. Set background=true to return immediately with an agent_id for later retrieval.",
 	retrieve:
-		"Wait for a child agent to finish and get its result (blocking). Pass the agent_id from summon.",
+		"Wait for a background task to finish and get its result (blocking). Pass the job_id or agent_id.",
 	web_search: "Search the web and optionally scrape full page content from results.",
-	youtube_transcribe: "Fetch the transcript/subtitles for a YouTube video.",
+	youtube_transcribe:
+		"Fetch the transcript/subtitles for a YouTube video. Set background=true to start in the background and get a job_id for later retrieval.",
 };
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -121,6 +122,8 @@ interface TabAgent {
 	modelId: string | null;
 	taskList: TaskList;
 	_lastPermKey?: string;
+	/** Ordered key+model fallback hierarchy from the agent definition. */
+	agentModels?: Array<{ key_id: string; model_id: string }>;
 	/** Abort controller for cancelling a running agent. */
 	abortController?: AbortController;
 	/** For child agents: resolves when the agent finishes its task. */
@@ -399,6 +402,7 @@ export class AgentManager {
 									parentAllowedTools: childParentAllowedTools,
 									parentTabId: tabId,
 								}),
+							getResult: (id) => this.getChildResult(id),
 						}),
 					});
 				}
@@ -454,6 +458,7 @@ export class AgentManager {
 									parentAllowedTools,
 									parentTabId: tabId,
 								}),
+							getResult: (id) => this.getChildResult(id),
 						}),
 					});
 					toolEntries.push({
@@ -715,6 +720,14 @@ export class AgentManager {
 		tabAgent.modelId = options.parentModelId ?? null;
 		tabAgent.finalOutput = "";
 
+		// Inherit parent's agent fallback models
+		if (options.parentTabId) {
+			const parentAgent = this.tabAgents.get(options.parentTabId);
+			if (parentAgent?.agentModels) {
+				tabAgent.agentModels = parentAgent.agentModels;
+			}
+		}
+
 		// Set up completion tracking
 		tabAgent.completionPromise = new Promise((resolve) => {
 			tabAgent.completionResolve = resolve;
@@ -793,6 +806,7 @@ export class AgentManager {
 		modelId?: string,
 		reasoningEffort?: "none" | "low" | "medium" | "high" | "max",
 		workingDirectory?: string,
+		agentModels?: Array<{ key_id: string; model_id: string }>,
 	): Promise<void> {
 		const tabAgent = this._getOrCreateTabAgent(tabId);
 
@@ -809,104 +823,126 @@ export class AgentManager {
 		tabAgent.status = "running";
 		this.messageCount += 1;
 
-		let allOutput = "";
-		let assistantText = "";
-		let assistantThinking = "";
-		const assistantToolCalls: Array<{
-			id: string;
-			name: string;
-			arguments: Record<string, unknown>;
-			result?: string;
-			isError?: boolean;
-		}> = [];
+		// Persist user message to DB (once, before any fallback retry)
+		appendMessage(
+			tabId,
+			crypto.randomUUID(),
+			"user",
+			JSON.stringify([{ type: "text", text: message }]),
+		);
+
+		// Store agent models on the tab if provided (defines fallback order)
+		if (agentModels) {
+			tabAgent.agentModels = agentModels;
+		}
+
+		// Build the fallback sequence: the agent's models list in order, or a single manual entry
+		const fallbackSequence = this.buildFallbackSequence(tabAgent, keyId, modelId);
+		const maxFallbackAttempts = fallbackSequence.length;
+
 		let processError: string | null = null;
+		let allOutput = "";
+		let currentKeyId: string | undefined;
+		let currentModelId: string | undefined;
 
-		try {
-			const agent = await this.getOrCreateAgentForTab(tabId, keyId, modelId);
+		for (let fallbackIdx = 0; fallbackIdx < maxFallbackAttempts; fallbackIdx++) {
+			const entry = fallbackSequence[fallbackIdx];
+			currentKeyId = entry.key_id;
+			currentModelId = entry.model_id;
+			allOutput = "";
+			let assistantText = "";
+			let assistantThinking = "";
+			const assistantToolCalls: Array<{
+				id: string;
+				name: string;
+				arguments: Record<string, unknown>;
+				result?: string;
+				isError?: boolean;
+			}> = [];
+			let attemptError: string | null = null;
 
-			// Ensure tab exists in DB (frontend may have failed to create it)
 			try {
-				const { getDatabase } = await import("@dispatch/core");
-				const db = getDatabase();
-				const exists = db.query("SELECT 1 FROM tabs WHERE id = $id").get({ $id: tabId });
-				if (!exists) {
-					const { createTab } = await import("@dispatch/core");
-					createTab(tabId, "New Tab", { keyId: keyId ?? null, modelId: modelId ?? null });
+				const agent = await this.getOrCreateAgentForTab(tabId, currentKeyId, currentModelId);
+
+				// Ensure tab exists in DB (frontend may have failed to create it)
+				try {
+					const { getDatabase } = await import("@dispatch/core");
+					const db = getDatabase();
+					const exists = db.query("SELECT 1 FROM tabs WHERE id = $id").get({ $id: tabId });
+					if (!exists) {
+						const { createTab } = await import("@dispatch/core");
+						createTab(tabId, "New Tab", {
+							keyId: currentKeyId ?? null,
+							modelId: currentModelId ?? null,
+						});
+					}
+				} catch {
+					// Best-effort — if this fails, appendMessage will throw and we'll catch it below
 				}
-			} catch {
-				// Best-effort — if this fails, appendMessage will throw and we'll catch it below
+
+				for await (const event of agent.run(
+					message,
+					reasoningEffort ? { reasoningEffort } : undefined,
+				)) {
+					// Stop processing if the tab was aborted (closed/stopped)
+					if (tabAgent.abortController?.signal.aborted) break;
+
+					if (event.type === "error") {
+						attemptError = event.error;
+						break;
+					}
+
+					if (event.type === "status") {
+						tabAgent.status = event.status;
+					}
+					this.emit(event, tabId);
+
+					// Accumulate content for DB persistence
+					if (event.type === "text-delta") {
+						assistantText += event.delta;
+						allOutput += event.delta;
+					} else if (event.type === "reasoning-delta") {
+						assistantThinking += event.delta;
+					} else if (event.type === "tool-call") {
+						assistantToolCalls.push({
+							id: event.toolCall.id,
+							name: event.toolCall.name,
+							arguments: event.toolCall.arguments,
+						});
+					} else if (event.type === "tool-result") {
+						const tc = assistantToolCalls.find((t) => t.id === event.toolResult.toolCallId);
+						if (tc) {
+							tc.result = event.toolResult.result;
+							tc.isError = event.toolResult.isError;
+						}
+					} else if (event.type === "done") {
+						// Persist assistant message to DB
+						const contentSegments: Array<Record<string, unknown>> = [];
+						if (assistantText) contentSegments.push({ type: "text", text: assistantText });
+						for (const tc of assistantToolCalls) {
+							contentSegments.push({ type: "tool-call", ...tc });
+						}
+						if (contentSegments.length > 0) {
+							appendMessage(
+								tabId,
+								crypto.randomUUID(),
+								"assistant",
+								JSON.stringify(contentSegments),
+								assistantThinking || undefined,
+							);
+						}
+						// Reset for next turn
+						assistantText = "";
+						assistantThinking = "";
+						assistantToolCalls.length = 0;
+					}
+				}
+			} catch (err) {
+				console.error(`[dispatch] processMessage error for tab ${tabId}:`, err);
+				attemptError = err instanceof Error ? err.message : String(err);
 			}
 
-			// Persist user message to DB
-			appendMessage(
-				tabId,
-				crypto.randomUUID(),
-				"user",
-				JSON.stringify([{ type: "text", text: message }]),
-			);
-
-			for await (const event of agent.run(
-				message,
-				reasoningEffort ? { reasoningEffort } : undefined,
-			)) {
-				// Stop processing if the tab was aborted (closed/stopped)
-				if (tabAgent.abortController?.signal.aborted) break;
-
-				if (event.type === "status") {
-					tabAgent.status = event.status;
-				}
-				this.emit(event, tabId);
-
-				// Accumulate content for DB persistence
-				if (event.type === "text-delta") {
-					assistantText += event.delta;
-					allOutput += event.delta;
-				} else if (event.type === "reasoning-delta") {
-					assistantThinking += event.delta;
-				} else if (event.type === "tool-call") {
-					assistantToolCalls.push({
-						id: event.toolCall.id,
-						name: event.toolCall.name,
-						arguments: event.toolCall.arguments,
-					});
-				} else if (event.type === "tool-result") {
-					const tc = assistantToolCalls.find((t) => t.id === event.toolResult.toolCallId);
-					if (tc) {
-						tc.result = event.toolResult.result;
-						tc.isError = event.toolResult.isError;
-					}
-				} else if (event.type === "done") {
-					// Persist assistant message to DB
-					const contentSegments: Array<Record<string, unknown>> = [];
-					if (assistantText) contentSegments.push({ type: "text", text: assistantText });
-					for (const tc of assistantToolCalls) {
-						contentSegments.push({ type: "tool-call", ...tc });
-					}
-					if (contentSegments.length > 0) {
-						appendMessage(
-							tabId,
-							crypto.randomUUID(),
-							"assistant",
-							JSON.stringify(contentSegments),
-							assistantThinking || undefined,
-						);
-					}
-					// Reset for next turn
-					assistantText = "";
-					assistantThinking = "";
-					assistantToolCalls.length = 0;
-				}
-			}
-		} catch (err) {
-			console.error(`[dispatch] processMessage error for tab ${tabId}:`, err);
-			const errorMsg = err instanceof Error ? err.message : String(err);
-			processError = errorMsg;
-			tabAgent.status = "error";
-			this.emit({ type: "error", error: errorMsg }, tabId);
-			this.emit({ type: "status", status: "error" }, tabId);
-		} finally {
-			// Flush any accumulated assistant content that wasn't saved by a done event
-			// (happens when the agent is aborted mid-stream or throws an error)
+			// Flush any accumulated assistant content from this attempt
 			if (assistantText || assistantToolCalls.length > 0) {
 				const contentSegments: Array<Record<string, unknown>> = [];
 				if (assistantText) contentSegments.push({ type: "text", text: assistantText });
@@ -923,14 +959,67 @@ export class AgentManager {
 					);
 				}
 			}
-			// Resolve completion promise for child agents
-			if (processError === null) {
-				tabAgent.finalOutput = allOutput;
-				tabAgent.completionResolve?.({ status: "done", result: allOutput || "(no output)" });
-			} else {
-				tabAgent.completionResolve?.({ status: "error", error: processError });
+
+			// No error — success
+			if (!attemptError) {
+				processError = null;
+				break;
 			}
+
+			// Check if error is retryable (rate limit / exhausted key)
+			const isRetryable =
+				attemptError.includes("status=429") ||
+				attemptError.toLowerCase().includes("rate limit") ||
+				attemptError.toLowerCase().includes("rate_limit");
+
+			if (isRetryable && this.modelRegistry && tabAgent.keyId) {
+				this.modelRegistry.markKeyExhausted(tabAgent.keyId, attemptError);
+
+				// Try the next entry in the agent's fallback sequence
+				const nextIdx = fallbackIdx + 1;
+				if (nextIdx < maxFallbackAttempts) {
+					const nextEntry = fallbackSequence[nextIdx];
+					const fallbackMsg =
+						`Key "${tabAgent.keyId}" rate limited. ` +
+						`Falling back to "${nextEntry.key_id}" (model: ${nextEntry.model_id})...`;
+					console.warn(`[dispatch] ${fallbackMsg}`);
+					this.emit({ type: "notice", message: fallbackMsg }, tabId);
+					tabAgent.agent = null;
+					continue;
+				}
+			}
+
+			// All fallbacks exhausted or non-retryable error
+			processError = attemptError;
+			tabAgent.status = "error";
+			this.emit({ type: "error", error: attemptError }, tabId);
+			this.emit({ type: "status", status: "error" }, tabId);
+			break;
 		}
+
+		// Resolve completion promise for child agents
+		if (processError === null) {
+			tabAgent.finalOutput = allOutput;
+			tabAgent.completionResolve?.({ status: "done", result: allOutput || "(no output)" });
+		} else {
+			tabAgent.completionResolve?.({ status: "error", error: processError });
+		}
+	}
+
+	private buildFallbackSequence(
+		tabAgent: TabAgent,
+		keyId?: string,
+		modelId?: string,
+	): Array<{ key_id: string; model_id: string }> {
+		// Agent mode: use the agent's configured fallback hierarchy in strict order
+		const models = tabAgent.agentModels;
+		if (models && models.length > 0) {
+			const startIdx = models.findIndex((m) => m.key_id === keyId && m.model_id === modelId);
+			return startIdx >= 0 ? models.slice(startIdx) : models;
+		}
+		// Manual mode: no fallback — just the selected key/model pair
+		if (keyId && modelId) return [{ key_id: keyId, model_id: modelId }];
+		return [];
 	}
 
 	queueMessage(tabId: string, message: string, clientId?: string): { messageId: string } {

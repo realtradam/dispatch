@@ -50,6 +50,8 @@ export interface Tab {
 	agentSlug: string | null;
 	/** Scope of the selected agent */
 	agentScope: string | null;
+	/** Ordered key+model fallback hierarchy from the selected agent */
+	agentModels: Array<{ key_id: string; model_id: string }> | null;
 	/** Custom working directory override for this tab */
 	workingDirectory: string | null;
 	/** Messages queued to be sent once the agent finishes its current run */
@@ -118,6 +120,7 @@ function createTabStore() {
 			persistent: true,
 			agentSlug: null,
 			agentScope: null,
+			agentModels: null,
 			workingDirectory: null,
 			queuedMessages: [],
 		};
@@ -210,6 +213,7 @@ function createTabStore() {
 				persistent: true,
 				agentSlug: null,
 				agentScope: null,
+				agentModels: null,
 				workingDirectory: null,
 				queuedMessages: [],
 			};
@@ -408,6 +412,25 @@ function createTabStore() {
 				}
 				break;
 			}
+			case "notice": {
+				if (tabId) {
+					const noticeMsg: ChatMessage = {
+						id: generateId(),
+						role: "assistant",
+						content: [{ type: "text", text: event.message }],
+						isStreaming: false,
+						debugInfo: makeDebugInfo({ notice: event.message }),
+					};
+					const tabN = getTabById(tabId);
+					if (tabN) {
+						updateTab(tabId, {
+							messages: [...tabN.messages, noticeMsg],
+							currentAssistantId: null,
+						});
+					}
+				}
+				break;
+			}
 			case "permission-prompt": {
 				pendingPermissions = event.pending;
 				break;
@@ -481,6 +504,7 @@ function createTabStore() {
 						persistent: newTabEvent.parentTabId == null,
 						agentSlug: null,
 						agentScope: null,
+						agentModels: null,
 						workingDirectory: newTabEvent.workingDirectory ?? null,
 						queuedMessages: [],
 					};
@@ -644,6 +668,7 @@ function createTabStore() {
 			const patch: Partial<Tab> = {
 				agentSlug: defaultAgent.slug,
 				agentScope: defaultAgent.scope,
+				agentModels: defaultAgent.models,
 				workingDirectory: defaultAgent.cwd || null,
 			};
 			if (firstModel) {
@@ -805,6 +830,7 @@ function createTabStore() {
 					message: messageToSend,
 					...(tab.keyId ? { keyId: tab.keyId } : {}),
 					...(tab.modelId ? { modelId: tab.modelId } : {}),
+					...(tab.agentModels ? { agentModels: tab.agentModels } : {}),
 					reasoningEffort: tab.reasoningEffort,
 					...(tab.workingDirectory ? { workingDirectory: tab.workingDirectory } : {}),
 					...(queueId ? { queueId } : {}),
@@ -935,7 +961,12 @@ function createTabStore() {
 
 		if (!agent) {
 			// Switch back to manual mode — clear agent and reset working directory
-			updateTab(tab.id, { agentSlug: null, agentScope: null, workingDirectory: null });
+			updateTab(tab.id, {
+				agentSlug: null,
+				agentScope: null,
+				agentModels: null,
+				workingDirectory: null,
+			});
 			return;
 		}
 
@@ -944,6 +975,7 @@ function createTabStore() {
 		const patch: Partial<Tab> = {
 			agentSlug: agent.slug,
 			agentScope: agent.scope,
+			agentModels: agent.models,
 			workingDirectory: agent.cwd || null,
 		};
 		if (firstModel) {
@@ -1039,6 +1071,8 @@ function createTabStore() {
 			`All tab IDs: ${tabs.map((t) => t.id).join(", ")}`,
 			"",
 		];
+		const TOOL_RESULT_MAX = 300;
+
 		for (const msg of tab.messages) {
 			const role = msg.role === "user" ? "User" : msg.role === "system" ? "System" : "Assistant";
 			lines.push(`--- ${role} ---`);
@@ -1047,7 +1081,16 @@ function createTabStore() {
 				if (seg.type === "text") lines.push(seg.text);
 				else if (seg.type === "tool-call") {
 					lines.push(`  [Tool: ${seg.name}]`);
-					if (seg.result !== undefined) lines.push(`  Result: ${seg.result}`);
+					if (seg.result !== undefined) {
+						const result = String(seg.result);
+						if (result.length > TOOL_RESULT_MAX) {
+							lines.push(
+								`  Result: ${result.slice(0, TOOL_RESULT_MAX)}... [truncated, ${result.length} chars total]`,
+							);
+						} else {
+							lines.push(`  Result: ${result}`);
+						}
+					}
 				}
 			}
 			lines.push("");

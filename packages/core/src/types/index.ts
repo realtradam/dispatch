@@ -36,7 +36,8 @@ export type AgentEvent =
 	| { type: "tool-call"; toolCall: ToolCall }
 	| { type: "tool-result"; toolResult: ToolResult }
 	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" }
-	| { type: "error"; error: string }
+	| { type: "error"; error: string; statusCode?: number }
+	| { type: "notice"; message: string }
 	| { type: "done"; message: ChatMessage }
 	| { type: "task-list-update"; tasks: TaskItem[] }
 	| { type: "config-reload" }

@@ -3,6 +3,9 @@ import type { ToolDefinition } from "../types/index.js";
 
 export interface SummonCallbacks {
 	spawn(options: { task: string; tools: string[]; workingDirectory?: string }): Promise<string>;
+	getResult(
+		agentId: string,
+	): Promise<{ status: "done"; result: string } | { status: "error"; error: string }>;
 }
 
 export function createSummonTool(
@@ -12,12 +15,15 @@ export function createSummonTool(
 	return {
 		name: "summon",
 		description: [
-			"Spawn a new child agent to work on a task independently. Returns immediately with an agent_id — does NOT wait for the child to finish.",
+			"Spawn a new child agent to work on a task independently.",
+			"",
+			"By default, blocks until the child agent finishes and returns the result directly.",
+			"Set background=true to return immediately with an agent_id instead — use retrieve to collect the result later.",
 			"",
 			"The child agent runs in its own tab visible to the user. Use the 'retrieve' tool with the returned agent_id to get the result when needed.",
 			"",
 			"Pattern for parallel work:",
-			"  1. Call summon multiple times to start several agents",
+			"  1. Call summon multiple times with background=true to start several agents",
 			"  2. Do your own work or wait",
 			"  3. Call retrieve for each agent_id to collect results",
 			"",
@@ -64,12 +70,19 @@ export function createSummonTool(
 				.describe(
 					"Absolute path for the child to work in. Defaults to the current working directory.",
 				),
+			background: z
+				.boolean()
+				.optional()
+				.describe(
+					"If true, returns immediately with an agent_id for later retrieval. If false (default), blocks until the child agent finishes and returns the result directly.",
+				),
 		}),
 		execute: async (args: Record<string, unknown>): Promise<string> => {
 			const task = args.task as string;
 			const tools = (args.tools as string[] | undefined) ?? ["read_file", "list_files", "todo"];
 			const workingDirectory =
 				(args.working_directory as string | undefined) ?? defaultWorkingDirectory;
+			const background = (args.background as boolean | undefined) ?? false;
 
 			try {
 				const agentId = await callbacks.spawn({
@@ -77,6 +90,16 @@ export function createSummonTool(
 					tools,
 					workingDirectory,
 				});
+
+				if (!background) {
+					// Block until the child agent completes
+					const result = await callbacks.getResult(agentId);
+					if (result.status === "done") {
+						return result.result;
+					}
+					return `Error from child agent: ${result.error}`;
+				}
+
 				return [
 					`Agent spawned successfully.`,
 					`agent_id: ${agentId}`,
