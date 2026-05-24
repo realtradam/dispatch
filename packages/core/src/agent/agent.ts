@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { CoreMessage, LanguageModelV1 } from "ai";
+import type { CoreMessage, CoreSystemMessage } from "ai";
 import { streamText } from "ai";
 import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
 import { createProvider, prefixToolName, unprefixToolName } from "../llm/provider.js";
@@ -16,7 +16,7 @@ import type {
 	ToolResult,
 } from "../types/index.js";
 
-function toCoreMessages(messages: ChatMessage[], isAnthropic?: boolean): CoreMessage[] {
+function toCoreMessages(messages: ChatMessage[], useToolPrefix?: boolean): CoreMessage[] {
 	const result: CoreMessage[] = [];
 	for (const msg of messages) {
 		if (msg.role === "user") {
@@ -27,12 +27,12 @@ function toCoreMessages(messages: ChatMessage[], isAnthropic?: boolean): CoreMes
 				| { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }
 			> = [{ type: "text", text: msg.content }];
 			for (const tc of msg.toolCalls ?? []) {
-				const toolName = isAnthropic ? prefixToolName(tc.name) : tc.name;
+				const toolName = useToolPrefix ? prefixToolName(tc.name) : tc.name;
 				parts.push({ type: "tool-call", toolCallId: tc.id, toolName, args: tc.arguments });
 			}
 			result.push({ role: "assistant", content: parts });
 			for (const tr of msg.toolResults ?? []) {
-				const toolName = isAnthropic ? prefixToolName(tr.toolName) : tr.toolName;
+				const toolName = useToolPrefix ? prefixToolName(tr.toolName) : tr.toolName;
 				result.push({
 					role: "tool",
 					content: [
@@ -43,6 +43,47 @@ function toCoreMessages(messages: ChatMessage[], isAnthropic?: boolean): CoreMes
 		}
 	}
 	return result;
+}
+
+/**
+ * Apply Anthropic prompt-caching breakpoints to a message list.
+ *
+ * Anthropic caches the entire request prefix up to (and including) any block
+ * marked with `cache_control`. Up to 4 breakpoints per request; we use three
+ * (first system + last 2 non-system).
+ *
+ * Strategy (mirrors OpenCode's `applyCaching` in transform.ts):
+ *  - Mark the first system message → caches system prompt (and tools, which
+ *    sit before messages in the request body).
+ *  - Mark the last 2 non-system messages → rolling cache that extends through
+ *    the conversation each turn.
+ *
+ * Only applied for the Anthropic provider. OpenCode Zen's OpenAI-compatible
+ * endpoint (`/zen/v1/chat/completions`) backs models like MiniMax, GLM, Kimi,
+ * Grok, etc. — those upstreams do automatic prefix caching server-side and
+ * don't accept `cache_control` markers. OpenCode's own transform.ts gates
+ * `applyCaching` on Anthropic-family detection for the same reason. Models
+ * served via `@ai-sdk/openai` (GPT) and `@ai-sdk/google` (Gemini) likewise
+ * use server-side automatic caching.
+ */
+function applyAnthropicCaching(msgs: CoreMessage[]): void {
+	const targets = new Set<CoreMessage>();
+
+	const systemMsgs = msgs.filter((m) => m.role === "system").slice(0, 2);
+	for (const m of systemMsgs) targets.add(m);
+
+	const nonSystem = msgs.filter((m) => m.role !== "system").slice(-2);
+	for (const m of nonSystem) targets.add(m);
+
+	for (const msg of targets) {
+		msg.providerOptions = {
+			...msg.providerOptions,
+			anthropic: {
+				...(msg.providerOptions?.anthropic ?? {}),
+				cacheControl: { type: "ephemeral" },
+			},
+		};
+	}
 }
 
 function formatError(err: unknown, config: AgentConfig): string {
@@ -66,7 +107,7 @@ function formatError(err: unknown, config: AgentConfig): string {
 	return `${String(err)} ${context}`;
 }
 
-const MAX_STEPS = 10;
+const MAX_STEPS = 50;
 
 export class Agent {
 	status: AgentStatus = "idle";
@@ -223,7 +264,15 @@ export class Agent {
 		this.messages.push({ role: "user", content: userMessage });
 
 		const registry = createToolRegistry(this.config.tools);
-		const isAnthropic = this.config.provider === "anthropic";
+		// `isClaudeOAuth` gates Claude-Code-CLI-specific behavior: billing-header
+		// injection, identity preamble, `mcp_*` tool name prefix, and extended
+		// thinking config. Only the OAuth flow (provider="anthropic") needs these.
+		// `usesAnthropicSDK` is the broader category — any provider whose
+		// requests are serialized by `@ai-sdk/anthropic` and therefore expect
+		// Anthropic-style `cache_control` markers. Today that's Claude OAuth
+		// plus OpenCode Go's MiniMax/Qwen routes.
+		const isClaudeOAuth = this.config.provider === "anthropic";
+		const usesAnthropicSDK = isClaudeOAuth || this.config.provider === "opencode-anthropic";
 		const providerFactory = createProvider({
 			apiKey: this.config.apiKey,
 			baseURL: this.config.baseURL,
@@ -231,17 +280,21 @@ export class Agent {
 			claudeCredentials: this.config.claudeCredentials,
 		});
 
-		// For Anthropic provider, prefix tool names and build full system prompt
+		// Only the Claude OAuth flow expects `mcp_*` prefixed tool names. The
+		// OpenCode Go anthropic-format endpoint passes tools through to MiniMax
+		// or Qwen, which expect raw names.
 		const aiTools = registry.getAISDKTools();
-		const tools = isAnthropic
+		const tools = isClaudeOAuth
 			? Object.fromEntries(
 					Object.entries(aiTools).map(([name, tool]) => [prefixToolName(name), tool]),
 				)
 			: aiTools;
 
-		// Build system prompt
+		// Build system prompt — Claude OAuth requests embed a billing header
+		// and the Claude Code identity preamble so Anthropic recognizes the
+		// request as coming from the official CLI.
 		let systemPrompt = this.config.systemPrompt;
-		if (isAnthropic) {
+		if (isClaudeOAuth) {
 			const billingHeader = buildBillingHeaderValue(this.messages);
 			systemPrompt = `${billingHeader}\n${SYSTEM_IDENTITY}\n\n${systemPrompt}`;
 		}
@@ -260,41 +313,58 @@ export class Agent {
 				const effort = options?.reasoningEffort ?? this.config.reasoningEffort ?? "max";
 
 				// Build stream text options
-				const rawModel = providerFactory(this.config.model);
-				const model = rawModel as unknown as LanguageModelV1;
+				const model = providerFactory(this.config.model);
+
+				// Build the message list with the system prompt prepended as a system
+				// role message. This is required for Anthropic prompt caching: the
+				// `system` shortcut parameter takes a plain string with nowhere to
+				// attach `providerOptions.anthropic.cacheControl`. Moving it inline
+				// also lets us apply rolling cache breakpoints to the last messages.
+				const systemMessage: CoreSystemMessage = { role: "system", content: systemPrompt };
+				const coreMessages: CoreMessage[] = [
+					systemMessage,
+					...toCoreMessages(stepMessages, isClaudeOAuth),
+				];
+
+				if (usesAnthropicSDK) {
+					applyAnthropicCaching(coreMessages);
+				}
+
 				const streamOptions: Parameters<typeof streamText>[0] = {
 					model,
-					system: systemPrompt,
-					messages: toCoreMessages(stepMessages, isAnthropic),
+					messages: coreMessages,
 					tools,
 				};
 
-				if (isAnthropic && effort !== "none") {
-					const modelId = this.config.model;
-					const isOpus47 = modelId === "claude-opus-4-7";
-
+				if (isClaudeOAuth && effort !== "none") {
+					// Opus 4.7 rejects `thinking: { type: "enabled" }` ("reasoning-
+					// signature without reasoning") and only supports adaptive thinking.
+					// `@ai-sdk/anthropic` v1.x can't emit `type: "adaptive"`, so we
+					// leave `providerOptions.anthropic.thinking` unset and let the
+					// custom fetch in `createClaudeOAuthProvider` inject the adaptive
+					// shape into the request body. We still set `maxTokens` here so
+					// the SDK serializes it — adaptive thinking spends from this
+					// budget rather than a separate one.
+					const isOpus47 = this.config.model === "claude-opus-4-7";
+					const budgetTokens =
+						effort === "max"
+							? 16000
+							: effort === "high"
+								? 10000
+								: effort === "medium"
+									? 5000
+									: effort === "low"
+										? 2000
+										: 0;
 					if (isOpus47) {
-						// Opus 4.7 only supports adaptive thinking
-						streamOptions.providerOptions = {
-							anthropic: { thinking: { type: "adaptive" as const } },
-						};
+						streamOptions.maxTokens = budgetTokens + 8000;
 					} else {
-						const budgetTokens =
-							effort === "max"
-								? 16000
-								: effort === "high"
-									? 10000
-									: effort === "medium"
-										? 5000
-										: effort === "low"
-											? 2000
-											: 0;
 						streamOptions.providerOptions = {
 							anthropic: { thinking: { type: "enabled" as const, budgetTokens } },
 						};
 						streamOptions.maxTokens = budgetTokens + 8000;
 					}
-				} else if (!isAnthropic && effort !== "none") {
+				} else if (!usesAnthropicSDK && effort !== "none") {
 					streamOptions.providerOptions = { openaiCompatible: { reasoningEffort: effort } };
 				}
 
@@ -313,7 +383,7 @@ export class Agent {
 							yield { type: "reasoning-delta", delta: event.textDelta };
 						} else if (event.type === "tool-call") {
 							const rawName = event.toolName;
-							const toolName = isAnthropic ? unprefixToolName(rawName) : rawName;
+							const toolName = isClaudeOAuth ? unprefixToolName(rawName) : rawName;
 							const toolCall: ToolCall = {
 								id: event.toolCallId,
 								name: toolName,

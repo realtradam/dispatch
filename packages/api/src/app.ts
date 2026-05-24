@@ -41,6 +41,7 @@ app.post("/chat", async (c) => {
 		message?: unknown;
 		keyId?: unknown;
 		modelId?: unknown;
+		agentModels?: unknown;
 		reasoningEffort?: unknown;
 		workingDirectory?: unknown;
 		queueId?: unknown;
