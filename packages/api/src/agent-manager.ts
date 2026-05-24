@@ -98,6 +98,15 @@ Good approach:
 3. Work through each file sequentially
 `.trim();
 
+/**
+ * Returns true for OpenCode Go models served via the Anthropic-format
+ * `/messages` endpoint (MiniMax M2.x, Qwen3.x Plus). See
+ * https://opencode.ai/docs/go/#endpoints for the per-model endpoint table.
+ */
+function isOpencodeGoAnthropicModel(modelId: string): boolean {
+	return modelId.startsWith("minimax-") || modelId.startsWith("qwen");
+}
+
 function buildSystemPrompt(toolNames: string[], basePrompt?: string): string {
 	const base = basePrompt || DEFAULT_SYSTEM_PROMPT;
 	const toolList = toolNames
@@ -553,6 +562,16 @@ export class AgentManager {
 							apiKey = envKey;
 							baseURL = key.base_url;
 							model = effectiveModelId;
+							// OpenCode Go splits its catalog across two endpoints:
+							//   `/chat/completions` — GLM, Kimi, DeepSeek, MiMo (OpenAI-compatible)
+							//   `/messages`        — MiniMax, Qwen (Anthropic-format)
+							// The configured key has provider="opencode-go" which defaults to
+							// the OpenAI-compatible path. When the selected model lives on the
+							// `/messages` route, route through the API-key Anthropic provider
+							// instead so the SDK targets the correct endpoint and protocol.
+							if (key.provider === "opencode-go" && isOpencodeGoAnthropicModel(model)) {
+								provider = "opencode-anthropic";
+							}
 							tabAgent.keyId = effectiveKeyId;
 							tabAgent.modelId = effectiveModelId;
 							useOverride = true;
@@ -847,8 +866,12 @@ export class AgentManager {
 
 		for (let fallbackIdx = 0; fallbackIdx < maxFallbackAttempts; fallbackIdx++) {
 			const entry = fallbackSequence[fallbackIdx];
-			currentKeyId = entry.key_id;
-			currentModelId = entry.model_id;
+			if (!entry) break; // unreachable: loop bound guarantees defined, satisfies TS
+			// Convert empty strings (used when caller omitted keyId/modelId in
+			// manual mode) to undefined so `getOrCreateAgentForTab` falls back
+			// to the tabAgent's stored defaults via the `?? tabAgent.keyId` chain.
+			currentKeyId = entry.key_id || undefined;
+			currentModelId = entry.model_id || undefined;
 			allOutput = "";
 			let assistantText = "";
 			let assistantThinking = "";
@@ -977,8 +1000,8 @@ export class AgentManager {
 
 				// Try the next entry in the agent's fallback sequence
 				const nextIdx = fallbackIdx + 1;
-				if (nextIdx < maxFallbackAttempts) {
-					const nextEntry = fallbackSequence[nextIdx];
+				const nextEntry = fallbackSequence[nextIdx];
+				if (nextIdx < maxFallbackAttempts && nextEntry) {
 					const fallbackMsg =
 						`Key "${tabAgent.keyId}" rate limited. ` +
 						`Falling back to "${nextEntry.key_id}" (model: ${nextEntry.model_id})...`;
@@ -1021,9 +1044,11 @@ export class AgentManager {
 			const startIdx = models.findIndex((m) => m.key_id === keyId && m.model_id === modelId);
 			return startIdx >= 0 ? models.slice(startIdx) : models;
 		}
-		// Manual mode: no fallback — just the selected key/model pair
-		if (keyId && modelId) return [{ key_id: keyId, model_id: modelId }];
-		return [];
+		// Manual mode: no fallback — just the selected key/model pair.
+		// Always return at least one entry so `processMessage` runs the agent
+		// once (empty strings let `getOrCreateAgentForTab` fall back to the
+		// tabAgent's stored defaults or environment-driven config).
+		return [{ key_id: keyId ?? "", model_id: modelId ?? "" }];
 	}
 
 	queueMessage(tabId: string, message: string, clientId?: string): { messageId: string } {

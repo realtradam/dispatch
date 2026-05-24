@@ -440,13 +440,13 @@ function hasBucketData(bucket: UsageBucket | undefined): boolean {
 									<span class="text-xs text-base-content/50">Models</span>
 									<span class="text-xs font-mono">{entry.data.models.length} available</span>
 								</div>
-								{#if m.rpm > 0}
+								{#if m && m.rpm > 0}
 									<div class="flex items-center justify-between">
 										<span class="text-xs text-base-content/50">RPM</span>
 										<span class="text-xs font-mono">{m.rpm}</span>
 									</div>
 								{/if}
-								{#if m.requestsPerDay > 0}
+								{#if m && m.requestsPerDay > 0}
 									<div class="flex items-center justify-between">
 										<span class="text-xs text-base-content/50">RPD</span>
 										<span class="text-xs font-mono">{m.requestsPerDay.toLocaleString()}</span>
