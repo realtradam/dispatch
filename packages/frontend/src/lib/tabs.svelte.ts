@@ -181,30 +181,28 @@ function createTabStore() {
 			};
 
 			const messagesRes = await fetch(`${config.apiBase}/tabs/${agentId}/messages`);
+			// The backend's `getMessagesForTab` (packages/core/src/db/messages.ts)
+			// already parses `content_json` into a `Chunk[]` and serves it as
+			// `chunks` over the wire — NOT the raw `contentJson` string. Earlier
+			// versions of this client expected `contentJson` and silently dropped
+			// every message when JSON.parse(undefined) threw, leaving the UI
+			// with empty conversations after a refresh.
 			const messagesData = messagesRes.ok
 				? ((await messagesRes.json()) as {
 						messages: Array<{
 							id?: string;
 							role: string;
-							contentJson: string;
+							chunks?: Chunk[];
 						}>;
 					})
 				: { messages: [] };
 
-			const chatMessages: ChatMessage[] = messagesData.messages.flatMap((m) => {
-				try {
-					return [
-						{
-							id: m.id ?? generateId(),
-							role: m.role as ChatMessage["role"],
-							chunks: JSON.parse(m.contentJson) as Chunk[],
-							isStreaming: false,
-						},
-					];
-				} catch {
-					return [];
-				}
-			});
+			const chatMessages: ChatMessage[] = messagesData.messages.map((m) => ({
+				id: m.id ?? generateId(),
+				role: m.role as ChatMessage["role"],
+				chunks: Array.isArray(m.chunks) ? m.chunks : [],
+				isStreaming: false,
+			}));
 
 			const newTab: Tab = {
 				id: agentId,
@@ -1089,6 +1087,25 @@ function createTabStore() {
 			.filter(([, v]) => v)
 			.map(([k]) => k);
 
+		// Short, distinguishable chunk descriptor — lets us see the shape of
+		// each message at a glance without dumping the full content.
+		// E.g. `chunks=6: thinking, tool-batch[2], thinking, tool-batch[1], thinking, text`.
+		// If a message reports `chunks=0`, the in-memory store has no content
+		// for it — which is the canonical symptom of a wire-format / load
+		// failure. Always include this so bug reports are diagnosable from
+		// the paste alone, without DB access.
+		const summarizeChunks = (chunks: (typeof tab.messages)[number]["chunks"]) => {
+			if (chunks.length === 0) return "chunks=0";
+			const parts = chunks.map((c) => {
+				if (c.type === "tool-batch") return `tool-batch[${c.calls.length}]`;
+				if (c.type === "system") return `system:${c.kind}`;
+				return c.type; // text | thinking | error
+			});
+			return `chunks=${chunks.length}: ${parts.join(", ")}`;
+		};
+
+		const shortId = (id: string | undefined) => (id ? `${id.slice(0, 8)}…` : "?");
+
 		const lines: string[] = [
 			"=== Dispatch Conversation ===",
 			`Tab ID: ${tab.id}`,
@@ -1099,12 +1116,47 @@ function createTabStore() {
 			`Total tabs: ${tabs.length}`,
 			`All tab IDs: ${tabs.map((t) => t.id).join(", ")}`,
 			"",
+			// Store-level state — distinguishes "store empty (load/parse
+			// failure)" from "store populated, agent stuck mid-stream" from
+			// "agent finished cleanly" etc.
+			"--- Frontend store state ---",
+			`Connected to backend: ${isConnected}`,
+			`Tab agentStatus: ${tab.agentStatus}`,
+			`Tab currentAssistantId: ${tab.currentAssistantId ?? "null"}`,
+			`Messages in store: ${tab.messages.length}`,
+			`Queued messages: ${tab.queuedMessages.length}`,
+			`Persistent: ${tab.persistent}`,
+			`Working directory: ${tab.workingDirectory ?? "default"}`,
+			`Reasoning effort: ${tab.reasoningEffort}`,
+			`Pending tasks: ${tab.tasks.length}`,
+			"",
 		];
 		const TOOL_RESULT_MAX = 300;
 
 		for (const msg of tab.messages) {
 			const role = msg.role === "user" ? "User" : msg.role === "system" ? "System" : "Assistant";
-			lines.push(`--- ${role} ---`);
+			const streamingFlag = msg.isStreaming ? ", streaming=true" : "";
+			// Inline message diagnostics — id, streaming, chunk summary —
+			// makes wire-format / store-shape bugs immediately visible.
+			lines.push(
+				`--- ${role} --- (id=${shortId(msg.id)}${streamingFlag}, ${summarizeChunks(msg.chunks)})`,
+			);
+
+			// Surface non-trivial debugInfo (errors, HTTP failures). Skip
+			// when there's nothing interesting — keeps the output readable
+			// for happy-path conversations.
+			const dbg = msg.debugInfo;
+			if (dbg && (dbg.error || dbg.httpStatus !== undefined || dbg.httpBody)) {
+				const dbgBits: string[] = [];
+				if (dbg.error) dbgBits.push(`error="${dbg.error}"`);
+				if (dbg.httpStatus !== undefined) dbgBits.push(`httpStatus=${dbg.httpStatus}`);
+				if (dbg.httpBody) {
+					const body = dbg.httpBody.length > 200 ? `${dbg.httpBody.slice(0, 200)}…` : dbg.httpBody;
+					dbgBits.push(`httpBody="${body}"`);
+				}
+				lines.push(`  [debug]: ${dbgBits.join(" ")}`);
+			}
+
 			for (const chunk of msg.chunks) {
 				switch (chunk.type) {
 					case "text":
