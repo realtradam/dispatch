@@ -1,10 +1,10 @@
-# Background Agents + Layout Restore Review
+# Sidebar Layout Persistence Review
 
 ## Verdict
 SHIP
 
 ## Block-level findings
-None. The implementation adheres strictly to the `plan-bg-restore.md` specification across all tiers (core, API, and frontend).
+None. The implementation is robust and follows the established patterns for localStorage usage in this codebase.
 
 ## Ship-with-followup findings
 None.
@@ -13,19 +13,26 @@ None.
 None.
 
 ## What was checked
-- **A. getAllStatuses correctness**: PASS. The method in `packages/api/src/agent-manager.ts:714-751` returns `Record<string, TabStatusSnapshot>`. It conditionally includes `currentChunks` and `currentAssistantId` only for `running` tabs and performs a defensive shallow copy `[...tabAgent.currentChunks]`.
-- **B. Frontend TabStatusSnapshot mirror**: PASS. `packages/frontend/src/lib/types.ts:96-100` mirrors the core interface exactly.
-- **C. hydrateFromBackend**: PASS. `packages/frontend/src/lib/tabs.svelte.ts:432-562` implements the full hydration flow (GET /tabs -> GET /status -> parallel GET /tabs/:id/messages). It handles failure modes without throwing, implements the required idempotency check (`tabs.length > 0`), and correctly seeds in-flight messages.
-- **D. WS statuses handler**: PASS. `packages/frontend/src/lib/tabs.svelte.ts:581-644` reconciles status, seeds in-flight chunks for running tabs, and clears pointers for idle tabs. The desync recovery path (`reloadTabMessagesFromApi`) is preserved.
-- **E. App.svelte onMount**: PASS. `packages/frontend/src/App.svelte:78-105` sequences `hydrateFromBackend` before the fallback `createNewTab` and only creates a fresh tab if hydration yields nothing. WS connection lifecycle is preserved.
-- **F. Behavior preservation**: PASS. No new `beforeunload` or `unload` handlers were added. WS `onClose` in `packages/api/src/index.ts:60-66` correctly only unsubscribes. Explicit tab close in `tabs.svelte.ts` still calls `DELETE /tabs/:id`, which cancels and archives as before.
-- **G. Test coverage**: PASS. 
-    - API tests in `agent-manager.test.ts` cover empty state, idle snapshot, running snapshot, and defensive copy.
-    - Frontend tests in `chat-store.test.ts` cover successful restore, in-flight seeding, failure tolerance, and idempotency.
-- **H. Race conditions**: PASS. `hydrateFromBackend` idempotency and the per-tab reconcile logic in the WS handler mitigate potential races between HTTP and WS data.
-- **I. Wire-shape symmetry**: PASS. The frontend mirror matches the core definition.
-- **J. Type-only vs runtime imports**: PASS. `agent-manager.ts:40` uses `type TabStatusSnapshot`.
+- **A. sidebar-storage.ts correctness**: 
+    - `loadSidebarPanels` correctly handles all failure modes (missing key, malformed JSON, non-array types, and mixed-type arrays) without throwing. It returns a defensive shallow copy of the default layout.
+    - `saveSidebarPanels` is best-effort and safely swallows any storage errors (e.g., QuotaExceededError or SecurityError).
+    - The localStorage key `dispatch-sidebar-panels` is correctly namespaced.
+- **B. SidebarPanel.svelte integration**:
+    - Initialization correctly seeds the `panels` state using `loadSidebarPanels()`.
+    - The `$effect` correctly captures all changes to the `panels` array (addition, removal, and selection changes) due to the reactive read in the map function.
+    - Session-ephemeral `id` fields are correctly regenerated and not persisted, avoiding potential collisions across sessions.
+    - The 'minimum 1 panel' invariant is preserved by the existing UI logic (`{#if idx > 0}`) and reinforced by the storage fallback.
+- **C. Test coverage**:
+    - The unit tests in `sidebar-storage.test.ts` are comprehensive, covering initial load, valid round-trips, corruption, malformed data, filtering, and storage exceptions.
+    - Verified mutation isolation (fresh array on each load).
+- **D. Regression risks**:
+    - Add/remove and dropdown handlers are preserved and correctly trigger persistence via state reassignment.
+    - No infinite loops or race conditions identified; the `$effect` is one-way (state -> localStorage).
+- **E. Stylistic / consistency**:
+    - Matches the `dispatch-` prefix pattern seen in `config.ts`.
+    - Documentation and comments are thorough and clear.
 
 ## What was NOT checked
-- Performance with extremely high tab counts (>100) was not verified empirically, though the implementation uses `Promise.all` for message fetching to minimize latency.
-- Direct database state verification (the review was limited to code analysis and existing test coverage).
+- Persistence of the `sidebarOpen` toggle (explicitly out of scope).
+- Drag-to-reorder support (not implemented in the UI).
+- Backend synchronization (feature designed for per-device localStorage).

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { loadSidebarPanels, saveSidebarPanels } from "../sidebar-storage.js";
 import type { KeyInfo, LogEntry, TaskItem } from "../types.js";
 import ClaudeReset from "./ClaudeReset.svelte";
 import ConfigPanel from "./ConfigPanel.svelte";
@@ -58,8 +59,20 @@ interface Panel {
 	selected: string;
 }
 
+// The `id` field is purely a stable key for Svelte's `{#each ... (panel.id)}`
+// block within a single session — it is NEVER persisted. Only the ordered
+// list of `selected` strings is round-tripped through localStorage; ids are
+// regenerated fresh from `nextId` on every mount.
 let nextId = 0;
-let panels = $state<Panel[]>([{ id: nextId++, selected: "Chat Settings" }]);
+let panels = $state<Panel[]>(loadSidebarPanels().map((selected) => ({ id: nextId++, selected })));
+
+// Persist the layout whenever it changes. `$effect` re-runs whenever any
+// reactive read inside it changes; we read `panels` (the whole array) via
+// `.map`, which Svelte 5 tracks. Save errors are swallowed inside
+// `saveSidebarPanels` — best-effort.
+$effect(() => {
+	saveSidebarPanels(panels.map((p) => p.selected));
+});
 
 const viewOptions = [
 	"Select a view",
