@@ -296,11 +296,13 @@ function createTabStore() {
 	 *
 	 * Reactivity contract: `appendEventToChunks` mutates the chunks array in
 	 * place, but Svelte 5 `$state` only triggers updates when we reassign at the
-	 * `tabs` array level. We deep-clone the message's chunks via
-	 * `structuredClone`, mutate the clone, then write it back through
-	 * `updateMessages` — which rebuilds the parent arrays. This is the same
-	 * pattern the old per-event handlers used (shallow copy + new arrays), just
-	 * centralized through the core helper.
+	 * `tabs` array level. We snapshot the message's chunks via
+	 * `$state.snapshot` (Svelte's own safe clone — strips reactive proxies and
+	 * falls back gracefully where native `structuredClone` would throw
+	 * `DataCloneError` on a `$state` proxy), mutate the snapshot, then write
+	 * it back through `updateMessages`. The previous use of `structuredClone`
+	 * here threw silently and was swallowed by the WS try/catch — left chunks
+	 * empty for every streaming turn.
 	 */
 	function applyChunkEvent(tabId: string, event: AgentEvent): void {
 		ensureAssistantMessage(tabId);
@@ -311,7 +313,7 @@ function createTabStore() {
 		updateMessages(tabId, (msgs) =>
 			msgs.map((m) => {
 				if (m.id !== currentId) return m;
-				const cloned = structuredClone(m.chunks);
+				const cloned = $state.snapshot(m.chunks) as Chunk[];
 				// The frontend's local AgentEvent is structurally compatible with
 				// core's for every variant the helper cares about; the variants
 				// where shapes differ (tab-created, done, status, message-*) are
@@ -331,13 +333,13 @@ function createTabStore() {
 		const tab = getTabById(tabId);
 		if (!tab) return;
 		// We need to mutate the messages array (applySystemEvent does in-place
-		// push). Build a shallow-cloned IdentifiedMessage[] view, run the
-		// helper, then write it back. We construct fresh ChatMessage objects
-		// for any newly-pushed messages by reading the resulting view.
+		// push). Build a shallow-cloned IdentifiedMessage[] view via
+		// `$state.snapshot` (safe against Svelte 5 reactive proxies; native
+		// `structuredClone` would throw), run the helper, then write it back.
 		const view: IdentifiedMessage[] = tab.messages.map((m) => ({
 			id: m.id,
 			role: m.role,
-			chunks: structuredClone(m.chunks),
+			chunks: $state.snapshot(m.chunks) as Chunk[],
 		}));
 		applySystemEvent(view, sysEvent, generateId);
 
@@ -359,6 +361,34 @@ function createTabStore() {
 		updateTab(tabId, { messages: rebuilt });
 	}
 
+	/**
+	 * Reload a tab's messages from the API. Used after a WS reconnect when
+	 * we detect the backend finished work while we were disconnected — the
+	 * persisted chunks are the source of truth; in-memory state may be
+	 * missing events.
+	 */
+	async function reloadTabMessagesFromApi(tabId: string): Promise<void> {
+		try {
+			const res = await fetch(`${config.apiBase}/tabs/${tabId}/messages`);
+			if (!res.ok) return;
+			const data = (await res.json()) as {
+				messages: Array<{ id?: string; role: string; chunks?: Chunk[] }>;
+			};
+			const reloaded: ChatMessage[] = data.messages.map((m) => ({
+				id: m.id ?? generateId(),
+				role: m.role as ChatMessage["role"],
+				chunks: Array.isArray(m.chunks) ? m.chunks : [],
+				isStreaming: false,
+			}));
+			updateTab(tabId, {
+				messages: reloaded,
+				currentAssistantId: null,
+			});
+		} catch (err) {
+			console.warn("[reloadTabMessagesFromApi] failed:", err);
+		}
+	}
+
 	function handleEvent(event: AgentEvent & { tabId?: string }): void {
 		const tabId = event.tabId;
 
@@ -372,6 +402,34 @@ function createTabStore() {
 						if (tab && !tab.persistent && tabId !== activeTabId) {
 							tabs = tabs.filter((t) => t.id !== tabId);
 						}
+					}
+				}
+				break;
+			}
+			case "statuses": {
+				// WS (re)connect snapshot. For any tab where the frontend thought
+				// we were running but the backend says otherwise, we missed the
+				// finishing events while disconnected — pull the persisted
+				// chunks from the API to recover. Also sync agentStatus and
+				// clear in-flight pointers on every desyncing tab.
+				const backend = event.statuses;
+				for (const t of tabs) {
+					const backendStatus = backend[t.id] ?? "idle";
+					if (t.agentStatus === "running" && backendStatus !== "running") {
+						void reloadTabMessagesFromApi(t.id);
+					}
+					if (t.agentStatus !== backendStatus) {
+						updateTab(t.id, { agentStatus: backendStatus });
+					}
+					if (backendStatus !== "running" && t.currentAssistantId) {
+						// Mark any in-flight assistant message as no-longer-streaming;
+						// `reloadTabMessagesFromApi` (if it ran) will replace the
+						// whole messages array, but if no reload was triggered we
+						// still want streaming flags cleared.
+						updateMessages(t.id, (msgs) =>
+							msgs.map((m) => (m.id === t.currentAssistantId ? { ...m, isStreaming: false } : m)),
+						);
+						updateTab(t.id, { currentAssistantId: null });
 					}
 				}
 				break;
