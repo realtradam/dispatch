@@ -79,6 +79,13 @@ export function createReadFileTool(workingDirectory: string): ToolDefinition {
 				return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;
 			}
 
+			// A truly empty file (0 bytes) would otherwise slip through the
+			// line-counting below: `"".split("\n")` is `[""]` and there's no
+			// trailing newline, yielding a spurious `totalLines === 1`.
+			if (raw === "") {
+				return `(empty file: ${filePath})`;
+			}
+
 			const allLines = raw.split("\n");
 			// `split("\n")` produces an extra empty entry when the file ends with a
 			// newline. The total line count we report to the caller should match
