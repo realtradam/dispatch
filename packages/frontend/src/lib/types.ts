@@ -70,6 +70,11 @@ export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
 export type AgentEvent =
 	| { type: "status"; status: "idle" | "running" | "error" }
+	// Sent on every WS (re)connect: a snapshot of every tab the backend is
+	// currently tracking and its live status. The frontend uses this to
+	// detect desync after a reconnect (e.g. bun --watch restart killed the
+	// in-flight agent state, frontend missed `done` / `status:idle` events).
+	| { type: "statuses"; statuses: Record<string, "idle" | "running" | "error"> }
 	| { type: "text-delta"; delta: string }
 	| { type: "reasoning-delta"; delta: string }
 	| {

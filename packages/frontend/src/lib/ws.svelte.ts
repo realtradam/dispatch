@@ -40,13 +40,24 @@ function createWebSocketClient(url: string) {
 		};
 
 		ws.onmessage = (event: MessageEvent) => {
+			let data: AgentEvent;
 			try {
-				const data = JSON.parse(event.data as string) as AgentEvent;
-				for (const cb of callbacks) {
+				data = JSON.parse(event.data as string) as AgentEvent;
+			} catch (err) {
+				// Genuinely malformed WS payload — these are rare and harmless.
+				console.warn("[ws] ignored malformed message:", err);
+				return;
+			}
+			// Run callbacks OUTSIDE the parse try so callback throws are visible.
+			// The previous catch-everything wrapper silently swallowed bugs in
+			// downstream handlers (notably the `structuredClone` of a Svelte 5
+			// $state proxy throwing DataCloneError), making them undiagnosable.
+			for (const cb of callbacks) {
+				try {
 					cb(data);
+				} catch (err) {
+					console.error("[ws] callback threw for event:", data, err);
 				}
-			} catch {
-				// ignore malformed messages
 			}
 		};
 
