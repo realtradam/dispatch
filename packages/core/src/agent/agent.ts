@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
 import type { CoreMessage, CoreSystemMessage } from "ai";
 import { streamText } from "ai";
+import { appendEventToChunks } from "../chunks/append.js";
 import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
 import { createProvider, prefixToolName, unprefixToolName } from "../llm/provider.js";
 import { canonicalize } from "../tools/path-utils.js";
@@ -12,35 +13,118 @@ import type {
 	AgentEvent,
 	AgentStatus,
 	ChatMessage,
+	Chunk,
 	QueueCallbacks,
 	ToolCall,
 	ToolResult,
 } from "../types/index.js";
 
+/**
+ * Rebuild AI SDK `CoreMessage[]` from our internal `ChatMessage[]`.
+ *
+ * Strip rules (see plan-chunk-refactor.md):
+ *  - `role: "system"` messages are skipped wholesale (they're display-only
+ *    standalone-system bubbles that exist outside any model turn).
+ *  - `error` chunks are skipped — the turn ended; the LLM doesn't need them.
+ *  - `system` chunks are skipped — display-only notices.
+ *  - `text` chunks → `{ type: "text", text }` parts.
+ *  - `thinking` chunks → `{ type: "reasoning", text }` parts (handles
+ *    Claude's `interleaved-thinking-2025-05-14` round-trip).
+ *  - `tool-batch` chunks → one `{ type: "tool-call" }` part per entry
+ *    inside the current assistant message, followed by a separate
+ *    `{ role: "tool", content: [{ type: "tool-result", ... }] }` message
+ *    for every entry that has a result. This mirrors what the AI SDK
+ *    expects on the wire.
+ *
+ * Mixed-resolution tool batches (some entries with `result`, some without):
+ * we emit tool-results only for the entries that have them. In practice
+ * the agent resolves every tool call in a step before looping back to the
+ * LLM, so this case only arises mid-step (where the message hasn't been
+ * round-tripped to the LLM yet) and is benign.
+ */
 function toCoreMessages(messages: ChatMessage[], useToolPrefix?: boolean): CoreMessage[] {
 	const result: CoreMessage[] = [];
 	for (const msg of messages) {
+		if (msg.role === "system") continue;
+
 		if (msg.role === "user") {
-			result.push({ role: "user", content: msg.content });
-		} else if (msg.role === "assistant") {
-			const parts: Array<
-				| { type: "text"; text: string }
-				| { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }
-			> = [{ type: "text", text: msg.content }];
-			for (const tc of msg.toolCalls ?? []) {
-				const toolName = useToolPrefix ? prefixToolName(tc.name) : tc.name;
-				parts.push({ type: "tool-call", toolCallId: tc.id, toolName, args: tc.arguments });
+			// User messages in our model can in theory contain non-text chunks,
+			// but in practice the UI only produces text. Concatenate any text
+			// chunks; ignore anything else.
+			const text = msg.chunks
+				.filter((c): c is Extract<Chunk, { type: "text" }> => c.type === "text")
+				.map((c) => c.text)
+				.join("");
+			result.push({ role: "user", content: text });
+			continue;
+		}
+
+		// role === "assistant"
+		const parts: Array<
+			| { type: "text"; text: string }
+			| { type: "reasoning"; text: string }
+			| { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }
+		> = [];
+		const trailingToolResults: Array<{
+			toolCallId: string;
+			toolName: string;
+			result: string;
+		}> = [];
+
+		for (const chunk of msg.chunks) {
+			switch (chunk.type) {
+				case "text":
+					parts.push({ type: "text", text: chunk.text });
+					break;
+				case "thinking":
+					parts.push({ type: "reasoning", text: chunk.text });
+					break;
+				case "tool-batch":
+					for (const entry of chunk.calls) {
+						const toolName = useToolPrefix ? prefixToolName(entry.name) : entry.name;
+						parts.push({
+							type: "tool-call",
+							toolCallId: entry.id,
+							toolName,
+							args: entry.arguments,
+						});
+						if (entry.result !== undefined) {
+							trailingToolResults.push({
+								toolCallId: entry.id,
+								toolName,
+								result: entry.result,
+							});
+						}
+					}
+					break;
+				case "error":
+				case "system":
+					// Strip — not sent back to the LLM.
+					break;
 			}
+		}
+
+		// Skip the assistant message entirely if it has no parts (e.g., a
+		// turn that consisted solely of system/error chunks). Emitting an
+		// assistant message with empty content can confuse some providers.
+		if (parts.length === 0 && trailingToolResults.length === 0) continue;
+
+		if (parts.length > 0) {
 			result.push({ role: "assistant", content: parts });
-			for (const tr of msg.toolResults ?? []) {
-				const toolName = useToolPrefix ? prefixToolName(tr.toolName) : tr.toolName;
-				result.push({
-					role: "tool",
-					content: [
-						{ type: "tool-result", toolCallId: tr.toolCallId, toolName, result: tr.result },
-					],
-				});
-			}
+		}
+
+		for (const tr of trailingToolResults) {
+			result.push({
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						toolCallId: tr.toolCallId,
+						toolName: tr.toolName,
+						result: tr.result,
+					},
+				],
+			});
 		}
 	}
 	return result;
@@ -204,8 +288,7 @@ export class Agent {
 			// to read it without prompting the user. Bypassing the external-
 			// directory check here keeps the inspection flow frictionless.
 			const isSpillPath =
-				resolvedPath === resolvedSpillRoot ||
-				resolvedPath.startsWith(`${resolvedSpillRoot}/`);
+				resolvedPath === resolvedSpillRoot || resolvedPath.startsWith(`${resolvedSpillRoot}/`);
 
 			if (!isUnderWorkdir && !isSpillPath) {
 				const permissionType =
@@ -288,7 +371,7 @@ export class Agent {
 		this.status = "running";
 		yield { type: "status", status: "running" };
 
-		this.messages.push({ role: "user", content: userMessage });
+		this.messages.push({ role: "user", chunks: [{ type: "text", text: userMessage }] });
 
 		const registry = createToolRegistry(this.config.tools);
 		// `isClaudeOAuth` gates Claude-Code-CLI-specific behavior: billing-header
@@ -322,19 +405,36 @@ export class Agent {
 		// request as coming from the official CLI.
 		let systemPrompt = this.config.systemPrompt;
 		if (isClaudeOAuth) {
-			const billingHeader = buildBillingHeaderValue(this.messages);
+			// `buildBillingHeaderValue` historically took `{ role, content: string }[]`.
+			// Project the new chunk-based ChatMessage shape onto that legacy shape
+			// by stringifying text chunks. Only the first user message's text is
+			// actually used (see extractFirstUserMessageText) — non-text chunks
+			// safely contribute nothing.
+			const legacyShape = this.messages.map((m) => ({
+				role: m.role,
+				content: m.chunks
+					.filter((c): c is Extract<Chunk, { type: "text" }> => c.type === "text")
+					.map((c) => c.text)
+					.join(""),
+			}));
+			const billingHeader = buildBillingHeaderValue(legacyShape);
 			systemPrompt = `${billingHeader}\n${SYSTEM_IDENTITY}\n\n${systemPrompt}`;
 		}
 
 		try {
-			// Track the final assistant message across all steps
-			let finalText = "";
-			const allToolCalls: ToolCall[] = [];
-			const allToolResults: ToolResult[] = [];
+			// Single chunk accumulator for the entire assistant turn (all steps).
+			// All event-driven mutations go through `appendEventToChunks`.
+			const chunks: Chunk[] = [];
 
 			// We build up a local message list for multi-turn within one run() call
-			// that includes tool results fed back to the LLM
+			// that includes tool results fed back to the LLM. Each step appends
+			// the assistant's evolving chunk list as one ChatMessage; subsequent
+			// steps see prior tool calls and their results via the chunks.
 			const stepMessages: ChatMessage[] = [...this.messages];
+			// The assistant ChatMessage for the current turn, shared across steps
+			// so its `chunks` reference matches the accumulator above. We push
+			// it once when the first step has actual output to record.
+			let assistantTurnMessage: ChatMessage | null = null;
 
 			for (let step = 0; step < MAX_STEPS; step++) {
 				const effort = options?.reasoningEffort ?? this.config.reasoningEffort ?? "max";
@@ -397,17 +497,35 @@ export class Agent {
 
 				const result = streamText(streamOptions);
 
-				let stepText = "";
+				// Per-step tool-call tracking — needed because we only loop back
+				// to the LLM if this step produced tool calls. The actual chunk
+				// state for the turn lives in `chunks`.
 				const stepToolCalls: ToolCall[] = [];
+
+				// Ensure we have an assistant message in stepMessages whose
+				// `chunks` reference is shared with our accumulator. Only push
+				// once; subsequent steps mutate the same chunks array.
+				if (assistantTurnMessage === null) {
+					assistantTurnMessage = { role: "assistant", chunks };
+					stepMessages.push(assistantTurnMessage);
+				}
 
 				try {
 					for await (const event of result.fullStream) {
 						if (event.type === "text-delta") {
-							stepText += event.textDelta;
-							finalText += event.textDelta;
-							yield { type: "text-delta", delta: event.textDelta };
+							const internalEvent: AgentEvent = {
+								type: "text-delta",
+								delta: event.textDelta,
+							};
+							appendEventToChunks(chunks, internalEvent);
+							yield internalEvent;
 						} else if (event.type === "reasoning") {
-							yield { type: "reasoning-delta", delta: event.textDelta };
+							const internalEvent: AgentEvent = {
+								type: "reasoning-delta",
+								delta: event.textDelta,
+							};
+							appendEventToChunks(chunks, internalEvent);
+							yield internalEvent;
 						} else if (event.type === "tool-call") {
 							const rawName = event.toolName;
 							const toolName = isClaudeOAuth ? unprefixToolName(rawName) : rawName;
@@ -417,18 +535,21 @@ export class Agent {
 								arguments: event.args as Record<string, unknown>,
 							};
 							stepToolCalls.push(toolCall);
-							allToolCalls.push(toolCall);
-							yield { type: "tool-call", toolCall };
+							const internalEvent: AgentEvent = { type: "tool-call", toolCall };
+							appendEventToChunks(chunks, internalEvent);
+							yield internalEvent;
 						} else if (event.type === "error") {
 							const errRecord = event.error as unknown as Record<string, unknown>;
 							const statusCode =
 								typeof errRecord.statusCode === "number" ? errRecord.statusCode : undefined;
 							const errorMsg = formatError(event.error, this.config);
-							yield {
+							const internalEvent: AgentEvent = {
 								type: "error",
 								error: errorMsg,
 								...(statusCode !== undefined ? { statusCode } : {}),
 							};
+							appendEventToChunks(chunks, internalEvent);
+							yield internalEvent;
 							this.status = "error";
 							yield { type: "status", status: "error" };
 							return;
@@ -452,8 +573,9 @@ export class Agent {
 						arguments: {},
 					};
 					stepToolCalls.push(badToolCall);
-					allToolCalls.push(badToolCall);
-					yield { type: "tool-call", toolCall: badToolCall };
+					const tcEvent: AgentEvent = { type: "tool-call", toolCall: badToolCall };
+					appendEventToChunks(chunks, tcEvent);
+					yield tcEvent;
 
 					const badToolResult: ToolResult = {
 						toolCallId: fakeId,
@@ -461,39 +583,33 @@ export class Agent {
 						result: errorResult,
 						isError: true,
 					};
-					allToolResults.push(badToolResult);
-					yield { type: "tool-result", toolResult: badToolResult };
+					const trEvent: AgentEvent = { type: "tool-result", toolResult: badToolResult };
+					appendEventToChunks(chunks, trEvent);
+					yield trEvent;
 				}
 
-				// No tool calls means the agent is done
+				// No tool calls means the agent is done — the assistant message
+				// already exists in stepMessages with up-to-date chunks.
 				if (stepToolCalls.length === 0) {
-					// Add the final assistant message to step messages (for history)
-					stepMessages.push({
-						role: "assistant",
-						content: stepText,
-					});
 					break;
 				}
 
-				// Add assistant message with tool calls to step messages
-				stepMessages.push({
-					role: "assistant",
-					content: stepText,
-					toolCalls: stepToolCalls,
-				});
-
-				// Execute tool calls manually
-				const stepToolResults: ToolResult[] = [];
-				// Track tool calls that already have results (e.g. synthetic unavailable-tool errors)
-				const alreadyResolved = new Set(allToolResults.map((r) => r.toolCallId));
+				// Execute tool calls manually. Their results merge back into the
+				// `chunks` accumulator via `appendEventToChunks`, which routes
+				// each result to the correct entry inside its tool-batch chunk.
+				// Track which calls already have a recorded result (from the
+				// synthetic unavailable-tool error path above) so we don't
+				// re-execute them.
+				const alreadyResolved = new Set<string>();
+				for (const c of chunks) {
+					if (c.type !== "tool-batch") continue;
+					for (const entry of c.calls) {
+						if (entry.result !== undefined) alreadyResolved.add(entry.id);
+					}
+				}
 
 				for (const tc of stepToolCalls) {
-					// Skip execution for tool calls that already have synthetic results
-					if (alreadyResolved.has(tc.id)) {
-						const existing = allToolResults.find((r) => r.toolCallId === tc.id);
-						if (existing) stepToolResults.push(existing);
-						continue;
-					}
+					if (alreadyResolved.has(tc.id)) continue;
 
 					const shellOutputQueue: Array<{ data: string; stream: "stdout" | "stderr" }> = [];
 
@@ -506,7 +622,15 @@ export class Agent {
 					while (toolResult === undefined) {
 						if (shellOutputQueue.length > 0) {
 							const item = shellOutputQueue.shift();
-							if (item) yield { type: "shell-output", data: item.data, stream: item.stream };
+							if (item) {
+								const shellEvent: AgentEvent = {
+									type: "shell-output",
+									data: item.data,
+									stream: item.stream,
+								};
+								appendEventToChunks(chunks, shellEvent);
+								yield shellEvent;
+							}
 							continue;
 						}
 						const raceResult = await Promise.race([
@@ -523,7 +647,15 @@ export class Agent {
 					// Drain any remaining shell output emitted before we read the result
 					while (shellOutputQueue.length > 0) {
 						const item = shellOutputQueue.shift();
-						if (item) yield { type: "shell-output", data: item.data, stream: item.stream };
+						if (item) {
+							const shellEvent: AgentEvent = {
+								type: "shell-output",
+								data: item.data,
+								stream: item.stream,
+							};
+							appendEventToChunks(chunks, shellEvent);
+							yield shellEvent;
+						}
 					}
 
 					// Check for queued user messages and append them to the tool result
@@ -539,36 +671,22 @@ export class Agent {
 						}
 					}
 
-					stepToolResults.push(finalToolResult);
-					allToolResults.push(finalToolResult);
-					yield { type: "tool-result", toolResult: finalToolResult };
-				}
-
-				// Add tool results back to step messages so LLM can see them
-				// We append them to the last assistant message's toolResults
-				const lastMsg = stepMessages[stepMessages.length - 1];
-				if (lastMsg) {
-					lastMsg.toolResults = stepToolResults;
+					const trEvent: AgentEvent = { type: "tool-result", toolResult: finalToolResult };
+					appendEventToChunks(chunks, trEvent);
+					yield trEvent;
 				}
 			}
 
-			// If we exhausted MAX_STEPS and there were pending tool calls, surface an error
-			if (stepMessages.length > 0) {
-				const lastMsg = stepMessages[stepMessages.length - 1];
-				if (lastMsg?.toolCalls && lastMsg.toolCalls.length > 0 && !lastMsg.toolResults) {
-					yield {
-						type: "error",
-						error: `Agent reached MAX_STEPS (${MAX_STEPS}) with unresolved tool calls`,
-					};
-				}
-			}
-
-			const assistantMessage: ChatMessage = {
+			// Build the final assistant message from the accumulated chunks.
+			// If no assistant turn message was ever created (e.g., the model
+			// produced nothing — unusual but possible), synthesize an empty one.
+			const assistantMessage: ChatMessage = assistantTurnMessage ?? {
 				role: "assistant",
-				content: finalText,
-				toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
-				toolResults: allToolResults.length > 0 ? allToolResults : undefined,
+				chunks,
 			};
+			// `assistantTurnMessage` was pushed into `stepMessages` but not into
+			// `this.messages` — push it now so the agent's outward-facing
+			// history reflects the turn.
 			this.messages.push(assistantMessage);
 
 			// Drain any remaining queued messages that arrived after the last tool call
@@ -580,7 +698,7 @@ export class Agent {
 					const userMessages = remaining.map((m) => m.message).join("\n---\n");
 					this.messages.push({
 						role: "user",
-						content: userMessages,
+						chunks: [{ type: "text", text: userMessages }],
 					});
 				}
 			}

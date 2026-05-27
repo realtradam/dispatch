@@ -24,10 +24,7 @@ export function createWriteFileTool(workingDirectory: string): ToolDefinition {
 			const absolutePath = await canonicalize(workingDirectory, filePath);
 			const absoluteWorkDir = await canonicalize(workingDirectory);
 
-			if (
-				absolutePath !== absoluteWorkDir &&
-				!absolutePath.startsWith(`${absoluteWorkDir}/`)
-			) {
+			if (absolutePath !== absoluteWorkDir && !absolutePath.startsWith(`${absoluteWorkDir}/`)) {
 				return `Error: Path "${filePath}" is outside the working directory.`;
 			}
 

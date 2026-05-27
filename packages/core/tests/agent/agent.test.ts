@@ -149,11 +149,11 @@ describe("Agent", () => {
 		expect(agent.messages).toHaveLength(2);
 		expect(agent.messages[0]).toMatchObject({
 			role: "user",
-			content: "my question",
+			chunks: [{ type: "text", text: "my question" }],
 		});
 		expect(agent.messages[1]).toMatchObject({
 			role: "assistant",
-			content: "Response",
+			chunks: [{ type: "text", text: "Response" }],
 		});
 	});
 
@@ -182,7 +182,7 @@ describe("Agent", () => {
 		expect(doneEvent).toBeDefined();
 		expect(doneEvent).toMatchObject({
 			type: "done",
-			message: { role: "assistant", content: "Done!" },
+			message: { role: "assistant", chunks: [{ type: "text", text: "Done!" }] },
 		});
 	});
 

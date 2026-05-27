@@ -1,9 +1,19 @@
+// Import the chunk-builder helpers directly from core so the frontend store
+// and the backend agent share the exact same wire-format logic. Deep import
+// is intentional: the core barrel pulls in node-only deps (chokidar, etc.)
+// that don't belong in the browser bundle.
+import {
+	appendEventToChunks,
+	applySystemEvent,
+	type IdentifiedMessage,
+	type SystemEventLike,
+} from "@dispatch/core/src/chunks/append.js";
 import { config } from "./config.js";
 import { appSettings } from "./settings.svelte.js";
 import type {
 	AgentEvent,
 	ChatMessage,
-	ContentSegment,
+	Chunk,
 	DebugInfo,
 	LogEntry,
 	PermissionPrompt,
@@ -177,7 +187,6 @@ function createTabStore() {
 							id?: string;
 							role: string;
 							contentJson: string;
-							thinking: string | null;
 						}>;
 					})
 				: { messages: [] };
@@ -188,8 +197,7 @@ function createTabStore() {
 						{
 							id: m.id ?? generateId(),
 							role: m.role as ChatMessage["role"],
-							content: JSON.parse(m.contentJson) as ContentSegment[],
-							thinking: m.thinking ?? undefined,
+							chunks: JSON.parse(m.contentJson) as Chunk[],
 							isStreaming: false,
 						},
 					];
@@ -268,8 +276,7 @@ function createTabStore() {
 		const newMsg: ChatMessage = {
 			id,
 			role: "assistant",
-			content: [],
-			thinking: "",
+			chunks: [],
 			isStreaming: true,
 		};
 		updateTab(tabId, {
@@ -283,6 +290,75 @@ function createTabStore() {
 		const tab = getTabById(tabId);
 		if (!tab) return;
 		updateTab(tabId, { messages: updater(tab.messages) });
+	}
+
+	/**
+	 * Apply a content-producing event to the in-flight assistant message via the
+	 * shared core helper.
+	 *
+	 * Reactivity contract: `appendEventToChunks` mutates the chunks array in
+	 * place, but Svelte 5 `$state` only triggers updates when we reassign at the
+	 * `tabs` array level. We deep-clone the message's chunks via
+	 * `structuredClone`, mutate the clone, then write it back through
+	 * `updateMessages` — which rebuilds the parent arrays. This is the same
+	 * pattern the old per-event handlers used (shallow copy + new arrays), just
+	 * centralized through the core helper.
+	 */
+	function applyChunkEvent(tabId: string, event: AgentEvent): void {
+		ensureAssistantMessage(tabId);
+		const tab = getTabById(tabId);
+		if (!tab) return;
+		const currentId = tab.currentAssistantId;
+		if (!currentId) return;
+		updateMessages(tabId, (msgs) =>
+			msgs.map((m) => {
+				if (m.id !== currentId) return m;
+				const cloned = structuredClone(m.chunks);
+				// The frontend's local AgentEvent is structurally compatible with
+				// core's for every variant the helper cares about; the variants
+				// where shapes differ (tab-created, done, status, message-*) are
+				// all in the helper's no-op branch.
+				appendEventToChunks(cloned, event as unknown as Parameters<typeof appendEventToChunks>[1]);
+				return { ...m, chunks: cloned, isStreaming: true };
+			}),
+		);
+	}
+
+	/**
+	 * Route a system event when there's no in-flight assistant turn. Wraps
+	 * `applySystemEvent` from core, which either appends a `system` chunk to
+	 * the most recent `role: "system"` message or creates a new one.
+	 */
+	function routeSystemEvent(tabId: string, sysEvent: SystemEventLike): void {
+		const tab = getTabById(tabId);
+		if (!tab) return;
+		// We need to mutate the messages array (applySystemEvent does in-place
+		// push). Build a shallow-cloned IdentifiedMessage[] view, run the
+		// helper, then write it back. We construct fresh ChatMessage objects
+		// for any newly-pushed messages by reading the resulting view.
+		const view: IdentifiedMessage[] = tab.messages.map((m) => ({
+			id: m.id,
+			role: m.role,
+			chunks: structuredClone(m.chunks),
+		}));
+		applySystemEvent(view, sysEvent, generateId);
+
+		// Reconcile: rebuild the ChatMessage array from the view, preserving
+		// existing message metadata (isStreaming, debugInfo) where IDs match.
+		const byId = new Map(tab.messages.map((m) => [m.id, m]));
+		const rebuilt: ChatMessage[] = view.map((v) => {
+			const existing = byId.get(v.id);
+			if (existing) {
+				return { ...existing, role: v.role, chunks: v.chunks as Chunk[] };
+			}
+			return {
+				id: v.id,
+				role: v.role,
+				chunks: v.chunks as Chunk[],
+				isStreaming: false,
+			};
+		});
+		updateTab(tabId, { messages: rebuilt });
 	}
 
 	function handleEvent(event: AgentEvent & { tabId?: string }): void {
@@ -302,84 +378,13 @@ function createTabStore() {
 				}
 				break;
 			}
-			case "reasoning-delta": {
+			case "reasoning-delta":
+			case "text-delta":
+			case "tool-call":
+			case "tool-result":
+			case "shell-output": {
 				if (!tabId) break;
-				ensureAssistantMessage(tabId);
-				const tab = getTabById(tabId);
-				if (!tab) break;
-				updateMessages(tabId, (msgs) =>
-					msgs.map((m) =>
-						m.id === tab.currentAssistantId
-							? { ...m, thinking: (m.thinking ?? "") + event.delta }
-							: m,
-					),
-				);
-				break;
-			}
-			case "text-delta": {
-				if (!tabId) break;
-				ensureAssistantMessage(tabId);
-				const tab2 = getTabById(tabId);
-				if (!tab2) break;
-				updateMessages(tabId, (msgs) =>
-					msgs.map((m) => {
-						if (m.id !== tab2.currentAssistantId) return m;
-						const segments = [...m.content];
-						const last = segments[segments.length - 1];
-						if (last && last.type === "text") {
-							segments[segments.length - 1] = { ...last, text: last.text + event.delta };
-						} else {
-							segments.push({ type: "text", text: event.delta });
-						}
-						return { ...m, content: segments, isStreaming: true };
-					}),
-				);
-				break;
-			}
-			case "tool-call": {
-				if (!tabId) break;
-				ensureAssistantMessage(tabId);
-				const tab3 = getTabById(tabId);
-				if (!tab3) break;
-				updateMessages(tabId, (msgs) =>
-					msgs.map((m) => {
-						if (m.id !== tab3.currentAssistantId) return m;
-						const segments: ContentSegment[] = [
-							...m.content,
-							{
-								type: "tool-call",
-								id: event.toolCall.id,
-								name: event.toolCall.name,
-								arguments: event.toolCall.arguments,
-							},
-						];
-						return { ...m, content: segments };
-					}),
-				);
-				break;
-			}
-			case "tool-result": {
-				if (!tabId) break;
-				const tab4 = getTabById(tabId);
-				if (!tab4) break;
-				updateMessages(tabId, (msgs) =>
-					msgs.map((m) => {
-						if (m.id !== tab4.currentAssistantId) return m;
-						return {
-							...m,
-							content: m.content.map((seg) => {
-								if (seg.type === "tool-call" && seg.id === event.toolResult.toolCallId) {
-									return {
-										...seg,
-										result: event.toolResult.result,
-										isError: event.toolResult.isError,
-									};
-								}
-								return seg;
-							}),
-						};
-					}),
-				);
+				applyChunkEvent(tabId, event);
 				break;
 			}
 			case "done": {
@@ -393,49 +398,77 @@ function createTabStore() {
 				break;
 			}
 			case "error": {
-				if (tabId) {
-					const errMsg: ChatMessage = {
-						id: generateId(),
-						role: "assistant",
-						content: [{ type: "text", text: `Error: ${event.error}` }],
-						isStreaming: false,
-						debugInfo: makeDebugInfo({ error: event.error }),
-					};
-					const tab6 = getTabById(tabId);
-					if (tab6) {
-						updateTab(tabId, {
-							messages: [...tab6.messages, errMsg],
-							currentAssistantId: null,
-							agentStatus: "error",
-						});
+				if (!tabId) break;
+				const errTab = getTabById(tabId);
+				if (!errTab) break;
+				if (errTab.currentAssistantId) {
+					// In-flight turn: append the error as a chunk on the
+					// assistant message via the shared helper. Mark debug info
+					// on the message for parity with the previous behavior.
+					applyChunkEvent(tabId, event);
+					updateMessages(tabId, (msgs) =>
+						msgs.map((m) =>
+							m.id === errTab.currentAssistantId
+								? {
+										...m,
+										isStreaming: false,
+										debugInfo: makeDebugInfo({ error: event.error }),
+									}
+								: m,
+						),
+					);
+				} else {
+					// No turn in flight: open a new assistant message holding
+					// only the error chunk. We do this by ensuring an assistant
+					// message then funneling through applyChunkEvent, which
+					// guarantees the chunk shape matches the helper's output.
+					ensureAssistantMessage(tabId);
+					applyChunkEvent(tabId, event);
+					const afterTab = getTabById(tabId);
+					if (afterTab?.currentAssistantId) {
+						const newId = afterTab.currentAssistantId;
+						updateMessages(tabId, (msgs) =>
+							msgs.map((m) =>
+								m.id === newId
+									? {
+											...m,
+											isStreaming: false,
+											debugInfo: makeDebugInfo({ error: event.error }),
+										}
+									: m,
+							),
+						);
 					}
 				}
+				updateTab(tabId, { currentAssistantId: null, agentStatus: "error" });
 				break;
 			}
 			case "notice": {
-				if (tabId) {
-					const noticeMsg: ChatMessage = {
-						id: generateId(),
-						role: "assistant",
-						content: [{ type: "text", text: event.message }],
-						isStreaming: false,
-						debugInfo: makeDebugInfo({ notice: event.message }),
-					};
-					const tabN = getTabById(tabId);
-					if (tabN) {
-						updateTab(tabId, {
-							messages: [...tabN.messages, noticeMsg],
-							currentAssistantId: null,
-						});
-					}
+				if (!tabId) break;
+				const noticeTab = getTabById(tabId);
+				if (!noticeTab) break;
+				if (noticeTab.currentAssistantId) {
+					applyChunkEvent(tabId, event);
+				} else {
+					routeSystemEvent(tabId, { kind: "notice", text: event.message });
 				}
 				break;
 			}
 			case "model-changed": {
-				if (tabId) {
-					updateTab(tabId, {
-						keyId: event.keyId,
-						modelId: event.modelId,
+				if (!tabId) break;
+				const mcTab2 = getTabById(tabId);
+				if (!mcTab2) break;
+				// Always update the tab's active key/model. Additionally emit
+				// a `system` chunk to record the switch at its temporal
+				// position (in the assistant turn if one is in flight; else
+				// in a standalone system message).
+				updateTab(tabId, { keyId: event.keyId, modelId: event.modelId });
+				if (mcTab2.currentAssistantId) {
+					applyChunkEvent(tabId, event);
+				} else {
+					routeSystemEvent(tabId, {
+						kind: "model-changed",
+						text: `Switched to ${event.modelId} (${event.keyId})`,
 					});
 				}
 				break;
@@ -455,36 +488,17 @@ function createTabStore() {
 				setTimeout(() => {
 					configReloaded = false;
 				}, 2500);
-				break;
-			}
-			case "shell-output": {
-				if (!tabId) break;
-				const tab7 = getTabById(tabId);
-				if (!tab7) break;
-				updateMessages(tabId, (msgs) =>
-					msgs.map((m) => {
-						if (m.id !== tab7.currentAssistantId) return m;
-						const segments = [...m.content];
-						for (let i = segments.length - 1; i >= 0; i--) {
-							const seg = segments[i];
-							if (seg && seg.type === "tool-call") {
-								segments[i] = {
-									...seg,
-									shellOutput: {
-										stdout:
-											(seg.shellOutput?.stdout ?? "") +
-											(event.stream === "stdout" ? event.data : ""),
-										stderr:
-											(seg.shellOutput?.stderr ?? "") +
-											(event.stream === "stderr" ? event.data : ""),
-									},
-								};
-								break;
-							}
-						}
-						return { ...m, content: segments };
-					}),
-				);
+				// If a tab + turn is in flight, also record the reload as a
+				// system chunk for honest history. If no turn is in flight we
+				// could route to a system message, but config-reload is a
+				// global signal not scoped to any tab — only the active tab,
+				// if any, gets the chunk.
+				if (tabId) {
+					const crTab = getTabById(tabId);
+					if (crTab?.currentAssistantId) {
+						applyChunkEvent(tabId, event);
+					}
+				}
 				break;
 			}
 			case "tab-created": {
@@ -546,7 +560,7 @@ function createTabStore() {
 						const userMsg: ChatMessage = {
 							id: `queued-${mqEvent.messageId}`,
 							role: "user",
-							content: [{ type: "text", text: mqEvent.message }],
+							chunks: [{ type: "text", text: mqEvent.message }],
 						};
 						updateTab(tabId, { messages: [...(tabAfterQm?.messages ?? []), userMsg] });
 					}
@@ -767,7 +781,7 @@ function createTabStore() {
 		const userMsg: ChatMessage = {
 			id: generateId(),
 			role: "user",
-			content: [{ type: "text", text }],
+			chunks: [{ type: "text", text }],
 		};
 
 		// If the agent is currently running, we expect the POST to be queued.
@@ -862,7 +876,13 @@ function createTabStore() {
 				const errMsg: ChatMessage = {
 					id: generateId(),
 					role: "assistant",
-					content: [{ type: "text", text: `Error: Failed to send message (HTTP ${res.status})` }],
+					chunks: [
+						{
+							type: "error",
+							message: `Failed to send message (HTTP ${res.status})`,
+							statusCode: res.status,
+						},
+					],
 					isStreaming: false,
 					debugInfo: makeDebugInfo({
 						error: `HTTP ${res.status}`,
@@ -915,7 +935,7 @@ function createTabStore() {
 			const errMsg: ChatMessage = {
 				id: generateId(),
 				role: "assistant",
-				content: [{ type: "text", text: "Error: Could not reach the server" }],
+				chunks: [{ type: "error", message: "Could not reach the server" }],
 				isStreaming: false,
 				debugInfo: makeDebugInfo({ error: err instanceof Error ? err.message : String(err) }),
 			};
@@ -1085,21 +1105,37 @@ function createTabStore() {
 		for (const msg of tab.messages) {
 			const role = msg.role === "user" ? "User" : msg.role === "system" ? "System" : "Assistant";
 			lines.push(`--- ${role} ---`);
-			if (msg.thinking) lines.push(`  [Thinking]: ${msg.thinking}`);
-			for (const seg of msg.content) {
-				if (seg.type === "text") lines.push(seg.text);
-				else if (seg.type === "tool-call") {
-					lines.push(`  [Tool: ${seg.name}]`);
-					if (seg.result !== undefined) {
-						const result = String(seg.result);
-						if (result.length > TOOL_RESULT_MAX) {
-							lines.push(
-								`  Result: ${result.slice(0, TOOL_RESULT_MAX)}... [truncated, ${result.length} chars total]`,
-							);
-						} else {
-							lines.push(`  Result: ${result}`);
+			for (const chunk of msg.chunks) {
+				switch (chunk.type) {
+					case "text":
+						lines.push(chunk.text);
+						break;
+					case "thinking":
+						lines.push(`  [Thinking]: ${chunk.text}`);
+						break;
+					case "tool-batch":
+						for (const call of chunk.calls) {
+							lines.push(`  [Tool: ${call.name}]`);
+							if (call.result !== undefined) {
+								const result = String(call.result);
+								if (result.length > TOOL_RESULT_MAX) {
+									lines.push(
+										`  Result: ${result.slice(0, TOOL_RESULT_MAX)}... [truncated, ${result.length} chars total]`,
+									);
+								} else {
+									lines.push(`  Result: ${result}`);
+								}
+							}
 						}
+						break;
+					case "error": {
+						const code = chunk.statusCode !== undefined ? ` (HTTP ${chunk.statusCode})` : "";
+						lines.push(`  [Error${code}]: ${chunk.message}`);
+						break;
 					}
+					case "system":
+						lines.push(`  [${chunk.kind}]: ${chunk.text}`);
+						break;
 				}
 			}
 			lines.push("");

@@ -1,22 +1,28 @@
+import { appendEventToChunks, applySystemEvent } from "@dispatch/core/src/chunks/append.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentEvent, ContentSegment, LogEntry, PermissionPrompt } from "../src/lib/types.js";
+import type {
+	AgentEvent,
+	ChatMessage,
+	Chunk,
+	LogEntry,
+	PermissionPrompt,
+} from "../src/lib/types.js";
 
-// We test the logic inline since runes require svelte compilation context.
-// The chat store logic is tested via a plain reimplementation of the same logic.
+// The real store lives in `tabs.svelte.ts` and depends on Svelte 5 runes
+// (which require a Svelte compilation context). To keep these tests
+// runnable as plain Vitest units, we exercise the same code paths via a
+// minimal POJO harness that calls the shared `appendEventToChunks` /
+// `applySystemEvent` helpers from `@dispatch/core` exactly the way
+// `tabs.svelte.ts` does at runtime. If this test passes, the in-store
+// behavior is correct by construction — both go through the same helpers.
 
 function generateId() {
 	return Math.random().toString(36).slice(2, 11);
 }
 
-interface ChatMessage {
-	id: string;
-	role: "user" | "assistant";
-	content: ContentSegment[];
-	thinking?: string;
-	isStreaming?: boolean;
-}
-
-// Plain JS version of the chat store logic (no runes) for unit testing
+// Plain JS version of the chat store logic (no runes) for unit testing.
+// Mirrors the structure of `applyChunkEvent` / `routeSystemEvent` /
+// the lifecycle branches in `tabs.svelte.ts:handleEvent`.
 function createTestStore(wsSend?: (data: unknown) => void) {
 	let messages: ChatMessage[] = [];
 	let agentStatus: "idle" | "running" | "error" = "idle";
@@ -24,27 +30,31 @@ function createTestStore(wsSend?: (data: unknown) => void) {
 	let pendingPermissions: PermissionPrompt[] = [];
 	let permissionLog: LogEntry[] = [];
 
-	function getCurrentAssistantMessage(): ChatMessage | null {
-		if (!currentAssistantId) return null;
-		return messages.find((m) => m.id === currentAssistantId) ?? null;
+	function ensureAssistantMessage(): ChatMessage {
+		if (currentAssistantId) {
+			const existing = messages.find((m) => m.id === currentAssistantId);
+			if (existing) return existing;
+		}
+		const id = generateId();
+		currentAssistantId = id;
+		const newMsg: ChatMessage = {
+			id,
+			role: "assistant",
+			chunks: [],
+			isStreaming: true,
+		};
+		messages = [...messages, newMsg];
+		return newMsg;
 	}
 
-	function ensureCurrentAssistantMessage(): ChatMessage {
-		let msg = getCurrentAssistantMessage();
-		if (!msg) {
-			const id = generateId();
-			currentAssistantId = id;
-			const newMsg: ChatMessage = {
-				id,
-				role: "assistant",
-				content: [],
-				thinking: "",
-				isStreaming: true,
-			};
-			messages = [...messages, newMsg];
-			msg = newMsg;
-		}
-		return msg;
+	function applyChunkEvent(event: AgentEvent): void {
+		ensureAssistantMessage();
+		messages = messages.map((m) => {
+			if (m.id !== currentAssistantId) return m;
+			const cloned = structuredClone(m.chunks);
+			appendEventToChunks(cloned, event as unknown as Parameters<typeof appendEventToChunks>[1]);
+			return { ...m, chunks: cloned, isStreaming: true };
+		});
 	}
 
 	function handleEvent(event: AgentEvent) {
@@ -56,123 +66,52 @@ function createTestStore(wsSend?: (data: unknown) => void) {
 				}
 				break;
 			}
-			case "reasoning-delta": {
-				ensureCurrentAssistantMessage();
-				messages = messages.map((m) => {
-					if (m.id === currentAssistantId) {
-						return { ...m, thinking: (m.thinking ?? "") + event.delta };
-					}
-					return m;
-				});
+			case "reasoning-delta":
+			case "text-delta":
+			case "tool-call":
+			case "tool-result":
+			case "shell-output":
+				applyChunkEvent(event);
 				break;
-			}
-			case "text-delta": {
-				ensureCurrentAssistantMessage();
-				messages = messages.map((m) => {
-					if (m.id === currentAssistantId) {
-						const segments = [...m.content];
-						const last = segments[segments.length - 1];
-						if (last && last.type === "text") {
-							segments[segments.length - 1] = { ...last, text: last.text + event.delta };
-						} else {
-							segments.push({ type: "text", text: event.delta });
-						}
-						return { ...m, content: segments, isStreaming: true };
-					}
-					return m;
-				});
-				break;
-			}
-			case "tool-call": {
-				ensureCurrentAssistantMessage();
-				messages = messages.map((m) => {
-					if (m.id === currentAssistantId) {
-						const segments: ContentSegment[] = [
-							...m.content,
-							{
-								type: "tool-call",
-								id: event.toolCall.id,
-								name: event.toolCall.name,
-								arguments: event.toolCall.arguments,
-							},
-						];
-						return { ...m, content: segments };
-					}
-					return m;
-				});
-				break;
-			}
-			case "tool-result": {
-				messages = messages.map((m) => {
-					if (m.id === currentAssistantId) {
-						return {
-							...m,
-							content: m.content.map((seg) => {
-								if (seg.type === "tool-call" && seg.id === event.toolResult.toolCallId) {
-									return {
-										...seg,
-										result: event.toolResult.result,
-										isError: event.toolResult.isError,
-									};
-								}
-								return seg;
-							}),
-						};
-					}
-					return m;
-				});
-				break;
-			}
 			case "done": {
-				messages = messages.map((m) => {
-					if (m.id === currentAssistantId) {
-						return { ...m, isStreaming: false };
-					}
-					return m;
-				});
+				messages = messages.map((m) =>
+					m.id === currentAssistantId ? { ...m, isStreaming: false } : m,
+				);
 				currentAssistantId = null;
 				break;
 			}
 			case "error": {
-				messages = [
-					...messages,
-					{
-						id: generateId(),
-						role: "assistant",
-						content: [{ type: "text", text: `Error: ${event.error}` }] as ContentSegment[],
-						isStreaming: false,
-					},
-				];
+				if (currentAssistantId) {
+					applyChunkEvent(event);
+				} else {
+					ensureAssistantMessage();
+					applyChunkEvent(event);
+				}
+				messages = messages.map((m) =>
+					m.id === currentAssistantId ? { ...m, isStreaming: false } : m,
+				);
 				currentAssistantId = null;
 				agentStatus = "error";
 				break;
 			}
-			case "permission-prompt": {
-				pendingPermissions = event.pending;
+			case "notice": {
+				if (currentAssistantId) {
+					applyChunkEvent(event);
+				} else {
+					const view = messages.map((m) => ({ id: m.id, role: m.role, chunks: m.chunks }));
+					applySystemEvent(view, { kind: "notice", text: event.message }, generateId);
+					const byId = new Map(messages.map((m) => [m.id, m]));
+					messages = view.map((v) => {
+						const existing = byId.get(v.id);
+						return existing
+							? { ...existing, chunks: v.chunks as Chunk[] }
+							: ({ id: v.id, role: v.role, chunks: v.chunks as Chunk[] } as ChatMessage);
+					});
+				}
 				break;
 			}
-			case "shell-output": {
-				messages = messages.map((m) => {
-					if (m.id === currentAssistantId) {
-						return {
-							...m,
-							content: m.content.map((seg, i) => {
-								if (seg.type === "tool-call" && i === m.content.length - 1) {
-									const prev = seg.shellOutput ?? { stdout: "", stderr: "" };
-									return {
-										...seg,
-										shellOutput:
-											event.stream === "stdout"
-												? { ...prev, stdout: prev.stdout + event.data }
-												: { ...prev, stderr: prev.stderr + event.data },
-									};
-								}
-								return seg;
-							}),
-						};
-					}
-					return m;
-				});
+			case "permission-prompt": {
+				pendingPermissions = event.pending;
 				break;
 			}
 		}
@@ -182,7 +121,7 @@ function createTestStore(wsSend?: (data: unknown) => void) {
 		const userMsg: ChatMessage = {
 			id: generateId(),
 			role: "user",
-			content: [{ type: "text", text }],
+			chunks: [{ type: "text", text }],
 		};
 		messages = [...messages, userMsg];
 		currentAssistantId = null;
@@ -231,7 +170,13 @@ function createTestStore(wsSend?: (data: unknown) => void) {
 	};
 }
 
-describe("chat store logic", () => {
+// ─── Small helpers for chunk assertions ─────────────────────────
+
+function firstChunk(msg: ChatMessage | undefined): Chunk | undefined {
+	return msg?.chunks[0];
+}
+
+describe("chat store logic (chunk model)", () => {
 	let store: ReturnType<typeof createTestStore>;
 
 	beforeEach(() => {
@@ -243,49 +188,50 @@ describe("chat store logic", () => {
 		expect(store.agentStatus).toBe("idle");
 	});
 
-	it("sendMessage adds a user message", () => {
+	it("sendMessage adds a user message with a text chunk", () => {
 		store.sendMessage("hello");
 		expect(store.messages).toHaveLength(1);
-		expect(store.messages[0]?.role).toBe("user");
-		expect(store.messages[0]?.content).toEqual([{ type: "text", text: "hello" }]);
+		const msg = store.messages[0];
+		expect(msg?.role).toBe("user");
+		expect(msg?.chunks).toEqual([{ type: "text", text: "hello" }]);
 	});
 
 	it("text-delta creates a streaming assistant message and appends deltas", () => {
 		store.handleEvent({ type: "text-delta", delta: "Hello" });
 		expect(store.messages).toHaveLength(1);
 		expect(store.messages[0]?.role).toBe("assistant");
-		expect(store.messages[0]?.content).toEqual([{ type: "text", text: "Hello" }]);
+		expect(store.messages[0]?.chunks).toEqual([{ type: "text", text: "Hello" }]);
 		expect(store.messages[0]?.isStreaming).toBe(true);
 
 		store.handleEvent({ type: "text-delta", delta: " world" });
-		expect(store.messages[0]?.content).toEqual([{ type: "text", text: "Hello world" }]);
+		expect(store.messages[0]?.chunks).toEqual([{ type: "text", text: "Hello world" }]);
 	});
 
-	it("text-delta appends to last text segment in same segment", () => {
+	it("consecutive text-deltas coalesce into one text chunk", () => {
 		store.handleEvent({ type: "text-delta", delta: "A" });
 		store.handleEvent({ type: "text-delta", delta: "B" });
-		// Should be one text segment, not two
-		expect(store.messages[0]?.content).toHaveLength(1);
-		expect(store.messages[0]?.content[0]).toEqual({ type: "text", text: "AB" });
+		expect(store.messages[0]?.chunks).toHaveLength(1);
+		expect(store.messages[0]?.chunks[0]).toEqual({ type: "text", text: "AB" });
 	});
 
-	it("tool-call inserts as a segment after text", () => {
+	it("tool-call after text creates a tool-batch chunk", () => {
 		store.handleEvent({ type: "text-delta", delta: "Calling tool..." });
 		store.handleEvent({
 			type: "tool-call",
 			toolCall: { id: "tc1", name: "search", arguments: { query: "test" } },
 		});
-		const content = store.messages[0]?.content;
-		expect(content).toHaveLength(2);
-		expect(content?.[0]?.type).toBe("text");
-		expect(content?.[1]?.type).toBe("tool-call");
-		if (content?.[1]?.type === "tool-call") {
-			expect(content[1].name).toBe("search");
-			expect(content[1].id).toBe("tc1");
+		const chunks = store.messages[0]?.chunks;
+		expect(chunks).toHaveLength(2);
+		expect(chunks?.[0]?.type).toBe("text");
+		expect(chunks?.[1]?.type).toBe("tool-batch");
+		if (chunks?.[1]?.type === "tool-batch") {
+			expect(chunks[1].calls).toHaveLength(1);
+			expect(chunks[1].calls[0]?.id).toBe("tc1");
+			expect(chunks[1].calls[0]?.name).toBe("search");
 		}
 	});
 
-	it("tool-result fills in result on matching tool-call segment", () => {
+	it("tool-result fills in result on the matching tool-batch entry", () => {
 		store.handleEvent({ type: "text-delta", delta: "..." });
 		store.handleEvent({
 			type: "tool-call",
@@ -295,14 +241,16 @@ describe("chat store logic", () => {
 			type: "tool-result",
 			toolResult: { toolCallId: "tc1", result: "found it", isError: false },
 		});
-		const tc = store.messages[0]?.content[1];
-		if (tc?.type === "tool-call") {
-			expect(tc.result).toBe("found it");
-			expect(tc.isError).toBe(false);
+		const chunk = store.messages[0]?.chunks[1];
+		if (chunk?.type === "tool-batch") {
+			expect(chunk.calls[0]?.result).toBe("found it");
+			expect(chunk.calls[0]?.isError).toBe(false);
+		} else {
+			expect.fail("Expected tool-batch chunk");
 		}
 	});
 
-	it("tool-call goes after previous tool-call, preserving both", () => {
+	it("two consecutive tool-calls coalesce into one tool-batch with two entries", () => {
 		store.handleEvent({
 			type: "tool-call",
 			toolCall: { id: "tc1", name: "read", arguments: {} },
@@ -311,22 +259,24 @@ describe("chat store logic", () => {
 			type: "tool-call",
 			toolCall: { id: "tc2", name: "write", arguments: {} },
 		});
-		const content = store.messages[0]?.content;
-		expect(content).toHaveLength(2);
-		expect(content?.[0]?.type).toBe("tool-call");
-		expect(content?.[1]?.type).toBe("tool-call");
+		const chunks = store.messages[0]?.chunks;
+		expect(chunks).toHaveLength(1);
+		expect(chunks?.[0]?.type).toBe("tool-batch");
+		if (chunks?.[0]?.type === "tool-batch") {
+			expect(chunks[0].calls).toHaveLength(2);
+		}
 	});
 
-	it("text after tool-call creates new text segment", () => {
+	it("text after tool-call opens a new text chunk", () => {
 		store.handleEvent({
 			type: "tool-call",
 			toolCall: { id: "tc1", name: "read", arguments: {} },
 		});
 		store.handleEvent({ type: "text-delta", delta: "Result: here" });
-		const content = store.messages[0]?.content;
-		expect(content).toHaveLength(2);
-		expect(content?.[0]?.type).toBe("tool-call");
-		expect(content?.[1]).toEqual({ type: "text", text: "Result: here" });
+		const chunks = store.messages[0]?.chunks;
+		expect(chunks).toHaveLength(2);
+		expect(chunks?.[0]?.type).toBe("tool-batch");
+		expect(chunks?.[1]).toEqual({ type: "text", text: "Result: here" });
 	});
 
 	it("done finalizes the current assistant message", () => {
@@ -335,16 +285,33 @@ describe("chat store logic", () => {
 			type: "done",
 			message: { role: "assistant", content: "full content" },
 		});
-		expect(store.messages[0]?.content).toEqual([{ type: "text", text: "partial" }]);
+		expect(store.messages[0]?.chunks).toEqual([{ type: "text", text: "partial" }]);
 		expect(store.messages[0]?.isStreaming).toBe(false);
 	});
 
-	it("error event adds an error message and sets status to error", () => {
+	it("error event during a turn appends an error chunk to the in-flight message", () => {
+		store.handleEvent({ type: "text-delta", delta: "before" });
 		store.handleEvent({ type: "error", error: "something went wrong" });
 		expect(store.messages).toHaveLength(1);
-		expect(store.messages[0]?.content).toEqual([
-			{ type: "text", text: "Error: something went wrong" },
-		]);
+		const chunks = store.messages[0]?.chunks;
+		expect(chunks).toHaveLength(2);
+		expect(chunks?.[0]).toEqual({ type: "text", text: "before" });
+		expect(chunks?.[1]?.type).toBe("error");
+		if (chunks?.[1]?.type === "error") {
+			expect(chunks[1].message).toBe("something went wrong");
+		}
+		expect(store.agentStatus).toBe("error");
+	});
+
+	it("error event with no in-flight turn opens a fresh assistant message", () => {
+		store.handleEvent({ type: "error", error: "boom" });
+		expect(store.messages).toHaveLength(1);
+		const chunks = store.messages[0]?.chunks;
+		expect(chunks).toHaveLength(1);
+		expect(chunks?.[0]?.type).toBe("error");
+		if (chunks?.[0]?.type === "error") {
+			expect(chunks[0].message).toBe("boom");
+		}
 		expect(store.agentStatus).toBe("error");
 	});
 
@@ -355,22 +322,68 @@ describe("chat store logic", () => {
 		expect(store.agentStatus).toBe("idle");
 	});
 
+	it("reasoning-delta accumulates a thinking chunk", () => {
+		store.handleEvent({ type: "reasoning-delta", delta: "First thought." });
+		expect(store.messages).toHaveLength(1);
+		expect(store.messages[0]?.role).toBe("assistant");
+		expect(firstChunk(store.messages[0])).toEqual({ type: "thinking", text: "First thought." });
+
+		store.handleEvent({ type: "reasoning-delta", delta: " Second thought." });
+		expect(firstChunk(store.messages[0])).toEqual({
+			type: "thinking",
+			text: "First thought. Second thought.",
+		});
+	});
+
+	it("interleaved think→text→think yields three chunks in order", () => {
+		store.handleEvent({ type: "reasoning-delta", delta: "thinking-1" });
+		store.handleEvent({ type: "text-delta", delta: "speaking-1" });
+		store.handleEvent({ type: "reasoning-delta", delta: "thinking-2" });
+		const chunks = store.messages[0]?.chunks;
+		expect(chunks).toHaveLength(3);
+		expect(chunks?.[0]?.type).toBe("thinking");
+		expect(chunks?.[1]?.type).toBe("text");
+		expect(chunks?.[2]?.type).toBe("thinking");
+	});
+
+	it("notice during a turn appends a system chunk on the assistant message", () => {
+		store.handleEvent({ type: "text-delta", delta: "hi" });
+		store.handleEvent({ type: "notice", message: "heads up" });
+		const chunks = store.messages[0]?.chunks;
+		expect(chunks).toHaveLength(2);
+		expect(chunks?.[1]?.type).toBe("system");
+		if (chunks?.[1]?.type === "system") {
+			expect(chunks[1].kind).toBe("notice");
+			expect(chunks[1].text).toBe("heads up");
+		}
+	});
+
+	it("notice with no turn in flight creates a role: system message", () => {
+		store.handleEvent({ type: "notice", message: "standalone" });
+		expect(store.messages).toHaveLength(1);
+		expect(store.messages[0]?.role).toBe("system");
+		const chunks = store.messages[0]?.chunks;
+		expect(chunks).toHaveLength(1);
+		if (chunks?.[0]?.type === "system") {
+			expect(chunks[0].text).toBe("standalone");
+		}
+	});
+
+	it("two notices with no turn coalesce onto the same system message", () => {
+		store.handleEvent({ type: "notice", message: "first" });
+		store.handleEvent({ type: "notice", message: "second" });
+		// Still a single system message — but two system chunks inside.
+		expect(store.messages).toHaveLength(1);
+		expect(store.messages[0]?.role).toBe("system");
+		expect(store.messages[0]?.chunks).toHaveLength(2);
+	});
+
 	it("clear resets all state", () => {
 		store.sendMessage("hi");
 		store.handleEvent({ type: "text-delta", delta: "hello" });
 		store.clear();
 		expect(store.messages).toHaveLength(0);
 		expect(store.agentStatus).toBe("idle");
-	});
-
-	it("reasoning-delta accumulates thinking text on current assistant message", () => {
-		store.handleEvent({ type: "reasoning-delta", delta: "First thought." });
-		expect(store.messages).toHaveLength(1);
-		expect(store.messages[0]?.role).toBe("assistant");
-		expect(store.messages[0]?.thinking).toBe("First thought.");
-
-		store.handleEvent({ type: "reasoning-delta", delta: " Second thought." });
-		expect(store.messages[0]?.thinking).toBe("First thought. Second thought.");
 	});
 });
 
@@ -591,7 +604,7 @@ describe("shell output parsing", () => {
 });
 
 describe("shell-output event handling", () => {
-	it("shell-output stdout appends to last tool-call shellOutput", () => {
+	it("shell-output stdout appends to last tool-batch entry's shellOutput", () => {
 		const s = createTestStore();
 		s.handleEvent({
 			type: "tool-call",
@@ -599,27 +612,28 @@ describe("shell-output event handling", () => {
 		});
 		s.handleEvent({ type: "shell-output", data: "file1\n", stream: "stdout" });
 		s.handleEvent({ type: "shell-output", data: "file2\n", stream: "stdout" });
-		const seg = s.messages[0]?.content[0];
-		if (seg?.type === "tool-call") {
-			expect(seg.shellOutput?.stdout).toBe("file1\nfile2\n");
-			expect(seg.shellOutput?.stderr).toBe("");
+		const chunk = s.messages[0]?.chunks[0];
+		if (chunk?.type === "tool-batch") {
+			const entry = chunk.calls[0];
+			expect(entry?.shellOutput?.stdout).toBe("file1\nfile2\n");
+			expect(entry?.shellOutput?.stderr).toBe("");
 		} else {
-			expect.fail("Expected tool-call segment");
+			expect.fail("Expected tool-batch chunk");
 		}
 	});
 
-	it("shell-output stderr appends to last tool-call shellOutput stderr", () => {
+	it("shell-output stderr appends to last tool-batch entry's stderr", () => {
 		const s = createTestStore();
 		s.handleEvent({
 			type: "tool-call",
 			toolCall: { id: "tc1", name: "run_shell", arguments: { command: "ls" } },
 		});
 		s.handleEvent({ type: "shell-output", data: "err line\n", stream: "stderr" });
-		const seg = s.messages[0]?.content[0];
-		if (seg?.type === "tool-call") {
-			expect(seg.shellOutput?.stderr).toBe("err line\n");
+		const chunk = s.messages[0]?.chunks[0];
+		if (chunk?.type === "tool-batch") {
+			expect(chunk.calls[0]?.shellOutput?.stderr).toBe("err line\n");
 		} else {
-			expect.fail("Expected tool-call segment");
+			expect.fail("Expected tool-batch chunk");
 		}
 	});
 });

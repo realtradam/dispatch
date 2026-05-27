@@ -99,7 +99,6 @@ export function getDatabase(): Database {
 		seq          INTEGER NOT NULL,
 		role         TEXT NOT NULL,
 		content_json TEXT NOT NULL,
-		thinking     TEXT,
 		created_at   INTEGER NOT NULL
 	)`);
 
