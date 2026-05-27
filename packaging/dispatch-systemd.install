@@ -1,0 +1,24 @@
+post_install() {
+	echo ""
+	echo "==> Dispatch systemd user units installed."
+	echo "    Enable and start:"
+	echo "      systemctl --user daemon-reload"
+	echo "      systemctl --user enable --now dispatch-api dispatch-frontend"
+	echo ""
+}
+
+post_upgrade() {
+	echo ""
+	echo "==> Dispatch systemd units upgraded."
+	echo "    Reload and restart:"
+	echo "      systemctl --user daemon-reload"
+	echo "      systemctl --user restart dispatch-api dispatch-frontend"
+	echo ""
+}
+
+pre_remove() {
+	echo ""
+	echo "==> Stop dispatch services before removal:"
+	echo "      systemctl --user disable --now dispatch-api dispatch-frontend"
+	echo ""
+}

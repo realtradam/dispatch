@@ -1,0 +1,29 @@
+#!/bin/sh
+# dispatch-api service — runs the Dispatch backend API as the `PII_REDACTED_USER_01` user.
+# stdout/stderr are piped to dispatch-api-log via the s6-rc pipeline.
+
+DISPATCH_CONF="/etc/dispatch/dispatch-api.conf"
+DISPATCH_DIR="/opt/dispatch"
+
+if [ -f "$DISPATCH_CONF" ]; then
+    set -a
+    . "$DISPATCH_CONF"
+    set +a
+fi
+
+cd "$DISPATCH_DIR" || exit 1
+
+# Merge stderr into stdout so both get logged by the consumer.
+exec 2>&1
+
+# Drop privileges to PII_REDACTED_USER_01 and run bun.
+exec /usr/bin/s6-setuidgid PII_REDACTED_USER_01 \
+    /usr/bin/env \
+        HOME=/home/PII_REDACTED_USER_01 \
+        USER=PII_REDACTED_USER_01 \
+        LOGNAME=PII_REDACTED_USER_01 \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        NODE_ENV="${NODE_ENV:-production}" \
+        PORT="${PORT:-18390}" \
+        OPENCODE_API_KEY="${OPENCODE_API_KEY:-}" \
+    /usr/bin/bun packages/api/src/index.ts
