@@ -49,12 +49,14 @@ export { prefix as bashArityPrefix } from "./tools/bash-arity.js";
 // Tools
 export { createListFilesTool } from "./tools/list-files.js";
 export { createReadFileTool } from "./tools/read-file.js";
+export { createReadFileSliceTool } from "./tools/read-file-slice.js";
 export { createToolRegistry } from "./tools/registry.js";
 export { createRetrieveTool, type RetrieveCallbacks } from "./tools/retrieve.js";
 export { BackgroundShellStore, createRunShellTool } from "./tools/run-shell.js";
 export { analyzeCommand } from "./tools/shell-analyze.js";
 export { createSummonTool, type SummonCallbacks } from "./tools/summon.js";
 export { createTaskListTool, TaskList } from "./tools/task-list.js";
+export { clearSpillForTab } from "./tools/truncate.js";
 export { createWebSearchTool } from "./tools/web-search.js";
 export { createWriteFileTool } from "./tools/write-file.js";
 export {

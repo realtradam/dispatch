@@ -35,6 +35,15 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => "mock file content",
 		};
 	},
+	createReadFileSliceTool(_wd: string): ToolDefinition {
+		return {
+			name: "read_file_slice",
+			description: "read a char slice of a single line",
+			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
+			execute: async () => "mock slice",
+		};
+	},
+	clearSpillForTab(_tabId: string) {},
 	createWriteFileTool(_wd: string): ToolDefinition {
 		return {
 			name: "write_file",
