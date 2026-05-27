@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/index.js";
+import { canonicalize } from "./path-utils.js";
 
 export function createListFilesTool(workingDirectory: string): ToolDefinition {
 	return {
@@ -15,10 +15,15 @@ export function createListFilesTool(workingDirectory: string): ToolDefinition {
 		}),
 		execute: async (args: Record<string, unknown>): Promise<string> => {
 			const relPath = (args.path as string | undefined) ?? ".";
-			const absolutePath = resolve(join(workingDirectory, relPath));
-			const absoluteWorkDir = resolve(workingDirectory);
+			// Canonicalize so a symlink-in-workdir pointing outside is detected.
+			// See `canonicalize` in ./path-utils.ts for the resolution semantics.
+			const absolutePath = await canonicalize(workingDirectory, relPath);
+			const absoluteWorkDir = await canonicalize(workingDirectory);
 
-			if (!absolutePath.startsWith(`${absoluteWorkDir}/`) && absolutePath !== absoluteWorkDir) {
+			if (
+				absolutePath !== absoluteWorkDir &&
+				!absolutePath.startsWith(`${absoluteWorkDir}/`)
+			) {
 				return `Error: Path "${relPath}" is outside the working directory.`;
 			}
 

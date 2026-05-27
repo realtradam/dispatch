@@ -87,6 +87,13 @@ export interface AgentConfig {
 	claudeCredentials?: {
 		accessToken: string;
 	};
+	/**
+	 * Tab ID the agent runs on. Used to scope per-tab side effects, namely
+	 * the tool-output spill directory (`/tmp/dispatch/tool-results/<tabId>/`).
+	 * Optional so legacy callers and tests can construct an Agent without one;
+	 * a fallback ID is generated when absent.
+	 */
+	tabId?: string;
 }
 
 // ─── Config Types (dispatch.toml) ────────────────────────────────

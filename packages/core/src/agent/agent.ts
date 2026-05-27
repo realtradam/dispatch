@@ -1,11 +1,12 @@
-import { realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname } from "node:path";
 import type { CoreMessage, CoreSystemMessage } from "ai";
 import { streamText } from "ai";
 import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
 import { createProvider, prefixToolName, unprefixToolName } from "../llm/provider.js";
+import { canonicalize } from "../tools/path-utils.js";
 import { createToolRegistry } from "../tools/registry.js";
 import { analyzeCommand } from "../tools/shell-analyze.js";
+import { applyTruncation, SPILL_ROOT } from "../tools/truncate.js";
 import type {
 	AgentConfig,
 	AgentEvent,
@@ -177,23 +178,36 @@ export class Agent {
 		// Permission check for file tools accessing paths outside workspace
 		if (
 			this.config.permissionChecker &&
-			(tc.name === "read_file" || tc.name === "write_file" || tc.name === "list_files")
+			(tc.name === "read_file" ||
+				tc.name === "read_file_slice" ||
+				tc.name === "write_file" ||
+				tc.name === "list_files")
 		) {
 			const pathArg = typeof tc.arguments.path === "string" ? tc.arguments.path : ".";
-			let resolvedPath: string;
-			try {
-				resolvedPath = realpathSync(resolve(this.config.workingDirectory, pathArg));
-			} catch {
-				// Path doesn't exist yet (e.g. write_file creating a new file) — fall back
-				resolvedPath = resolve(this.config.workingDirectory, pathArg);
-			}
 
-			// Check if outside workspace
-			const rel = relative(this.config.workingDirectory, resolvedPath);
-			const isOutside =
-				rel.startsWith("../") || rel.startsWith("..\\") || rel === ".." || isAbsolute(rel);
+			// Canonicalize all three so symlink-in-workdir escapes are detected
+			// at the permission gate (not just relative `../` traversal). The
+			// helper walks up to the nearest existing ancestor when the leaf
+			// doesn't exist (write_file creating new files), so a parent
+			// symlink pointing outside the workdir is still caught. The same
+			// helper is used inside the tool implementations — keeping the
+			// two layers consistent so a path that looks external here also
+			// looks external in the tool, and vice versa.
+			const resolvedPath = await canonicalize(this.config.workingDirectory, pathArg);
+			const resolvedWorkDir = await canonicalize(this.config.workingDirectory);
+			const resolvedSpillRoot = await canonicalize(SPILL_ROOT);
 
-			if (isOutside) {
+			const isUnderWorkdir =
+				resolvedPath === resolvedWorkDir || resolvedPath.startsWith(`${resolvedWorkDir}/`);
+			// Dispatch's own tool-output spill directory is implicitly allowed —
+			// the AI receives a truncation notice pointing here and is expected
+			// to read it without prompting the user. Bypassing the external-
+			// directory check here keeps the inspection flow frictionless.
+			const isSpillPath =
+				resolvedPath === resolvedSpillRoot ||
+				resolvedPath.startsWith(`${resolvedSpillRoot}/`);
+
+			if (!isUnderWorkdir && !isSpillPath) {
 				const permissionType =
 					tc.name === "read_file" ? "read" : tc.name === "write_file" ? "edit" : "list";
 
@@ -238,11 +252,24 @@ export class Agent {
 
 			const rawResult = await execPromise;
 			const resultStr = typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult);
+
+			// Compute isError on the raw (untruncated) string so an `Error:` prefix
+			// that lives anywhere — including beyond the head excerpt — is still
+			// detected. The display result goes through universal truncation so
+			// oversized outputs don't blow context. The full content lives in the
+			// spill file the truncation notice points to.
+			const isError = resultStr.startsWith("Error:");
+			const { displayResult } = applyTruncation(resultStr, {
+				tabId: this.config.tabId ?? "default",
+				callId: tc.id,
+				toolName: tc.name,
+			});
+
 			return {
 				toolCallId: tc.id,
 				toolName: tc.name,
-				result: resultStr,
-				isError: resultStr.startsWith("Error:"),
+				result: displayResult,
+				isError,
 			};
 		} catch (err) {
 			return {

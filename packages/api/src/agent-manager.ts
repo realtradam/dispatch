@@ -7,9 +7,11 @@ import {
 	BackgroundShellStore,
 	BackgroundTranscriptStore,
 	type ClaudeAccount,
+	clearSpillForTab,
 	configToRuleset,
 	createConfigWatcher,
 	createListFilesTool,
+	createReadFileSliceTool,
 	createReadFileTool,
 	createRetrieveTool,
 	createRunShellTool,
@@ -41,6 +43,8 @@ import { setTabsAgentManager } from "./routes/tabs.js";
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
 	read_file: "Read the contents of a file",
+	read_file_slice:
+		"Read a character-range slice of a single line in a file (for inspecting long lines that read_file truncated)",
 	list_files: "List files and directories",
 	write_file: "Write content to a file (creates parent directories if needed)",
 	run_shell:
@@ -369,6 +373,12 @@ export class AgentManager {
 				const allowed = new Set(tabAgent.toolsOverride);
 				if (allowed.has("read_file")) {
 					toolEntries.push({ name: "read_file", tool: createReadFileTool(workingDirectory) });
+					// read_file_slice is a companion to read_file — only useful for
+					// inspecting long lines that read_file truncated. Ship them together.
+					toolEntries.push({
+						name: "read_file_slice",
+						tool: createReadFileSliceTool(workingDirectory),
+					});
 					// list_files is bundled with read access
 					if (allowed.has("list_files")) {
 						toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
@@ -432,6 +442,10 @@ export class AgentManager {
 				// Parent agent: use permission settings from DB
 				if (permRead) {
 					toolEntries.push({ name: "read_file", tool: createReadFileTool(workingDirectory) });
+					toolEntries.push({
+						name: "read_file_slice",
+						tool: createReadFileSliceTool(workingDirectory),
+					});
 					toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
 				}
 				if (permEdit) {
@@ -607,6 +621,7 @@ export class AgentManager {
 					permissionChecker: this.permissionManager ?? undefined,
 					ruleset,
 					provider,
+					tabId,
 					...(claudeCredentials ? { claudeCredentials } : {}),
 				},
 				{
@@ -670,6 +685,9 @@ export class AgentManager {
 	deleteTab(tabId: string): void {
 		this.stopTab(tabId);
 		this.tabAgents.delete(tabId);
+		// Drop any spilled tool-output files this tab accumulated. Best-effort —
+		// errors are swallowed inside the helper. See packages/core/src/tools/truncate.ts.
+		clearSpillForTab(tabId);
 	}
 
 	/**
