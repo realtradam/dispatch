@@ -654,6 +654,55 @@ export class AgentManager {
 					waitForQueuedMessage: () => this.waitForQueuedMessage(tabId),
 				},
 			);
+
+			// Pre-populate the Agent's in-memory message history from the DB
+			// so prior turns survive Agent recreation. The Agent is
+			// constructed fresh here in three scenarios that ALL discard
+			// the previous in-memory `messages` array:
+			//   1. First call for this tab (no prior Agent existed)
+			//   2. Model/key/permission/working-directory change — the
+			//      invalidation gate above set `tabAgent.agent = null`.
+			//      This is the model-switcher-slider case: without this
+			//      pre-population, DeepSeek would see zero context after
+			//      switching from Opus mid-conversation.
+			//   3. Config or skills reload (configWatcher / skillsWatcher
+			//      also null out `tabAgent.agent`).
+			//
+			// Boundary semantics: `processMessage` calls `appendMessage`
+			// for the current turn's user message BEFORE calling this
+			// function, so the DB ends in `[..., u_current]`. In the
+			// fallback retry path (agent-mode automatic model fallback),
+			// the previous attempt may also have flushed a partial
+			// assistant response, so the DB ends in
+			// `[..., u_current, partial_a]`. Either way, we walk
+			// backwards to the most recent user-role row and load only
+			// strictly-prior rows: `agent.run()` will push the current
+			// user message itself at agent.ts:546, so including it here
+			// would duplicate it.
+			//
+			// `toModelMessages` already filters out `role === "system"`
+			// rows and strips `error` / `system` chunks, so it's safe to
+			// load system messages verbatim.
+			try {
+				const rows = getMessagesForTab(tabId);
+				let cutIdx = rows.length;
+				for (let i = rows.length - 1; i >= 0; i--) {
+					const row = rows[i];
+					if (row && row.role === "user") {
+						cutIdx = i;
+						break;
+					}
+				}
+				if (cutIdx > 0) {
+					tabAgent.agent.messages = rows
+						.slice(0, cutIdx)
+						.map((r) => ({ role: r.role, chunks: r.chunks }));
+				}
+			} catch {
+				// DB read failed — leave `messages: []`. The agent still
+				// works, just without prior history (matches pre-fix
+				// behaviour, so this is no worse than what we had before).
+			}
 		}
 		return tabAgent.agent;
 	}

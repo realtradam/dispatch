@@ -1,42 +1,103 @@
 import type { AgentEvent, ToolDefinition } from "@dispatch/core";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Spy on appendEventToChunks so we can assert persistence calls
 const appendEventToChunksSpy = vi.fn((_chunks: unknown[], _event: unknown) => {
 	// no-op; we inspect calls in tests
 });
 
+// Configurable stub for `getMessagesForTab`. Tests can push rows
+// before invoking `processMessage` to simulate prior conversation
+// history persisted in the DB (model-switch / history-replay path).
+interface FakeMessageRow {
+	id: string;
+	tabId: string;
+	seq: number;
+	role: "user" | "assistant" | "system";
+	chunks: unknown[];
+	createdAt: number;
+}
+const fakeMessagesByTab = new Map<string, FakeMessageRow[]>();
+function resetFakeMessages(): void {
+	fakeMessagesByTab.clear();
+}
+function setFakeMessages(tabId: string, rows: FakeMessageRow[]): void {
+	fakeMessagesByTab.set(tabId, rows);
+}
+function makeRow(
+	tabId: string,
+	seq: number,
+	role: "user" | "assistant" | "system",
+	chunks: unknown[],
+): FakeMessageRow {
+	return { id: `msg-${tabId}-${seq}`, tabId, seq, role, chunks, createdAt: seq };
+}
+
+// Hook into Agent construction so tests can assert what
+// `messages` was pre-populated with at the moment `run()` was
+// called (after the post-construction pre-populate step in
+// `getOrCreateAgentForTab` has had a chance to assign).
+//
+// We snapshot at `run()` invocation rather than at construction
+// because the production code reassigns `agent.messages =
+// rows.slice(...)` AFTER `new Agent()` returns — capturing a
+// reference at construction would yield a stale empty array.
+const constructedAgents: Array<{ initialMessages: unknown[] }> = [];
+function resetConstructedAgents(): void {
+	constructedAgents.length = 0;
+}
+
+// Allow tests to swap in a custom `run` generator (e.g. to simulate
+// a fallback failure mid-stream). Returning to undefined restores
+// the default.
+type RunGen = (msg: string) => AsyncGenerator<unknown>;
+let runImpl: RunGen | null = null;
+function setRunImpl(impl: RunGen | null): void {
+	runImpl = impl;
+}
+async function* defaultRun(_message: string): AsyncGenerator<unknown> {
+	yield { type: "status", status: "running" } as const;
+	await new Promise<void>((r) => setTimeout(r, 10));
+	yield { type: "reasoning-delta", delta: "thinking about it" } as const;
+	yield {
+		type: "reasoning-end",
+		metadata: { anthropic: { signature: "mock-sig" } },
+	} as const;
+	yield { type: "text-delta", delta: "Hello " } as const;
+	yield { type: "text-delta", delta: "world" } as const;
+	yield {
+		type: "done",
+		message: {
+			role: "assistant",
+			chunks: [
+				{
+					type: "thinking",
+					text: "thinking about it",
+					metadata: { anthropic: { signature: "mock-sig" } },
+				},
+				{ type: "text", text: "Hello world" },
+			],
+		},
+	} as const;
+	yield { type: "status", status: "idle" } as const;
+}
+
 // Mock @dispatch/core's Agent to avoid real LLM calls
 vi.mock("@dispatch/core", () => ({
 	Agent: class MockAgent {
 		status = "idle";
 		messages: unknown[] = [];
-		async *run(_message: string) {
-			yield { type: "status", status: "running" } as const;
-			await new Promise<void>((r) => setTimeout(r, 10));
-			// v6-style reasoning turn: delta(s) then end with providerMetadata
-			yield { type: "reasoning-delta", delta: "thinking about it" } as const;
-			yield {
-				type: "reasoning-end",
-				metadata: { anthropic: { signature: "mock-sig" } },
-			} as const;
-			yield { type: "text-delta", delta: "Hello " } as const;
-			yield { type: "text-delta", delta: "world" } as const;
-			yield {
-				type: "done",
-				message: {
-					role: "assistant",
-					chunks: [
-						{
-							type: "thinking",
-							text: "thinking about it",
-							metadata: { anthropic: { signature: "mock-sig" } },
-						},
-						{ type: "text", text: "Hello world" },
-					],
-				},
-			} as const;
-			yield { type: "status", status: "idle" } as const;
+		async *run(message: string): AsyncGenerator<unknown> {
+			// Snapshot the post-construction pre-populated message list
+			// the first thing `run()` does, before the real `Agent.run`
+			// would push the current user message at line 546. Tests
+			// inspect this to verify history was loaded correctly.
+			constructedAgents.push({ initialMessages: [...this.messages] });
+			if (runImpl) {
+				for await (const ev of runImpl(message)) yield ev;
+				return;
+			}
+			for await (const ev of defaultRun(message)) yield ev;
 		}
 	},
 	PermissionService: class MockPermissionService {
@@ -200,8 +261,8 @@ vi.mock("@dispatch/core", () => ({
 	},
 	appendMessage() {},
 	updateMessage() {},
-	getMessagesForTab() {
-		return [];
+	getMessagesForTab(tabId: string) {
+		return fakeMessagesByTab.get(tabId) ?? [];
 	},
 	appendEventToChunks: appendEventToChunksSpy,
 	applySystemEvent(_messages: unknown[], _event: unknown) {
@@ -245,6 +306,13 @@ vi.mock("@dispatch/core", () => ({
 const { AgentManager } = await import("../src/agent-manager.js");
 
 describe("AgentManager", () => {
+	beforeEach(() => {
+		resetFakeMessages();
+		resetConstructedAgents();
+		setRunImpl(null);
+		appendEventToChunksSpy.mockClear();
+	});
+
 	it("initial status is idle", () => {
 		const manager = new AgentManager();
 		expect(manager.getStatus()).toBe("idle");
@@ -415,5 +483,179 @@ describe("AgentManager", () => {
 			text: "thinking about it",
 			metadata: { anthropic: { signature: "mock-sig" } },
 		});
+	});
+
+	// ─── History pre-population on Agent (re)construction ────────────
+	//
+	// These tests guard the fix that prior conversation turns survive
+	// switching models mid-conversation via the sidebar slider. Without
+	// it, a fresh `Agent` is constructed with `messages: []` and the
+	// next LLM call sees zero prior context.
+
+	it("pre-populates Agent.messages from DB history when constructing a fresh Agent", async () => {
+		const manager = new AgentManager();
+		const tabId = "tab-history";
+
+		// Simulate prior conversation in the DB:
+		//   u1, a1, u_current
+		// (the current turn's user message has already been appended
+		//  by `processMessage` before `getOrCreateAgentForTab` runs)
+		setFakeMessages(tabId, [
+			makeRow(tabId, 0, "user", [{ type: "text", text: "first question" }]),
+			makeRow(tabId, 1, "assistant", [{ type: "text", text: "first answer" }]),
+			makeRow(tabId, 2, "user", [{ type: "text", text: "follow-up" }]),
+		]);
+
+		await manager.processMessage(tabId, "follow-up");
+
+		// Exactly one Agent should have been constructed for this tab,
+		// and its messages must be the prior two rows (excluding the
+		// current user message — `Agent.run()` pushes that itself).
+		expect(constructedAgents.length).toBe(1);
+		const inst = constructedAgents[0];
+		expect(inst).toBeDefined();
+		if (!inst) return;
+		const init = inst.initialMessages as Array<{ role: string; chunks: unknown[] }>;
+		expect(init.length).toBe(2);
+		expect(init[0]).toMatchObject({
+			role: "user",
+			chunks: [{ type: "text", text: "first question" }],
+		});
+		expect(init[1]).toMatchObject({
+			role: "assistant",
+			chunks: [{ type: "text", text: "first answer" }],
+		});
+	});
+
+	it("leaves messages empty when the DB has only the current turn's user message (first turn)", async () => {
+		const manager = new AgentManager();
+		const tabId = "tab-first-turn";
+
+		// First-ever turn: DB has only the just-appended user message.
+		setFakeMessages(tabId, [makeRow(tabId, 0, "user", [{ type: "text", text: "hello" }])]);
+
+		await manager.processMessage(tabId, "hello");
+
+		expect(constructedAgents.length).toBe(1);
+		const inst = constructedAgents[0];
+		expect(inst).toBeDefined();
+		if (!inst) return;
+		// The user message at idx 0 is the current turn — must be excluded.
+		expect((inst.initialMessages as unknown[]).length).toBe(0);
+	});
+
+	it("excludes a partial assistant trail from a prior fallback attempt", async () => {
+		const manager = new AgentManager();
+		const tabId = "tab-fallback-partial";
+
+		// Scenario: the agent-mode fallback path. Attempt 1 (Opus) errored
+		// mid-stream after flushing some chunks; attempt 2 (DeepSeek) is
+		// about to start. DB looks like:
+		//   u1, a1, u_current, partial_a_attempt1
+		// The fresh Agent for attempt 2 must see [u1, a1] — not the
+		// current user message and not the failed attempt's partial.
+		setFakeMessages(tabId, [
+			makeRow(tabId, 0, "user", [{ type: "text", text: "q1" }]),
+			makeRow(tabId, 1, "assistant", [{ type: "text", text: "a1" }]),
+			makeRow(tabId, 2, "user", [{ type: "text", text: "q2" }]),
+			makeRow(tabId, 3, "assistant", [{ type: "text", text: "half-baked..." }]),
+		]);
+
+		await manager.processMessage(tabId, "q2");
+
+		expect(constructedAgents.length).toBe(1);
+		const inst = constructedAgents[0];
+		expect(inst).toBeDefined();
+		if (!inst) return;
+		const init = inst.initialMessages as Array<{ role: string; chunks: unknown[] }>;
+		expect(init.length).toBe(2);
+		expect(init[0]).toMatchObject({ role: "user", chunks: [{ type: "text", text: "q1" }] });
+		expect(init[1]).toMatchObject({ role: "assistant", chunks: [{ type: "text", text: "a1" }] });
+	});
+
+	it("preserves system-role rows in pre-populated history (toModelMessages filters them later)", async () => {
+		const manager = new AgentManager();
+		const tabId = "tab-with-system-rows";
+
+		setFakeMessages(tabId, [
+			makeRow(tabId, 0, "user", [{ type: "text", text: "q1" }]),
+			makeRow(tabId, 1, "assistant", [{ type: "text", text: "a1" }]),
+			makeRow(tabId, 2, "system", [
+				{ type: "system", kind: "config-reload", text: "Configuration reloaded" },
+			]),
+			makeRow(tabId, 3, "user", [{ type: "text", text: "q2" }]),
+		]);
+
+		await manager.processMessage(tabId, "q2");
+
+		expect(constructedAgents.length).toBe(1);
+		const inst = constructedAgents[0];
+		expect(inst).toBeDefined();
+		if (!inst) return;
+		const init = inst.initialMessages as Array<{ role: string; chunks: unknown[] }>;
+		// All three prior rows (user/assistant/system) preserved; the
+		// LLM-facing `toModelMessages` strips the system row later.
+		expect(init.length).toBe(3);
+		expect(init[2]).toMatchObject({ role: "system" });
+	});
+
+	it("survives a getMessagesForTab failure without crashing (messages stays empty)", async () => {
+		const manager = new AgentManager();
+		const tabId = "tab-db-error";
+
+		// Simulate DB error by stubbing the fake-store getter to throw
+		// for this specific tab. We use a Proxy on the Map's get method
+		// for the duration of one call.
+		const realGet = fakeMessagesByTab.get.bind(fakeMessagesByTab);
+		fakeMessagesByTab.get = ((key: string) => {
+			if (key === tabId) throw new Error("simulated DB error");
+			return realGet(key);
+		}) as typeof fakeMessagesByTab.get;
+
+		try {
+			await expect(manager.processMessage(tabId, "anything")).resolves.toBeUndefined();
+		} finally {
+			fakeMessagesByTab.get = realGet;
+		}
+
+		// Agent still constructed, just with empty messages.
+		expect(constructedAgents.length).toBe(1);
+		const inst = constructedAgents[0];
+		expect(inst).toBeDefined();
+		if (!inst) return;
+		expect((inst.initialMessages as unknown[]).length).toBe(0);
+	});
+
+	it("reloads history on every Agent reconstruction (simulated model switch)", async () => {
+		const manager = new AgentManager();
+		const tabId = "tab-model-switch";
+
+		// Turn 1: empty DB → just the first user message.
+		setFakeMessages(tabId, [makeRow(tabId, 0, "user", [{ type: "text", text: "q1" }])]);
+		await manager.processMessage(tabId, "q1", "key-opus", "claude-opus-4-7");
+
+		// Turn 2: DB now has the full prior turn + new user message.
+		// User has switched models via the sidebar slider — different
+		// (keyId, modelId) triggers Agent invalidation and reconstruction.
+		setFakeMessages(tabId, [
+			makeRow(tabId, 0, "user", [{ type: "text", text: "q1" }]),
+			makeRow(tabId, 1, "assistant", [{ type: "text", text: "a1" }]),
+			makeRow(tabId, 2, "user", [{ type: "text", text: "q2" }]),
+		]);
+		await manager.processMessage(tabId, "q2", "key-deepseek", "deepseek-v3");
+
+		// Exactly two Agents constructed across the two turns (the
+		// invalidation gate fires when keyId/modelId change).
+		expect(constructedAgents.length).toBe(2);
+
+		// Second Agent (the DeepSeek one) was pre-populated with the
+		// completed first turn — not empty, not duplicating q2.
+		const second = constructedAgents[1];
+		expect(second).toBeDefined();
+		if (!second) return;
+		const init = second.initialMessages as Array<{ role: string; chunks: unknown[] }>;
+		expect(init.length).toBe(2);
+		expect(init[0]).toMatchObject({ role: "user", chunks: [{ type: "text", text: "q1" }] });
+		expect(init[1]).toMatchObject({ role: "assistant", chunks: [{ type: "text", text: "a1" }] });
 	});
 });
