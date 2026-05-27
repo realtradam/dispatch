@@ -1,36 +1,31 @@
-# Code Review — DeepSeek `reasoning_content` fix
+# Background Agents + Layout Restore Review
 
 ## Verdict
-**Ship-with-followups.** The removal of the v4-era middleware correctly resolves the primary bug: `reasoning_content` is now passed to the AI SDK as `{ type: "reasoning" }` parts, which the v6 SDK successfully serializes to the wire format instead of burying it in a dead `providerMetadata` key. However, the fix strictly relies on the AI SDK's native serialization, which introduces a critical edge case for empty reasoning blocks that the reference OpenCode implementation explicitly handles.
+SHIP
 
-## Bugs found (must-fix)
-*(None blocking the immediate happy-path fix, but see edge cases below)*
+## Block-level findings
+None. The implementation adheres strictly to the `plan-bg-restore.md` specification across all tiers (core, API, and frontend).
 
-## Edge cases / risks
-*   **The Empty-Reasoning Edge Case:** DeepSeek (and other models) can occasionally emit an empty reasoning block. In Dispatch, `toModelMessages` will correctly emit `{ type: "reasoning", text: "" }`. However, `@ai-sdk/openai-compatible@2.0.48` strips `reasoning_content` entirely if the text is empty:
-    ```javascript
-    // node_modules/@ai-sdk/openai-compatible/dist/index.mjs:245
-    ...reasoning.length > 0 ? { reasoning_content: reasoning } : {},
-    ```
-    If DeepSeek emitted an empty reasoning block in a previous turn, the SDK will drop `reasoning_content` from the subsequent request payload. DeepSeek requires this field to be present (even if empty) during a thinking-mode session and will crash with the exact same "must be passed back" error.
+## Ship-with-followup findings
+None.
 
-## opencode reference parity gaps
-*   **Forced empty string serialization:** The OpenCode reference implementation specifically works around the SDK's empty-string stripping behavior in `packages/opencode/src/provider/transform.ts:233-241`:
-    ```typescript
-    // Always set the field even when empty — some providers (e.g. DeepSeek) may return empty
-    // reasoning_content which still needs to be sent back in subsequent requests.
-    ```
-    It enforces this by stripping the `reasoning` parts and injecting the `providerOptions.openaiCompatible[field]` directly. Dispatch's fix misses this workaround because it relies 100% on the AI SDK's native serialization.
+## Nits
+None.
 
-## Test coverage gaps
-*   **Empty Reasoning Handling:** The new `agent.test.ts` integration test ("openai-compatible reasoning round-trip...") only tests the happy path with non-empty reasoning (`text: "let me reason about this"`). It should include a test asserting that `text: ""` still results in a valid request (which currently would fail against the wire, though testing this fully might require mocking the provider wire payload rather than just `streamText` arguments).
-*   **Tool calls + Reasoning:** There is no test verifying that an assistant message with both reasoning and a tool call correctly passes both to `streamText` for the `openai-compatible` provider (though the logic in `toModelMessages` handles it).
-*   **Multiple reasoning blocks:** The AI SDK concatenates multiple reasoning parts natively, but an integration test verifying that Dispatch's `toModelMessages` correctly emits all of them would be valuable.
+## What was checked
+- **A. getAllStatuses correctness**: PASS. The method in `packages/api/src/agent-manager.ts:714-751` returns `Record<string, TabStatusSnapshot>`. It conditionally includes `currentChunks` and `currentAssistantId` only for `running` tabs and performs a defensive shallow copy `[...tabAgent.currentChunks]`.
+- **B. Frontend TabStatusSnapshot mirror**: PASS. `packages/frontend/src/lib/types.ts:96-100` mirrors the core interface exactly.
+- **C. hydrateFromBackend**: PASS. `packages/frontend/src/lib/tabs.svelte.ts:432-562` implements the full hydration flow (GET /tabs -> GET /status -> parallel GET /tabs/:id/messages). It handles failure modes without throwing, implements the required idempotency check (`tabs.length > 0`), and correctly seeds in-flight messages.
+- **D. WS statuses handler**: PASS. `packages/frontend/src/lib/tabs.svelte.ts:581-644` reconciles status, seeds in-flight chunks for running tabs, and clears pointers for idle tabs. The desync recovery path (`reloadTabMessagesFromApi`) is preserved.
+- **E. App.svelte onMount**: PASS. `packages/frontend/src/App.svelte:78-105` sequences `hydrateFromBackend` before the fallback `createNewTab` and only creates a fresh tab if hydration yields nothing. WS connection lifecycle is preserved.
+- **F. Behavior preservation**: PASS. No new `beforeunload` or `unload` handlers were added. WS `onClose` in `packages/api/src/index.ts:60-66` correctly only unsubscribes. Explicit tab close in `tabs.svelte.ts` still calls `DELETE /tabs/:id`, which cancels and archives as before.
+- **G. Test coverage**: PASS. 
+    - API tests in `agent-manager.test.ts` cover empty state, idle snapshot, running snapshot, and defensive copy.
+    - Frontend tests in `chat-store.test.ts` cover successful restore, in-flight seeding, failure tolerance, and idempotency.
+- **H. Race conditions**: PASS. `hydrateFromBackend` idempotency and the per-tab reconcile logic in the WS handler mitigate potential races between HTTP and WS data.
+- **I. Wire-shape symmetry**: PASS. The frontend mirror matches the core definition.
+- **J. Type-only vs runtime imports**: PASS. `agent-manager.ts:40` uses `type TabStatusSnapshot`.
 
-## Style / consistency
-*   **Clean removal:** The deletion of the obsolete middleware and the cleanup of `packages/core/src/llm/provider.ts` is idiomatic and cleanly delegates responsibility to the v6 AI SDK.
-*   **Comments:** The new block comment in `provider.ts` accurately explains why the old middleware broke DeepSeek and why the SDK handles it natively now.
-
-## Other observations
-*   **Redacted Reasoning:** The removed middleware stripped `redacted-reasoning` types. This is no longer necessary because Dispatch's `toModelMessages` only knows how to emit `text`, `reasoning`, and `tool-call` parts; it intrinsically filters out any other internal chunk types. This means no regressions are introduced regarding redacted reasoning.
-*   **Empty part filtering for Anthropic:** The `applyAnthropicStructuralNormalisations` function correctly strips empty reasoning/text parts, but this is safely gated behind `usesAnthropicSDK`, so it will not interfere with DeepSeek's `openai-compatible` path.
+## What was NOT checked
+- Performance with extremely high tab counts (>100) was not verified empirically, though the implementation uses `Promise.all` for message fetching to minimize latency.
+- Direct database state verification (the review was limited to code analysis and existing test coverage).

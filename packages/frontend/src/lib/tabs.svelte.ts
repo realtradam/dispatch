@@ -18,6 +18,7 @@ import type {
 	LogEntry,
 	PermissionPrompt,
 	QueuedMessage,
+	TabStatusSnapshot,
 	TaskItem,
 } from "./types.js";
 import { wsClient } from "./ws.svelte.js";
@@ -399,6 +400,167 @@ export function createTabStore() {
 		}
 	}
 
+	/**
+	 * Hydrate the tab store from the backend on app mount. Restores the
+	 * full list of open tabs (every row with `is_open = 1` in the DB),
+	 * loads each tab's persisted message history, and seeds the in-flight
+	 * assistant message for any tab the backend is currently streaming.
+	 *
+	 * Wire calls:
+	 *   - GET /tabs                       → list of open tabs in `position` order
+	 *   - GET /tabs/:id/messages          → persisted ChatMessage[] for each
+	 *   - GET /status                     → in-flight TabStatusSnapshot map
+	 *
+	 * Failure modes (all log + continue with whatever was successfully
+	 * hydrated; callers fall back to creating a fresh tab if the final
+	 * `tabs` array is empty):
+	 *   - /tabs request fails → no tabs restored
+	 *   - /tabs/:id/messages fails → that tab restored with empty messages
+	 *   - /status fails → tabs restored, in-flight streaming will be
+	 *     lost (will surface as a static "running" status until the next
+	 *     event arrives); harmless because the WS will broadcast `statuses`
+	 *     on reconnect anyway.
+	 *
+	 * Returns the number of tabs hydrated (0 on total failure, ≥1 on
+	 * partial or full success). Caller uses this to decide whether to
+	 * create a fresh tab.
+	 *
+	 * Idempotency: if `tabs.length > 0` when called, returns 0 without
+	 * touching state — the caller already has tabs from elsewhere (e.g.
+	 * a hot-reload that preserved Svelte state).
+	 */
+	async function hydrateFromBackend(): Promise<number> {
+		if (tabs.length > 0) return 0;
+
+		// 1. Fetch the list of open tabs from the DB.
+		let tabRows: Array<{
+			id: string;
+			title: string;
+			keyId?: string | null;
+			modelId?: string | null;
+			parentTabId?: string | null;
+		}> = [];
+		try {
+			const res = await fetch(`${config.apiBase}/tabs`);
+			if (!res.ok) return 0;
+			const data = (await res.json()) as { tabs?: typeof tabRows };
+			tabRows = Array.isArray(data.tabs) ? data.tabs : [];
+		} catch {
+			return 0;
+		}
+
+		if (tabRows.length === 0) return 0;
+
+		// 2. Fetch the in-flight snapshot. Failure is non-fatal.
+		let statusMap: Record<string, TabStatusSnapshot> = {};
+		try {
+			const res = await fetch(`${config.apiBase}/status`);
+			if (res.ok) {
+				const data = (await res.json()) as { statuses?: Record<string, TabStatusSnapshot> };
+				if (data.statuses && typeof data.statuses === "object") {
+					statusMap = data.statuses;
+				}
+			}
+		} catch {
+			// Non-fatal: tabs still restore with idle status.
+		}
+
+		// 3. For each tab, fetch its persisted messages in parallel.
+		const messageFetches = tabRows.map(async (row) => {
+			try {
+				const res = await fetch(`${config.apiBase}/tabs/${row.id}/messages`);
+				if (!res.ok) return { id: row.id, messages: [] as ChatMessage[] };
+				const data = (await res.json()) as {
+					messages?: Array<{ id?: string; role: string; chunks?: Chunk[] }>;
+				};
+				const messages: ChatMessage[] = (data.messages ?? []).map((m) => ({
+					id: m.id ?? generateId(),
+					role: m.role as ChatMessage["role"],
+					chunks: Array.isArray(m.chunks) ? m.chunks : [],
+					isStreaming: false,
+				}));
+				return { id: row.id, messages };
+			} catch {
+				return { id: row.id, messages: [] as ChatMessage[] };
+			}
+		});
+
+		const messagesByTab = new Map<string, ChatMessage[]>();
+		for (const result of await Promise.all(messageFetches)) {
+			messagesByTab.set(result.id, result.messages);
+		}
+
+		// 4. Build the Tab objects, splicing in the in-flight snapshot for
+		//    running tabs.
+		const restored: Tab[] = tabRows.map((row) => {
+			const snap = statusMap[row.id];
+			const messages = messagesByTab.get(row.id) ?? [];
+			const agentStatus: Tab["agentStatus"] = snap?.status ?? "idle";
+
+			let currentAssistantId: string | null = null;
+			let finalMessages = messages;
+
+			if (agentStatus === "running" && snap?.currentAssistantId) {
+				currentAssistantId = snap.currentAssistantId;
+				// Find or create the in-flight assistant message. If the DB
+				// already has a row with this id (the backend appended on
+				// first flush and we picked it up via /tabs/:id/messages),
+				// merge the snapshot chunks on top — the snapshot is the
+				// live source of truth and may have chunks the DB doesn't.
+				// If there's no matching row, append a new in-flight
+				// assistant message holding only the snapshot chunks.
+				const existingIdx = finalMessages.findIndex((m) => m.id === snap.currentAssistantId);
+				if (existingIdx >= 0) {
+					finalMessages = finalMessages.map((m, i) =>
+						i === existingIdx
+							? {
+									...m,
+									chunks: snap.currentChunks ? [...snap.currentChunks] : m.chunks,
+									isStreaming: true,
+								}
+							: m,
+					);
+				} else {
+					finalMessages = [
+						...finalMessages,
+						{
+							id: snap.currentAssistantId,
+							role: "assistant",
+							chunks: snap.currentChunks ? [...snap.currentChunks] : [],
+							isStreaming: true,
+						},
+					];
+				}
+			}
+
+			return {
+				id: row.id,
+				title: row.title,
+				messages: finalMessages,
+				agentStatus,
+				keyId: row.keyId ?? null,
+				modelId: row.modelId ?? null,
+				reasoningEffort: "max",
+				currentAssistantId,
+				tasks: [],
+				injectedSkills: [],
+				parentTabId: row.parentTabId ?? null,
+				persistent: true,
+				agentSlug: null,
+				agentScope: null,
+				agentModels: null,
+				workingDirectory: null,
+				queuedMessages: [],
+			};
+		});
+
+		tabs = restored;
+		// Activate the first restored tab (the list is already ordered by
+		// `position` from the backend).
+		activeTabId = restored[0]?.id ?? null;
+		return restored.length;
+	}
+
 	function handleEvent(event: AgentEvent & { tabId?: string }): void {
 		const tabId = event.tabId;
 
@@ -417,25 +579,62 @@ export function createTabStore() {
 				break;
 			}
 			case "statuses": {
-				// WS (re)connect snapshot. For any tab where the frontend thought
-				// we were running but the backend says otherwise, we missed the
-				// finishing events while disconnected — pull the persisted
-				// chunks from the API to recover. Also sync agentStatus and
-				// clear in-flight pointers on every desyncing tab.
+				// WS (re)connect snapshot. The shape was widened to
+				// TabStatusSnapshot (status + optional currentChunks +
+				// optional currentAssistantId) so the frontend can seed
+				// in-flight assistant messages on browser reopen.
 				const backend = event.statuses;
 				for (const t of tabs) {
-					const backendStatus = backend[t.id] ?? "idle";
+					const snap = backend[t.id];
+					const backendStatus = snap?.status ?? "idle";
+
+					// Desync case: frontend thought it was streaming, backend
+					// has already moved on. Pull the persisted chunks so the
+					// final answer shows up.
 					if (t.agentStatus === "running" && backendStatus !== "running") {
 						void reloadTabMessagesFromApi(t.id);
 					}
+
+					// Status alignment.
 					if (t.agentStatus !== backendStatus) {
 						updateTab(t.id, { agentStatus: backendStatus });
 					}
-					if (backendStatus !== "running" && t.currentAssistantId) {
-						// Mark any in-flight assistant message as no-longer-streaming;
-						// `reloadTabMessagesFromApi` (if it ran) will replace the
-						// whole messages array, but if no reload was triggered we
-						// still want streaming flags cleared.
+
+					if (backendStatus === "running") {
+						// Seed the in-flight assistant message from the snapshot.
+						// This handles the "browser just reopened mid-stream"
+						// path: the DB only has chunks up to the last
+						// flushAssistant call, but the snapshot has the live
+						// in-memory currentChunks.
+						if (snap?.currentAssistantId) {
+							const targetId = snap.currentAssistantId;
+							updateTab(t.id, { currentAssistantId: targetId });
+							updateMessages(t.id, (msgs) => {
+								const idx = msgs.findIndex((m) => m.id === targetId);
+								if (idx >= 0) {
+									return msgs.map((m, i) =>
+										i === idx
+											? {
+													...m,
+													chunks: snap.currentChunks ? [...snap.currentChunks] : m.chunks,
+													isStreaming: true,
+												}
+											: m,
+									);
+								}
+								return [
+									...msgs,
+									{
+										id: targetId,
+										role: "assistant",
+										chunks: snap.currentChunks ? [...snap.currentChunks] : [],
+										isStreaming: true,
+									},
+								];
+							});
+						}
+					} else if (t.currentAssistantId) {
+						// Not running: clear streaming flags.
 						updateMessages(t.id, (msgs) =>
 							msgs.map((m) => (m.id === t.currentAssistantId ? { ...m, isStreaming: false } : m)),
 						);
@@ -1303,6 +1502,7 @@ export function createTabStore() {
 		// WS callback uses in production. Not intended for use in
 		// components — they should rely on the WS subscription instead.
 		handleEvent,
+		hydrateFromBackend,
 	};
 }
 

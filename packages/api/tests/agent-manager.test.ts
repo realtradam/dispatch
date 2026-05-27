@@ -658,4 +658,160 @@ describe("AgentManager", () => {
 		expect(init[0]).toMatchObject({ role: "user", chunks: [{ type: "text", text: "q1" }] });
 		expect(init[1]).toMatchObject({ role: "assistant", chunks: [{ type: "text", text: "a1" }] });
 	});
+
+	// ─── getAllStatuses snapshot shape (for browser-reopen restore) ────
+	//
+	// The snapshot enriches the legacy `Record<string, AgentStatus>` shape
+	// with per-tab in-flight context so a fresh frontend can render the
+	// streaming assistant message correctly after a reload.
+
+	it("getAllStatuses returns an empty record when no tabs are tracked", () => {
+		const manager = new AgentManager();
+		expect(manager.getAllStatuses()).toEqual({});
+	});
+
+	it("getAllStatuses returns { status } for an idle tab (no currentChunks/currentAssistantId)", async () => {
+		const manager = new AgentManager();
+		// Drive a full turn so the tab gets registered; default mock run
+		// settles back to idle by the time `await` resolves.
+		await manager.processMessage("tab-idle", "hi");
+		const snap = manager.getAllStatuses();
+		expect(snap["tab-idle"]).toBeDefined();
+		expect(snap["tab-idle"]?.status).toBe("idle");
+		expect(snap["tab-idle"]).not.toHaveProperty("currentChunks");
+		expect(snap["tab-idle"]).not.toHaveProperty("currentAssistantId");
+	});
+
+	it("getAllStatuses includes currentChunks and currentAssistantId for a running tab", () => {
+		const manager = new AgentManager();
+		// Reach into the private map to set up a synthetic running state.
+		// Justification: there is no public API to enter a sustained
+		// "running" state without actually streaming, and we want to
+		// assert the snapshot shape — not the streaming pipeline.
+		const inner = manager as unknown as {
+			tabAgents: Map<
+				string,
+				{
+					agent: null;
+					status: "running" | "idle" | "error";
+					keyId: null;
+					modelId: null;
+					taskList: { onChange: (cb: unknown) => void };
+					messageQueue: unknown[];
+					queueListeners: unknown[];
+					shellStore: unknown;
+					transcriptStore: unknown;
+					currentChunks: Array<{ type: string; text?: string }> | null;
+					currentAssistantId: string | null;
+				}
+			>;
+		};
+		inner.tabAgents.set("tab-running", {
+			agent: null,
+			status: "running",
+			keyId: null,
+			modelId: null,
+			taskList: { onChange: () => {} },
+			messageQueue: [],
+			queueListeners: [],
+			shellStore: {},
+			transcriptStore: {},
+			currentChunks: [
+				{ type: "thinking", text: "let me think" },
+				{ type: "text", text: "partial answer" },
+			],
+			currentAssistantId: "assistant-msg-id-7",
+		});
+
+		const snap = manager.getAllStatuses();
+		expect(snap["tab-running"]).toBeDefined();
+		expect(snap["tab-running"]?.status).toBe("running");
+		expect(snap["tab-running"]?.currentAssistantId).toBe("assistant-msg-id-7");
+		expect(snap["tab-running"]?.currentChunks).toEqual([
+			{ type: "thinking", text: "let me think" },
+			{ type: "text", text: "partial answer" },
+		]);
+	});
+
+	it("getAllStatuses defensively copies currentChunks (mutating the snapshot doesn't affect the live array)", () => {
+		const manager = new AgentManager();
+		const inner = manager as unknown as {
+			tabAgents: Map<
+				string,
+				{
+					agent: null;
+					status: "running";
+					keyId: null;
+					modelId: null;
+					taskList: { onChange: (cb: unknown) => void };
+					messageQueue: unknown[];
+					queueListeners: unknown[];
+					shellStore: unknown;
+					transcriptStore: unknown;
+					currentChunks: Array<{ type: string; text?: string }>;
+					currentAssistantId: string;
+				}
+			>;
+		};
+		const liveChunks = [{ type: "text", text: "live" }];
+		inner.tabAgents.set("tab-copy", {
+			agent: null,
+			status: "running",
+			keyId: null,
+			modelId: null,
+			taskList: { onChange: () => {} },
+			messageQueue: [],
+			queueListeners: [],
+			shellStore: {},
+			transcriptStore: {},
+			currentChunks: liveChunks,
+			currentAssistantId: "msg-x",
+		});
+
+		const snap = manager.getAllStatuses();
+		// Mutate the snapshot's array
+		snap["tab-copy"]?.currentChunks?.push({ type: "text", text: "polluted" });
+		// Live array must be untouched
+		expect(liveChunks).toEqual([{ type: "text", text: "live" }]);
+	});
+
+	it("getAllStatuses omits currentChunks when a running tab has none yet", () => {
+		const manager = new AgentManager();
+		const inner = manager as unknown as {
+			tabAgents: Map<
+				string,
+				{
+					agent: null;
+					status: "running";
+					keyId: null;
+					modelId: null;
+					taskList: { onChange: (cb: unknown) => void };
+					messageQueue: unknown[];
+					queueListeners: unknown[];
+					shellStore: unknown;
+					transcriptStore: unknown;
+					currentChunks: null;
+					currentAssistantId: null;
+				}
+			>;
+		};
+		inner.tabAgents.set("tab-early", {
+			agent: null,
+			status: "running",
+			keyId: null,
+			modelId: null,
+			taskList: { onChange: () => {} },
+			messageQueue: [],
+			queueListeners: [],
+			shellStore: {},
+			transcriptStore: {},
+			currentChunks: null,
+			currentAssistantId: null,
+		});
+
+		const snap = manager.getAllStatuses();
+		expect(snap["tab-early"]?.status).toBe("running");
+		expect(snap["tab-early"]).not.toHaveProperty("currentChunks");
+		expect(snap["tab-early"]).not.toHaveProperty("currentAssistantId");
+	});
 });

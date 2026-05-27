@@ -37,6 +37,7 @@ import {
 	resolveApiKey,
 	type SkillDefinition,
 	type SystemChunkKind,
+	type TabStatusSnapshot,
 	TaskList,
 	updateMessage,
 	validateConfig,
@@ -711,10 +712,40 @@ export class AgentManager {
 		return this.tabAgents.get(tabId)?.status ?? "idle";
 	}
 
-	getAllStatuses(): Record<string, AgentStatus> {
-		const result: Record<string, AgentStatus> = {};
+	/**
+	 * Snapshot of every tab the manager is currently tracking. Sent on WS
+	 * connect and via GET /status so a freshly-loaded frontend can
+	 * reconstruct any in-flight assistant turn without missing the chunks
+	 * that arrived before its WS handshake completed.
+	 *
+	 * For each running tab, the snapshot includes:
+	 *   - status: "running"
+	 *   - currentChunks: a defensive shallow copy of `tabAgent.currentChunks`
+	 *     (the live chunk array the streaming loop appends to). The
+	 *     consumer owns this copy and may mutate it freely.
+	 *   - currentAssistantId: the DB id of the in-flight assistant message
+	 *     row. The frontend aligns its local assistant message id with
+	 *     this so the next `done` event lands on the right message.
+	 *
+	 * For idle/error tabs, only `status` is present. Tabs not in
+	 * `this.tabAgents` (e.g. tabs in the DB that have never been touched
+	 * since server start) are absent from the returned record — the
+	 * caller infers their status from the DB row (always "idle" at rest).
+	 */
+	getAllStatuses(): Record<string, TabStatusSnapshot> {
+		const result: Record<string, TabStatusSnapshot> = {};
 		for (const [tabId, tabAgent] of this.tabAgents.entries()) {
-			result[tabId] = tabAgent.status;
+			const snap: TabStatusSnapshot = { status: tabAgent.status };
+			if (tabAgent.status === "running") {
+				if (tabAgent.currentChunks) {
+					// Defensive shallow copy: callers may serialize/mutate.
+					snap.currentChunks = [...tabAgent.currentChunks];
+				}
+				if (tabAgent.currentAssistantId) {
+					snap.currentAssistantId = tabAgent.currentAssistantId;
+				}
+			}
+			result[tabId] = snap;
 		}
 		return result;
 	}

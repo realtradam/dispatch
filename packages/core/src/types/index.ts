@@ -95,6 +95,33 @@ export interface ToolResult {
 
 export type AgentStatus = "idle" | "running" | "error" | "waiting_for_key";
 
+/**
+ * Per-tab snapshot of live state, sent on WS connect and via
+ * `GET /status`. Carries enough information for a freshly-loaded
+ * frontend to reconstruct any in-flight assistant message.
+ *
+ * - `status` — always present; mirrors the in-memory `TabAgent.status`.
+ * - `currentChunks` — the live in-flight `Chunk[]` for the running
+ *   assistant turn. Present iff `status === "running"` AND
+ *   `TabAgent.currentChunks` is non-null. Defensively copied at
+ *   snapshot time; the consumer owns the array.
+ * - `currentAssistantId` — DB id of the in-flight assistant message
+ *   (the row that the eventual `flushAssistant` call will write/update).
+ *   Present iff `status === "running"` AND `TabAgent.currentAssistantId`
+ *   is set. The frontend uses this to align its local assistant
+ *   message id with the persisted id so subsequent `done` and reload
+ *   paths line up.
+ *
+ * Not part of `AgentEvent` itself: the `statuses` payload is a WS-
+ * connect-level snapshot, not an event the `Agent` emits. The frontend
+ * mirrors this type in `packages/frontend/src/lib/types.ts`.
+ */
+export interface TabStatusSnapshot {
+	status: AgentStatus;
+	currentChunks?: Chunk[];
+	currentAssistantId?: string;
+}
+
 export type AgentEvent =
 	| { type: "status"; status: AgentStatus }
 	| { type: "text-delta"; delta: string }
