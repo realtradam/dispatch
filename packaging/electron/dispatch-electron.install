@@ -1,0 +1,32 @@
+post_install() {
+	echo ""
+	echo "==> Dispatch Electron desktop wrapper installed (self-contained)."
+	echo "    Launch from your menu (Dispatch) or run:"
+	echo "      dispatch"
+	echo ""
+	echo "    The bundled frontend talks to the API URL baked in at build"
+	echo "    time (default: http://localhost:18390). To run a local backend:"
+	echo "      pacman -S dispatch dispatch-systemd   # systemd"
+	echo "      pacman -S dispatch dispatch-s6        # s6 / Artix"
+	echo ""
+	echo "    To point the wrapper at a different backend, rebuild with:"
+	echo "      VITE_API_URL=\"http://your-host:18390\" bin/build-pkg-electron"
+	echo ""
+
+	if command -v update-desktop-database >/dev/null 2>&1; then
+		update-desktop-database -q /usr/share/applications 2>/dev/null || true
+	fi
+	if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+		gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+	fi
+}
+
+post_upgrade() {
+	post_install
+}
+
+post_remove() {
+	if command -v update-desktop-database >/dev/null 2>&1; then
+		update-desktop-database -q /usr/share/applications 2>/dev/null || true
+	fi
+}

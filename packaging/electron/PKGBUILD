@@ -1,0 +1,100 @@
+# Maintainer: dispatch
+#
+# Electron desktop wrapper for Dispatch on Linux.
+#
+# Self-contained: bundles its own copy of the built frontend dist + electron
+# entry points under /opt/dispatch-electron/. Does NOT depend on the `dispatch`
+# package — install that separately (with dispatch-systemd or dispatch-s6) if
+# you want to run the backend locally, or point VITE_API_URL at a remote
+# instance at build time.
+#
+# Build with:
+#   bin/build-pkg-electron       # makepkg -fd in packaging/electron/
+#
+# Override the backend URL the bundled frontend talks to:
+#   VITE_API_URL="http://your-host:18390" bin/build-pkg-electron
+
+pkgname=dispatch-electron
+pkgver=0.0.1
+pkgrel=1
+pkgdesc='Electron desktop wrapper for Dispatch (self-contained)'
+arch=('x86_64')
+url='https://github.com/anomalyco/dispatch'
+license=('MIT')
+depends=('electron')
+makedepends=('bun')
+install=dispatch-electron.install
+source=()
+sha256sums=()
+
+_projectdir="${startdir}/../.."
+_packagingdir="${_projectdir}/packaging"
+_electrondir="${_packagingdir}/electron"
+
+prepare() {
+	mkdir -p "${srcdir}/dispatch-electron-${pkgver}"
+
+	# Copy project files into the src build directory (preserve symlinks)
+	cp -a \
+		"${_projectdir}/packages" \
+		"${_projectdir}/package.json" \
+		"${_projectdir}/bun.lock" \
+		"${_projectdir}/tsconfig.base.json" \
+		"${srcdir}/dispatch-electron-${pkgver}/"
+}
+
+build() {
+	cd "${srcdir}/dispatch-electron-${pkgver}"
+
+	# Install all deps (including devDependencies for vite build)
+	bun install --frozen-lockfile
+
+	# Build the SPA. VITE_API_URL is baked in at build time.
+	VITE_API_URL="${VITE_API_URL:-http://localhost:18390}" \
+		bun run --cwd packages/frontend build
+}
+
+package() {
+	cd "${srcdir}/dispatch-electron-${pkgver}"
+
+	local optdir="${pkgdir}/opt/dispatch-electron"
+
+	# --- Bundled SPA dist ---
+	install -dm755 "${optdir}/dist"
+	cp -a packages/frontend/dist/. "${optdir}/dist/"
+
+	# --- Electron entry points ---
+	# main.cjs loads ../dist/index.html — so the dist must sit alongside electron/.
+	install -Dm644 \
+		packages/frontend/electron/main.cjs \
+		"${optdir}/electron/main.cjs"
+	install -Dm644 \
+		packages/frontend/electron/preload.cjs \
+		"${optdir}/electron/preload.cjs"
+
+	# --- /usr/bin/dispatch (electron wrapper) ---
+	install -Dm755 \
+		"${_electrondir}/dispatch-electron-wrapper.sh" \
+		"${pkgdir}/usr/bin/dispatch"
+
+	# --- Desktop integration ---
+	install -Dm644 \
+		"${_electrondir}/dispatch.desktop" \
+		"${pkgdir}/usr/share/applications/dispatch.desktop"
+
+	install -Dm644 \
+		"${_electrondir}/dispatch.svg" \
+		"${pkgdir}/usr/share/icons/hicolor/scalable/apps/dispatch.svg"
+
+	if [ -f "${_electrondir}/dispatch.png" ]; then
+		install -Dm644 \
+			"${_electrondir}/dispatch.png" \
+			"${pkgdir}/usr/share/icons/hicolor/512x512/apps/dispatch.png"
+	fi
+
+	# --- License ---
+	if [ -f "${_projectdir}/LICENSE" ]; then
+		install -Dm644 "${_projectdir}/LICENSE" \
+			"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+	fi
+}

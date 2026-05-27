@@ -1,15 +1,68 @@
 #!/usr/bin/env bash
+# Install one or more built dispatch packages with yay -U.
+#
+# Default: installs the freshest dispatch + dispatch-systemd from packaging/.
+# Pass package names (without version) to install a custom set.
+#
+# Usage:
+#   bin/install-pkg                              # dispatch + dispatch-systemd
+#   bin/install-pkg dispatch dispatch-s6         # dispatch + dispatch-s6
+#   bin/install-pkg dispatch dispatch-electron   # dispatch + electron wrapper
+#   bin/install-pkg --all                        # every freshest pkg found
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PACKAGING_DIR="$(dirname "$SCRIPT_DIR")/packaging"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PACKAGING_DIR="$PROJECT_DIR/packaging"
+ELECTRON_DIR="$PROJECT_DIR/packaging/electron"
 
-PKG=$(ls -t "$PACKAGING_DIR"/dispatch-[0-9]*-x86_64.pkg.tar.zst 2>/dev/null | head -1)
+# Find the most recent .pkg.tar.zst matching a package name in a given dir.
+find_pkg() {
+	local name="$1" dir="$2"
+	ls -t "$dir"/"$name"-[0-9]*-x86_64.pkg.tar.zst 2>/dev/null | head -1
+}
 
-if [ -z "$PKG" ]; then
-	echo "No package found. Run bin/build-pkg first." >&2
+# Resolve a package name to its freshest tarball, searching both dirs.
+resolve_pkg() {
+	local name="$1" path
+	path=$(find_pkg "$name" "$PACKAGING_DIR")
+	[ -n "$path" ] || path=$(find_pkg "$name" "$ELECTRON_DIR")
+	echo "$path"
+}
+
+declare -a names
+declare -a paths
+
+if [ $# -eq 0 ]; then
+	names=(dispatch dispatch-systemd)
+elif [ "${1:-}" = "--all" ]; then
+	names=(dispatch dispatch-systemd dispatch-s6 dispatch-electron)
+else
+	names=("$@")
+fi
+
+for name in "${names[@]}"; do
+	path=$(resolve_pkg "$name")
+	if [ -z "$path" ]; then
+		# --all is lenient: skip missing packages
+		if [ "${1:-}" = "--all" ]; then
+			echo "warn: no built package found for '$name', skipping" >&2
+			continue
+		fi
+		echo "error: no built package found for '$name'" >&2
+		echo "       run bin/build-pkg (or bin/build-pkg-electron) first." >&2
+		exit 1
+	fi
+	paths+=("$path")
+done
+
+if [ ${#paths[@]} -eq 0 ]; then
+	echo "error: nothing to install." >&2
 	exit 1
 fi
 
-echo "Installing $PKG"
-yay -U "$PKG" "$@"
+echo "Installing:"
+printf '  %s\n' "${paths[@]}"
+echo ""
+yay -U "${paths[@]}"

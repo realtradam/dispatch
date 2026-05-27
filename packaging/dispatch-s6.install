@@ -1,0 +1,46 @@
+post_install() {
+	install -dm755 -o tradam -g tradam /var/log/dispatch-api
+	install -dm755 -o tradam -g tradam /var/log/dispatch-frontend
+
+	echo ""
+	echo "==> Dispatch s6-rc services installed at /etc/s6/sv/"
+	echo "    Service pipelines: dispatch-api (= dispatch-api-srv | dispatch-api-log)"
+	echo "                       dispatch-frontend (= dispatch-frontend-srv | dispatch-frontend-log)"
+	echo "    To enable and start:"
+	echo "      s6 repository sync"
+	echo "      s6 set enable -I pull dispatch-api-srv dispatch-api-log"
+	echo "      s6 set enable -I pull dispatch-frontend-srv dispatch-frontend-log"
+	echo "      s6 set commit -f"
+	echo "      s6 live install"
+	echo "      s6-rc -u change dispatch-api"
+	echo "      s6-rc -u change dispatch-frontend"
+	echo ""
+}
+
+post_upgrade() {
+	install -dm755 -o tradam -g tradam /var/log/dispatch-api  2>/dev/null || true
+	install -dm755 -o tradam -g tradam /var/log/dispatch-frontend 2>/dev/null || true
+
+	# Remove any stale legacy service dirs from the old (pre-srv/-log split)
+	# layout, which would otherwise confuse s6 repository sync.
+	for legacy in /etc/s6/sv/dispatch-api /etc/s6/sv/dispatch-frontend; do
+		if [ -d "$legacy" ] && [ -d "$legacy/log" ] && [ ! -e "$legacy/producer-for" ]; then
+			rm -rf "$legacy"
+		fi
+	done
+
+	echo ""
+	echo "==> Dispatch s6 services upgraded."
+	echo "    Restart:"
+	echo "      s6-rc -d change dispatch-api && s6-rc -u change dispatch-api"
+	echo "      s6-rc -d change dispatch-frontend && s6-rc -u change dispatch-frontend"
+	echo ""
+}
+
+pre_remove() {
+	echo ""
+	echo "==> Stopping dispatch services..."
+	s6-rc -d change dispatch-api      2>/dev/null || true
+	s6-rc -d change dispatch-frontend 2>/dev/null || true
+	echo ""
+}

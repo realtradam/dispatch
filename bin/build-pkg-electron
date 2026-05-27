@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Build the dispatch-electron Arch package (Linux desktop wrapper).
+# Depends on the `dispatch` package being built/installed at the matching version.
+#
+# Usage:
+#   bin/build-pkg-electron            # build
+#   bin/build-pkg-electron --noconfirm
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PACKAGING_DIR="$PROJECT_DIR/packaging/electron"
+
+cd "$PACKAGING_DIR"
+makepkg -fd "$@"
+
+echo ""
+echo "Built package:"
+ls -1t "$PACKAGING_DIR"/*.pkg.tar.zst 2>/dev/null | head -1

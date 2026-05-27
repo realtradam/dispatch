@@ -13,4 +13,9 @@ references/
 packaging/src/
 packaging/pkg/
 packaging/*.pkg.tar.zst
+packaging/*.tar.zst
+packaging/electron/src/
+packaging/electron/pkg/
+packaging/electron/*.pkg.tar.zst
+packaging/electron/*.tar.zst
 packages/frontend/release/

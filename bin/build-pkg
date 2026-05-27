@@ -1,8 +1,23 @@
 #!/usr/bin/env bash
+# Build the dispatch Arch split package: dispatch + dispatch-systemd + dispatch-s6.
+# One makepkg run produces three .pkg.tar.zst files in packaging/.
+#
+# Usage:
+#   bin/build-pkg                 # build
+#   bin/build-pkg --noconfirm     # forward extra args to makepkg
+#
+# Override frontend build target with VITE_API_URL, e.g.:
+#   VITE_API_URL="https://api.example.com" bin/build-pkg
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PACKAGING_DIR="$(dirname "$SCRIPT_DIR")/packaging"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PACKAGING_DIR="$PROJECT_DIR/packaging"
 
 cd "$PACKAGING_DIR"
 makepkg -fd "$@"
+
+echo ""
+echo "Built packages (newest first):"
+ls -1t "$PACKAGING_DIR"/*.pkg.tar.zst 2>/dev/null | head -5
