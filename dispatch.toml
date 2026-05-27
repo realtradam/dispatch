@@ -24,13 +24,7 @@ base_url = "https://opencode.ai/zen/go/v1"
 [[keys]]
 id = "opencode-2"
 provider = "opencode-go"
-base_url = "https://opencode.ai/zen/go/v1"
-[[keys]]
-id = "newyorkiedog"
-provider = "google"
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
-
-# ─── Permissions ─────────────────────────────────────────────────
+base_url = "https://opencode.ai/zen/go/v1"# ─── Permissions ─────────────────────────────────────────────────
 
 [permissions]
 read = "allow"
