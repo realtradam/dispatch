@@ -611,6 +611,13 @@ export class AgentManager {
 							console.warn(
 								`dispatch: env var "${key.env}" not set for key "${key.id}", falling back to env vars`,
 							);
+							// Apply the correct model + baseURL even when the key
+							// is unavailable so the request at least targets the
+							// right endpoint and produces a diagnosable auth error
+							// instead of silently routing to the default OpenCode Go
+							// endpoint (which may serve a different model).
+							baseURL = key.base_url;
+							model = effectiveModelId;
 							tabAgent.keyId = effectiveKeyId;
 							tabAgent.modelId = effectiveModelId;
 							useOverride = true;
