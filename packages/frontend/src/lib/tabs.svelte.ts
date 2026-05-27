@@ -445,6 +445,7 @@ export function createTabStore() {
 				break;
 			}
 			case "reasoning-delta":
+			case "reasoning-end":
 			case "text-delta":
 			case "tool-call":
 			case "tool-result":

@@ -6,6 +6,10 @@ import type { AgentEvent, ChatMessage, Chunk } from "../../src/types/index.js";
 
 const td = (delta: string): AgentEvent => ({ type: "text-delta", delta });
 const rd = (delta: string): AgentEvent => ({ type: "reasoning-delta", delta });
+const re = (metadata?: Record<string, unknown>): AgentEvent => ({
+	type: "reasoning-end",
+	...(metadata !== undefined ? { metadata } : {}),
+});
 const tc = (id: string, name = "fake_tool", args: Record<string, unknown> = {}): AgentEvent => ({
 	type: "tool-call",
 	toolCall: { id, name, arguments: args },
@@ -293,6 +297,99 @@ describe("appendEventToChunks — transition matrix", () => {
 		expect(chunks).toEqual([
 			{ type: "system", kind: "config-reload", text: "Configuration reloaded" },
 		]);
+	});
+
+	// ─── reasoning-end (v6 SDK metadata round-trip) ──────────────────
+
+	it("reasoning-delta then reasoning-end seals the thinking chunk with metadata", () => {
+		const meta = { anthropic: { signature: "sig-1" } };
+		const chunks = run([rd("plan"), re(meta)]);
+		expect(chunks).toEqual([{ type: "thinking", text: "plan", metadata: meta }]);
+	});
+
+	it("two reasoning-deltas then reasoning-end coalesces text and seals once", () => {
+		const meta = { anthropic: { signature: "abc" } };
+		const chunks = run([rd("a"), rd("b"), re(meta)]);
+		expect(chunks).toEqual([{ type: "thinking", text: "ab", metadata: meta }]);
+	});
+
+	it("reasoning-delta → reasoning-end → reasoning-delta opens a NEW chunk", () => {
+		// Each Anthropic thinking content block gets its own metadata.
+		// Extending a sealed chunk would corrupt the text/metadata mapping.
+		const meta1 = { anthropic: { signature: "sig-1" } };
+		const chunks = run([rd("first"), re(meta1), rd("second")]);
+		expect(chunks).toEqual([
+			{ type: "thinking", text: "first", metadata: meta1 },
+			{ type: "thinking", text: "second" },
+		]);
+	});
+
+	it("rd → re → rd → re produces two independently sealed chunks", () => {
+		const m1 = { anthropic: { signature: "s1" } };
+		const m2 = { anthropic: { signature: "s2" } };
+		const chunks = run([rd("first"), re(m1), rd("second"), re(m2)]);
+		expect(chunks).toEqual([
+			{ type: "thinking", text: "first", metadata: m1 },
+			{ type: "thinking", text: "second", metadata: m2 },
+		]);
+	});
+
+	it("orphan reasoning-end (no prior thinking chunk) is a no-op", () => {
+		const chunks = run([re({ anthropic: { signature: "orphan" } })]);
+		expect(chunks).toEqual([]);
+	});
+
+	it("reasoning-end after an already-sealed thinking chunk does NOT overwrite", () => {
+		const m1 = { anthropic: { signature: "first" } };
+		const m2 = { anthropic: { signature: "second" } };
+		const chunks = run([rd("a"), re(m1), re(m2)]);
+		expect(chunks).toEqual([{ type: "thinking", text: "a", metadata: m1 }]);
+	});
+
+	it("reasoning-end without metadata is a silent no-op (does not seal)", () => {
+		// v6 may emit reasoning-end with no providerMetadata for
+		// non-Anthropic providers. Don't seal those chunks — a subsequent
+		// reasoning-delta should continue extending.
+		const chunks = run([rd("hello"), re(), rd(" world")]);
+		expect(chunks).toEqual([{ type: "thinking", text: "hello world" }]);
+	});
+
+	it("re walks back across an intervening text chunk to seal the right thinking", () => {
+		// Defensive: even if a non-thinking chunk lands between the
+		// reasoning text and its end-event, the metadata still attaches
+		// to the unsealed thinking chunk.
+		const meta = { anthropic: { signature: "late" } };
+		const chunks = run([rd("plan"), td("midstream"), re(meta)]);
+		expect(chunks).toEqual([
+			{ type: "thinking", text: "plan", metadata: meta },
+			{ type: "text", text: "midstream" },
+		]);
+	});
+
+	it("interleaved rd / re / tool-call / rd / re produces correct chunk sequence", () => {
+		// Anthropic's interleaved-thinking emits a thinking block, then
+		// a tool call, then another thinking block. Each thinking block
+		// gets its own metadata.
+		const m1 = { anthropic: { signature: "before-tool" } };
+		const m2 = { anthropic: { signature: "after-tool" } };
+		const chunks = run([
+			rd("plan tool"),
+			re(m1),
+			tc("t1", "read_file"),
+			rd("plan response"),
+			re(m2),
+		]);
+		expect(chunks.map((c) => c.type)).toEqual(["thinking", "tool-batch", "thinking"]);
+		expect(chunks[0]).toEqual({
+			type: "thinking",
+			text: "plan tool",
+			metadata: m1,
+		});
+		expect(chunks[2]).toEqual({
+			type: "thinking",
+			text: "plan response",
+			metadata: m2,
+		});
 	});
 
 	it("non-content events (status / done / task-list-update / message-queued etc.) are no-ops", () => {

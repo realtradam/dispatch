@@ -1,298 +1,178 @@
 import { describe, expect, it, vi } from "vitest";
 
-// We test normalizeMessages through the middleware by mocking the provider
-// layers and capturing what transformParams does to the prompt.
+// Mock @ai-sdk/anthropic to capture what options createAnthropic is called with
+const mockAnthropicInstance = vi.fn((modelId: string) => ({
+	specificationVersion: "v3" as const,
+	provider: "anthropic.messages",
+	modelId,
+	supportedUrls: {},
+	doGenerate: vi.fn(),
+	doStream: vi.fn(),
+}));
+const mockCreateAnthropic = vi.fn(() => mockAnthropicInstance);
+vi.mock("@ai-sdk/anthropic", () => ({
+	createAnthropic: mockCreateAnthropic,
+}));
 
-// Mock wrapLanguageModel to capture the middleware
-vi.mock("ai", async () => {
-	const actual = await import("ai");
-	return {
-		...actual,
-		wrapLanguageModel: vi.fn(({ model, middleware }) => {
-			// Return a wrapper that exposes the middleware for testing
-			const wrapped = actual.wrapLanguageModel({ model, middleware });
-			(wrapped as unknown as Record<string, unknown>)._middleware = middleware;
-			return wrapped;
-		}),
-		streamText: vi.fn(),
-	};
-});
-
-// Mock provider factory
+// Mock @ai-sdk/openai-compatible to capture what options createOpenAICompatible
+// is called with, and what model id the returned factory is called with.
+const mockOpenAICompatibleFactory = vi.fn((modelId: string) => ({
+	specificationVersion: "v3" as const,
+	provider: "openai-compatible",
+	modelId,
+	supportedUrls: {},
+	doGenerate: vi.fn(),
+	doStream: vi.fn(),
+}));
+const mockCreateOpenAICompatible = vi.fn(() => mockOpenAICompatibleFactory);
 vi.mock("@ai-sdk/openai-compatible", () => ({
-	createOpenAICompatible: vi.fn(() => (modelId: string) => ({
-		id: `mock-${modelId}`,
-		doGenerate: vi.fn(),
-		doStream: vi.fn(),
-	})),
+	createOpenAICompatible: mockCreateOpenAICompatible,
 }));
 
 const { createProvider } = await import("../../src/llm/provider.js");
 
-// A helper that runs the middleware's transformParams on a prompt
-// and returns the resulting normalized prompt.
-async function runTransform(prompt: unknown[]): Promise<unknown[]> {
-	const wrappedModel = createProvider({
-		apiKey: "test-key",
-		baseURL: "https://example.com/v1",
-	})("test-model");
+describe("createProvider (default OpenAI-compatible path)", () => {
+	it("does not wrap the model in a middleware layer — v6 SDK handles reasoning round-trip natively", () => {
+		mockCreateOpenAICompatible.mockClear();
+		mockOpenAICompatibleFactory.mockClear();
 
-	const middleware = (
-		wrappedModel as unknown as {
-			_middleware: Array<{
-				transformParams: (args: {
-					type: string;
-					params: Record<string, unknown>;
-				}) => Promise<unknown>;
-			}>;
-		}
-	)._middleware;
-
-	const result = await middleware[0]?.transformParams({
-		type: "stream",
-		params: { prompt },
-	});
-
-	return (result as Record<string, unknown>).prompt as unknown[];
-}
-
-describe("createProvider middleware", () => {
-	it("passes through non-stream calls unchanged", async () => {
-		const wrappedModel = createProvider({
+		const model = createProvider({
 			apiKey: "test-key",
 			baseURL: "https://example.com/v1",
-		})("test-model");
+		})("deepseek-v4-pro");
 
-		const middleware = (
-			wrappedModel as unknown as {
-				_middleware: Array<{
-					transformParams: (args: {
-						type: string;
-						params: Record<string, unknown>;
-					}) => Promise<unknown>;
-				}>;
-			}
-		)._middleware;
-
-		const params = { prompt: [], temperature: 0.5 };
-		const result = (await middleware[0]?.transformParams({
-			type: "generate",
-			params,
-		})) as Record<string, unknown>;
-
-		expect(result).toEqual(params);
+		// The factory should have been invoked with the model id directly,
+		// without going through `wrapLanguageModel`. If a middleware were
+		// still in place, the returned object would carry an `_middleware`
+		// property (set by our test mock pattern). The bare provider model
+		// has no such property — verifying the v4-era normalizeMessages
+		// middleware is gone.
+		expect(mockOpenAICompatibleFactory).toHaveBeenCalledWith("deepseek-v4-pro");
+		expect((model as { _middleware?: unknown })._middleware).toBeUndefined();
 	});
 
-	it("strips reasoning parts and sets reasoning_content on providerMetadata", async () => {
-		const prompt = [
-			{
-				role: "assistant",
-				content: [
-					{ type: "reasoning", text: "I should use the list_files tool." },
-					{ type: "text", text: "Let me check the directory." },
-					{
-						type: "tool-call",
-						toolCallId: "call_1",
-						toolName: "list_files",
-						args: { path: "." },
-					},
-				],
-			},
-		];
+	it("passes name, apiKey, baseURL to createOpenAICompatible", () => {
+		mockCreateOpenAICompatible.mockClear();
 
-		const normalized = await runTransform(prompt);
-		const msg = normalized[0] as Record<string, unknown>;
+		createProvider({
+			apiKey: "zen-key",
+			baseURL: "https://opencode.ai/zen/v1",
+		})("deepseek-v4-pro");
 
-		// Reasoning parts removed from content
-		const content = msg.content as Array<Record<string, unknown>>;
-		expect(content).toHaveLength(2);
-		expect(content.find((p) => p.type === "reasoning")).toBeUndefined();
-		expect(content.find((p) => p.type === "text")).toBeDefined();
-		expect(content.find((p) => p.type === "tool-call")).toBeDefined();
+		expect(mockCreateOpenAICompatible).toHaveBeenCalledWith({
+			name: "opencode-zen",
+			apiKey: "zen-key",
+			baseURL: "https://opencode.ai/zen/v1",
+		});
+	});
+});
 
-		// reasoning_content set on providerMetadata
-		const pm = msg.providerMetadata as Record<string, unknown>;
-		const compat = pm.openaiCompatible as Record<string, unknown>;
-		expect(compat.reasoning_content).toBe("I should use the list_files tool.");
+describe("createClaudeOAuthProvider", () => {
+	it("passes authToken (not apiKey) to createAnthropic for OAuth flow", () => {
+		mockCreateAnthropic.mockClear();
+
+		createProvider({
+			provider: "anthropic",
+			apiKey: "fallback-api-key",
+			baseURL: "",
+			claudeCredentials: { accessToken: "oauth-access-token" },
+		})("claude-opus-4-5");
+
+		expect(mockCreateAnthropic).toHaveBeenCalledOnce();
+		const callArgs = mockCreateAnthropic.mock.calls[0]?.[0] as Record<string, unknown>;
+		expect(callArgs.authToken).toBe("oauth-access-token");
+		expect(callArgs.apiKey).toBeUndefined();
 	});
 
-	it("sets empty reasoning_content when no reasoning parts exist", async () => {
-		const prompt = [
-			{
-				role: "assistant",
-				content: [{ type: "text", text: "Hello!" }],
-			},
-		];
+	it("falls back to apiKey as authToken when claudeCredentials are absent", () => {
+		mockCreateAnthropic.mockClear();
 
-		const normalized = await runTransform(prompt);
-		const msg = normalized[0] as Record<string, unknown>;
+		createProvider({
+			provider: "anthropic",
+			apiKey: "sk-ant-api-key",
+			baseURL: "",
+		})("claude-opus-4-5");
 
-		// Content unchanged
-		const content = msg.content as Array<Record<string, unknown>>;
-		expect(content).toHaveLength(1);
-		expect(content[0]?.type).toBe("text");
-
-		// reasoning_content always set, even empty
-		const pm = msg.providerMetadata as Record<string, unknown>;
-		const compat = pm.openaiCompatible as Record<string, unknown>;
-		expect(compat.reasoning_content).toBe("");
+		expect(mockCreateAnthropic).toHaveBeenCalledOnce();
+		const callArgs = mockCreateAnthropic.mock.calls[0]?.[0] as Record<string, unknown>;
+		expect(callArgs.authToken).toBe("sk-ant-api-key");
+		expect(callArgs.apiKey).toBeUndefined();
 	});
 
-	it("does not modify user messages", async () => {
-		const prompt = [
-			{
-				role: "user",
-				content: [{ type: "text", text: "What dir am I in?" }],
-			},
-		];
+	it("includes required Claude CLI headers", () => {
+		mockCreateAnthropic.mockClear();
 
-		const normalized = await runTransform(prompt);
-		expect(normalized).toEqual(prompt);
-	});
+		createProvider({
+			provider: "anthropic",
+			apiKey: "test-key",
+			baseURL: "",
+			claudeCredentials: { accessToken: "tok" },
+		})("claude-opus-4-5");
 
-	it("does not modify system messages", async () => {
-		const prompt = [{ role: "system", content: "You are a helpful assistant." }];
-
-		const normalized = await runTransform(prompt);
-		expect(normalized).toEqual(prompt);
-	});
-
-	it("handles assistant with plain string content (not array)", async () => {
-		const prompt = [
-			{
-				role: "assistant",
-				content: "Hello world",
-			},
-		];
-
-		const normalized = await runTransform(prompt);
-		expect(normalized).toEqual(prompt);
-	});
-
-	it("handles redacted-reasoning type parts", async () => {
-		const prompt = [
-			{
-				role: "assistant",
-				content: [
-					{ type: "redacted-reasoning", text: "[redacted chain of thought]" },
-					{ type: "text", text: "Here is the result." },
-				],
-			},
-		];
-
-		const normalized = await runTransform(prompt);
-		const msg = normalized[0] as Record<string, unknown>;
-
-		const content = msg.content as Array<Record<string, unknown>>;
-		expect(content.find((p) => p.type === "redacted-reasoning")).toBeUndefined();
-		expect(content.find((p) => p.type === "text")).toBeDefined();
-
-		const pm = msg.providerMetadata as Record<string, unknown>;
-		const compat = pm.openaiCompatible as Record<string, unknown>;
-		expect(compat.reasoning_content).toBe("[redacted chain of thought]");
-	});
-
-	it("preserves existing providerMetadata fields", async () => {
-		const prompt = [
-			{
-				role: "assistant",
-				content: [
-					{ type: "reasoning", text: "thinking..." },
-					{ type: "text", text: "done" },
-				],
-				providerMetadata: {
-					openaiCompatible: { custom_field: "keep-me" },
-				},
-			},
-		];
-
-		const normalized = await runTransform(prompt);
-		const msg = normalized[0] as Record<string, unknown>;
-		const pm = msg.providerMetadata as Record<string, unknown>;
-		const compat = pm.openaiCompatible as Record<string, unknown>;
-
-		expect(compat.custom_field).toBe("keep-me");
-		expect(compat.reasoning_content).toBe("thinking...");
-	});
-
-	it("handles multi-message prompts with mixed roles", async () => {
-		const prompt = [
-			{ role: "system", content: "Be helpful." },
-			{ role: "user", content: [{ type: "text", text: "hi" }] },
-			{
-				role: "assistant",
-				content: [
-					{ type: "reasoning", text: "I'll say hello." },
-					{ type: "text", text: "Hi there!" },
-				],
-			},
-		];
-
-		const normalized = await runTransform(prompt);
-
-		// System and user unchanged
-		expect(normalized[0]).toEqual(prompt[0]);
-		expect(normalized[1]).toEqual(prompt[1]);
-
-		// Assistant transformed
-		const msg = normalized[2] as Record<string, unknown>;
-		const pm = msg.providerMetadata as Record<string, unknown>;
-		const compat = pm.openaiCompatible as Record<string, unknown>;
-		expect(compat.reasoning_content).toBe("I'll say hello.");
-	});
-
-	it("concatenates multiple reasoning parts", async () => {
-		const prompt = [
-			{
-				role: "assistant",
-				content: [
-					{ type: "reasoning", text: "Step 1: " },
-					{ type: "reasoning", text: "Step 2: " },
-					{ type: "reasoning", text: "Step 3." },
-					{ type: "text", text: "Final answer." },
-				],
-			},
-		];
-
-		const normalized = await runTransform(prompt);
-		const msg = normalized[0] as Record<string, unknown>;
-		const pm = msg.providerMetadata as Record<string, unknown>;
-		const compat = pm.openaiCompatible as Record<string, unknown>;
-		expect(compat.reasoning_content).toBe("Step 1: Step 2: Step 3.");
-	});
-
-	it("applies to every assistant message in a multi-step history", async () => {
-		const prompt = [
-			{
-				role: "assistant",
-				content: [
-					{ type: "reasoning", text: "First thought." },
-					{ type: "tool-call", toolCallId: "c1", toolName: "list_files", args: {} },
-				],
-			},
-			{
-				role: "assistant",
-				content: [
-					{ type: "reasoning", text: "Second thought." },
-					{ type: "text", text: "All done." },
-				],
-			},
-		];
-
-		const normalized = await runTransform(prompt);
-
-		const msg1 = normalized[0] as Record<string, unknown>;
-		const compat1 = (msg1.providerMetadata as Record<string, unknown>).openaiCompatible as Record<
+		const callArgs = mockCreateAnthropic.mock.calls[0]?.[0] as Record<
 			string,
-			unknown
+			Record<string, string>
 		>;
-		expect(compat1.reasoning_content).toBe("First thought.");
+		expect(callArgs.headers?.["anthropic-dangerous-direct-browser-access"]).toBe("true");
+		expect(callArgs.headers?.["x-app"]).toBe("cli");
+		expect(callArgs.headers?.["user-agent"]).toMatch(/claude-cli/);
+	});
 
-		const msg2 = normalized[1] as Record<string, unknown>;
-		const compat2 = (msg2.providerMetadata as Record<string, unknown>).openaiCompatible as Record<
-			string,
-			unknown
-		>;
-		expect(compat2.reasoning_content).toBe("Second thought.");
+	it("uses default Anthropic baseURL when none provided", () => {
+		mockCreateAnthropic.mockClear();
+
+		createProvider({
+			provider: "anthropic",
+			apiKey: "test-key",
+			baseURL: "",
+			claudeCredentials: { accessToken: "tok" },
+		})("claude-opus-4-5");
+
+		const callArgs = mockCreateAnthropic.mock.calls[0]?.[0] as Record<string, string>;
+		expect(callArgs.baseURL).toBe("https://api.anthropic.com/v1");
+	});
+
+	it("uses configured baseURL when provided", () => {
+		mockCreateAnthropic.mockClear();
+
+		createProvider({
+			provider: "anthropic",
+			apiKey: "test-key",
+			baseURL: "https://custom.proxy.example.com/v1",
+			claudeCredentials: { accessToken: "tok" },
+		})("claude-opus-4-5");
+
+		const callArgs = mockCreateAnthropic.mock.calls[0]?.[0] as Record<string, string>;
+		expect(callArgs.baseURL).toBe("https://custom.proxy.example.com/v1");
+	});
+});
+
+describe("createApiKeyAnthropicProvider", () => {
+	it("passes apiKey (not authToken) to createAnthropic", () => {
+		mockCreateAnthropic.mockClear();
+
+		createProvider({
+			provider: "opencode-anthropic",
+			apiKey: "zen-api-key",
+			baseURL: "",
+		})("minimax-model");
+
+		expect(mockCreateAnthropic).toHaveBeenCalledOnce();
+		const callArgs = mockCreateAnthropic.mock.calls[0]?.[0] as Record<string, unknown>;
+		expect(callArgs.apiKey).toBe("zen-api-key");
+		expect(callArgs.authToken).toBeUndefined();
+	});
+
+	it("uses default OpenCode Zen baseURL when none provided", () => {
+		mockCreateAnthropic.mockClear();
+
+		createProvider({
+			provider: "opencode-anthropic",
+			apiKey: "zen-api-key",
+			baseURL: "",
+		})("minimax-model");
+
+		const callArgs = mockCreateAnthropic.mock.calls[0]?.[0] as Record<string, string>;
+		expect(callArgs.baseURL).toBe("https://opencode.ai/zen/go/v1");
 	});
 });

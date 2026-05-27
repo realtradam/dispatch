@@ -29,7 +29,9 @@ const distDir = resolve(process.env.DIST_DIR || join(moduleDir, "dist"));
 
 if (!existsSync(distDir) || !statSync(distDir).isDirectory()) {
 	console.error(`[dispatch-frontend] dist directory not found: ${distDir}`);
-	console.error("[dispatch-frontend] Build the frontend first (bun run --cwd packages/frontend build)");
+	console.error(
+		"[dispatch-frontend] Build the frontend first (bun run --cwd packages/frontend build)",
+	);
 	process.exit(1);
 }
 
@@ -38,7 +40,7 @@ const indexPath = join(distDir, "index.html");
 function safeResolve(urlPath: string): string | null {
 	// Normalize and prevent path-traversal outside distDir.
 	const decoded = decodeURIComponent(urlPath);
-	const candidate = resolve(distDir, "." + normalize(decoded));
+	const candidate = resolve(distDir, `.${normalize(decoded)}`);
 	if (!candidate.startsWith(distDir)) return null;
 	return candidate;
 }

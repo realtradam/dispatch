@@ -28,6 +28,14 @@ export interface TextChunk {
 export interface ThinkingChunk {
 	type: "thinking";
 	text: string;
+	/**
+	 * Mirror of core. Anthropic's `providerMetadata` blob captured from
+	 * the v6 `reasoning-end` stream event. Present once the backend has
+	 * sealed the chunk; absent for in-flight thinking or for non-Anthropic
+	 * models. The UI doesn't render this — it lives here for wire-format
+	 * symmetry with the persisted chunk shape.
+	 */
+	metadata?: Record<string, unknown>;
 }
 
 export interface ToolBatchChunk {
@@ -77,6 +85,7 @@ export type AgentEvent =
 	| { type: "statuses"; statuses: Record<string, "idle" | "running" | "error"> }
 	| { type: "text-delta"; delta: string }
 	| { type: "reasoning-delta"; delta: string }
+	| { type: "reasoning-end"; metadata?: Record<string, unknown> }
 	| {
 			type: "tool-call";
 			toolCall: {

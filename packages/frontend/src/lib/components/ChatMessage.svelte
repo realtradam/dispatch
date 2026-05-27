@@ -36,6 +36,42 @@ const SYSTEM_KIND_LABEL: Record<SystemChunkKind, string> = {
 	"config-reload": "Config reload",
 	cancelled: "Cancelled",
 };
+
+/**
+ * Returns true if the given chunk has visible content worth rendering.
+ * Used by `hasRenderableContent` to suppress empty assistant bubbles.
+ *
+ * Note: `ThinkingChunk.metadata` is intentionally excluded — it is
+ * internal wire data (Anthropic's providerMetadata / signature) and
+ * must never appear in the UI.
+ */
+function chunkHasRenderableContent(chunk: Chunk): boolean {
+	switch (chunk.type) {
+		case "text":
+			return chunk.text.length > 0;
+		case "thinking":
+			return chunk.text.length > 0;
+		case "tool-batch":
+			return chunk.calls.length > 0;
+		case "error":
+			return true;
+		case "system":
+			return true;
+	}
+}
+
+/**
+ * True when the assistant bubble has something worth showing.
+ * Guards the assistant render path so we don't emit an empty box
+ * (e.g. a message that only had empty/signature-only thinking blocks
+ * from Anthropic adaptive thinking mode).
+ *
+ * Streaming messages always have renderable content — the cursor
+ * needs somewhere to live.
+ */
+const hasRenderableContent = $derived(
+	message.isStreaming === true || message.chunks.some(chunkHasRenderableContent),
+);
 </script>
 
 {#snippet renderChunks(chunks: Chunk[], streaming: boolean | undefined)}
@@ -43,13 +79,18 @@ const SYSTEM_KIND_LABEL: Record<SystemChunkKind, string> = {
 		{#if chunk.type === "text"}
 			<MarkdownRenderer text={chunk.text} {streaming} />
 		{:else if chunk.type === "thinking"}
-			<div class="collapse collapse-arrow mb-2 p-1">
-				<input type="checkbox" checked={appSettings.autoExpandThinking} />
-				<div class="collapse-title text-sm opacity-60 italic py-0 pl-0 pr-8 min-h-0">Thinking...</div>
-				<div class="collapse-content text-sm opacity-60 italic p-0">
-					<p class="whitespace-pre-wrap mt-1">{chunk.text}</p>
+			<!-- Skip empty thinking chunks: Anthropic adaptive thinking can emit
+			     a reasoning-end with a signature but no thinking_delta content.
+			     The metadata is internal wire data — never displayed. -->
+			{#if chunk.text.length > 0}
+				<div class="collapse collapse-arrow mb-2 p-1">
+					<input type="checkbox" checked={appSettings.autoExpandThinking} />
+					<div class="collapse-title text-sm opacity-60 italic py-0 pl-0 pr-8 min-h-0">Thinking...</div>
+					<div class="collapse-content text-sm opacity-60 italic p-0">
+						<p class="whitespace-pre-wrap mt-1">{chunk.text}</p>
+					</div>
 				</div>
-			</div>
+			{/if}
 		{:else if chunk.type === "tool-batch"}
 			{#each chunk.calls as call (call.id)}
 				<ToolCallDisplay toolCall={call} />
@@ -78,6 +119,11 @@ const SYSTEM_KIND_LABEL: Record<SystemChunkKind, string> = {
 			{@render renderChunks(message.chunks, false)}
 		</div>
 	</div>
+{:else if !isUser && !hasRenderableContent}
+	<!-- Empty assistant message — no renderable chunks and not streaming.
+	     Suppressed to avoid an empty bubble (e.g. a turn that produced
+	     only empty/signature-only thinking blocks from Anthropic adaptive
+	     thinking mode, or a done event with no content). -->
 {:else}
 <div class="chat chat-start mb-2 [&>.chat-bubble]:max-w-full {isQueued ? 'opacity-60' : ''}">
 	<div class="chat-bubble break-words {isUser ? 'chat-bubble-primary w-fit' : 'bg-transparent w-full'}">
