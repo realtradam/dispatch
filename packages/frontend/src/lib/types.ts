@@ -76,13 +76,33 @@ export interface ChatMessage {
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
+/**
+ * Mirror of core's `TabStatusSnapshot` (see packages/core/src/types/index.ts).
+ *
+ * Sent on every WS (re)connect and via `GET /status`. The frontend uses
+ * this to:
+ *   - reconcile its in-memory `agentStatus` with the backend's truth
+ *     after a disconnect window;
+ *   - reconstruct the in-flight assistant message for any tab the
+ *     backend is currently streaming, so the user sees the partial
+ *     thinking / text without waiting for the next delta.
+ *
+ * Wire-format symmetry MUST be kept with core. If you change one,
+ * change the other.
+ */
+export interface TabStatusSnapshot {
+	status: "idle" | "running" | "error";
+	currentChunks?: Chunk[];
+	currentAssistantId?: string;
+}
+
 export type AgentEvent =
 	| { type: "status"; status: "idle" | "running" | "error" }
 	// Sent on every WS (re)connect: a snapshot of every tab the backend is
 	// currently tracking and its live status. The frontend uses this to
 	// detect desync after a reconnect (e.g. bun --watch restart killed the
 	// in-flight agent state, frontend missed `done` / `status:idle` events).
-	| { type: "statuses"; statuses: Record<string, "idle" | "running" | "error"> }
+	| { type: "statuses"; statuses: Record<string, TabStatusSnapshot> }
 	| { type: "text-delta"; delta: string }
 	| { type: "reasoning-delta"; delta: string }
 	| { type: "reasoning-end"; metadata?: Record<string, unknown> }

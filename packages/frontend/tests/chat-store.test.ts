@@ -449,8 +449,8 @@ describe("tabStore — reactivity contract", () => {
 		// hiccup, etc.)
 		store.handleEvent({
 			type: "statuses",
-			statuses: { [tabId]: "idle" },
-		} as Parameters<typeof store.handleEvent>[0]);
+			statuses: { [tabId]: { status: "idle" } },
+		});
 
 		expect(store.tabs[0]?.agentStatus).toBe("idle");
 		expect(store.tabs[0]?.currentAssistantId).toBeNull();
@@ -670,5 +670,383 @@ describe("shell output parsing helper", () => {
 
 	it("returns null for non-object JSON", () => {
 		expect(parseShellResult(JSON.stringify(42))).toBeNull();
+	});
+});
+
+// ─── hydrateFromBackend ─────────────────────────────────────────
+//
+// Verifies the browser-reopen restore path: GET /tabs + GET /status +
+// GET /tabs/:id/messages combined into the in-memory tab store with
+// in-flight chunks seeded for any running tab.
+
+describe("hydrateFromBackend", () => {
+	it("restores tabs from /tabs with their persisted messages", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								tabs: [
+									{ id: "t1", title: "First", keyId: null, modelId: null, parentTabId: null },
+									{ id: "t2", title: "Second", keyId: "k", modelId: "m", parentTabId: null },
+								],
+							}),
+					});
+				}
+				if (url.endsWith("/status")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ statuses: {} }),
+					});
+				}
+				if (url.endsWith("/tabs/t1/messages")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								messages: [
+									{ id: "m1", role: "user", chunks: [{ type: "text", text: "hello" }] },
+									{
+										id: "m2",
+										role: "assistant",
+										chunks: [{ type: "text", text: "hi back" }],
+									},
+								],
+							}),
+					});
+				}
+				if (url.endsWith("/tabs/t2/messages")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ messages: [] }),
+					});
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+
+		const store = createTabStore();
+		const n = await store.hydrateFromBackend();
+		expect(n).toBe(2);
+		expect(store.tabs.length).toBe(2);
+		expect(store.tabs[0]?.id).toBe("t1");
+		expect(store.tabs[0]?.messages.length).toBe(2);
+		expect(store.tabs[1]?.id).toBe("t2");
+		expect(store.tabs[1]?.messages.length).toBe(0);
+		expect(store.activeTabId).toBe("t1");
+	});
+
+	it("seeds the in-flight assistant message from /status for a running tab", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								tabs: [
+									{ id: "tr", title: "Running tab", keyId: null, modelId: null, parentTabId: null },
+								],
+							}),
+					});
+				}
+				if (url.endsWith("/status")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								statuses: {
+									tr: {
+										status: "running",
+										currentAssistantId: "live-msg-id",
+										currentChunks: [
+											{ type: "thinking", text: "still thinking" },
+											{ type: "text", text: "partial " },
+										],
+									},
+								},
+							}),
+					});
+				}
+				if (url.endsWith("/tabs/tr/messages")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								messages: [{ id: "u1", role: "user", chunks: [{ type: "text", text: "go" }] }],
+							}),
+					});
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+
+		const store = createTabStore();
+		const n = await store.hydrateFromBackend();
+		expect(n).toBe(1);
+		const tab = store.tabs[0];
+		expect(tab?.agentStatus).toBe("running");
+		expect(tab?.currentAssistantId).toBe("live-msg-id");
+		// Two messages: the user message + the seeded in-flight assistant.
+		expect(tab?.messages.length).toBe(2);
+		const inflight = tab?.messages.find((m) => m.id === "live-msg-id");
+		expect(inflight).toBeDefined();
+		expect(inflight?.isStreaming).toBe(true);
+		expect(inflight?.chunks).toEqual([
+			{ type: "thinking", text: "still thinking" },
+			{ type: "text", text: "partial " },
+		]);
+	});
+
+	it("returns 0 and leaves tabs empty when /tabs fails", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: false, json: () => Promise.resolve({}) })),
+		);
+		const store = createTabStore();
+		const n = await store.hydrateFromBackend();
+		expect(n).toBe(0);
+		expect(store.tabs.length).toBe(0);
+	});
+
+	it("returns 0 and leaves tabs empty when /tabs returns an empty array", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve({ tabs: [] }) });
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+		const store = createTabStore();
+		const n = await store.hydrateFromBackend();
+		expect(n).toBe(0);
+		expect(store.tabs.length).toBe(0);
+	});
+
+	it("is a no-op when the store already has tabs (idempotency)", async () => {
+		const store = createTabStore();
+		// Pretend the store already has a tab (e.g. from a hot-reload).
+		// We do this by reaching into the store via the public API.
+		// Use the create path with mocked fetch failure (existing
+		// `createNewTab` already tolerates fetch failure — adds locally).
+		// (beforeEach already stubs fetch to reject, so createNewTab will
+		// proceed past the failed POST and add the tab locally.)
+		await store.createNewTab();
+		expect(store.tabs.length).toBe(1);
+
+		// Now swap to a fetch that would lie about there being 3 tabs;
+		// hydrateFromBackend must NOT call it. We use a fresh mock that
+		// rejects to catch any stray background async calls too.
+		let hydrateCallCount = 0;
+		const sentinelFetch = vi.fn((url: string) => {
+			// Allow background auto-agent/skill fetches that fire from
+			// createNewTab's void async closure (autoSelectDefaultAgent,
+			// autoCheckDefaultSkills) — they use /agents and /skills paths,
+			// not /tabs. Reject them so they don't interfere.
+			if (url.includes("/agents") || url.includes("/skills")) {
+				return Promise.reject(new Error("test: background fetch ignored"));
+			}
+			// Any /tabs call would mean hydrateFromBackend ran — count it.
+			hydrateCallCount++;
+			return Promise.resolve({
+				ok: true,
+				json: () => Promise.resolve({ tabs: [{ id: "x" }, { id: "y" }, { id: "z" }] }),
+			});
+		});
+		vi.stubGlobal("fetch", sentinelFetch);
+		const n = await store.hydrateFromBackend();
+		expect(n).toBe(0);
+		expect(store.tabs.length).toBe(1);
+		expect(hydrateCallCount).toBe(0);
+	});
+
+	it("restores a tab with an idle status when /status omits it", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								tabs: [{ id: "ti", title: "Idle", keyId: null, modelId: null, parentTabId: null }],
+							}),
+					});
+				}
+				if (url.endsWith("/status")) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
+				}
+				if (url.endsWith("/tabs/ti/messages")) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve({ messages: [] }) });
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+		const store = createTabStore();
+		const n = await store.hydrateFromBackend();
+		expect(n).toBe(1);
+		expect(store.tabs[0]?.agentStatus).toBe("idle");
+		expect(store.tabs[0]?.currentAssistantId).toBeNull();
+	});
+
+	it("restores a tab with empty messages when /tabs/:id/messages fails (per-tab failure isolation)", async () => {
+		// The hydrateFromBackend implementation wraps each per-tab
+		// messages fetch in a try/catch so one tab's failure can't
+		// destroy the whole restore pass. This test covers BOTH failure
+		// modes the try/catch protects against:
+		//   - response.ok === false (HTTP error like 500)
+		//   - the fetch rejects (network error)
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								tabs: [
+									{
+										id: "tA",
+										title: "Healthy",
+										keyId: null,
+										modelId: null,
+										parentTabId: null,
+									},
+									{
+										id: "tB",
+										title: "Broken (HTTP 500)",
+										keyId: null,
+										modelId: null,
+										parentTabId: null,
+									},
+									{
+										id: "tC",
+										title: "Broken (network)",
+										keyId: null,
+										modelId: null,
+										parentTabId: null,
+									},
+								],
+							}),
+					});
+				}
+				if (url.endsWith("/status")) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
+				}
+				if (url.endsWith("/tabs/tA/messages")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								messages: [{ id: "msg-a", role: "user", chunks: [{ type: "text", text: "ok" }] }],
+							}),
+					});
+				}
+				if (url.endsWith("/tabs/tB/messages")) {
+					// HTTP error path: response is not ok.
+					return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+				}
+				if (url.endsWith("/tabs/tC/messages")) {
+					// Network error path: the fetch itself rejects.
+					return Promise.reject(new Error("simulated network failure"));
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+
+		const store = createTabStore();
+		const n = await store.hydrateFromBackend();
+		expect(n).toBe(3);
+
+		// Healthy tab restored with its message.
+		const tA = store.tabs.find((t) => t.id === "tA");
+		expect(tA?.messages.length).toBe(1);
+		expect(tA?.messages[0]?.chunks).toEqual([{ type: "text", text: "ok" }]);
+
+		// Both broken tabs restored with empty message lists — neither
+		// crashed the hydration nor leaked an error chunk into the UI.
+		const tB = store.tabs.find((t) => t.id === "tB");
+		expect(tB).toBeDefined();
+		expect(tB?.messages.length).toBe(0);
+		expect(tB?.agentStatus).toBe("idle");
+
+		const tC = store.tabs.find((t) => t.id === "tC");
+		expect(tC).toBeDefined();
+		expect(tC?.messages.length).toBe(0);
+		expect(tC?.agentStatus).toBe("idle");
+	});
+});
+
+// ─── statuses WS event with the wider TabStatusSnapshot shape ───
+//
+// The handler must reconcile snapshot.status against the local tab,
+// and (when running) seed currentChunks into the in-flight assistant
+// message.
+
+describe("handleEvent statuses with TabStatusSnapshot", () => {
+	it("seeds the in-flight assistant message when a running snapshot arrives", async () => {
+		const store = createTabStore();
+		// Manually add a tab to the store via the existing createNewTab path
+		// (fetch was mocked to reject in beforeEach; createNewTab tolerates).
+		// We then drive a statuses event.
+		await store.createNewTab();
+		const tabId = store.tabs[0]?.id;
+		if (!tabId) throw new Error("test fixture: tab id missing");
+
+		store.handleEvent({
+			type: "statuses",
+			statuses: {
+				[tabId]: {
+					status: "running",
+					currentAssistantId: "live-x",
+					currentChunks: [{ type: "text", text: "live data" }],
+				},
+			},
+		});
+
+		const tab = store.tabs.find((t) => t.id === tabId);
+		expect(tab?.agentStatus).toBe("running");
+		expect(tab?.currentAssistantId).toBe("live-x");
+		const inflight = tab?.messages.find((m) => m.id === "live-x");
+		expect(inflight).toBeDefined();
+		expect(inflight?.chunks).toEqual([{ type: "text", text: "live data" }]);
+		expect(inflight?.isStreaming).toBe(true);
+	});
+
+	it("clears in-flight pointers when snapshot says the tab is idle", async () => {
+		const store = createTabStore();
+		await store.createNewTab();
+		const tabId = store.tabs[0]?.id;
+		if (!tabId) throw new Error("test fixture: tab id missing");
+
+		// First put the tab into a running state with an in-flight message.
+		store.handleEvent({
+			type: "statuses",
+			statuses: {
+				[tabId]: {
+					status: "running",
+					currentAssistantId: "msg-a",
+					currentChunks: [{ type: "text", text: "x" }],
+				},
+			},
+		});
+		expect(store.tabs.find((t) => t.id === tabId)?.currentAssistantId).toBe("msg-a");
+
+		// Now snapshot says idle.
+		store.handleEvent({
+			type: "statuses",
+			statuses: { [tabId]: { status: "idle" } },
+		});
+		const tab = store.tabs.find((t) => t.id === tabId);
+		expect(tab?.agentStatus).toBe("idle");
+		expect(tab?.currentAssistantId).toBeNull();
+		const msgA = tab?.messages.find((m) => m.id === "msg-a");
+		expect(msgA?.isStreaming).toBe(false);
 	});
 });

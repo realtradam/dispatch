@@ -82,16 +82,24 @@ onMount(() => {
 		document.documentElement.setAttribute("data-theme", saved);
 	}
 
-	// Connect WebSocket
+	// Connect WebSocket in parallel with hydration. The `statuses`
+	// snapshot delivered on WS open is idempotent against
+	// already-hydrated tabs (the handler reconciles per-tab).
 	wsClient.connect();
 
-	// Initial models fetch
+	// Initial models fetch (fire-and-forget; UI tolerates models
+	// arriving later than tabs).
 	fetchModels();
 
-	// Create initial tab
-	if (tabStore.tabs.length === 0) {
-		tabStore.createNewTab();
-	}
+	// Restore tabs from the backend. The user's previous session is
+	// the source of truth; only fall back to a fresh tab if nothing
+	// was restored (first-ever load, or DB was wiped, or HTTP failed).
+	void (async () => {
+		const restored = await tabStore.hydrateFromBackend();
+		if (restored === 0 && tabStore.tabs.length === 0) {
+			await tabStore.createNewTab();
+		}
+	})();
 
 	return () => {
 		wsClient.disconnect();
