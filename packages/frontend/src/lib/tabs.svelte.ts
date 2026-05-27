@@ -68,7 +68,17 @@ export interface Tab {
 	queuedMessages: QueuedMessage[];
 }
 
-function createTabStore() {
+/**
+ * Build a fresh tab store. Exported so tests can construct a real
+ * `$state`-backed instance per test — the production singleton is
+ * exported below as `tabStore`. The previous test harness duplicated
+ * the store logic against POJO arrays, which made the
+ * `structuredClone(svelteProxy)` bug undetectable: native `structuredClone`
+ * works on plain arrays and throws on Svelte reactive proxies. See the
+ * `chat-store.test.ts` rewrite for the proper integration tests that
+ * drive the actual reactive code path.
+ */
+export function createTabStore() {
 	let tabs: Tab[] = $state([]);
 	let activeTabId: string | null = $state(null);
 	let pendingPermissions: PermissionPrompt[] = $state([]);
@@ -1288,6 +1298,10 @@ function createTabStore() {
 		promoteTab,
 		openAgentTab,
 		setWorkingDirectory,
+		// Exposed so tests can drive the real reactive code path that the
+		// WS callback uses in production. Not intended for use in
+		// components — they should rely on the WS subscription instead.
+		handleEvent,
 	};
 }
 
