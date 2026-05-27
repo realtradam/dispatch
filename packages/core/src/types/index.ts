@@ -3,13 +3,62 @@ import type { PermissionChecker, Ruleset } from "../permission/index.js";
 
 // ─── Message Types ───────────────────────────────────────────────
 
-export type MessageRole = "user" | "assistant" | "tool";
+export type MessageRole = "user" | "assistant" | "system";
+
+/**
+ * A single ordered chunk of content inside a message. The chunk list
+ * preserves the actual temporal ordering of text, reasoning, tool calls,
+ * system notices, and errors as they arrived from the model.
+ *
+ * Coalescing rules (see plan-chunk-refactor.md):
+ *  - `text` and `thinking` coalesce on consecutive same-type deltas.
+ *  - `tool-batch` coalesces on consecutive `tool-call` events
+ *    (appends a new entry to `calls`).
+ *  - `error` and `system` are always single-event chunks (no coalescing).
+ */
+export type Chunk = TextChunk | ThinkingChunk | ToolBatchChunk | ErrorChunk | SystemChunk;
+
+export interface TextChunk {
+	type: "text";
+	text: string;
+}
+
+export interface ThinkingChunk {
+	type: "thinking";
+	text: string;
+}
+
+export interface ToolBatchChunk {
+	type: "tool-batch";
+	calls: ToolBatchEntry[];
+}
+
+export interface ToolBatchEntry {
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+	result?: string;
+	isError?: boolean;
+	shellOutput?: { stdout: string; stderr: string };
+}
+
+export interface ErrorChunk {
+	type: "error";
+	message: string;
+	statusCode?: number;
+}
+
+export type SystemChunkKind = "notice" | "model-changed" | "config-reload" | "cancelled";
+
+export interface SystemChunk {
+	type: "system";
+	kind: SystemChunkKind;
+	text: string;
+}
 
 export interface ChatMessage {
 	role: MessageRole;
-	content: string;
-	toolCalls?: ToolCall[];
-	toolResults?: ToolResult[];
+	chunks: Chunk[];
 }
 
 export interface ToolCall {

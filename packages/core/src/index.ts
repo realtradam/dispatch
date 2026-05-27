@@ -3,6 +3,13 @@
 // Agent & LLM
 export { Agent } from "./agent/agent.js";
 export { deleteAgent, getAgentDirs, loadAgents, saveAgent } from "./agents/index.js";
+// Chunk helpers
+export {
+	appendEventToChunks,
+	applySystemEvent,
+	type IdentifiedMessage,
+	type SystemEventLike,
+} from "./chunks/append.js";
 // Config
 export {
 	configToRuleset,

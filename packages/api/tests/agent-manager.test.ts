@@ -13,7 +13,10 @@ vi.mock("@dispatch/core", () => ({
 			yield { type: "text-delta", delta: "world" } as const;
 			yield {
 				type: "done",
-				message: { role: "assistant", content: "Hello world" },
+				message: {
+					role: "assistant",
+					chunks: [{ type: "text", text: "Hello world" }],
+				},
 			} as const;
 			yield { type: "status", status: "idle" } as const;
 		}
@@ -178,6 +181,16 @@ vi.mock("@dispatch/core", () => ({
 		return null;
 	},
 	appendMessage() {},
+	updateMessage() {},
+	getMessagesForTab() {
+		return [];
+	},
+	appendEventToChunks(_chunks: unknown[], _event: unknown) {
+		// no-op stub; chunk accumulation isn't exercised in these unit tests
+	},
+	applySystemEvent(_messages: unknown[], _event: unknown) {
+		return { messageId: "mock-system-msg" };
+	},
 	BackgroundShellStore: class MockBackgroundShellStore {
 		has() {
 			return false;

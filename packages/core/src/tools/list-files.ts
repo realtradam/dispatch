@@ -20,10 +20,7 @@ export function createListFilesTool(workingDirectory: string): ToolDefinition {
 			const absolutePath = await canonicalize(workingDirectory, relPath);
 			const absoluteWorkDir = await canonicalize(workingDirectory);
 
-			if (
-				absolutePath !== absoluteWorkDir &&
-				!absolutePath.startsWith(`${absoluteWorkDir}/`)
-			) {
+			if (absolutePath !== absoluteWorkDir && !absolutePath.startsWith(`${absoluteWorkDir}/`)) {
 				return `Error: Path "${relPath}" is outside the working directory.`;
 			}
 

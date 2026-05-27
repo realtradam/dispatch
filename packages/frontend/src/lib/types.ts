@@ -1,12 +1,3 @@
-export interface ToolCallDisplay {
-	id: string;
-	name: string;
-	arguments: Record<string, unknown>;
-	result?: string;
-	isError?: boolean;
-	shellOutput?: { stdout: string; stderr: string };
-}
-
 export interface DebugInfo {
 	timestamp: string;
 	error?: string;
@@ -20,15 +11,57 @@ export interface DebugInfo {
 	httpBody?: string;
 }
 
-export type ContentSegment =
-	| { type: "text"; text: string }
-	| ({ type: "tool-call" } & ToolCallDisplay);
+/**
+ * Mirror of the core `Chunk` union (see packages/core/src/types/index.ts).
+ *
+ * Wire-format symmetry MUST be kept with core. If you change one, change
+ * the other. The frontend store calls into the shared
+ * `appendEventToChunks` helper from core so the two stay in lockstep.
+ */
+export type Chunk = TextChunk | ThinkingChunk | ToolBatchChunk | ErrorChunk | SystemChunk;
+
+export interface TextChunk {
+	type: "text";
+	text: string;
+}
+
+export interface ThinkingChunk {
+	type: "thinking";
+	text: string;
+}
+
+export interface ToolBatchChunk {
+	type: "tool-batch";
+	calls: ToolBatchEntry[];
+}
+
+export interface ToolBatchEntry {
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+	result?: string;
+	isError?: boolean;
+	shellOutput?: { stdout: string; stderr: string };
+}
+
+export interface ErrorChunk {
+	type: "error";
+	message: string;
+	statusCode?: number;
+}
+
+export type SystemChunkKind = "notice" | "model-changed" | "config-reload" | "cancelled";
+
+export interface SystemChunk {
+	type: "system";
+	kind: SystemChunkKind;
+	text: string;
+}
 
 export interface ChatMessage {
 	id: string;
 	role: "user" | "assistant" | "system";
-	content: ContentSegment[];
-	thinking?: string;
+	chunks: Chunk[];
 	isStreaming?: boolean;
 	debugInfo?: DebugInfo;
 }

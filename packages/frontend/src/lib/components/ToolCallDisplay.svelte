@@ -1,8 +1,8 @@
 <script lang="ts">
 import { tabStore } from "../tabs.svelte.js";
-import type { ToolCallDisplay } from "../types.js";
+import type { ToolBatchEntry } from "../types.js";
 
-const { toolCall }: { toolCall: ToolCallDisplay } = $props();
+const { toolCall }: { toolCall: ToolBatchEntry } = $props();
 
 let isExpanded = $state(false);
 

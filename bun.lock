@@ -42,6 +42,7 @@
       "name": "@dispatch/frontend",
       "version": "0.0.1",
       "dependencies": {
+        "@dispatch/core": "workspace:*",
         "dompurify": "^3.4.5",
         "highlight.js": "^11.11.1",
         "marked": "^18.0.4",
