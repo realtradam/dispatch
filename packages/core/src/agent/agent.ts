@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
-import type { CoreMessage, CoreSystemMessage } from "ai";
+import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import type { ModelMessage, SystemModelMessage } from "ai";
 import { streamText } from "ai";
 import { appendEventToChunks } from "../chunks/append.js";
 import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
@@ -20,7 +21,7 @@ import type {
 } from "../types/index.js";
 
 /**
- * Rebuild AI SDK `CoreMessage[]` from our internal `ChatMessage[]`.
+ * Rebuild AI SDK `ModelMessage[]` from our internal `ChatMessage[]`.
  *
  * Strip rules (see plan-chunk-refactor.md):
  *  - `role: "system"` messages are skipped wholesale (they're display-only
@@ -28,8 +29,11 @@ import type {
  *  - `error` chunks are skipped — the turn ended; the LLM doesn't need them.
  *  - `system` chunks are skipped — display-only notices.
  *  - `text` chunks → `{ type: "text", text }` parts.
- *  - `thinking` chunks → `{ type: "reasoning", text }` parts (handles
- *    Claude's `interleaved-thinking-2025-05-14` round-trip).
+ *  - `thinking` chunks → `{ type: "reasoning", text, providerOptions? }` parts.
+ *    The `providerOptions` carries the Anthropic signature blob (if present) so
+ *    Anthropic can validate extended-thinking round-trips. Non-Anthropic
+ *    reasoning has no metadata and is sent without providerOptions (accepted
+ *    by Anthropic — it just won't verify a missing signature).
  *  - `tool-batch` chunks → one `{ type: "tool-call" }` part per entry
  *    inside the current assistant message, followed by a separate
  *    `{ role: "tool", content: [{ type: "tool-result", ... }] }` message
@@ -42,8 +46,8 @@ import type {
  * LLM, so this case only arises mid-step (where the message hasn't been
  * round-tripped to the LLM yet) and is benign.
  */
-function toCoreMessages(messages: ChatMessage[], useToolPrefix?: boolean): CoreMessage[] {
-	const result: CoreMessage[] = [];
+function toModelMessages(messages: ChatMessage[], useToolPrefix?: boolean): ModelMessage[] {
+	const result: ModelMessage[] = [];
 	for (const msg of messages) {
 		if (msg.role === "system") continue;
 
@@ -62,8 +66,8 @@ function toCoreMessages(messages: ChatMessage[], useToolPrefix?: boolean): CoreM
 		// role === "assistant"
 		const parts: Array<
 			| { type: "text"; text: string }
-			| { type: "reasoning"; text: string }
-			| { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }
+			| { type: "reasoning"; text: string; providerOptions?: ProviderOptions }
+			| { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
 		> = [];
 		const trailingToolResults: Array<{
 			toolCallId: string;
@@ -77,16 +81,26 @@ function toCoreMessages(messages: ChatMessage[], useToolPrefix?: boolean): CoreM
 					parts.push({ type: "text", text: chunk.text });
 					break;
 				case "thinking":
-					parts.push({ type: "reasoning", text: chunk.text });
+					// v6: carry providerOptions (Anthropic signature blob) if present.
+					// Non-Anthropic reasoning has no metadata → send without providerOptions
+					// (Anthropic accepts it; the round-trip just won't carry a signature).
+					parts.push({
+						type: "reasoning",
+						text: chunk.text,
+						...(chunk.metadata !== undefined
+							? { providerOptions: chunk.metadata as ProviderOptions }
+							: {}),
+					});
 					break;
 				case "tool-batch":
 					for (const entry of chunk.calls) {
 						const toolName = useToolPrefix ? prefixToolName(entry.name) : entry.name;
+						// v6: `input` replaces v4's `args`
 						parts.push({
 							type: "tool-call",
 							toolCallId: entry.id,
 							toolName,
-							args: entry.arguments,
+							input: entry.arguments,
 						});
 						if (entry.result !== undefined) {
 							trailingToolResults.push({
@@ -114,6 +128,7 @@ function toCoreMessages(messages: ChatMessage[], useToolPrefix?: boolean): CoreM
 		}
 
 		for (const tr of trailingToolResults) {
+			// v6: `output` (ToolResultOutput) replaces v4's `result` (raw string)
 			result.push({
 				role: "tool",
 				content: [
@@ -121,13 +136,170 @@ function toCoreMessages(messages: ChatMessage[], useToolPrefix?: boolean): CoreM
 						type: "tool-result",
 						toolCallId: tr.toolCallId,
 						toolName: tr.toolName,
-						result: tr.result,
+						output: { type: "text" as const, value: tr.result },
 					},
 				],
 			});
 		}
 	}
 	return result;
+}
+
+/**
+ * Apply OpenAI-compatible reasoning normalisation.
+ *
+ * Cribbed from opencode `provider/transform.ts:217-249`. Solves DeepSeek's
+ * "The reasoning_content in the thinking mode must be passed back to the
+ * API" error.
+ *
+ * The v6 `@ai-sdk/openai-compatible@2.x` provider extracts `reasoning_content`
+ * from assistant `{ type: "reasoning", text }` parts natively
+ * (see `node_modules/@ai-sdk/openai-compatible/dist/index.mjs:215-216` and :245).
+ * But that native path SKIPS emission when `reasoning.length === 0` —
+ * "reasoning_content" is omitted from the wire. DeepSeek (and similar
+ * "thinking mode" providers) require the field to be present in every
+ * follow-up turn once it was emitted at least once, even if the value is
+ * the empty string.
+ *
+ * Strategy: for every assistant message that has any `reasoning` parts,
+ * concatenate their text into `providerOptions.openaiCompatible.reasoning_content`
+ * (preserving empty strings) AND strip those parts from content. The
+ * resulting payload has a single source of truth for `reasoning_content`
+ * coming via the message-level `providerOptions` spread at line 247 of the
+ * SDK provider, which fires regardless of empty-vs-non-empty text.
+ *
+ * Only applied for the default (non-Anthropic) openai-compatible path.
+ */
+function applyOpenAICompatibleReasoningNormalisation(msgs: ModelMessage[]): ModelMessage[] {
+	return msgs.map((msg) => {
+		if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg;
+
+		// Find reasoning parts. If there are none, this message never had
+		// a thinking turn — DeepSeek doesn't require `reasoning_content`
+		// in that case, so we pass through unchanged.
+		const reasoningParts = msg.content.filter(
+			(p): p is Extract<typeof p, { type: "reasoning" }> => p.type === "reasoning",
+		);
+		if (reasoningParts.length === 0) return msg;
+
+		const reasoningText = reasoningParts.map((p) => p.text).join("");
+		const filteredContent = msg.content.filter((p) => p.type !== "reasoning");
+
+		const existingOpts = msg.providerOptions ?? {};
+		const existingCompat = (existingOpts.openaiCompatible ?? {}) as Record<string, unknown>;
+
+		return {
+			...msg,
+			content: filteredContent,
+			providerOptions: {
+				...existingOpts,
+				openaiCompatible: {
+					...existingCompat,
+					// Always set, even when empty. This is the key fix —
+					// the SDK's content-side extraction skips empty
+					// reasoning, but DeepSeek requires the field present.
+					reasoning_content: reasoningText,
+				},
+			},
+		} as ModelMessage;
+	});
+}
+
+/**
+ * Apply Anthropic structural normalisations to a `ModelMessage[]`.
+ *
+ * Cribbed from opencode `provider/transform.ts:53-148`. Two passes:
+ *
+ * 1. **Empty-text/reasoning filter**: Drop `text` / `reasoning` parts
+ *    whose `text === ""`. Drop messages whose content array becomes
+ *    empty. Anthropic rejects assistant turns with empty content.
+ *
+ * 2. **`toolCallId` scrubbing**: Anthropic only accepts tool call IDs
+ *    that match `[a-zA-Z0-9_-]`. Our IDs are crypto.randomUUID() values
+ *    which are already safe, but tool-call IDs assigned by upstream
+ *    sources (provider-executed tools, subagent retrieval, etc.) may
+ *    not be. Defensively scrub. Mirrors opencode `provider/transform.ts:96-122`.
+ *
+ * 3. **`[tool-call, text]` split**: Anthropic rejects assistant turns
+ *    where `tool_use` blocks are followed by non-tool-call content
+ *    ("`tool_use` ids were found without `tool_result` blocks immediately
+ *    after"). If an assistant message has mixed ordering, split it into
+ *    `[non-tool parts] + [tool-call parts]`.
+ *
+ * Only applied for Anthropic-backed providers (Claude OAuth or
+ * opencode-anthropic). Skip for openai-compatible / OpenCode Zen.
+ */
+const SCRUB_TOOL_CALL_ID = (id: string): string => id.replace(/[^a-zA-Z0-9_-]/g, "_");
+
+function applyAnthropicStructuralNormalisations(msgs: ModelMessage[]): ModelMessage[] {
+	// Pass 1: Filter empty text/reasoning parts; drop messages that become empty.
+	msgs = msgs
+		.map((msg) => {
+			if (typeof msg.content === "string") {
+				if (msg.content === "") return undefined;
+				return msg;
+			}
+			if (!Array.isArray(msg.content)) return msg;
+			const filtered = msg.content.filter((part) => {
+				if (part.type === "text" || part.type === "reasoning") {
+					return (part as { text: string }).text !== "";
+				}
+				return true;
+			});
+			if (filtered.length === 0) return undefined;
+			return { ...msg, content: filtered };
+		})
+		.filter((msg): msg is ModelMessage => msg !== undefined && msg.content !== "");
+
+	// Pass 2: Scrub toolCallId chars on both assistant tool-call parts and
+	// tool-role tool-result parts. Anthropic rejects anything outside
+	// [a-zA-Z0-9_-]. Our internal IDs are crypto.randomUUID() and safe, but
+	// upstream provider-executed tools or external sources may not be.
+	msgs = msgs.map((msg) => {
+		if (msg.role === "assistant" && Array.isArray(msg.content)) {
+			return {
+				...msg,
+				content: msg.content.map((part) => {
+					if (part.type === "tool-call" || part.type === "tool-result") {
+						return { ...part, toolCallId: SCRUB_TOOL_CALL_ID(part.toolCallId) };
+					}
+					return part;
+				}),
+			};
+		}
+		if (msg.role === "tool" && Array.isArray(msg.content)) {
+			return {
+				...msg,
+				content: msg.content.map((part) => {
+					if (part.type === "tool-result") {
+						return { ...part, toolCallId: SCRUB_TOOL_CALL_ID(part.toolCallId) };
+					}
+					return part;
+				}),
+			};
+		}
+		return msg;
+	});
+
+	// Pass 3: Split assistant messages where tool-calls are followed by non-tool-call parts.
+	// [text, tool-call, text] → [text, text] + [tool-call] (text-only first, tools-only second)
+	msgs = msgs.flatMap((msg) => {
+		if (msg.role !== "assistant" || !Array.isArray(msg.content)) return [msg];
+		const parts = msg.content;
+		const firstToolCallIdx = parts.findIndex((part) => part.type === "tool-call");
+		if (firstToolCallIdx === -1) return [msg]; // no tool calls → pass through
+		// If everything from the first tool-call onward is also a tool-call, it's already valid
+		if (!parts.slice(firstToolCallIdx).some((part) => part.type !== "tool-call")) return [msg];
+		// Has non-tool-call content AFTER a tool-call → split
+		const nonToolParts = parts.filter((part) => part.type !== "tool-call");
+		const toolParts = parts.filter((part) => part.type === "tool-call");
+		return [
+			{ ...msg, content: nonToolParts },
+			{ ...msg, content: toolParts },
+		];
+	});
+
+	return msgs;
 }
 
 /**
@@ -151,8 +323,8 @@ function toCoreMessages(messages: ChatMessage[], useToolPrefix?: boolean): CoreM
  * served via `@ai-sdk/openai` (GPT) and `@ai-sdk/google` (Gemini) likewise
  * use server-side automatic caching.
  */
-function applyAnthropicCaching(msgs: CoreMessage[]): void {
-	const targets = new Set<CoreMessage>();
+function applyAnthropicCaching(msgs: ModelMessage[]): void {
+	const targets = new Set<ModelMessage>();
 
 	const systemMsgs = msgs.filter((m) => m.role === "system").slice(0, 2);
 	for (const m of systemMsgs) targets.add(m);
@@ -447,14 +619,25 @@ export class Agent {
 				// `system` shortcut parameter takes a plain string with nowhere to
 				// attach `providerOptions.anthropic.cacheControl`. Moving it inline
 				// also lets us apply rolling cache breakpoints to the last messages.
-				const systemMessage: CoreSystemMessage = { role: "system", content: systemPrompt };
-				const coreMessages: CoreMessage[] = [
+				const systemMessage: SystemModelMessage = {
+					role: "system",
+					content: systemPrompt,
+				};
+
+				let coreMessages: ModelMessage[] = [
 					systemMessage,
-					...toCoreMessages(stepMessages, isClaudeOAuth),
+					...toModelMessages(stepMessages, isClaudeOAuth),
 				];
 
+				// Apply provider-specific structural normalisations before
+				// sending. Anthropic and openai-compatible paths each have
+				// their own message-shape requirements; the two passes are
+				// mutually exclusive.
 				if (usesAnthropicSDK) {
+					coreMessages = applyAnthropicStructuralNormalisations(coreMessages);
 					applyAnthropicCaching(coreMessages);
+				} else {
+					coreMessages = applyOpenAICompatibleReasoningNormalisation(coreMessages);
 				}
 
 				const streamOptions: Parameters<typeof streamText>[0] = {
@@ -464,34 +647,68 @@ export class Agent {
 				};
 
 				if (isClaudeOAuth && effort !== "none") {
-					// Opus 4.7 rejects `thinking: { type: "enabled" }` ("reasoning-
-					// signature without reasoning") and only supports adaptive thinking.
-					// `@ai-sdk/anthropic` v1.x can't emit `type: "adaptive"`, so we
-					// leave `providerOptions.anthropic.thinking` unset and let the
-					// custom fetch in `createClaudeOAuthProvider` inject the adaptive
-					// shape into the request body. We still set `maxTokens` here so
-					// the SDK serializes it — adaptive thinking spends from this
-					// budget rather than a separate one.
+					// v6 native support for Opus 4.7 adaptive thinking via
+					// providerOptions. No more rewriteBodyForOpus47 body-
+					// injection hack needed.
+					//
+					// Budgets mirror opencode transform.ts:
+					//   - max  budget = 31999 (Anthropic's documented ceiling;
+					//     `Math.min(31_999, model.limit.output - 1)` in
+					//     opencode line 668)
+					//   - high budget = 16000 (opencode line 662:
+					//     `Math.min(16_000, Math.floor(model.limit.output/2-1))`)
+					//   - medium/low: no opencode equivalent — sensible
+					//     intermediate defaults.
+					//
+					// `maxOutputTokens` is the TOTAL output cap (thinking +
+					// response combined). Anthropic's standard output max is
+					// 32K for Claude 4.x; matching opencode's OUTPUT_TOKEN_MAX
+					// constant. The `budget_tokens` field is a thinking
+					// ceiling, not a requirement, so the model self-regulates
+					// thinking vs response within this total budget.
+					//
+					// Opus 4.7 (adaptive) specifics (mirrors opencode
+					// transform.ts:642-655):
+					//   - `thinking.type = "adaptive"` — the model decides how
+					//     much to think within `maxOutputTokens`.
+					//   - `thinking.display = "summarized"` — adaptive thinking
+					//     for Opus 4.7 defaults to `display: "omitted"`, which
+					//     means NO thinking content is streamed to us. Setting
+					//     `summarized` is what makes the thinking visible in
+					//     the UI.
+					//   - `effort` (sibling of `thinking`) — adaptive needs an
+					//     explicit effort level. Without it, Anthropic uses a
+					//     conservative default and the model barely thinks.
 					const isOpus47 = this.config.model === "claude-opus-4-7";
 					const budgetTokens =
 						effort === "max"
-							? 16000
+							? 31999
 							: effort === "high"
-								? 10000
+								? 16000
 								: effort === "medium"
 									? 5000
 									: effort === "low"
 										? 2000
 										: 0;
-					if (isOpus47) {
-						streamOptions.maxTokens = budgetTokens + 8000;
-					} else {
-						streamOptions.providerOptions = {
-							anthropic: { thinking: { type: "enabled" as const, budgetTokens } },
-						};
-						streamOptions.maxTokens = budgetTokens + 8000;
-					}
+					// Cap at Anthropic's standard 32K output (matches opencode's
+					// OUTPUT_TOKEN_MAX); the model splits this between thinking
+					// (up to budgetTokens) and response.
+					streamOptions.maxOutputTokens = 32000;
+					streamOptions.providerOptions = {
+						anthropic: isOpus47
+							? {
+									thinking: { type: "adaptive" as const, display: "summarized" as const },
+									effort,
+								}
+							: { thinking: { type: "enabled" as const, budgetTokens } },
+					};
 				} else if (!usesAnthropicSDK && effort !== "none") {
+					// OpenAI-compatible models (OpenCode Zen: DeepSeek, GLM,
+					// Kimi, etc.). The `reasoningEffort` field is forwarded
+					// verbatim to providers that support it. `"max"` is the
+					// strongest level we expose; the provider may map it
+					// internally (e.g. DeepSeek interprets it as deep
+					// reasoning).
 					streamOptions.providerOptions = { openaiCompatible: { reasoningEffort: effort } };
 				}
 
@@ -513,31 +730,100 @@ export class Agent {
 				try {
 					for await (const event of result.fullStream) {
 						if (event.type === "text-delta") {
+							// v6: text-delta carries `text` (not `textDelta`)
 							const internalEvent: AgentEvent = {
 								type: "text-delta",
-								delta: event.textDelta,
+								delta: event.text,
 							};
 							appendEventToChunks(chunks, internalEvent);
 							yield internalEvent;
-						} else if (event.type === "reasoning") {
+						} else if (event.type === "reasoning-delta") {
+							// v6 new event: reasoning-delta carries `text` (not `textDelta`)
 							const internalEvent: AgentEvent = {
 								type: "reasoning-delta",
-								delta: event.textDelta,
+								delta: event.text,
 							};
 							appendEventToChunks(chunks, internalEvent);
 							yield internalEvent;
+						} else if (event.type === "reasoning-end") {
+							// Only emit when providerMetadata is present — non-Anthropic
+							// models send reasoning-end without any metadata to round-trip.
+							// Anthropic's signature lives inside providerMetadata as
+							// { anthropic: { signature: "..." } }.
+							if (event.providerMetadata !== undefined) {
+								const internalEvent: AgentEvent = {
+									type: "reasoning-end",
+									metadata: event.providerMetadata as Record<string, unknown>,
+								};
+								appendEventToChunks(chunks, internalEvent);
+								yield internalEvent;
+							}
 						} else if (event.type === "tool-call") {
+							// v6: tool call input is in `input` (not `args`)
 							const rawName = event.toolName;
 							const toolName = isClaudeOAuth ? unprefixToolName(rawName) : rawName;
 							const toolCall: ToolCall = {
 								id: event.toolCallId,
 								name: toolName,
-								arguments: event.args as Record<string, unknown>,
+								arguments: event.input as Record<string, unknown>,
 							};
 							stepToolCalls.push(toolCall);
 							const internalEvent: AgentEvent = { type: "tool-call", toolCall };
 							appendEventToChunks(chunks, internalEvent);
 							yield internalEvent;
+						} else if (event.type === "tool-error") {
+							// Anthropic-side / provider-executed tool failures
+							// (e.g. server tools or repair-tool-call paths) surface
+							// as a fresh stream event rather than as a thrown
+							// `tool-result` from our manual executor. Forward both
+							// a synthetic tool-result (so the tool-batch entry the
+							// model expects has an `isError: true` result) and
+							// abort the step as an error chunk — without this the
+							// model would silently wait for a result that never
+							// arrives.
+							const evt = event as unknown as {
+								toolCallId: string;
+								toolName: string;
+								error: unknown;
+							};
+							const toolName = isClaudeOAuth ? unprefixToolName(evt.toolName) : evt.toolName;
+							const errMessage = evt.error instanceof Error ? evt.error.message : String(evt.error);
+
+							const trEvent: AgentEvent = {
+								type: "tool-result",
+								toolResult: {
+									toolCallId: evt.toolCallId,
+									toolName,
+									result: `Error: ${errMessage}`,
+									isError: true,
+								},
+							};
+							appendEventToChunks(chunks, trEvent);
+							yield trEvent;
+
+							const errorMsg = formatError(evt.error, this.config);
+							const errChunkEvent: AgentEvent = { type: "error", error: errorMsg };
+							appendEventToChunks(chunks, errChunkEvent);
+							yield errChunkEvent;
+							this.status = "error";
+							yield { type: "status", status: "error" };
+							return;
+						} else if (event.type === "abort") {
+							// Stream aborted upstream. Surface as an error so the
+							// frontend tab transitions out of `running`. We don't
+							// currently call abortController.abort() ourselves, so
+							// this would only fire from external signal propagation.
+							const reason =
+								typeof (event as { reason?: unknown }).reason === "string"
+									? (event as { reason: string }).reason
+									: "stream aborted";
+							const errorMsg = formatError(new Error(reason), this.config);
+							const internalEvent: AgentEvent = { type: "error", error: errorMsg };
+							appendEventToChunks(chunks, internalEvent);
+							yield internalEvent;
+							this.status = "error";
+							yield { type: "status", status: "error" };
+							return;
 						} else if (event.type === "error") {
 							const errRecord = event.error as unknown as Record<string, unknown>;
 							const statusCode =
@@ -554,9 +840,17 @@ export class Agent {
 							yield { type: "status", status: "error" };
 							return;
 						}
+						// Ignored events (intentional):
+						//   start, text-start, text-end, reasoning-start,
+						//   tool-input-start, tool-input-delta, tool-input-end,
+						//   tool-result (only fires if tool has execute; ours don't),
+						//   start-step, finish-step, finish, raw,
+						//   source, file, tool-output-denied, tool-approval-*
 					}
 				} catch (streamErr) {
 					const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+					// v6 SDK error message: "Model tried to call unavailable tool '...'"
+					// (v4 was: "tried to call unavailable tool '...'")
 					const unavailMatch = errMsg.match(/tried to call unavailable tool '([^']+)'/i);
 					if (!unavailMatch) throw streamErr;
 

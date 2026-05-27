@@ -26,6 +26,23 @@ export interface TextChunk {
 export interface ThinkingChunk {
 	type: "thinking";
 	text: string;
+	/**
+	 * Full Anthropic `providerMetadata` blob captured from the v6
+	 * `reasoning-end` stream event (typically `{ anthropic: { signature
+	 * } }` plus any other provider-side metadata). Round-tripped verbatim
+	 * as `providerOptions` on the `ReasoningPart` of the next request so
+	 * Anthropic can validate the thinking block's signature.
+	 *
+	 * Also acts as a "sealed" marker for `appendEventToChunks`: once
+	 * `metadata` is set, the next `reasoning-delta` opens a new thinking
+	 * chunk rather than extending this one (each Anthropic content block
+	 * gets its own metadata, so two consecutive thinking blocks must not
+	 * be coalesced).
+	 *
+	 * Optional: non-Anthropic models produce no metadata, and pre-v6
+	 * persisted chunks have neither field.
+	 */
+	metadata?: Record<string, unknown>;
 }
 
 export interface ToolBatchChunk {
@@ -82,6 +99,13 @@ export type AgentEvent =
 	| { type: "status"; status: AgentStatus }
 	| { type: "text-delta"; delta: string }
 	| { type: "reasoning-delta"; delta: string }
+	/**
+	 * Emitted on the v6 `reasoning-end` stream event when it carries
+	 * `providerMetadata`. `appendEventToChunks` attaches the metadata to
+	 * the most recent unsealed `thinking` chunk; `toModelMessages` reads
+	 * it back as `providerOptions` on the next request's `ReasoningPart`.
+	 */
+	| { type: "reasoning-end"; metadata?: Record<string, unknown> }
 	| { type: "tool-call"; toolCall: ToolCall }
 	| { type: "tool-result"; toolResult: ToolResult }
 	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" }

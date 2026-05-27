@@ -8,18 +8,31 @@
  *
  * Open/close rules — see plan-chunk-refactor.md for the full table.
  *
- *  | Chunk         | Opens on                                              | Coalesces                                                  |
- *  |---------------|-------------------------------------------------------|------------------------------------------------------------|
- *  | `text`        | first `text-delta` after a non-text chunk             | consecutive `text-delta` events append to `.text`          |
- *  | `thinking`    | first `reasoning-delta` after a non-thinking chunk    | consecutive `reasoning-delta` events append to `.text`     |
- *  | `tool-batch`  | first `tool-call` after a non-tool-batch chunk        | consecutive `tool-call` events push a new entry to `.calls`|
- *  | `error`       | every `error` event                                   | NEVER (always single-event)                                |
- *  | `system`      | every `notice`/`model-changed`/`config-reload`/...    | NEVER (two consecutive system events → two chunks)         |
+ *  | Chunk         | Opens on                                                        | Coalesces                                                  |
+ *  |---------------|-----------------------------------------------------------------|------------------------------------------------------------|
+ *  | `text`        | first `text-delta` after a non-text chunk                       | consecutive `text-delta` events append to `.text`          |
+ *  | `thinking`    | first `reasoning-delta` after a non-thinking chunk              | consecutive `reasoning-delta` events append to `.text`     |
+ *  |               | OR after the last thinking chunk was sealed by `reasoning-end`  | (only into the most recent UNSEALED thinking chunk)        |
+ *  | `tool-batch`  | first `tool-call` after a non-tool-batch chunk                  | consecutive `tool-call` events push a new entry to `.calls`|
+ *  | `error`       | every `error` event                                             | NEVER (always single-event)                                |
+ *  | `system`      | every `notice`/`model-changed`/`config-reload`/...              | NEVER (two consecutive system events → two chunks)         |
  *
  * Side-effect events (no new chunk):
- *  - `tool-result`  → finds the call by `id` across all `tool-batch` chunks (most-recent first)
- *                     and updates its `result` / `isError`.
- *  - `shell-output` → appends to the most recent entry of the most recent `tool-batch` chunk.
+ *  - `tool-result`   → finds the call by `id` across all `tool-batch`
+ *                       chunks (most-recent first) and updates its
+ *                       `result` / `isError`.
+ *  - `shell-output`  → appends to the most recent entry of the most
+ *                       recent `tool-batch` chunk.
+ *  - `reasoning-end` → attaches `metadata` (the AI SDK v6
+ *                       `providerMetadata` blob) to the most recent
+ *                       UNSEALED `thinking` chunk. The metadata is also
+ *                       the "sealed" marker — subsequent
+ *                       `reasoning-delta`s will open a new chunk rather
+ *                       than extending this one. Anthropic's signature
+ *                       lives inside this blob; round-tripping it on the
+ *                       next turn is mandatory for Anthropic to accept
+ *                       the conversation. Orphan `reasoning-end` events
+ *                       (no unsealed thinking chunk) are dropped.
  *
  * Ignored events:
  *  - `status`, `done`, `task-list-update`, `tab-created`, `message-queued`,
@@ -56,13 +69,42 @@ export function appendEventToChunks(chunks: Chunk[], event: AgentEvent): void {
 		}
 
 		case "reasoning-delta": {
-			// Open or extend the current thinking chunk.
+			// Open a new thinking chunk if the last chunk is not a thinking
+			// chunk OR if it's already sealed by metadata. Anthropic emits
+			// each thinking content block with its own metadata; a fresh
+			// reasoning-delta after a sealed thinking chunk is the start of
+			// a new block, not a continuation — extending the sealed chunk
+			// would corrupt the metadata/text mapping.
 			const last = chunks[chunks.length - 1];
-			if (last && last.type === "thinking") {
+			if (last && last.type === "thinking" && last.metadata === undefined) {
 				last.text += event.delta;
 			} else {
 				chunks.push({ type: "thinking", text: event.delta });
 			}
+			return;
+		}
+
+		case "reasoning-end": {
+			// Attach `providerMetadata` to the most recent unsealed
+			// thinking chunk. Anthropic's signature lives inside this
+			// blob; without it on the next request, Anthropic rejects the
+			// thinking block. The walk-back is a defensive backstop —
+			// Anthropic's SSE delivers a content block's deltas strictly
+			// in order and `appendEventToChunks` runs synchronously per
+			// event, so the most recent thinking chunk is normally the
+			// last chunk in the array.
+			if (event.metadata === undefined) return;
+			for (let i = chunks.length - 1; i >= 0; i--) {
+				const c = chunks[i];
+				if (!c || c.type !== "thinking") continue;
+				if (c.metadata !== undefined) {
+					// Already sealed; the orphan metadata has no home.
+					return;
+				}
+				c.metadata = event.metadata;
+				return;
+			}
+			// No thinking chunk found at all — drop silently.
 			return;
 		}
 

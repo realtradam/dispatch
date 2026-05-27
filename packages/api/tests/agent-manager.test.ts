@@ -1,6 +1,11 @@
 import type { AgentEvent, ToolDefinition } from "@dispatch/core";
 import { describe, expect, it, vi } from "vitest";
 
+// Spy on appendEventToChunks so we can assert persistence calls
+const appendEventToChunksSpy = vi.fn((_chunks: unknown[], _event: unknown) => {
+	// no-op; we inspect calls in tests
+});
+
 // Mock @dispatch/core's Agent to avoid real LLM calls
 vi.mock("@dispatch/core", () => ({
 	Agent: class MockAgent {
@@ -9,13 +14,26 @@ vi.mock("@dispatch/core", () => ({
 		async *run(_message: string) {
 			yield { type: "status", status: "running" } as const;
 			await new Promise<void>((r) => setTimeout(r, 10));
+			// v6-style reasoning turn: delta(s) then end with providerMetadata
+			yield { type: "reasoning-delta", delta: "thinking about it" } as const;
+			yield {
+				type: "reasoning-end",
+				metadata: { anthropic: { signature: "mock-sig" } },
+			} as const;
 			yield { type: "text-delta", delta: "Hello " } as const;
 			yield { type: "text-delta", delta: "world" } as const;
 			yield {
 				type: "done",
 				message: {
 					role: "assistant",
-					chunks: [{ type: "text", text: "Hello world" }],
+					chunks: [
+						{
+							type: "thinking",
+							text: "thinking about it",
+							metadata: { anthropic: { signature: "mock-sig" } },
+						},
+						{ type: "text", text: "Hello world" },
+					],
 				},
 			} as const;
 			yield { type: "status", status: "idle" } as const;
@@ -185,9 +203,7 @@ vi.mock("@dispatch/core", () => ({
 	getMessagesForTab() {
 		return [];
 	},
-	appendEventToChunks(_chunks: unknown[], _event: unknown) {
-		// no-op stub; chunk accumulation isn't exercised in these unit tests
-	},
+	appendEventToChunks: appendEventToChunksSpy,
 	applySystemEvent(_messages: unknown[], _event: unknown) {
 		return { messageId: "mock-system-msg" };
 	},
@@ -310,5 +326,94 @@ describe("AgentManager", () => {
 
 		expect(listener1).toHaveBeenCalled();
 		expect(listener2).toHaveBeenCalled();
+	});
+
+	// ─── v6 reasoning-end tests ───────────────────────────────────────
+
+	it("reasoning-end event is broadcast to WS listeners", async () => {
+		const manager = new AgentManager();
+		const events: AgentEvent[] = [];
+		manager.onEvent((event) => {
+			events.push(event);
+		});
+
+		await manager.processMessage("tab-reasoning", "think please");
+
+		const reasoningEndEvents = events.filter((e) => e.type === "reasoning-end");
+		expect(reasoningEndEvents.length).toBeGreaterThan(0);
+		expect(reasoningEndEvents[0]).toMatchObject({
+			type: "reasoning-end",
+			metadata: { anthropic: { signature: "mock-sig" } },
+		});
+	});
+
+	it("reasoning-end is passed to appendEventToChunks for persistence", async () => {
+		appendEventToChunksSpy.mockClear();
+		const manager = new AgentManager();
+
+		await manager.processMessage("tab-persist", "think and persist");
+
+		// Find all calls to appendEventToChunks that received a reasoning-end event
+		const reasoningEndCalls = appendEventToChunksSpy.mock.calls.filter(
+			([_chunks, event]) => (event as AgentEvent).type === "reasoning-end",
+		);
+		expect(reasoningEndCalls.length).toBeGreaterThan(0);
+
+		// The event should carry the metadata blob
+		const [, reasoningEndEvent] = reasoningEndCalls[0] as [unknown[], AgentEvent];
+		expect(reasoningEndEvent).toMatchObject({
+			type: "reasoning-end",
+			metadata: { anthropic: { signature: "mock-sig" } },
+		});
+	});
+
+	it("reasoning-end follows reasoning-delta in broadcast order (chunk accumulator ordering)", async () => {
+		const manager = new AgentManager();
+		const events: AgentEvent[] = [];
+		manager.onEvent((event) => {
+			events.push(event);
+		});
+
+		await manager.processMessage("tab-ordering", "think in order");
+
+		const types = events.map((e) => e.type);
+		const deltaIdx = types.indexOf("reasoning-delta");
+		const endIdx = types.indexOf("reasoning-end");
+
+		// Both must be present
+		expect(deltaIdx).toBeGreaterThanOrEqual(0);
+		expect(endIdx).toBeGreaterThanOrEqual(0);
+
+		// reasoning-end must come AFTER reasoning-delta
+		expect(endIdx).toBeGreaterThan(deltaIdx);
+
+		// reasoning-end must come BEFORE any text-delta (reasoning precedes text)
+		const textDeltaIdx = types.indexOf("text-delta");
+		if (textDeltaIdx >= 0) {
+			expect(endIdx).toBeLessThan(textDeltaIdx);
+		}
+	});
+
+	it("done event includes a thinking chunk with metadata in its message", async () => {
+		const manager = new AgentManager();
+		const events: AgentEvent[] = [];
+		manager.onEvent((event) => {
+			events.push(event);
+		});
+
+		await manager.processMessage("tab-done-chunks", "think and respond");
+
+		const doneEvent = events.find((e) => e.type === "done") as
+			| Extract<AgentEvent, { type: "done" }>
+			| undefined;
+		expect(doneEvent).toBeDefined();
+
+		const thinkingChunk = doneEvent?.message.chunks.find((c) => c.type === "thinking");
+		expect(thinkingChunk).toBeDefined();
+		expect(thinkingChunk).toMatchObject({
+			type: "thinking",
+			text: "thinking about it",
+			metadata: { anthropic: { signature: "mock-sig" } },
+		});
 	});
 });

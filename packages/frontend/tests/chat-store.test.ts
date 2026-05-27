@@ -230,6 +230,62 @@ describe("tabStore — streaming chunk flow (real $state)", () => {
 		]);
 	});
 
+	it("reasoning-end seals the thinking chunk with metadata (end-to-end signature seal)", async () => {
+		const { store, tabId } = await setupStoreWithTab();
+
+		store.handleEvent({ type: "reasoning-delta", delta: "plan", tabId });
+		store.handleEvent({
+			type: "reasoning-end",
+			metadata: { anthropic: { signature: "wire-sig" } },
+			tabId,
+		});
+
+		const chunks = getAssistantChunks(store);
+		expect(chunks).toEqual([
+			{ type: "thinking", text: "plan", metadata: { anthropic: { signature: "wire-sig" } } },
+		]);
+	});
+
+	it("reasoning-delta after reasoning-end opens a new thinking chunk (v6 multi-block)", async () => {
+		const { store, tabId } = await setupStoreWithTab();
+
+		// First thinking block: delta → seal
+		store.handleEvent({ type: "reasoning-delta", delta: "block-1", tabId });
+		store.handleEvent({
+			type: "reasoning-end",
+			metadata: { anthropic: { signature: "sig-1" } },
+			tabId,
+		});
+
+		// Second thinking block: new delta after seal must NOT extend the sealed chunk
+		store.handleEvent({ type: "reasoning-delta", delta: "block-2", tabId });
+
+		const chunks = getAssistantChunks(store);
+		expect(chunks).toHaveLength(2);
+		// First chunk sealed — text must not have been extended
+		expect(chunks?.[0]).toEqual({
+			type: "thinking",
+			text: "block-1",
+			metadata: { anthropic: { signature: "sig-1" } },
+		});
+		// Second chunk is fresh — no metadata yet
+		expect(chunks?.[1]).toEqual({ type: "thinking", text: "block-2" });
+	});
+
+	it("reasoning-end without metadata is a no-op (subsequent delta still extends the chunk)", async () => {
+		const { store, tabId } = await setupStoreWithTab();
+
+		store.handleEvent({ type: "reasoning-delta", delta: "start", tabId });
+		// reasoning-end with no metadata → helper returns early, chunk stays unsealed
+		store.handleEvent({ type: "reasoning-end", tabId });
+		// Next delta should extend the existing (still unsealed) chunk
+		store.handleEvent({ type: "reasoning-delta", delta: " continued", tabId });
+
+		const chunks = getAssistantChunks(store);
+		expect(chunks).toHaveLength(1);
+		expect(chunks?.[0]).toEqual({ type: "thinking", text: "start continued" });
+	});
+
 	it("interleaved think→text→think yields three chunks in order", async () => {
 		const { store, tabId } = await setupStoreWithTab();
 		store.handleEvent({ type: "reasoning-delta", delta: "thinking-1", tabId });
