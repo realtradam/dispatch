@@ -1,49 +1,147 @@
-import { Database } from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-/** In-memory database instance assigned in beforeAll. */
-let memDb: Database;
+/**
+ * Internal row shape — matches the production `tabs` table columns.
+ * Kept loose (`Record`) on the `query()` boundary to mirror bun:sqlite's
+ * dynamic return type.
+ */
+interface TabRow {
+	id: string;
+	title: string;
+	key_id: string | null;
+	model_id: string | null;
+	parent_tab_id: string | null;
+	status: string;
+	is_open: number;
+	position: number;
+	created_at: number;
+	updated_at: number;
+}
 
-// Mock getDatabase to return the in-memory database.  The factory
-// captures memDb by reference — it won't be dereferenced until a test
-// calls getDescendantIds (or another exported function), by which
-// point beforeAll will have initialised the variable.
+/**
+ * In-memory fake of `bun:sqlite`'s Database that implements only the
+ * queries actually issued by `tabs.ts`. This sidesteps two problems
+ * the original test had:
+ *   1. Vite's resolver can't load `bun:sqlite` (it's a Bun-native
+ *      module with no on-disk file).
+ *   2. Even under `bun --bun vitest`, `vi.mock` doesn't intercept
+ *      module imports because Bun's loader bypasses Vite's transforms.
+ *
+ * By implementing the exact query strings as fixed branches we avoid
+ * writing an SQL parser; if `tabs.ts` ever changes a query string,
+ * tests will fail loudly with "Unsupported query" instead of
+ * silently returning wrong data.
+ */
+class FakeDatabase {
+	rows: TabRow[] = [];
+
+	/** Match production's `db.query(sql).get|all|run(params)` shape. */
+	query(sql: string): {
+		all: (params?: Record<string, unknown>) => unknown[];
+		get: (params?: Record<string, unknown>) => unknown;
+		run: (params?: Record<string, unknown>) => void;
+	} {
+		return {
+			all: (params) => this.execSelect(sql, params),
+			get: (params) => this.execSelect(sql, params)[0] ?? null,
+			run: (params) => {
+				this.execMutation(sql, params);
+			},
+		};
+	}
+
+	private execSelect(sql: string, params?: Record<string, unknown>): unknown[] {
+		const norm = sql.replace(/\s+/g, " ").trim();
+
+		// getDescendantIds: children-of query
+		if (norm === "SELECT id FROM tabs WHERE parent_tab_id = $id AND is_open = 1") {
+			return this.rows
+				.filter((r) => r.parent_tab_id === params?.$id && r.is_open === 1)
+				.map((r) => ({ id: r.id }));
+		}
+
+		// getTab: single-row lookup
+		if (norm === "SELECT * FROM tabs WHERE id = $id") {
+			const row = this.rows.find((r) => r.id === params?.$id);
+			return row ? [row] : [];
+		}
+
+		// createTab: next-position lookup
+		if (norm === "SELECT COALESCE(MAX(position), -1) as max_pos FROM tabs WHERE is_open = 1") {
+			const positions = this.rows.filter((r) => r.is_open === 1).map((r) => r.position);
+			const maxPos = positions.length > 0 ? Math.max(...positions) : -1;
+			return [{ max_pos: maxPos }];
+		}
+
+		throw new Error(`FakeDatabase: unsupported SELECT: ${norm}`);
+	}
+
+	private execMutation(sql: string, params?: Record<string, unknown>): void {
+		const norm = sql.replace(/\s+/g, " ").trim();
+
+		// createTab: full-row insert (every column named, $-bound params)
+		if (
+			norm ===
+			"INSERT INTO tabs (id, title, key_id, model_id, parent_tab_id, status, is_open, position, created_at, updated_at) VALUES ($id, $title, $keyId, $modelId, $parentTabId, 'idle', 1, $position, $now, $now)"
+		) {
+			const id = params?.$id as string;
+			if (this.rows.some((r) => r.id === id)) {
+				throw new Error(`UNIQUE constraint failed: tabs.id (${id})`);
+			}
+			this.rows.push({
+				id,
+				title: (params?.$title as string) ?? "",
+				key_id: (params?.$keyId as string | null) ?? null,
+				model_id: (params?.$modelId as string | null) ?? null,
+				parent_tab_id: (params?.$parentTabId as string | null) ?? null,
+				status: "idle",
+				is_open: 1,
+				position: (params?.$position as number) ?? 0,
+				created_at: (params?.$now as number) ?? 0,
+				updated_at: (params?.$now as number) ?? 0,
+			});
+			return;
+		}
+
+		// archiveTab: flip is_open to 0
+		if (norm === "UPDATE tabs SET is_open = 0, updated_at = $now WHERE id = $id") {
+			const row = this.rows.find((r) => r.id === params?.$id);
+			if (row) {
+				row.is_open = 0;
+				row.updated_at = (params?.$now as number) ?? Date.now();
+			}
+			return;
+		}
+
+		throw new Error(`FakeDatabase: unsupported mutation: ${norm}`);
+	}
+}
+
+/**
+ * Shared instance referenced by both the test setup and the
+ * `vi.mock` factory below. Declared with `let` (not `const`) so the
+ * factory's closure picks up the value assigned in `beforeAll`.
+ */
+let fakeDb: FakeDatabase;
+
+// Mock the db module before importing `tabs.ts` so that `getDatabase()`
+// returns our in-memory fake instead of trying to open a real SQLite
+// file. Mirrors the same pattern used by `tests/agent/agent.test.ts`.
 vi.mock("../../src/db/index.js", () => ({
-	getDatabase: vi.fn(() => memDb),
+	getDatabase: vi.fn(() => fakeDb),
 }));
 
-// Dynamic import AFTER the mock is registered (hoisted) so the
-// module-under-test sees the mocked getDatabase.
-const {
-	getDescendantIds,
-	createTab,
-	archiveTab,
-	getTab,
-} = await import("../../src/db/tabs.js");
+// Dynamic import AFTER `vi.mock` registers (vitest hoists `vi.mock` to
+// the very top of the file, so by the time this line runs the mock is
+// active for `./index.js` resolution inside `tabs.ts`).
+const { archiveTab, createTab, getDescendantIds, getTab } = await import("../../src/db/tabs.js");
 
 beforeAll(() => {
-	memDb = new Database(":memory:");
-	memDb.run(`CREATE TABLE tabs (
-		id             TEXT PRIMARY KEY,
-		title          TEXT NOT NULL,
-		key_id         TEXT,
-		model_id       TEXT,
-		parent_tab_id  TEXT,
-		status         TEXT NOT NULL DEFAULT 'idle',
-		is_open        INTEGER NOT NULL DEFAULT 1,
-		position       INTEGER NOT NULL DEFAULT 0,
-		created_at     INTEGER NOT NULL,
-		updated_at     INTEGER NOT NULL
-	)`);
+	fakeDb = new FakeDatabase();
 });
 
-afterAll(() => {
-	memDb.close();
-});
-
-/** Wipe the tabs table between tests so every test starts clean. */
 beforeEach(() => {
-	memDb.run("DELETE FROM tabs");
+	fakeDb.rows = [];
 });
 
 // ---------------------------------------------------------------------------
@@ -51,34 +149,16 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 describe("getDescendantIds", () => {
 	it("returns only the id when the tab has no children", () => {
-		const now = Date.now();
-		memDb.run(
-			`INSERT INTO tabs (id, title, status, is_open, position, created_at, updated_at)
-			 VALUES ('root', 'Root', 'idle', 1, 0, $now, $now)`,
-			{ $now: now },
-		);
+		createTab("root", "Root");
 
 		const ids = getDescendantIds("root");
 		expect(ids).toEqual(["root"]);
 	});
 
 	it("returns leaf-first order for a linear chain (root → child → grandchild)", () => {
-		const now = Date.now();
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('root', 'Root', NULL, 'idle', 1, 0, $now, $now)`,
-			{ $now: now },
-		);
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('child', 'Child', 'root', 'idle', 1, 1, $now, $now)`,
-			{ $now: now },
-		);
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('grandchild', 'Grandchild', 'child', 'idle', 1, 2, $now, $now)`,
-			{ $now: now },
-		);
+		createTab("root", "Root");
+		createTab("child", "Child", { parentTabId: "root" });
+		createTab("grandchild", "Grandchild", { parentTabId: "child" });
 
 		const ids = getDescendantIds("root");
 		// Leaves first: grandchild, child, root
@@ -86,32 +166,11 @@ describe("getDescendantIds", () => {
 	});
 
 	it("returns leaf-first for a branching tree", () => {
-		const now = Date.now();
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('a', 'A', NULL, 'idle', 1, 0, $now, $now)`,
-			{ $now: now },
-		);
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('b1', 'B1', 'a', 'idle', 1, 1, $now, $now)`,
-			{ $now: now },
-		);
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('b2', 'B2', 'a', 'idle', 1, 2, $now, $now)`,
-			{ $now: now },
-		);
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('c1', 'C1', 'b1', 'idle', 1, 3, $now, $now)`,
-			{ $now: now },
-		);
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('c2', 'C2', 'b1', 'idle', 1, 4, $now, $now)`,
-			{ $now: now },
-		);
+		createTab("a", "A");
+		createTab("b1", "B1", { parentTabId: "a" });
+		createTab("b2", "B2", { parentTabId: "a" });
+		createTab("c1", "C1", { parentTabId: "b1" });
+		createTab("c2", "C2", { parentTabId: "b1" });
 
 		const ids = getDescendantIds("a");
 		// BFS: a, b1, b2, c1, c2  →  reverse: c2, c1, b2, b1, a
@@ -119,30 +178,14 @@ describe("getDescendantIds", () => {
 	});
 
 	it("skips archived descendants (is_open = 0)", () => {
-		const now = Date.now();
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('root', 'Root', NULL, 'idle', 1, 0, $now, $now)`,
-			{ $now: now },
-		);
+		createTab("root", "Root");
 		// Open child of root — should appear
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('open-child', 'Open', 'root', 'idle', 1, 1, $now, $now)`,
-			{ $now: now },
-		);
+		createTab("open-child", "Open", { parentTabId: "root" });
 		// Archived child — should be skipped together with its descendants
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('archived-child', 'Archived', 'root', 'idle', 0, 2, $now, $now)`,
-			{ $now: now },
-		);
-		// Child of archived — data drift, should NOT appear
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('orphan', 'Orphan', 'archived-child', 'idle', 1, 3, $now, $now)`,
-			{ $now: now },
-		);
+		createTab("archived-child", "Archived", { parentTabId: "root" });
+		archiveTab("archived-child");
+		// Child of archived — data drift, should NOT appear (parent is archived)
+		createTab("orphan", "Orphan", { parentTabId: "archived-child" });
 
 		const ids = getDescendantIds("root");
 		expect(ids).toEqual(["open-child", "root"]);
@@ -156,17 +199,11 @@ describe("getDescendantIds", () => {
 	});
 
 	it("defends against accidental parent_tab_id cycles", () => {
-		const now = Date.now();
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('x', 'X', 'y', 'idle', 1, 0, $now, $now)`,
-			{ $now: now },
-		);
-		memDb.run(
-			`INSERT INTO tabs (id, title, parent_tab_id, status, is_open, position, created_at, updated_at)
-			 VALUES ('y', 'Y', 'x', 'idle', 1, 1, $now, $now)`,
-			{ $now: now },
-		);
+		// Insert x first with a forward reference to y (y doesn't exist
+		// yet — the schema has no foreign key enforcement). Then insert
+		// y with parent_tab_id = x. Result: x.parent = y, y.parent = x.
+		createTab("x", "X", { parentTabId: "y" });
+		createTab("y", "Y", { parentTabId: "x" });
 
 		// Must terminate — no infinite loop
 		const ids = getDescendantIds("x");
