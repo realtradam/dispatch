@@ -46,10 +46,65 @@ import type {
  * LLM, so this case only arises mid-step (where the message hasn't been
  * round-tripped to the LLM yet) and is benign.
  */
+/**
+ * Marker used to identify the start of a `[USER INTERRUPT]` block embedded
+ * in a tool result. Both the agent-level injection
+ * (`packages/core/src/agent/agent.ts`) and the tool-level injections in
+ * `run-shell`, `youtube-transcribe`, and `retrieve` use the same separator
+ * (`\n\n[USER INTERRUPT]`) before the boilerplate, so a single substring
+ * search suffices for stripping.
+ */
+const USER_INTERRUPT_MARKER = "\n\n[USER INTERRUPT]";
+
+/**
+ * Remove the `[USER INTERRUPT]` block (and everything after it) from a tool
+ * result string. Used when a historical tool-result is being re-serialized
+ * for the LLM and the model has already had a chance to address that
+ * interrupt — leaving the imperative "You MUST address these" text in
+ * place causes the model to re-acknowledge the same interrupt on every
+ * subsequent step.
+ *
+ * The interrupt block is always appended to the end of the tool result, so
+ * we strip from the marker to end-of-string.
+ */
+function stripUserInterruptBlock(result: string): string {
+	const idx = result.indexOf(USER_INTERRUPT_MARKER);
+	if (idx === -1) return result;
+	return result.slice(0, idx);
+}
+
 function toModelMessages(messages: ChatMessage[], useToolPrefix?: boolean): ModelMessage[] {
 	const result: ModelMessage[] = [];
-	for (const msg of messages) {
-		if (msg.role === "system") continue;
+
+	// A `[USER INTERRUPT]` block in a tool-result is "fresh" — i.e., the
+	// model has not yet seen and responded to it — only when ALL of these
+	// hold:
+	//   1. The tool-batch is in the very last message of the history.
+	//   2. That message is an assistant message (a follow-up user message
+	//      means the user moved on; the interrupt was addressed).
+	//   3. The tool-batch is the LAST chunk in that message (any later
+	//      text/thinking/tool-batch in the same message represents the
+	//      model's response to the tool results).
+	//
+	// All other interrupts get stripped from history because the imperative
+	// "You MUST address these" otherwise gets re-evaluated as a fresh
+	// instruction on every subsequent LLM step.
+	let freshestToolBatchMsgIdx = -1;
+	let freshestToolBatchChunkIdx = -1;
+	const lastMsgIdx = messages.length - 1;
+	const lastMsg = messages[lastMsgIdx];
+	if (lastMsg && lastMsg.role === "assistant" && lastMsg.chunks.length > 0) {
+		const lastChunkIdx = lastMsg.chunks.length - 1;
+		const lastChunk = lastMsg.chunks[lastChunkIdx];
+		if (lastChunk && lastChunk.type === "tool-batch") {
+			freshestToolBatchMsgIdx = lastMsgIdx;
+			freshestToolBatchChunkIdx = lastChunkIdx;
+		}
+	}
+
+	for (let msgIdx = 0; msgIdx < messages.length; msgIdx++) {
+		const msg = messages[msgIdx];
+		if (!msg || msg.role === "system") continue;
 
 		if (msg.role === "user") {
 			// User messages in our model can in theory contain non-text chunks,
@@ -75,7 +130,9 @@ function toModelMessages(messages: ChatMessage[], useToolPrefix?: boolean): Mode
 			result: string;
 		}> = [];
 
-		for (const chunk of msg.chunks) {
+		for (let chunkIdx = 0; chunkIdx < msg.chunks.length; chunkIdx++) {
+			const chunk = msg.chunks[chunkIdx];
+			if (!chunk) continue;
 			switch (chunk.type) {
 				case "text":
 					parts.push({ type: "text", text: chunk.text });
@@ -92,7 +149,15 @@ function toModelMessages(messages: ChatMessage[], useToolPrefix?: boolean): Mode
 							: {}),
 					});
 					break;
-				case "tool-batch":
+				case "tool-batch": {
+					// Strip stale `[USER INTERRUPT]` blocks from every
+					// tool-batch except the freshest one (most recent
+					// tool-batch in the most recent assistant message).
+					// Without this, the imperative "You MUST address these"
+					// text persists in history and the model re-acknowledges
+					// the same interrupt verbatim on every subsequent step.
+					const isFreshestToolBatch =
+						msgIdx === freshestToolBatchMsgIdx && chunkIdx === freshestToolBatchChunkIdx;
 					for (const entry of chunk.calls) {
 						const toolName = useToolPrefix ? prefixToolName(entry.name) : entry.name;
 						// v6: `input` replaces v4's `args`
@@ -103,14 +168,18 @@ function toModelMessages(messages: ChatMessage[], useToolPrefix?: boolean): Mode
 							input: entry.arguments,
 						});
 						if (entry.result !== undefined) {
+							const resultText = isFreshestToolBatch
+								? entry.result
+								: stripUserInterruptBlock(entry.result);
 							trailingToolResults.push({
 								toolCallId: entry.id,
 								toolName,
-								result: entry.result,
+								result: resultText,
 							});
 						}
 					}
 					break;
+				}
 				case "error":
 				case "system":
 					// Strip — not sent back to the LLM.
@@ -902,8 +971,29 @@ export class Agent {
 					}
 				}
 
-				for (const tc of stepToolCalls) {
-					if (alreadyResolved.has(tc.id)) continue;
+				// Identify the index of the last tool in this batch that will
+				// actually execute. Queued user messages are buffered across
+				// this batch and injected into ONLY that tool's result, so the
+				// interrupt appears exactly once per step rather than fragmented
+				// across whichever tool happened to dequeue first. Tool-level
+				// interrupt handlers in run-shell/youtube-transcribe/retrieve
+				// still embed their own interrupt text in their return values —
+				// that path is independent and remains correct.
+				let lastExecutableIdx = -1;
+				for (let i = 0; i < stepToolCalls.length; i++) {
+					const tcAt = stepToolCalls[i];
+					if (tcAt && !alreadyResolved.has(tcAt.id)) lastExecutableIdx = i;
+				}
+
+				// Accumulator for messages dequeued during this batch. Drained
+				// only at `lastExecutableIdx`. Destructive dequeue at the queue
+				// level prevents the same message from appearing in subsequent
+				// batches.
+				const batchPendingInjection: { id: string; message: string; timestamp: number }[] = [];
+
+				for (let tcIdx = 0; tcIdx < stepToolCalls.length; tcIdx++) {
+					const tc = stepToolCalls[tcIdx];
+					if (!tc || alreadyResolved.has(tc.id)) continue;
 
 					const shellOutputQueue: Array<{ data: string; stream: "stdout" | "stderr" }> = [];
 
@@ -952,22 +1042,45 @@ export class Agent {
 						}
 					}
 
-					// Check for queued user messages and append them to the tool result
-					let finalToolResult = toolResult;
+					// Harvest any queued user messages but DEFER injection until
+					// the last tool of the batch. This collapses multiple
+					// queued messages into a single interrupt block on a single
+					// tool-result instead of fragmenting across the batch.
 					if (this.queueCallbacks) {
 						const queuedMsgs = this.queueCallbacks.dequeueMessages();
 						if (queuedMsgs.length > 0) {
-							const userMessages = queuedMsgs.map((m) => m.message).join("\n---\n");
-							finalToolResult = {
-								...toolResult,
-								result: `${toolResult.result}\n\n[USER INTERRUPT]\nThe user has sent you message(s) while you were working. You MUST address these before continuing with your current task:\n\n${userMessages}`,
-							};
+							batchPendingInjection.push(...queuedMsgs);
 						}
+					}
+
+					let finalToolResult = toolResult;
+					if (tcIdx === lastExecutableIdx && batchPendingInjection.length > 0) {
+						const userMessages = batchPendingInjection.map((m) => m.message).join("\n---\n");
+						finalToolResult = {
+							...toolResult,
+							result: `${toolResult.result}\n\n[USER INTERRUPT]\nThe user has sent you message(s) while you were working. You MUST address these before continuing with your current task:\n\n${userMessages}`,
+						};
+						batchPendingInjection.length = 0;
 					}
 
 					const trEvent: AgentEvent = { type: "tool-result", toolResult: finalToolResult };
 					appendEventToChunks(chunks, trEvent);
 					yield trEvent;
+				}
+
+				// Safety net: if `lastExecutableIdx` was never reached (e.g.,
+				// no tools executed because all were already resolved) but
+				// messages were still dequeued, surface them as a user message
+				// so they aren't dropped. In practice this is rare — it only
+				// happens when the entire batch is unavailable-tool synthesized
+				// errors with a message arriving in that narrow window.
+				if (batchPendingInjection.length > 0) {
+					const userMessages = batchPendingInjection.map((m) => m.message).join("\n---\n");
+					this.messages.push({
+						role: "user",
+						chunks: [{ type: "text", text: userMessages }],
+					});
+					batchPendingInjection.length = 0;
 				}
 			}
 

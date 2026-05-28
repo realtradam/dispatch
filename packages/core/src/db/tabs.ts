@@ -122,3 +122,40 @@ export function archiveTab(id: string): void {
 		$now: Date.now(),
 	});
 }
+
+/**
+ * Return the IDs of `rootId` plus every OPEN descendant tab, in leaf-first
+ * order (children before their parent). Archived descendants
+ * (`is_open = 0`) and their sub-trees are skipped — closing a parent
+ * shouldn't drag archived branches back into view.
+ *
+ * The starting `rootId` is always included in the result, even if no row
+ * with that id exists in the `tabs` table (graceful handling for stale
+ * references).
+ *
+ * Order matters for the cascade-close path: callers archive descendants
+ * leaf-first so foreign-key cleanup (messages, etc.) doesn't fail on
+ * partially-deleted parents.
+ *
+ * Cycle-safe: a `visited` set guards against accidental `parent_tab_id`
+ * loops that would otherwise spin forever.
+ */
+export function getDescendantIds(rootId: string): string[] {
+	const db = getDatabase();
+	const visited = new Set<string>();
+	const order: string[] = [];
+	const queue: string[] = [rootId];
+	while (queue.length > 0) {
+		const id = queue.shift() as string;
+		if (visited.has(id)) continue;
+		visited.add(id);
+		order.push(id);
+		const children = db
+			.query("SELECT id FROM tabs WHERE parent_tab_id = $id AND is_open = 1")
+			.all({ $id: id }) as Array<{ id: string }>;
+		for (const child of children) {
+			if (!visited.has(child.id)) queue.push(child.id);
+		}
+	}
+	return order.reverse();
+}
