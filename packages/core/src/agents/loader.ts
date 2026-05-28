@@ -20,9 +20,9 @@ function sanitizeSlug(slug: string): string {
 
 // ─── Constants ───────────────────────────────────────────────────
 
-const GLOBAL_AGENTS_DIR = path.join(os.homedir(), ".config", "dispatch", "agents");
+export const GLOBAL_AGENTS_DIR = path.join(os.homedir(), ".config", "dispatch", "agents");
 
-function getProjectAgentsDir(projectDir: string): string {
+export function getProjectAgentsDir(projectDir: string): string {
 	return path.join(projectDir, ".dispatch", "agents");
 }
 
@@ -46,6 +46,77 @@ export function getAgentDirs(
 		});
 	}
 	return dirs;
+}
+
+/**
+ * Return just the absolute filesystem paths of the agent directories.
+ * Used by the agent's permission gate to grant read-only access to
+ * these locations by default (so any agent can list/read agent
+ * definitions without prompting the user).
+ */
+export function getAgentDirPaths(projectDir?: string): string[] {
+	const paths = [GLOBAL_AGENTS_DIR];
+	if (projectDir) paths.push(getProjectAgentsDir(projectDir));
+	return paths;
+}
+
+/**
+ * Load a single agent definition by slug. Searches the project-scoped
+ * directory first (if `projectDir` is provided), then falls back to
+ * the global directory. Returns `null` if no match is found.
+ *
+ * Slug matching is exact and case-sensitive; sanitization mirrors
+ * `saveAgent` to keep loader and writer symmetric.
+ */
+export function loadAgent(slug: string, projectDir?: string): AgentDefinition | null {
+	const safeSlug = sanitizeSlug(slug);
+	const agents = loadAgents(projectDir);
+	return agents.find((a) => a.slug === safeSlug) ?? null;
+}
+
+/**
+ * Translate the short permission-group names used by `AgentDefinition.tools`
+ * (e.g. `"read"`, `"edit"`, `"bash"`) into the concrete tool-implementation
+ * names registered with the agent runtime (e.g. `"read_file"`,
+ * `"list_files"`, `"write_file"`, `"run_shell"`).
+ *
+ * The mapping mirrors the per-permission tool-creation paths in
+ * `AgentManager.getOrCreateAgentForTab` so a subagent summoned with a
+ * given agent definition ends up with the exact same set of registered
+ * tools as a top-level tab using that definition. Tool names that aren't
+ * group aliases (`summon`, `retrieve`, `web_search`, `youtube_transcribe`,
+ * `todo`) are passed through unchanged.
+ *
+ * `"todo"` is auto-included so the summoned agent always has its task list
+ * available, matching the parent-agent path which always registers `todo`.
+ */
+export function expandAgentToolNames(tools: string[]): string[] {
+	const expanded = new Set<string>();
+	for (const t of tools) {
+		switch (t) {
+			case "read":
+				expanded.add("read_file");
+				expanded.add("read_file_slice");
+				expanded.add("list_files");
+				break;
+			case "edit":
+				expanded.add("write_file");
+				break;
+			case "bash":
+				expanded.add("run_shell");
+				break;
+			default:
+				// Pass through tool names that aren't permission-group
+				// aliases (summon, retrieve, web_search, youtube_transcribe,
+				// todo, and the granular file tools themselves if a user
+				// hand-wrote them in a TOML).
+				expanded.add(t);
+		}
+	}
+	// Always include `todo` — every agent should be able to track its work,
+	// and the parent-agent path adds it unconditionally.
+	expanded.add("todo");
+	return Array.from(expanded);
 }
 
 /**
