@@ -25,9 +25,14 @@ import {
 	createWriteFileTool,
 	createYoutubeTranscribeTool,
 	type DispatchConfig,
+	expandAgentToolNames,
+	GLOBAL_AGENTS_DIR,
+	getAgentDirPaths,
 	getClaudeAccountsFromDB,
 	getMessagesForTab,
 	getSetting,
+	loadAgent,
+	loadAgents,
 	loadConfig,
 	loadSkills,
 	ModelRegistry,
@@ -39,6 +44,7 @@ import {
 	type SystemChunkKind,
 	type TabStatusSnapshot,
 	TaskList,
+	toAvailableAgents,
 	updateMessage,
 	validateConfig,
 } from "@dispatch/core";
@@ -429,19 +435,30 @@ export class AgentManager {
 				}
 				if (allowed.has("summon")) {
 					const childParentAllowedTools = new Set(toolEntries.map((e) => e.name));
+					const availableAgents = toAvailableAgents(
+						loadAgents(workingDirectory),
+						GLOBAL_AGENTS_DIR,
+						workingDirectory,
+					);
+					const agentDirPaths = getAgentDirPaths(workingDirectory);
 					toolEntries.push({
 						name: "summon",
-						tool: createSummonTool(workingDirectory, {
-							spawn: (opts) =>
-								this.spawnChildAgent({
-									...opts,
-									parentKeyId: tabAgent.keyId,
-									parentModelId: tabAgent.modelId,
-									parentAllowedTools: childParentAllowedTools,
-									parentTabId: tabId,
-								}),
-							getResult: (id) => this.getChildResult(id),
-						}),
+						tool: createSummonTool(
+							workingDirectory,
+							{
+								spawn: (opts) =>
+									this.spawnChildAgent({
+										...opts,
+										parentKeyId: tabAgent.keyId,
+										parentModelId: tabAgent.modelId,
+										parentAllowedTools: childParentAllowedTools,
+										parentTabId: tabId,
+									}),
+								getResult: (id) => this.getChildResult(id),
+							},
+							availableAgents,
+							agentDirPaths,
+						),
 					});
 				}
 				if (allowed.has("retrieve")) {
@@ -489,19 +506,30 @@ export class AgentManager {
 				if (permSummon) {
 					// Capture parent's allowed tool names for child permission enforcement
 					const parentAllowedTools = new Set(toolEntries.map((e) => e.name));
+					const availableAgents = toAvailableAgents(
+						loadAgents(workingDirectory),
+						GLOBAL_AGENTS_DIR,
+						workingDirectory,
+					);
+					const agentDirPaths = getAgentDirPaths(workingDirectory);
 					toolEntries.push({
 						name: "summon",
-						tool: createSummonTool(workingDirectory, {
-							spawn: (opts) =>
-								this.spawnChildAgent({
-									...opts,
-									parentKeyId: tabAgent.keyId,
-									parentModelId: tabAgent.modelId,
-									parentAllowedTools,
-									parentTabId: tabId,
-								}),
-							getResult: (id) => this.getChildResult(id),
-						}),
+						tool: createSummonTool(
+							workingDirectory,
+							{
+								spawn: (opts) =>
+									this.spawnChildAgent({
+										...opts,
+										parentKeyId: tabAgent.keyId,
+										parentModelId: tabAgent.modelId,
+										parentAllowedTools,
+										parentTabId: tabId,
+									}),
+								getResult: (id) => this.getChildResult(id),
+							},
+							availableAgents,
+							agentDirPaths,
+						),
 					});
 					toolEntries.push({
 						name: "retrieve",
@@ -874,6 +902,14 @@ export class AgentManager {
 		task: string;
 		tools: string[];
 		workingDirectory?: string;
+		/**
+		 * Optional slug of an `AgentDefinition` to apply. When set, the
+		 * definition's `tools`, `models`, and `cwd` take precedence over
+		 * the `tools`/`workingDirectory` passed in `options`. Tools are
+		 * still intersected with `parentAllowedTools` to prevent a
+		 * subagent from gaining capabilities its parent doesn't have.
+		 */
+		agentSlug?: string;
 		parentKeyId?: string | null;
 		parentModelId?: string | null;
 		parentAllowedTools?: Set<string>;
@@ -895,12 +931,28 @@ export class AgentManager {
 			parentEffectiveDir = join(homedir(), parentEffectiveDir.slice(1));
 		}
 
+		// Resolve the agent definition (if a slug was supplied) BEFORE
+		// computing the effective working directory and tool whitelist.
+		// The definition's cwd/tools take precedence over the caller's
+		// `workingDirectory`/`tools` parameters, mirroring how a top-level
+		// tab picking the same definition would behave.
+		let agentDef: ReturnType<typeof loadAgent> = null;
+		if (options.agentSlug) {
+			agentDef = loadAgent(options.agentSlug, parentEffectiveDir);
+			if (!agentDef) {
+				throw new Error(
+					`Agent definition not found: "${options.agentSlug}". Inspect the agents directories to see available slugs.`,
+				);
+			}
+		}
+
 		// Resolve and validate child working directory against parent's effective dir
-		let resolvedWorkingDirectory = options.workingDirectory;
-		if (options.workingDirectory) {
+		const requestedDir = agentDef?.cwd ?? options.workingDirectory;
+		let resolvedWorkingDirectory = requestedDir;
+		if (requestedDir) {
 			const { isAbsolute, relative, resolve, join } = await import("node:path");
 			// Expand ~ in child working directory
-			let childDir = options.workingDirectory;
+			let childDir = requestedDir;
 			if (childDir === "~" || childDir.startsWith("~/")) {
 				const { homedir } = await import("node:os");
 				childDir = join(homedir(), childDir.slice(1));
@@ -911,7 +963,7 @@ export class AgentManager {
 			const isOutside = rel.startsWith("..") || isAbsolute(rel);
 			if (isOutside) {
 				throw new Error(
-					`Working directory "${options.workingDirectory}" is outside the parent's working directory "${parentDir}".`,
+					`Working directory "${requestedDir}" is outside the parent's working directory "${parentDir}".`,
 				);
 			}
 			// Store the resolved absolute path so downstream code doesn't
@@ -919,25 +971,42 @@ export class AgentManager {
 			resolvedWorkingDirectory = resolved;
 		}
 
-		// Intersect requested tools with parent's allowed tools to prevent privilege escalation
-		let childTools = options.tools;
+		// Determine the child's tool whitelist. When an agent definition
+		// was supplied, expand its short permission-group names
+		// (read/edit/bash) into concrete tool names. Otherwise use the
+		// `tools` parameter verbatim. Either way, intersect with
+		// parentAllowedTools so a subagent can't gain capabilities the
+		// parent doesn't have — even an agent definition can't escalate.
+		const baseTools = agentDef ? expandAgentToolNames(agentDef.tools) : options.tools;
+		let childTools = baseTools;
 		if (options.parentAllowedTools) {
-			childTools = options.tools.filter((t) => options.parentAllowedTools?.has(t));
+			childTools = baseTools.filter((t) => options.parentAllowedTools?.has(t));
 		}
 
 		// Create the tab agent entry with overrides
 		const tabAgent = this._getOrCreateTabAgent(tabId);
 		tabAgent.toolsOverride = childTools;
 		tabAgent.workingDirectoryOverride = resolvedWorkingDirectory;
-		tabAgent.keyId = options.parentKeyId ?? null;
-		tabAgent.modelId = options.parentModelId ?? null;
 		tabAgent.finalOutput = "";
 
-		// Inherit parent's agent fallback models
-		if (options.parentTabId) {
-			const parentAgent = this.tabAgents.get(options.parentTabId);
-			if (parentAgent?.agentModels) {
-				tabAgent.agentModels = parentAgent.agentModels;
+		if (agentDef && agentDef.models.length > 0) {
+			// The agent definition specifies its own model fallback chain.
+			// Clear keyId/modelId so the fallback sequence uses the
+			// definition's models (matches how a top-level tab using this
+			// definition would be configured).
+			tabAgent.keyId = null;
+			tabAgent.modelId = null;
+			tabAgent.agentModels = agentDef.models;
+		} else {
+			// No definition (or definition has no models) → inherit from
+			// the parent like before.
+			tabAgent.keyId = options.parentKeyId ?? null;
+			tabAgent.modelId = options.parentModelId ?? null;
+			if (options.parentTabId) {
+				const parentAgent = this.tabAgents.get(options.parentTabId);
+				if (parentAgent?.agentModels) {
+					tabAgent.agentModels = parentAgent.agentModels;
+				}
 			}
 		}
 

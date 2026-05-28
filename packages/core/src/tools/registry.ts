@@ -4,6 +4,41 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ToolDefinition } from "../types/index.js";
 
 /**
+ * Strip JSON Schema fields that Anthropic's API does not accept from a
+ * `zodToJsonSchema()` output. The Anthropic `/messages` API rejects (or
+ * silently ignores) tools whose `input_schema` contains `$schema`,
+ * `additionalProperties`, `default`, or `nullable` — when this happens
+ * Claude never sees the tool and the model "thinks forever" instead of
+ * calling it.
+ *
+ * The stripped fields are also harmless to remove for OpenAI-compatible
+ * endpoints, so we apply this unconditionally.
+ */
+function normalizeForAnthropic(schema: Record<string, unknown>): Record<string, unknown> {
+	delete schema.$schema;
+	delete schema.additionalProperties;
+	delete schema.default;
+	delete schema.nullable;
+
+	const properties = schema.properties;
+	if (properties && typeof properties === "object") {
+		for (const key of Object.keys(properties as Record<string, unknown>)) {
+			const prop = (properties as Record<string, unknown>)[key];
+			if (prop && typeof prop === "object") {
+				normalizeForAnthropic(prop as Record<string, unknown>);
+			}
+		}
+	}
+
+	const items = schema.items;
+	if (items && typeof items === "object") {
+		normalizeForAnthropic(items as Record<string, unknown>);
+	}
+
+	return schema;
+}
+
+/**
  * Convert an internal `ToolDefinition` (Zod-parameterised) to an AI SDK v6
  * `Tool` object.
  *
@@ -14,9 +49,11 @@ import type { ToolDefinition } from "../types/index.js";
  * `fullStream` that agent.ts collects and dispatches.
  */
 function toAISDKTool(def: ToolDefinition): Tool {
+	const raw = zodToJsonSchema(def.parameters) as Record<string, unknown>;
+	const normalized = normalizeForAnthropic(raw);
 	return tool({
 		description: def.description,
-		inputSchema: jsonSchema(zodToJsonSchema(def.parameters)),
+		inputSchema: jsonSchema(normalized),
 	});
 }
 

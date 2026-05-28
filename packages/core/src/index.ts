@@ -2,7 +2,17 @@
 
 // Agent & LLM
 export { Agent } from "./agent/agent.js";
-export { deleteAgent, getAgentDirs, loadAgents, saveAgent } from "./agents/index.js";
+export {
+	deleteAgent,
+	expandAgentToolNames,
+	GLOBAL_AGENTS_DIR,
+	getAgentDirPaths,
+	getAgentDirs,
+	getProjectAgentsDir,
+	loadAgent,
+	loadAgents,
+	saveAgent,
+} from "./agents/index.js";
 // Chunk helpers
 export {
 	appendEventToChunks,
@@ -61,7 +71,12 @@ export { createToolRegistry } from "./tools/registry.js";
 export { createRetrieveTool, type RetrieveCallbacks } from "./tools/retrieve.js";
 export { BackgroundShellStore, createRunShellTool } from "./tools/run-shell.js";
 export { analyzeCommand } from "./tools/shell-analyze.js";
-export { createSummonTool, type SummonCallbacks } from "./tools/summon.js";
+export {
+	type AvailableAgent,
+	createSummonTool,
+	type SummonCallbacks,
+	toAvailableAgents,
+} from "./tools/summon.js";
 export { createTaskListTool, TaskList } from "./tools/task-list.js";
 export { clearSpillForTab } from "./tools/truncate.js";
 export { createWebSearchTool } from "./tools/web-search.js";

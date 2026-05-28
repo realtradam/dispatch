@@ -91,8 +91,10 @@ package_dispatch() {
 	install -Dm644 packages/frontend/package.json "${optdir}/packages/frontend/package.json"
 
 	# Runtime node_modules (preserve symlinks for bun workspaces)
+	# Exclude prebuilt ARM64 .node binaries — strip (x86_64 host) can't process them.
 	install -dm755 "${optdir}/node_modules"
 	cp -a node_modules/. "${optdir}/node_modules/"
+	find "${optdir}/node_modules" -path '*/prebuilds/linux-arm64/*.node' -delete
 
 	# Root manifest + lockfile
 	install -Dm644 package.json "${optdir}/package.json"

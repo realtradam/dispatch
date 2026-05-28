@@ -2,6 +2,7 @@ import { dirname } from "node:path";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { ModelMessage, SystemModelMessage } from "ai";
 import { streamText } from "ai";
+import { getAgentDirPaths } from "../agents/loader.js";
 import { appendEventToChunks } from "../chunks/append.js";
 import { buildBillingHeaderValue, SYSTEM_IDENTITY } from "../credentials/claude.js";
 import { createProvider, prefixToolName, unprefixToolName } from "../llm/provider.js";
@@ -531,7 +532,27 @@ export class Agent {
 			const isSpillPath =
 				resolvedPath === resolvedSpillRoot || resolvedPath.startsWith(`${resolvedSpillRoot}/`);
 
-			if (!isUnderWorkdir && !isSpillPath) {
+			// Agent definitions live in well-known directories
+			// (`~/.config/dispatch/agents/` and
+			// `<workdir>/.dispatch/agents/`). Reading those is a
+			// prerequisite for the summon tool's "specify which subagent"
+			// flow — the LLM needs to inspect the TOML to know what each
+			// agent does. We auto-allow READ-ONLY tools under those paths
+			// without prompting the user. Writes (`write_file`) still go
+			// through the normal external_directory gate so an agent can't
+			// quietly overwrite another agent's definition.
+			const isReadOnlyTool =
+				tc.name === "read_file" || tc.name === "read_file_slice" || tc.name === "list_files";
+			let isAgentsDirReadOnly = false;
+			if (isReadOnlyTool) {
+				const agentDirs = getAgentDirPaths(this.config.workingDirectory);
+				const canonicalAgentDirs = await Promise.all(agentDirs.map((d) => canonicalize(d)));
+				isAgentsDirReadOnly = canonicalAgentDirs.some(
+					(d) => resolvedPath === d || resolvedPath.startsWith(`${d}/`),
+				);
+			}
+
+			if (!isUnderWorkdir && !isSpillPath && !isAgentsDirReadOnly) {
 				const permissionType =
 					tc.name === "read_file" ? "read" : tc.name === "write_file" ? "edit" : "list";
 
@@ -714,6 +735,16 @@ export class Agent {
 					messages: coreMessages,
 					tools,
 				};
+
+				// Encourage tool use on Anthropic. Without an explicit
+				// `toolChoice`, Claude (especially Opus 4.7 with adaptive
+				// thinking) can decide to "think forever" instead of calling
+				// the tools it has been given. `"auto"` keeps Claude free to
+				// answer with text when no tool is needed, while making the
+				// availability of tools an explicit signal in the request.
+				if (isClaudeOAuth) {
+					streamOptions.toolChoice = "auto";
+				}
 
 				if (isClaudeOAuth && effort !== "none") {
 					// v6 native support for Opus 4.7 adaptive thinking via
