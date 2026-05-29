@@ -18,3 +18,9 @@
 - **ntfy push notifications.** Configurable ntfy.sh notifications — ping on chat completion, errors, permission prompts, and other events. Configure topic URL and which events trigger notifications.
 
 - **Fix the todo system.** The current task list tool and its UI have bugs or limitations that need addressing.
+
+- **Track token usage in a tab.** Display token usage (e.g. prompt/completion/total tokens) for the chat within each tab.
+
+- **Fix queue not being consumed after the AI finishes its turn.** When the AI completes its turn, a queued user message is just attached to the chat without continuing the conversation — the turn ends instead of consuming the queue and generating a response. The queued message should kick off a new turn.
+
+- **Compaction tool.** A tool to compact/summarize the conversation history to reduce context size while preserving important information.
