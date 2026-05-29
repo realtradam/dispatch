@@ -9,9 +9,15 @@
 
 - **Edit chat history.** Click on any existing message in the chat history and choose to edit it — this applies to user messages, AI responses, and tool results.
 
-- **AI can summon subagents using pre-configured agent types.** When the AI needs to delegate work, it can spawn subagents by selecting from a list of agent types that were defined in the agent editor page, rather than simply cloning itself with the same model.
+- **Status indicator next to the chat input box.** Exists: spinner while running, checkmark on success, X on error. Needs: clickable to cancel (with text label), not just the spinner icon.
 
-- **Status indicator next to the chat input box.** A small icon sits to the left of the input area: a spinner while the AI is generating a response, a checkmark when it finishes successfully, and an X when the last generation errored out.
+- **Update the way tools appear in the chat UI.** Improve the visual presentation of tool calls and their results — make them more readable, compact, and scannable.
+
+- **Show git diffs for edited files.** When the AI edits a file (write_file tool call), display a git diff in the UI rather than just the raw file content.
+
+- **Show live shell output in a collapsible block.** When a shell command is running, show live stdout/stderr in a collapsible shell block (similar to the thinking block), instead of requiring the user to expand the tool call and read raw JSON.
+
+- **ntfy push notifications.** Configurable ntfy.sh notifications — ping on chat completion, errors, permission prompts, and other events. Configure topic URL and which events trigger notifications.
 
 - **Failed tool calls should produce proper tool results, not get silently dropped.**
   - Repro: agent calls `read_file` but the tool is unavailable → SDK emits `tried to call unavailable tool`. User grants permission and asks agent to retry. Agent tries again, but the SDK now errors with `Tool results are missing for tool calls call_00_..., call_01_...` — the previous step's tool calls were recorded (IDs registered in the assistant message) but their results were never written (because the stream aborted when the unavailable-tool error was caught). The synthetic error path in agent.ts (lines 856-882) only covers the ONE tool that triggered the error; sibling tool calls in the same batch that the LLM sent alongside the unavailable one have their IDs in the history but no matching tool-result, which trips the v6 SDK validation.

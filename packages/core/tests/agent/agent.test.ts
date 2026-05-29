@@ -749,14 +749,18 @@ describe("Agent", () => {
 		});
 	});
 
-	it("tool-error stream event yields a synthetic tool-result + error chunk and aborts the turn", async () => {
+	it("tool-error stream event yields a synthetic tool-result + error chunk and continues the turn", async () => {
 		// Provider-executed tools (Anthropic server tools) bypass our
 		// manual executor and surface as a `tool-error` stream event.
 		// We must:
 		//   1. Synthesize a tool-result with isError=true so the chunks
-		//      reflect that the tool ran and failed.
+		//      reflect that the tool ran and failed — this keeps the
+		//      tool-call/tool-result pairing complete and avoids the AI SDK
+		//      throwing MissingToolResultsError on the next round-trip.
 		//   2. Emit an error chunk so the UI shows the failure.
-		//   3. Transition the agent to "error" status (no further steps).
+		//   3. NOT transition to "error" status — the step breaks out of the
+		//      stream loop and the turn ends normally (here, with no further
+		//      tool calls pending, the agent completes to idle).
 		vi.mocked(streamText).mockReturnValue(
 			makeMockStreamResult([
 				{
@@ -783,16 +787,72 @@ describe("Agent", () => {
 			toolResult: { toolCallId: "tc_server", isError: true },
 		});
 
-		// Error chunk
+		// Error chunk for visibility
 		const errEvent = events.find((e) => e.type === "error");
 		expect(errEvent).toBeDefined();
 		const errMsg = errEvent && "error" in errEvent ? errEvent.error : "";
 		expect(typeof errMsg).toBe("string");
 		expect((errMsg as string).includes("upstream tool failure")).toBe(true);
 
-		// Status transitions to error
-		const errStatusEvent = events.filter((e) => e.type === "status").at(-1);
-		expect(errStatusEvent).toMatchObject({ type: "status", status: "error" });
+		// Status does NOT transition to error — the turn completes to idle.
+		const lastStatus = events.filter((e) => e.type === "status").at(-1);
+		expect(lastStatus).toMatchObject({ type: "status", status: "idle" });
+
+		// The turn produced a `done` event (it did not abort).
+		expect(events.some((e) => e.type === "done")).toBe(true);
+	});
+
+	it("tool-error leaves sibling tool calls to be resolved by the executor (not orphaned)", async () => {
+		// When one tool in a batch errors, its siblings — whose tool-call
+		// events were already yielded — must still receive a result, otherwise
+		// the tool-call IDs are orphaned in the chunks (no matching result)
+		// and the next LLM round-trip throws MissingToolResultsError. The
+		// tool-error handler breaks out of the stream loop WITHOUT executing
+		// the unresolved siblings inline; the normal manual-executor pass then
+		// runs them. Here `sibling_tool` is not a registered tool, so the
+		// executor returns an "Unknown tool" error result — completing the
+		// tool-call/tool-result pairing with `isError: true`.
+		vi.mocked(streamText).mockReturnValue(
+			makeMockStreamResult([
+				{
+					type: "tool-call",
+					toolCallId: "tc_sibling",
+					toolName: "sibling_tool",
+					input: {},
+				},
+				{
+					type: "tool-error",
+					toolCallId: "tc_failed",
+					toolName: "failed_tool",
+					error: new Error("boom"),
+				},
+				finishStop,
+			]),
+		);
+
+		const agent = new Agent(makeConfig());
+		const events: AgentEvent[] = [];
+		for await (const event of agent.run("trigger")) {
+			events.push(event);
+		}
+
+		const toolResults = events.filter((e) => e.type === "tool-result");
+		// One for the failed tool, one for the sibling resolved by the executor.
+		const siblingResult = toolResults.find(
+			(e) => "toolResult" in e && e.toolResult.toolCallId === "tc_sibling",
+		);
+		expect(siblingResult).toBeDefined();
+		expect(siblingResult).toMatchObject({
+			type: "tool-result",
+			toolResult: { toolCallId: "tc_sibling", isError: true },
+		});
+		const siblingMsg =
+			siblingResult && "toolResult" in siblingResult ? siblingResult.toolResult.result : "";
+		expect((siblingMsg as string).includes("sibling_tool")).toBe(true);
+
+		// Status completes to idle (the turn continued, not aborted).
+		const lastStatus = events.filter((e) => e.type === "status").at(-1);
+		expect(lastStatus).toMatchObject({ type: "status", status: "idle" });
 	});
 
 	it("abort stream event surfaces as an error event and stops the turn", async () => {

@@ -129,6 +129,7 @@ function toModelMessages(messages: ChatMessage[], useToolPrefix?: boolean): Mode
 			toolCallId: string;
 			toolName: string;
 			result: string;
+			isError?: boolean;
 		}> = [];
 
 		for (let chunkIdx = 0; chunkIdx < msg.chunks.length; chunkIdx++) {
@@ -176,6 +177,7 @@ function toModelMessages(messages: ChatMessage[], useToolPrefix?: boolean): Mode
 								toolCallId: entry.id,
 								toolName,
 								result: resultText,
+								isError: entry.isError,
 							});
 						}
 					}
@@ -207,6 +209,7 @@ function toModelMessages(messages: ChatMessage[], useToolPrefix?: boolean): Mode
 						toolCallId: tr.toolCallId,
 						toolName: tr.toolName,
 						output: { type: "text" as const, value: tr.result },
+						...(tr.isError ? { isError: true } : {}),
 					},
 				],
 			});
@@ -626,6 +629,48 @@ export class Agent {
 		}
 	}
 
+	/**
+	 * Build synthetic `tool-result` error events for every tool call in
+	 * `stepToolCalls` that does not yet have a recorded result in `chunks`.
+	 *
+	 * When a tool batch is partially resolved — e.g. one tool emitted a
+	 * `tool-error` while its siblings were never executed, or the stream
+	 * aborted mid-batch — the unresolved tool-call IDs are registered in the
+	 * history (inside `tool-batch` chunks) but have no matching result. On the
+	 * next LLM round-trip the AI SDK throws `MissingToolResultsError`. Filling
+	 * in `isError: true` results for those orphaned IDs keeps the on-the-wire
+	 * tool-call/tool-result pairing complete.
+	 *
+	 * Caller is responsible for `appendEventToChunks(chunks, evt)` + `yield`ing
+	 * each returned event.
+	 */
+	private synthesizeResidualToolResults(
+		stepToolCalls: ToolCall[],
+		chunks: Chunk[],
+		defaultMessage: string,
+	): AgentEvent[] {
+		const results: AgentEvent[] = [];
+		const resolved = new Set<string>();
+		for (const c of chunks) {
+			if (c.type !== "tool-batch") continue;
+			for (const entry of c.calls) {
+				if (entry.result !== undefined) resolved.add(entry.id);
+			}
+		}
+		for (const tc of stepToolCalls) {
+			if (resolved.has(tc.id)) continue;
+			const tr: ToolResult = {
+				toolCallId: tc.id,
+				toolName: tc.name,
+				result: defaultMessage,
+				isError: true,
+			};
+			const evt: AgentEvent = { type: "tool-result", toolResult: tr };
+			results.push(evt);
+		}
+		return results;
+	}
+
 	async *run(
 		userMessage: string,
 		options?: { reasoningEffort?: "none" | "low" | "medium" | "high" | "max" },
@@ -827,159 +872,155 @@ export class Agent {
 					stepMessages.push(assistantTurnMessage);
 				}
 
-				try {
-					for await (const event of result.fullStream) {
-						if (event.type === "text-delta") {
-							// v6: text-delta carries `text` (not `textDelta`)
+				// Unexpected stream errors propagate up to the outer try/catch
+				// in `run()`, which formats them and transitions the agent to
+				// the "error" status. The AI SDK v6 surfaces unavailable-tool
+				// calls as native `tool-error` stream events (handled below),
+				// so there's no NoSuchToolError to catch here.
+				for await (const event of result.fullStream) {
+					if (event.type === "text-delta") {
+						// v6: text-delta carries `text` (not `textDelta`)
+						const internalEvent: AgentEvent = {
+							type: "text-delta",
+							delta: event.text,
+						};
+						appendEventToChunks(chunks, internalEvent);
+						yield internalEvent;
+					} else if (event.type === "reasoning-delta") {
+						// v6 new event: reasoning-delta carries `text` (not `textDelta`)
+						const internalEvent: AgentEvent = {
+							type: "reasoning-delta",
+							delta: event.text,
+						};
+						appendEventToChunks(chunks, internalEvent);
+						yield internalEvent;
+					} else if (event.type === "reasoning-end") {
+						// Only emit when providerMetadata is present — non-Anthropic
+						// models send reasoning-end without any metadata to round-trip.
+						// Anthropic's signature lives inside providerMetadata as
+						// { anthropic: { signature: "..." } }.
+						if (event.providerMetadata !== undefined) {
 							const internalEvent: AgentEvent = {
-								type: "text-delta",
-								delta: event.text,
+								type: "reasoning-end",
+								metadata: event.providerMetadata as Record<string, unknown>,
 							};
 							appendEventToChunks(chunks, internalEvent);
 							yield internalEvent;
-						} else if (event.type === "reasoning-delta") {
-							// v6 new event: reasoning-delta carries `text` (not `textDelta`)
-							const internalEvent: AgentEvent = {
-								type: "reasoning-delta",
-								delta: event.text,
-							};
-							appendEventToChunks(chunks, internalEvent);
-							yield internalEvent;
-						} else if (event.type === "reasoning-end") {
-							// Only emit when providerMetadata is present — non-Anthropic
-							// models send reasoning-end without any metadata to round-trip.
-							// Anthropic's signature lives inside providerMetadata as
-							// { anthropic: { signature: "..." } }.
-							if (event.providerMetadata !== undefined) {
-								const internalEvent: AgentEvent = {
-									type: "reasoning-end",
-									metadata: event.providerMetadata as Record<string, unknown>,
-								};
-								appendEventToChunks(chunks, internalEvent);
-								yield internalEvent;
-							}
-						} else if (event.type === "tool-call") {
-							// v6: tool call input is in `input` (not `args`)
-							const rawName = event.toolName;
-							const toolName = isClaudeOAuth ? unprefixToolName(rawName) : rawName;
-							const toolCall: ToolCall = {
-								id: event.toolCallId,
-								name: toolName,
-								arguments: event.input as Record<string, unknown>,
-							};
-							stepToolCalls.push(toolCall);
-							const internalEvent: AgentEvent = { type: "tool-call", toolCall };
-							appendEventToChunks(chunks, internalEvent);
-							yield internalEvent;
-						} else if (event.type === "tool-error") {
-							// Anthropic-side / provider-executed tool failures
-							// (e.g. server tools or repair-tool-call paths) surface
-							// as a fresh stream event rather than as a thrown
-							// `tool-result` from our manual executor. Forward both
-							// a synthetic tool-result (so the tool-batch entry the
-							// model expects has an `isError: true` result) and
-							// abort the step as an error chunk — without this the
-							// model would silently wait for a result that never
-							// arrives.
-							const evt = event as unknown as {
-								toolCallId: string;
-								toolName: string;
-								error: unknown;
-							};
-							const toolName = isClaudeOAuth ? unprefixToolName(evt.toolName) : evt.toolName;
-							const errMessage = evt.error instanceof Error ? evt.error.message : String(evt.error);
-
-							const trEvent: AgentEvent = {
-								type: "tool-result",
-								toolResult: {
-									toolCallId: evt.toolCallId,
-									toolName,
-									result: `Error: ${errMessage}`,
-									isError: true,
-								},
-							};
-							appendEventToChunks(chunks, trEvent);
-							yield trEvent;
-
-							const errorMsg = formatError(evt.error, this.config);
-							const errChunkEvent: AgentEvent = { type: "error", error: errorMsg };
-							appendEventToChunks(chunks, errChunkEvent);
-							yield errChunkEvent;
-							this.status = "error";
-							yield { type: "status", status: "error" };
-							return;
-						} else if (event.type === "abort") {
-							// Stream aborted upstream. Surface as an error so the
-							// frontend tab transitions out of `running`. We don't
-							// currently call abortController.abort() ourselves, so
-							// this would only fire from external signal propagation.
-							const reason =
-								typeof (event as { reason?: unknown }).reason === "string"
-									? (event as { reason: string }).reason
-									: "stream aborted";
-							const errorMsg = formatError(new Error(reason), this.config);
-							const internalEvent: AgentEvent = { type: "error", error: errorMsg };
-							appendEventToChunks(chunks, internalEvent);
-							yield internalEvent;
-							this.status = "error";
-							yield { type: "status", status: "error" };
-							return;
-						} else if (event.type === "error") {
-							const errRecord = event.error as unknown as Record<string, unknown>;
-							const statusCode =
-								typeof errRecord.statusCode === "number" ? errRecord.statusCode : undefined;
-							const errorMsg = formatError(event.error, this.config);
-							const internalEvent: AgentEvent = {
-								type: "error",
-								error: errorMsg,
-								...(statusCode !== undefined ? { statusCode } : {}),
-							};
-							appendEventToChunks(chunks, internalEvent);
-							yield internalEvent;
-							this.status = "error";
-							yield { type: "status", status: "error" };
-							return;
 						}
-						// Ignored events (intentional):
-						//   start, text-start, text-end, reasoning-start,
-						//   tool-input-start, tool-input-delta, tool-input-end,
-						//   tool-result (only fires if tool has execute; ours don't),
-						//   start-step, finish-step, finish, raw,
-						//   source, file, tool-output-denied, tool-approval-*
+					} else if (event.type === "tool-call") {
+						// v6: tool call input is in `input` (not `args`)
+						const rawName = event.toolName;
+						const toolName = isClaudeOAuth ? unprefixToolName(rawName) : rawName;
+						const toolCall: ToolCall = {
+							id: event.toolCallId,
+							name: toolName,
+							arguments: event.input as Record<string, unknown>,
+						};
+						stepToolCalls.push(toolCall);
+						const internalEvent: AgentEvent = { type: "tool-call", toolCall };
+						appendEventToChunks(chunks, internalEvent);
+						yield internalEvent;
+					} else if (event.type === "tool-error") {
+						// The model called a tool that doesn't exist (or a
+						// provider-executed / server tool failed). The AI SDK v6
+						// emits this as a native stream event carrying the
+						// original tool name. Forward both a synthetic
+						// tool-result (so the tool-batch entry the model expects
+						// has an `isError: true` result) and an error chunk for
+						// visibility — without the result the model would
+						// silently wait for one that never arrives.
+						const evt = event as unknown as {
+							toolCallId: string;
+							toolName: string;
+							error: unknown;
+						};
+						const toolName = isClaudeOAuth ? unprefixToolName(evt.toolName) : evt.toolName;
+						const errMessage = evt.error instanceof Error ? evt.error.message : String(evt.error);
+
+						const trEvent: AgentEvent = {
+							type: "tool-result",
+							toolResult: {
+								toolCallId: evt.toolCallId,
+								toolName,
+								result: `Error: ${errMessage}`,
+								isError: true,
+							},
+						};
+						appendEventToChunks(chunks, trEvent);
+						yield trEvent;
+
+						// Emit an error chunk for visibility, but do NOT set the
+						// agent status to "error" — the step continues and loops
+						// back to the LLM normally.
+						const errorMsg = formatError(evt.error, this.config);
+						const errChunkEvent: AgentEvent = { type: "error", error: errorMsg };
+						appendEventToChunks(chunks, errChunkEvent);
+						yield errChunkEvent;
+						break;
+					} else if (event.type === "abort") {
+						// Stream aborted upstream. Surface as an error so the
+						// frontend tab transitions out of `running`. We don't
+						// currently call abortController.abort() ourselves, so
+						// this would only fire from external signal propagation.
+						const reason =
+							typeof (event as { reason?: unknown }).reason === "string"
+								? (event as { reason: string }).reason
+								: "stream aborted";
+						// Fill in error results for any unresolved tool calls so
+						// the orphaned tool-call IDs don't trigger a
+						// MissingToolResultsError if this history is ever replayed.
+						const abortResidual = this.synthesizeResidualToolResults(
+							stepToolCalls,
+							chunks,
+							`Error: Stream was aborted: ${reason}`,
+						);
+						for (const r of abortResidual) {
+							appendEventToChunks(chunks, r);
+							yield r;
+						}
+
+						const errorMsg = formatError(new Error(reason), this.config);
+						const internalEvent: AgentEvent = { type: "error", error: errorMsg };
+						appendEventToChunks(chunks, internalEvent);
+						yield internalEvent;
+						this.status = "error";
+						yield { type: "status", status: "error" };
+						return;
+					} else if (event.type === "error") {
+						const errRecord = event.error as unknown as Record<string, unknown>;
+						const statusCode =
+							typeof errRecord.statusCode === "number" ? errRecord.statusCode : undefined;
+						const errorMsg = formatError(event.error, this.config);
+						// Fill in error results for any unresolved tool calls so
+						// the orphaned tool-call IDs don't trigger a
+						// MissingToolResultsError if this history is ever replayed.
+						const streamErrResidual = this.synthesizeResidualToolResults(
+							stepToolCalls,
+							chunks,
+							`Error: ${errorMsg}`,
+						);
+						for (const r of streamErrResidual) {
+							appendEventToChunks(chunks, r);
+							yield r;
+						}
+
+						const internalEvent: AgentEvent = {
+							type: "error",
+							error: errorMsg,
+							...(statusCode !== undefined ? { statusCode } : {}),
+						};
+						appendEventToChunks(chunks, internalEvent);
+						yield internalEvent;
+						this.status = "error";
+						yield { type: "status", status: "error" };
+						return;
 					}
-				} catch (streamErr) {
-					const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
-					// v6 SDK error message: "Model tried to call unavailable tool '...'"
-					// (v4 was: "tried to call unavailable tool '...'")
-					const unavailMatch = errMsg.match(/tried to call unavailable tool '([^']+)'/i);
-					if (!unavailMatch) throw streamErr;
-
-					// Model tried to call an unavailable tool.
-					// Add a synthetic tool call + error result for the bad tool.
-					const badToolName = unavailMatch[1] as string;
-					const fakeId = `unavail_${crypto.randomUUID().slice(0, 8)}`;
-					const availableTools = Object.keys(aiTools).join(", ");
-					const errorResult = `Tool "${badToolName}" is not available. Available tools: ${availableTools}. Please use only available tools.`;
-
-					const badToolCall: ToolCall = {
-						id: fakeId,
-						name: badToolName,
-						arguments: {},
-					};
-					stepToolCalls.push(badToolCall);
-					const tcEvent: AgentEvent = { type: "tool-call", toolCall: badToolCall };
-					appendEventToChunks(chunks, tcEvent);
-					yield tcEvent;
-
-					const badToolResult: ToolResult = {
-						toolCallId: fakeId,
-						toolName: badToolName,
-						result: errorResult,
-						isError: true,
-					};
-					const trEvent: AgentEvent = { type: "tool-result", toolResult: badToolResult };
-					appendEventToChunks(chunks, trEvent);
-					yield trEvent;
+					// Ignored events (intentional):
+					//   start, text-start, text-end, reasoning-start,
+					//   tool-input-start, tool-input-delta, tool-input-end,
+					//   tool-result (only fires if tool has execute; ours don't),
+					//   start-step, finish-step, finish, raw,
+					//   source, file, tool-output-denied, tool-approval-*
 				}
 
 				// No tool calls means the agent is done — the assistant message
@@ -1112,6 +1153,22 @@ export class Agent {
 						chunks: [{ type: "text", text: userMessages }],
 					});
 					batchPendingInjection.length = 0;
+				}
+
+				// Final safety net: after executing the batch, guarantee every
+				// tool-call recorded in this step has a matching result before we
+				// loop back to the LLM. Any tool-call ID that slipped through
+				// without a result (a path we didn't anticipate) would otherwise
+				// orphan and trigger MissingToolResultsError on the next
+				// round-trip.
+				const safetyResidual = this.synthesizeResidualToolResults(
+					stepToolCalls,
+					chunks,
+					"Error: Internal error: tool result was never produced.",
+				);
+				for (const r of safetyResidual) {
+					appendEventToChunks(chunks, r);
+					yield r;
 				}
 			}
 
