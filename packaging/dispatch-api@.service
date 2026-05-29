@@ -1,19 +1,19 @@
-# Dispatch API — system service template.
-# Runs under the system manager (PID 1) but drops privileges to the user named
-# in the instance: `dispatch-api@tradam` runs as the `tradam` user.
-#
-# Enable/start:
-#   sudo systemctl enable --now dispatch-api@<user>
 [Unit]
-Description=Dispatch API Backend (running as %i)
-After=network.target
+Description=Dispatch API server (user %i)
+After=network.target local-fs.target home.mount
+# The API stores its SQLite DB and reads Claude credentials under the user's
+# home (~/.local/share/dispatch). If /home is a separate filesystem, starting
+# before it is mounted makes credential discovery fail (EACCES) and Claude
+# tabs fall back to an empty API key (401). Ensure /home is mounted first.
+RequiresMountsFor=/home
 
 [Service]
 Type=simple
 User=%i
+Environment=NODE_ENV=production
+Environment=PORT=18390
 WorkingDirectory=/opt/dispatch
 ExecStart=/usr/bin/bun packages/api/src/index.ts
-EnvironmentFile=-/etc/dispatch/dispatch-api.conf
 Restart=on-failure
 RestartSec=5
 

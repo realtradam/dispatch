@@ -16,6 +16,27 @@ cd "$DISPATCH_DIR" || exit 1
 # Merge stderr into stdout so both get logged by the consumer.
 exec 2>&1
 
+# Wait for the home directory to be available before starting.
+#
+# On the cyberdeck /home is a separate filesystem (ext4 on /dev/sda4). If this
+# service starts before that mount is ready, the API runs as `tradam` with
+# HOME=/home/tradam while /home/tradam does not yet exist. Creating the data
+# dir (~/.local/share/dispatch) then fails with EACCES, Claude credential
+# discovery silently fails, and Claude tabs fall back to an empty API key
+# (401 from OpenCode Zen) for the entire lifetime of the process. Block until
+# the home directory appears (capped at ~30s as a safety net). Where /home is
+# part of the root filesystem this check passes immediately.
+i=0
+while [ ! -d "/home/tradam" ]; do
+    i=$((i + 1))
+    if [ "$i" -ge 30 ]; then
+        echo "dispatch-api: /home/tradam still missing after ${i}s — starting anyway" >&2
+        break
+    fi
+    echo "dispatch-api: waiting for /home/tradam to be available (${i})..." >&2
+    sleep 1
+done
+
 # Drop privileges to tradam and run bun.
 exec /usr/bin/s6-setuidgid tradam \
     /usr/bin/env \

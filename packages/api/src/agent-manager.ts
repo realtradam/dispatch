@@ -244,6 +244,10 @@ export class AgentManager {
 			}
 			// Update model registry with new config
 			this._initModelRegistry(newConfig);
+			// Re-discover Claude accounts: a config reload may accompany freshly
+			// imported credentials, and (critically) lets a process that failed
+			// account discovery at boot recover without a full restart.
+			this._refreshClaudeAccounts();
 			// Invalidate cached agents so next message uses updated config
 			for (const tabAgent of this.tabAgents.values()) {
 				tabAgent.agent = null;
@@ -575,11 +579,21 @@ export class AgentManager {
 					if (key.provider === "anthropic") {
 						// Anthropic provider: resolve credentials from Claude accounts
 						const credFile = key.credentials_file;
-						const account =
+						const findAccount = () =>
 							this.claudeAccounts.find((a) => a.id === effectiveKeyId) ??
 							(credFile
 								? this.claudeAccounts.find((a) => a.source === credFile)
 								: this.claudeAccounts[0]);
+						let account = findAccount();
+						// Self-heal: account discovery runs once at construction and can
+						// fail at boot (e.g. the data dir isn't mounted yet and
+						// getDatabase() throws EACCES), leaving claudeAccounts empty for
+						// the process lifetime. If the lookup fails, re-run discovery now
+						// that the DB is reachable and retry before giving up.
+						if (!account) {
+							this._refreshClaudeAccounts();
+							account = findAccount();
+						}
 						if (account) {
 							const creds = refreshAccountCredentials(account);
 							if (creds && creds.expiresAt > Date.now() + 60_000) {
