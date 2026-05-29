@@ -215,18 +215,20 @@ export function toAvailableAgents(
 	globalDir: string,
 	projectDir: string | null,
 ): AvailableAgent[] {
-	return defs.map((d) => {
-		const baseDir =
-			d.scope === "global"
-				? globalDir
-				: projectDir
-					? `${projectDir.replace(/\/$/, "")}/.dispatch/agents`
-					: globalDir;
-		return {
-			slug: d.slug,
-			name: d.name,
-			description: d.description,
-			path: `${baseDir}/${d.slug}.toml`,
-		};
-	});
+	return defs
+		.filter((d) => d.is_subagent)
+		.map((d) => {
+			const baseDir =
+				d.scope === "global"
+					? globalDir
+					: projectDir
+						? `${projectDir.replace(/\/$/, "")}/.dispatch/agents`
+						: globalDir;
+			return {
+				slug: d.slug,
+				name: d.name,
+				description: d.description,
+				path: `${baseDir}/${d.slug}.toml`,
+			};
+		});
 }

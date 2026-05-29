@@ -134,9 +134,14 @@ function buildSystemPrompt(toolNames: string[], basePrompt?: string): string {
 	if (!toolList) return base;
 
 	const hasTodo = toolNames.includes("todo");
+	const hasSummon = toolNames.includes("summon");
 	let prompt = `${base}\n\nYou have access to the following tools:\n\n${toolList}\n\nWhen asked to work with files, use these tools. Always confirm what you did after completing an action.`;
 	if (hasTodo) {
 		prompt += `\n\n${TODO_GUIDANCE}`;
+	}
+	if (hasSummon) {
+		prompt +=
+			'\n\nYou have pre-configured subagent types. Use summon(agent="slug", task="...") to delegate specialized work to a subagent. Use list_files and read_file to inspect available agent definitions.';
 	}
 	return prompt;
 }
@@ -940,9 +945,13 @@ export class AgentManager {
 		if (options.agentSlug) {
 			agentDef = loadAgent(options.agentSlug, parentEffectiveDir);
 			if (!agentDef) {
-				throw new Error(
-					`Agent definition not found: "${options.agentSlug}". Inspect the agents directories to see available slugs.`,
-				);
+				const allDefs = loadAgents(parentEffectiveDir);
+				const subagents = allDefs.filter((d) => d.is_subagent).map((d) => `${d.slug} (${d.name})`);
+				const hint =
+					subagents.length > 0
+						? ` Available subagents: ${subagents.join(", ")}.`
+						: " No subagent definitions exist yet.";
+				throw new Error(`Agent definition not found: "${options.agentSlug}".${hint}`);
 			}
 		}
 
@@ -989,13 +998,16 @@ export class AgentManager {
 		tabAgent.workingDirectoryOverride = resolvedWorkingDirectory;
 		tabAgent.finalOutput = "";
 
-		if (agentDef && agentDef.models.length > 0) {
+		const primary = agentDef?.models[0];
+		if (agentDef && primary) {
 			// The agent definition specifies its own model fallback chain.
-			// Clear keyId/modelId so the fallback sequence uses the
-			// definition's models (matches how a top-level tab using this
-			// definition would be configured).
-			tabAgent.keyId = null;
-			tabAgent.modelId = null;
+			// Set keyId/modelId to the primary (first) model in the chain so
+			// the frontend can display the concrete key/model this subagent
+			// was configured with, while `agentModels` drives the fallback
+			// sequence (matches how a top-level tab using this definition
+			// would be configured).
+			tabAgent.keyId = primary.key_id;
+			tabAgent.modelId = primary.model_id;
 			tabAgent.agentModels = agentDef.models;
 		} else {
 			// No definition (or definition has no models) → inherit from
@@ -1036,7 +1048,9 @@ export class AgentManager {
 				keyId: tabAgent.keyId,
 				modelId: tabAgent.modelId,
 				parentTabId: options.parentTabId ?? null,
+				agentSlug: options.agentSlug ?? null,
 				workingDirectory: resolvedWorkingDirectory ?? null,
+				agentModels: tabAgent.agentModels ?? null,
 			},
 			tabId,
 		);

@@ -142,6 +142,8 @@ onMount(() => {
 				activeModelId={tabStore.activeTab?.modelId ?? null}
 				reasoningEffort={tabStore.activeTab?.reasoningEffort ?? "max"}
 				activeAgentSlug={tabStore.activeTab?.agentSlug ?? null}
+				activeTabParentId={tabStore.activeTab?.parentTabId ?? null}
+				activeAgentModels={tabStore.activeTab?.agentModels ?? null}
 				workingDirectory={tabStore.activeTab?.workingDirectory ?? null}
 				onKeyChange={(keyId) => tabStore.setKey(keyId)}
 				onModelChange={(keyId, modelId) => tabStore.changeModel(keyId, modelId)}
