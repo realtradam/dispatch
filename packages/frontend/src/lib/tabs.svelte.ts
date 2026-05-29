@@ -1194,6 +1194,41 @@ export function createTabStore() {
 		}
 	}
 
+	async function refreshAgentConfig(tabId: string): Promise<void> {
+		const tab = getTabById(tabId);
+		if (!tab?.agentSlug || !tab.agentScope) return;
+		try {
+			const res = await fetch(`${config.apiBase}/agents`);
+			if (!res.ok) return;
+			const data = (await res.json()) as {
+				agents?: Array<{
+					slug: string;
+					scope: string;
+					models: Array<{ key_id: string; model_id: string }>;
+					cwd?: string;
+				}>;
+			};
+			const agents = data.agents ?? [];
+			const freshAgent = agents.find((a) => a.slug === tab.agentSlug && a.scope === tab.agentScope);
+			if (!freshAgent) return;
+			const firstModel = freshAgent.models[0];
+			const patch: Partial<Tab> = {
+				agentModels: freshAgent.models,
+				workingDirectory: freshAgent.cwd || null,
+			};
+			if (firstModel) {
+				patch.keyId = firstModel.key_id;
+				patch.modelId = firstModel.model_id;
+			} else {
+				patch.keyId = null;
+				patch.modelId = null;
+			}
+			updateTab(tabId, patch);
+		} catch {
+			// Silently fall back to stale values
+		}
+	}
+
 	async function fetchSkillContent(scope: string, name: string): Promise<string | null> {
 		try {
 			const res = await fetch(
@@ -1208,8 +1243,15 @@ export function createTabStore() {
 	}
 
 	async function sendMessage(text: string): Promise<void> {
-		const tab = getActiveTab();
+		let tab = getActiveTab();
 		if (!tab) return;
+
+		// Refresh agent config to pick up any changes made in AgentBuilder
+		if (tab.agentSlug && tab.agentScope) {
+			await refreshAgentConfig(tab.id);
+			tab = getActiveTab();
+			if (!tab) return;
+		}
 
 		// Fetch content for checked skills and build the message to send
 		let messageToSend = text;

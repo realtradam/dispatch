@@ -1248,7 +1248,9 @@ export class AgentManager {
 			const isRetryable =
 				attemptError.includes("status=429") ||
 				attemptError.toLowerCase().includes("rate limit") ||
-				attemptError.toLowerCase().includes("rate_limit");
+				attemptError.toLowerCase().includes("rate_limit") ||
+				attemptError.toLowerCase().includes("usage limit") ||
+				attemptError.toLowerCase().includes("exhausted");
 
 			if (isRetryable && this.modelRegistry && tabAgent.keyId) {
 				this.modelRegistry.markKeyExhausted(tabAgent.keyId, attemptError);
