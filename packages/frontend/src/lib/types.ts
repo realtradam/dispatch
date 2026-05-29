@@ -72,6 +72,7 @@ export interface ChatMessage {
 	chunks: Chunk[];
 	isStreaming?: boolean;
 	debugInfo?: DebugInfo;
+	seq?: number;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";

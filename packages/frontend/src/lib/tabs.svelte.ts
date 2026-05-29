@@ -34,6 +34,22 @@ function generateId(): string {
 	});
 }
 
+/**
+ * Extract the smallest `seq` from a list of raw API message rows. The backend
+ * tags each persisted message with a monotonic `seq`; we track the oldest one
+ * currently loaded so `loadMoreMessages` can page backwards via `?before=seq`.
+ * Returns null when no row carries a usable seq.
+ */
+function oldestSeqOf(messages: Array<{ seq?: number }>): number | null {
+	let min: number | null = null;
+	for (const m of messages) {
+		if (typeof m.seq === "number" && (min === null || m.seq < min)) {
+			min = m.seq;
+		}
+	}
+	return min;
+}
+
 function makeDebugInfo(overrides: Partial<DebugInfo> = {}): DebugInfo {
 	return {
 		timestamp: new Date().toISOString(),
@@ -67,6 +83,12 @@ export interface Tab {
 	workingDirectory: string | null;
 	/** Messages queued to be sent once the agent finishes its current run */
 	queuedMessages: QueuedMessage[];
+	/** Max chunks to keep in memory before evicting oldest messages */
+	chunkLimit: number;
+	/** Seq of the oldest message currently loaded, or null if unknown/none */
+	oldestLoadedSeq: number | null;
+	/** Total number of messages for this tab on the backend */
+	totalMessages: number;
 }
 
 /**
@@ -90,6 +112,12 @@ export function createTabStore() {
 	// Track message IDs that were consumed before the POST /chat response arrived.
 	// Keyed by queueId — if consumed before we process the response, we skip the queued state.
 	const recentlyConsumedIds = new Set<string>();
+
+	// Tabs whose UI is currently scrolled up (viewing older history). While a
+	// tab is in this set, automatic eviction is suppressed so messages don't
+	// vanish out from under the user's viewport. ChatPanel toggles this via
+	// `setScrolledUp`. A `force` eviction ignores this set entirely.
+	const scrolledUpTabs = new Set<string>();
 
 	// Clear any stale listeners from HMR reloads, then register
 	wsClient.clearCallbacks();
@@ -144,6 +172,9 @@ export function createTabStore() {
 			agentModels: null,
 			workingDirectory: null,
 			queuedMessages: [],
+			chunkLimit: appSettings.chunkLimit,
+			oldestLoadedSeq: null,
+			totalMessages: 0,
 		};
 		tabs = [...tabs, tab];
 		activeTabId = id;
@@ -191,7 +222,7 @@ export function createTabStore() {
 				parentTabId?: string | null;
 			};
 
-			const messagesRes = await fetch(`${config.apiBase}/tabs/${agentId}/messages`);
+			const messagesRes = await fetch(`${config.apiBase}/tabs/${agentId}/messages?limit=100`);
 			// The backend's `getMessagesForTab` (packages/core/src/db/messages.ts)
 			// already parses `content_json` into a `Chunk[]` and serves it as
 			// `chunks` over the wire — NOT the raw `contentJson` string. Earlier
@@ -204,15 +235,18 @@ export function createTabStore() {
 							id?: string;
 							role: string;
 							chunks?: Chunk[];
+							seq?: number;
 						}>;
+						total?: number;
 					})
-				: { messages: [] };
+				: { messages: [], total: 0 };
 
 			const chatMessages: ChatMessage[] = messagesData.messages.map((m) => ({
 				id: m.id ?? generateId(),
 				role: m.role as ChatMessage["role"],
 				chunks: Array.isArray(m.chunks) ? m.chunks : [],
 				isStreaming: false,
+				seq: m.seq,
 			}));
 
 			const newTab: Tab = {
@@ -233,9 +267,13 @@ export function createTabStore() {
 				agentModels: null,
 				workingDirectory: null,
 				queuedMessages: [],
+				chunkLimit: appSettings.chunkLimit,
+				oldestLoadedSeq: oldestSeqOf(messagesData.messages),
+				totalMessages: messagesData.total ?? messagesData.messages.length,
 			};
 			tabs = [...tabs, newTab];
 			activeTabId = agentId;
+			evictMessages(agentId);
 		} catch (err) {
 			console.error("openAgentTab failed:", err);
 		}
@@ -272,6 +310,135 @@ export function createTabStore() {
 		tabs = tabs.map((t) => (t.id === id ? { ...t, ...patch } : t));
 	}
 
+	/**
+	 * Record whether a tab's chat view is scrolled up (viewing older history).
+	 * Used to suppress automatic eviction while the user is reading old
+	 * messages — we don't want to delete what they're currently looking at.
+	 */
+	function setScrolledUp(tabId: string, scrolledUp: boolean): void {
+		if (scrolledUp) scrolledUpTabs.add(tabId);
+		else scrolledUpTabs.delete(tabId);
+	}
+
+	/**
+	 * Trim a tab's in-memory message history down to its `chunkLimit`.
+	 *
+	 * Counts the total number of chunks across all messages and removes the
+	 * oldest messages (from the front of the array) until the count is at or
+	 * below the limit — but never drops below a coherent conversation bottom:
+	 *   - the in-flight streaming assistant message is always pinned;
+	 *   - the most recent user+assistant pair (last 2 messages) is always pinned.
+	 *
+	 * Evicted messages are fully removed from `tab.messages` — there is no
+	 * stub or hidden cache; scrolling up re-fetches them via `loadMoreMessages`.
+	 *
+	 * Eviction is suppressed while the user is scrolled up (reading history),
+	 * unless `force` is true.
+	 */
+	function evictMessages(tabId: string, force = false): void {
+		const tab = getTabById(tabId);
+		if (!tab) return;
+		if (!force && scrolledUpTabs.has(tabId)) return;
+
+		const limit = appSettings.chunkLimit;
+		if (!Number.isFinite(limit) || limit <= 0) return;
+
+		const countChunks = (msgs: ChatMessage[]) => msgs.reduce((sum, m) => sum + m.chunks.length, 0);
+
+		// Work on a shallow copy we can shift from.
+		const working = [...tab.messages];
+		let total = countChunks(working);
+		let removed = false;
+
+		// `chunkLimit` is a SOFT target for trimming OLD history, not a hard
+		// cap. We always keep at least the latest user+assistant pair (the
+		// `working.length > 2` floor) so the view is never blank and an answer
+		// always has its preceding question on screen. Consequently a single
+		// very long turn (one message holding e.g. 150 chunks) can briefly push
+		// the in-memory total above `limit` — that is intentional and accepted.
+		// We never trim chunks from WITHIN a message: messages are the
+		// persistence/pagination unit (the backend stores whole rows keyed by
+		// `seq` and `loadMoreMessages` pages by whole messages via `?before=`),
+		// so a partially-trimmed message would just be re-fetched from the DB
+		// and bounce back, and each message's `role` would be lost in a flat
+		// chunk array. Whole-message eviction from the front is the correct
+		// granularity.
+		while (total > limit && working.length > 2) {
+			const candidate = working[0];
+			if (!candidate) break;
+			// Never evict the in-flight streaming assistant message.
+			if (candidate.isStreaming || candidate.id === tab.currentAssistantId) break;
+			working.shift();
+			total -= candidate.chunks.length;
+			removed = true;
+		}
+
+		if (!removed) return;
+		// Recalculate oldestLoadedSeq from remaining messages after eviction so
+		// the `?before=` pagination cursor doesn't point at an evicted seq.
+		const remainingSeq = (working as Array<ChatMessage & { seq?: number }>).reduce<number | null>(
+			(min, m) => (typeof m.seq === "number" && (min === null || m.seq < min) ? m.seq : min),
+			null,
+		);
+		updateTab(tabId, {
+			messages: working,
+			oldestLoadedSeq: remainingSeq ?? tab.oldestLoadedSeq,
+		});
+	}
+
+	/**
+	 * Fetch and prepend the next page of older messages for a tab. Called when
+	 * the user scrolls toward the top. Pages backwards using the oldest loaded
+	 * `seq` (`?before=`). Does NOT trigger eviction — the user is reading
+	 * history, so we keep everything they've pulled in.
+	 */
+	async function loadMoreMessages(tabId: string): Promise<void> {
+		const tab = getTabById(tabId);
+		if (!tab) return;
+
+		const beforeParam = tab.oldestLoadedSeq !== null ? `&before=${tab.oldestLoadedSeq}` : "";
+		try {
+			const res = await fetch(`${config.apiBase}/tabs/${tabId}/messages?limit=50${beforeParam}`);
+			if (!res.ok) return;
+			const data = (await res.json()) as {
+				messages?: Array<{ id?: string; role: string; chunks?: Chunk[]; seq?: number }>;
+				total?: number;
+			};
+			const rawMessages = data.messages ?? [];
+			if (rawMessages.length === 0) {
+				// Nothing older to load; record the total if provided.
+				if (typeof data.total === "number") {
+					updateTab(tabId, { totalMessages: data.total });
+				}
+				return;
+			}
+
+			const older: ChatMessage[] = rawMessages.map((m) => ({
+				id: m.id ?? generateId(),
+				role: m.role as ChatMessage["role"],
+				chunks: Array.isArray(m.chunks) ? m.chunks : [],
+				isStreaming: false,
+				seq: m.seq,
+			}));
+
+			const current = getTabById(tabId);
+			if (!current) return;
+
+			// Avoid duplicating messages we already have loaded.
+			const existingIds = new Set(current.messages.map((m) => m.id));
+			const toPrepend = older.filter((m) => !existingIds.has(m.id));
+
+			const newOldestSeq = oldestSeqOf(rawMessages);
+			updateTab(tabId, {
+				messages: [...toPrepend, ...current.messages],
+				oldestLoadedSeq: newOldestSeq ?? current.oldestLoadedSeq,
+				totalMessages: data.total ?? current.totalMessages,
+			});
+		} catch (err) {
+			console.warn("[loadMoreMessages] failed:", err);
+		}
+	}
+
 	function ensureAssistantMessage(tabId: string): ChatMessage | null {
 		const tab = getTabById(tabId);
 		if (!tab) return null;
@@ -292,6 +459,7 @@ export function createTabStore() {
 			currentAssistantId: id,
 			messages: [...tab.messages, newMsg],
 		});
+		evictMessages(tabId);
 		return newMsg;
 	}
 
@@ -380,21 +548,26 @@ export function createTabStore() {
 	 */
 	async function reloadTabMessagesFromApi(tabId: string): Promise<void> {
 		try {
-			const res = await fetch(`${config.apiBase}/tabs/${tabId}/messages`);
+			const res = await fetch(`${config.apiBase}/tabs/${tabId}/messages?limit=100`);
 			if (!res.ok) return;
 			const data = (await res.json()) as {
-				messages: Array<{ id?: string; role: string; chunks?: Chunk[] }>;
+				messages: Array<{ id?: string; role: string; chunks?: Chunk[]; seq?: number }>;
+				total?: number;
 			};
 			const reloaded: ChatMessage[] = data.messages.map((m) => ({
 				id: m.id ?? generateId(),
 				role: m.role as ChatMessage["role"],
 				chunks: Array.isArray(m.chunks) ? m.chunks : [],
 				isStreaming: false,
+				seq: m.seq,
 			}));
 			updateTab(tabId, {
 				messages: reloaded,
 				currentAssistantId: null,
+				oldestLoadedSeq: oldestSeqOf(data.messages),
+				totalMessages: data.total ?? reloaded.length,
 			});
+			evictMessages(tabId);
 		} catch (err) {
 			console.warn("[reloadTabMessagesFromApi] failed:", err);
 		}
@@ -468,26 +641,39 @@ export function createTabStore() {
 		// 3. For each tab, fetch its persisted messages in parallel.
 		const messageFetches = tabRows.map(async (row) => {
 			try {
-				const res = await fetch(`${config.apiBase}/tabs/${row.id}/messages`);
-				if (!res.ok) return { id: row.id, messages: [] as ChatMessage[] };
+				const res = await fetch(`${config.apiBase}/tabs/${row.id}/messages?limit=100`);
+				if (!res.ok)
+					return { id: row.id, messages: [] as ChatMessage[], total: 0, oldestSeq: null };
 				const data = (await res.json()) as {
-					messages?: Array<{ id?: string; role: string; chunks?: Chunk[] }>;
+					messages?: Array<{ id?: string; role: string; chunks?: Chunk[]; seq?: number }>;
+					total?: number;
 				};
-				const messages: ChatMessage[] = (data.messages ?? []).map((m) => ({
+				const rawMessages = data.messages ?? [];
+				const messages: ChatMessage[] = rawMessages.map((m) => ({
 					id: m.id ?? generateId(),
 					role: m.role as ChatMessage["role"],
 					chunks: Array.isArray(m.chunks) ? m.chunks : [],
 					isStreaming: false,
+					seq: m.seq,
 				}));
-				return { id: row.id, messages };
+				return {
+					id: row.id,
+					messages,
+					total: data.total ?? messages.length,
+					oldestSeq: oldestSeqOf(rawMessages),
+				};
 			} catch {
-				return { id: row.id, messages: [] as ChatMessage[] };
+				return { id: row.id, messages: [] as ChatMessage[], total: 0, oldestSeq: null };
 			}
 		});
 
 		const messagesByTab = new Map<string, ChatMessage[]>();
+		const totalByTab = new Map<string, number>();
+		const oldestSeqByTab = new Map<string, number | null>();
 		for (const result of await Promise.all(messageFetches)) {
 			messagesByTab.set(result.id, result.messages);
+			totalByTab.set(result.id, result.total);
+			oldestSeqByTab.set(result.id, result.oldestSeq);
 		}
 
 		// 4. Build the Tab objects, splicing in the in-flight snapshot for
@@ -551,10 +737,17 @@ export function createTabStore() {
 				agentModels: null,
 				workingDirectory: null,
 				queuedMessages: [],
+				chunkLimit: appSettings.chunkLimit,
+				oldestLoadedSeq: oldestSeqByTab.get(row.id) ?? null,
+				totalMessages: totalByTab.get(row.id) ?? finalMessages.length,
 			};
 		});
 
 		tabs = restored;
+		// Trim each restored tab down to the chunk limit (user starts at bottom).
+		for (const t of restored) {
+			evictMessages(t.id);
+		}
 		// Activate the first restored tab (the list is already ordered by
 		// `position` from the backend).
 		activeTabId = restored[0]?.id ?? null;
@@ -796,6 +989,9 @@ export function createTabStore() {
 						agentModels: null,
 						workingDirectory: newTabEvent.workingDirectory ?? null,
 						queuedMessages: [],
+						chunkLimit: appSettings.chunkLimit,
+						oldestLoadedSeq: null,
+						totalMessages: 0,
 					};
 					tabs = [...tabs, tab];
 				}
@@ -1503,6 +1699,9 @@ export function createTabStore() {
 		// components — they should rely on the WS subscription instead.
 		handleEvent,
 		hydrateFromBackend,
+		loadMoreMessages,
+		evictMessages,
+		setScrolledUp,
 	};
 }
 

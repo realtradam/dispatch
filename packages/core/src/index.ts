@@ -35,6 +35,7 @@ export {
 	appendMessage,
 	clearMessagesForTab,
 	getMessagesForTab,
+	getTotalMessageCount,
 	type MessageRow,
 	updateMessage,
 } from "./db/messages.js";

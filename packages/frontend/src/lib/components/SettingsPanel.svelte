@@ -16,8 +16,18 @@ let titleModelId = $state<string | null>(null);
 let availableModels = $state<string[]>([]);
 let loadingModels = $state(false);
 let autoExpandThinking = $state(appSettings.autoExpandThinking);
+let localChunkLimit = $state(appSettings.chunkLimit);
 let backendUrl = $state(config.apiBase);
 let backendUrlSaved = $state(false);
+
+function onChunkLimitChange(e: Event): void {
+	const input = e.target as HTMLInputElement;
+	const val = parseInt(input.value, 10);
+	if (val >= 10 && val <= 2000) {
+		appSettings.chunkLimit = val;
+		localChunkLimit = val;
+	}
+}
 
 function saveBackendUrl(): void {
 	const trimmed = backendUrl.trim().replace(/\/+$/, "");
@@ -165,6 +175,25 @@ $effect(() => {
 				onchange={toggleAutoExpand}
 			/>
 			<span class="text-xs text-base-content/70">Auto-expand thinking</span>
+		</label>
+
+		<div class="divider my-0"></div>
+
+		<p class="text-xs text-base-content/70">Memory</p>
+		<label class="flex flex-col gap-1">
+			<span class="text-xs text-base-content/70">
+				Max chunks in memory: <span class="font-semibold">{localChunkLimit}</span>
+			</span>
+			<input
+				type="range"
+				min="20"
+				max="1000"
+				step="10"
+				class="range range-xs"
+				value={localChunkLimit}
+				oninput={onChunkLimitChange}
+			/>
+			<span class="text-[10px] text-base-content/40">Lower = less RAM. Higher = less re-fetching.</span>
 		</label>
 
 		<div class="divider my-0"></div>
