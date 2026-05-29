@@ -1595,6 +1595,18 @@ export function createTabStore() {
 		}
 	}
 
+	async function stopGeneration(tabId: string): Promise<void> {
+		try {
+			await fetch(`${config.apiBase}/chat/stop`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ tabId }),
+			});
+		} catch {
+			// ignore
+		}
+	}
+
 	function copyConversation(): string {
 		const tab = getActiveTab();
 		if (!tab) return "";
@@ -1738,6 +1750,7 @@ export function createTabStore() {
 		closeTab,
 		sendMessage,
 		cancelQueuedMessage,
+		stopGeneration,
 		changeModel,
 		setKey,
 		setAgent,

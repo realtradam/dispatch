@@ -673,7 +673,10 @@ export class Agent {
 
 	async *run(
 		userMessage: string,
-		options?: { reasoningEffort?: "none" | "low" | "medium" | "high" | "max" },
+		options?: {
+			reasoningEffort?: "none" | "low" | "medium" | "high" | "max";
+			abortSignal?: AbortSignal;
+		},
 	): AsyncGenerator<AgentEvent> {
 		this.status = "running";
 		yield { type: "status", status: "running" };
@@ -779,6 +782,7 @@ export class Agent {
 					model,
 					messages: coreMessages,
 					tools,
+					abortSignal: options?.abortSignal,
 				};
 
 				// Encourage tool use on Anthropic. Without an explicit

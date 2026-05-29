@@ -885,6 +885,7 @@ export class AgentManager {
 			}
 			tabAgent.abortController?.abort();
 			tabAgent.status = "idle";
+			this.emit({ type: "status", status: "idle" }, tabId);
 			tabAgent.agent = null;
 			// Resolve any pending completion promise so retrieve doesn't hang
 			tabAgent.completionResolve?.({ status: "error", error: "Agent was stopped." });
@@ -1193,10 +1194,10 @@ export class AgentManager {
 					// Best-effort — if this fails, appendMessage will throw and we'll catch it below
 				}
 
-				for await (const event of agent.run(
-					message,
-					reasoningEffort ? { reasoningEffort } : undefined,
-				)) {
+				for await (const event of agent.run(message, {
+					...(reasoningEffort ? { reasoningEffort } : {}),
+					abortSignal: tabAgent.abortController?.signal,
+				})) {
 					// Stop processing if the tab was aborted (closed/stopped).
 					// stopTab() already injected a `cancelled` system chunk into
 					// `chunks` before flipping the abort flag, so we just need
