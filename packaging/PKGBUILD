@@ -2,7 +2,7 @@
 #
 # Split package: builds the base application once and produces three packages:
 #   dispatch           — application files + CLI wrappers + env configs
-#   dispatch-systemd   — systemd user units for dispatch-api / dispatch-frontend
+#   dispatch-systemd   — systemd system units (run as a given user: dispatch-api@<user>)
 #   dispatch-s6        — s6 service definitions for dispatch-api / dispatch-frontend
 #
 # The Electron desktop wrapper lives in a separate PKGBUILD at packaging/electron/.
@@ -129,21 +129,25 @@ package_dispatch() {
 }
 
 # ----------------------------------------------------------------------------
-# dispatch-systemd — systemd user unit files
+# dispatch-systemd — systemd system unit templates (run as a chosen user)
+#
+# These are *system* units (managed by PID 1), not user units, so they do not
+# depend on a per-user `user@UID.service` manager. Each is a template keyed on
+# the username: `dispatch-api@tradam` runs as the `tradam` user via User=%i.
 # ----------------------------------------------------------------------------
 package_dispatch-systemd() {
-	pkgdesc='Systemd user units for the Dispatch API and Frontend services'
+	pkgdesc='Systemd system unit templates for the Dispatch API and Frontend services (run as dispatch-api@<user>)'
 	depends=("dispatch=${pkgver}" 'systemd')
 	conflicts=('dispatch-s6')
 	install=dispatch-systemd.install
 
 	install -Dm644 \
-		"${_packagingdir}/dispatch-api.service" \
-		"${pkgdir}/usr/lib/systemd/user/dispatch-api.service"
+		"${_packagingdir}/dispatch-api@.service" \
+		"${pkgdir}/usr/lib/systemd/system/dispatch-api@.service"
 
 	install -Dm644 \
-		"${_packagingdir}/dispatch-frontend.service" \
-		"${pkgdir}/usr/lib/systemd/user/dispatch-frontend.service"
+		"${_packagingdir}/dispatch-frontend@.service" \
+		"${pkgdir}/usr/lib/systemd/system/dispatch-frontend@.service"
 }
 
 # ----------------------------------------------------------------------------

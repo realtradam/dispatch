@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Dispatch runs as system service instances keyed on the *invoking* user, so
+# `bin/service start` brings the services up running as you (e.g. dispatch-api@tradam).
+RUN_USER="$(id -un)"
+API_UNIT="dispatch-api@${RUN_USER}"
+FRONTEND_UNIT="dispatch-frontend@${RUN_USER}"
+
 cmd="${1:-help}"
 shift 2>/dev/null || true
 
@@ -12,16 +18,20 @@ usage() {
 Usage: bin/service <command>
 
 Commands:
-  install    Install the dispatch packages (systemd user units +
+  install    Install the dispatch packages (systemd system unit templates +
              application files in /opt/dispatch).
-  start      Start dispatch-api and dispatch-frontend.
+  start      Start dispatch-api and dispatch-frontend as ${RUN_USER}.
              If already running, restart instead.
              Prints the frontend URL when ready.
   stop       Stop dispatch-api and dispatch-frontend.
   status     Show status of both services.
   logs       Tail journal output for both services.
 
-After install, configure /etc/dispatch/dispatch-api.conf before starting.
+Services run as system instances for the current user:
+  ${API_UNIT}
+  ${FRONTEND_UNIT}
+Start/stop use sudo (system manager). After install, configure
+/etc/dispatch/dispatch-api.conf before starting.
 EOF
 }
 
@@ -33,14 +43,14 @@ install() {
     echo "==> Installing..."
     "$PROJECT_DIR/bin/install-pkg"
 
-    systemctl --user daemon-reload
+    sudo systemctl daemon-reload
     echo ""
     echo "==> Installed. Edit /etc/dispatch/dispatch-api.conf, then run:"
     echo "      bin/service start"
 }
 
 have_units() {
-    systemctl --user cat dispatch-api.service &>/dev/null
+    systemctl cat dispatch-api@.service &>/dev/null
 }
 
 start() {
@@ -49,17 +59,27 @@ start() {
         return 1
     fi
     local api_active frontend_active
-    api_active=$(systemctl --user is-active dispatch-api 2>/dev/null || echo "inactive")
-    frontend_active=$(systemctl --user is-active dispatch-frontend 2>/dev/null || echo "inactive")
+    api_active=$(systemctl is-active "$API_UNIT" 2>/dev/null || echo "inactive")
+    frontend_active=$(systemctl is-active "$FRONTEND_UNIT" 2>/dev/null || echo "inactive")
 
     if [ "$api_active" = "active" ] || [ "$frontend_active" = "active" ]; then
         echo "==> Services already running (api=$api_active frontend=$frontend_active) — restarting"
-        systemctl --user restart dispatch-api dispatch-frontend
+        sudo systemctl restart "$API_UNIT" "$FRONTEND_UNIT"
+        echo "dispatch-api + dispatch-frontend restarted (as ${RUN_USER})"
     else
-        systemctl --user start dispatch-api dispatch-frontend
+        sudo systemctl start "$API_UNIT" "$FRONTEND_UNIT"
+        echo "dispatch-api + dispatch-frontend started (as ${RUN_USER})"
     fi
-    echo "dispatch-api + dispatch-frontend $( [ "$api_active" = "active" ] || [ "$frontend_active" = "active" ] && echo restarted || echo started )"
     echo "  → http://localhost:18391"
+}
+
+stop() {
+    if ! have_units; then
+        echo "dispatch services not installed."
+        return 1
+    fi
+    sudo systemctl stop "$API_UNIT" "$FRONTEND_UNIT"
+    echo "dispatch-api + dispatch-frontend stopped"
 }
 
 status() {
@@ -67,11 +87,11 @@ status() {
         echo "dispatch services not installed."
         return 1
     fi
-    systemctl --user status dispatch-api dispatch-frontend --no-pager 2>/dev/null || true
+    systemctl status "$API_UNIT" "$FRONTEND_UNIT" --no-pager 2>/dev/null || true
 }
 
 logs() {
-    journalctl --user -u dispatch-api -u dispatch-frontend -f "$@"
+    sudo journalctl -u "$API_UNIT" -u "$FRONTEND_UNIT" -f "$@"
 }
 
 case "$cmd" in

@@ -1,24 +1,25 @@
 post_install() {
 	echo ""
-	echo "==> Dispatch systemd user units installed."
-	echo "    Enable and start:"
-	echo "      systemctl --user daemon-reload"
-	echo "      systemctl --user enable --now dispatch-api dispatch-frontend"
+	echo "==> Dispatch systemd system unit templates installed."
+	echo "    These run as the user named in the instance (replace <user>)."
+	echo "    Enable and start (e.g. for user 'tradam'):"
+	echo "      sudo systemctl daemon-reload"
+	echo "      sudo systemctl enable --now dispatch-api@<user> dispatch-frontend@<user>"
 	echo ""
 }
 
 post_upgrade() {
 	echo ""
 	echo "==> Dispatch systemd units upgraded."
-	echo "    Reload and restart:"
-	echo "      systemctl --user daemon-reload"
-	echo "      systemctl --user restart dispatch-api dispatch-frontend"
+	echo "    Reload and restart your instances (replace <user>):"
+	echo "      sudo systemctl daemon-reload"
+	echo "      sudo systemctl restart dispatch-api@<user> dispatch-frontend@<user>"
 	echo ""
 }
 
 pre_remove() {
 	echo ""
-	echo "==> Stop dispatch services before removal:"
-	echo "      systemctl --user disable --now dispatch-api dispatch-frontend"
+	echo "==> Stop dispatch services before removal (replace <user>):"
+	echo "      sudo systemctl disable --now dispatch-api@<user> dispatch-frontend@<user>"
 	echo ""
 }

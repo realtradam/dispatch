@@ -1,0 +1,21 @@
+# Dispatch API — system service template.
+# Runs under the system manager (PID 1) but drops privileges to the user named
+# in the instance: `dispatch-api@tradam` runs as the `tradam` user.
+#
+# Enable/start:
+#   sudo systemctl enable --now dispatch-api@<user>
+[Unit]
+Description=Dispatch API Backend (running as %i)
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/dispatch
+ExecStart=/usr/bin/bun packages/api/src/index.ts
+EnvironmentFile=-/etc/dispatch/dispatch-api.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
