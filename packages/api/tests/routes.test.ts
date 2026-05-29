@@ -318,3 +318,25 @@ describe("POST /chat", () => {
 		expect(typeof body.messageId).toBe("string");
 	});
 });
+
+describe("POST /chat/stop", () => {
+	it("returns 200 with success: true for valid tabId", async () => {
+		const res = await app.request("/chat/stop", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ tabId: "tab-stop-1" }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body).toEqual({ success: true });
+	});
+
+	it("returns 400 when tabId is missing", async () => {
+		const res = await app.request("/chat/stop", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+	});
+});

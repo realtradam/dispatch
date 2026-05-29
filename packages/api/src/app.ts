@@ -94,6 +94,15 @@ app.post("/chat/cancel", async (c) => {
 	return c.json({ success: cancelled });
 });
 
+app.post("/chat/stop", async (c) => {
+	const body = await c.req.json();
+	if (typeof body.tabId !== "string") {
+		return c.json({ error: "tabId is required" }, 400);
+	}
+	agentManager.stopTab(body.tabId);
+	return c.json({ success: true });
+});
+
 app.route("/skills", skillsRoutes);
 app.route("/models", modelsRoutes);
 app.route("/tabs", tabsRoutes);

@@ -5,6 +5,7 @@ let inputEl: HTMLInputElement | undefined;
 let inputValue = $state("");
 
 const agentStatus = $derived(tabStore.activeTab?.agentStatus ?? "idle");
+const tabId = $derived(tabStore.activeTab?.id ?? "");
 
 $effect(() => {
 	inputEl?.focus();
@@ -27,7 +28,15 @@ function submit() {
 
 <div class="flex items-center gap-2 p-3">
 	{#if agentStatus === "running"}
-		<span class="loading loading-spinner loading-sm text-primary"></span>
+		<button
+			type="button"
+			class="btn btn-ghost gap-1 btn-sm lg:btn-xs"
+			onclick={() => tabStore.stopGeneration(tabId)}
+			title="Stop generation"
+		>
+			<span class="loading loading-spinner loading-sm text-primary"></span>
+			<span class="text-xs">Stop</span>
+		</button>
 	{:else if agentStatus === "idle"}
 		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-success">
 			<polyline points="20 6 9 17 4 12"></polyline>
