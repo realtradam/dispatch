@@ -56,16 +56,26 @@ export function updateMessage(id: string, contentJson: string): void {
 }
 
 /**
- * Read all messages for a tab in seq order. `content_json` is parsed into
+ * Read messages for a tab in seq order (ASC). `content_json` is parsed into
  * `Chunk[]` here so callers don't have to. If a row's JSON is malformed,
  * the message is returned with an empty chunk list rather than throwing.
+ *
+ * When `options` is omitted, returns ALL messages (backward compatible).
+ *
+ * When `options.before` is provided, returns messages with `seq < before`,
+ * taking the most recent ones first (DESC) up to `options.limit`, then
+ * reversing back to ASC before returning.
+ *
+ * When only `options.limit` is provided, returns the most recent `limit`
+ * messages, reversed back to ASC.
  */
-export function getMessagesForTab(tabId: string): MessageRow[] {
+export function getMessagesForTab(
+	tabId: string,
+	options?: { limit?: number; before?: number },
+): MessageRow[] {
 	const db = getDatabase();
-	const rows = db
-		.query("SELECT * FROM messages WHERE tab_id = $tabId ORDER BY seq ASC")
-		.all({ $tabId: tabId }) as Array<Record<string, unknown>>;
-	return rows.map((row) => {
+
+	const mapRow = (row: Record<string, unknown>): MessageRow => {
 		const rawJson = row.content_json as string;
 		let chunks: Chunk[];
 		try {
@@ -82,7 +92,60 @@ export function getMessagesForTab(tabId: string): MessageRow[] {
 			chunks,
 			createdAt: row.created_at as number,
 		};
-	});
+	};
+
+	// Backward-compatible path: no options → ALL messages, seq ASC.
+	if (!options) {
+		const rows = db
+			.query("SELECT * FROM messages WHERE tab_id = $tabId ORDER BY seq ASC")
+			.all({ $tabId: tabId }) as Array<Record<string, unknown>>;
+		return rows.map(mapRow);
+	}
+
+	const { limit, before } = options;
+
+	// Paginated path: fetch DESC, then reverse to ASC before returning.
+	if (before !== undefined) {
+		// `seq < before`, DESC, optionally limited.
+		if (limit !== undefined) {
+			const rows = db
+				.query(
+					"SELECT * FROM messages WHERE tab_id = $tabId AND seq < $before ORDER BY seq DESC LIMIT $limit",
+				)
+				.all({ $tabId: tabId, $before: before, $limit: limit }) as Array<Record<string, unknown>>;
+			return rows.map(mapRow).reverse();
+		}
+		const rows = db
+			.query("SELECT * FROM messages WHERE tab_id = $tabId AND seq < $before ORDER BY seq DESC")
+			.all({ $tabId: tabId, $before: before }) as Array<Record<string, unknown>>;
+		return rows.map(mapRow).reverse();
+	}
+
+	// Only `limit` provided: most recent `limit`, reversed to ASC.
+	if (limit !== undefined) {
+		const rows = db
+			.query("SELECT * FROM messages WHERE tab_id = $tabId ORDER BY seq DESC LIMIT $limit")
+			.all({ $tabId: tabId, $limit: limit }) as Array<Record<string, unknown>>;
+		return rows.map(mapRow).reverse();
+	}
+
+	// `options` was provided but empty → same as no options.
+	const rows = db
+		.query("SELECT * FROM messages WHERE tab_id = $tabId ORDER BY seq ASC")
+		.all({ $tabId: tabId }) as Array<Record<string, unknown>>;
+	return rows.map(mapRow);
+}
+
+/**
+ * Return the total number of persisted messages for a tab.
+ * Used by the API to advertise total history size alongside a paginated window.
+ */
+export function getTotalMessageCount(tabId: string): number {
+	const db = getDatabase();
+	const row = db
+		.query("SELECT COUNT(*) as count FROM messages WHERE tab_id = $tabId")
+		.get({ $tabId: tabId }) as { count: number } | null;
+	return row?.count ?? 0;
 }
 
 export function clearMessagesForTab(tabId: string): void {

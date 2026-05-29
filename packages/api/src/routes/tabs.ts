@@ -5,6 +5,7 @@ import {
 	getMessagesForTab,
 	getSetting,
 	getTab,
+	getTotalMessageCount,
 	listOpenTabs,
 	setSetting,
 	updateTabModel,
@@ -66,8 +67,20 @@ tabsRoutes.get("/:id", (c) => {
 
 tabsRoutes.get("/:id/messages", (c) => {
 	const id = c.req.param("id");
-	const messages = getMessagesForTab(id);
-	return c.json({ messages });
+	const limitRaw = c.req.query("limit");
+	const beforeRaw = c.req.query("before");
+	const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
+	const before = beforeRaw !== undefined ? Number(beforeRaw) : undefined;
+	const options =
+		limit !== undefined || before !== undefined
+			? {
+					...(limit !== undefined && Number.isFinite(limit) ? { limit } : {}),
+					...(before !== undefined && Number.isFinite(before) ? { before } : {}),
+				}
+			: undefined;
+	const messages = getMessagesForTab(id, options);
+	const total = getTotalMessageCount(id);
+	return c.json({ messages, total });
 });
 
 tabsRoutes.patch("/:id", async (c) => {

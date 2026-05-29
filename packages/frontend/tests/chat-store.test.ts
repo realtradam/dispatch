@@ -702,7 +702,7 @@ describe("hydrateFromBackend", () => {
 						json: () => Promise.resolve({ statuses: {} }),
 					});
 				}
-				if (url.endsWith("/tabs/t1/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/t1/messages")) {
 					return Promise.resolve({
 						ok: true,
 						json: () =>
@@ -718,7 +718,7 @@ describe("hydrateFromBackend", () => {
 							}),
 					});
 				}
-				if (url.endsWith("/tabs/t2/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/t2/messages")) {
 					return Promise.resolve({
 						ok: true,
 						json: () => Promise.resolve({ messages: [] }),
@@ -772,7 +772,7 @@ describe("hydrateFromBackend", () => {
 							}),
 					});
 				}
-				if (url.endsWith("/tabs/tr/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/tr/messages")) {
 					return Promise.resolve({
 						ok: true,
 						json: () =>
@@ -882,7 +882,7 @@ describe("hydrateFromBackend", () => {
 				if (url.endsWith("/status")) {
 					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
 				}
-				if (url.endsWith("/tabs/ti/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/ti/messages")) {
 					return Promise.resolve({ ok: true, json: () => Promise.resolve({ messages: [] }) });
 				}
 				return Promise.reject(new Error(`unexpected fetch ${url}`));
@@ -939,7 +939,7 @@ describe("hydrateFromBackend", () => {
 				if (url.endsWith("/status")) {
 					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
 				}
-				if (url.endsWith("/tabs/tA/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/tA/messages")) {
 					return Promise.resolve({
 						ok: true,
 						json: () =>
@@ -948,11 +948,11 @@ describe("hydrateFromBackend", () => {
 							}),
 					});
 				}
-				if (url.endsWith("/tabs/tB/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/tB/messages")) {
 					// HTTP error path: response is not ok.
 					return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
 				}
-				if (url.endsWith("/tabs/tC/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/tC/messages")) {
 					// Network error path: the fetch itself rejects.
 					return Promise.reject(new Error("simulated network failure"));
 				}

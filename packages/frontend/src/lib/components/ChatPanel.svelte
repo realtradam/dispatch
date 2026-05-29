@@ -1,11 +1,12 @@
 <script lang="ts">
-import { untrack } from "svelte";
+import { tick, untrack } from "svelte";
 import { tabStore } from "../tabs.svelte.js";
 import ChatMessageComponent from "./ChatMessage.svelte";
 
 let messagesEl: HTMLDivElement | undefined;
 let userScrolledUp = $state(false);
 let isAutoScrolling = false;
+let isLoadingMore = $state(false);
 
 const messages = $derived(tabStore.activeTab?.messages ?? []);
 const activeTabId = $derived(tabStore.activeTab?.id);
@@ -22,14 +23,64 @@ function scrollToBottom(animate = false) {
 	});
 }
 
+async function onNearTop() {
+	if (isLoadingMore) return;
+	const tab = tabStore.activeTab;
+	if (!tab) return;
+	// Nothing older to load if we're already at the very first message, or if
+	// we already hold every message the backend has for this tab.
+	if (tab.oldestLoadedSeq !== null && tab.oldestLoadedSeq <= 0) return;
+
+	isLoadingMore = true;
+	const prevScrollHeight = messagesEl?.scrollHeight ?? 0;
+	const prevScrollTop = messagesEl?.scrollTop ?? 0;
+	try {
+		await tabStore.loadMoreMessages(tab.id);
+		// Wait for Svelte to flush the prepended messages into the DOM.
+		// Reading `scrollHeight` synchronously after the await would observe
+		// the OLD layout (reactive updates are batched), so the scroll
+		// correction would be computed against a stale height and the
+		// viewport would jump. `tick()` resolves once the DOM reflects the
+		// new message list.
+		await tick();
+		if (messagesEl) {
+			const newScrollHeight = messagesEl.scrollHeight;
+			const delta = newScrollHeight - prevScrollHeight;
+			// Only adjust when content was actually prepended above the
+			// viewport. If nothing was added (all duplicates / nothing older),
+			// `delta` is 0 and we leave the user where they are instead of
+			// snapping to the top.
+			if (delta > 0) {
+				messagesEl.scrollTop = prevScrollTop + delta;
+			}
+		}
+	} finally {
+		isLoadingMore = false;
+	}
+}
+
 function handleScroll() {
 	if (!messagesEl || isAutoScrolling) return;
+	const wasScrolledUp = userScrolledUp;
 	userScrolledUp = !isNearBottom(messagesEl);
+	if (activeTabId) tabStore.setScrolledUp(activeTabId, userScrolledUp);
+	// User just scrolled back to the bottom manually — safe to evict now.
+	if (wasScrolledUp && !userScrolledUp && activeTabId) {
+		tabStore.evictMessages(activeTabId);
+	}
+	// Near the top — pull in older history.
+	if (userScrolledUp && messagesEl.scrollTop < 200) {
+		void onNearTop();
+	}
 }
 
 function resumeAutoScroll() {
 	userScrolledUp = false;
 	isAutoScrolling = true;
+	if (activeTabId) {
+		tabStore.setScrolledUp(activeTabId, false);
+		tabStore.evictMessages(activeTabId);
+	}
 	scrollToBottom(true);
 }
 
@@ -41,6 +92,18 @@ $effect(() => {
 			if (!userScrolledUp) scrollToBottom(false);
 		});
 	}
+});
+
+$effect(() => {
+	const prevTabId = activeTabId;
+	// Reset scroll state when switching tabs
+	userScrolledUp = false;
+	isAutoScrolling = false;
+	return () => {
+		if (prevTabId) {
+			tabStore.setScrolledUp(prevTabId, false);
+		}
+	};
 });
 </script>
 
@@ -55,6 +118,9 @@ $effect(() => {
 				isAutoScrolling = false;
 			}}
 		>
+			{#if isLoadingMore}
+				<div class="text-center text-xs text-base-content/40 py-2">Loading earlier messages...</div>
+			{/if}
 			{#if messages.length === 0}
 				<div class="flex items-center justify-center h-full text-base-content/40 text-sm">
 					Send a message to start a conversation

@@ -22,8 +22,15 @@ let savedToolPerms = $state<Record<string, boolean>>({
 	youtube_transcribe: false,
 });
 let skillChecks = $state<Record<string, boolean>>({});
+let chunkLimit = $state(100);
 
 export const appSettings = {
+	get chunkLimit() {
+		return chunkLimit;
+	},
+	set chunkLimit(v: number) {
+		chunkLimit = v;
+	},
 	get autoExpandThinking() {
 		return autoExpandThinking;
 	},
