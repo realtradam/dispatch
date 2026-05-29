@@ -34,7 +34,7 @@ function submit() {
 			onclick={() => tabStore.stopGeneration(tabId)}
 			title="Stop generation"
 		>
-			<span class="loading loading-spinner loading-sm text-primary"></span>
+			<span class="loading loading-spinner loading-sm text-primary" style="pointer-events: auto"></span>
 			<span class="text-xs">Stop</span>
 		</button>
 	{:else if agentStatus === "idle"}
