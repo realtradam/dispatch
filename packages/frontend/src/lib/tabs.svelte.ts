@@ -967,7 +967,9 @@ export function createTabStore() {
 					keyId: string | null;
 					modelId: string | null;
 					parentTabId: string | null;
+					agentSlug?: string | null;
 					workingDirectory: string | null;
+					agentModels?: Array<{ key_id: string; model_id: string }> | null;
 				};
 				// Only add if we don't already have this tab
 				if (!getTabById(newTabEvent.id)) {
@@ -984,9 +986,9 @@ export function createTabStore() {
 						injectedSkills: [],
 						parentTabId: newTabEvent.parentTabId ?? null,
 						persistent: newTabEvent.parentTabId == null,
-						agentSlug: null,
+						agentSlug: newTabEvent.agentSlug ?? null,
 						agentScope: null,
-						agentModels: null,
+						agentModels: newTabEvent.agentModels ?? null,
 						workingDirectory: newTabEvent.workingDirectory ?? null,
 						queuedMessages: [],
 						chunkLimit: appSettings.chunkLimit,

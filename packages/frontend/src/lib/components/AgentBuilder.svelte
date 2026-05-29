@@ -124,7 +124,7 @@ const modelCache = new Map();
 		formSkills = new Set();
 		formTools = new Set();
 		formModels = [];
-		formIsSubagent = false;
+		formIsSubagent = true;
 		editing = true;
 		// Allow the effect to skip the initial population
 		setTimeout(() => { formReady = true; }, 0);

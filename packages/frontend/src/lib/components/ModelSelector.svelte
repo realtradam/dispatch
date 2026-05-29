@@ -36,6 +36,8 @@ const modelCache = new Map<string, string[]>();
 		activeModelId = null,
 		reasoningEffort = "max",
 		activeAgentSlug = null,
+		activeTabParentId = null as string | null,
+		activeAgentModels = null as Array<{ key_id: string; model_id: string }> | null,
 		workingDirectory = null,
 		onKeyChange,
 		onModelChange,
@@ -48,6 +50,8 @@ const modelCache = new Map<string, string[]>();
 		activeModelId?: string | null;
 		reasoningEffort?: string;
 		activeAgentSlug?: string | null;
+		activeTabParentId?: string | null;
+		activeAgentModels?: Array<{ key_id: string; model_id: string }> | null;
 		workingDirectory?: string | null;
 		onKeyChange: (keyId: string) => void;
 		onModelChange: (keyId: string, modelId: string) => void;
@@ -91,7 +95,11 @@ const modelCache = new Map<string, string[]>();
 	});
 
 	let modeOverride = $state<"manual" | "agent" | null>(null);
-	let mode = $derived(modeOverride ?? (activeAgentSlug ? "agent" : "manual"));
+	let mode = $derived(
+		activeTabParentId && activeAgentSlug
+			? "subagent"
+			: modeOverride ?? (activeAgentSlug ? "agent" : "manual"),
+	);
 	let agents = $state<AgentInfo[]>([]);
 	let visibleAgents = $derived(agents.filter((a) => !a.is_subagent));
 	let loadingAgents = $state(false);
@@ -202,6 +210,7 @@ const modelCache = new Map<string, string[]>();
 		<button
 			class="btn btn-xs {mode === 'manual' ? 'btn-primary' : 'btn-ghost'}"
 			onclick={() => { modeOverride = "manual"; onAgentChange(null); }}
+			disabled={mode === 'subagent'}
 		>
 			Manual
 		</button>
@@ -220,8 +229,15 @@ const modelCache = new Map<string, string[]>();
 					if (cwdEl) cwdEl.value = agentToApply.cwd ?? "";
 				}
 			}}
+			disabled={mode === 'subagent'}
 		>
 			Agent
+		</button>
+		<button
+			class="btn btn-xs {mode === 'subagent' ? 'btn-primary' : 'btn-ghost'}"
+			disabled={true}
+		>
+			SubAgent
 		</button>
 	</div>
 
@@ -256,6 +272,55 @@ const modelCache = new Map<string, string[]>();
 				</select>
 			</div>
 		{/if}
+	{:else if mode === "subagent"}
+		<!-- SubAgent read-only info -->
+		{@const subModels = activeAgentModels ?? []}
+		{@const hasSubModels = subModels.length > 1}
+		{@const subActiveIdx = subModels.findIndex(
+			(m) => m.key_id === activeKeyId && m.model_id === activeModelId,
+		)}
+		<div class="flex flex-col gap-2">
+			<div class="flex items-center justify-between">
+				<span class="text-sm font-medium">SubAgent</span>
+				<span class="badge badge-sm">{activeAgentSlug}</span>
+			</div>
+			<div class="flex items-center justify-between">
+				<span class="text-sm font-medium">Key</span>
+				<span class="font-mono text-xs">{activeKeyId ?? "default"}</span>
+			</div>
+			<div class="flex items-center justify-between">
+				<span class="text-sm font-medium">Model</span>
+				<span class="font-mono text-xs">{activeModelId ?? "default"}</span>
+			</div>
+			{#if hasSubModels}
+				{@const displayIdx = subActiveIdx >= 0 ? subActiveIdx : 0}
+				<div class="mt-1 pt-2 border-t border-base-content/20">
+					<div class="text-xs font-semibold mb-1">Model fallback chain</div>
+					<input
+						type="range"
+						min="0"
+						max={subModels.length - 1}
+						value={displayIdx}
+						class="range range-xs"
+						step="1"
+						disabled
+					/>
+					<div class="flex w-full justify-between px-0.5 text-xs opacity-50 mt-0.5">
+						{#each subModels as _, i}
+							<span>{i + 1}</span>
+						{/each}
+					</div>
+					<div class="mt-1 flex flex-col gap-0.5">
+						{#each subModels as m, i}
+							<div class="text-xs font-mono truncate {i === displayIdx ? 'opacity-100 font-semibold' : 'opacity-50'}">
+								{i + 1}. {m.key_id} / {m.model_id}
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+			<p class="text-xs text-base-content/50 mt-1">This tab was spawned by a parent agent. Settings cannot be changed.</p>
+		</div>
 	{:else}
 		<!-- Agent selection UI -->
 		{#if loadingAgents}

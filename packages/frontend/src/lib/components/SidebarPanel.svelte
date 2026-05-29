@@ -29,6 +29,8 @@ const {
 	activeModelId = null,
 	reasoningEffort = "max",
 	activeAgentSlug = null as string | null,
+	activeTabParentId = null as string | null,
+	activeAgentModels = null as Array<{ key_id: string; model_id: string }> | null,
 	workingDirectory = null as string | null,
 	onKeyChange,
 	onModelChange,
@@ -45,6 +47,8 @@ const {
 	activeModelId?: string | null;
 	reasoningEffort?: string;
 	activeAgentSlug?: string | null;
+	activeTabParentId?: string | null;
+	activeAgentModels?: Array<{ key_id: string; model_id: string }> | null;
 	workingDirectory?: string | null;
 	onKeyChange: (keyId: string) => void;
 	onModelChange: (keyId: string, modelId: string) => void;
@@ -144,6 +148,8 @@ function contentClass(selected: string): string {
 				{onModelChange}
 				{onReasoningChange}
 				{activeAgentSlug}
+				{activeTabParentId}
+				{activeAgentModels}
 				{onAgentChange}
 				{workingDirectory}
 				{onWorkingDirectoryChange}

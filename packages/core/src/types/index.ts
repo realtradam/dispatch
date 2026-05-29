@@ -149,7 +149,9 @@ export type AgentEvent =
 			keyId: string | null;
 			modelId: string | null;
 			parentTabId: string | null;
+			agentSlug?: string | null;
 			workingDirectory: string | null;
+			agentModels?: Array<{ key_id: string; model_id: string }> | null;
 	  }
 	| { type: "message-queued"; tabId: string; messageId: string; message: string }
 	| { type: "message-consumed"; tabId: string; messageIds: string[] }
