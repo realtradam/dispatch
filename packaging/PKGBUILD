@@ -180,6 +180,11 @@ package_dispatch-s6() {
 		"${pkgdir}/etc/s6/sv/dispatch-api-log/consumer-for"
 	install -Dm644 "${_packagingdir}/s6/dispatch-api-log/pipeline-name" \
 		"${pkgdir}/etc/s6/sv/dispatch-api-log/pipeline-name"
+	# notification-fd must match the `-d3` flag in run; without it s6-log
+	# aborts with "invalid notification fd" and the API blocks on a full
+	# stdout pipe before it can listen().
+	install -Dm644 "${_packagingdir}/s6/dispatch-api-log/notification-fd" \
+		"${pkgdir}/etc/s6/sv/dispatch-api-log/notification-fd"
 
 	# --- dispatch-frontend-srv ---
 	install -Dm755 "${_packagingdir}/s6/dispatch-frontend-srv/run" \
@@ -198,4 +203,7 @@ package_dispatch-s6() {
 		"${pkgdir}/etc/s6/sv/dispatch-frontend-log/consumer-for"
 	install -Dm644 "${_packagingdir}/s6/dispatch-frontend-log/pipeline-name" \
 		"${pkgdir}/etc/s6/sv/dispatch-frontend-log/pipeline-name"
+	# notification-fd must match the `-d3` flag in run (see dispatch-api-log).
+	install -Dm644 "${_packagingdir}/s6/dispatch-frontend-log/notification-fd" \
+		"${pkgdir}/etc/s6/sv/dispatch-frontend-log/notification-fd"
 }
