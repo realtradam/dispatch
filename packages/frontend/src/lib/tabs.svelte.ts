@@ -1215,7 +1215,9 @@ export function createTabStore() {
 			if (!freshAgent) return;
 			const patch: Partial<Tab> = {
 				agentModels: freshAgent.models,
-				workingDirectory: freshAgent.cwd || null,
+				// NOTE: do not reset workingDirectory here. It is a per-tab user
+				// setting (see setWorkingDirectory); refreshing agent config on
+				// send must not clobber the directory the user chose for this tab.
 			};
 			// Preserve the user's current selection if it still exists in the
 			// refreshed models list. Only fall back to the first model when the
