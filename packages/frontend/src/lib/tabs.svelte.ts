@@ -1213,17 +1213,25 @@ export function createTabStore() {
 			const agents = data.agents ?? [];
 			const freshAgent = agents.find((a) => a.slug === tab.agentSlug && a.scope === tab.agentScope);
 			if (!freshAgent) return;
-			const firstModel = freshAgent.models[0];
 			const patch: Partial<Tab> = {
 				agentModels: freshAgent.models,
 				workingDirectory: freshAgent.cwd || null,
 			};
-			if (firstModel) {
-				patch.keyId = firstModel.key_id;
-				patch.modelId = firstModel.model_id;
-			} else {
-				patch.keyId = null;
-				patch.modelId = null;
+			// Preserve the user's current selection if it still exists in the
+			// refreshed models list. Only fall back to the first model when the
+			// current selection is no longer valid.
+			const currentStillValid = freshAgent.models.some(
+				(m) => m.key_id === tab.keyId && m.model_id === tab.modelId,
+			);
+			if (!currentStillValid) {
+				const firstModel = freshAgent.models[0];
+				if (firstModel) {
+					patch.keyId = firstModel.key_id;
+					patch.modelId = firstModel.model_id;
+				} else {
+					patch.keyId = null;
+					patch.modelId = null;
+				}
 			}
 			updateTab(tabId, patch);
 		} catch {

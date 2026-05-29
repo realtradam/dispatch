@@ -183,12 +183,18 @@ export function createSummonTool(
 				});
 
 				if (!background) {
-					// Block until the child agent completes
+					// Block until the child agent completes. Always prefix the
+					// result with `agent_id: <uuid>` so the frontend's
+					// ToolCallDisplay regex (`agent_id:\s*([a-f0-9-]+)`) can
+					// surface the "Open Tab" button for foreground summons too —
+					// not just background ones. The child's tab still exists and
+					// holds the full conversation, so the user should always be
+					// able to open it.
 					const result = await callbacks.getResult(agentId);
 					if (result.status === "done") {
-						return result.result;
+						return `agent_id: ${agentId}\n\n${result.result}`;
 					}
-					return `Error from child agent: ${result.error}`;
+					return `agent_id: ${agentId}\n\nError from child agent: ${result.error}`;
 				}
 
 				return [
