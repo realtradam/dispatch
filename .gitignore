@@ -9,6 +9,10 @@ build/
 .skills/
 references/
 
+# Local scratch / sensitive — never commit
+cyberdeck/
+.old_tabs.svelte.ts
+
 # Packaging build artifacts
 packaging/src/
 packaging/pkg/
