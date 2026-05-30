@@ -30,7 +30,7 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
 	})),
 }));
 
-const { Agent } = await import("../../src/agent/agent.js");
+const { Agent, anthropicThinkingProviderOptions } = await import("../../src/agent/agent.js");
 const { streamText } = await import("ai");
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
@@ -1390,5 +1390,66 @@ describe("Agent", () => {
 		}
 
 		expect(events.some((e) => e.type === "usage")).toBe(false);
+	});
+});
+
+describe("anthropicThinkingProviderOptions — adaptive-thinking model detection", () => {
+	// Pure function: no provider construction, no streamText, no network I/O.
+	// Mirrors opencode's transform.ts detection — Opus 4.7+ AND Opus/Sonnet 4.6
+	// are adaptive; only Opus 4.7+ needs display:"summarized" to surface thinking.
+
+	it("Opus 4.8 → adaptive + display:summarized (the reported bug)", () => {
+		expect(anthropicThinkingProviderOptions("claude-opus-4-8", "max")).toEqual({
+			thinking: { type: "adaptive", display: "summarized" },
+			effort: "max",
+		});
+	});
+
+	it("Opus 4.7 → adaptive + display:summarized (dash and dot id forms)", () => {
+		const expected = { thinking: { type: "adaptive", display: "summarized" }, effort: "high" };
+		expect(anthropicThinkingProviderOptions("claude-opus-4-7", "high")).toEqual(expected);
+		expect(anthropicThinkingProviderOptions("claude-opus-4.7", "high")).toEqual(expected);
+	});
+
+	it("Sonnet 4.6 → adaptive WITHOUT display (dash and dot id forms)", () => {
+		const expected = { thinking: { type: "adaptive" }, effort: "medium" };
+		expect(anthropicThinkingProviderOptions("claude-sonnet-4-6", "medium")).toEqual(expected);
+		expect(anthropicThinkingProviderOptions("claude-sonnet-4.6", "medium")).toEqual(expected);
+	});
+
+	it("Opus 4.6 → adaptive WITHOUT display", () => {
+		expect(anthropicThinkingProviderOptions("claude-opus-4-6", "high")).toEqual({
+			thinking: { type: "adaptive" },
+			effort: "high",
+		});
+	});
+
+	it("older Claude (Opus 4.5, dated Sonnet) → classic enabled thinking", () => {
+		expect(anthropicThinkingProviderOptions("claude-opus-4-5", "max")).toEqual({
+			thinking: { type: "enabled", budgetTokens: 31999 },
+		});
+		expect(anthropicThinkingProviderOptions("claude-sonnet-4-20250514", "high")).toEqual({
+			thinking: { type: "enabled", budgetTokens: 16000 },
+		});
+	});
+
+	it("uses a version parse, not a hardcoded string (future Opus 4.9 is adaptive)", () => {
+		expect(anthropicThinkingProviderOptions("claude-opus-4-9", "high")).toEqual({
+			thinking: { type: "adaptive", display: "summarized" },
+			effort: "high",
+		});
+	});
+
+	it("maps reasoning effort → budgetTokens for enabled (non-adaptive) models", () => {
+		const budget = (e: "low" | "medium" | "high" | "max") => {
+			const opts = anthropicThinkingProviderOptions("claude-3-7-sonnet", e) as {
+				thinking: { type: "enabled"; budgetTokens: number };
+			};
+			return opts.thinking.budgetTokens;
+		};
+		expect(budget("low")).toBe(2000);
+		expect(budget("medium")).toBe(5000);
+		expect(budget("high")).toBe(16000);
+		expect(budget("max")).toBe(31999);
 	});
 });
