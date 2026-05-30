@@ -6,7 +6,7 @@
  * backend (agent + agent-manager) and the frontend store call this helper
  * so the wire format stays in lockstep across the boundary.
  *
- * Open/close rules — see plan-chunk-refactor.md for the full table.
+ * Open/close rules — see notes/plan-chunk-refactor.md for the full table.
  *
  *  | Chunk         | Opens on                                                        | Coalesces                                                  |
  *  |---------------|-----------------------------------------------------------------|------------------------------------------------------------|
@@ -35,9 +35,10 @@
  *                       (no unsealed thinking chunk) are dropped.
  *
  * Ignored events:
- *  - `status`, `done`, `usage`, `task-list-update`, `tab-created`,
- *    `message-queued`, `message-consumed`, `message-cancelled` — these are
- *    control / lifecycle events, not message content.
+ *  - `status`, `turn-start`, `turn-sealed`, `done`, `usage`,
+ *    `task-list-update`, `tab-created`, `message-queued`, `message-consumed`,
+ *    `message-cancelled` — these are control / lifecycle events, not message
+ *    content.
  */
 
 import type {
@@ -200,6 +201,8 @@ export function appendEventToChunks(chunks: Chunk[], event: AgentEvent): void {
 
 		// Lifecycle / control events — no chunk emitted.
 		case "status":
+		case "turn-start":
+		case "turn-sealed":
 		case "done":
 		case "usage":
 		case "task-list-update":
@@ -251,7 +254,7 @@ export interface SystemEventLike {
  * in flight*. (When a turn IS in flight, the caller should instead use
  * `appendEventToChunks` against the in-flight message's chunks directly.)
  *
- * Routing rules (from plan-chunk-refactor.md):
+ * Routing rules (from notes/plan-chunk-refactor.md):
  *
  *  1. Most recent message is `role: "system"` → append a `system` chunk
  *     to it. (Note: a second consecutive system event creates a second

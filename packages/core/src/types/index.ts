@@ -10,7 +10,7 @@ export type MessageRole = "user" | "assistant" | "system";
  * preserves the actual temporal ordering of text, reasoning, tool calls,
  * system notices, and errors as they arrived from the model.
  *
- * Coalescing rules (see plan-chunk-refactor.md):
+ * Coalescing rules (see notes/plan-chunk-refactor.md):
  *  - `text` and `thinking` coalesce on consecutive same-type deltas.
  *  - `tool-batch` coalesces on consecutive `tool-call` events
  *    (appends a new entry to `calls`).
@@ -199,10 +199,34 @@ export interface TabStatusSnapshot {
 	status: AgentStatus;
 	currentChunks?: Chunk[];
 	currentAssistantId?: string;
+	/**
+	 * `turn_id` of the in-flight turn. Present iff `status === "running"`.
+	 * Lets a frontend that reconnects mid-stream key its live chunks the same
+	 * way `turn-start` would, so they reconcile cleanly when the turn seals.
+	 */
+	currentTurnId?: string;
 }
 
 export type AgentEvent =
 	| { type: "status"; status: AgentStatus }
+	/**
+	 * Emitted once at the start of a turn (`processMessage`), before any
+	 * content deltas. Carries the `turn_id` shared by this turn's user message
+	 * and every assistant/tool chunk row. The frontend tags its in-flight
+	 * (live) chunks with this id so they key-match the sealed rows on
+	 * turn-completion reconcile (no remount/flicker). Display/sync only — not
+	 * conversation content.
+	 */
+	| { type: "turn-start"; turnId: string }
+	/**
+	 * Emitted once after a turn has fully settled AND its chunks have been
+	 * persisted (after `flushAssistant`). Signals the frontend that the turn's
+	 * rows — with real `seq`s — are now durable and can be reloaded, so it can
+	 * fold its transient live representation into the sealed chunk log. Emitted
+	 * after `status: idle`/`error` (which fire before the DB write). Display/sync
+	 * only — not conversation content.
+	 */
+	| { type: "turn-sealed"; turnId: string }
 	| { type: "text-delta"; delta: string }
 	| { type: "reasoning-delta"; delta: string }
 	/**

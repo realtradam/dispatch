@@ -8,6 +8,10 @@ import {
 	type IdentifiedMessage,
 	type SystemEventLike,
 } from "@dispatch/core/src/chunks/append.js";
+// DB-free; safe in the browser bundle. The flat chunk log is the frontend's
+// source of truth for HISTORY; `groupRowsToMessages` derives render bubbles.
+import { groupRowsToMessages, type MessageRow } from "@dispatch/core/src/chunks/transform.js";
+import type { ChunkRow } from "@dispatch/core/src/types/index.js";
 import { config } from "./config.js";
 import { appSettings } from "./settings.svelte.js";
 import type {
@@ -35,22 +39,6 @@ function generateId(): string {
 	});
 }
 
-/**
- * Extract the smallest `seq` from a list of raw API message rows. The backend
- * tags each persisted message with a monotonic `seq`; we track the oldest one
- * currently loaded so `loadMoreMessages` can page backwards via `?before=seq`.
- * Returns null when no row carries a usable seq.
- */
-function oldestSeqOf(messages: Array<{ seq?: number }>): number | null {
-	let min: number | null = null;
-	for (const m of messages) {
-		if (typeof m.seq === "number" && (min === null || m.seq < min)) {
-			min = m.seq;
-		}
-	}
-	return min;
-}
-
 function makeDebugInfo(overrides: Partial<DebugInfo> = {}): DebugInfo {
 	return {
 		timestamp: new Date().toISOString(),
@@ -59,10 +47,110 @@ function makeDebugInfo(overrides: Partial<DebugInfo> = {}): DebugInfo {
 	};
 }
 
+// ─── Chunk-log → render projection ───────────────────────────────
+//
+// History lives as a flat `ChunkRow[]` (sealed, real seq). For rendering we
+// group it into bubbles with `groupRowsToMessages` (pairs tool_call+tool_result
+// by callId, wraps a turn's assistant chunks) — a pure, ephemeral view, never
+// stored as the source of truth.
+
+/** Map a grouped chunk-row message to a render `ChatMessage`. */
+function rowGroupToMessage(m: MessageRow): ChatMessage {
+	return {
+		id: m.id,
+		role: m.role,
+		chunks: m.chunks,
+		isStreaming: false,
+		seq: m.seq,
+		turnId: m.turnId,
+	};
+}
+
+/**
+ * The render view for a tab: grouped sealed chunks followed by the transient
+ * live tail (current unsealed turn). This is what the chat panel renders.
+ */
+function deriveRenderGroups(chunks: ChunkRow[], live: ChatMessage[]): ChatMessage[] {
+	const sealed = groupRowsToMessages(chunks).map(rowGroupToMessage);
+	return live.length > 0 ? [...sealed, ...live] : sealed;
+}
+
+/** Total chunk count of the live tail (for the eviction budget). */
+function countLiveChunks(live: ChatMessage[]): number {
+	return live.reduce((sum, m) => sum + m.chunks.length, 0);
+}
+
+/** Smallest `seq` among sealed chunk rows, or null when empty. */
+function minSeqOf(chunks: ChunkRow[]): number | null {
+	let min: number | null = null;
+	for (const c of chunks) {
+		if (typeof c.seq === "number" && (min === null || c.seq < min)) min = c.seq;
+	}
+	return min;
+}
+
+/** Merge older chunk rows into a window, dedupe by `seq`, keep ascending. */
+function mergeChunksBySeq(existing: ChunkRow[], incoming: ChunkRow[]): ChunkRow[] {
+	const bySeq = new Map<number, ChunkRow>();
+	for (const c of existing) bySeq.set(c.seq, c);
+	for (const c of incoming) bySeq.set(c.seq, c);
+	return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+}
+
+/** Fetch a raw chunk window from the backend (the chunk-native load source). */
+async function fetchChunkWindow(
+	tabId: string,
+	params: { limit?: number; before?: number } = {},
+): Promise<{ ok: boolean; chunks: ChunkRow[]; total: number; oldestSeq: number | null }> {
+	const qs = new URLSearchParams();
+	if (params.limit !== undefined) qs.set("limit", String(params.limit));
+	if (params.before !== undefined) qs.set("before", String(params.before));
+	const q = qs.toString();
+	try {
+		const res = await fetch(`${config.apiBase}/tabs/${tabId}/chunks${q ? `?${q}` : ""}`);
+		if (!res.ok) return { ok: false, chunks: [], total: 0, oldestSeq: null };
+		const data = (await res.json()) as {
+			chunks?: ChunkRow[];
+			total?: number;
+			oldestSeq?: number | null;
+		};
+		const chunks = Array.isArray(data.chunks) ? data.chunks : [];
+		return {
+			ok: true,
+			chunks,
+			total: data.total ?? chunks.length,
+			oldestSeq: data.oldestSeq ?? minSeqOf(chunks),
+		};
+	} catch {
+		return { ok: false, chunks: [], total: 0, oldestSeq: null };
+	}
+}
+
 export interface Tab {
 	id: string;
 	title: string;
-	messages: ChatMessage[];
+	/**
+	 * SEALED conversation history as a flat chunk log (real per-tab `seq`).
+	 * The source of truth for history and the unit of eviction + pagination.
+	 */
+	chunks: ChunkRow[];
+	/**
+	 * Transient render buffer for the CURRENT (unsealed) turn only: the
+	 * optimistic user message, the in-flight assistant turn (folded from
+	 * stream deltas), queued/consumed user messages, interrupt splits. Tiny and
+	 * short-lived — cleared and folded into `chunks` (via refetch) the moment
+	 * the turn seals. NOT stored history.
+	 */
+	live: ChatMessage[];
+	/**
+	 * Materialized render projection = groupRowsToMessages(chunks) ++ live,
+	 * recomputed by `updateTab` after any change to `chunks`/`live`. A derived
+	 * cache for the view layer — NOT the source of truth, never the
+	 * eviction/pagination unit.
+	 */
+	renderGroups: ChatMessage[];
+	/** turn_id of the in-flight turn (stable render keys + reconcile). */
+	liveTurnId: string | null;
 	agentStatus: "idle" | "running" | "error";
 	keyId: string | null;
 	modelId: string | null;
@@ -70,26 +158,18 @@ export interface Tab {
 	currentAssistantId: string | null;
 	tasks: TaskItem[];
 	injectedSkills: string[];
-	/** null = user-owned tab, string = spawned by that tab */
 	parentTabId: string | null;
-	/** Persistent tabs stay until manually closed. Temp tabs disappear when agent finishes. */
 	persistent: boolean;
-	/** Slug of the selected agent, or null for manual mode */
 	agentSlug: string | null;
-	/** Scope of the selected agent */
 	agentScope: string | null;
-	/** Ordered key+model fallback hierarchy from the selected agent */
 	agentModels: Array<{ key_id: string; model_id: string }> | null;
-	/** Custom working directory override for this tab */
 	workingDirectory: string | null;
-	/** Messages queued to be sent once the agent finishes its current run */
 	queuedMessages: QueuedMessage[];
-	/** Max chunks to keep in memory before evicting oldest messages */
 	chunkLimit: number;
-	/** Seq of the oldest message currently loaded, or null if unknown/none */
+	/** Smallest `seq` currently in `chunks` — the backward-pagination cursor. */
 	oldestLoadedSeq: number | null;
-	/** Total number of messages for this tab on the backend */
-	totalMessages: number;
+	/** Total chunk count for this tab on the backend (drives "more to load?"). */
+	totalChunks: number;
 	/**
 	 * Cumulative prompt-cache token telemetry for this tab since the page
 	 * loaded (in-memory only — resets on reload). Undefined until the first
@@ -125,6 +205,12 @@ export function createTabStore() {
 	// vanish out from under the user's viewport. ChatPanel toggles this via
 	// `setScrolledUp`. A `force` eviction ignores this set entirely.
 	const scrolledUpTabs = new Set<string>();
+
+	// tabId → the turn_id whose reconcile was deferred because the user was
+	// scrolled up. A Map (not a Set) so the deferred flush knows which turn
+	// sealed and can preserve a newer turn that started streaming meanwhile.
+	// Flushed when they return to the bottom so we don't yank their viewport.
+	const pendingReconcileTabs = new Map<string, string>();
 
 	// Clear any stale listeners from HMR reloads, then register
 	wsClient.clearCallbacks();
@@ -164,7 +250,10 @@ export function createTabStore() {
 		const tab: Tab = {
 			id,
 			title,
-			messages: [],
+			chunks: [],
+			live: [],
+			renderGroups: [],
+			liveTurnId: null,
 			agentStatus: "idle",
 			keyId: null,
 			modelId: null,
@@ -181,7 +270,7 @@ export function createTabStore() {
 			queuedMessages: [],
 			chunkLimit: appSettings.chunkLimit,
 			oldestLoadedSeq: null,
-			totalMessages: 0,
+			totalChunks: 0,
 		};
 		tabs = [...tabs, tab];
 		activeTabId = id;
@@ -229,35 +318,17 @@ export function createTabStore() {
 				parentTabId?: string | null;
 			};
 
-			const messagesRes = await fetch(`${config.apiBase}/tabs/${agentId}/messages?limit=100`);
-			// `GET /messages` windows the flat chunk log (last N chunks) and
-			// groups the rows into render messages (`groupRowsToMessages` in
-			// packages/core/src/chunks/transform.ts), serving them as `chunks`
-			// per message over the wire — NOT a raw JSON string.
-			const messagesData = messagesRes.ok
-				? ((await messagesRes.json()) as {
-						messages: Array<{
-							id?: string;
-							role: string;
-							chunks?: Chunk[];
-							seq?: number;
-						}>;
-						total?: number;
-					})
-				: { messages: [], total: 0 };
-
-			const chatMessages: ChatMessage[] = messagesData.messages.map((m) => ({
-				id: m.id ?? generateId(),
-				role: m.role as ChatMessage["role"],
-				chunks: Array.isArray(m.chunks) ? m.chunks : [],
-				isStreaming: false,
-				seq: m.seq,
-			}));
+			// Load the tail of the flat chunk log (raw rows — the frontend groups
+			// for render and evicts/paginates on the flat list).
+			const win = await fetchChunkWindow(agentId, { limit: 100 });
 
 			const newTab: Tab = {
 				id: agentId,
 				title: tabData.title,
-				messages: chatMessages,
+				chunks: win.chunks,
+				live: [],
+				renderGroups: deriveRenderGroups(win.chunks, []),
+				liveTurnId: null,
 				agentStatus: "idle",
 				keyId: tabData.keyId ?? null,
 				modelId: tabData.modelId ?? null,
@@ -273,12 +344,12 @@ export function createTabStore() {
 				workingDirectory: null,
 				queuedMessages: [],
 				chunkLimit: appSettings.chunkLimit,
-				oldestLoadedSeq: oldestSeqOf(messagesData.messages),
-				totalMessages: messagesData.total ?? messagesData.messages.length,
+				oldestLoadedSeq: win.oldestSeq,
+				totalChunks: win.total,
 			};
 			tabs = [...tabs, newTab];
 			activeTabId = agentId;
-			evictMessages(agentId);
+			evictChunks(agentId);
 		} catch (err) {
 			console.error("openAgentTab failed:", err);
 		}
@@ -312,7 +383,17 @@ export function createTabStore() {
 	}
 
 	function updateTab(id: string, patch: Partial<Tab>): void {
-		tabs = tabs.map((t) => (t.id === id ? { ...t, ...patch } : t));
+		tabs = tabs.map((t) => {
+			if (t.id !== id) return t;
+			const next = { ...t, ...patch };
+			// `renderGroups` is a derived cache: recompute it whenever its inputs
+			// (`chunks` / `live`) change so the view layer never reads a stale
+			// projection. Callers only ever mutate `chunks`/`live`.
+			if ("chunks" in patch || "live" in patch) {
+				next.renderGroups = deriveRenderGroups(next.chunks, next.live);
+			}
+			return next;
+		});
 	}
 
 	/**
@@ -321,26 +402,56 @@ export function createTabStore() {
 	 * messages — we don't want to delete what they're currently looking at.
 	 */
 	function setScrolledUp(tabId: string, scrolledUp: boolean): void {
-		if (scrolledUp) scrolledUpTabs.add(tabId);
-		else scrolledUpTabs.delete(tabId);
+		if (scrolledUp) {
+			scrolledUpTabs.add(tabId);
+		} else {
+			scrolledUpTabs.delete(tabId);
+			// Returned to the bottom — run any reconcile we deferred while reading.
+			const deferredTurnId = pendingReconcileTabs.get(tabId);
+			if (deferredTurnId !== undefined) {
+				pendingReconcileTabs.delete(tabId);
+				reconcileSealedTurn(tabId, deferredTurnId);
+			}
+		}
 	}
 
 	/**
-	 * Trim a tab's in-memory message history down to its `chunkLimit`.
-	 *
-	 * Counts the total number of chunks across all messages and removes the
-	 * oldest messages (from the front of the array) until the count is at or
-	 * below the limit — but never drops below a coherent conversation bottom:
-	 *   - the in-flight streaming assistant message is always pinned;
-	 *   - the most recent user+assistant pair (last 2 messages) is always pinned.
-	 *
-	 * Evicted messages are fully removed from `tab.messages` — there is no
-	 * stub or hidden cache; scrolling up re-fetches them via `loadMoreMessages`.
-	 *
-	 * Eviction is suppressed while the user is scrolled up (reading history),
-	 * unless `force` is true.
+	 * Drop up to `n` of the oldest chunks from the live tail (front-to-back
+	 * across its messages), never removing the chunk currently being streamed
+	 * (the last chunk of the in-flight assistant message). Emptied messages are
+	 * dropped. Used only when a single in-flight turn alone exceeds the budget.
 	 */
-	function evictMessages(tabId: string, force = false): void {
+	function trimLiveChunks(
+		live: ChatMessage[],
+		n: number,
+		streamingId: string | null,
+	): ChatMessage[] {
+		let remaining = n;
+		const out = live.map((m) => ({ ...m, chunks: [...m.chunks] }));
+		for (const m of out) {
+			if (remaining <= 0) break;
+			const isStreamingMsg = m.id === streamingId || m.isStreaming === true;
+			while (m.chunks.length > 0 && remaining > 0) {
+				// Keep the last (open) chunk of the actively streaming message.
+				if (isStreamingMsg && m.chunks.length === 1) break;
+				m.chunks.shift();
+				remaining--;
+			}
+		}
+		return out.filter((m) => m.chunks.length > 0);
+	}
+
+	/**
+	 * Bound a tab's in-memory footprint to `chunkLimit` by rolling eviction of
+	 * the OLDEST chunks. Sealed history (`tab.chunks`) is trimmed from the front
+	 * first; if a single in-flight turn alone still exceeds the budget, the
+	 * oldest chunks of the live tail are trimmed too (never the chunk currently
+	 * being streamed). Evicted sealed chunks are re-fetched on scroll-up via
+	 * `loadOlderChunks`; live chunks that haven't sealed yet are recovered by
+	 * the turn-completion reconcile once their write lands. Suppressed while
+	 * scrolled up unless `force` is set.
+	 */
+	function evictChunks(tabId: string, force = false): void {
 		const tab = getTabById(tabId);
 		if (!tab) return;
 		if (!force && scrolledUpTabs.has(tabId)) return;
@@ -348,132 +459,61 @@ export function createTabStore() {
 		const limit = appSettings.chunkLimit;
 		if (!Number.isFinite(limit) || limit <= 0) return;
 
-		const countChunks = (msgs: ChatMessage[]) => msgs.reduce((sum, m) => sum + m.chunks.length, 0);
+		let sealed = tab.chunks;
+		let live = tab.live;
+		let total = sealed.length + countLiveChunks(live);
+		if (total <= limit) return;
 
-		// Work on a shallow copy we can shift from.
-		const working = [...tab.messages];
-		let total = countChunks(working);
-		let removed = false;
-
-		// `chunkLimit` is a SOFT target for trimming OLD history, not a hard
-		// cap. We always keep at least the latest user+assistant pair (the
-		// `working.length > 2` floor) so the view is never blank and an answer
-		// always has its preceding question on screen. Consequently a single
-		// very long turn (one message holding e.g. 150 chunks) can briefly push
-		// the in-memory total above `limit` — that is intentional and accepted.
-		// We never trim chunks from WITHIN a message: messages are the
-		// persistence/pagination unit (the backend stores whole rows keyed by
-		// `seq` and `loadMoreMessages` pages by whole messages via `?before=`),
-		// so a partially-trimmed message would just be re-fetched from the DB
-		// and bounce back, and each message's `role` would be lost in a flat
-		// chunk array. Whole-message eviction from the front is the correct
-		// granularity.
-		while (total > limit && working.length > 2) {
-			const candidate = working[0];
-			if (!candidate) break;
-			// Never evict the in-flight streaming assistant message.
-			if (candidate.isStreaming || candidate.id === tab.currentAssistantId) break;
-			working.shift();
-			total -= candidate.chunks.length;
-			removed = true;
+		// 1. Drop oldest sealed chunk rows from the front.
+		if (sealed.length > 0) {
+			let dropTo = 0;
+			while (total > limit && dropTo < sealed.length) {
+				dropTo++;
+				total--;
+			}
+			if (dropTo > 0) sealed = sealed.slice(dropTo);
 		}
 
-		if (!removed) return;
-		// Recalculate oldestLoadedSeq from remaining messages after eviction so
-		// the `?before=` pagination cursor doesn't point at an evicted seq.
-		const remainingSeq = (working as Array<ChatMessage & { seq?: number }>).reduce<number | null>(
-			(min, m) => (typeof m.seq === "number" && (min === null || m.seq < min) ? m.seq : min),
-			null,
-		);
+		// 2. Still over budget → one live turn exceeds the limit on its own.
+		if (total > limit && live.length > 0) {
+			live = trimLiveChunks(live, total - limit, tab.currentAssistantId);
+		}
+
 		updateTab(tabId, {
-			messages: working,
-			oldestLoadedSeq: remainingSeq ?? tab.oldestLoadedSeq,
+			chunks: sealed,
+			live,
+			oldestLoadedSeq: minSeqOf(sealed) ?? tab.oldestLoadedSeq,
 		});
 	}
 
 	/**
-	 * Fetch and prepend the next page of older messages for a tab. Called when
-	 * the user scrolls toward the top. Pages backwards using the oldest loaded
-	 * `seq` (`?before=`). Does NOT trigger eviction — the user is reading
-	 * history, so we keep everything they've pulled in.
+	 * Fetch and prepend the next older page of CHUNKS (raw rows). Called when
+	 * the user scrolls toward the top. Pages backward by the oldest loaded
+	 * `seq` (`?before=`), dedupes by `seq`, and keeps the window seq-sorted —
+	 * so a turn split across the window boundary regroups into one bubble with
+	 * no special-casing. Does NOT evict (the user is reading history).
 	 */
-	async function loadMoreMessages(tabId: string): Promise<void> {
+	async function loadOlderChunks(tabId: string): Promise<void> {
 		const tab = getTabById(tabId);
 		if (!tab) return;
-
-		const beforeParam = tab.oldestLoadedSeq !== null ? `&before=${tab.oldestLoadedSeq}` : "";
-		try {
-			const res = await fetch(`${config.apiBase}/tabs/${tabId}/messages?limit=50${beforeParam}`);
-			if (!res.ok) return;
-			const data = (await res.json()) as {
-				messages?: Array<{
-					id?: string;
-					role: string;
-					chunks?: Chunk[];
-					seq?: number;
-					turnId?: string;
-				}>;
-				total?: number;
-				oldestSeq?: number | null;
-			};
-			const rawMessages = data.messages ?? [];
-			if (rawMessages.length === 0) {
-				// Nothing older to load; record the total if provided.
-				if (typeof data.total === "number") {
-					updateTab(tabId, { totalMessages: data.total });
-				}
-				return;
-			}
-
-			const older: ChatMessage[] = rawMessages.map((m) => ({
-				id: m.id ?? generateId(),
-				role: m.role as ChatMessage["role"],
-				chunks: Array.isArray(m.chunks) ? m.chunks : [],
-				isStreaming: false,
-				seq: m.seq,
-				...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
-			}));
-
-			const current = getTabById(tabId);
-			if (!current) return;
-
-			// Chunk-granular pagination can split ONE turn across the window
-			// boundary: the oldest message already loaded and the newest message
-			// in this older page may share a turn_id. Merge them (older chunks
-			// first) so the turn renders as one bubble instead of duplicating.
-			const merged = [...current.messages];
-			const lastOlder = older[older.length - 1];
-			const firstCurrent = merged[0];
-			if (
-				lastOlder &&
-				firstCurrent &&
-				lastOlder.turnId !== undefined &&
-				lastOlder.turnId === firstCurrent.turnId &&
-				lastOlder.role === firstCurrent.role
-			) {
-				older.pop();
-				merged[0] = {
-					...firstCurrent,
-					id: lastOlder.id,
-					seq: lastOlder.seq,
-					turnId: lastOlder.turnId,
-					chunks: [...lastOlder.chunks, ...firstCurrent.chunks],
-				};
-			}
-
-			// Avoid duplicating messages we already have loaded.
-			const existingIds = new Set(merged.map((m) => m.id));
-			const toPrepend = older.filter((m) => !existingIds.has(m.id));
-
-			const newOldestSeq = data.oldestSeq ?? oldestSeqOf(rawMessages);
-			updateTab(tabId, {
-				messages: [...toPrepend, ...merged],
-				oldestLoadedSeq: newOldestSeq ?? current.oldestLoadedSeq,
-				totalMessages: data.total ?? current.totalMessages,
-			});
-		} catch (err) {
-			console.warn("[loadMoreMessages] failed:", err);
+		const before = tab.oldestLoadedSeq;
+		const win = await fetchChunkWindow(tabId, {
+			limit: 50,
+			...(before !== null ? { before } : {}),
+		});
+		const current = getTabById(tabId);
+		if (!current) return;
+		if (win.chunks.length === 0) {
+			// Nothing older; refresh the total if the backend reported a real one.
+			if (win.total > 0) updateTab(tabId, { totalChunks: win.total });
+			return;
 		}
+		const merged = mergeChunksBySeq(current.chunks, win.chunks);
+		updateTab(tabId, {
+			chunks: merged,
+			oldestLoadedSeq: minSeqOf(merged),
+			totalChunks: win.total,
+		});
 	}
 
 	function ensureAssistantMessage(tabId: string): ChatMessage | null {
@@ -481,7 +521,7 @@ export function createTabStore() {
 		if (!tab) return null;
 
 		if (tab.currentAssistantId) {
-			const existing = tab.messages.find((m) => m.id === tab.currentAssistantId);
+			const existing = tab.live.find((m) => m.id === tab.currentAssistantId);
 			if (existing) return existing;
 		}
 
@@ -491,19 +531,24 @@ export function createTabStore() {
 			role: "assistant",
 			chunks: [],
 			isStreaming: true,
+			...(tab.liveTurnId !== null ? { turnId: tab.liveTurnId } : {}),
 		};
 		updateTab(tabId, {
 			currentAssistantId: id,
-			messages: [...tab.messages, newMsg],
+			live: [...tab.live, newMsg],
 		});
-		evictMessages(tabId);
+		evictChunks(tabId);
 		return newMsg;
 	}
 
-	function updateMessages(tabId: string, updater: (msgs: ChatMessage[]) => ChatMessage[]): void {
+	/**
+	 * Update the live tail (the current unsealed turn). All streaming handlers
+	 * operate here; sealed history (`tab.chunks`) is never touched by streaming.
+	 */
+	function updateLive(tabId: string, updater: (live: ChatMessage[]) => ChatMessage[]): void {
 		const tab = getTabById(tabId);
 		if (!tab) return;
-		updateTab(tabId, { messages: updater(tab.messages) });
+		updateTab(tabId, { live: updater(tab.live) });
 	}
 
 	/**
@@ -516,7 +561,7 @@ export function createTabStore() {
 	 * `$state.snapshot` (Svelte's own safe clone — strips reactive proxies and
 	 * falls back gracefully where native `structuredClone` would throw
 	 * `DataCloneError` on a `$state` proxy), mutate the snapshot, then write
-	 * it back through `updateMessages`. The previous use of `structuredClone`
+	 * it back through `updateLive`. The previous use of `structuredClone`
 	 * here threw silently and was swallowed by the WS try/catch — left chunks
 	 * empty for every streaming turn.
 	 */
@@ -526,7 +571,7 @@ export function createTabStore() {
 		if (!tab) return;
 		const currentId = tab.currentAssistantId;
 		if (!currentId) return;
-		updateMessages(tabId, (msgs) =>
+		updateLive(tabId, (msgs) =>
 			msgs.map((m) => {
 				if (m.id !== currentId) return m;
 				const cloned = $state.snapshot(m.chunks) as Chunk[];
@@ -538,6 +583,8 @@ export function createTabStore() {
 				return { ...m, chunks: cloned, isStreaming: true };
 			}),
 		);
+		// A chunk may have just completed — keep the in-memory footprint bounded.
+		evictChunks(tabId);
 	}
 
 	/**
@@ -548,20 +595,22 @@ export function createTabStore() {
 	function routeSystemEvent(tabId: string, sysEvent: SystemEventLike): void {
 		const tab = getTabById(tabId);
 		if (!tab) return;
-		// We need to mutate the messages array (applySystemEvent does in-place
-		// push). Build a shallow-cloned IdentifiedMessage[] view via
-		// `$state.snapshot` (safe against Svelte 5 reactive proxies; native
-		// `structuredClone` would throw), run the helper, then write it back.
-		const view: IdentifiedMessage[] = tab.messages.map((m) => ({
+		// Operate on the live tail (applySystemEvent appends a system chunk to
+		// the trailing system message or creates one). Build a shallow-cloned
+		// IdentifiedMessage[] view via `$state.snapshot` (safe against Svelte 5
+		// reactive proxies; native `structuredClone` would throw), run the
+		// helper, then write it back. The backend persists this system row too,
+		// so it reconciles into `chunks` on the next turn/load.
+		const view: IdentifiedMessage[] = tab.live.map((m) => ({
 			id: m.id,
 			role: m.role,
 			chunks: $state.snapshot(m.chunks) as Chunk[],
 		}));
 		applySystemEvent(view, sysEvent, generateId);
 
-		// Reconcile: rebuild the ChatMessage array from the view, preserving
-		// existing message metadata (isStreaming, debugInfo) where IDs match.
-		const byId = new Map(tab.messages.map((m) => [m.id, m]));
+		// Reconcile: rebuild the live array from the view, preserving existing
+		// message metadata (isStreaming, debugInfo) where IDs match.
+		const byId = new Map(tab.live.map((m) => [m.id, m]));
 		const rebuilt: ChatMessage[] = view.map((v) => {
 			const existing = byId.get(v.id);
 			if (existing) {
@@ -574,40 +623,74 @@ export function createTabStore() {
 				isStreaming: false,
 			};
 		});
-		updateTab(tabId, { messages: rebuilt });
+		updateTab(tabId, { live: rebuilt });
 	}
 
 	/**
-	 * Reload a tab's messages from the API. Used after a WS reconnect when
-	 * we detect the backend finished work while we were disconnected — the
-	 * persisted chunks are the source of truth; in-memory state may be
-	 * missing events.
+	 * Reload a tab's chunk window from the API and fold the sealed turn out of
+	 * the live tail. The persisted chunk log is the source of truth. Two modes:
+	 *   - turn-completion reconcile (`preserveActiveTurn=true`, `sealedTurnId`
+	 *     set): the just-sealed turn's rows now carry real seqs. Drop that turn
+	 *     from `live`, but PRESERVE (a) a newer turn that began streaming while a
+	 *     reconcile was deferred — the queued-message race — and (b) optimistic
+	 *     user messages not yet bound to a turn, so neither is wiped.
+	 *   - WS-reconnect desync (`preserveActiveTurn=false`): the backend has moved
+	 *     on and is idle, so trust the DB fully and clear the live tail.
+	 * A failed fetch is a no-op (never wipes a populated tab).
 	 */
-	async function reloadTabMessagesFromApi(tabId: string): Promise<void> {
-		try {
-			const res = await fetch(`${config.apiBase}/tabs/${tabId}/messages?limit=100`);
-			if (!res.ok) return;
-			const data = (await res.json()) as {
-				messages: Array<{ id?: string; role: string; chunks?: Chunk[]; seq?: number }>;
-				total?: number;
-			};
-			const reloaded: ChatMessage[] = data.messages.map((m) => ({
-				id: m.id ?? generateId(),
-				role: m.role as ChatMessage["role"],
-				chunks: Array.isArray(m.chunks) ? m.chunks : [],
-				isStreaming: false,
-				seq: m.seq,
-			}));
-			updateTab(tabId, {
-				messages: reloaded,
-				currentAssistantId: null,
-				oldestLoadedSeq: oldestSeqOf(data.messages),
-				totalMessages: data.total ?? reloaded.length,
-			});
-			evictMessages(tabId);
-		} catch (err) {
-			console.warn("[reloadTabMessagesFromApi] failed:", err);
+	async function reloadChunksFromApi(
+		tabId: string,
+		preserveActiveTurn = false,
+		sealedTurnId?: string,
+	): Promise<void> {
+		const win = await fetchChunkWindow(tabId, { limit: 100 });
+		if (!win.ok) return;
+		const current = getTabById(tabId);
+		if (!current) return;
+		// A turn that started streaming AFTER the one being reconciled must not be
+		// wiped — only the sealed turn folds into `chunks`.
+		const preserveTurnId =
+			preserveActiveTurn && current.liveTurnId !== null && current.liveTurnId !== sealedTurnId
+				? current.liveTurnId
+				: null;
+		const keptLive = preserveActiveTurn
+			? current.live.filter(
+					(m) =>
+						(preserveTurnId !== null && m.turnId === preserveTurnId) ||
+						// Optimistic / queued user messages not yet bound to a turn.
+						(m.turnId === undefined && m.role === "user"),
+				)
+			: [];
+		const stillActive = preserveTurnId !== null;
+		updateTab(tabId, {
+			chunks: win.chunks,
+			live: keptLive,
+			liveTurnId: stillActive ? current.liveTurnId : null,
+			currentAssistantId: stillActive ? current.currentAssistantId : null,
+			oldestLoadedSeq: win.oldestSeq,
+			totalChunks: win.total,
+		});
+		evictChunks(tabId);
+	}
+
+	/**
+	 * Turn-completion reconcile. On `turn-sealed`, fold the just-finished turn
+	 * (`sealedTurnId`) into the sealed log by reloading the chunk window (real
+	 * seqs) and dropping that turn from the live tail — while preserving any
+	 * newer in-flight turn and not-yet-sealed optimistic user messages. Deferred
+	 * while the user is scrolled up so the viewport isn't disturbed; re-attempted
+	 * (with the same `sealedTurnId`) when they return to the bottom.
+	 */
+	function reconcileSealedTurn(tabId: string, sealedTurnId: string): void {
+		const tab = getTabById(tabId);
+		if (!tab) return;
+		if (tab.live.length === 0 && tab.liveTurnId === null) return;
+		if (scrolledUpTabs.has(tabId)) {
+			pendingReconcileTabs.set(tabId, sealedTurnId);
+			return;
 		}
+		pendingReconcileTabs.delete(tabId);
+		void reloadChunksFromApi(tabId, true, sealedTurnId);
 	}
 
 	/**
@@ -675,91 +758,51 @@ export function createTabStore() {
 			// Non-fatal: tabs still restore with idle status.
 		}
 
-		// 3. For each tab, fetch its persisted messages in parallel.
-		const messageFetches = tabRows.map(async (row) => {
-			try {
-				const res = await fetch(`${config.apiBase}/tabs/${row.id}/messages?limit=100`);
-				if (!res.ok)
-					return { id: row.id, messages: [] as ChatMessage[], total: 0, oldestSeq: null };
-				const data = (await res.json()) as {
-					messages?: Array<{ id?: string; role: string; chunks?: Chunk[]; seq?: number }>;
-					total?: number;
-				};
-				const rawMessages = data.messages ?? [];
-				const messages: ChatMessage[] = rawMessages.map((m) => ({
-					id: m.id ?? generateId(),
-					role: m.role as ChatMessage["role"],
-					chunks: Array.isArray(m.chunks) ? m.chunks : [],
-					isStreaming: false,
-					seq: m.seq,
-				}));
-				return {
-					id: row.id,
-					messages,
-					total: data.total ?? messages.length,
-					oldestSeq: oldestSeqOf(rawMessages),
-				};
-			} catch {
-				return { id: row.id, messages: [] as ChatMessage[], total: 0, oldestSeq: null };
-			}
-		});
-
-		const messagesByTab = new Map<string, ChatMessage[]>();
-		const totalByTab = new Map<string, number>();
-		const oldestSeqByTab = new Map<string, number | null>();
-		for (const result of await Promise.all(messageFetches)) {
-			messagesByTab.set(result.id, result.messages);
-			totalByTab.set(result.id, result.total);
-			oldestSeqByTab.set(result.id, result.oldestSeq);
+		// 3. For each tab, fetch its chunk window (raw rows) in parallel.
+		type Win = { ok: boolean; chunks: ChunkRow[]; total: number; oldestSeq: number | null };
+		const winByTab = new Map<string, Win>();
+		for (const { id, win } of await Promise.all(
+			tabRows.map(async (row) => ({
+				id: row.id,
+				win: await fetchChunkWindow(row.id, { limit: 100 }),
+			})),
+		)) {
+			winByTab.set(id, win);
 		}
 
-		// 4. Build the Tab objects, splicing in the in-flight snapshot for
-		//    running tabs.
+		// 4. Build the Tab objects, seeding the in-flight live turn for running
+		//    tabs from the status snapshot (the unsealed turn isn't in the DB
+		//    yet; it reconciles into `chunks` when `turn-sealed` arrives).
 		const restored: Tab[] = tabRows.map((row) => {
 			const snap = statusMap[row.id];
-			const messages = messagesByTab.get(row.id) ?? [];
+			const win: Win = winByTab.get(row.id) ?? { ok: true, chunks: [], total: 0, oldestSeq: null };
 			const agentStatus: Tab["agentStatus"] = snap?.status ?? "idle";
 
 			let currentAssistantId: string | null = null;
-			let finalMessages = messages;
+			let liveTurnId: string | null = null;
+			let live: ChatMessage[] = [];
 
 			if (agentStatus === "running" && snap?.currentAssistantId) {
 				currentAssistantId = snap.currentAssistantId;
-				// Find or create the in-flight assistant message. If the DB
-				// already has a row with this id (the backend appended on
-				// first flush and we picked it up via /tabs/:id/messages),
-				// merge the snapshot chunks on top — the snapshot is the
-				// live source of truth and may have chunks the DB doesn't.
-				// If there's no matching row, append a new in-flight
-				// assistant message holding only the snapshot chunks.
-				const existingIdx = finalMessages.findIndex((m) => m.id === snap.currentAssistantId);
-				if (existingIdx >= 0) {
-					finalMessages = finalMessages.map((m, i) =>
-						i === existingIdx
-							? {
-									...m,
-									chunks: snap.currentChunks ? [...snap.currentChunks] : m.chunks,
-									isStreaming: true,
-								}
-							: m,
-					);
-				} else {
-					finalMessages = [
-						...finalMessages,
-						{
-							id: snap.currentAssistantId,
-							role: "assistant",
-							chunks: snap.currentChunks ? [...snap.currentChunks] : [],
-							isStreaming: true,
-						},
-					];
-				}
+				liveTurnId = snap.currentTurnId ?? null;
+				live = [
+					{
+						id: snap.currentAssistantId,
+						role: "assistant",
+						chunks: snap.currentChunks ? [...snap.currentChunks] : [],
+						isStreaming: true,
+						...(liveTurnId !== null ? { turnId: liveTurnId } : {}),
+					},
+				];
 			}
 
 			return {
 				id: row.id,
 				title: row.title,
-				messages: finalMessages,
+				chunks: win.chunks,
+				live,
+				renderGroups: deriveRenderGroups(win.chunks, live),
+				liveTurnId,
 				agentStatus,
 				keyId: row.keyId ?? null,
 				modelId: row.modelId ?? null,
@@ -775,15 +818,15 @@ export function createTabStore() {
 				workingDirectory: null,
 				queuedMessages: [],
 				chunkLimit: appSettings.chunkLimit,
-				oldestLoadedSeq: oldestSeqByTab.get(row.id) ?? null,
-				totalMessages: totalByTab.get(row.id) ?? finalMessages.length,
+				oldestLoadedSeq: win.oldestSeq,
+				totalChunks: win.total,
 			};
 		});
 
 		tabs = restored;
 		// Trim each restored tab down to the chunk limit (user starts at bottom).
 		for (const t of restored) {
-			evictMessages(t.id);
+			evictChunks(t.id);
 		}
 		// Activate the first restored tab (the list is already ordered by
 		// `position` from the backend).
@@ -796,16 +839,71 @@ export function createTabStore() {
 
 		switch (event.type) {
 			case "status": {
-				if (tabId) {
-					updateTab(tabId, { agentStatus: event.status });
-					if (event.status === "idle" || event.status === "error") {
-						updateTab(tabId, { currentAssistantId: null });
-						const tab = getTabById(tabId);
-						if (tab && !tab.persistent && tabId !== activeTabId) {
-							tabs = tabs.filter((t) => t.id !== tabId);
-						}
+				if (!tabId) break;
+				updateTab(tabId, { agentStatus: event.status });
+				if (event.status === "idle" || event.status === "error") {
+					// Stop the streaming cursor immediately; the fold of the live
+					// tail into the sealed chunk log happens on `turn-sealed`
+					// (after the DB write lands — status fires before it).
+					updateLive(tabId, (msgs) =>
+						msgs.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
+					);
+					updateTab(tabId, { currentAssistantId: null });
+					const tab = getTabById(tabId);
+					if (tab && !tab.persistent && tabId !== activeTabId) {
+						tabs = tabs.filter((t) => t.id !== tabId);
 					}
 				}
+				break;
+			}
+			case "turn-start": {
+				if (!tabId) break;
+				const tsTab = getTabById(tabId);
+				// Tag the in-flight turn. Also backfill the turn_id onto THIS
+				// turn's initiating optimistic user message — it was created on
+				// send before the turn_id was known — so it key-matches the sealed
+				// user row after reconcile (flicker-free; no remount).
+				//
+				// A turn-start corresponds to exactly one persisted user row
+				// (processMessage → explodeUserText), and a queued message never
+				// gets its own turn-start (it is drained into a running turn via
+				// message-consumed). So the initiator is the single most-recent
+				// NON-queued untagged user row. We must NOT tag pending `queued-`
+				// rows: they belong to future turns, and tagging them here would
+				// wipe them from the UI when THIS turn seals (reconcile drops live
+				// rows bound to the sealed turn).
+				const taggedLive = tsTab
+					? (() => {
+							const live = [...tsTab.live];
+							for (let i = live.length - 1; i >= 0; i--) {
+								const m = live[i];
+								// Stop at the first non-user row (assistant/system
+								// boundary): earlier user rows belong to prior turns.
+								if (!m || m.role !== "user") break;
+								// Skip past pending queued messages (future turns).
+								if (m.id.startsWith("queued-")) continue;
+								// Most-recent non-queued user row = this turn's
+								// initiator. Tag it once (if untagged), then stop.
+								if (m.turnId === undefined) {
+									live[i] = { ...m, turnId: event.turnId };
+								}
+								break;
+							}
+							return live;
+						})()
+					: undefined;
+				updateTab(tabId, {
+					liveTurnId: event.turnId,
+					...(taggedLive ? { live: taggedLive } : {}),
+				});
+				break;
+			}
+			case "turn-sealed": {
+				if (!tabId) break;
+				// The turn's rows are now durable — fold THIS turn out of the live
+				// tail into the sealed chunk log (refetch real seqs), preserving any
+				// newer in-flight turn. Deferred while scrolled up.
+				reconcileSealedTurn(tabId, event.turnId);
 				break;
 			}
 			case "statuses": {
@@ -819,10 +917,10 @@ export function createTabStore() {
 					const backendStatus = snap?.status ?? "idle";
 
 					// Desync case: frontend thought it was streaming, backend
-					// has already moved on. Pull the persisted chunks so the
-					// final answer shows up.
+					// has already moved on. The turn is persisted now — reload
+					// the chunk window so the final answer shows up.
 					if (t.agentStatus === "running" && backendStatus !== "running") {
-						void reloadTabMessagesFromApi(t.id);
+						void reloadChunksFromApi(t.id);
 					}
 
 					// Status alignment.
@@ -838,8 +936,11 @@ export function createTabStore() {
 						// in-memory currentChunks.
 						if (snap?.currentAssistantId) {
 							const targetId = snap.currentAssistantId;
-							updateTab(t.id, { currentAssistantId: targetId });
-							updateMessages(t.id, (msgs) => {
+							updateTab(t.id, {
+								currentAssistantId: targetId,
+								...(snap.currentTurnId ? { liveTurnId: snap.currentTurnId } : {}),
+							});
+							updateLive(t.id, (msgs) => {
 								const idx = msgs.findIndex((m) => m.id === targetId);
 								if (idx >= 0) {
 									return msgs.map((m, i) =>
@@ -859,13 +960,14 @@ export function createTabStore() {
 										role: "assistant",
 										chunks: snap.currentChunks ? [...snap.currentChunks] : [],
 										isStreaming: true,
+										...(snap.currentTurnId ? { turnId: snap.currentTurnId } : {}),
 									},
 								];
 							});
 						}
 					} else if (t.currentAssistantId) {
 						// Not running: clear streaming flags.
-						updateMessages(t.id, (msgs) =>
+						updateLive(t.id, (msgs) =>
 							msgs.map((m) => (m.id === t.currentAssistantId ? { ...m, isStreaming: false } : m)),
 						);
 						updateTab(t.id, { currentAssistantId: null });
@@ -910,7 +1012,7 @@ export function createTabStore() {
 				if (!tabId) break;
 				const tab5 = getTabById(tabId);
 				if (!tab5) break;
-				updateMessages(tabId, (msgs) =>
+				updateLive(tabId, (msgs) =>
 					msgs.map((m) => (m.id === tab5.currentAssistantId ? { ...m, isStreaming: false } : m)),
 				);
 				updateTab(tabId, { currentAssistantId: null });
@@ -925,7 +1027,7 @@ export function createTabStore() {
 					// assistant message via the shared helper. Mark debug info
 					// on the message for parity with the previous behavior.
 					applyChunkEvent(tabId, event);
-					updateMessages(tabId, (msgs) =>
+					updateLive(tabId, (msgs) =>
 						msgs.map((m) =>
 							m.id === errTab.currentAssistantId
 								? {
@@ -946,7 +1048,7 @@ export function createTabStore() {
 					const afterTab = getTabById(tabId);
 					if (afterTab?.currentAssistantId) {
 						const newId = afterTab.currentAssistantId;
-						updateMessages(tabId, (msgs) =>
+						updateLive(tabId, (msgs) =>
 							msgs.map((m) =>
 								m.id === newId
 									? {
@@ -1036,7 +1138,10 @@ export function createTabStore() {
 					const tab: Tab = {
 						id: newTabEvent.id,
 						title: newTabEvent.title,
-						messages: [],
+						chunks: [],
+						live: [],
+						renderGroups: [],
+						liveTurnId: null,
 						agentStatus: "running",
 						keyId: newTabEvent.keyId ?? null,
 						modelId: newTabEvent.modelId ?? null,
@@ -1053,7 +1158,7 @@ export function createTabStore() {
 						queuedMessages: [],
 						chunkLimit: appSettings.chunkLimit,
 						oldestLoadedSeq: null,
-						totalMessages: 0,
+						totalChunks: 0,
 					};
 					tabs = [...tabs, tab];
 				}
@@ -1075,9 +1180,9 @@ export function createTabStore() {
 						timestamp: Date.now(),
 					};
 					updateTab(tabId, { queuedMessages: [...mqTab.queuedMessages, qm] });
-					// Also add as a user chat message if not already present
+					// Also add as a user message in the live tail if not present.
 					const tabAfterQm = getTabById(tabId);
-					const existingMsg = tabAfterQm?.messages.find(
+					const existingMsg = tabAfterQm?.live.find(
 						(m) => m.id === `queued-${mqEvent.messageId}` || m.id === mqEvent.messageId,
 					);
 					if (!existingMsg) {
@@ -1086,7 +1191,7 @@ export function createTabStore() {
 							role: "user",
 							chunks: [{ type: "text", text: mqEvent.message }],
 						};
-						updateTab(tabId, { messages: [...(tabAfterQm?.messages ?? []), userMsg] });
+						updateTab(tabId, { live: [...(tabAfterQm?.live ?? []), userMsg] });
 					}
 				}
 				// If alreadyQueued, the optimistic update already put everything in place with the
@@ -1110,7 +1215,7 @@ export function createTabStore() {
 				// the consumed user messages after it. Subsequent streaming events
 				// will create a NEW assistant message block below.
 				const currentAssistantId = mcTab.currentAssistantId;
-				updateMessages(tabId, (msgs) => {
+				updateLive(tabId, (msgs) => {
 					// Extract consumed messages
 					const consumed: ChatMessage[] = [];
 					const rest: ChatMessage[] = [];
@@ -1118,7 +1223,20 @@ export function createTabStore() {
 						if (m.id.startsWith("queued-")) {
 							const queuedId = m.id.slice(7);
 							if (mcEvent.messageIds.includes(queuedId)) {
-								consumed.push({ ...m, id: queuedId });
+								// Bind the consumed message to the in-flight turn that is
+								// consuming it. Stripping the `queued-` prefix alone leaves
+								// it an UNTAGGED user row, which reconcileSealedTurn KEEPS —
+								// so the interrupt bubble would linger in the live tail
+								// forever AND duplicate the `[USER INTERRUPT]` text the
+								// backend folds into the sealed tool-result chunk. Tagging
+								// it lets reconcile drop it on seal, collapsing to the
+								// persisted shape. (liveTurnId is set for the duration of a
+								// running turn, which is the only time a consume happens.)
+								consumed.push({
+									...m,
+									id: queuedId,
+									...(mcTab.liveTurnId !== null ? { turnId: mcTab.liveTurnId } : {}),
+								});
 								continue;
 							}
 						}
@@ -1154,7 +1272,7 @@ export function createTabStore() {
 				if (!cancelTab) break;
 				updateTab(tabId, {
 					queuedMessages: cancelTab.queuedMessages.filter((m) => m.id !== cancelEvent.messageId),
-					messages: cancelTab.messages.filter(
+					live: cancelTab.live.filter(
 						(m) => !(m.role === "user" && m.id === `queued-${cancelEvent.messageId}`),
 					),
 				});
@@ -1377,8 +1495,11 @@ export function createTabStore() {
 			];
 		}
 
-		updateTab(tab.id, { messages: [...tab.messages, userMsg] }); // Generate title from first user message
-		if (tab.messages.length === 0 || (tab.messages.length === 1 && tab.title === "New Tab")) {
+		// Optimistically show the user's message in the live tail.
+		updateTab(tab.id, { live: [...tab.live, userMsg] });
+		// Generate a title from the first user message of an empty tab.
+		const isFirstMessage = tab.chunks.length === 0 && tab.live.length === 0;
+		if (isFirstMessage || tab.title === "New Tab") {
 			const titleText = text.length > 50 ? `${text.slice(0, 47)}...` : text;
 			updateTab(tab.id, { title: titleText });
 			fetch(`${config.apiBase}/tabs/${tab.id}`, {
@@ -1445,7 +1566,7 @@ export function createTabStore() {
 							queuedMessages: currentTab.queuedMessages.filter((m) => m.id !== queueId),
 						});
 					}
-					updateMessages(tab.id, (msgs) =>
+					updateLive(tab.id, (msgs) =>
 						msgs.map((m) => (m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m)),
 					);
 				}
@@ -1466,7 +1587,7 @@ export function createTabStore() {
 						httpBody: body,
 					}),
 				};
-				updateTab(tab.id, { messages: [...(getTabById(tab.id)?.messages ?? []), errMsg] });
+				updateTab(tab.id, { live: [...(getTabById(tab.id)?.live ?? []), errMsg] });
 			} else {
 				const responseData = (await res.json()) as { status: string; messageId?: string };
 				if (responseData.status === "queued" && responseData.messageId) {
@@ -1489,7 +1610,7 @@ export function createTabStore() {
 							});
 						}
 						// Restore the message to a normal (non-queued) ID
-						updateMessages(tab.id, (msgs) =>
+						updateLive(tab.id, (msgs) =>
 							msgs.map((m) => (m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m)),
 						);
 					}
@@ -1504,7 +1625,7 @@ export function createTabStore() {
 						queuedMessages: currentTab.queuedMessages.filter((m) => m.id !== queueId),
 					});
 				}
-				updateMessages(tab.id, (msgs) =>
+				updateLive(tab.id, (msgs) =>
 					msgs.map((m) => (m.id === `queued-${queueId}` ? { ...m, id: generateId() } : m)),
 				);
 			}
@@ -1515,7 +1636,7 @@ export function createTabStore() {
 				isStreaming: false,
 				debugInfo: makeDebugInfo({ error: err instanceof Error ? err.message : String(err) }),
 			};
-			updateTab(tab.id, { messages: [...(getTabById(tab.id)?.messages ?? []), errMsg] });
+			updateTab(tab.id, { live: [...(getTabById(tab.id)?.live ?? []), errMsg] });
 		}
 	}
 
@@ -1641,9 +1762,7 @@ export function createTabStore() {
 		if (tab) {
 			updateTab(tabId, {
 				queuedMessages: tab.queuedMessages.filter((m) => m.id !== messageId),
-				messages: tab.messages.filter(
-					(m) => !(m.role === "user" && m.id === `queued-${messageId}`),
-				),
+				live: tab.live.filter((m) => !(m.role === "user" && m.id === `queued-${messageId}`)),
 			});
 		}
 		try {
@@ -1684,7 +1803,7 @@ export function createTabStore() {
 		// for it — which is the canonical symptom of a wire-format / load
 		// failure. Always include this so bug reports are diagnosable from
 		// the paste alone, without DB access.
-		const summarizeChunks = (chunks: (typeof tab.messages)[number]["chunks"]) => {
+		const summarizeChunks = (chunks: (typeof tab.renderGroups)[number]["chunks"]) => {
 			if (chunks.length === 0) return "chunks=0";
 			const parts = chunks.map((c) => {
 				if (c.type === "tool-batch") return `tool-batch[${c.calls.length}]`;
@@ -1713,7 +1832,7 @@ export function createTabStore() {
 			`Connected to backend: ${isConnected}`,
 			`Tab agentStatus: ${tab.agentStatus}`,
 			`Tab currentAssistantId: ${tab.currentAssistantId ?? "null"}`,
-			`Messages in store: ${tab.messages.length}`,
+			`Render groups in store: ${tab.renderGroups.length}`,
 			`Queued messages: ${tab.queuedMessages.length}`,
 			`Persistent: ${tab.persistent}`,
 			`Working directory: ${tab.workingDirectory ?? "default"}`,
@@ -1723,7 +1842,7 @@ export function createTabStore() {
 		];
 		const TOOL_RESULT_MAX = 300;
 
-		for (const msg of tab.messages) {
+		for (const msg of tab.renderGroups) {
 			const role = msg.role === "user" ? "User" : msg.role === "system" ? "System" : "Assistant";
 			const streamingFlag = msg.isStreaming ? ", streaming=true" : "";
 			// Inline message diagnostics — id, streaming, chunk summary —
@@ -1826,8 +1945,8 @@ export function createTabStore() {
 		// components — they should rely on the WS subscription instead.
 		handleEvent,
 		hydrateFromBackend,
-		loadMoreMessages,
-		evictMessages,
+		loadOlderChunks,
+		evictChunks,
 		setScrolledUp,
 	};
 }

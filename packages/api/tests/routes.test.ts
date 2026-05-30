@@ -335,6 +335,19 @@ describe("POST /chat", () => {
 	});
 });
 
+describe("GET /tabs/:id/chunks", () => {
+	it("returns the raw chunk window shape { chunks, total, oldestSeq }", async () => {
+		const res = await app.request("/tabs/tab-x/chunks?limit=50");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		// Mocked getChunksForTab returns [] → empty window, null cursor.
+		expect(Array.isArray(body.chunks)).toBe(true);
+		expect(body.chunks).toEqual([]);
+		expect(body.total).toBe(0);
+		expect(body.oldestSeq).toBeNull();
+	});
+});
+
 describe("POST /chat/stop", () => {
 	it("returns 200 with success: true for valid tabId", async () => {
 		const res = await app.request("/chat/stop", {

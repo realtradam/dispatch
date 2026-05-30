@@ -89,6 +89,11 @@ export interface SystemChunk {
 	text: string;
 }
 
+/**
+ * A render bubble. NOT stored state — it's a derived projection of the flat
+ * chunk log (`groupRowsToMessages(tab.chunks)`) concatenated with the transient
+ * live tail. The store's source of truth for history is `tab.chunks: ChunkRow[]`.
+ */
 export interface ChatMessage {
 	id: string;
 	role: "user" | "assistant" | "system";
@@ -97,10 +102,9 @@ export interface ChatMessage {
 	debugInfo?: DebugInfo;
 	seq?: number;
 	/**
-	 * turn_id of the chunk rows this message was grouped from (history loaded
-	 * from the backend). Used by `loadMoreMessages` to merge a turn that was
-	 * split across the chunk-pagination window boundary. Absent for live
-	 * (streaming) messages built client-side.
+	 * turn_id of the chunk rows this message was grouped from (or the in-flight
+	 * turn for a live message). Gives a stable, turn-scoped render key so the
+	 * bubble doesn't remount when the live turn reconciles into sealed chunks.
 	 */
 	turnId?: string;
 }
@@ -125,10 +129,18 @@ export interface TabStatusSnapshot {
 	status: "idle" | "running" | "error";
 	currentChunks?: Chunk[];
 	currentAssistantId?: string;
+	/** turn_id of the in-flight turn; present iff status === "running". */
+	currentTurnId?: string;
 }
 
 export type AgentEvent =
 	| { type: "status"; status: "idle" | "running" | "error" }
+	// Opens a turn before any content delta; carries the turn_id used to tag
+	// the live chunks so they reconcile cleanly when the turn seals.
+	| { type: "turn-start"; turnId: string }
+	// Fires after the turn settled AND its chunks were persisted (after the DB
+	// write, post status:idle). Triggers the frontend's reconcile-from-DB.
+	| { type: "turn-sealed"; turnId: string }
 	// Sent on every WS (re)connect: a snapshot of every tab the backend is
 	// currently tracking and its live status. The frontend uses this to
 	// detect desync after a reconnect (e.g. bun --watch restart killed the
