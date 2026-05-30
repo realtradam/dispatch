@@ -99,7 +99,7 @@ export function getDatabase(): Database {
 	// keyed by a per-tab monotonic `seq`. "Message" and "turn" are DERIVED
 	// groupings (see db/chunks.ts), never stored containers. This is what
 	// powers per-chunk frontend pagination AND the stable per-step wire
-	// format that fixes Anthropic prompt-cache churn (see plan-chunk-log.md).
+	// format that fixes Anthropic prompt-cache churn (see notes/plan-chunk-log.md).
 	//
 	//   role  : 'user' | 'assistant' | 'tool' | 'system'
 	//   type  : 'text' | 'thinking' | 'tool_call' | 'tool_result' | 'error' | 'system'

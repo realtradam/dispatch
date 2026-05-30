@@ -81,7 +81,7 @@ export function createProvider(config: ProviderConfig): ModelFactory {
  * (computer-use, structured-outputs, etc.) — it does NOT add the prompt-caching
  * or oauth betas on its own. Without `prompt-caching-scope-2026-01-05` the API
  * silently ignores every `cache_control` breakpoint we attach to messages,
- * giving a 0% cache hit rate and a massive token burn (see claude-report.md).
+ * giving a 0% cache hit rate and a massive token burn (see notes/claude-report.md).
  * The SDK folds any `anthropic-beta` it finds on the provider's config headers
  * back into its own beta set (via `getBetasFromHeaders`), so the values here
  * are merged — not overwritten — with any tool-derived betas.

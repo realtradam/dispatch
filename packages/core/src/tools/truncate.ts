@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 // /tmp/dispatch/tool-results/<tabId>/<callId>.txt and the model receives
 // HEAD_CHARS from the start + TAIL_CHARS from the end with a notice
 // in between. These are deliberate hardcoded defaults — see the design
-// discussion in plan.md for the rationale.
+// discussion in notes/plan.md for the rationale.
 
 export const MAX_CHARS = 10_000;
 export const MAX_LINES = 500;
