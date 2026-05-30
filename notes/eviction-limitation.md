@@ -1,8 +1,18 @@
 # Known Limitation: Frontend eviction is whole-message, not per-chunk
 
-Status: **open / deal-with-later.** Documented from the append-only chunk-log
-work (see `plan-chunk-log.md`). The backend is not the problem — this is purely
-a frontend in-memory concern.
+Status: **RESOLVED.** Fixed by the chunk-native frontend store (see
+`plan-chunk-eviction.md`). The frontend's source of truth for history is now a
+flat `ChunkRow[]` (`tab.chunks`, real per-tab `seq`); the live turn is a
+transient tail (`tab.live`) reconciled into the sealed log on a `turn-sealed`
+event. Eviction (`evictChunks`) is a rolling per-chunk trim of the oldest rows —
+so a single oversized turn is trimmed chunk-by-chunk instead of pinned whole.
+Pagination loads raw chunks (`GET /tabs/:id/chunks`), deduped by `seq`. The
+historical analysis below is retained for context.
+
+---
+
+Documented from the append-only chunk-log work (see `plan-chunk-log.md`). The
+backend was not the problem — this was purely a frontend in-memory concern.
 
 ## TL;DR
 

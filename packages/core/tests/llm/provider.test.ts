@@ -179,7 +179,7 @@ describe("createClaudeOAuthProvider", () => {
 		}
 	});
 
-	it("sends the anthropic-beta header so prompt-caching is honored (claude-report.md Root Cause 1)", () => {
+	it("sends the anthropic-beta header so prompt-caching is honored (notes/claude-report.md Root Cause 1)", () => {
 		// Without `anthropic-beta: ...,prompt-caching-scope-2026-01-05,...` the
 		// Anthropic API silently ignores every `cache_control` marker we attach
 		// to messages, producing a 0% cache hit rate. `@ai-sdk/anthropic` does

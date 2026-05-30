@@ -7,7 +7,7 @@
 //
 // `prompt-caching-scope-2026-01-05` is load-bearing for cost: without it the
 // Anthropic API silently ignores every `cache_control` breakpoint we place,
-// producing a 0% cache hit rate (see claude-report.md). `oauth-2025-04-20`
+// producing a 0% cache hit rate (see notes/claude-report.md). `oauth-2025-04-20`
 // gates the Bearer/OAuth flow used by Claude Pro/Max subscriptions.
 
 const BASE_BETAS = [

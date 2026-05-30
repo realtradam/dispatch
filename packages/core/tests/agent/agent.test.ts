@@ -1038,7 +1038,7 @@ describe("Agent", () => {
 		expect(rc).toBeUndefined();
 	});
 
-	// ─── Prompt-caching: tool-result grouping & breakpoints (claude-report.md) ──
+	// ─── Prompt-caching: tool-result grouping & breakpoints (notes/claude-report.md) ──
 
 	it("groups a turn's tool results into a SINGLE role:'tool' message (Root Cause 2)", async () => {
 		// The agent batches three distinct read_file calls in one step. The
@@ -1158,7 +1158,7 @@ describe("Agent", () => {
 		}
 	});
 
-	// ─── Tool-call dedup (tool-runner-duplication-incident.md) ─────────────────
+	// ─── Tool-call dedup (notes/tool-runner-duplication-incident.md) ─────────────────
 
 	it("deduplicates byte-identical tool calls within a single batch", async () => {
 		// Claude can degenerate and emit the same tool call (same name + args)
@@ -1265,7 +1265,7 @@ describe("Agent", () => {
 		// A 3-step tool turn. The messages for steps 0 and 1 must serialize
 		// identically in the step-2 request and the step-3 request — that
 		// byte-stability is what lets Anthropic's rolling prompt cache extend
-		// instead of re-writing the whole prefix every step (cache-miss-report.md).
+		// instead of re-writing the whole prefix every step (notes/cache-miss-report.md).
 		// Uses the openai-compatible provider so no cacheControl markers (which
 		// intentionally move each step) obscure the content comparison.
 		let n = 0;
