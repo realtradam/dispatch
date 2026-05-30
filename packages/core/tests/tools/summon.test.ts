@@ -118,7 +118,11 @@ describe("createSummonTool — execute() argument forwarding", () => {
 			[],
 		);
 		const out = await tool.execute({ task: "x" });
-		expect(out).toBe("child-output");
+		// Foreground summons prefix the blocked result with `agent_id: <id>` so
+		// the frontend's ToolCallDisplay regex can surface the "Open Tab" button
+		// (see summon.ts). Assert both the prefix and the child output survive.
+		expect(out).toContain("agent_id: id-1");
+		expect(out).toBe("agent_id: id-1\n\nchild-output");
 	});
 
 	it("surfaces child errors when blocking", async () => {

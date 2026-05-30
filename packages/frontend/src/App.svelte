@@ -136,6 +136,8 @@ onMount(() => {
 		<SidebarPanel
 			keys={modelsData.keys}
 				tasks={tabStore.activeTab?.tasks ?? []}
+				cacheStats={tabStore.activeTab?.cacheStats ?? null}
+				cacheTabTitle={tabStore.activeTab?.title ?? null}
 				permissionLog={tabStore.permissionLog}
 				apiBase={config.apiBase}
 				activeKeyId={tabStore.activeTab?.keyId ?? null}

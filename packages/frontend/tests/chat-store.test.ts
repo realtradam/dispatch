@@ -1050,3 +1050,50 @@ describe("handleEvent statuses with TabStatusSnapshot", () => {
 		expect(msgA?.isStreaming).toBe(false);
 	});
 });
+
+describe("tabStore — cache rate (usage events)", () => {
+	it("accumulates usage events into per-tab cacheStats and tracks the last request", async () => {
+		const { store, tabId } = await setupStoreWithTab();
+
+		// No usage yet.
+		expect(store.tabs.find((t) => t.id === tabId)?.cacheStats).toBeUndefined();
+
+		// First request: mostly a cache write (cold prefix).
+		store.handleEvent({
+			type: "usage",
+			tabId,
+			usage: { inputTokens: 1000, outputTokens: 40, cacheReadTokens: 0, cacheWriteTokens: 900 },
+		});
+		// Second request: mostly a cache hit.
+		store.handleEvent({
+			type: "usage",
+			tabId,
+			usage: { inputTokens: 1200, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 100 },
+		});
+
+		const stats = store.tabs.find((t) => t.id === tabId)?.cacheStats;
+		expect(stats).toBeDefined();
+		expect(stats?.requests).toBe(2);
+		// Cumulative totals.
+		expect(stats?.inputTokens).toBe(2200);
+		expect(stats?.outputTokens).toBe(100);
+		expect(stats?.cacheReadTokens).toBe(1000);
+		expect(stats?.cacheWriteTokens).toBe(1000);
+		// `last` reflects only the most recent request.
+		expect(stats?.last).toEqual({
+			inputTokens: 1200,
+			outputTokens: 60,
+			cacheReadTokens: 1000,
+			cacheWriteTokens: 100,
+		});
+	});
+
+	it("ignores usage events with no tabId", async () => {
+		const { store } = await setupStoreWithTab();
+		store.handleEvent({
+			type: "usage",
+			usage: { inputTokens: 10, outputTokens: 1, cacheReadTokens: 5, cacheWriteTokens: 0 },
+		});
+		expect(store.tabs[0]?.cacheStats).toBeUndefined();
+	});
+});

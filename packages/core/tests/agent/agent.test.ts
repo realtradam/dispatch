@@ -1028,4 +1028,290 @@ describe("Agent", () => {
 		const rc = assistantMsg?.providerOptions?.openaiCompatible?.reasoning_content;
 		expect(rc).toBeUndefined();
 	});
+
+	// ─── Prompt-caching: tool-result grouping & breakpoints (claude-report.md) ──
+
+	it("groups a turn's tool results into a SINGLE role:'tool' message (Root Cause 2)", async () => {
+		// The agent batches three distinct read_file calls in one step. The
+		// rebuilt ModelMessage[] must contain exactly ONE `role: "tool"` message
+		// holding all three results (not three separate tool messages). Per-
+		// result messages would strand the rolling cache breakpoints on the last
+		// two adjacent tool results, wasting a breakpoint.
+		const toolDef = {
+			name: "read_file",
+			description: "reads a file",
+			parameters: z.object({ path: z.string() }),
+			execute: async (args: Record<string, unknown>) => `contents of ${String(args.path)}`,
+		};
+		vi.mocked(streamText)
+			.mockReturnValueOnce(
+				makeMockStreamResult([
+					{ type: "tool-call", toolCallId: "b1", toolName: "read_file", input: { path: "a.txt" } },
+					{ type: "tool-call", toolCallId: "b2", toolName: "read_file", input: { path: "b.txt" } },
+					{ type: "tool-call", toolCallId: "b3", toolName: "read_file", input: { path: "c.txt" } },
+					finishToolCalls,
+				]),
+			)
+			.mockReturnValueOnce(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "done" }, finishStop]),
+			);
+
+		const agent = new Agent(makeConfig({ provider: "opencode-anthropic", tools: [toolDef] }));
+		for await (const _ of agent.run("read three files")) {
+			/* consume */
+		}
+
+		// Inspect the step-1 request (sent after the batch executed) — its tail
+		// is the assistant tool-calls + the grouped tool results.
+		const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+		const messages = callArgs?.messages as Array<{ role: string; content: unknown }>;
+
+		const toolMsgs = messages.filter((m) => m.role === "tool");
+		expect(toolMsgs).toHaveLength(1);
+		const toolContent = toolMsgs[0]?.content as Array<Record<string, unknown>>;
+		expect(toolContent).toHaveLength(3);
+		expect(toolContent.every((p) => p.type === "tool-result")).toBe(true);
+		// IDs preserved per result.
+		expect(toolContent.map((p) => p.toolCallId)).toEqual(["b1", "b2", "b3"]);
+	});
+
+	it("places cache breakpoints on [assistant, grouped-tool], not adjacent tool results (Root Cause 2)", async () => {
+		// With grouping, the last two non-system messages of a mid-turn request
+		// are [assistant(tool-calls), tool(all results)]. Both — plus the system
+		// message — must carry an ephemeral cacheControl marker. The pre-fix bug
+		// put both rolling breakpoints on two adjacent tool-result messages and
+		// never marked the assistant turn.
+		const toolDef = {
+			name: "read_file",
+			description: "reads a file",
+			parameters: z.object({ path: z.string() }),
+			execute: async (args: Record<string, unknown>) => `contents of ${String(args.path)}`,
+		};
+		vi.mocked(streamText)
+			.mockReturnValueOnce(
+				makeMockStreamResult([
+					{ type: "tool-call", toolCallId: "c1", toolName: "read_file", input: { path: "a.txt" } },
+					{ type: "tool-call", toolCallId: "c2", toolName: "read_file", input: { path: "b.txt" } },
+					{ type: "tool-call", toolCallId: "c3", toolName: "read_file", input: { path: "c.txt" } },
+					finishToolCalls,
+				]),
+			)
+			.mockReturnValueOnce(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "done" }, finishStop]),
+			);
+
+		const agent = new Agent(makeConfig({ provider: "opencode-anthropic", tools: [toolDef] }));
+		for await (const _ of agent.run("read three files")) {
+			/* consume */
+		}
+
+		const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+		const messages = callArgs?.messages as Array<{
+			role: string;
+			content: unknown;
+			providerOptions?: { anthropic?: { cacheControl?: { type?: string } } };
+		}>;
+
+		const isCached = (m?: {
+			providerOptions?: { anthropic?: { cacheControl?: { type?: string } } };
+		}) => m?.providerOptions?.anthropic?.cacheControl?.type === "ephemeral";
+
+		// Exactly one tool message — no adjacent tool-result breakpoints.
+		expect(messages.filter((m) => m.role === "tool")).toHaveLength(1);
+
+		const systemMsg = messages.find((m) => m.role === "system");
+		const assistantMsg = messages.find((m) => m.role === "assistant");
+		const toolMsg = messages.find((m) => m.role === "tool");
+
+		expect(isCached(systemMsg)).toBe(true);
+		expect(isCached(assistantMsg)).toBe(true);
+		expect(isCached(toolMsg)).toBe(true);
+	});
+
+	it("does NOT attach cacheControl for the openai-compatible (non-Anthropic) path", async () => {
+		// Sanity check: caching markers are Anthropic-only. The OpenAI-compatible
+		// endpoints do automatic server-side prefix caching and reject explicit
+		// cache_control, so no marker should be attached.
+		vi.mocked(streamText).mockReturnValue(
+			makeMockStreamResult([{ type: "text-delta", id: "t0", text: "hi" }, finishStop]),
+		);
+		const agent = new Agent(makeConfig()); // default → openai-compatible
+		for await (const _ of agent.run("hello")) {
+			/* consume */
+		}
+		const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+		const messages = callArgs?.messages as Array<{
+			role: string;
+			providerOptions?: { anthropic?: { cacheControl?: unknown } };
+		}>;
+		for (const m of messages) {
+			expect(m.providerOptions?.anthropic?.cacheControl).toBeUndefined();
+		}
+	});
+
+	// ─── Tool-call dedup (tool-runner-duplication-incident.md) ─────────────────
+
+	it("deduplicates byte-identical tool calls within a single batch", async () => {
+		// Claude can degenerate and emit the same tool call (same name + args)
+		// many times in one batch. Each copy keeps its own id (and still gets its
+		// own result), but the tool must execute only ONCE — re-running identical
+		// idempotent reads wastes time/money and floods the context.
+		let execCount = 0;
+		const toolDef = {
+			name: "read_file",
+			description: "reads a file",
+			parameters: z.object({ path: z.string() }),
+			execute: async (args: Record<string, unknown>) => {
+				execCount++;
+				return `contents of ${String(args.path)}`;
+			},
+		};
+		vi.mocked(streamText)
+			.mockReturnValueOnce(
+				makeMockStreamResult([
+					{
+						type: "tool-call",
+						toolCallId: "d1",
+						toolName: "read_file",
+						input: { path: "package.json" },
+					},
+					{
+						type: "tool-call",
+						toolCallId: "d2",
+						toolName: "read_file",
+						input: { path: "package.json" },
+					},
+					{
+						type: "tool-call",
+						toolCallId: "d3",
+						toolName: "read_file",
+						input: { path: "package.json" },
+					},
+					finishToolCalls,
+				]),
+			)
+			.mockReturnValueOnce(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "done" }, finishStop]),
+			);
+
+		const agent = new Agent(makeConfig({ tools: [toolDef] }));
+		const events: AgentEvent[] = [];
+		for await (const e of agent.run("read it thrice")) {
+			events.push(e);
+		}
+
+		// Executed exactly once despite three identical calls.
+		expect(execCount).toBe(1);
+
+		// Every call id still received its own result, all with identical content.
+		const results = events.filter(
+			(e): e is Extract<AgentEvent, { type: "tool-result" }> => e.type === "tool-result",
+		);
+		expect(results).toHaveLength(3);
+		expect(results.map((e) => e.toolResult.toolCallId).sort()).toEqual(["d1", "d2", "d3"]);
+		for (const r of results) {
+			expect(r.toolResult.result).toBe("contents of package.json");
+		}
+	});
+
+	it("does NOT deduplicate tool calls with differing arguments", async () => {
+		// Dedup is keyed on name + serialized arguments. Distinct args must each
+		// execute — only byte-identical calls collapse.
+		let execCount = 0;
+		const toolDef = {
+			name: "read_file",
+			description: "reads a file",
+			parameters: z.object({ path: z.string() }),
+			execute: async (args: Record<string, unknown>) => {
+				execCount++;
+				return `contents of ${String(args.path)}`;
+			},
+		};
+		vi.mocked(streamText)
+			.mockReturnValueOnce(
+				makeMockStreamResult([
+					{ type: "tool-call", toolCallId: "e1", toolName: "read_file", input: { path: "a.txt" } },
+					{ type: "tool-call", toolCallId: "e2", toolName: "read_file", input: { path: "b.txt" } },
+					{ type: "tool-call", toolCallId: "e3", toolName: "read_file", input: { path: "a.txt" } },
+					finishToolCalls,
+				]),
+			)
+			.mockReturnValueOnce(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "done" }, finishStop]),
+			);
+
+		const agent = new Agent(makeConfig({ tools: [toolDef] }));
+		for await (const _ of agent.run("read a, b, a")) {
+			/* consume */
+		}
+
+		// a.txt + b.txt are distinct → two executions; the repeated a.txt reuses
+		// the first result.
+		expect(execCount).toBe(2);
+	});
+
+	// ─── Usage / cache-rate telemetry ──────────────────────────────────────────
+
+	it("emits a usage event from the finish-step part with the cache read/write split", async () => {
+		// The per-step `usage` (with Anthropic's cache read/write split in
+		// `inputTokenDetails`) rides on the `finish-step` part — NOT the terminal
+		// `finish` part, which only carries the aggregate `totalUsage`. The agent
+		// re-emits it as a `usage` AgentEvent that powers the Cache Rate view.
+		vi.mocked(streamText).mockReturnValue(
+			makeMockStreamResult([
+				{ type: "text-delta", id: "t0", text: "hi" },
+				{
+					type: "finish-step",
+					finishReason: "stop",
+					rawFinishReason: "stop",
+					usage: {
+						inputTokens: 1000,
+						outputTokens: 50,
+						inputTokenDetails: {
+							noCacheTokens: 200,
+							cacheReadTokens: 750,
+							cacheWriteTokens: 50,
+						},
+					},
+				},
+				finishStop,
+			]),
+		);
+
+		const agent = new Agent(makeConfig());
+		const events: AgentEvent[] = [];
+		for await (const e of agent.run("hi")) {
+			events.push(e);
+		}
+
+		const usageEvents = events.filter(
+			(e): e is Extract<AgentEvent, { type: "usage" }> => e.type === "usage",
+		);
+		// Exactly one usage event (from finish-step) — the terminal `finish`
+		// part must NOT double-count.
+		expect(usageEvents).toHaveLength(1);
+		expect(usageEvents[0]?.usage).toEqual({
+			inputTokens: 1000,
+			outputTokens: 50,
+			cacheReadTokens: 750,
+			cacheWriteTokens: 50,
+		});
+	});
+
+	it("does NOT emit a usage event when no finish-step usage is present", async () => {
+		// `finishStop` (type `finish`, aggregate `totalUsage` only) must not
+		// trigger a usage event — and with no `finish-step` part there is no
+		// per-step usage to emit.
+		vi.mocked(streamText).mockReturnValue(
+			makeMockStreamResult([{ type: "text-delta", id: "t0", text: "hi" }, finishStop]),
+		);
+
+		const agent = new Agent(makeConfig());
+		const events: AgentEvent[] = [];
+		for await (const e of agent.run("hi")) {
+			events.push(e);
+		}
+
+		expect(events.some((e) => e.type === "usage")).toBe(false);
+	});
 });

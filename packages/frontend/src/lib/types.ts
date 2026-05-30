@@ -12,6 +12,29 @@ export interface DebugInfo {
 }
 
 /**
+ * Per-tab prompt-cache telemetry, accumulated from the `usage` AgentEvent
+ * (one per LLM round-trip). Token counts are cumulative across the session
+ * since the page loaded; `last` holds the most recent request's split. Powers
+ * the "Cache Rate" sidebar view. The cache hit rate is
+ * `cacheReadTokens / inputTokens` (inputTokens is the TOTAL prompt, including
+ * cached tokens).
+ */
+export interface CacheStats {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	/** Number of LLM requests (usage events) counted. */
+	requests: number;
+	last: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens: number;
+		cacheWriteTokens: number;
+	} | null;
+}
+
+/**
  * Mirror of the core `Chunk` union (see packages/core/src/types/index.ts).
  *
  * Wire-format symmetry MUST be kept with core. If you change one, change
@@ -118,6 +141,15 @@ export type AgentEvent =
 	| {
 			type: "tool-result";
 			toolResult: { toolCallId: string; result: string; isError: boolean };
+	  }
+	| {
+			type: "usage";
+			usage: {
+				inputTokens: number;
+				outputTokens: number;
+				cacheReadTokens: number;
+				cacheWriteTokens: number;
+			};
 	  }
 	| { type: "error"; error: string }
 	| { type: "notice"; message: string }

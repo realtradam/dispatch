@@ -1,6 +1,7 @@
 <script lang="ts">
 import { loadSidebarPanels, saveSidebarPanels } from "../sidebar-storage.js";
-import type { KeyInfo, LogEntry, TaskItem } from "../types.js";
+import type { CacheStats, KeyInfo, LogEntry, TaskItem } from "../types.js";
+import CacheRatePanel from "./CacheRatePanel.svelte";
 import ClaudeReset from "./ClaudeReset.svelte";
 import ConfigPanel from "./ConfigPanel.svelte";
 import KeyUsage from "./KeyUsage.svelte";
@@ -23,6 +24,8 @@ interface AgentInfo {
 const {
 	keys = [],
 	tasks = [],
+	cacheStats = null,
+	cacheTabTitle = null,
 	permissionLog = [],
 	apiBase = "",
 	activeKeyId = null,
@@ -41,6 +44,8 @@ const {
 }: {
 	keys?: KeyInfo[];
 	tasks?: TaskItem[];
+	cacheStats?: CacheStats | null;
+	cacheTabTitle?: string | null;
 	permissionLog?: LogEntry[];
 	apiBase?: string;
 	activeKeyId?: string | null;
@@ -82,6 +87,7 @@ const viewOptions = [
 	"Select a view",
 	"Chat Settings",
 	"Key Usage",
+	"Cache Rate",
 	"Claude Reset",
 	"Model Status",
 	"Tasks",
@@ -97,12 +103,12 @@ function addPanel() {
 
 function panelClass(selected: string): string {
 	const base = "bg-base-200 rounded-lg p-3 flex flex-col min-h-0";
-	const fill = selected === "Key Usage" || selected === "Tasks";
+	const fill = selected === "Key Usage" || selected === "Tasks" || selected === "Cache Rate";
 	return fill ? `${base} flex-1` : base;
 }
 
 function contentClass(selected: string): string {
-	const fill = selected === "Key Usage" || selected === "Tasks";
+	const fill = selected === "Key Usage" || selected === "Tasks" || selected === "Cache Rate";
 	return fill ? "mt-2 flex-1 min-h-0" : "mt-2";
 }
 </script>
@@ -156,6 +162,8 @@ function contentClass(selected: string): string {
 			/>
 				{:else if panel.selected === "Key Usage"}
 					<KeyUsage {keys} {apiBase} />
+				{:else if panel.selected === "Cache Rate"}
+					<CacheRatePanel {cacheStats} tabTitle={cacheTabTitle} />
 				{:else if panel.selected === "Claude Reset"}
 					<ClaudeReset {apiBase} />
 				{:else if panel.selected === "Model Status"}

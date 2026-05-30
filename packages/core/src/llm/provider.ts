@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
+import type { FetchFunction } from "@ai-sdk/provider-utils";
+import { getAnthropicBetas } from "../credentials/anthropic-betas.js";
+import { transformClaudeOAuthBody } from "./anthropic-oauth-transform.js";
 
 export interface ProviderConfig {
 	apiKey: string;
@@ -71,12 +75,52 @@ export function createProvider(config: ProviderConfig): ModelFactory {
  * (claude-pro, claude-max). Uses `authToken` to send `Authorization: Bearer`
  * (natively supported by `@ai-sdk/anthropic` v3.x), and mimics Claude Code CLI
  * request headers so the request bills against the user's Claude subscription.
+ *
+ * The `anthropic-beta` header is REQUIRED here. `@ai-sdk/anthropic` only emits
+ * an `anthropic-beta` header for betas it auto-derives from tool definitions
+ * (computer-use, structured-outputs, etc.) — it does NOT add the prompt-caching
+ * or oauth betas on its own. Without `prompt-caching-scope-2026-01-05` the API
+ * silently ignores every `cache_control` breakpoint we attach to messages,
+ * giving a 0% cache hit rate and a massive token burn (see claude-report.md).
+ * The SDK folds any `anthropic-beta` it finds on the provider's config headers
+ * back into its own beta set (via `getBetasFromHeaders`), so the values here
+ * are merged — not overwritten — with any tool-derived betas.
  */
 function createClaudeOAuthProvider(config: ProviderConfig): ModelFactory {
+	// Stable per-provider session id — mirrors the Claude Code CLI, which sends
+	// the same `X-Claude-Code-Session-Id` across a session's requests.
+	const sessionId = randomUUID();
+	const baseFetch = globalThis.fetch;
+
+	// Custom fetch that (1) restructures the request body into the genuine
+	// Claude Code system layout — required for Anthropic to bill correctly and
+	// apply the prompt-cache scope (see anthropic-oauth-transform.ts) — and
+	// (2) stamps the Claude Code session/request id headers the real CLI sends.
+	// Cast through `unknown`: `FetchFunction` is `typeof globalThis.fetch`, whose
+	// (Bun) type carries a `preconnect` member a plain wrapper can't satisfy.
+	const oauthFetch = (async (
+		input: Parameters<FetchFunction>[0],
+		init?: Parameters<FetchFunction>[1],
+	) => {
+		const nextInit: RequestInit = { ...init };
+		if (init?.body != null) {
+			nextInit.body = transformClaudeOAuthBody(init.body) ?? init.body;
+		}
+		const headers = new Headers(init?.headers);
+		headers.set("X-Claude-Code-Session-Id", sessionId);
+		if (!headers.has("x-client-request-id")) {
+			headers.set("x-client-request-id", randomUUID());
+		}
+		nextInit.headers = headers;
+		return baseFetch(input, nextInit);
+	}) as unknown as FetchFunction;
+
 	const anthropic = createAnthropic({
 		baseURL: config.baseURL || "https://api.anthropic.com/v1",
 		authToken: config.claudeCredentials?.accessToken ?? config.apiKey,
+		fetch: oauthFetch,
 		headers: {
+			"anthropic-beta": getAnthropicBetas().join(","),
 			"anthropic-dangerous-direct-browser-access": "true",
 			"x-app": "cli",
 			"user-agent": "claude-cli/2.1.112 (external, sdk-cli)",

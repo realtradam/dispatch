@@ -12,6 +12,7 @@ import { config } from "./config.js";
 import { appSettings } from "./settings.svelte.js";
 import type {
 	AgentEvent,
+	CacheStats,
 	ChatMessage,
 	Chunk,
 	DebugInfo,
@@ -89,6 +90,12 @@ export interface Tab {
 	oldestLoadedSeq: number | null;
 	/** Total number of messages for this tab on the backend */
 	totalMessages: number;
+	/**
+	 * Cumulative prompt-cache token telemetry for this tab since the page
+	 * loaded (in-memory only — resets on reload). Undefined until the first
+	 * `usage` event arrives. Drives the "Cache Rate" sidebar view.
+	 */
+	cacheStats?: CacheStats;
 }
 
 /**
@@ -844,6 +851,29 @@ export function createTabStore() {
 			case "shell-output": {
 				if (!tabId) break;
 				applyChunkEvent(tabId, event);
+				break;
+			}
+			case "usage": {
+				if (!tabId) break;
+				const tab = getTabById(tabId);
+				if (!tab) break;
+				const u = event.usage;
+				const prev = tab.cacheStats;
+				updateTab(tabId, {
+					cacheStats: {
+						inputTokens: (prev?.inputTokens ?? 0) + u.inputTokens,
+						outputTokens: (prev?.outputTokens ?? 0) + u.outputTokens,
+						cacheReadTokens: (prev?.cacheReadTokens ?? 0) + u.cacheReadTokens,
+						cacheWriteTokens: (prev?.cacheWriteTokens ?? 0) + u.cacheWriteTokens,
+						requests: (prev?.requests ?? 0) + 1,
+						last: {
+							inputTokens: u.inputTokens,
+							outputTokens: u.outputTokens,
+							cacheReadTokens: u.cacheReadTokens,
+							cacheWriteTokens: u.cacheWriteTokens,
+						},
+					},
+				});
 				break;
 			}
 			case "done": {

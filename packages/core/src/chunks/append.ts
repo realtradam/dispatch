@@ -35,9 +35,9 @@
  *                       (no unsealed thinking chunk) are dropped.
  *
  * Ignored events:
- *  - `status`, `done`, `task-list-update`, `tab-created`, `message-queued`,
- *    `message-consumed`, `message-cancelled` — these are control / lifecycle
- *    events, not message content.
+ *  - `status`, `done`, `usage`, `task-list-update`, `tab-created`,
+ *    `message-queued`, `message-consumed`, `message-cancelled` — these are
+ *    control / lifecycle events, not message content.
  */
 
 import type {
@@ -201,6 +201,7 @@ export function appendEventToChunks(chunks: Chunk[], event: AgentEvent): void {
 		// Lifecycle / control events — no chunk emitted.
 		case "status":
 		case "done":
+		case "usage":
 		case "task-list-update":
 		case "tab-created":
 		case "message-queued":
