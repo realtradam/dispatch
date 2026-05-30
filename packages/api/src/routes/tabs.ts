@@ -2,10 +2,11 @@ import {
 	archiveTab,
 	createTab,
 	deleteSetting,
-	getMessagesForTab,
+	getChunksForTab,
 	getSetting,
 	getTab,
-	getTotalMessageCount,
+	getTotalChunkCount,
+	groupRowsToMessages,
 	listOpenTabs,
 	setSetting,
 	updateTabModel,
@@ -65,6 +66,11 @@ tabsRoutes.get("/:id", (c) => {
 	return c.json(tab);
 });
 
+// Conversation history for a tab, paginated at CHUNK granularity. The flat
+// chunk log is windowed by `limit`/`before` (both chunk-`seq` cursors) so a
+// single huge turn never dumps in full, then grouped into render messages.
+// `before` is the oldest chunk seq the client already holds. This is what
+// powers per-chunk frontend pagination / memory control.
 tabsRoutes.get("/:id/messages", (c) => {
 	const id = c.req.param("id");
 	const limitRaw = c.req.query("limit");
@@ -78,9 +84,13 @@ tabsRoutes.get("/:id/messages", (c) => {
 					...(before !== undefined && Number.isFinite(before) ? { before } : {}),
 				}
 			: undefined;
-	const messages = getMessagesForTab(id, options);
-	const total = getTotalMessageCount(id);
-	return c.json({ messages, total });
+	const chunks = getChunksForTab(id, options);
+	const messages = groupRowsToMessages(chunks);
+	// `oldestSeq` is the chunk-seq cursor the client pages backward from; null
+	// when the window is empty.
+	const oldestSeq = chunks.length > 0 ? (chunks[0]?.seq ?? null) : null;
+	const total = getTotalChunkCount(id);
+	return c.json({ messages, total, oldestSeq });
 });
 
 tabsRoutes.patch("/:id", async (c) => {

@@ -78,6 +78,85 @@ export interface ChatMessage {
 	chunks: Chunk[];
 }
 
+// ─── Append-only chunk log (persisted model) ─────────────────────
+//
+// The DB stores a conversation as a flat stream of `ChunkRow`s (see
+// db/chunks.ts). The render-facing `Chunk`/`ChatMessage` shapes above are
+// DERIVED from these rows by grouping (turn_id + step + role). Tool calls
+// and their results are SEPARATE rows linked by `callId`, mapping 1:1 to the
+// Anthropic wire format.
+
+/** Role of a persisted chunk row. `tool` rows hold tool results. */
+export type ChunkRole = "user" | "assistant" | "tool" | "system";
+
+/** Discriminator for a persisted chunk row's payload. */
+export type ChunkType = "text" | "thinking" | "tool_call" | "tool_result" | "error" | "system";
+
+export interface TextData {
+	text: string;
+}
+export interface ThinkingData {
+	text: string;
+	metadata?: Record<string, unknown>;
+}
+export interface ToolCallData {
+	callId: string;
+	name: string;
+	arguments: Record<string, unknown>;
+}
+export interface ToolResultData {
+	callId: string;
+	name: string;
+	result: string;
+	isError: boolean;
+	shellOutput?: { stdout: string; stderr: string };
+}
+export interface ErrorData {
+	message: string;
+	statusCode?: number;
+}
+export interface SystemData {
+	kind: SystemChunkKind;
+	text: string;
+}
+
+export type ChunkData =
+	| TextData
+	| ThinkingData
+	| ToolCallData
+	| ToolResultData
+	| ErrorData
+	| SystemData;
+
+/**
+ * A persisted chunk row — the append-only unit of conversation storage and
+ * the unit of frontend pagination. `seq` is per-tab monotonic and is both the
+ * ordering key and the pagination cursor.
+ */
+export interface ChunkRow {
+	id: string;
+	tabId: string;
+	seq: number;
+	turnId: string;
+	step: number;
+	role: ChunkRole;
+	type: ChunkType;
+	data: ChunkData;
+	createdAt: number;
+}
+
+/**
+ * A chunk-row draft (no `seq`/`tabId`/`createdAt`/`id` yet) used when
+ * exploding an in-memory turn into rows for persistence.
+ */
+export interface ChunkRowDraft {
+	turnId: string;
+	step: number;
+	role: ChunkRole;
+	type: ChunkType;
+	data: ChunkData;
+}
+
 export interface ToolCall {
 	id: string;
 	name: string;

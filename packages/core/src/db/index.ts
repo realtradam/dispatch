@@ -93,16 +93,46 @@ export function getDatabase(): Database {
 		// Column already exists — ignore
 	}
 
-	_db.run(`CREATE TABLE IF NOT EXISTS messages (
-		id           TEXT PRIMARY KEY,
-		tab_id       TEXT NOT NULL REFERENCES tabs(id),
-		seq          INTEGER NOT NULL,
-		role         TEXT NOT NULL,
-		content_json TEXT NOT NULL,
-		created_at   INTEGER NOT NULL
+	// ─── Append-only chunk log (replaces the old `messages` blob table) ──
+	//
+	// A conversation is stored as a flat, append-only stream of chunk rows
+	// keyed by a per-tab monotonic `seq`. "Message" and "turn" are DERIVED
+	// groupings (see db/chunks.ts), never stored containers. This is what
+	// powers per-chunk frontend pagination AND the stable per-step wire
+	// format that fixes Anthropic prompt-cache churn (see plan-chunk-log.md).
+	//
+	//   role  : 'user' | 'assistant' | 'tool' | 'system'
+	//   type  : 'text' | 'thinking' | 'tool_call' | 'tool_result' | 'error' | 'system'
+	//   step  : LLM round-trip index within a turn (user/system rows = 0)
+	//   data_json: the type-specific payload (see ChunkData in types)
+	_db.run(`CREATE TABLE IF NOT EXISTS chunks (
+		id          TEXT PRIMARY KEY,
+		tab_id      TEXT NOT NULL,
+		seq         INTEGER NOT NULL,
+		turn_id     TEXT NOT NULL,
+		step        INTEGER NOT NULL DEFAULT 0,
+		role        TEXT NOT NULL,
+		type        TEXT NOT NULL,
+		data_json   TEXT NOT NULL,
+		created_at  INTEGER NOT NULL
 	)`);
 
-	_db.run(`CREATE INDEX IF NOT EXISTS idx_messages_tab ON messages(tab_id, seq)`);
+	_db.run(`CREATE INDEX IF NOT EXISTS idx_chunks_tab_seq ON chunks(tab_id, seq)`);
+
+	// One-shot migration off the legacy `messages` blob model. Beta software,
+	// no backward compatibility: the old chat history is destroyed (tabs +
+	// messages), while settings / credentials / api_keys / usage_cache /
+	// wake_schedule are preserved. Detect the old schema by the presence of
+	// the `messages` table; once dropped, this branch never runs again.
+	const hasLegacyMessages = _db
+		.query("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+		.get() as { name: string } | null;
+	if (hasLegacyMessages) {
+		_db.run("DROP TABLE IF EXISTS messages");
+		// Clear conversation containers too (fresh slate for the new model).
+		_db.run("DELETE FROM tabs");
+		_db.run("DELETE FROM chunks");
+	}
 
 	_db.run(`CREATE TABLE IF NOT EXISTS settings (
 		key   TEXT PRIMARY KEY,

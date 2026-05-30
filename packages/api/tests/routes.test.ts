@@ -181,10 +181,26 @@ vi.mock("@dispatch/core", () => ({
 	getSetting(_key: string) {
 		return null;
 	},
-	appendMessage() {},
-	updateMessage() {},
+	appendChunks() {
+		return [];
+	},
+	explodeUserText() {
+		return [];
+	},
+	explodeTurn() {
+		return [];
+	},
 	getMessagesForTab() {
 		return [];
+	},
+	getChunksForTab() {
+		return [];
+	},
+	groupRowsToMessages() {
+		return [];
+	},
+	getTotalChunkCount() {
+		return 0;
 	},
 	appendEventToChunks(_chunks: unknown[], _event: unknown) {
 		// no-op stub

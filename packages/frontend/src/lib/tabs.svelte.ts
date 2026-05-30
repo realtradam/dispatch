@@ -230,12 +230,10 @@ export function createTabStore() {
 			};
 
 			const messagesRes = await fetch(`${config.apiBase}/tabs/${agentId}/messages?limit=100`);
-			// The backend's `getMessagesForTab` (packages/core/src/db/messages.ts)
-			// already parses `content_json` into a `Chunk[]` and serves it as
-			// `chunks` over the wire — NOT the raw `contentJson` string. Earlier
-			// versions of this client expected `contentJson` and silently dropped
-			// every message when JSON.parse(undefined) threw, leaving the UI
-			// with empty conversations after a refresh.
+			// `GET /messages` windows the flat chunk log (last N chunks) and
+			// groups the rows into render messages (`groupRowsToMessages` in
+			// packages/core/src/chunks/transform.ts), serving them as `chunks`
+			// per message over the wire — NOT a raw JSON string.
 			const messagesData = messagesRes.ok
 				? ((await messagesRes.json()) as {
 						messages: Array<{
@@ -408,8 +406,15 @@ export function createTabStore() {
 			const res = await fetch(`${config.apiBase}/tabs/${tabId}/messages?limit=50${beforeParam}`);
 			if (!res.ok) return;
 			const data = (await res.json()) as {
-				messages?: Array<{ id?: string; role: string; chunks?: Chunk[]; seq?: number }>;
+				messages?: Array<{
+					id?: string;
+					role: string;
+					chunks?: Chunk[];
+					seq?: number;
+					turnId?: string;
+				}>;
 				total?: number;
+				oldestSeq?: number | null;
 			};
 			const rawMessages = data.messages ?? [];
 			if (rawMessages.length === 0) {
@@ -426,18 +431,43 @@ export function createTabStore() {
 				chunks: Array.isArray(m.chunks) ? m.chunks : [],
 				isStreaming: false,
 				seq: m.seq,
+				...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
 			}));
 
 			const current = getTabById(tabId);
 			if (!current) return;
 
+			// Chunk-granular pagination can split ONE turn across the window
+			// boundary: the oldest message already loaded and the newest message
+			// in this older page may share a turn_id. Merge them (older chunks
+			// first) so the turn renders as one bubble instead of duplicating.
+			const merged = [...current.messages];
+			const lastOlder = older[older.length - 1];
+			const firstCurrent = merged[0];
+			if (
+				lastOlder &&
+				firstCurrent &&
+				lastOlder.turnId !== undefined &&
+				lastOlder.turnId === firstCurrent.turnId &&
+				lastOlder.role === firstCurrent.role
+			) {
+				older.pop();
+				merged[0] = {
+					...firstCurrent,
+					id: lastOlder.id,
+					seq: lastOlder.seq,
+					turnId: lastOlder.turnId,
+					chunks: [...lastOlder.chunks, ...firstCurrent.chunks],
+				};
+			}
+
 			// Avoid duplicating messages we already have loaded.
-			const existingIds = new Set(current.messages.map((m) => m.id));
+			const existingIds = new Set(merged.map((m) => m.id));
 			const toPrepend = older.filter((m) => !existingIds.has(m.id));
 
-			const newOldestSeq = oldestSeqOf(rawMessages);
+			const newOldestSeq = data.oldestSeq ?? oldestSeqOf(rawMessages);
 			updateTab(tabId, {
-				messages: [...toPrepend, ...current.messages],
+				messages: [...toPrepend, ...merged],
 				oldestLoadedSeq: newOldestSeq ?? current.oldestLoadedSeq,
 				totalMessages: data.total ?? current.totalMessages,
 			});

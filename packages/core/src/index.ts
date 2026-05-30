@@ -29,16 +29,19 @@ export {
 } from "./config/index.js";
 // Credentials
 export * from "./credentials/index.js";
+export {
+	appendChunks,
+	clearChunksForTab,
+	explodeTurn,
+	explodeUserText,
+	getChunksForTab,
+	getMessagesForTab,
+	getTotalChunkCount,
+	groupRowsToMessages,
+	type MessageRow,
+} from "./db/chunks.js";
 // Database
 export { closeDatabase, getDatabase, getDatabasePath } from "./db/index.js";
-export {
-	appendMessage,
-	clearMessagesForTab,
-	getMessagesForTab,
-	getTotalMessageCount,
-	type MessageRow,
-	updateMessage,
-} from "./db/messages.js";
 export { deleteSetting, getSetting, setSetting } from "./db/settings.js";
 // Tabs & Messages
 export {
