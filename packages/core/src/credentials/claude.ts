@@ -10,7 +10,13 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { getDatabase } from "../db/index.js";
+import { getAnthropicBetas } from "./anthropic-betas.js";
 import { getStoredCredentials, listStoredCredentials, updateStoredTokens } from "./store.js";
+
+// Re-exported for backward compatibility — `getAnthropicBetas` historically
+// lived here and is surfaced through `credentials/index.ts`. The definition
+// now lives in the dependency-free `anthropic-betas.ts` module.
+export { getAnthropicBetas };
 
 export interface ClaudeCredentials {
 	accessToken: string;
@@ -366,21 +372,6 @@ export function buildBillingHeaderValue(
 }
 
 export const SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
-
-// ─── Anthropic Beta Headers ───────────────────────────────────
-
-const BASE_BETAS = [
-	"claude-code-20250219",
-	"oauth-2025-04-20",
-	"interleaved-thinking-2025-05-14",
-	"prompt-caching-scope-2026-01-05",
-	"context-management-2025-06-27",
-	"advisor-tool-2026-03-01",
-];
-
-export function getAnthropicBetas(): string[] {
-	return [...BASE_BETAS];
-}
 
 // ─── Anthropic Request Headers ────────────────────────────────
 

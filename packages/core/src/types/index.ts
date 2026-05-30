@@ -136,6 +136,24 @@ export type AgentEvent =
 	| { type: "tool-call"; toolCall: ToolCall }
 	| { type: "tool-result"; toolResult: ToolResult }
 	| { type: "shell-output"; data: string; stream: "stdout" | "stderr" }
+	/**
+	 * Per-request token usage, emitted once per LLM round-trip (each
+	 * `streamText` step) from the AI SDK `finish` stream event. `inputTokens`
+	 * is the TOTAL prompt size including cached tokens; `cacheReadTokens` is
+	 * the portion served from Anthropic's prompt cache (a cache HIT) and
+	 * `cacheWriteTokens` the portion written to it (a cache seed). The "Cache
+	 * Rate" view aggregates these to show the prompt-cache hit rate. Non-
+	 * caching providers report zero for the cache fields.
+	 */
+	| {
+			type: "usage";
+			usage: {
+				inputTokens: number;
+				outputTokens: number;
+				cacheReadTokens: number;
+				cacheWriteTokens: number;
+			};
+	  }
 	| { type: "error"; error: string; statusCode?: number }
 	| { type: "notice"; message: string }
 	| { type: "model-changed"; keyId: string; modelId: string }
