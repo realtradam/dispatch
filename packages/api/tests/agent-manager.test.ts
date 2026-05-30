@@ -259,8 +259,15 @@ vi.mock("@dispatch/core", () => ({
 	getSetting(_key: string) {
 		return null;
 	},
-	appendMessage() {},
-	updateMessage() {},
+	appendChunks() {
+		return [];
+	},
+	explodeUserText() {
+		return [];
+	},
+	explodeTurn() {
+		return [];
+	},
 	getMessagesForTab(tabId: string) {
 		return fakeMessagesByTab.get(tabId) ?? [];
 	},

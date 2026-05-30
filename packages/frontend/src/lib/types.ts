@@ -96,6 +96,13 @@ export interface ChatMessage {
 	isStreaming?: boolean;
 	debugInfo?: DebugInfo;
 	seq?: number;
+	/**
+	 * turn_id of the chunk rows this message was grouped from (history loaded
+	 * from the backend). Used by `loadMoreMessages` to merge a turn that was
+	 * split across the chunk-pagination window boundary. Absent for live
+	 * (streaming) messages built client-side.
+	 */
+	turnId?: string;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";

@@ -450,10 +450,11 @@ describe("Agent", () => {
 		expect(toolContent[0]).not.toHaveProperty("result");
 	});
 
-	it("Anthropic [tool-call, text] split: mixed-order assistant message gets split into [text]+[tool-call]", async () => {
-		// Pre-seed an assistant message with chunks in [tool-batch, text] order —
-		// which produces [tool-call, text] in the ModelMessage content, a shape
-		// Anthropic rejects. Only applies for anthropic / opencode-anthropic provider.
+	it("per-step segmentation: a [tool-batch, text] turn becomes [assistant(tool-call), tool(result), assistant(text)]", async () => {
+		// `toModelMessages` segments a turn at each tool-batch boundary, so the
+		// tool-batch (step 0) and the trailing text (step 1) land in SEPARATE
+		// assistant messages — never a single invalid [tool_use, text] block.
+		// This is the cache-stability fix and is applied for every provider.
 		const agent = new Agent(makeConfig({ provider: "opencode-anthropic" }));
 		agent.messages.push({
 			role: "user",
@@ -490,34 +491,31 @@ describe("Agent", () => {
 		const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
 		const messages = callArgs?.messages as Array<{ role: string; content: unknown }>;
 
-		// After Anthropic structural normalisation, we should have TWO assistant messages:
-		// 1st: text-only content
-		// 2nd: tool-call-only content
+		// No assistant message may mix tool-call and non-tool-call parts (the
+		// invalid shape Anthropic rejects); segmentation guarantees this.
 		const assistantMsgs = messages.filter((m) => m.role === "assistant");
-		expect(assistantMsgs.length).toBeGreaterThanOrEqual(2);
-
-		// Find the text-only assistant message and the tool-call-only assistant message
-		const textOnlyMsg = assistantMsgs.find((m) => {
+		for (const m of assistantMsgs) {
 			const c = m.content as Array<Record<string, unknown>>;
-			return Array.isArray(c) && c.every((p) => p.type !== "tool-call");
-		});
-		const toolOnlyMsg = assistantMsgs.find((m) => {
+			if (!Array.isArray(c)) continue;
+			const hasToolCall = c.some((p) => p.type === "tool-call");
+			const hasNonToolCall = c.some((p) => p.type !== "tool-call");
+			expect(hasToolCall && hasNonToolCall).toBe(false);
+		}
+
+		// The seeded turn yields a tool-call assistant message immediately
+		// followed by its tool-result message (valid tool_use → tool_result).
+		const toolOnlyIdx = messages.findIndex((m) => {
 			const c = m.content as Array<Record<string, unknown>>;
-			return Array.isArray(c) && c.every((p) => p.type === "tool-call");
+			return m.role === "assistant" && Array.isArray(c) && c.some((p) => p.type === "tool-call");
 		});
-
-		// Narrow the optionals — toBeDefined() already verified non-null,
-		// but TypeScript needs the explicit assertion via local consts so
-		// we can pass them to indexOf without `!`.
-		if (!textOnlyMsg || !toolOnlyMsg) throw new Error("type guard");
-
-		// Text message comes first (before tool-call message) — Anthropic requires this ordering
-		expect(messages.indexOf(textOnlyMsg)).toBeLessThan(messages.indexOf(toolOnlyMsg));
+		expect(toolOnlyIdx).toBeGreaterThanOrEqual(0);
+		expect(messages[toolOnlyIdx + 1]?.role).toBe("tool");
 	});
 
-	it("Anthropic [tool-call, text] split: openai-compatible provider preserves original order (no split)", async () => {
-		// For non-Anthropic providers, the [tool-call, text] split should NOT be applied.
-		// (No provider set → defaults to openai-compatible)
+	it("per-step segmentation also applies to the openai-compatible provider", async () => {
+		// Segmentation is provider-agnostic: a [tool-batch, text] turn is split
+		// into separate assistant messages for openai-compatible too, with the
+		// tool result in its own tool message (the standard OpenAI shape).
 		const agent = new Agent(makeConfig());
 		agent.messages.push({
 			role: "user",
@@ -552,13 +550,24 @@ describe("Agent", () => {
 		const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
 		const messages = callArgs?.messages as Array<{ role: string; content: unknown }>;
 
-		// For openai-compatible provider, only ONE assistant message with mixed content
+		// The seeded [tool-batch, text] turn is segmented: a tool-call-only
+		// assistant message, its tool message, and a separate text assistant
+		// message (the new turn's "ok" reply adds one more). No assistant
+		// message mixes tool-call and non-tool-call parts.
 		const assistantMsgs = messages.filter((m) => m.role === "assistant");
-		expect(assistantMsgs).toHaveLength(1);
-		const content = assistantMsgs[0]?.content as Array<Record<string, unknown>>;
-		// Both tool-call and text parts should be in the same message
-		expect(content.some((p) => p.type === "tool-call")).toBe(true);
-		expect(content.some((p) => p.type === "text")).toBe(true);
+		for (const m of assistantMsgs) {
+			const c = m.content as Array<Record<string, unknown>>;
+			if (!Array.isArray(c)) continue;
+			expect(c.some((p) => p.type === "tool-call") && c.some((p) => p.type !== "tool-call")).toBe(
+				false,
+			);
+		}
+		expect(messages.some((m) => m.role === "tool")).toBe(true);
+		const toolCallMsg = assistantMsgs.find((m) => {
+			const c = m.content as Array<Record<string, unknown>>;
+			return Array.isArray(c) && c.some((p) => p.type === "tool-call");
+		});
+		expect(toolCallMsg).toBeDefined();
 	});
 
 	it("empty-text-part filter (Anthropic): empty text chunk is not sent", async () => {
@@ -1248,6 +1257,74 @@ describe("Agent", () => {
 		// a.txt + b.txt are distinct → two executions; the repeated a.txt reuses
 		// the first result.
 		expect(execCount).toBe(2);
+	});
+
+	// ─── Cache stability: per-step wire prefix is immutable ─────────────────────
+
+	it("keeps earlier steps' wire messages byte-identical across requests (cache prefix is stable)", async () => {
+		// A 3-step tool turn. The messages for steps 0 and 1 must serialize
+		// identically in the step-2 request and the step-3 request — that
+		// byte-stability is what lets Anthropic's rolling prompt cache extend
+		// instead of re-writing the whole prefix every step (cache-miss-report.md).
+		// Uses the openai-compatible provider so no cacheControl markers (which
+		// intentionally move each step) obscure the content comparison.
+		let n = 0;
+		// mock.calls accumulates across tests in this file — reset so our
+		// `calls.length` assertions count only this run's requests.
+		vi.mocked(streamText).mockClear();
+		const toolDef = {
+			name: "read_file",
+			description: "reads a file",
+			parameters: z.object({ path: z.string() }),
+			execute: async (args: Record<string, unknown>) => `contents of ${String(args.path)}`,
+		};
+		const toolStep = (id: string, path: string) =>
+			makeMockStreamResult([
+				{ type: "reasoning-delta", id: `r${id}`, text: `thinking ${id}` },
+				{ type: "text-delta", id: `t${id}`, text: `step ${id}` },
+				{ type: "tool-call", toolCallId: id, toolName: "read_file", input: { path } },
+				finishToolCalls,
+			]);
+		vi.mocked(streamText).mockImplementation(() => {
+			n++;
+			if (n === 1) return toolStep("s0", "a.txt");
+			if (n === 2) return toolStep("s1", "b.txt");
+			if (n === 3) return toolStep("s2", "c.txt");
+			return makeMockStreamResult([{ type: "text-delta", id: "tf", text: "done" }, finishStop]);
+		});
+
+		const agent = new Agent(makeConfig({ tools: [toolDef] }));
+		for await (const _ of agent.run("go")) {
+			/* consume */
+		}
+
+		// 4 streamText calls (steps 0..3). Compare the step-2 request (call idx 2)
+		// and step-3 request (call idx 3).
+		const calls = vi.mocked(streamText).mock.calls;
+		expect(calls.length).toBe(4);
+		const req2 = calls[2]?.[0]?.messages as unknown[];
+		const req3 = calls[3]?.[0]?.messages as unknown[];
+
+		// Step-2 request = [system, user, a(s0), tool(s0), a(s1), tool(s1)] (6).
+		// Step-3 request appends a(s2), tool(s2). The shared 6-message prefix
+		// must be byte-identical.
+		expect(req2).toHaveLength(6);
+		expect(req3).toHaveLength(8);
+		expect(JSON.stringify(req3.slice(0, 6))).toBe(JSON.stringify(req2));
+
+		// And each step really is its own [assistant, tool] pair (not one merged
+		// assistant message with all tool calls bunched together).
+		const roles = (req3 as Array<{ role: string }>).map((m) => m.role);
+		expect(roles).toEqual([
+			"system",
+			"user",
+			"assistant",
+			"tool",
+			"assistant",
+			"tool",
+			"assistant",
+			"tool",
+		]);
 	});
 
 	// ─── Usage / cache-rate telemetry ──────────────────────────────────────────
