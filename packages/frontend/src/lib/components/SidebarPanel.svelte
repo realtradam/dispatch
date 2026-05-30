@@ -101,15 +101,18 @@ function addPanel() {
 	panels = [...panels, { id: nextId++, selected: "Select a view" }];
 }
 
-function panelClass(selected: string): string {
-	const base = "bg-base-200 rounded-lg p-3 flex flex-col min-h-0";
-	const fill = selected === "Key Usage" || selected === "Tasks" || selected === "Cache Rate";
-	return fill ? `${base} flex-1` : base;
+// Every panel sizes to its content; the sidebar itself (in App.svelte) is the
+// scroll container. We deliberately do NOT use `flex-1` fill here: a filled
+// panel combined with `min-h-0` lets flex shrink the panel below its content's
+// natural height, and since the content wrapper is a plain block the inner
+// scroll regions never receive a bounded height — so their bars/lists spill
+// out of the panel into neighbours or past the window edge.
+function panelClass(_selected: string): string {
+	return "bg-base-200 rounded-lg p-3 flex flex-col";
 }
 
-function contentClass(selected: string): string {
-	const fill = selected === "Key Usage" || selected === "Tasks" || selected === "Cache Rate";
-	return fill ? "mt-2 flex-1 min-h-0" : "mt-2";
+function contentClass(_selected: string): string {
+	return "mt-2";
 }
 </script>
 
