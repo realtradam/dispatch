@@ -799,6 +799,9 @@ export class AgentManager {
 				if (tabAgent.currentAssistantId) {
 					snap.currentAssistantId = tabAgent.currentAssistantId;
 				}
+				if (tabAgent.currentTurnId) {
+					snap.currentTurnId = tabAgent.currentTurnId;
+				}
 			}
 			result[tabId] = snap;
 		}
@@ -1119,6 +1122,10 @@ export class AgentManager {
 		// chunk rows — shares one `turn_id`.
 		const turnId = crypto.randomUUID();
 		tabAgent.currentTurnId = turnId;
+		// Announce the turn so the frontend can tag its live chunks with this
+		// turn_id (stable render keys → flicker-free reconcile when the turn
+		// seals). Emitted before any content delta.
+		this.emit({ type: "turn-start", turnId }, tabId);
 		appendChunks(tabId, explodeUserText(turnId, message));
 
 		// Store agent models on the tab if provided (defines fallback order)
@@ -1284,6 +1291,12 @@ export class AgentManager {
 			this.emit({ type: "status", status: "error" }, tabId);
 			break;
 		}
+		// Turn fully settled and its chunks are now persisted (flushAssistant ran
+		// above). Signal the frontend that the turn's rows — with real seqs — are
+		// durable so it can fold its live representation into the sealed log.
+		// Emitted AFTER status:idle/error (which fire before the DB write).
+		this.emit({ type: "turn-sealed", turnId }, tabId);
+
 		// Turn fully settled — clear the shared turn id.
 		tabAgent.currentTurnId = null;
 

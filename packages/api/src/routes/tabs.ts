@@ -93,6 +93,30 @@ tabsRoutes.get("/:id/messages", (c) => {
 	return c.json({ messages, total, oldestSeq });
 });
 
+// Raw chunk window for a tab — the chunk-native frontend's load/paginate
+// source. Same `limit`/`before` chunk-`seq` windowing as `/messages`, but
+// returns the flat `ChunkRow[]` WITHOUT server-side grouping (the frontend
+// groups for render and evicts/paginates on the flat list). Dedupe on the
+// client by `seq` when overlap-fetching.
+tabsRoutes.get("/:id/chunks", (c) => {
+	const id = c.req.param("id");
+	const limitRaw = c.req.query("limit");
+	const beforeRaw = c.req.query("before");
+	const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
+	const before = beforeRaw !== undefined ? Number(beforeRaw) : undefined;
+	const options =
+		limit !== undefined || before !== undefined
+			? {
+					...(limit !== undefined && Number.isFinite(limit) ? { limit } : {}),
+					...(before !== undefined && Number.isFinite(before) ? { before } : {}),
+				}
+			: undefined;
+	const chunks = getChunksForTab(id, options);
+	const oldestSeq = chunks.length > 0 ? (chunks[0]?.seq ?? null) : null;
+	const total = getTotalChunkCount(id);
+	return c.json({ chunks, total, oldestSeq });
+});
+
 tabsRoutes.patch("/:id", async (c) => {
 	const id = c.req.param("id");
 	const body = await c.req.json<{

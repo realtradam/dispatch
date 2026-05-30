@@ -52,32 +52,38 @@ export function appendChunks(tabId: string, drafts: ChunkRowDraft[]): ChunkRow[]
 		 VALUES ($id, $tabId, $seq, $turnId, $step, $role, $type, $dataJson, $now)`,
 	);
 	const out: ChunkRow[] = [];
-	for (const draft of drafts) {
-		const id = randomUUID();
-		insert.run({
-			$id: id,
-			$tabId: tabId,
-			$seq: seq,
-			$turnId: draft.turnId,
-			$step: draft.step,
-			$role: draft.role,
-			$type: draft.type,
-			$dataJson: JSON.stringify(draft.data),
-			$now: now,
-		});
-		out.push({
-			id,
-			tabId,
-			seq,
-			turnId: draft.turnId,
-			step: draft.step,
-			role: draft.role,
-			type: draft.type,
-			data: draft.data,
-			createdAt: now,
-		});
-		seq++;
-	}
+	// Wrap the whole batch in one transaction: a turn's chunks are persisted in
+	// a single `appendChunks` call, so this is one fsync per turn instead of one
+	// per row — the chosen low-IO write strategy for constrained backends.
+	const insertAll = db.transaction(() => {
+		for (const draft of drafts) {
+			const id = randomUUID();
+			insert.run({
+				$id: id,
+				$tabId: tabId,
+				$seq: seq,
+				$turnId: draft.turnId,
+				$step: draft.step,
+				$role: draft.role,
+				$type: draft.type,
+				$dataJson: JSON.stringify(draft.data),
+				$now: now,
+			});
+			out.push({
+				id,
+				tabId,
+				seq,
+				turnId: draft.turnId,
+				step: draft.step,
+				role: draft.role,
+				type: draft.type,
+				data: draft.data,
+				createdAt: now,
+			});
+			seq++;
+		}
+	});
+	insertAll();
 	return out;
 }
 

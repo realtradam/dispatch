@@ -340,13 +340,41 @@ describe("AgentManager", () => {
 		await manager.processMessage("tab-1", "test");
 
 		expect(events.length).toBeGreaterThan(0);
-		expect(events[0]).toMatchObject({ type: "status", status: "running" });
+		// A turn now opens with `turn-start`, immediately followed by the
+		// agent's `status: running`.
+		expect(events[0]).toMatchObject({ type: "turn-start" });
+		expect(events[1]).toMatchObject({ type: "status", status: "running" });
 
+		// A turn now closes with `turn-sealed` (emitted after the DB write, which
+		// is after the agent's final `status: idle`).
 		const lastEvent = events[events.length - 1];
-		expect(lastEvent).toMatchObject({ type: "status", status: "idle" });
+		expect(lastEvent).toMatchObject({ type: "turn-sealed" });
+		expect(events.some((e) => e.type === "status" && e.status === "idle")).toBe(true);
 
 		const doneEvent = events.find((e) => e.type === "done");
 		expect(doneEvent).toBeDefined();
+	});
+
+	it("emits a turn-start with a turnId before any content event", async () => {
+		const manager = new AgentManager();
+		const events: AgentEvent[] = [];
+		manager.onEvent((event) => {
+			events.push(event);
+		});
+
+		await manager.processMessage("tab-turnstart", "go");
+
+		const turnStartIdx = events.findIndex((e) => e.type === "turn-start");
+		expect(turnStartIdx).toBeGreaterThanOrEqual(0);
+		const turnStart = events[turnStartIdx] as Extract<AgentEvent, { type: "turn-start" }>;
+		expect(typeof turnStart.turnId).toBe("string");
+		expect(turnStart.turnId.length).toBeGreaterThan(0);
+
+		// Must precede the first content delta.
+		const firstContentIdx = events.findIndex(
+			(e) => e.type === "text-delta" || e.type === "reasoning-delta",
+		);
+		expect(firstContentIdx).toBeGreaterThan(turnStartIdx);
 	});
 
 	it("emits text-delta events during processMessage", async () => {

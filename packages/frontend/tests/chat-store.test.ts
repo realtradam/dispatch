@@ -71,6 +71,7 @@ beforeEach(() => {
 	);
 });
 
+import { appSettings } from "../src/lib/settings.svelte.js";
 import { createTabStore } from "../src/lib/tabs.svelte.js";
 import type { Chunk, PermissionPrompt } from "../src/lib/types.js";
 import { wsClient } from "../src/lib/ws.svelte.js";
@@ -92,8 +93,25 @@ async function setupStoreWithTab() {
  */
 function getAssistantChunks(store: ReturnType<typeof createTabStore>): Chunk[] | undefined {
 	const tab = store.tabs[0];
-	const assistant = tab?.messages.find((m) => m.role === "assistant");
+	const assistant = tab?.renderGroups.find((m) => m.role === "assistant");
 	return assistant?.chunks;
+}
+
+/**
+ * Build a raw `ChunkRow` as the `GET /tabs/:id/chunks` endpoint returns them.
+ * The chunk-native store loads/paginates raw rows and groups them for render.
+ */
+function chunkRow(
+	id: string,
+	tabId: string,
+	seq: number,
+	turnId: string,
+	role: "user" | "assistant" | "tool" | "system",
+	type: "text" | "thinking" | "tool_call" | "tool_result" | "error" | "system",
+	data: unknown,
+	step = 0,
+): Record<string, unknown> {
+	return { id, tabId, seq, turnId, step, role, type, data, createdAt: seq };
 }
 
 describe("tabStore — streaming chunk flow (real $state)", () => {
@@ -102,7 +120,7 @@ describe("tabStore — streaming chunk flow (real $state)", () => {
 
 		store.handleEvent({ type: "text-delta", delta: "Hello", tabId });
 
-		const assistant = store.tabs[0]?.messages.find((m) => m.role === "assistant");
+		const assistant = store.tabs[0]?.renderGroups.find((m) => m.role === "assistant");
 		expect(assistant).toBeDefined();
 		expect(assistant?.isStreaming).toBe(true);
 		expect(assistant?.chunks).toEqual([{ type: "text", text: "Hello" }]);
@@ -204,7 +222,7 @@ describe("tabStore — streaming chunk flow (real $state)", () => {
 			message: { role: "assistant", chunks: [] },
 			tabId,
 		} as Parameters<typeof store.handleEvent>[0]);
-		const assistant = store.tabs[0]?.messages.find((m) => m.role === "assistant");
+		const assistant = store.tabs[0]?.renderGroups.find((m) => m.role === "assistant");
 		expect(assistant?.chunks).toEqual([{ type: "text", text: "partial" }]);
 		expect(assistant?.isStreaming).toBe(false);
 		expect(store.tabs[0]?.currentAssistantId).toBeNull();
@@ -315,7 +333,8 @@ describe("tabStore — streaming chunk flow (real $state)", () => {
 	it("error event with no in-flight turn opens a fresh assistant message", async () => {
 		const { store, tabId } = await setupStoreWithTab();
 		store.handleEvent({ type: "error", error: "boom", tabId });
-		const assistantMessages = store.tabs[0]?.messages.filter((m) => m.role === "assistant") ?? [];
+		const assistantMessages =
+			store.tabs[0]?.renderGroups.filter((m) => m.role === "assistant") ?? [];
 		expect(assistantMessages.length).toBeGreaterThanOrEqual(1);
 		const errChunks = assistantMessages[assistantMessages.length - 1]?.chunks;
 		expect(errChunks).toHaveLength(1);
@@ -342,7 +361,7 @@ describe("tabStore — streaming chunk flow (real $state)", () => {
 	it("notice with no turn in flight creates a role:system message", async () => {
 		const { store, tabId } = await setupStoreWithTab();
 		store.handleEvent({ type: "notice", message: "standalone", tabId });
-		const systemMsg = store.tabs[0]?.messages.find((m) => m.role === "system");
+		const systemMsg = store.tabs[0]?.renderGroups.find((m) => m.role === "system");
 		expect(systemMsg).toBeDefined();
 		const chunks = systemMsg?.chunks;
 		expect(chunks).toHaveLength(1);
@@ -355,7 +374,7 @@ describe("tabStore — streaming chunk flow (real $state)", () => {
 		const { store, tabId } = await setupStoreWithTab();
 		store.handleEvent({ type: "notice", message: "first", tabId });
 		store.handleEvent({ type: "notice", message: "second", tabId });
-		const sysMsgs = store.tabs[0]?.messages.filter((m) => m.role === "system") ?? [];
+		const sysMsgs = store.tabs[0]?.renderGroups.filter((m) => m.role === "system") ?? [];
 		expect(sysMsgs).toHaveLength(1);
 		expect(sysMsgs[0]?.chunks).toHaveLength(2);
 	});
@@ -455,7 +474,7 @@ describe("tabStore — reactivity contract", () => {
 		expect(store.tabs[0]?.agentStatus).toBe("idle");
 		expect(store.tabs[0]?.currentAssistantId).toBeNull();
 		// The streaming flag on the in-flight message should be cleared.
-		const assistant = store.tabs[0]?.messages.find((m) => m.role === "assistant");
+		const assistant = store.tabs[0]?.renderGroups.find((m) => m.role === "assistant");
 		expect(assistant?.isStreaming).toBe(false);
 	});
 });
@@ -702,26 +721,24 @@ describe("hydrateFromBackend", () => {
 						json: () => Promise.resolve({ statuses: {} }),
 					});
 				}
-				if (url.split("?")[0]?.endsWith("/tabs/t1/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/t1/chunks")) {
 					return Promise.resolve({
 						ok: true,
 						json: () =>
 							Promise.resolve({
-								messages: [
-									{ id: "m1", role: "user", chunks: [{ type: "text", text: "hello" }] },
-									{
-										id: "m2",
-										role: "assistant",
-										chunks: [{ type: "text", text: "hi back" }],
-									},
+								chunks: [
+									chunkRow("m1", "t1", 0, "u1", "user", "text", { text: "hello" }),
+									chunkRow("m2", "t1", 1, "u1", "assistant", "text", { text: "hi back" }),
 								],
+								total: 2,
+								oldestSeq: 0,
 							}),
 					});
 				}
-				if (url.split("?")[0]?.endsWith("/tabs/t2/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/t2/chunks")) {
 					return Promise.resolve({
 						ok: true,
-						json: () => Promise.resolve({ messages: [] }),
+						json: () => Promise.resolve({ chunks: [], total: 0, oldestSeq: null }),
 					});
 				}
 				return Promise.reject(new Error(`unexpected fetch ${url}`));
@@ -733,9 +750,9 @@ describe("hydrateFromBackend", () => {
 		expect(n).toBe(2);
 		expect(store.tabs.length).toBe(2);
 		expect(store.tabs[0]?.id).toBe("t1");
-		expect(store.tabs[0]?.messages.length).toBe(2);
+		expect(store.tabs[0]?.renderGroups.length).toBe(2);
 		expect(store.tabs[1]?.id).toBe("t2");
-		expect(store.tabs[1]?.messages.length).toBe(0);
+		expect(store.tabs[1]?.renderGroups.length).toBe(0);
 		expect(store.activeTabId).toBe("t1");
 	});
 
@@ -772,12 +789,14 @@ describe("hydrateFromBackend", () => {
 							}),
 					});
 				}
-				if (url.split("?")[0]?.endsWith("/tabs/tr/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/tr/chunks")) {
 					return Promise.resolve({
 						ok: true,
 						json: () =>
 							Promise.resolve({
-								messages: [{ id: "u1", role: "user", chunks: [{ type: "text", text: "go" }] }],
+								chunks: [chunkRow("u1", "tr", 0, "turn-r", "user", "text", { text: "go" })],
+								total: 1,
+								oldestSeq: 0,
 							}),
 					});
 				}
@@ -792,8 +811,8 @@ describe("hydrateFromBackend", () => {
 		expect(tab?.agentStatus).toBe("running");
 		expect(tab?.currentAssistantId).toBe("live-msg-id");
 		// Two messages: the user message + the seeded in-flight assistant.
-		expect(tab?.messages.length).toBe(2);
-		const inflight = tab?.messages.find((m) => m.id === "live-msg-id");
+		expect(tab?.renderGroups.length).toBe(2);
+		const inflight = tab?.renderGroups.find((m) => m.id === "live-msg-id");
 		expect(inflight).toBeDefined();
 		expect(inflight?.isStreaming).toBe(true);
 		expect(inflight?.chunks).toEqual([
@@ -882,8 +901,11 @@ describe("hydrateFromBackend", () => {
 				if (url.endsWith("/status")) {
 					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
 				}
-				if (url.split("?")[0]?.endsWith("/tabs/ti/messages")) {
-					return Promise.resolve({ ok: true, json: () => Promise.resolve({ messages: [] }) });
+				if (url.split("?")[0]?.endsWith("/tabs/ti/chunks")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ chunks: [], total: 0, oldestSeq: null }),
+					});
 				}
 				return Promise.reject(new Error(`unexpected fetch ${url}`));
 			}),
@@ -939,20 +961,22 @@ describe("hydrateFromBackend", () => {
 				if (url.endsWith("/status")) {
 					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
 				}
-				if (url.split("?")[0]?.endsWith("/tabs/tA/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/tA/chunks")) {
 					return Promise.resolve({
 						ok: true,
 						json: () =>
 							Promise.resolve({
-								messages: [{ id: "msg-a", role: "user", chunks: [{ type: "text", text: "ok" }] }],
+								chunks: [chunkRow("msg-a", "tA", 0, "turn-a", "user", "text", { text: "ok" })],
+								total: 1,
+								oldestSeq: 0,
 							}),
 					});
 				}
-				if (url.split("?")[0]?.endsWith("/tabs/tB/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/tB/chunks")) {
 					// HTTP error path: response is not ok.
 					return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
 				}
-				if (url.split("?")[0]?.endsWith("/tabs/tC/messages")) {
+				if (url.split("?")[0]?.endsWith("/tabs/tC/chunks")) {
 					// Network error path: the fetch itself rejects.
 					return Promise.reject(new Error("simulated network failure"));
 				}
@@ -966,19 +990,19 @@ describe("hydrateFromBackend", () => {
 
 		// Healthy tab restored with its message.
 		const tA = store.tabs.find((t) => t.id === "tA");
-		expect(tA?.messages.length).toBe(1);
-		expect(tA?.messages[0]?.chunks).toEqual([{ type: "text", text: "ok" }]);
+		expect(tA?.renderGroups.length).toBe(1);
+		expect(tA?.renderGroups[0]?.chunks).toEqual([{ type: "text", text: "ok" }]);
 
 		// Both broken tabs restored with empty message lists — neither
 		// crashed the hydration nor leaked an error chunk into the UI.
 		const tB = store.tabs.find((t) => t.id === "tB");
 		expect(tB).toBeDefined();
-		expect(tB?.messages.length).toBe(0);
+		expect(tB?.renderGroups.length).toBe(0);
 		expect(tB?.agentStatus).toBe("idle");
 
 		const tC = store.tabs.find((t) => t.id === "tC");
 		expect(tC).toBeDefined();
-		expect(tC?.messages.length).toBe(0);
+		expect(tC?.renderGroups.length).toBe(0);
 		expect(tC?.agentStatus).toBe("idle");
 	});
 });
@@ -1013,7 +1037,7 @@ describe("handleEvent statuses with TabStatusSnapshot", () => {
 		const tab = store.tabs.find((t) => t.id === tabId);
 		expect(tab?.agentStatus).toBe("running");
 		expect(tab?.currentAssistantId).toBe("live-x");
-		const inflight = tab?.messages.find((m) => m.id === "live-x");
+		const inflight = tab?.renderGroups.find((m) => m.id === "live-x");
 		expect(inflight).toBeDefined();
 		expect(inflight?.chunks).toEqual([{ type: "text", text: "live data" }]);
 		expect(inflight?.isStreaming).toBe(true);
@@ -1046,7 +1070,7 @@ describe("handleEvent statuses with TabStatusSnapshot", () => {
 		const tab = store.tabs.find((t) => t.id === tabId);
 		expect(tab?.agentStatus).toBe("idle");
 		expect(tab?.currentAssistantId).toBeNull();
-		const msgA = tab?.messages.find((m) => m.id === "msg-a");
+		const msgA = tab?.renderGroups.find((m) => m.id === "msg-a");
 		expect(msgA?.isStreaming).toBe(false);
 	});
 });
@@ -1095,5 +1119,394 @@ describe("tabStore — cache rate (usage events)", () => {
 			usage: { inputTokens: 10, outputTokens: 1, cacheReadTokens: 5, cacheWriteTokens: 0 },
 		});
 		expect(store.tabs[0]?.cacheStats).toBeUndefined();
+	});
+});
+
+// ─── chunk-native store: eviction, pagination, reconcile ────────
+//
+// The store's source of truth for HISTORY is a flat ChunkRow[] (`tab.chunks`,
+// real seqs); the live turn is a transient tail (`tab.live`) folded from
+// stream deltas and reconciled into `chunks` on `turn-sealed`. `tab.renderGroups`
+// is a derived render projection. These tests drive the real store.
+
+describe("tabStore — chunk-native eviction / pagination / reconcile", () => {
+	function chunksResponse(rows: Array<Record<string, unknown>>, total?: number) {
+		const oldestSeq = rows.length > 0 ? ((rows[0]?.seq as number) ?? null) : null;
+		return {
+			ok: true,
+			json: () => Promise.resolve({ chunks: rows, total: total ?? rows.length, oldestSeq }),
+		};
+	}
+	function tabsListResponse(id: string) {
+		return {
+			ok: true,
+			json: () => Promise.resolve({ tabs: [{ id, title: id, parentTabId: null }] }),
+		};
+	}
+	function emptyStatuses() {
+		return { ok: true, json: () => Promise.resolve({ statuses: {} }) };
+	}
+	const tick = () => new Promise((r) => setTimeout(r, 0));
+
+	it("evicts sealed chunks to chunkLimit, trimming WITHIN one large turn", async () => {
+		appSettings.chunkLimit = 5;
+		try {
+			// One turn of 10 chunk rows (the pathological single big turn).
+			const rows = Array.from({ length: 10 }, (_, i) =>
+				chunkRow(`c${i}`, "big", i, "turn-1", i === 0 ? "user" : "assistant", "text", {
+					text: `t${i}`,
+				}),
+			);
+			vi.stubGlobal(
+				"fetch",
+				vi.fn((url: string) => {
+					if (url.endsWith("/tabs")) return Promise.resolve(tabsListResponse("big"));
+					if (url.endsWith("/status")) return Promise.resolve(emptyStatuses());
+					if (url.split("?")[0]?.endsWith("/tabs/big/chunks"))
+						return Promise.resolve(chunksResponse(rows, 10));
+					return Promise.reject(new Error(`unexpected ${url}`));
+				}),
+			);
+			const store = createTabStore();
+			await store.hydrateFromBackend();
+			const tab = store.tabs.find((t) => t.id === "big");
+			// Bounded to chunkLimit; the OLDEST rows of the single turn were trimmed.
+			expect(tab?.chunks.length).toBe(5);
+			expect(tab?.chunks.map((c) => c.seq)).toEqual([5, 6, 7, 8, 9]);
+			// Pagination cursor points at a real remaining seq.
+			expect(tab?.oldestLoadedSeq).toBe(5);
+		} finally {
+			appSettings.chunkLimit = 100;
+		}
+	});
+
+	it("loadOlderChunks prepends an older page and dedupes by seq", async () => {
+		appSettings.chunkLimit = 1000; // don't evict during this test
+		try {
+			const newer = [6, 7, 8, 9].map((s) =>
+				chunkRow(`c${s}`, "pg", s, "t", "assistant", "text", { text: `t${s}` }),
+			);
+			// Overlaps the newer window at seq 6 — must dedupe.
+			const older = [2, 3, 4, 5, 6].map((s) =>
+				chunkRow(`c${s}`, "pg", s, "t", "assistant", "text", { text: `t${s}` }),
+			);
+			vi.stubGlobal(
+				"fetch",
+				vi.fn((url: string) => {
+					if (url.endsWith("/tabs")) return Promise.resolve(tabsListResponse("pg"));
+					if (url.endsWith("/status")) return Promise.resolve(emptyStatuses());
+					if (url.split("?")[0]?.endsWith("/tabs/pg/chunks")) {
+						return Promise.resolve(
+							url.includes("before=") ? chunksResponse(older, 8) : chunksResponse(newer, 8),
+						);
+					}
+					return Promise.reject(new Error(`unexpected ${url}`));
+				}),
+			);
+			const store = createTabStore();
+			await store.hydrateFromBackend();
+			let tab = store.tabs.find((t) => t.id === "pg");
+			expect(tab?.chunks.map((c) => c.seq)).toEqual([6, 7, 8, 9]);
+			expect(tab?.oldestLoadedSeq).toBe(6);
+
+			await store.loadOlderChunks("pg");
+			tab = store.tabs.find((t) => t.id === "pg");
+			expect(tab?.chunks.map((c) => c.seq)).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
+			expect(tab?.oldestLoadedSeq).toBe(2);
+		} finally {
+			appSettings.chunkLimit = 100;
+		}
+	});
+
+	it("turn-sealed folds the live turn into the sealed chunk log with real seqs", async () => {
+		const sealed = [
+			chunkRow("u", "rc", 0, "turn-x", "user", "text", { text: "hi" }),
+			chunkRow("a", "rc", 1, "turn-x", "assistant", "text", { text: "answer" }),
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.split("?")[0]?.endsWith("/tabs/rc/chunks"))
+					return Promise.resolve(chunksResponse(sealed, 2));
+				return Promise.reject(new Error(`unexpected ${url}`));
+			}),
+		);
+		const store = createTabStore();
+		store.handleEvent({
+			type: "tab-created",
+			id: "rc",
+			title: "RC",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+		});
+		store.handleEvent({ type: "turn-start", turnId: "turn-x", tabId: "rc" });
+		store.handleEvent({ type: "text-delta", delta: "answer", tabId: "rc" });
+		// While streaming: live tail holds the in-flight assistant; sealed empty.
+		let tab = store.tabs.find((t) => t.id === "rc");
+		expect(tab?.live.length).toBe(1);
+		expect(tab?.chunks.length).toBe(0);
+		// The live assistant is tagged with the turn id (stable render key basis).
+		expect(tab?.live[0]?.turnId).toBe("turn-x");
+
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-x", tabId: "rc" });
+		await tick(); // reconcile refetch is async
+		tab = store.tabs.find((t) => t.id === "rc");
+		expect(tab?.live.length).toBe(0);
+		expect(tab?.chunks.map((c) => c.seq)).toEqual([0, 1]);
+		expect(tab?.renderGroups.map((m) => m.role)).toEqual(["user", "assistant"]);
+		// The sealed messages carry the SAME turn id as the live ones did, so the
+		// turn-scoped render key is stable across reconcile (no remount/flash).
+		expect(tab?.renderGroups.every((m) => m.turnId === "turn-x")).toBe(true);
+	});
+
+	it("defers reconcile while scrolled up, then runs it on return to bottom", async () => {
+		const sealed = [chunkRow("u", "df", 0, "turn-y", "user", "text", { text: "q" })];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.split("?")[0]?.endsWith("/tabs/df/chunks"))
+					return Promise.resolve(chunksResponse(sealed, 1));
+				return Promise.reject(new Error(`unexpected ${url}`));
+			}),
+		);
+		const store = createTabStore();
+		store.handleEvent({
+			type: "tab-created",
+			id: "df",
+			title: "DF",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+		});
+		store.handleEvent({ type: "turn-start", turnId: "turn-y", tabId: "df" });
+		store.handleEvent({ type: "text-delta", delta: "partial", tabId: "df" });
+		store.setScrolledUp("df", true);
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-y", tabId: "df" });
+		await tick();
+		// Deferred: live tail still present, not yet folded into sealed chunks.
+		expect(store.tabs.find((t) => t.id === "df")?.live.length).toBe(1);
+
+		store.setScrolledUp("df", false);
+		await tick();
+		const tab = store.tabs.find((t) => t.id === "df");
+		expect(tab?.live.length).toBe(0);
+		expect(tab?.chunks.length).toBe(1);
+	});
+
+	it("preserves an optimistic queued user message when an earlier turn reconciles", async () => {
+		const sealed = [
+			chunkRow("u", "q", 0, "turn-a", "user", "text", { text: "first" }),
+			chunkRow("a", "q", 1, "turn-a", "assistant", "text", { text: "answer" }),
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.split("?")[0]?.endsWith("/tabs/q/chunks"))
+					return Promise.resolve(chunksResponse(sealed, 2));
+				return Promise.reject(new Error(`unexpected ${url}`));
+			}),
+		);
+		const store = createTabStore();
+		store.handleEvent({
+			type: "tab-created",
+			id: "q",
+			title: "Q",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+		});
+		store.handleEvent({ type: "turn-start", turnId: "turn-a", tabId: "q" });
+		store.handleEvent({ type: "text-delta", delta: "answer", tabId: "q" });
+		// User queues a follow-up WHILE turn-a streams (optimistic, no turn id yet).
+		store.handleEvent({
+			type: "message-queued",
+			tabId: "q",
+			messageId: "q1",
+			message: "do this next",
+		});
+		expect(store.tabs.find((t) => t.id === "q")?.live.some((m) => m.id === "queued-q1")).toBe(true);
+
+		// turn-a seals → reconcile. The queued user bubble must survive.
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-a", tabId: "q" });
+		await tick();
+		const tab = store.tabs.find((t) => t.id === "q");
+		expect(tab?.chunks.map((c) => c.seq)).toEqual([0, 1]);
+		expect(tab?.live.some((m) => m.id === "queued-q1")).toBe(true);
+		// The sealed turn's assistant was folded out of the live tail.
+		expect(tab?.live.some((m) => m.role === "assistant")).toBe(false);
+	});
+
+	it("turn-start backfill skips a pending queued row (race), tags only the initiator", async () => {
+		// Realistic race: the user sends a prompt (plain optimistic row, no turn id
+		// yet) and, before the WS `turn-start` arrives, sends a follow-up that the
+		// backend queues (`queued-` prefix). When `turn-start` finally lands, the
+		// backfill must tag ONLY the plain initiator and SKIP the pending queued
+		// row — otherwise the queued row inherits the sealing turn's id and is
+		// wiped on reconcile (the Pass-2 Blocker).
+		const store = createTabStore();
+		store.handleEvent({
+			type: "tab-created",
+			id: "rq",
+			title: "RQ",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+		});
+		store.switchTab("rq"); // sendMessage targets the active tab
+		const sealed = [
+			chunkRow("u", "rq", 0, "turn-a", "user", "text", { text: "first" }),
+			chunkRow("a", "rq", 1, "turn-a", "assistant", "text", { text: "answer" }),
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string, opts?: { body?: string }) => {
+				const path = url.split("?")[0] ?? "";
+				if (path.endsWith("/tabs/rq/chunks")) return Promise.resolve(chunksResponse(sealed, 2));
+				if (path.endsWith("/chat")) {
+					// The 2nd send carries a queueId → backend reports it queued.
+					const queued = (opts?.body ?? "").includes("queueId");
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve(queued ? { status: "queued", messageId: "srv" } : { status: "ok" }),
+					});
+				}
+				return Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({}),
+					text: () => Promise.resolve(""),
+				});
+			}),
+		);
+
+		// A freshly created tab defaults to "running"; the agent is idle here.
+		store.handleEvent({ type: "status", status: "idle", tabId: "rq" });
+		await store.sendMessage("first"); // idle → plain optimistic user row
+		store.handleEvent({ type: "status", status: "running", tabId: "rq" });
+		await store.sendMessage("second"); // running → queued (queued- prefix)
+
+		let tab = store.tabs.find((t) => t.id === "rq");
+		const initiatorId = tab?.live.find((m) => m.role === "user" && !m.id.startsWith("queued-"))?.id;
+		const queuedId = tab?.live.find((m) => m.id.startsWith("queued-"))?.id;
+		expect(initiatorId).toBeTruthy();
+		expect(queuedId).toBeTruthy();
+
+		// turn-start arrives LATE: the queued follow-up is already in the live tail.
+		store.handleEvent({ type: "turn-start", turnId: "turn-a", tabId: "rq" });
+		tab = store.tabs.find((t) => t.id === "rq");
+		expect(tab?.live.find((m) => m.id === initiatorId)?.turnId).toBe("turn-a");
+		expect(tab?.live.find((m) => m.id === queuedId)?.turnId).toBeUndefined();
+
+		store.handleEvent({ type: "text-delta", delta: "answer", tabId: "rq" });
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-a", tabId: "rq" });
+		await tick();
+		tab = store.tabs.find((t) => t.id === "rq");
+		// Initiator folded cleanly into its sealed row (no duplicate user bubble);
+		// the queued follow-up survives, still untagged and still queued.
+		expect(tab?.chunks.map((c) => c.seq)).toEqual([0, 1]);
+		expect(tab?.live.find((m) => m.id === queuedId)?.turnId).toBeUndefined();
+		expect(tab?.live.some((m) => m.role === "assistant")).toBe(false);
+		expect(tab?.renderGroups.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+	});
+
+	it("a consumed interrupt message collapses into the sealed turn (no lingering bubble)", async () => {
+		// During a running turn the user queues a message; the agent CONSUMES it
+		// (interrupt), folding its text into the turn's persisted chunks. The
+		// frontend's consumed user bubble must be BOUND to the in-flight turn so it
+		// is dropped on reconcile — otherwise it lingers untagged forever AND
+		// duplicates the interrupt text now living in the sealed chunk (Pass-3 Block).
+		const sealed = [
+			chunkRow("u", "ic", 0, "turn-a", "user", "text", { text: "do a thing" }),
+			chunkRow("a", "ic", 1, "turn-a", "assistant", "text", { text: "working ...resumed" }),
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.split("?")[0]?.endsWith("/tabs/ic/chunks"))
+					return Promise.resolve(chunksResponse(sealed, 2));
+				return Promise.reject(new Error(`unexpected ${url}`));
+			}),
+		);
+		const store = createTabStore();
+		store.handleEvent({
+			type: "tab-created",
+			id: "ic",
+			title: "IC",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+		});
+		store.handleEvent({ type: "turn-start", turnId: "turn-a", tabId: "ic" });
+		store.handleEvent({ type: "text-delta", delta: "working", tabId: "ic" });
+		store.handleEvent({ type: "message-queued", tabId: "ic", messageId: "qx", message: "stop" });
+		// Agent consumes the queued message mid-turn (interrupt injection).
+		store.handleEvent({ type: "message-consumed", tabId: "ic", messageIds: ["qx"] });
+		let tab = store.tabs.find((t) => t.id === "ic");
+		const consumed = tab?.live.find((m) => m.id === "qx");
+		expect(consumed).toBeTruthy();
+		// The fix: the consumed row is bound to the active turn, not left untagged.
+		expect(consumed?.turnId).toBe("turn-a");
+		expect(tab?.queuedMessages.some((m) => m.id === "qx")).toBe(false);
+
+		store.handleEvent({ type: "text-delta", delta: "resumed", tabId: "ic" });
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-a", tabId: "ic" });
+		await tick();
+		tab = store.tabs.find((t) => t.id === "ic");
+		// Collapsed to the persisted shape: the consumed bubble was dropped; only
+		// the sealed chunks remain (no lingering / duplicated interrupt bubble).
+		expect(tab?.live.length).toBe(0);
+		expect(tab?.live.some((m) => m.id === "qx")).toBe(false);
+		expect(tab?.chunks.map((c) => c.seq)).toEqual([0, 1]);
+	});
+
+	it("preserves a concurrent newer turn when an earlier deferred reconcile flushes", async () => {
+		const sealedA = [
+			chunkRow("ua", "c", 0, "turn-a", "user", "text", { text: "A?" }),
+			chunkRow("aa", "c", 1, "turn-a", "assistant", "text", { text: "A!" }),
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.split("?")[0]?.endsWith("/tabs/c/chunks"))
+					return Promise.resolve(chunksResponse(sealedA, 2));
+				return Promise.reject(new Error(`unexpected ${url}`));
+			}),
+		);
+		const store = createTabStore();
+		store.handleEvent({
+			type: "tab-created",
+			id: "c",
+			title: "C",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+		});
+		// Turn A streams; user scrolls up; A finishes → reconcile deferred.
+		store.handleEvent({ type: "turn-start", turnId: "turn-a", tabId: "c" });
+		store.handleEvent({ type: "text-delta", delta: "A!", tabId: "c" });
+		store.setScrolledUp("c", true);
+		store.handleEvent({ type: "status", status: "idle", tabId: "c" });
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-a", tabId: "c" });
+		// Turn B (a queued message) starts streaming while still scrolled up.
+		store.handleEvent({ type: "turn-start", turnId: "turn-b", tabId: "c" });
+		store.handleEvent({ type: "status", status: "running", tabId: "c" });
+		store.handleEvent({ type: "text-delta", delta: "B in progress", tabId: "c" });
+		let tab = store.tabs.find((t) => t.id === "c");
+		expect(tab?.liveTurnId).toBe("turn-b");
+		const bId = tab?.currentAssistantId;
+		expect(bId).toBeTruthy();
+
+		// User scrolls down → the deferred reconcile for turn-a flushes.
+		store.setScrolledUp("c", false);
+		await tick();
+		tab = store.tabs.find((t) => t.id === "c");
+		// Turn A folded into the sealed log...
+		expect(tab?.chunks.map((c) => c.seq)).toEqual([0, 1]);
+		// ...but turn B's in-flight state survived intact (no wipe / no remount).
+		expect(tab?.liveTurnId).toBe("turn-b");
+		expect(tab?.currentAssistantId).toBe(bId);
+		expect(tab?.live.some((m) => m.turnId === "turn-b")).toBe(true);
+		expect(tab?.live.some((m) => m.turnId === "turn-a")).toBe(false);
 	});
 });

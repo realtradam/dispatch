@@ -8,8 +8,25 @@ let userScrolledUp = $state(false);
 let isAutoScrolling = false;
 let isLoadingMore = $state(false);
 
-const messages = $derived(tabStore.activeTab?.messages ?? []);
+const renderGroups = $derived(tabStore.activeTab?.renderGroups ?? []);
 const activeTabId = $derived(tabStore.activeTab?.id);
+
+// Stable, turn-scoped render keys. A bubble's identity is `${turnId}:${role}:${n}`
+// (n = its index among same-(turn,role) messages) rather than the underlying
+// row/client id, so when the live turn reconciles into sealed chunk rows the
+// bubble keeps its identity and does NOT remount (no flash). Falls back to the
+// message id for anything without a turnId (e.g. optimistic/queued messages
+// before turn-start, standalone system notices).
+const keyedMessages = $derived.by(() => {
+	const counts = new Map<string, number>();
+	return renderGroups.map((m) => {
+		if (!m.turnId) return { m, key: m.id };
+		const base = `${m.turnId}:${m.role}`;
+		const n = counts.get(base) ?? 0;
+		counts.set(base, n + 1);
+		return { m, key: `${base}:${n}` };
+	});
+});
 
 function isNearBottom(el: HTMLElement): boolean {
 	return el.scrollHeight - el.scrollTop - el.clientHeight < 64;
@@ -35,7 +52,7 @@ async function onNearTop() {
 	const prevScrollHeight = messagesEl?.scrollHeight ?? 0;
 	const prevScrollTop = messagesEl?.scrollTop ?? 0;
 	try {
-		await tabStore.loadMoreMessages(tab.id);
+		await tabStore.loadOlderChunks(tab.id);
 		// Wait for Svelte to flush the prepended messages into the DOM.
 		// Reading `scrollHeight` synchronously after the await would observe
 		// the OLD layout (reactive updates are batched), so the scroll
@@ -66,7 +83,7 @@ function handleScroll() {
 	if (activeTabId) tabStore.setScrolledUp(activeTabId, userScrolledUp);
 	// User just scrolled back to the bottom manually — safe to evict now.
 	if (wasScrolledUp && !userScrolledUp && activeTabId) {
-		tabStore.evictMessages(activeTabId);
+		tabStore.evictChunks(activeTabId);
 	}
 	// Near the top — pull in older history.
 	if (userScrolledUp && messagesEl.scrollTop < 200) {
@@ -79,13 +96,13 @@ function resumeAutoScroll() {
 	isAutoScrolling = true;
 	if (activeTabId) {
 		tabStore.setScrolledUp(activeTabId, false);
-		tabStore.evictMessages(activeTabId);
+		tabStore.evictChunks(activeTabId);
 	}
 	scrollToBottom(true);
 }
 
 $effect(() => {
-	const count = messages.length;
+	const count = renderGroups.length;
 	void count;
 	if (messagesEl) {
 		untrack(() => {
@@ -121,13 +138,13 @@ $effect(() => {
 			{#if isLoadingMore}
 				<div class="text-center text-xs text-base-content/40 py-2">Loading earlier messages...</div>
 			{/if}
-			{#if messages.length === 0}
+			{#if renderGroups.length === 0}
 				<div class="flex items-center justify-center h-full text-base-content/40 text-sm">
 					Send a message to start a conversation
 				</div>
 			{/if}
-			{#each messages as message (message.id)}
-				<ChatMessageComponent {message} tabId={activeTabId} />
+			{#each keyedMessages as { m, key } (key)}
+				<ChatMessageComponent message={m} tabId={activeTabId} />
 			{/each}
 		</div>
 
