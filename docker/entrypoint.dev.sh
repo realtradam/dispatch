@@ -43,5 +43,29 @@ if [ "${SKIP_INSTALL:-}" != "1" ]; then
     su -s /bin/bash - "$USER_NAME" -c "export HOME=$USER_HOME && cd /app && bun install"
 fi
 
+# ─── Env vars that must survive the `su -` login-shell barrier ──
+# `su -` resets the environment to a clean login profile (TERM, PATH,
+# HOME, SHELL, USER, LOGNAME, MAIL only — everything else is wiped).
+# Anything compose/Dockerfile set on PID 1 that the actual app process
+# needs has to be re-exported explicitly here. The
+# `${VAR-}` form (note: NOT `${VAR:-}`) preserves the empty-string case
+# so a deliberately-blank var stays blank instead of going undefined.
+FORWARD_VARS=(
+    DISPATCH_DEBUG_LLM
+    DISPATCH_DEBUG_LLM_VERBOSITY
+    DISPATCH_DEBUG_LLM_DIR
+    DISPATCH_DEBUG_USAGE
+    DISPATCH_WORKING_DIR
+    PORT
+)
+EXPORTS=""
+for var in "${FORWARD_VARS[@]}"; do
+    # Use indirect expansion to read the var's current value, default to empty.
+    val="${!var-}"
+    # Single-quote-escape the value so shell-meaningful chars survive.
+    esc=${val//\'/\'\\\'\'}
+    EXPORTS+="export $var='$esc'; "
+done
+
 # Execute the main command as the target user
-exec su -s /bin/bash - "$USER_NAME" -c "export HOME=$USER_HOME && cd /app && exec $*"
+exec su -s /bin/bash - "$USER_NAME" -c "export HOME=$USER_HOME && $EXPORTS cd /app && exec $*"

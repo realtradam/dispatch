@@ -9,5 +9,36 @@ export HOST_UID="$(id -u)"
 export HOST_GID="$(id -g)"
 export HOST_USER="$(whoami)"
 
+# Debug-logger pass-through. docker-compose only forwards env vars that are
+# (a) set in the parent shell AND (b) referenced in docker-compose.yml's
+# `environment:` block — so without this `export` step the variables would
+# be invisible to the container even when the user prefixes the command with
+# DISPATCH_DEBUG_LLM=1. We re-export here (rather than relying on the shell's
+# inline `VAR=… cmd` syntax) so it works whether the user sets them inline,
+# in their shell rc, or via `.env`.
+#
+# All variables default to empty — when unset, the logger short-circuits and
+# does nothing.
+export DISPATCH_DEBUG_LLM="${DISPATCH_DEBUG_LLM:-}"
+export DISPATCH_DEBUG_LLM_VERBOSITY="${DISPATCH_DEBUG_LLM_VERBOSITY:-}"
+export DISPATCH_DEBUG_USAGE="${DISPATCH_DEBUG_USAGE:-}"
+
+# Pre-create the LLM debug log directory owned by the host user. Without
+# this, docker auto-creates the bind-mount source as root on first start,
+# and the container's bun process (running as host UID) then gets EACCES
+# on every log write — silent except for `[dispatch-debug] Failed to
+# write ...: EACCES` lines drowned in stderr.
+#
+# If the directory already exists and is NOT owned by us (likely from a
+# prior root-mkdir by docker), fix it with sudo. This prompts once and
+# then never again — files we write afterwards are owned correctly.
+LOG_DIR=/tmp/dispatch/llm-debug
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+if [ ! -O "$LOG_DIR" ]; then
+    current_owner=$(stat -c '%U' "$LOG_DIR" 2>/dev/null || echo "unknown")
+    echo "bin/up: $LOG_DIR is owned by '$current_owner', fixing ownership to '$HOST_USER'..."
+    sudo chown -R "$HOST_UID:$HOST_GID" "$LOG_DIR"
+fi
+
 # Start all services
 docker compose -f "$PROJECT_DIR/docker-compose.yml" up "$@"

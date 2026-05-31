@@ -5,6 +5,7 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 import type { FetchFunction } from "@ai-sdk/provider-utils";
 import { getAnthropicBetas } from "../credentials/anthropic-betas.js";
 import { transformClaudeOAuthBody } from "./anthropic-oauth-transform.js";
+import { wrapFetchWithLogging } from "./debug-logger.js";
 
 export interface ProviderConfig {
 	apiKey: string;
@@ -13,6 +14,9 @@ export interface ProviderConfig {
 	claudeCredentials?: {
 		accessToken: string;
 	};
+	/** Optional tab id for labelling debug logs. No effect when
+	 *  `DISPATCH_DEBUG_LLM` is unset. */
+	tabId?: string;
 }
 
 const MCP_PREFIX = "mcp_";
@@ -61,10 +65,21 @@ export function createProvider(config: ProviderConfig): ModelFactory {
 	// prompts, which use `providerOptions`. The result was that
 	// reasoning_content never reached the wire and DeepSeek rejected the
 	// follow-up turn with "must be passed back".)
+	//
+	// Debug logging: when DISPATCH_DEBUG_LLM is set, wrap the base fetch
+	// so every wire request/response (including SSE chunks) is captured.
+	// When disabled, `wrapFetchWithLogging` returns the input unchanged
+	// (zero overhead).
+	const loggingFetch = wrapFetchWithLogging(globalThis.fetch, {
+		tabId: config.tabId,
+		modelHint: "opencode-zen",
+	}) as unknown as FetchFunction;
+
 	const provider = createOpenAICompatible({
 		name: "opencode-zen",
 		apiKey: config.apiKey,
 		baseURL: config.baseURL,
+		fetch: loggingFetch,
 	});
 
 	return (modelId: string) => provider(modelId);
@@ -90,7 +105,17 @@ function createClaudeOAuthProvider(config: ProviderConfig): ModelFactory {
 	// Stable per-provider session id — mirrors the Claude Code CLI, which sends
 	// the same `X-Claude-Code-Session-Id` across a session's requests.
 	const sessionId = randomUUID();
-	const baseFetch = globalThis.fetch;
+
+	// Wrap the base fetch FIRST so the logging wrapper sees the genuine
+	// outgoing HTTP body — i.e. AFTER the OAuth body transform and AFTER the
+	// Claude-Code session headers have been stamped on. Order matters: if we
+	// wrapped the inner `baseFetch` instead, the logs would show the pre-
+	// transform body and miss the session headers, defeating the point of
+	// capturing the wire for cache/billing debugging.
+	const baseFetch = wrapFetchWithLogging(globalThis.fetch, {
+		tabId: config.tabId,
+		modelHint: "claude-oauth",
+	});
 
 	// Custom fetch that (1) restructures the request body into the genuine
 	// Claude Code system layout — required for Anthropic to bill correctly and
@@ -138,9 +163,15 @@ function createClaudeOAuthProvider(config: ProviderConfig): ModelFactory {
  * authentication path.
  */
 function createApiKeyAnthropicProvider(config: ProviderConfig): ModelFactory {
+	const loggingFetch = wrapFetchWithLogging(globalThis.fetch, {
+		tabId: config.tabId,
+		modelHint: "opencode-anthropic",
+	}) as unknown as FetchFunction;
+
 	const anthropic = createAnthropic({
 		apiKey: config.apiKey,
 		baseURL: config.baseURL || "https://opencode.ai/zen/go/v1",
+		fetch: loggingFetch,
 	});
 
 	return (modelId: string) => anthropic(modelId);

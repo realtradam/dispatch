@@ -59,11 +59,16 @@ describe("createProvider (default OpenAI-compatible path)", () => {
 			baseURL: "https://opencode.ai/zen/v1",
 		})("deepseek-v4-pro");
 
-		expect(mockCreateOpenAICompatible).toHaveBeenCalledWith({
-			name: "opencode-zen",
-			apiKey: "zen-key",
-			baseURL: "https://opencode.ai/zen/v1",
-		});
+		// We assert by property rather than full-object equality because the
+		// provider also passes a `fetch:` wrapper (the debug-logger tee). The
+		// load-bearing wiring is name/apiKey/baseURL; the fetch field is
+		// tested separately via the wrap-fetch tests.
+		expect(mockCreateOpenAICompatible).toHaveBeenCalledOnce();
+		const zenArgs = mockCreateOpenAICompatible.mock.calls[0]?.[0] as Record<string, unknown>;
+		expect(zenArgs.name).toBe("opencode-zen");
+		expect(zenArgs.apiKey).toBe("zen-key");
+		expect(zenArgs.baseURL).toBe("https://opencode.ai/zen/v1");
+		expect(typeof zenArgs.fetch).toBe("function");
 	});
 });
 

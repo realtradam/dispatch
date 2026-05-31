@@ -54,6 +54,13 @@ export {
 	updateTabStatus,
 	updateTabTitle,
 } from "./db/tabs.js";
+export {
+	debugVerbosity,
+	isDebugEnabled,
+	logAgentLoop,
+	logStepLifecycle,
+	logStreamEvent,
+} from "./llm/debug-logger.js";
 export { createProvider } from "./llm/provider.js";
 // Models
 export { ModelRegistry } from "./models/index.js";
