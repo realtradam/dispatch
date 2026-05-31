@@ -79,7 +79,8 @@ export {
 	type AvailableAgent,
 	createSummonTool,
 	type SummonCallbacks,
-	toAvailableAgents,
+	toAvailableSubagents,
+	toAvailableUserAgents,
 } from "./tools/summon.js";
 export { createTaskListTool, TaskList } from "./tools/task-list.js";
 export { clearSpillForTab } from "./tools/truncate.js";
