@@ -39,9 +39,13 @@ describe("createSummonTool — description content", () => {
 				path: "/home/u/.config/dispatch/agents/researcher.toml",
 			},
 		];
-		const tool = createSummonTool("/tmp/work", noopCallbacks, agents, [], [
-			"/home/u/.config/dispatch/agents",
-		]);
+		const tool = createSummonTool(
+			"/tmp/work",
+			noopCallbacks,
+			agents,
+			[],
+			["/home/u/.config/dispatch/agents"],
+		);
 		expect(tool.description).toContain("programmer");
 		expect(tool.description).toContain("Programmer");
 		expect(tool.description).toContain("Implements code from a plan");

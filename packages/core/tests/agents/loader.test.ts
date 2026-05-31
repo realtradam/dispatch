@@ -22,10 +22,34 @@ describe("expandAgentToolNames", () => {
 		expect(out).toContain("run_shell");
 	});
 
+	it("passes through the tab tools as independent names (no tab_comm group)", () => {
+		const out = expandAgentToolNames(["send_to_tab", "read_tab"]);
+		expect(out).toContain("send_to_tab");
+		expect(out).toContain("read_tab");
+		// Granting only one must not pull in the other.
+		const onlySend = expandAgentToolNames(["send_to_tab"]);
+		expect(onlySend).toContain("send_to_tab");
+		expect(onlySend).not.toContain("read_tab");
+	});
+
 	it("passes through non-group tool names unchanged", () => {
-		const out = expandAgentToolNames(["summon", "retrieve", "web_search", "youtube_transcribe"]);
+		const out = expandAgentToolNames([
+			"summon",
+			"retrieve",
+			"web_search",
+			"youtube_transcribe",
+			"send_to_tab",
+			"read_tab",
+		]);
 		expect(out).toEqual(
-			expect.arrayContaining(["summon", "retrieve", "web_search", "youtube_transcribe"]),
+			expect.arrayContaining([
+				"summon",
+				"retrieve",
+				"web_search",
+				"youtube_transcribe",
+				"send_to_tab",
+				"read_tab",
+			]),
 		);
 	});
 

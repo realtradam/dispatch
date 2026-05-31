@@ -232,6 +232,29 @@ export function createTabStore() {
 		return tabs.find((t) => t.id === id);
 	}
 
+	/**
+	 * Minimum display length of a tab handle (git-style short id). Mirrors
+	 * `MIN_TAB_PREFIX_LENGTH` in core's `db/tabs.ts` so the handle the user sees
+	 * is always resolvable by the backend's `resolveTabPrefix`.
+	 */
+	const MIN_HANDLE_LENGTH = 4;
+
+	/**
+	 * Compute the shortest unique prefix (≥ MIN_HANDLE_LENGTH chars) of `tabId`
+	 * among all currently-open tabs — the displayed "handle" agents use to
+	 * address each other. Purely DERIVED from the UUIDs already in `tabs`; never
+	 * stored. Grows by one char only when another open tab shares the prefix, and
+	 * shrinks back when that sibling closes.
+	 */
+	function shortHandleFor(tabId: string): string {
+		const others = tabs.map((t) => t.id).filter((id) => id !== tabId);
+		for (let len = MIN_HANDLE_LENGTH; len < tabId.length; len++) {
+			const candidate = tabId.slice(0, len);
+			if (!others.some((id) => id.startsWith(candidate))) return candidate;
+		}
+		return tabId;
+	}
+
 	async function createNewTab(): Promise<Tab> {
 		const id = generateId();
 		const title = "New Tab";
@@ -1926,6 +1949,7 @@ export function createTabStore() {
 		get configReloaded() {
 			return configReloaded;
 		},
+		shortHandleFor,
 		createNewTab,
 		switchTab,
 		closeTab,

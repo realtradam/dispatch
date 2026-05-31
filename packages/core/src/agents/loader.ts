@@ -108,8 +108,8 @@ export function expandAgentToolNames(tools: string[]): string[] {
 			default:
 				// Pass through tool names that aren't permission-group
 				// aliases (summon, retrieve, web_search, youtube_transcribe,
-				// todo, and the granular file tools themselves if a user
-				// hand-wrote them in a TOML).
+				// send_to_tab, read_tab, todo, and the granular file tools
+				// themselves if a user hand-wrote them in a TOML).
 				expanded.add(t);
 		}
 	}

@@ -56,6 +56,7 @@ const activeUserTabId = $derived(
 			>
 				<span class="flex items-center gap-1.5">
 					<span class="w-1.5 h-1.5 rounded-full shrink-0 {statusColor(tab.agentStatus)}"></span>
+					<span class="font-mono text-[10px] px-1 py-0.5 rounded bg-base-300 text-base-content/60 shrink-0" title="Tab ID — agents address this tab by this handle">{tabStore.shortHandleFor(tab.id)}</span>
 					<span class="max-w-32 truncate text-xs">{tab.title}</span>
 				</span>
 				<button
@@ -89,6 +90,7 @@ const activeUserTabId = $derived(
 				>
 					<span class="flex items-center gap-1">
 						<span class="w-1 h-1 rounded-full shrink-0 {statusColor(tab.agentStatus)}"></span>
+						<span class="font-mono text-[10px] px-1 rounded bg-base-300 text-base-content/60 shrink-0" title="Tab ID — agents address this tab by this handle">{tabStore.shortHandleFor(tab.id)}</span>
 						<span class="max-w-28 truncate text-xs">{tab.title}</span>
 					</span>
 					{#if tab.persistent}
