@@ -1460,6 +1460,88 @@ describe("tabStore — chunk-native eviction / pagination / reconcile", () => {
 		expect(tab?.chunks.map((c) => c.seq)).toEqual([0, 1]);
 	});
 
+	it("a continuation-consumed queued message becomes the next turn's initiator", async () => {
+		// The turn-end fix: a message queued during turn-a is drained AFTER the
+		// turn ends (reason: "continuation") to START turn-b. Its optimistic
+		// `queued-` bubble must collapse into a single UNTAGGED user row so the
+		// imminent turn-b `turn-start` tags it as that turn's initiator — and it
+		// then folds cleanly into turn-b's sealed chunks (no linger, no dup).
+		const sealedB = [
+			chunkRow("ua", "cc", 0, "turn-a", "user", "text", { text: "first" }),
+			chunkRow("aa", "cc", 1, "turn-a", "assistant", "text", { text: "first answer" }),
+			chunkRow("ub", "cc", 2, "turn-b", "user", "text", { text: "next please" }),
+			chunkRow("ab", "cc", 3, "turn-b", "assistant", "text", { text: "second answer" }),
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.split("?")[0]?.endsWith("/tabs/cc/chunks"))
+					return Promise.resolve(chunksResponse(sealedB, 4));
+				return Promise.reject(new Error(`unexpected ${url}`));
+			}),
+		);
+		const store = createTabStore();
+		store.handleEvent({
+			type: "tab-created",
+			id: "cc",
+			title: "CC",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+		});
+		// Turn A streams; user queues a follow-up while it runs.
+		store.handleEvent({ type: "turn-start", turnId: "turn-a", tabId: "cc" });
+		store.handleEvent({ type: "text-delta", delta: "first answer", tabId: "cc" });
+		store.handleEvent({
+			type: "message-queued",
+			tabId: "cc",
+			messageId: "q1",
+			message: "next please",
+		});
+		let tab = store.tabs.find((t) => t.id === "cc");
+		expect(tab?.live.some((m) => m.id === "queued-q1")).toBe(true);
+
+		// Turn A ends. The backend drains the queue as a CONTINUATION (not an
+		// interrupt) and emits message-consumed{reason:"continuation"}.
+		store.handleEvent({
+			type: "message-consumed",
+			tabId: "cc",
+			messageIds: ["q1"],
+			reason: "continuation",
+		});
+		tab = store.tabs.find((t) => t.id === "cc");
+		// The queued- bubble collapsed into ONE plain (untagged, un-prefixed) user row.
+		expect(tab?.live.some((m) => m.id === "queued-q1")).toBe(false);
+		const initiator = tab?.live.find((m) => m.role === "user");
+		expect(initiator).toBeTruthy();
+		expect(initiator?.id.startsWith("queued-")).toBe(false);
+		expect(initiator?.turnId).toBeUndefined();
+		expect(tab?.queuedMessages.some((m) => m.id === "q1")).toBe(false);
+
+		// turn-a seals first (it was the running turn when the queue drained).
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-a", tabId: "cc" });
+		// Now turn-b starts — it must tag the collapsed initiator row.
+		store.handleEvent({ type: "turn-start", turnId: "turn-b", tabId: "cc" });
+		tab = store.tabs.find((t) => t.id === "cc");
+		const taggedInitiator = tab?.live.find((m) => m.role === "user" && m.turnId === "turn-b");
+		expect(taggedInitiator).toBeTruthy();
+
+		store.handleEvent({ type: "text-delta", delta: "second answer", tabId: "cc" });
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-b", tabId: "cc" });
+		await tick();
+		tab = store.tabs.find((t) => t.id === "cc");
+		// Both turns are durable; the live tail is empty (initiator folded into
+		// turn-b, no lingering/duplicated user bubble).
+		expect(tab?.chunks.map((c) => c.seq)).toEqual([0, 1, 2, 3]);
+		expect(tab?.live.length).toBe(0);
+		expect(tab?.renderGroups.map((m) => m.role)).toEqual([
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+	});
+
 	it("preserves a concurrent newer turn when an earlier deferred reconcile flushes", async () => {
 		const sealedA = [
 			chunkRow("ua", "c", 0, "turn-a", "user", "text", { text: "A?" }),

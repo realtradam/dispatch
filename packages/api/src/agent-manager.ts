@@ -1628,6 +1628,75 @@ export class AgentManager {
 		} else {
 			tabAgent.completionResolve?.({ status: "error", error: processError });
 		}
+
+		// The turn has fully settled. If messages piled up on the queue during it
+		// and were NOT injected as a mid-turn interrupt (they arrived after the
+		// last tool call, or this turn had no tool calls), kick off a fresh turn
+		// to answer them instead of letting them sit unanswered — the queue is
+		// consumed, not just appended. Only on a clean finish: a turn the user
+		// explicitly stopped, or one that errored out, leaves its queue intact
+		// for the next deliberate send (see continueFromQueue).
+		if (processError === null) {
+			this.continueFromQueue(tabId);
+		}
+	}
+
+	/**
+	 * Start a new turn for any messages that accumulated on `tabId`'s queue
+	 * during the turn that just finished. This is what makes a queued message
+	 * (from a user OR another agent via send_to_tab) actually get a response
+	 * after the agent's current turn ends, rather than waiting forever.
+	 *
+	 * Loop safety: a queued-then-continued turn draws from the SAME
+	 * `autoWakeBudget` that bounds agent-to-agent wakes. Every human-originated
+	 * message refills that budget when it is delivered (see deliverMessage), so
+	 * human conversations are never throttled; only a runaway agent<->agent
+	 * chain (A queues B, B queues A, ...) is capped. When the budget is spent
+	 * the messages stay queued and a notice is emitted; the next human message
+	 * refills the budget and starts their turn.
+	 */
+	private continueFromQueue(tabId: string): void {
+		const tabAgent = this.tabAgents.get(tabId);
+		if (!tabAgent) return;
+		if (tabAgent.messageQueue.length === 0) return;
+		// Never auto-continue a turn the user stopped or one that errored.
+		if (tabAgent.status === "error") return;
+		if (tabAgent.abortController?.signal.aborted) return;
+
+		if (tabAgent.autoWakeBudget <= 0) {
+			// Budget spent — hold the queued messages (don't drop them) until a
+			// human message refills the budget. Prevents unbounded agent loops.
+			const notice =
+				`Automatic continuation limit reached for this tab ` +
+				`(${MAX_AGENT_AUTO_WAKES} consecutive turns). Queued messages are held ` +
+				`until you send a message here.`;
+			this.emit({ type: "notice", message: notice }, tabId);
+			this.routeSystemEventToTab(tabId, "notice", notice);
+			return;
+		}
+		tabAgent.autoWakeBudget -= 1;
+
+		// Drain the queue as a "continuation" so the frontend folds the pending
+		// queued bubbles into this NEW turn's initiating user row (rather than
+		// into a running turn's tool result, which is the "interrupt" case).
+		const drained = this.dequeueMessages(tabId, "continuation");
+		if (drained.length === 0) return;
+		const message = drained.map((m) => m.message).join("\n---\n");
+
+		// Reuse the tab's resolved key/model/fallback chain — the continuation is
+		// the same conversation, just a new turn. Fire-and-forget: if more
+		// messages arrive during it, its own tail will continue the chain.
+		this.processMessage(
+			tabId,
+			message,
+			tabAgent.keyId ?? undefined,
+			tabAgent.modelId ?? undefined,
+			undefined,
+			undefined,
+			tabAgent.agentModels,
+		).catch((err) => {
+			console.error(`[dispatch] continueFromQueue processMessage error for tab ${tabId}:`, err);
+		});
 	}
 
 	private buildFallbackSequence(
@@ -1673,13 +1742,19 @@ export class AgentManager {
 		return true;
 	}
 
-	dequeueMessages(tabId: string): QueuedMessage[] {
+	dequeueMessages(
+		tabId: string,
+		reason: "interrupt" | "continuation" = "interrupt",
+	): QueuedMessage[] {
 		const tabAgent = this.tabAgents.get(tabId);
 		if (!tabAgent) return [];
 		const messages = [...tabAgent.messageQueue];
 		tabAgent.messageQueue = [];
 		if (messages.length > 0) {
-			this.emit({ type: "message-consumed", tabId, messageIds: messages.map((m) => m.id) }, tabId);
+			this.emit(
+				{ type: "message-consumed", tabId, messageIds: messages.map((m) => m.id), reason },
+				tabId,
+			);
 		}
 		return messages;
 	}

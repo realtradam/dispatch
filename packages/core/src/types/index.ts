@@ -275,7 +275,21 @@ export type AgentEvent =
 			agentModels?: Array<{ key_id: string; model_id: string }> | null;
 	  }
 	| { type: "message-queued"; tabId: string; messageId: string; message: string }
-	| { type: "message-consumed"; tabId: string; messageIds: string[] }
+	| {
+			type: "message-consumed";
+			tabId: string;
+			messageIds: string[];
+			/**
+			 * Why the queue was drained:
+			 *  - "interrupt": consumed mid-turn, folded into a running turn's tool
+			 *    result as a [USER INTERRUPT]. The optimistic bubble collapses into
+			 *    that sealed turn.
+			 *  - "continuation": consumed between turns to START a new turn. The
+			 *    optimistic bubble becomes that new turn's initiating user row.
+			 * Absent ⇒ treat as "interrupt" (back-compat).
+			 */
+			reason?: "interrupt" | "continuation";
+	  }
 	| { type: "message-cancelled"; tabId: string; messageId: string };
 
 // ─── Tool Types ──────────────────────────────────────────────────

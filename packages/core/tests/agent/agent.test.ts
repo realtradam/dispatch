@@ -219,6 +219,79 @@ describe("Agent", () => {
 		});
 	});
 
+	it("does NOT swallow trailing queued messages into history at turn end", async () => {
+		// Regression for the "queue not consumed after the turn ends" bug. A
+		// message that lands on the queue after the last tool call (here: a
+		// no-tool turn) must be LEFT on the queue for the orchestrator to start
+		// a new turn — not silently appended to history with no response.
+		vi.mocked(streamText).mockReturnValue(
+			makeMockStreamResult([{ type: "text-delta", id: "t0", text: "done" }, finishStop]),
+		);
+
+		const queue = [{ id: "q1", message: "answer me next", timestamp: 1 }];
+		const dequeueMessages = vi.fn(() => queue.splice(0, queue.length));
+		const agent = new Agent(makeConfig(), {
+			dequeueMessages,
+			waitForQueuedMessage: () => ({ promise: Promise.resolve(), cancel: () => {} }),
+		});
+
+		const before = agent.messages.length;
+		for await (const _ of agent.run("hello")) {
+			// consume
+		}
+
+		// The agent appended exactly the user turn + its own assistant reply;
+		// it did NOT drain the queue or append a trailing user message for it.
+		expect(dequeueMessages).not.toHaveBeenCalled();
+		expect(queue).toHaveLength(1);
+		const added = agent.messages.slice(before);
+		expect(added.map((m) => m.role)).toEqual(["user", "assistant"]);
+		expect(
+			added.some((m) => m.chunks.some((c) => c.type === "text" && c.text === "answer me next")),
+		).toBe(false);
+	});
+
+	it("still injects a mid-turn queued message into the last tool result", async () => {
+		// The interrupt path (site 1) must be untouched by the turn-end fix: a
+		// message present DURING a tool batch is folded into that batch's last
+		// tool result as a [USER INTERRUPT], and the agent loops back to the LLM.
+		vi.mocked(streamText)
+			.mockReturnValueOnce(
+				makeMockStreamResult([
+					{ type: "tool-call", toolCallId: "tc1", toolName: "read_file", input: { path: "a.txt" } },
+					finishToolCalls,
+				]),
+			)
+			.mockReturnValueOnce(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "ok" }, finishStop]),
+			);
+
+		const queue = [{ id: "q1", message: "stop and do X", timestamp: 1 }];
+		const dequeueMessages = vi.fn(() => queue.splice(0, queue.length));
+		const toolDef = {
+			name: "read_file",
+			description: "reads a file",
+			parameters: z.object({ path: z.string() }),
+			execute: async () => "file contents",
+		};
+		const agent = new Agent(makeConfig({ tools: [toolDef] }), {
+			dequeueMessages,
+			waitForQueuedMessage: () => ({ promise: Promise.resolve(), cancel: () => {} }),
+		});
+
+		const events: AgentEvent[] = [];
+		for await (const event of agent.run("read it")) {
+			events.push(event);
+		}
+
+		expect(dequeueMessages).toHaveBeenCalled();
+		const toolResult = events.find((e) => e.type === "tool-result") as
+			| (AgentEvent & { toolResult: { result: string } })
+			| undefined;
+		expect(toolResult?.toolResult.result).toContain("[USER INTERRUPT]");
+		expect(toolResult?.toolResult.result).toContain("stop and do X");
+	});
+
 	it("yields reasoning-delta events", async () => {
 		vi.mocked(streamText).mockReturnValue(
 			makeMockStreamResult([
