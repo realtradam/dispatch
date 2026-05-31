@@ -1542,6 +1542,53 @@ describe("tabStore — chunk-native eviction / pagination / reconcile", () => {
 		]);
 	});
 
+	it("collapses MULTIPLE continuation-consumed queued messages into one initiator row", async () => {
+		// The backend joins several drained queued messages into a SINGLE user
+		// turn (with a "\n---\n" separator). The frontend must mirror that: N
+		// optimistic `queued-` bubbles collapse into exactly ONE untagged user
+		// row carrying the joined text, which the next turn-start then tags.
+		const store = createTabStore();
+		store.handleEvent({
+			type: "tab-created",
+			id: "mc",
+			title: "MC",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+		});
+		store.handleEvent({ type: "turn-start", turnId: "turn-a", tabId: "mc" });
+		store.handleEvent({ type: "text-delta", delta: "answer", tabId: "mc" });
+		// Two follow-ups queued while turn-a streams.
+		store.handleEvent({ type: "message-queued", tabId: "mc", messageId: "q1", message: "first" });
+		store.handleEvent({ type: "message-queued", tabId: "mc", messageId: "q2", message: "second" });
+		let tab = store.tabs.find((t) => t.id === "mc");
+		expect(tab?.live.filter((m) => m.id.startsWith("queued-")).length).toBe(2);
+
+		// Turn ends; backend drains BOTH as one continuation.
+		store.handleEvent({
+			type: "message-consumed",
+			tabId: "mc",
+			messageIds: ["q1", "q2"],
+			reason: "continuation",
+		});
+		tab = store.tabs.find((t) => t.id === "mc");
+		// Exactly one user row, untagged, with the joined text — no queued- bubbles left.
+		const userRows = tab?.live.filter((m) => m.role === "user") ?? [];
+		expect(userRows.length).toBe(1);
+		expect(userRows[0]?.id.startsWith("queued-")).toBe(false);
+		expect(userRows[0]?.turnId).toBeUndefined();
+		const textChunk = userRows[0]?.chunks.find((c) => c.type === "text");
+		expect(textChunk && textChunk.type === "text" ? textChunk.text : "").toBe("first\n---\nsecond");
+		expect(tab?.queuedMessages.length).toBe(0);
+
+		// The next turn-start tags that single collapsed row as its initiator.
+		store.handleEvent({ type: "turn-sealed", turnId: "turn-a", tabId: "mc" });
+		store.handleEvent({ type: "turn-start", turnId: "turn-b", tabId: "mc" });
+		tab = store.tabs.find((t) => t.id === "mc");
+		const tagged = tab?.live.filter((m) => m.role === "user" && m.turnId === "turn-b") ?? [];
+		expect(tagged.length).toBe(1);
+	});
+
 	it("preserves a concurrent newer turn when an earlier deferred reconcile flushes", async () => {
 		const sealedA = [
 			chunkRow("ua", "c", 0, "turn-a", "user", "text", { text: "A?" }),
