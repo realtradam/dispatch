@@ -24,6 +24,39 @@ function resetFakeMessages(): void {
 function setFakeMessages(tabId: string, rows: FakeMessageRow[]): void {
 	fakeMessagesByTab.set(tabId, rows);
 }
+
+// Configurable stub for the tabs DB (getTab / listOpenTabs). Tests can seed
+// rows to exercise deliverMessage cold-hydration and handle resolution.
+interface FakeTabRow {
+	id: string;
+	title: string;
+	keyId: string | null;
+	modelId: string | null;
+	parentTabId: string | null;
+	status: string;
+	isOpen: boolean;
+	position: number;
+	createdAt: number;
+	updatedAt: number;
+}
+const fakeTabs = new Map<string, FakeTabRow>();
+function resetFakeTabs(): void {
+	fakeTabs.clear();
+}
+function setFakeTab(row: Partial<FakeTabRow> & { id: string }): void {
+	fakeTabs.set(row.id, {
+		title: "Tab",
+		keyId: null,
+		modelId: null,
+		parentTabId: null,
+		status: "idle",
+		isOpen: true,
+		position: 0,
+		createdAt: 0,
+		updatedAt: 0,
+		...row,
+	});
+}
 function makeRow(
 	tabId: string,
 	seq: number,
@@ -42,9 +75,20 @@ function makeRow(
 // because the production code reassigns `agent.messages =
 // rows.slice(...)` AFTER `new Agent()` returns — capturing a
 // reference at construction would yield a stale empty array.
-const constructedAgents: Array<{ initialMessages: unknown[] }> = [];
+const constructedAgents: Array<{ initialMessages: unknown[]; toolNames: string[] }> = [];
 function resetConstructedAgents(): void {
 	constructedAgents.length = 0;
+}
+
+// Configurable settings store so tests can toggle tool permissions
+// (perm_send_to_tab / perm_read_tab / ...) and assert which tools the
+// constructed Agent receives. Defaults to empty (getSetting → null).
+const fakeSettings = new Map<string, string>();
+function resetFakeSettings(): void {
+	fakeSettings.clear();
+}
+function setFakeSetting(key: string, value: string): void {
+	fakeSettings.set(key, value);
 }
 
 // Allow tests to swap in a custom `run` generator (e.g. to simulate
@@ -87,12 +131,19 @@ vi.mock("@dispatch/core", () => ({
 	Agent: class MockAgent {
 		status = "idle";
 		messages: unknown[] = [];
+		toolNames: string[] = [];
+		constructor(config: { tools?: Array<{ name: string }> }) {
+			this.toolNames = (config?.tools ?? []).map((t) => t.name);
+		}
 		async *run(message: string): AsyncGenerator<unknown> {
 			// Snapshot the post-construction pre-populated message list
 			// the first thing `run()` does, before the real `Agent.run`
 			// would push the current user message at line 546. Tests
 			// inspect this to verify history was loaded correctly.
-			constructedAgents.push({ initialMessages: [...this.messages] });
+			constructedAgents.push({
+				initialMessages: [...this.messages],
+				toolNames: [...this.toolNames],
+			});
 			if (runImpl) {
 				for await (const ev of runImpl(message)) yield ev;
 				return;
@@ -244,6 +295,41 @@ vi.mock("@dispatch/core", () => ({
 		};
 	},
 	createTab() {},
+	getTab(id: string) {
+		return fakeTabs.get(id) ?? null;
+	},
+	listOpenTabs() {
+		return [...fakeTabs.values()].filter((t) => t.isOpen);
+	},
+	resolveTabPrefix(prefix: string) {
+		const sanitized = (prefix ?? "").toLowerCase().replace(/[^0-9a-f-]/g, "");
+		if (sanitized.length < 4) return { status: "none" };
+		const matches = [...fakeTabs.values()].filter(
+			(t) => t.isOpen && t.id.toLowerCase().startsWith(sanitized),
+		);
+		if (matches.length === 0) return { status: "none" };
+		if (matches.length === 1) return { status: "ok", tab: matches[0] };
+		return { status: "ambiguous", matches };
+	},
+	shortestUniquePrefix(id: string) {
+		return (id ?? "").slice(0, 4);
+	},
+	createSendToTabTool(_callbacks: unknown): ToolDefinition {
+		return {
+			name: "send_to_tab",
+			description: "send to tab",
+			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
+			execute: async () => "mock",
+		};
+	},
+	createReadTabTool(_callbacks: unknown): ToolDefinition {
+		return {
+			name: "read_tab",
+			description: "read tab",
+			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
+			execute: async () => "mock",
+		};
+	},
 	getClaudeAccountsFromDB() {
 		return [];
 	},
@@ -256,8 +342,8 @@ vi.mock("@dispatch/core", () => ({
 	resolveApiKey() {
 		return null;
 	},
-	getSetting(_key: string) {
-		return null;
+	getSetting(key: string) {
+		return fakeSettings.get(key) ?? null;
 	},
 	appendChunks() {
 		return [];
@@ -316,6 +402,8 @@ describe("AgentManager", () => {
 	beforeEach(() => {
 		resetFakeMessages();
 		resetConstructedAgents();
+		resetFakeTabs();
+		resetFakeSettings();
 		setRunImpl(null);
 		appendEventToChunksSpy.mockClear();
 	});
@@ -848,5 +936,274 @@ describe("AgentManager", () => {
 		expect(snap["tab-early"]?.status).toBe("running");
 		expect(snap["tab-early"]).not.toHaveProperty("currentChunks");
 		expect(snap["tab-early"]).not.toHaveProperty("currentAssistantId");
+	});
+
+	// ─── Tab-to-tab communication ─────────────────────────────────
+
+	describe("deliverMessage", () => {
+		it("starts a new turn when the target tab is idle", async () => {
+			const manager = new AgentManager();
+			const events: AgentEvent[] = [];
+			manager.onEvent((e) => events.push(e));
+
+			const outcome = manager.deliverMessage("tab-idle", "wake up");
+			expect(outcome.status).toBe("started");
+
+			// Let the background turn run to completion.
+			await new Promise<void>((r) => setTimeout(r, 60));
+			expect(events.some((e) => e.type === "text-delta")).toBe(true);
+			expect(manager.getTabStatus("tab-idle")).toBe("idle");
+		});
+
+		it("queues the message when the target tab is running", () => {
+			const manager = new AgentManager();
+			const inner = manager as unknown as {
+				tabAgents: Map<string, Record<string, unknown>>;
+			};
+			// Seed a running tab agent directly.
+			inner.tabAgents.set("tab-busy", {
+				agent: null,
+				status: "running",
+				keyId: null,
+				modelId: null,
+				taskList: { onChange: () => {} },
+				messageQueue: [],
+				queueListeners: [],
+				shellStore: {},
+				transcriptStore: {},
+				currentChunks: null,
+				currentAssistantId: null,
+				currentTurnId: null,
+			});
+
+			const outcome = manager.deliverMessage("tab-busy", "queued msg");
+			expect(outcome.status).toBe("queued");
+			if (outcome.status === "queued") {
+				expect(typeof outcome.messageId).toBe("string");
+			}
+			// The message landed on the running tab's queue.
+			const agent = inner.tabAgents.get("tab-busy") as { messageQueue: unknown[] };
+			expect(agent.messageQueue).toHaveLength(1);
+		});
+
+		it("hydrates key/model from the persisted tab row for a cold wake", () => {
+			const manager = new AgentManager();
+			setFakeTab({ id: "tab-cold", keyId: "persisted-key", modelId: "persisted-model" });
+
+			// Spy on processMessage to capture the key/model deliverMessage
+			// forwarded — asserting the hydration decision directly rather than
+			// downstream tabAgent state (which the mocked ModelRegistry rewrites).
+			const spy = vi.spyOn(manager, "processMessage").mockResolvedValue(undefined);
+
+			const outcome = manager.deliverMessage("tab-cold", "hello");
+			expect(outcome.status).toBe("started");
+
+			expect(spy).toHaveBeenCalledTimes(1);
+			const args = spy.mock.calls[0] ?? [];
+			expect(args[0]).toBe("tab-cold"); // tabId
+			expect(args[1]).toBe("hello"); // message
+			expect(args[2]).toBe("persisted-key"); // keyId hydrated from row
+			expect(args[3]).toBe("persisted-model"); // modelId hydrated from row
+		});
+
+		it("prefers explicit opts over the persisted row on a cold wake", () => {
+			const manager = new AgentManager();
+			setFakeTab({ id: "tab-cold2", keyId: "row-key", modelId: "row-model" });
+			const spy = vi.spyOn(manager, "processMessage").mockResolvedValue(undefined);
+
+			manager.deliverMessage("tab-cold2", "hello", {
+				keyId: "explicit-key",
+				modelId: "explicit-model",
+			});
+
+			const args = spy.mock.calls[0] ?? [];
+			expect(args[2]).toBe("explicit-key");
+			expect(args[3]).toBe("explicit-model");
+		});
+	});
+
+	describe("deliverMessage — agent auto-wake budget", () => {
+		it("allows up to 6 consecutive agent wakes, then suppresses further ones", () => {
+			const manager = new AgentManager();
+			const spy = vi.spyOn(manager, "processMessage").mockResolvedValue(undefined);
+
+			// 6 agent-originated wakes of an idle tab should all start turns.
+			for (let i = 0; i < 6; i++) {
+				const outcome = manager.deliverMessage("tab-pp", `msg ${i}`, { origin: "agent" });
+				expect(outcome.status).toBe("started");
+			}
+			expect(spy).toHaveBeenCalledTimes(6);
+
+			// The 7th is suppressed: no new turn, message preserved on the queue.
+			const seventh = manager.deliverMessage("tab-pp", "msg 7", { origin: "agent" });
+			expect(seventh.status).toBe("suppressed");
+			expect(spy).toHaveBeenCalledTimes(6); // unchanged — no wake
+
+			const inner = manager as unknown as {
+				tabAgents: Map<string, { messageQueue: unknown[]; autoWakeBudget: number }>;
+			};
+			const agent = inner.tabAgents.get("tab-pp");
+			expect(agent?.autoWakeBudget).toBe(0);
+			// Suppressed message is queued, not dropped.
+			expect(agent?.messageQueue).toHaveLength(1);
+		});
+
+		it("a human message refills the budget and re-enables agent wakes", () => {
+			const manager = new AgentManager();
+			vi.spyOn(manager, "processMessage").mockResolvedValue(undefined);
+
+			// Exhaust the budget with agent wakes.
+			for (let i = 0; i < 6; i++) {
+				manager.deliverMessage("tab-refill", `a${i}`, { origin: "agent" });
+			}
+			expect(manager.deliverMessage("tab-refill", "blocked", { origin: "agent" }).status).toBe(
+				"suppressed",
+			);
+
+			// A human message refills the budget...
+			const humanOutcome = manager.deliverMessage("tab-refill", "human here", {
+				origin: "human",
+			});
+			expect(humanOutcome.status).toBe("started");
+
+			const inner = manager as unknown as {
+				tabAgents: Map<string, { autoWakeBudget: number }>;
+			};
+			expect(inner.tabAgents.get("tab-refill")?.autoWakeBudget).toBe(6);
+
+			// ...so an agent can wake it again.
+			expect(manager.deliverMessage("tab-refill", "again", { origin: "agent" }).status).toBe(
+				"started",
+			);
+		});
+
+		it("does not consume budget when the message is merely queued (busy target)", () => {
+			const manager = new AgentManager();
+			const inner = manager as unknown as {
+				tabAgents: Map<string, Record<string, unknown>>;
+			};
+			inner.tabAgents.set("tab-busy-budget", {
+				agent: null,
+				status: "running",
+				keyId: null,
+				modelId: null,
+				taskList: { onChange: () => {} },
+				messageQueue: [],
+				queueListeners: [],
+				shellStore: {},
+				transcriptStore: {},
+				currentChunks: null,
+				currentAssistantId: null,
+				currentTurnId: null,
+				autoWakeBudget: 6,
+			});
+
+			const outcome = manager.deliverMessage("tab-busy-budget", "queued one", {
+				origin: "agent",
+			});
+			expect(outcome.status).toBe("queued");
+			// Budget untouched — queuing can't drive a runaway loop.
+			const agent = inner.tabAgents.get("tab-busy-budget") as { autoWakeBudget: number };
+			expect(agent.autoWakeBudget).toBe(6);
+		});
+
+		it("human-originated wakes are never throttled", () => {
+			const manager = new AgentManager();
+			const spy = vi.spyOn(manager, "processMessage").mockResolvedValue(undefined);
+
+			// Far more than the budget, all human-originated → all start turns.
+			for (let i = 0; i < 10; i++) {
+				const outcome = manager.deliverMessage("tab-human", `h${i}`, { origin: "human" });
+				expect(outcome.status).toBe("started");
+			}
+			expect(spy).toHaveBeenCalledTimes(10);
+		});
+
+		it("defaults origin to human when unspecified (POST /chat path)", () => {
+			const manager = new AgentManager();
+			const spy = vi.spyOn(manager, "processMessage").mockResolvedValue(undefined);
+			for (let i = 0; i < 8; i++) {
+				expect(manager.deliverMessage("tab-default", `d${i}`).status).toBe("started");
+			}
+			expect(spy).toHaveBeenCalledTimes(8);
+		});
+	});
+
+	describe("getLastTabResponse", () => {
+		it("returns the most recent assistant turn's text and current status", () => {
+			const manager = new AgentManager();
+			setFakeMessages("tab-hist", [
+				makeRow("tab-hist", 1, "user", [{ type: "text", text: "hi" }]),
+				makeRow("tab-hist", 2, "assistant", [{ type: "text", text: "first answer" }]),
+				makeRow("tab-hist", 3, "user", [{ type: "text", text: "again" }]),
+				makeRow("tab-hist", 4, "assistant", [
+					{ type: "text", text: "second " },
+					{ type: "text", text: "answer" },
+				]),
+			]);
+
+			const res = manager.getLastTabResponse("tab-hist");
+			expect(res.text).toBe("second answer");
+			expect(res.status).toBe("idle");
+		});
+
+		it("returns null text when the tab has no assistant turn yet", () => {
+			const manager = new AgentManager();
+			setFakeMessages("tab-empty", [
+				makeRow("tab-empty", 1, "user", [{ type: "text", text: "hi" }]),
+			]);
+			const res = manager.getLastTabResponse("tab-empty");
+			expect(res.text).toBeNull();
+		});
+
+		it("skips assistant turns that contain no text chunks", () => {
+			const manager = new AgentManager();
+			setFakeMessages("tab-toolonly", [
+				makeRow("tab-toolonly", 1, "assistant", [{ type: "text", text: "real answer" }]),
+				// A later assistant turn with only non-text chunks should be skipped.
+				makeRow("tab-toolonly", 2, "assistant", [{ type: "thinking", text: "hmm" }]),
+			]);
+			const res = manager.getLastTabResponse("tab-toolonly");
+			expect(res.text).toBe("real answer");
+		});
+	});
+
+	describe("send_to_tab / read_tab permission split", () => {
+		// Drives the real parent-path tool construction in getOrCreateAgentForTab
+		// by toggling the new split permissions and inspecting which tools the
+		// constructed Agent received.
+		async function toolsForPerms(tabId: string, perms: Record<string, string>): Promise<string[]> {
+			for (const [k, v] of Object.entries(perms)) setFakeSetting(k, v);
+			const manager = new AgentManager();
+			await manager.processMessage(tabId, "go");
+			return constructedAgents.at(-1)?.toolNames ?? [];
+		}
+
+		it("grants only send_to_tab when only perm_send_to_tab is allowed", async () => {
+			const tools = await toolsForPerms("tab-send-only", { perm_send_to_tab: "allow" });
+			expect(tools).toContain("send_to_tab");
+			expect(tools).not.toContain("read_tab");
+		});
+
+		it("grants only read_tab when only perm_read_tab is allowed", async () => {
+			const tools = await toolsForPerms("tab-read-only", { perm_read_tab: "allow" });
+			expect(tools).toContain("read_tab");
+			expect(tools).not.toContain("send_to_tab");
+		});
+
+		it("grants both when both permissions are allowed", async () => {
+			const tools = await toolsForPerms("tab-both", {
+				perm_send_to_tab: "allow",
+				perm_read_tab: "allow",
+			});
+			expect(tools).toContain("send_to_tab");
+			expect(tools).toContain("read_tab");
+		});
+
+		it("grants neither when both permissions are off", async () => {
+			const tools = await toolsForPerms("tab-neither", {});
+			expect(tools).not.toContain("send_to_tab");
+			expect(tools).not.toContain("read_tab");
+		});
 	});
 });

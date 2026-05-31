@@ -49,6 +49,10 @@ export {
 	createTab,
 	getTab,
 	listOpenTabs,
+	MIN_TAB_PREFIX_LENGTH,
+	type ResolveTabPrefixResult,
+	resolveTabPrefix,
+	shortestUniquePrefix,
 	type TabRow,
 	updateTabModel,
 	updateTabStatus,
@@ -78,9 +82,16 @@ export { prefix as bashArityPrefix } from "./tools/bash-arity.js";
 export { createListFilesTool } from "./tools/list-files.js";
 export { createReadFileTool } from "./tools/read-file.js";
 export { createReadFileSliceTool } from "./tools/read-file-slice.js";
+export { createReadTabTool, type ReadTabCallbacks } from "./tools/read-tab.js";
 export { createToolRegistry } from "./tools/registry.js";
 export { createRetrieveTool, type RetrieveCallbacks } from "./tools/retrieve.js";
 export { BackgroundShellStore, createRunShellTool } from "./tools/run-shell.js";
+export {
+	createSendToTabTool,
+	type ResolvedTabRef,
+	type SendToTabCallbacks,
+	type TabResolution,
+} from "./tools/send-to-tab.js";
 export { analyzeCommand } from "./tools/shell-analyze.js";
 export {
 	type AvailableAgent,

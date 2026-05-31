@@ -15,8 +15,10 @@ import {
 	createListFilesTool,
 	createReadFileSliceTool,
 	createReadFileTool,
+	createReadTabTool,
 	createRetrieveTool,
 	createRunShellTool,
+	createSendToTabTool,
 	createSkillsWatcher,
 	createSummonTool,
 	createTaskListTool,
@@ -32,6 +34,8 @@ import {
 	getClaudeAccountsFromDB,
 	getMessagesForTab,
 	getSetting,
+	getTab,
+	listOpenTabs,
 	loadAgent,
 	loadAgents,
 	loadConfig,
@@ -41,8 +45,11 @@ import {
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
 	resolveApiKey,
+	resolveTabPrefix,
 	type SkillDefinition,
 	type SystemChunkKind,
+	shortestUniquePrefix,
+	type TabResolution,
 	type TabStatusSnapshot,
 	TaskList,
 	toAvailableSubagents,
@@ -72,6 +79,16 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	youtube_transcribe:
 		"Fetch the transcript/subtitles for a YouTube video. Set background=true to start in the background and get a job_id for later retrieval.",
 };
+
+/**
+ * Maximum number of CONSECUTIVE agent-to-agent auto-wakes a tab will accept
+ * before it stops auto-responding and waits for a human. Each `send_to_tab`
+ * that would wake an idle tab consumes one unit; any human-originated message
+ * (e.g. via `POST /chat`) refills the budget to full. This bounds runaway
+ * agent ping-pong loops (A wakes B wakes A ...) that would otherwise spend
+ * tokens unbounded with no human in the loop. See notes/plan-tab-comm.md.
+ */
+const MAX_AGENT_AUTO_WAKES = 6;
 
 const DEFAULT_SYSTEM_PROMPT =
 	"You are Dispatch, an agent designed to help with any task that the user asks for. Be helpful and concise.";
@@ -197,6 +214,14 @@ interface TabAgent {
 	 * rows. Set at the start of `processMessage`, cleared when the turn ends.
 	 */
 	currentTurnId: string | null;
+	/**
+	 * Remaining consecutive agent-to-agent auto-wakes this tab will accept
+	 * before requiring human intervention (see `MAX_AGENT_AUTO_WAKES`).
+	 * Refilled to the max by any human-originated `deliverMessage`; decremented
+	 * each time an agent-originated `send_to_tab` wakes this tab from idle. When
+	 * it hits 0, further agent messages are queued but do NOT start a turn.
+	 */
+	autoWakeBudget: number;
 }
 
 export class AgentManager {
@@ -343,6 +368,7 @@ export class AgentManager {
 				currentChunks: null,
 				currentAssistantId: null,
 				currentTurnId: null,
+				autoWakeBudget: MAX_AGENT_AUTO_WAKES,
 			};
 			this.tabAgents.set(tabId, tabAgent);
 		}
@@ -366,10 +392,12 @@ export class AgentManager {
 		const permBash = getSetting("perm_bash") === "allow";
 		const permSummon = getSetting("perm_summon") === "allow";
 		const permUserAgent = getSetting("perm_user_agent") === "allow";
+		const permSendToTab = getSetting("perm_send_to_tab") === "allow";
+		const permReadTab = getSetting("perm_read_tab") === "allow";
 		const permWebSearch = getSetting("perm_web_search") === "allow";
 		const permYoutubeTranscribe = getSetting("perm_youtube_transcribe") === "allow";
 		const sysPrompt = getSetting("system_prompt") ?? "";
-		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permWebSearch}:${permYoutubeTranscribe}:${sysPrompt}`;
+		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
@@ -504,6 +532,12 @@ export class AgentManager {
 						}),
 					});
 				}
+				// Tab-to-tab communication — gated on the child whitelist.
+				if (allowed.has("send_to_tab") || allowed.has("read_tab")) {
+					for (const entry of this.buildTabCommToolEntries(tabId)) {
+						if (allowed.has(entry.name)) toolEntries.push(entry);
+					}
+				}
 			} else {
 				// Parent agent: use permission settings from DB
 				if (permRead) {
@@ -580,6 +614,14 @@ export class AgentManager {
 										: this.getChildResult(id),
 						}),
 					});
+				}
+				if (permSendToTab || permReadTab) {
+					const tabCommAllowed = new Set<string>();
+					if (permSendToTab) tabCommAllowed.add("send_to_tab");
+					if (permReadTab) tabCommAllowed.add("read_tab");
+					for (const entry of this.buildTabCommToolEntries(tabId)) {
+						if (tabCommAllowed.has(entry.name)) toolEntries.push(entry);
+					}
 				}
 			}
 
@@ -971,14 +1013,18 @@ export class AgentManager {
 			if (!agentDef) {
 				const allDefs = loadAgents(parentEffectiveDir);
 				if (options.topLevel) {
-					const userAgents = allDefs.filter((d) => !d.is_subagent).map((d) => `${d.slug} (${d.name})`);
+					const userAgents = allDefs
+						.filter((d) => !d.is_subagent)
+						.map((d) => `${d.slug} (${d.name})`);
 					const hint =
 						userAgents.length > 0
 							? ` Available user agents: ${userAgents.join(", ")}.`
 							: " No user agent definitions exist yet.";
 					throw new Error(`Agent definition not found: "${options.agentSlug}".${hint}`);
 				} else {
-					const subagents = allDefs.filter((d) => d.is_subagent).map((d) => `${d.slug} (${d.name})`);
+					const subagents = allDefs
+						.filter((d) => d.is_subagent)
+						.map((d) => `${d.slug} (${d.name})`);
 					const hint =
 						subagents.length > 0
 							? ` Available subagents: ${subagents.join(", ")}.`
@@ -1147,7 +1193,8 @@ export class AgentManager {
 			if (tabAgent.status === "running") {
 				return {
 					status: "error",
-					error: "This is a user agent (top-level tab) and cannot be retrieved. User agents are fire-and-forget.",
+					error:
+						"This is a user agent (top-level tab) and cannot be retrieved. User agents are fire-and-forget.",
 				};
 			}
 			return {
@@ -1157,6 +1204,214 @@ export class AgentManager {
 		}
 
 		return tabAgent.completionPromise;
+	}
+
+	// ─── Tab-to-tab communication ───────────────────────────────────
+	//
+	// `send_to_tab` / `read_tab` let an agent message a peer tab by its short
+	// handle (a git-style prefix of the tab UUID). Delivery reuses the exact
+	// running→queue / idle→new-turn routing that `POST /chat` uses (see
+	// `deliverMessage`), so an agent message behaves identically to a user one.
+
+	/**
+	 * Build the `send_to_tab` + `read_tab` tool entries for `tabId`. Shared by
+	 * both tool-construction paths (child whitelist + permission-gated parent).
+	 * `selfHandle` is computed once so the calling tab can stamp provenance and
+	 * reject self-sends.
+	 */
+	private buildTabCommToolEntries(
+		tabId: string,
+	): Array<{ name: string; tool: ReturnType<typeof createSendToTabTool> }> {
+		const selfHandle = shortestUniquePrefix(tabId);
+		return [
+			{
+				name: "send_to_tab",
+				tool: createSendToTabTool({
+					resolveShortId: (prefix) => this.resolveTabHandle(prefix),
+					// origin: "agent" subjects this to the receiver's auto-wake
+					// budget so agent↔agent loops are bounded (see deliverMessage).
+					deliver: (targetId, message) =>
+						this.deliverMessage(targetId, message, { origin: "agent" }),
+					listOpenHandles: () => this.listOpenHandles(tabId),
+					self: { id: tabId, handle: selfHandle },
+				}),
+			},
+			{
+				name: "read_tab",
+				tool: createReadTabTool({
+					resolveShortId: (prefix) => this.resolveTabHandle(prefix),
+					getLastResponse: (targetId) => this.getLastTabResponse(targetId),
+					listOpenHandles: () => this.listOpenHandles(tabId),
+				}),
+			},
+		];
+	}
+
+	/**
+	 * Project a core `ResolveTabPrefixResult` down to the tool-facing
+	 * `TabResolution` (minimal `{ id, title, handle }` refs). Each match's
+	 * `handle` is recomputed via `shortestUniquePrefix` so the value the tool
+	 * echoes back always matches what the UI currently shows.
+	 */
+	private resolveTabHandle(prefix: string): TabResolution {
+		const res = resolveTabPrefix(prefix);
+		if (res.status === "none") return { status: "none" };
+		if (res.status === "ok") {
+			return {
+				status: "ok",
+				tab: {
+					id: res.tab.id,
+					title: res.tab.title,
+					handle: shortestUniquePrefix(res.tab.id),
+				},
+			};
+		}
+		return {
+			status: "ambiguous",
+			matches: res.matches.map((t) => ({
+				id: t.id,
+				title: t.title,
+				handle: shortestUniquePrefix(t.id),
+			})),
+		};
+	}
+
+	/** Snapshot of open tabs as `{ handle, title }`, excluding `exceptId`
+	 *  (typically the caller's own tab). Drives the "available tabs" hints. */
+	private listOpenHandles(exceptId?: string): Array<{ handle: string; title: string }> {
+		return listOpenTabs()
+			.filter((t) => t.id !== exceptId)
+			.map((t) => ({ handle: shortestUniquePrefix(t.id), title: t.title }));
+	}
+
+	/**
+	 * Return a tab's most recent COMPLETED assistant turn as flat text, plus
+	 * its current status. Reads the persisted chunk log (source of truth) and
+	 * grabs the last `role === "assistant"` group's text chunks. `text` is null
+	 * when no completed assistant turn exists yet.
+	 */
+	getLastTabResponse(tabId: string): { text: string | null; status: AgentStatus } {
+		const status = this.getTabStatus(tabId);
+		try {
+			const messages = getMessagesForTab(tabId);
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const msg = messages[i];
+				if (!msg || msg.role !== "assistant") continue;
+				const text = msg.chunks
+					.filter((c): c is { type: "text"; text: string } => c.type === "text")
+					.map((c) => c.text)
+					.join("")
+					.trim();
+				if (text.length > 0) return { text, status };
+			}
+		} catch {
+			// DB unavailable / tab unknown — fall through to null.
+		}
+		return { text: null, status };
+	}
+
+	/**
+	 * Deliver `message` to `tabId`, choosing the SAME routing as `POST /chat`:
+	 *   - target running → queue it (consumed like a user interrupt).
+	 *   - target idle/errored → wake it and start a new turn.
+	 *
+	 * Returns quickly; does NOT block on the turn. Both the HTTP `/chat` path
+	 * and the `send_to_tab` tool call through here so the running/idle decision
+	 * lives in exactly one place.
+	 *
+	 * `opts` carries the per-request knobs `/chat` forwards (key/model, agent
+	 * fallback chain, reasoning effort, working dir, an explicit queue id). The
+	 * `send_to_tab` tool passes none of these — for a cold wake (a tab not in
+	 * `tabAgents`, e.g. after a server restart) the key/model are hydrated from
+	 * the live `TabAgent` if present, else from the persisted tab row. (A cold
+	 * tab keeps its stored key/model but not its full agent-definition fallback
+	 * chain — see plan notes.)
+	 */
+	deliverMessage(
+		tabId: string,
+		message: string,
+		opts: {
+			keyId?: string;
+			modelId?: string;
+			agentModels?: Array<{ key_id: string; model_id: string }>;
+			reasoningEffort?: "none" | "low" | "medium" | "high" | "max";
+			workingDirectory?: string;
+			queueId?: string;
+			/**
+			 * Who is sending this message. `"human"` (default) is unrestricted
+			 * and REFILLS the target's agent-to-agent auto-wake budget. `"agent"`
+			 * (from the `send_to_tab` tool) is governed by that budget: an
+			 * agent-originated wake of an idle tab consumes one unit, and once the
+			 * budget is exhausted the message is queued WITHOUT starting a turn
+			 * (returned as `suppressed`) so a runaway A↔B loop can't spend tokens
+			 * forever with no human in the loop.
+			 */
+			origin?: "human" | "agent";
+		} = {},
+	): { status: "queued"; messageId: string } | { status: "started" } | { status: "suppressed" } {
+		const origin = opts.origin ?? "human";
+
+		// A human touching the tab clears any accumulated agent-wake throttle:
+		// the conversation is back under human supervision, so peers get a fresh
+		// budget of auto-wakes again.
+		if (origin === "human") {
+			this._getOrCreateTabAgent(tabId).autoWakeBudget = MAX_AGENT_AUTO_WAKES;
+		}
+
+		if (this.getTabStatus(tabId) === "running") {
+			// Busy target → always queue (consumed like a user interrupt),
+			// regardless of origin. Queuing does not itself start a turn, so it
+			// can't drive a runaway loop; we don't spend budget here.
+			const { messageId } = this.queueMessage(tabId, message, opts.queueId);
+			return { status: "queued", messageId };
+		}
+
+		// Idle/errored target → this delivery would WAKE the tab (start a turn).
+		// For agent-originated wakes, enforce the auto-wake budget first.
+		if (origin === "agent") {
+			const target = this._getOrCreateTabAgent(tabId);
+			if (target.autoWakeBudget <= 0) {
+				// Budget exhausted: preserve the message (queue it, never drop)
+				// but do NOT wake the tab. A human message will refill the budget
+				// and the queued message will be seen on the next human turn.
+				this.queueMessage(tabId, message, opts.queueId);
+				const notice =
+					`Automatic agent-to-agent message limit reached for this tab ` +
+					`(${MAX_AGENT_AUTO_WAKES} consecutive). Further messages from other tabs ` +
+					`are held until you send a message here.`;
+				this.emit({ type: "notice", message: notice }, tabId);
+				this.routeSystemEventToTab(tabId, "notice", notice);
+				return { status: "suppressed" };
+			}
+			target.autoWakeBudget -= 1;
+		}
+
+		// Resolve key/model: explicit opts win, then the live tab agent's, then
+		// the persisted row's.
+		const tabAgent = this.tabAgents.get(tabId);
+		let keyId = opts.keyId ?? tabAgent?.keyId ?? undefined;
+		let modelId = opts.modelId ?? tabAgent?.modelId ?? undefined;
+		const agentModels = opts.agentModels ?? tabAgent?.agentModels;
+		if (!keyId || !modelId) {
+			const row = getTab(tabId);
+			if (row) {
+				keyId = keyId ?? row.keyId ?? undefined;
+				modelId = modelId ?? row.modelId ?? undefined;
+			}
+		}
+
+		this.processMessage(
+			tabId,
+			message,
+			keyId,
+			modelId,
+			opts.reasoningEffort,
+			opts.workingDirectory,
+			agentModels,
+		).catch((err) => {
+			console.error(`[dispatch] deliverMessage processMessage error for tab ${tabId}:`, err);
+		});
+		return { status: "started" };
 	}
 
 	async processMessage(

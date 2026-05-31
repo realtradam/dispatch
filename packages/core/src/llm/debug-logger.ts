@@ -281,11 +281,7 @@ export function logStepLifecycle(data: {
  * Log agent loop-level events (loop start, break conditions, etc.).
  * Only logs at verbosity >= 3.
  */
-export function logAgentLoop(data: {
-	tabId?: string;
-	event: string;
-	detail?: unknown;
-}): void {
+export function logAgentLoop(data: { tabId?: string; event: string; detail?: unknown }): void {
 	if (!ENABLED || VERBOSITY < 3) return;
 	const detail = data.detail !== undefined ? ` ${JSON.stringify(data.detail)}` : "";
 	console.error(`[dispatch-debug] AGENT tab=${data.tabId ?? "?"} ${data.event}${detail}`);
@@ -308,16 +304,14 @@ export function logAgentLoop(data: {
  * we just clone and read once via `.text()` — simpler and safe because
  * non-streaming bodies are bounded.
  */
-export function wrapFetchWithLogging<
-	F extends (...args: never[]) => Promise<Response> | Response,
->(baseFetch: F, opts: { tabId?: string; modelHint?: string }): F {
+export function wrapFetchWithLogging<F extends (...args: never[]) => Promise<Response> | Response>(
+	baseFetch: F,
+	opts: { tabId?: string; modelHint?: string },
+): F {
 	if (!ENABLED) return baseFetch;
 	const wrapped = async (...args: Parameters<F>) => {
 		const requestId = ++seq;
-		const [input, init] = args as unknown as [
-			RequestInfo | URL,
-			RequestInit | undefined,
-		];
+		const [input, init] = args as unknown as [RequestInfo | URL, RequestInit | undefined];
 		const url =
 			typeof input === "string"
 				? input
@@ -325,7 +319,8 @@ export function wrapFetchWithLogging<
 					? input.toString()
 					: (input as Request).url;
 		const method =
-			init?.method ?? (typeof input === "object" && "method" in input ? (input as Request).method : "POST");
+			init?.method ??
+			(typeof input === "object" && "method" in input ? (input as Request).method : "POST");
 
 		// Snapshot headers as a plain object for logging.
 		const headerObj: Record<string, string> = {};

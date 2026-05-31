@@ -7,8 +7,6 @@
   - Start a chat on one device (e.g. desktop) and seamlessly pick it up later on another (e.g. phone).
   - Sidebar remembers which views were open and in what order, restoring them exactly as they were.
 
-- **Edit chat history.** Click on any existing message in the chat history and choose to edit it — this applies to user messages, AI responses, and tool results.
-
 - **Update the way tools appear in the chat UI.** Improve the visual presentation of tool calls and their results — make them more readable, compact, and scannable.
 
 - **Show git diffs for edited files.** When the AI edits a file (write_file tool call), display a git diff in the UI rather than just the raw file content.

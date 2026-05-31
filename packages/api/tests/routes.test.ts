@@ -166,6 +166,34 @@ vi.mock("@dispatch/core", () => ({
 		};
 	},
 	createTab() {},
+	getTab() {
+		return null;
+	},
+	listOpenTabs() {
+		return [];
+	},
+	resolveTabPrefix() {
+		return { status: "none" };
+	},
+	shortestUniquePrefix(id: string) {
+		return (id ?? "").slice(0, 4);
+	},
+	createSendToTabTool(_callbacks: unknown) {
+		return {
+			name: "send_to_tab",
+			description: "send to tab",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
+	createReadTabTool(_callbacks: unknown) {
+		return {
+			name: "read_tab",
+			description: "read tab",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
 	getClaudeAccountsFromDB() {
 		return [];
 	},

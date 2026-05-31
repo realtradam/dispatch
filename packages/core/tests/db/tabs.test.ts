@@ -73,6 +73,22 @@ class FakeDatabase {
 			return [{ max_pos: maxPos }];
 		}
 
+		// resolveTabPrefix: open tabs whose id starts with a sanitized prefix.
+		// The production query binds `$prefix` as `<sanitized>%`; emulate SQLite
+		// LIKE prefix semantics here (case-insensitive, `%` = "rest of string").
+		if (norm === "SELECT * FROM tabs WHERE is_open = 1 AND id LIKE $prefix ORDER BY position ASC") {
+			const raw = String(params?.$prefix ?? "");
+			const needle = raw.endsWith("%") ? raw.slice(0, -1) : raw;
+			return this.rows
+				.filter((r) => r.is_open === 1 && r.id.toLowerCase().startsWith(needle.toLowerCase()))
+				.sort((a, b) => a.position - b.position);
+		}
+
+		// shortestUniquePrefix: all open tab ids.
+		if (norm === "SELECT id FROM tabs WHERE is_open = 1") {
+			return this.rows.filter((r) => r.is_open === 1).map((r) => ({ id: r.id }));
+		}
+
 		throw new Error(`FakeDatabase: unsupported SELECT: ${norm}`);
 	}
 
@@ -134,7 +150,8 @@ vi.mock("../../src/db/index.js", () => ({
 // Dynamic import AFTER `vi.mock` registers (vitest hoists `vi.mock` to
 // the very top of the file, so by the time this line runs the mock is
 // active for `./index.js` resolution inside `tabs.ts`).
-const { archiveTab, createTab, getDescendantIds, getTab } = await import("../../src/db/tabs.js");
+const { archiveTab, createTab, getDescendantIds, getTab, resolveTabPrefix, shortestUniquePrefix } =
+	await import("../../src/db/tabs.js");
 
 beforeAll(() => {
 	fakeDb = new FakeDatabase();
@@ -232,5 +249,105 @@ describe("getDescendantIds", () => {
 
 		const ids2 = getDescendantIds("a1");
 		expect(ids2).toEqual(["b1", "a1"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveTabPrefix — git-style short-handle resolution
+// ---------------------------------------------------------------------------
+describe("resolveTabPrefix", () => {
+	it("returns none when the prefix is shorter than the minimum length", () => {
+		createTab("abcd1234-0000-4000-8000-000000000000", "A");
+		// 3 chars < MIN_TAB_PREFIX_LENGTH (4)
+		expect(resolveTabPrefix("abc").status).toBe("none");
+	});
+
+	it("returns none when no open tab matches", () => {
+		createTab("abcd1234-0000-4000-8000-000000000000", "A");
+		expect(resolveTabPrefix("ffff").status).toBe("none");
+	});
+
+	it("resolves a unique 4-char prefix to the single matching tab", () => {
+		createTab("abcd1234-0000-4000-8000-000000000000", "Alpha");
+		createTab("9999aaaa-0000-4000-8000-000000000000", "Beta");
+		const res = resolveTabPrefix("abcd");
+		expect(res.status).toBe("ok");
+		if (res.status === "ok") {
+			expect(res.tab.id).toBe("abcd1234-0000-4000-8000-000000000000");
+			expect(res.tab.title).toBe("Alpha");
+		}
+	});
+
+	it("resolves the full UUID (a maximal prefix)", () => {
+		createTab("abcd1234-0000-4000-8000-000000000000", "Alpha");
+		const res = resolveTabPrefix("abcd1234-0000-4000-8000-000000000000");
+		expect(res.status).toBe("ok");
+	});
+
+	it("reports ambiguity when multiple open tabs share the prefix", () => {
+		createTab("abcd1111-0000-4000-8000-000000000000", "One");
+		createTab("abcd2222-0000-4000-8000-000000000000", "Two");
+		const res = resolveTabPrefix("abcd");
+		expect(res.status).toBe("ambiguous");
+		if (res.status === "ambiguous") {
+			expect(res.matches).toHaveLength(2);
+			expect(res.matches.map((m) => m.title).sort()).toEqual(["One", "Two"]);
+		}
+	});
+
+	it("disambiguates when one more character is supplied", () => {
+		createTab("abcd1111-0000-4000-8000-000000000000", "One");
+		createTab("abcd2222-0000-4000-8000-000000000000", "Two");
+		const res = resolveTabPrefix("abcd1");
+		expect(res.status).toBe("ok");
+		if (res.status === "ok") expect(res.tab.title).toBe("One");
+	});
+
+	it("matches case-insensitively (UUIDs are lowercase; LIKE is ASCII-CI)", () => {
+		createTab("abcd1234-0000-4000-8000-000000000000", "Alpha");
+		const res = resolveTabPrefix("ABCD");
+		expect(res.status).toBe("ok");
+	});
+
+	it("sanitizes LIKE wildcards so they cannot broaden the match", () => {
+		createTab("abcd1234-0000-4000-8000-000000000000", "Alpha");
+		createTab("9999aaaa-0000-4000-8000-000000000000", "Beta");
+		// `%` would match everything if not stripped; after sanitization the
+		// query is effectively `abcd%` which matches only Alpha.
+		const res = resolveTabPrefix("ab%d");
+		// "ab%d" -> sanitized "abd" (3 chars) -> below min length -> none.
+		expect(res.status).toBe("none");
+	});
+
+	it("excludes archived (closed) tabs from matches", () => {
+		createTab("abcd1234-0000-4000-8000-000000000000", "Alpha");
+		archiveTab("abcd1234-0000-4000-8000-000000000000");
+		expect(resolveTabPrefix("abcd").status).toBe("none");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// shortestUniquePrefix — display-handle derivation
+// ---------------------------------------------------------------------------
+describe("shortestUniquePrefix", () => {
+	it("returns a 4-char prefix when no other open tab collides", () => {
+		createTab("abcd1234-0000-4000-8000-000000000000", "Alpha");
+		expect(shortestUniquePrefix("abcd1234-0000-4000-8000-000000000000")).toBe("abcd");
+	});
+
+	it("grows the prefix one char at a time on a collision", () => {
+		createTab("abcd1111-0000-4000-8000-000000000000", "One");
+		createTab("abcd2222-0000-4000-8000-000000000000", "Two");
+		// First differing char is at index 4, so a 5-char prefix is unique.
+		expect(shortestUniquePrefix("abcd1111-0000-4000-8000-000000000000")).toBe("abcd1");
+		expect(shortestUniquePrefix("abcd2222-0000-4000-8000-000000000000")).toBe("abcd2");
+	});
+
+	it("ignores closed tabs when computing uniqueness", () => {
+		createTab("abcd1111-0000-4000-8000-000000000000", "One");
+		createTab("abcd2222-0000-4000-8000-000000000000", "Two");
+		archiveTab("abcd2222-0000-4000-8000-000000000000");
+		// With Two closed, One no longer collides → back to 4 chars.
+		expect(shortestUniquePrefix("abcd1111-0000-4000-8000-000000000000")).toBe("abcd");
 	});
 });

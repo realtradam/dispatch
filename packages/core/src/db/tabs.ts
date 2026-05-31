@@ -159,3 +159,78 @@ export function getDescendantIds(rootId: string): string[] {
 	}
 	return order.reverse();
 }
+
+/**
+ * Minimum length of a tab-handle prefix accepted by `resolveTabPrefix`.
+ * Mirrors the frontend's minimum DISPLAY length (4 hex chars). Anything
+ * shorter is rejected as too broad — an agent must echo at least the 4-char
+ * handle shown in the UI.
+ */
+export const MIN_TAB_PREFIX_LENGTH = 4;
+
+/**
+ * Outcome of resolving a short tab handle (a git-style prefix of a tab's
+ * UUID) back to a concrete open tab.
+ *
+ *  - `ok`        — exactly one open tab matched; `tab` is it.
+ *  - `none`      — no open tab matched (bad/stale handle, or too-short prefix).
+ *  - `ambiguous` — more than one open tab shares the prefix; `matches` lists
+ *                  them so the caller can ask for one more character (the same
+ *                  UX as `git checkout <ambiguous-sha>`).
+ */
+export type ResolveTabPrefixResult =
+	| { status: "ok"; tab: TabRow }
+	| { status: "none" }
+	| { status: "ambiguous"; matches: TabRow[] };
+
+/**
+ * Resolve a short tab handle to a single OPEN tab by prefix match — the
+ * git-short-hash model. The handle is NEVER stored: it is always derived from
+ * (and matched against) the canonical lowercase UUID in `tabs.id`.
+ *
+ * Sanitization is mandatory because the SQLite `LIKE` operator treats `%` and
+ * `_` as wildcards: an unsanitized prefix like `a%` would match broadly. We
+ * lowercase the input (UUIDs are canonical lowercase; SQLite `LIKE` is also
+ * ASCII-case-insensitive by default) and strip everything outside the UUID
+ * alphabet `[0-9a-f-]` so no wildcard can survive into the query.
+ *
+ * A prefix shorter than `MIN_TAB_PREFIX_LENGTH` after sanitization returns
+ * `none` rather than matching a large swath of tabs.
+ *
+ * Only OPEN tabs (`is_open = 1`) are addressable — a closed tab's UUID prefix
+ * must not cause phantom ambiguity or resolve to a dead conversation.
+ */
+export function resolveTabPrefix(prefix: string): ResolveTabPrefixResult {
+	const sanitized = (prefix ?? "").toLowerCase().replace(/[^0-9a-f-]/g, "");
+	if (sanitized.length < MIN_TAB_PREFIX_LENGTH) {
+		return { status: "none" };
+	}
+	const db = getDatabase();
+	const rows = db
+		.query("SELECT * FROM tabs WHERE is_open = 1 AND id LIKE $prefix ORDER BY position ASC")
+		.all({ $prefix: `${sanitized}%` }) as Array<Record<string, unknown>>;
+	if (rows.length === 0) return { status: "none" };
+	if (rows.length === 1) return { status: "ok", tab: rowToTab(rows[0] as Record<string, unknown>) };
+	return { status: "ambiguous", matches: rows.map(rowToTab) };
+}
+
+/**
+ * Compute the shortest unique prefix (minimum `MIN_TAB_PREFIX_LENGTH` chars)
+ * that identifies `tabId` among the currently OPEN tabs — the backend twin of
+ * the frontend's display helper. Used when a tool needs to echo a tab's own
+ * handle (e.g. provenance prefixes, "available tabs" hints) without trusting a
+ * value from the wire.
+ *
+ * Returns the full id if no shorter unique prefix exists (degenerate — only if
+ * two open tabs share an entire id, which UUID uniqueness precludes).
+ */
+export function shortestUniquePrefix(tabId: string): string {
+	const db = getDatabase();
+	const rows = db.query("SELECT id FROM tabs WHERE is_open = 1").all() as Array<{ id: string }>;
+	const others = rows.map((r) => r.id).filter((id) => id !== tabId);
+	for (let len = MIN_TAB_PREFIX_LENGTH; len < tabId.length; len++) {
+		const candidate = tabId.slice(0, len);
+		if (!others.some((id) => id.startsWith(candidate))) return candidate;
+	}
+	return tabId;
+}

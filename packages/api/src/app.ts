@@ -56,28 +56,33 @@ app.post("/chat", async (c) => {
 		return c.json({ error: "message must be a non-empty string" }, 400);
 	}
 
-	if (agentManager.getTabStatus(tabId) === "running") {
-		const queueId = typeof body.queueId === "string" ? body.queueId : undefined;
-		const { messageId } = agentManager.queueMessage(tabId, message, queueId);
-		return c.json({ status: "queued", messageId });
-	}
-
 	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
 	const modelId = typeof body.modelId === "string" ? body.modelId : undefined;
 	const agentModels = Array.isArray(body.agentModels) ? body.agentModels : undefined;
 	const workingDirectory =
 		typeof body.workingDirectory === "string" ? body.workingDirectory : undefined;
+	const queueId = typeof body.queueId === "string" ? body.queueId : undefined;
 	const validEfforts = ["none", "low", "medium", "high", "max"];
 	const reasoningEffort =
 		typeof body.reasoningEffort === "string" && validEfforts.includes(body.reasoningEffort)
 			? (body.reasoningEffort as "none" | "low" | "medium" | "high" | "max")
 			: undefined;
 
-	// Non-blocking — let the agent run in the background
-	agentManager
-		.processMessage(tabId, message, keyId, modelId, reasoningEffort, workingDirectory, agentModels)
-		.catch(console.error);
+	// Single routing decision (queue if busy, new turn if idle) shared with the
+	// `send_to_tab` tool via `AgentManager.deliverMessage`. Non-blocking — a
+	// started turn runs in the background.
+	const outcome = agentManager.deliverMessage(tabId, message, {
+		...(keyId ? { keyId } : {}),
+		...(modelId ? { modelId } : {}),
+		...(agentModels ? { agentModels } : {}),
+		...(reasoningEffort ? { reasoningEffort } : {}),
+		...(workingDirectory !== undefined ? { workingDirectory } : {}),
+		...(queueId ? { queueId } : {}),
+	});
 
+	if (outcome.status === "queued") {
+		return c.json({ status: "queued", messageId: outcome.messageId });
+	}
 	return c.json({ status: "ok" });
 });
 

@@ -177,6 +177,8 @@ export function createSummonTool(
 		"  - retrieve: Collect results from its children (required if summon is given)",
 		"  - web_search: Search the web",
 		"  - youtube_transcribe: Fetch YouTube video transcripts",
+		"  - send_to_tab: Send a message to another tab/agent by its ID",
+		"  - read_tab: Read another tab/agent's latest response by its ID",
 		"",
 		"The 'agent' parameter is required — every spawned agent must use a definition.",
 		"Tools default to the agent definition's tools, intersected with your own tools (you can't grant capabilities you don't have).",
@@ -232,6 +234,8 @@ export function createSummonTool(
 					"retrieve",
 					"web_search",
 					"youtube_transcribe",
+					"send_to_tab",
+					"read_tab",
 				]),
 			)
 			.optional()
@@ -262,7 +266,9 @@ export function createSummonTool(
 			const tools = args.tools as string[] | undefined;
 			const workingDirectory = args.working_directory as string | undefined;
 			const background = (args.background as boolean | undefined) ?? false;
-			const topLevel = userAgentEnabled ? ((args.top_level as boolean | undefined) ?? false) : false;
+			const topLevel = userAgentEnabled
+				? ((args.top_level as boolean | undefined) ?? false)
+				: false;
 
 			try {
 				const agentId = await callbacks.spawn({

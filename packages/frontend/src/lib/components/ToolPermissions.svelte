@@ -28,6 +28,16 @@ const toolPermissions: ToolPermission[] = [
 		description: "Allow the AI to open new independent top-level tabs",
 	},
 	{
+		id: "send_to_tab",
+		label: "Message other tabs",
+		description: "Allow the AI to send messages to other tabs by their ID",
+	},
+	{
+		id: "read_tab",
+		label: "Read other tabs",
+		description: "Allow the AI to read other tabs' latest responses by their ID",
+	},
+	{
 		id: "web_search",
 		label: "Web search",
 		description: "Allow the AI to search the web via Firecrawl",
