@@ -16,6 +16,7 @@ describe("createSummonTool — description content", () => {
 			"/tmp/work",
 			noopCallbacks,
 			[],
+			[],
 			["/home/u/.config/dispatch/agents", "/tmp/work/.dispatch/agents"],
 		);
 		expect(tool.description).toContain("/home/u/.config/dispatch/agents");
@@ -38,7 +39,7 @@ describe("createSummonTool — description content", () => {
 				path: "/home/u/.config/dispatch/agents/researcher.toml",
 			},
 		];
-		const tool = createSummonTool("/tmp/work", noopCallbacks, agents, [
+		const tool = createSummonTool("/tmp/work", noopCallbacks, agents, [], [
 			"/home/u/.config/dispatch/agents",
 		]);
 		expect(tool.description).toContain("programmer");
@@ -53,9 +54,74 @@ describe("createSummonTool — description content", () => {
 			"/tmp/work",
 			noopCallbacks,
 			[],
+			[],
 			["/home/u/.config/dispatch/agents"],
 		);
 		expect(tool.description).toContain("No agent definitions are currently defined");
+	});
+
+	it("shows two groups when userAgentEnabled is true", () => {
+		const subagents: AvailableAgent[] = [
+			{
+				slug: "programmer",
+				name: "Programmer",
+				description: "Codes things",
+				path: "/agents/programmer.toml",
+			},
+		];
+		const userAgents: AvailableAgent[] = [
+			{
+				slug: "default",
+				name: "Default",
+				description: "Default agent",
+				path: "/agents/default.toml",
+			},
+		];
+		const tool = createSummonTool(
+			"/tmp/work",
+			noopCallbacks,
+			subagents,
+			userAgents,
+			["/agents"],
+			true,
+		);
+		expect(tool.description).toContain("Subagents (spawned as child tabs):");
+		expect(tool.description).toContain(
+			"User agents (spawned as independent top-level tabs, requires top_level=true):",
+		);
+		expect(tool.description).toContain("programmer");
+		expect(tool.description).toContain("default");
+	});
+
+	it("hides user agents group when userAgentEnabled is false", () => {
+		const subagents: AvailableAgent[] = [
+			{
+				slug: "programmer",
+				name: "Programmer",
+				description: "Codes things",
+				path: "/agents/programmer.toml",
+			},
+		];
+		const userAgents: AvailableAgent[] = [
+			{
+				slug: "default",
+				name: "Default",
+				description: "Default agent",
+				path: "/agents/default.toml",
+			},
+		];
+		const tool = createSummonTool(
+			"/tmp/work",
+			noopCallbacks,
+			subagents,
+			userAgents,
+			["/agents"],
+			false,
+		);
+		expect(tool.description).toContain("Available agents:");
+		expect(tool.description).not.toContain("User agents");
+		// "default" appears in generic description text, so check for the slug listing format
+		expect(tool.description).not.toContain("- default: Default");
 	});
 });
 
@@ -81,27 +147,10 @@ describe("createSummonTool — execute() argument forwarding", () => {
 		});
 	});
 
-	it("omits agentSlug from the spawn payload when no agent param is given", async () => {
-		const spawn = vi.fn(async () => "tab-xyz");
-		const tool = createSummonTool(
-			"/tmp/work",
-			{ spawn, getResult: async () => ({ status: "done", result: "ok" }) },
-			[],
-			[],
-		);
-		await tool.execute({
-			task: "do thing",
-			background: true,
-		});
-		expect(spawn).toHaveBeenCalledTimes(1);
-		const callArg = spawn.mock.calls[0]?.[0];
-		expect(callArg).not.toHaveProperty("agentSlug");
-	});
-
 	it("returns spawned agent_id when background=true (no blocking on result)", async () => {
 		const getResult = vi.fn(async () => ({ status: "done" as const, result: "should-not-see" }));
 		const tool = createSummonTool("/tmp/work", { spawn: async () => "id-42", getResult }, [], []);
-		const out = await tool.execute({ task: "x", background: true });
+		const out = await tool.execute({ task: "x", agent: "test-agent", background: true });
 		expect(out).toContain("id-42");
 		// Background mode must not block on getResult
 		expect(getResult).not.toHaveBeenCalled();
@@ -117,7 +166,7 @@ describe("createSummonTool — execute() argument forwarding", () => {
 			[],
 			[],
 		);
-		const out = await tool.execute({ task: "x" });
+		const out = await tool.execute({ task: "x", agent: "test-agent" });
 		// Foreground summons prefix the blocked result with `agent_id: <id>` so
 		// the frontend's ToolCallDisplay regex can surface the "Open Tab" button
 		// (see summon.ts). Assert both the prefix and the child output survive.
@@ -135,7 +184,54 @@ describe("createSummonTool — execute() argument forwarding", () => {
 			[],
 			[],
 		);
-		const out = await tool.execute({ task: "x" });
+		const out = await tool.execute({ task: "x", agent: "test-agent" });
 		expect(out).toContain("boom");
+	});
+
+	it("returns fire-and-forget message when top_level=true", async () => {
+		const spawn = vi.fn(async () => "ua-tab-1");
+		const getResult = vi.fn(async () => ({ status: "done" as const, result: "nope" }));
+		const tool = createSummonTool(
+			"/tmp/work",
+			{ spawn, getResult },
+			[],
+			[],
+			[],
+			true, // userAgentEnabled
+		);
+		const out = await tool.execute({
+			task: "do stuff",
+			agent: "default",
+			top_level: true,
+		});
+		expect(out).toContain("User agent spawned successfully");
+		expect(out).toContain("ua-tab-1");
+		expect(out).toContain("fire-and-forget");
+		expect(getResult).not.toHaveBeenCalled();
+
+		// Verify topLevel was forwarded to spawn
+		const callArg = spawn.mock.calls[0]?.[0];
+		expect(callArg).toMatchObject({ topLevel: true });
+	});
+
+	it("ignores top_level when userAgentEnabled is false", async () => {
+		const spawn = vi.fn(async () => "tab-1");
+		const getResult = vi.fn(async () => ({ status: "done" as const, result: "result" }));
+		const tool = createSummonTool(
+			"/tmp/work",
+			{ spawn, getResult },
+			[],
+			[],
+			[],
+			false, // userAgentEnabled
+		);
+		const out = await tool.execute({
+			task: "do stuff",
+			agent: "default",
+			top_level: true, // should be ignored
+		});
+		// Should behave as a normal foreground summon, not fire-and-forget
+		expect(out).not.toContain("fire-and-forget");
+		expect(getResult).toHaveBeenCalled();
 	});
 });

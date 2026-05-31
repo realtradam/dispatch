@@ -23,6 +23,11 @@ const toolPermissions: ToolPermission[] = [
 		description: "Allow the AI to spawn child agents to work on tasks",
 	},
 	{
+		id: "user_agent",
+		label: "Spawn user agents",
+		description: "Allow the AI to open new independent top-level tabs",
+	},
+	{
 		id: "web_search",
 		label: "Web search",
 		description: "Allow the AI to search the web via Firecrawl",

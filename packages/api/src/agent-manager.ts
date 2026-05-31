@@ -45,7 +45,8 @@ import {
 	type SystemChunkKind,
 	type TabStatusSnapshot,
 	TaskList,
-	toAvailableAgents,
+	toAvailableSubagents,
+	toAvailableUserAgents,
 	validateConfig,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
@@ -364,10 +365,11 @@ export class AgentManager {
 		const permEdit = getSetting("perm_edit") === "allow";
 		const permBash = getSetting("perm_bash") === "allow";
 		const permSummon = getSetting("perm_summon") === "allow";
+		const permUserAgent = getSetting("perm_user_agent") === "allow";
 		const permWebSearch = getSetting("perm_web_search") === "allow";
 		const permYoutubeTranscribe = getSetting("perm_youtube_transcribe") === "allow";
 		const sysPrompt = getSetting("system_prompt") ?? "";
-		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permWebSearch}:${permYoutubeTranscribe}:${sysPrompt}`;
+		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permWebSearch}:${permYoutubeTranscribe}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
@@ -455,8 +457,14 @@ export class AgentManager {
 				}
 				if (allowed.has("summon")) {
 					const childParentAllowedTools = new Set(toolEntries.map((e) => e.name));
-					const availableAgents = toAvailableAgents(
-						loadAgents(workingDirectory),
+					const allAgentDefs = loadAgents(workingDirectory);
+					const availableSubagents = toAvailableSubagents(
+						allAgentDefs,
+						GLOBAL_AGENTS_DIR,
+						workingDirectory,
+					);
+					const availableUserAgents = toAvailableUserAgents(
+						allAgentDefs,
 						GLOBAL_AGENTS_DIR,
 						workingDirectory,
 					);
@@ -476,8 +484,10 @@ export class AgentManager {
 									}),
 								getResult: (id) => this.getChildResult(id),
 							},
-							availableAgents,
+							availableSubagents,
+							availableUserAgents,
 							agentDirPaths,
+							permUserAgent,
 						),
 					});
 				}
@@ -526,8 +536,14 @@ export class AgentManager {
 				if (permSummon) {
 					// Capture parent's allowed tool names for child permission enforcement
 					const parentAllowedTools = new Set(toolEntries.map((e) => e.name));
-					const availableAgents = toAvailableAgents(
-						loadAgents(workingDirectory),
+					const allAgentDefs = loadAgents(workingDirectory);
+					const availableSubagents = toAvailableSubagents(
+						allAgentDefs,
+						GLOBAL_AGENTS_DIR,
+						workingDirectory,
+					);
+					const availableUserAgents = toAvailableUserAgents(
+						allAgentDefs,
 						GLOBAL_AGENTS_DIR,
 						workingDirectory,
 					);
@@ -547,8 +563,10 @@ export class AgentManager {
 									}),
 								getResult: (id) => this.getChildResult(id),
 							},
-							availableAgents,
+							availableSubagents,
+							availableUserAgents,
 							agentDirPaths,
+							permUserAgent,
 						),
 					});
 					toolEntries.push({
@@ -917,15 +935,23 @@ export class AgentManager {
 		parentModelId?: string | null;
 		parentAllowedTools?: Set<string>;
 		parentTabId?: string;
+		/**
+		 * When true, spawn as an independent top-level "user agent" tab
+		 * instead of a subagent child tab. User agents have no parent,
+		 * are persistent, and cannot be retrieved (fire-and-forget).
+		 */
+		topLevel?: boolean;
 	}): Promise<string> {
 		const tabId = crypto.randomUUID();
 		const title = options.task.length > 50 ? `${options.task.slice(0, 47)}...` : options.task;
 
 		// Validate working directory is within the parent agent's effective CWD
 		const defaultWorkDir = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
-		let parentEffectiveDir = options.parentTabId
-			? (this.tabAgents.get(options.parentTabId)?.workingDirectoryOverride ?? defaultWorkDir)
-			: defaultWorkDir;
+		let parentEffectiveDir = options.topLevel
+			? defaultWorkDir
+			: options.parentTabId
+				? (this.tabAgents.get(options.parentTabId)?.workingDirectoryOverride ?? defaultWorkDir)
+				: defaultWorkDir;
 
 		// Expand ~ in parent dir
 		if (parentEffectiveDir === "~" || parentEffectiveDir.startsWith("~/")) {
@@ -944,16 +970,41 @@ export class AgentManager {
 			agentDef = loadAgent(options.agentSlug, parentEffectiveDir);
 			if (!agentDef) {
 				const allDefs = loadAgents(parentEffectiveDir);
-				const subagents = allDefs.filter((d) => d.is_subagent).map((d) => `${d.slug} (${d.name})`);
-				const hint =
-					subagents.length > 0
-						? ` Available subagents: ${subagents.join(", ")}.`
-						: " No subagent definitions exist yet.";
-				throw new Error(`Agent definition not found: "${options.agentSlug}".${hint}`);
+				if (options.topLevel) {
+					const userAgents = allDefs.filter((d) => !d.is_subagent).map((d) => `${d.slug} (${d.name})`);
+					const hint =
+						userAgents.length > 0
+							? ` Available user agents: ${userAgents.join(", ")}.`
+							: " No user agent definitions exist yet.";
+					throw new Error(`Agent definition not found: "${options.agentSlug}".${hint}`);
+				} else {
+					const subagents = allDefs.filter((d) => d.is_subagent).map((d) => `${d.slug} (${d.name})`);
+					const hint =
+						subagents.length > 0
+							? ` Available subagents: ${subagents.join(", ")}.`
+							: " No subagent definitions exist yet.";
+					throw new Error(`Agent definition not found: "${options.agentSlug}".${hint}`);
+				}
+			}
+
+			// Validate that the definition type matches the spawn mode:
+			// subagent slugs can't be used with top_level=true, and
+			// user-agent slugs can't be used without top_level=true.
+			if (options.topLevel && agentDef.is_subagent) {
+				throw new Error(
+					`Cannot spawn user agent: "${options.agentSlug}" is a subagent definition. Use a non-subagent definition for top_level=true.`,
+				);
+			}
+			if (!options.topLevel && !agentDef.is_subagent) {
+				throw new Error(
+					`Cannot spawn subagent: "${options.agentSlug}" is a user agent definition. Set top_level=true to spawn it as an independent tab, or use a subagent definition.`,
+				);
 			}
 		}
 
-		// Resolve and validate child working directory against parent's effective dir
+		// Resolve child working directory.
+		// Subagents are validated to stay within the parent's effective dir.
+		// User agents (topLevel) are free to use any directory.
 		const requestedDir = agentDef?.cwd ?? options.workingDirectory;
 		let resolvedWorkingDirectory = requestedDir;
 		if (requestedDir) {
@@ -964,18 +1015,24 @@ export class AgentManager {
 				const { homedir } = await import("node:os");
 				childDir = join(homedir(), childDir.slice(1));
 			}
-			const parentDir = resolve(parentEffectiveDir);
-			const resolved = resolve(parentDir, childDir);
-			const rel = relative(parentDir, resolved);
-			const isOutside = rel.startsWith("..") || isAbsolute(rel);
-			if (isOutside) {
-				throw new Error(
-					`Working directory "${requestedDir}" is outside the parent's working directory "${parentDir}".`,
-				);
+			if (options.topLevel) {
+				// User agents: resolve freely, no containment check
+				resolvedWorkingDirectory = resolve(defaultWorkDir, childDir);
+			} else {
+				// Subagents: validate within parent's directory
+				const parentDir = resolve(parentEffectiveDir);
+				const resolved = resolve(parentDir, childDir);
+				const rel = relative(parentDir, resolved);
+				const isOutside = rel.startsWith("..") || isAbsolute(rel);
+				if (isOutside) {
+					throw new Error(
+						`Working directory "${requestedDir}" is outside the parent's working directory "${parentDir}".`,
+					);
+				}
+				// Store the resolved absolute path so downstream code doesn't
+				// re-resolve against the wrong base directory
+				resolvedWorkingDirectory = resolved;
 			}
-			// Store the resolved absolute path so downstream code doesn't
-			// re-resolve against the wrong base directory
-			resolvedWorkingDirectory = resolved;
 		}
 
 		// Determine the child's tool whitelist. When an agent definition
@@ -1020,10 +1077,13 @@ export class AgentManager {
 			}
 		}
 
-		// Set up completion tracking
-		tabAgent.completionPromise = new Promise((resolve) => {
-			tabAgent.completionResolve = resolve;
-		});
+		// Set up completion tracking — user agents are fire-and-forget,
+		// so only subagents get completion promises.
+		if (!options.topLevel) {
+			tabAgent.completionPromise = new Promise((resolve) => {
+				tabAgent.completionResolve = resolve;
+			});
+		}
 
 		// Create tab in DB
 		try {
@@ -1031,7 +1091,7 @@ export class AgentManager {
 			createTab(tabId, title, {
 				keyId: tabAgent.keyId,
 				modelId: tabAgent.modelId,
-				parentTabId: options.parentTabId,
+				parentTabId: options.topLevel ? undefined : options.parentTabId,
 			});
 		} catch {
 			// Continue even if DB fails
@@ -1045,7 +1105,7 @@ export class AgentManager {
 				title,
 				keyId: tabAgent.keyId,
 				modelId: tabAgent.modelId,
-				parentTabId: options.parentTabId ?? null,
+				parentTabId: options.topLevel ? null : (options.parentTabId ?? null),
 				agentSlug: options.agentSlug ?? null,
 				workingDirectory: resolvedWorkingDirectory ?? null,
 				agentModels: tabAgent.agentModels ?? null,
@@ -1083,6 +1143,12 @@ export class AgentManager {
 			// Not a child agent or already completed
 			if (tabAgent.status === "idle") {
 				return { status: "done", result: tabAgent.finalOutput ?? "(no output)" };
+			}
+			if (tabAgent.status === "running") {
+				return {
+					status: "error",
+					error: "This is a user agent (top-level tab) and cannot be retrieved. User agents are fire-and-forget.",
+				};
 			}
 			return {
 				status: "error",
