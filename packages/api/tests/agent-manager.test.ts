@@ -1129,6 +1129,131 @@ describe("AgentManager", () => {
 		});
 	});
 
+	describe("queue continuation after a turn ends", () => {
+		// A run generator that enqueues `msg` (as if a user/agent sent it mid-turn)
+		// exactly once, then streams a normal short reply. Used to simulate a
+		// message landing on the queue while the agent is busy.
+		function runThatEnqueues(manager: AgentManager, tabId: string, msg: string): RunGen {
+			let enqueued = false;
+			return async function* () {
+				yield { type: "status", status: "running" } as const;
+				if (!enqueued) {
+					enqueued = true;
+					manager.queueMessage(tabId, msg);
+				}
+				yield { type: "text-delta", delta: "reply" } as const;
+				yield {
+					type: "done",
+					message: { role: "assistant", chunks: [{ type: "text", text: "reply" }] },
+				} as const;
+				yield { type: "status", status: "idle" } as const;
+			};
+		}
+
+		it("starts a NEW turn for a message queued during the turn (the bug fix)", async () => {
+			const manager = new AgentManager();
+			const processSpy = vi.spyOn(manager, "processMessage");
+			setRunImpl(runThatEnqueues(manager, "tab-cont", "follow-up question"));
+
+			await manager.processMessage("tab-cont", "first");
+			// Let the fire-and-forget continuation turn run to completion.
+			await new Promise<void>((r) => setTimeout(r, 50));
+
+			// processMessage called twice: the original turn + the continuation.
+			expect(processSpy).toHaveBeenCalledTimes(2);
+			expect(processSpy.mock.calls[1]?.[0]).toBe("tab-cont");
+			expect(processSpy.mock.calls[1]?.[1]).toBe("follow-up question");
+
+			// Queue is drained and the tab is idle again.
+			const inner = manager as unknown as {
+				tabAgents: Map<string, { messageQueue: unknown[] }>;
+			};
+			expect(inner.tabAgents.get("tab-cont")?.messageQueue).toHaveLength(0);
+			expect(manager.getTabStatus("tab-cont")).toBe("idle");
+		});
+
+		it('emits message-consumed with reason "continuation" when draining between turns', async () => {
+			const manager = new AgentManager();
+			const events: AgentEvent[] = [];
+			manager.onEvent((e) => events.push(e));
+			setRunImpl(runThatEnqueues(manager, "tab-evt", "next"));
+
+			await manager.processMessage("tab-evt", "first");
+			await new Promise<void>((r) => setTimeout(r, 50));
+
+			const consumed = events.find((e) => e.type === "message-consumed") as
+				| (AgentEvent & { reason?: string })
+				| undefined;
+			expect(consumed).toBeDefined();
+			expect(consumed?.reason).toBe("continuation");
+		});
+
+		it("does NOT continue when the queue is empty after a clean turn", async () => {
+			const manager = new AgentManager();
+			const processSpy = vi.spyOn(manager, "processMessage");
+
+			await manager.processMessage("tab-noqueue", "only message");
+			await new Promise<void>((r) => setTimeout(r, 30));
+
+			expect(processSpy).toHaveBeenCalledTimes(1); // no continuation
+		});
+
+		it("does NOT continue a turn the user stopped (queue is preserved)", async () => {
+			const manager = new AgentManager();
+			const processSpy = vi.spyOn(manager, "processMessage");
+			// Run that enqueues then aborts itself via stopTab to mimic a user stop.
+			setRunImpl(async function* () {
+				yield { type: "status", status: "running" } as const;
+				manager.queueMessage("tab-stop", "should wait");
+				manager.stopTab("tab-stop");
+				yield {
+					type: "done",
+					message: { role: "assistant", chunks: [] },
+				} as const;
+			});
+
+			await manager.processMessage("tab-stop", "go");
+			await new Promise<void>((r) => setTimeout(r, 30));
+
+			// Only the original turn ran; the queued message is preserved, unanswered.
+			expect(processSpy).toHaveBeenCalledTimes(1);
+			const inner = manager as unknown as {
+				tabAgents: Map<string, { messageQueue: unknown[] }>;
+			};
+			expect(inner.tabAgents.get("tab-stop")?.messageQueue).toHaveLength(1);
+		});
+
+		it("bounds runaway agent<->agent continuation via the auto-wake budget", async () => {
+			const manager = new AgentManager();
+			// A run that ALWAYS enqueues another message → would loop forever
+			// without the budget cap.
+			setRunImpl(async function* () {
+				yield { type: "status", status: "running" } as const;
+				manager.queueMessage("tab-loop", "again and again");
+				yield {
+					type: "done",
+					message: { role: "assistant", chunks: [{ type: "text", text: "r" }] },
+				} as const;
+				yield { type: "status", status: "idle" } as const;
+			});
+			const processSpy = vi.spyOn(manager, "processMessage");
+
+			await manager.processMessage("tab-loop", "kick off");
+			await new Promise<void>((r) => setTimeout(r, 120));
+
+			// 1 original + at most MAX_AGENT_AUTO_WAKES (6) continuations = 7.
+			// Crucially BOUNDED, not infinite.
+			expect(processSpy.mock.calls.length).toBeLessThanOrEqual(7);
+			expect(processSpy.mock.calls.length).toBeGreaterThan(1);
+			// Budget spent; the last queued message is held, not answered.
+			const inner = manager as unknown as {
+				tabAgents: Map<string, { autoWakeBudget: number; messageQueue: unknown[] }>;
+			};
+			expect(inner.tabAgents.get("tab-loop")?.autoWakeBudget).toBe(0);
+			expect(inner.tabAgents.get("tab-loop")?.messageQueue.length).toBeGreaterThan(0);
+		});
+	});
+
 	describe("getLastTabResponse", () => {
 		it("returns the most recent assistant turn's text and current status", () => {
 			const manager = new AgentManager();

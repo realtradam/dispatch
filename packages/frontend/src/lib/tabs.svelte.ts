@@ -1223,7 +1223,11 @@ export function createTabStore() {
 			}
 			case "message-consumed": {
 				if (!tabId) break;
-				const mcEvent = event as AgentEvent & { tabId: string; messageIds: string[] };
+				const mcEvent = event as AgentEvent & {
+					tabId: string;
+					messageIds: string[];
+					reason?: "interrupt" | "continuation";
+				};
 				const mcTab = getTabById(tabId);
 				if (!mcTab) break;
 				// Track recently consumed IDs so sendMessage can detect early consumption
@@ -1234,6 +1238,46 @@ export function createTabStore() {
 				updateTab(tabId, {
 					queuedMessages: mcTab.queuedMessages.filter((m) => !mcEvent.messageIds.includes(m.id)),
 				});
+
+				// "continuation" — these queued messages are draining BETWEEN turns
+				// to START a fresh turn (the "queue consumed after turn ends" path),
+				// not folding into a running turn's tool result. The backend joins
+				// them into ONE initiating user row, so we collapse the matching
+				// optimistic `queued-` bubbles into a single UNTAGGED user row. It
+				// stays untagged on purpose: the imminent `turn-start` tags it as
+				// this new turn's initiator (exactly like a normal send), and
+				// reconcile then folds it into the sealed turn. Leaving N separate
+				// untagged rows would strand all but the most-recent one (turn-start
+				// only tags one), so collapsing is required.
+				if (mcEvent.reason === "continuation") {
+					updateLive(tabId, (msgs) => {
+						const consumedTexts: string[] = [];
+						const rest: ChatMessage[] = [];
+						let firstConsumedIdx = -1;
+						for (const m of msgs) {
+							if (m.role === "user" && m.id.startsWith("queued-")) {
+								const queuedId = m.id.slice(7);
+								if (mcEvent.messageIds.includes(queuedId)) {
+									if (firstConsumedIdx === -1) firstConsumedIdx = rest.length;
+									const textChunk = m.chunks.find((c) => c.type === "text");
+									consumedTexts.push(textChunk && textChunk.type === "text" ? textChunk.text : "");
+									continue;
+								}
+							}
+							rest.push(m);
+						}
+						if (consumedTexts.length === 0) return msgs;
+						const initiator: ChatMessage = {
+							id: generateId(),
+							role: "user",
+							chunks: [{ type: "text", text: consumedTexts.join("\n---\n") }],
+						};
+						rest.splice(firstConsumedIdx === -1 ? rest.length : firstConsumedIdx, 0, initiator);
+						return rest;
+					});
+					break;
+				}
+
 				// Split the current assistant message: finalize it, then insert
 				// the consumed user messages after it. Subsequent streaming events
 				// will create a NEW assistant message block below.

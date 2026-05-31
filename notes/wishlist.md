@@ -19,8 +19,6 @@
 
 - **Track token usage in a tab.** Display token usage (e.g. prompt/completion/total tokens) for the chat within each tab.
 
-- **Fix queue not being consumed after the AI finishes its turn.** When the AI completes its turn, a queued user message is just attached to the chat without continuing the conversation — the turn ends instead of consuming the queue and generating a response. The queued message should kick off a new turn.
-
 - **Compaction tool.** A tool to compact/summarize the conversation history to reduce context size while preserving important information.
 
 - **Make the plus button on tabs always on top and to the left.** The "+" button for creating new tabs is currently mixed in with the scrollable tab list. It should be fixed/absolute positioned at the top-left of the tab bar so it's always visible regardless of horizontal scrolling.
@@ -45,5 +43,3 @@
 - **"User agents" — summon counterpart to subagents.** Currently agents can summon subagents which are owned by a parent tab (they appear indented under the parent in the tab bar). Add a "user agent" summon variant that spawns a standard top-level tab owned by the user rather than by another tab. This gives agents the ability to open new independent tabs (like a user would), enabling more complex multi-agent workflows where spawned agents persist as first-class tabs.
 
 - **Fix key switching not migrating context correctly.** When switching API keys (e.g. hitting usage limits on one key and switching to another), the new agent appears to receive only the initial system prompt — all subsequent thinking, tool calls, and conversation history are lost. The full chat context including all turns needs to be properly passed to the new key/model so the conversation continues seamlessly.
-
-- **Worktree workflow skill.** A skill for orchestration agents that enables executing several plans or feature implementations in parallel using git worktrees. Each worktree gets its own isolated checkout of the repo at a given branch/commit, so multiple agents can work independently on different features without stepping on each other. The orchestration agent manages creating worktrees, assigning tasks to sub-agents per worktree, reviewing results, and merging back.
