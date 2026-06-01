@@ -901,6 +901,7 @@ function scheduleSnapshot(): {
 modelsRoutes.post("/wake-schedule/toggle", async (c) => {
 	const body = await c.req.json<{
 		hour?: unknown;
+		action?: unknown;
 		timestamps?: unknown;
 	}>();
 	const hour = body.hour;
@@ -911,13 +912,32 @@ modelsRoutes.post("/wake-schedule/toggle", async (c) => {
 		return c.json({ error: "hour must be an integer 0-23" }, 400);
 	}
 
-	if (wakeSchedule[hour] !== undefined) {
-		// Toggle off — remove all 4 slots for this hour.
-		deleteHour(wakeSchedule, hour);
+	// The action is the CLIENT'S DECLARED INTENT. Previously the server
+	// derived add-vs-remove from its own in-memory state, which meant a UI
+	// that had become stale (e.g. due to a snapshot race) would have its
+	// clicks silently inverted: user clicks to turn ON an hour the UI shows
+	// as OFF, server sees it as already-ON, deletes it. Requiring an explicit
+	// action makes the request idempotent and self-describing — a stale UI's
+	// click is now either a redundant no-op (action matches server state) or
+	// a recoverable replace (action="on" against an already-on hour just
+	// refreshes its timestamps to the new values).
+	const action = body.action;
+	if (action !== "on" && action !== "off") {
+		return c.json({ error: "action must be 'on' or 'off'" }, 400);
+	}
+
+	if (action === "off") {
+		// Idempotent: removing an already-removed hour is a no-op success.
+		if (wakeSchedule[hour] !== undefined) {
+			deleteHour(wakeSchedule, hour);
+		}
 	} else {
-		// Toggle on — require a `timestamps` object with one absolute Unix ms
-		// per probe slot (0, 15, 30, 45). The client is the source of truth
-		// for the *local* wall-clock intent of each probe.
+		// action === "on" — require a `timestamps` object with one absolute
+		// Unix ms per probe slot (0, 15, 30, 45). The client is the source
+		// of truth for the *local* wall-clock intent of each probe.
+		// Idempotent: turning ON an already-on hour replaces its timestamps
+		// (so a UI recovering from a desync can re-assert the correct wall-
+		// clock intent without first deleting).
 		const timestamps = body.timestamps;
 		if (timestamps === null || typeof timestamps !== "object") {
 			return c.json(
