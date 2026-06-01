@@ -11,10 +11,9 @@ import TabBar from "./lib/components/TabBar.svelte";
 import { config } from "./lib/config.js";
 import { router } from "./lib/router.svelte.js";
 import { tabStore } from "./lib/tabs.svelte.js";
+import { applyTheme, loadStoredTheme } from "./lib/theme.js";
 import type { KeyInfo } from "./lib/types.js";
 import { wsClient } from "./lib/ws.svelte.js";
-
-const STORAGE_KEY = "dispatch-theme";
 
 let modelsData = $state<{ keys: KeyInfo[] }>({
 	keys: [],
@@ -76,11 +75,11 @@ $effect(() => {
 });
 
 onMount(() => {
-	// Apply saved theme
-	const saved = localStorage.getItem(STORAGE_KEY);
-	if (saved) {
-		document.documentElement.setAttribute("data-theme", saved);
-	}
+	// Apply persisted theme (or the shared DEFAULT_THEME if nothing is
+	// stored) so the first paint matches what the Settings panel will
+	// show as the selected option. Without this, daisyUI falls back to
+	// the first theme in `app.css` (light) while Settings shows "dark".
+	applyTheme(loadStoredTheme());
 
 	// Connect WebSocket in parallel with hydration. The `statuses`
 	// snapshot delivered on WS open is idempotent against

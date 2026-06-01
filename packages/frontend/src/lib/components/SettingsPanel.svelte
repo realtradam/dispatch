@@ -1,6 +1,7 @@
 <script lang="ts">
 import { config } from "../config.js";
 import { appSettings } from "../settings.svelte.js";
+import { applyTheme, loadStoredTheme, THEMES, type Theme } from "../theme.js";
 import type { KeyInfo } from "../types.js";
 
 const {
@@ -13,38 +14,13 @@ const {
 
 // Theme picker — was a header-triggered modal (`ThemeSwitcher.svelte`);
 // inlined here so theme picking lives in Settings alongside other UI
-// preferences. The list and localStorage key must stay in sync with the
-// boot-time theme apply in `App.svelte`'s `onMount`.
-const THEMES = [
-	"light",
-	"dark",
-	"dracula",
-	"night",
-	"nord",
-	"sunset",
-	"cyberpunk",
-	"forest",
-	"cmyk",
-	"coffee",
-	"caramellatte",
-	"garden",
-	"luxury",
-] as const;
+// preferences. Theme constants and apply/persist live in `../theme.ts`
+// so the boot-time apply in `App.svelte` and this picker can't drift.
+let currentTheme = $state<Theme>(loadStoredTheme());
 
-const THEME_STORAGE_KEY = "dispatch-theme";
-
-let currentTheme = $state(
-	(typeof localStorage !== "undefined" && localStorage.getItem(THEME_STORAGE_KEY)) || "dark",
-);
-
-function selectTheme(theme: string): void {
+function selectTheme(theme: Theme): void {
 	currentTheme = theme;
-	document.documentElement.setAttribute("data-theme", theme);
-	try {
-		localStorage.setItem(THEME_STORAGE_KEY, theme);
-	} catch {
-		// Best-effort — private mode / quota.
-	}
+	applyTheme(theme);
 }
 
 let titleKeyId = $state<string | null>(null);
@@ -178,7 +154,7 @@ $effect(() => {
 			<select
 				class="select select-bordered select-sm w-full capitalize"
 				value={currentTheme}
-				onchange={(e) => selectTheme(e.currentTarget.value)}
+				onchange={(e) => selectTheme(e.currentTarget.value as Theme)}
 			>
 				{#each THEMES as theme (theme)}
 					<option value={theme} class="capitalize">{theme}</option>
