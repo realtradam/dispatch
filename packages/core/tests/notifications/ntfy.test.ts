@@ -61,6 +61,27 @@ describe("validateTopicUrl", () => {
 		expect(validateTopicUrl("https://ntfy.sh")).toMatch(/topic/);
 		expect(validateTopicUrl("https://ntfy.sh/")).toMatch(/topic/);
 	});
+
+	it("rejects multi-segment paths (topic must be a single segment)", () => {
+		expect(validateTopicUrl("https://ntfy.sh/team/sub")).toMatch(/single topic/);
+	});
+
+	it("rejects topic names with disallowed characters", () => {
+		expect(validateTopicUrl("https://ntfy.sh/has.dot")).toMatch(/letters\/numbers/);
+		expect(validateTopicUrl("https://ntfy.sh/has space")).toMatch(/letters\/numbers/);
+		expect(validateTopicUrl("https://ntfy.sh/has%20enc")).toMatch(/letters\/numbers/);
+	});
+
+	it("rejects topic names longer than 64 chars", () => {
+		const long = "a".repeat(65);
+		expect(validateTopicUrl(`https://ntfy.sh/${long}`)).toMatch(/64/);
+	});
+
+	it("accepts 64-char topic names and underscore/hyphen mixes", () => {
+		const maxlen = "a".repeat(64);
+		expect(validateTopicUrl(`https://ntfy.sh/${maxlen}`)).toBeNull();
+		expect(validateTopicUrl("https://ntfy.sh/My_Topic-123")).toBeNull();
+	});
 });
 
 describe("sendNtfy", () => {
@@ -91,11 +112,21 @@ describe("sendNtfy", () => {
 		expect(init.headers.Tags).toBe("rotating_light");
 	});
 
-	it("attaches Authorization header when authToken is set", async () => {
+	it("attaches Authorization header with Bearer prefix when authToken is a bare token", async () => {
 		const fetchImpl = makeFetch();
 		await sendNtfy(makeConfig({ authToken: "tk_secret " }), makeEvent(), fetchImpl);
 		const init = fetchImpl.mock.calls[0][1];
 		expect(init.headers.Authorization).toBe("Bearer tk_secret");
+	});
+
+	it("passes a pre-prefixed Authorization value (Basic, custom schemes) through verbatim", async () => {
+		const fetchImpl = makeFetch();
+		await sendNtfy(makeConfig({ authToken: "Basic dXNlcjpwYXNz" }), makeEvent(), fetchImpl);
+		expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe("Basic dXNlcjpwYXNz");
+
+		const fetchImpl2 = makeFetch();
+		await sendNtfy(makeConfig({ authToken: "Bearer already_prefixed" }), makeEvent(), fetchImpl2);
+		expect(fetchImpl2.mock.calls[0][1].headers.Authorization).toBe("Bearer already_prefixed");
 	});
 
 	it("omits Authorization when authToken is blank", async () => {
@@ -110,6 +141,18 @@ describe("sendNtfy", () => {
 		await sendNtfy(makeConfig(), makeEvent({ clickUrl: "https://example.com/tab/abc" }), fetchImpl);
 		const init = fetchImpl.mock.calls[0][1];
 		expect(init.headers.Click).toBe("https://example.com/tab/abc");
+	});
+
+	it("sanitizes Click header (CR/LF injection guard)", async () => {
+		const fetchImpl = makeFetch();
+		await sendNtfy(
+			makeConfig(),
+			makeEvent({ clickUrl: "https://example.com/\r\nInjected: yes" }),
+			fetchImpl,
+		);
+		const v = fetchImpl.mock.calls[0][1].headers.Click;
+		expect(v).not.toContain("\n");
+		expect(v).not.toContain("\r");
 	});
 
 	it("appends short tab tag when tabId is set", async () => {

@@ -28,9 +28,17 @@ export type FetchLike = (
 ) => Promise<{ ok: boolean; status: number; statusText?: string; text(): Promise<string> }>;
 
 /**
- * Validate a ntfy topic URL. Accepts only `http(s)://host/topic` with a
- * non-empty topic path. Returns `null` on success, a human-readable error
- * string on failure.
+ * ntfy topic-name rules: 1–64 chars, ASCII alphanumerics + `-` and `_`. Sourced
+ * from the ntfy server (cf. binwiederhier/ntfy issue #1451 — longer names
+ * silently 404). Matching this client-side keeps users from saving topic URLs
+ * that look fine but only fail at publish time.
+ */
+const NTFY_TOPIC_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Validate a ntfy topic URL. Accepts only `http(s)://host/topic` where
+ * `topic` is a single path segment of 1–64 chars matching `[A-Za-z0-9_-]`.
+ * Returns `null` on success, a human-readable error string on failure.
  */
 export function validateTopicUrl(topicUrl: string): string | null {
 	const trimmed = topicUrl.trim();
@@ -44,9 +52,15 @@ export function validateTopicUrl(topicUrl: string): string | null {
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
 		return "Topic URL must use http:// or https://";
 	}
-	// Path must be a non-empty topic (more than just "/")
+	// Path must be exactly one topic segment.
 	const topic = url.pathname.replace(/^\/+|\/+$/g, "");
 	if (!topic) return "Topic URL must include a topic name (e.g. https://ntfy.sh/my-topic)";
+	if (topic.includes("/")) {
+		return "Topic URL must point at a single topic (no extra path segments)";
+	}
+	if (!NTFY_TOPIC_RE.test(topic)) {
+		return "Topic name must be 1–64 characters, letters/numbers/underscore/hyphen only";
+	}
 	return null;
 }
 
@@ -79,17 +93,17 @@ export async function sendNtfy(
 	}
 
 	const headers: Record<string, string> = {
-		// ntfy treats the title/priority/tags/click headers as ASCII-only. Strip
-		// control chars from the title; the body is sent UTF-8 verbatim.
+		// ntfy is tolerant of non-ASCII in the Title header but many proxies
+		// aren't — sanitizeHeader strips CR/LF/control chars (injection guard)
+		// and leaves UTF-8 in place. Body is sent verbatim as UTF-8.
 		Title: sanitizeHeader(event.title),
 		Priority: String(priority),
 		"Content-Type": "text/plain; charset=utf-8",
 	};
 	if (tags.length > 0) headers.Tags = tags.map(sanitizeHeader).join(",");
-	if (event.clickUrl) headers.Click = event.clickUrl;
-	if (config.authToken && config.authToken.trim() !== "") {
-		headers.Authorization = `Bearer ${config.authToken.trim()}`;
-	}
+	if (event.clickUrl) headers.Click = sanitizeHeader(event.clickUrl);
+	const authValue = buildAuthHeaderValue(config.authToken);
+	if (authValue) headers.Authorization = authValue;
 
 	// Per-request abort so a hung server doesn't pin a Bun worker forever.
 	const controller = new AbortController();
@@ -119,9 +133,27 @@ export async function sendNtfy(
 	}
 }
 
+/**
+ * Build the `Authorization` header value from the user-configured token.
+ *
+ * - Empty/blank ⇒ no header.
+ * - Already starts with `Bearer ` / `Basic ` / etc. (RFC 7235 scheme + space)
+ *   ⇒ used verbatim. Lets users paste a complete header for Basic auth or
+ *   any other scheme their private ntfy server supports.
+ * - Otherwise ⇒ prefixed with `Bearer ` (the common case).
+ */
+function buildAuthHeaderValue(rawToken: string): string | null {
+	const trimmed = (rawToken ?? "").trim();
+	if (!trimmed) return null;
+	if (/^[A-Za-z][A-Za-z0-9._~+/-]*\s+\S/.test(trimmed)) {
+		// Already includes a scheme token (e.g. "Bearer xyz", "Basic dXNlcjpw").
+		return sanitizeHeader(trimmed);
+	}
+	return `Bearer ${sanitizeHeader(trimmed)}`;
+}
+
 function sanitizeHeader(value: string): string {
-	// Strip CR/LF (header injection guard) and trim. ntfy is tolerant of
-	// non-ASCII in titles, but we still drop control chars.
+	// Strip CR/LF (header injection guard) and other control chars, then trim.
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional
 	return value.replace(/[\r\n\u0000-\u001f]+/g, " ").trim();
 }
