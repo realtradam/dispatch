@@ -31,6 +31,15 @@ export interface PermissionPromptSource {
 /** Look up a human-readable tab title for nicer notification text. */
 export type TabTitleLookup = (tabId: string) => string | null;
 
+/**
+ * Look up a tab's `parentTabId`. Returns `null` for top-level tabs (no
+ * parent) and `undefined` when the lookup can't be performed (no DB, tab
+ * not found). Both non-strings cause the dispatcher to fall back to
+ * "treat as top-level" to avoid silently dropping notifications when the
+ * lookup is broken.
+ */
+export type TabParentLookup = (tabId: string) => string | null | undefined;
+
 export interface DispatcherOptions {
 	/** Override the config loader (tests). Defaults to `loadNtfyConfig`. */
 	loadConfig?: () => NtfyConfig;
@@ -40,6 +49,13 @@ export interface DispatcherOptions {
 	fetchImpl?: FetchLike;
 	/** Look up a tab title for richer titles. */
 	getTabTitle?: TabTitleLookup;
+	/**
+	 * Look up a tab's `parentTabId`. Used to honour the
+	 * `notifySubagents` config flag — when false, `turn-completed` /
+	 * `turn-error` from subagent tabs (those with a parent) are
+	 * suppressed.
+	 */
+	getTabParentId?: TabParentLookup;
 	/**
 	 * How long (ms) a dedupeKey is suppressed for. Permission prompts re-emit
 	 * the whole pending list on every change, so dedupe is essential.
@@ -51,6 +67,7 @@ export class NotificationDispatcher {
 	private loadConfig: () => NtfyConfig;
 	private send: (config: NtfyConfig, event: NotificationEvent) => Promise<unknown>;
 	private getTabTitle: TabTitleLookup | undefined;
+	private getTabParentId: TabParentLookup | undefined;
 	private dedupeWindowMs: number;
 	/** Recently-sent dedupeKey → expiresAt epoch ms. */
 	private recentlySent = new Map<string, number>();
@@ -61,6 +78,7 @@ export class NotificationDispatcher {
 		this.send =
 			opts.send ?? ((config, event) => sendNtfy(config, event, opts.fetchImpl ?? undefined));
 		this.getTabTitle = opts.getTabTitle;
+		this.getTabParentId = opts.getTabParentId;
 		this.dedupeWindowMs = opts.dedupeWindowMs ?? 5_000;
 	}
 
@@ -101,12 +119,22 @@ export class NotificationDispatcher {
 	 *
 	 * `status` events are ignored — they fire on every transition and we'd
 	 * either spam or duplicate the `done`/`error` notifications.
+	 *
+	 * Turn events from subagent tabs are suppressed when
+	 * `config.notifySubagents === false` (the default). A parent agent
+	 * spawning 8 subagents would otherwise produce 9 "Turn complete"
+	 * pushes per round; almost always noise. Permission prompts are NOT
+	 * gated this way — a subagent's permission request still needs human
+	 * input to proceed, so suppressing those would silently hang the
+	 * subagent.
 	 */
 	attachToAgentManager(source: AgentEventSource): () => void {
 		const unsub = source.onEvent((event) => {
 			if (event.type === "done") {
+				if (this.isSubagentSuppressed(event.tabId)) return;
 				this.notify(this.buildTurnCompleted(event));
 			} else if (event.type === "error") {
+				if (this.isSubagentSuppressed(event.tabId)) return;
 				this.notify(this.buildTurnError(event));
 			} else if (event.type === "tab-created") {
 				const ev = event as unknown as {
@@ -211,6 +239,27 @@ export class NotificationDispatcher {
 		const title = this.getTabTitle?.(tabId);
 		if (title?.trim()) return title.trim();
 		return `tab ${tabId.slice(0, 8)}`;
+	}
+
+	/**
+	 * Returns true when this `tabId` belongs to a subagent AND the user has
+	 * opted out of subagent turn notifications. On lookup failure
+	 * (`getTabParentId` returns `undefined` or throws) we err on the side
+	 * of "not a subagent" — better to over-notify than to silently drop
+	 * legitimate top-level events when the DB is briefly unreadable.
+	 */
+	private isSubagentSuppressed(tabId: string): boolean {
+		const config = this.loadConfig();
+		if (config.notifySubagents) return false;
+		if (!this.getTabParentId) return false;
+		let parent: string | null | undefined;
+		try {
+			parent = this.getTabParentId(tabId);
+		} catch {
+			return false;
+		}
+		// Only a non-empty string parent id means "this tab is a subagent".
+		return typeof parent === "string" && parent.length > 0;
 	}
 
 	// ─── Dedupe helpers ───────────────────────────────────────────

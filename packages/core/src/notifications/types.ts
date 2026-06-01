@@ -57,12 +57,20 @@ export interface NotificationEvent {
  * - `authToken` — optional bearer token for private ntfy servers.
  * - `events` — per-event-type enable map. Missing entries default to OFF
  *   so a newly-added event type doesn't silently start firing.
+ * - `notifySubagents` — when false (default), `turn-completed` and
+ *   `turn-error` notifications from subagent tabs (tabs with a
+ *   `parentTabId`) are suppressed. A parent agent that spawns 8
+ *   subagents would otherwise push 9 "Turn complete" notifications per
+ *   round — usually noise. `permission-required` is NOT gated: even a
+ *   subagent's permission prompt needs a human tap to proceed.
+ *   `agent-spawned` is already top-level-only by construction.
  */
 export interface NtfyConfig {
 	enabled: boolean;
 	topicUrl: string;
 	authToken: string;
 	events: Record<NotificationEventType, boolean>;
+	notifySubagents: boolean;
 }
 
 /** All event types this build knows about (the source of truth for UI). */
