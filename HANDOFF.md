@@ -49,9 +49,18 @@ can tell which conversation pinged them.
   surfaces `hasAuthToken: boolean`. `PUT /notifications` semantics:
   `authToken === undefined` keeps the stored value, `""` clears it, any
   other string replaces it. The frontend's "Clear stored token" button
-  uses the explicit-`""` path.
+  uses the explicit-`""` path **and awaits the server response** before
+  flipping local UI state (post-review fix — see Review section).
+- **Auth header scheme**: tokens that already start with a scheme
+  (`Bearer foo`, `Basic dXNlcjpwYXNz`) pass through verbatim; bare tokens
+  get a `Bearer ` prefix automatically. Lets users of private ntfy
+  servers use any HTTP auth scheme without code changes.
+- **Topic-URL validation**: tightened to ntfy's actual constraints —
+  exactly one path segment, 1–64 chars, `[A-Za-z0-9_-]` only. Catches
+  topics that would silently 404 at publish time.
 - **Header injection guard**: CR/LF and control chars are stripped from
-  `Title`/`Tags` before they go into `fetch` headers.
+  every header value the transport writes (`Title`, `Tags`, `Click`,
+  `Authorization`).
 - **Permission "added" detection**: `PermissionManager.broadcastPending`
   now diffs the current pending-id set against an `announcedPromptIds`
   set and fires `onPromptAdded` only for genuinely new ids. Resolved ids
@@ -60,28 +69,30 @@ can tell which conversation pinged them.
 ## Files changed / added
 
 ```
-packages/core/src/notifications/types.ts            +97   (new)
-packages/core/src/notifications/ntfy.ts             +125  (new)
-packages/core/src/notifications/config.ts           +73   (new)
-packages/core/src/notifications/dispatcher.ts       +238  (new)
-packages/core/src/notifications/index.ts            +29   (new)
-packages/core/src/index.ts                          +2    (barrel re-export)
-packages/core/tests/notifications/ntfy.test.ts      +173  (new, 16 tests)
-packages/core/tests/notifications/config.test.ts    +130  (new, 10 tests)
-packages/core/tests/notifications/dispatcher.test.ts +325 (new, 13 tests)
+packages/core/src/notifications/types.ts             (new)
+packages/core/src/notifications/ntfy.ts              (new)
+packages/core/src/notifications/config.ts            (new)
+packages/core/src/notifications/dispatcher.ts        (new)
+packages/core/src/notifications/index.ts             (new)
+packages/core/src/index.ts                           (barrel re-export)
+packages/core/tests/notifications/ntfy.test.ts       (new, 22 tests)
+packages/core/tests/notifications/config.test.ts     (new, 10 tests)
+packages/core/tests/notifications/dispatcher.test.ts (new, 13 tests)
 
-packages/api/src/permission-manager.ts              ~98   (+ onPromptAdded contract)
-packages/api/src/routes/notifications.ts            +82   (new — GET/PUT/POST routes)
-packages/api/src/app.ts                             +18   (wire dispatcher + mount routes)
-packages/api/tests/permission-manager.test.ts       +103  (new, 4 tests)
-packages/api/tests/routes.test.ts                   +51   (add mocks for new core exports)
+packages/api/src/permission-manager.ts               (+ onPromptAdded contract)
+packages/api/src/routes/notifications.ts             (new — GET/PUT/POST routes)
+packages/api/src/app.ts                              (wire dispatcher + mount routes)
+packages/api/tests/permission-manager.test.ts        (new, 4 tests)
+packages/api/tests/routes.test.ts                    (add mocks for new core exports)
 
-packages/frontend/src/lib/components/SettingsPanel.svelte  +256  (new ntfy section)
+packages/frontend/src/lib/components/SettingsPanel.svelte  (new ntfy section)
 ```
 
-Three commits on `n2/ntfy-notifications`:
+Five commits on `n2/ntfy-notifications`:
 
 ```
+1870d0b fix(notifications): address Gemini review — tighten validation, sanitize Click, support Basic auth, non-optimistic UI clear
+29bdd00 docs: add HANDOFF.md for ntfy notifications feature
 786bc43 feat(frontend): ntfy.sh settings block in SettingsPanel
 21cdb11 feat(api): wire notification dispatcher into app + /notifications routes
 5e72191 feat(core): ntfy.sh notification dispatcher module
@@ -152,7 +163,7 @@ and uses its existing `{ keys, apiBase }` props.
 
 ```
 $ biome check .
-Checked 150 files in 175ms. No fixes applied.
+Checked 150 files in 158ms. No fixes applied.
 ```
 
 ✅ Pass (0 errors, 0 warnings).
@@ -161,39 +172,59 @@ Checked 150 files in 175ms. No fixes applied.
 
 ```
 Test Files  28 passed (28)
-     Tests  436 passed (436)
-  Duration  2.93s
+     Tests  442 passed (442)
+  Duration  2.85s
 ```
 
-✅ Pass. Baseline was 393 tests in 24 files; this branch adds 43 tests
-across 4 new files (`notifications/ntfy.test.ts` ×16,
+✅ Pass. Baseline was 393 tests in 24 files; this branch adds 49 tests
+across 4 new files (`notifications/ntfy.test.ts` ×22,
 `notifications/config.test.ts` ×10, `notifications/dispatcher.test.ts` ×13,
 `permission-manager.test.ts` ×4) and modifies 0 existing tests.
 
 ### Per-package strict typecheck
 
 ```
-@dispatch/core   tsc --noEmit             — 0 errors
-@dispatch/api    tsc --noEmit             — 0 errors
-@dispatch/frontend svelte-check           — 0 errors, 0 warnings
+@dispatch/core    tsc --noEmit       — 0 errors
+@dispatch/api     tsc --noEmit       — 0 errors
+@dispatch/frontend svelte-check      — 0 errors, 0 warnings
 ```
 
 ### Manual smoke test
 
-Verified end-to-end against the real `ntfy.sh` server with no auth:
+Verified end-to-end against the real `ntfy.sh` server twice (initial
+build + post-review):
 
 ```
 $ bun -e 'import { sendNtfy } from "./packages/core/src/notifications/ntfy.js"; ...'
-Sending to: https://ntfy.sh/dispatch-smoke-ofntnrp4
+validate: null
 {"ok":true,"status":200}
 ```
 
-(Topic was throwaway and only used for this smoke test.) Full UI flow
+Topics were throwaway and only used for these smoke tests. Full UI flow
 (Settings → topic URL → Save → Send test → push lands in ntfy app)
 was not executed because that requires a live `bun run dev:api` plus
 `dev:frontend` plus a phone with the ntfy app — but the same code path
 that the "Send test" button exercises is what the smoke test above hit,
 and the route logic on top of it is covered by unit tests.
+
+## Second-opinion review (Gemini)
+
+After the initial implementation I ran a broad, open-ended code review
+via `gemini-3-flash-preview` in YOLO mode (read-only, instructed to find
+bugs/flaws/edge-cases). Findings were triaged as follows:
+
+| # | Severity | Finding | Action |
+|---|----------|---------|--------|
+| 1 | Medium | "Duplicate error+done notifications on LLM fallback retries" | **Rejected.** Verified against `agent-manager.ts:1525–1532` and `:1611`: inner per-attempt errors set `attemptError` and `break` out of the stream loop; only the final terminal error is `this.emit({type:"error"})`-ed. The dispatcher cannot see intermediate retry errors. |
+| 2 | Medium | "Loose topic URL validation" | **Fixed.** `validateTopicUrl` now enforces one segment + `[A-Za-z0-9_-]{1,64}`. |
+| 3 | Low | "`Click` header not sanitized" | **Fixed.** Passed through `sanitizeHeader`. |
+| 4 | Low | "Use JSON publishing for UTF-8 safety in headers" | **Deferred.** Per ntfy docs UTF-8 in `Title` is supported and works in practice; the only realistic risk is non-ASCII tab titles being mangled by an exotic intermediate proxy. Switching to JSON-body publishing would re-architect the transport (and invalidate all header-shape tests) for a hypothetical edge case. Worth a follow-up if anyone reports mangled titles. |
+| 5 | Low | "Optimistic UI clear of auth token" | **Fixed.** `clearNtfyAuthToken` now awaits the response and only mutates local state on success; failures surface via the existing error banner. Added a `ntfyClearingToken` loading flag so the button disables + spins during the request. |
+| 6 | Nit | "DB read on every notify()" | **Skipped.** SQLite reads are sub-millisecond, events are human-scale infrequent (one per turn at most, dominated by an LLM round-trip taking seconds). Cache adds invalidation complexity for no measurable win. |
+| OQ | — | "Support Basic auth, not just Bearer" | **Fixed.** Tokens with a scheme prefix already (`Bearer xyz`, `Basic dXNlcjpwYXNz`) now pass through verbatim; bare tokens still get the `Bearer ` prefix. |
+
+The other two open questions (click-URL deep link, subagent noise) are
+documented as known gaps below.
 
 ## Assumptions / known gaps
 
@@ -221,9 +252,10 @@ single-user, single-process design):
 4. **No click-URL deep-link to the originating tab.** The frontend
    doesn't currently route tabs by URL (`router.svelte.ts` just toggles
    between `dashboard` and `agent-builder`), so I left `clickUrl`
-   plumbing in the transport layer for callers but didn't synthesize
-   one in the dispatcher. A future "open this tab" router change would
-   make this a 4-line addition in `buildTurnCompleted` / etc.
+   plumbing in the transport layer (now sanitized as of the Gemini-fix
+   commit) but didn't synthesize one in the dispatcher. A future "open
+   this tab" router change would make this a 4-line addition in
+   `buildTurnCompleted` / etc.
 
 5. **Event taxonomy is intentionally small.** I considered `model-changed`
    and `queue-overflow`/`auto-wake-budget-exhausted` notices but they
@@ -231,19 +263,28 @@ single-user, single-process design):
    later by extending `NotificationEventType`, `NTFY_DEFAULT_EVENTS`,
    and adding a builder + dispatch hook.
 
-6. **Subagent completions don't notify.** `attachToAgentManager` filters
-   `agent-spawned` to `parentTabId === null && agentSlug` (top-level user
-   agents only). `turn-completed`/`turn-error` fire for any tab including
-   subagents, which is technically what the user asked for (turn
-   completion) but could be noisy if someone runs a parent agent that
-   spawns many short-lived subagents. Toggle-off-`turn-completed` is the
-   escape hatch today; a separate "include subagents" toggle would be a
-   trivial follow-up.
+6. **Subagent completions don't get an extra opt-out.**
+   `attachToAgentManager` filters `agent-spawned` to `parentTabId === null
+   && agentSlug` (top-level user agents only). `turn-completed` /
+   `turn-error` fire for any tab including subagents, which is technically
+   what the user asked for (turn completion) but could be noisy if
+   someone runs a parent agent that spawns many short-lived subagents.
+   Toggle-off-`turn-completed` is the escape hatch today; a separate
+   "include subagents" toggle would be a trivial follow-up.
 
 7. **Ntfy server-side validation is minimal.** We only check that the
-   topic URL is a syntactically-valid `http(s)://host/topic`. We don't
-   ping the server on save (would slow the UI and confuse users behind
-   captive portals). The "Send test" button is the integration check.
+   topic URL is a syntactically-valid `http(s)://host/topic-segment`
+   matching ntfy's documented topic-name rules. We don't ping the server
+   on save (would slow the UI and confuse users behind captive portals).
+   The "Send test" button is the integration check.
 
-Working tree is clean; three commits on `n2/ntfy-notifications`; nothing
+8. **Header-based publishing (vs. JSON-body publishing).** Per the
+   Gemini-review triage above, the transport sends `Title`/`Tags`/`Click`
+   as HTTP headers. UTF-8 titles work against ntfy.sh itself; non-ASCII
+   tab titles through an exotic intermediate proxy could theoretically
+   be mangled. Switching to ntfy's JSON publish mode (`Content-Type:
+   application/json`, body `{topic, message, title, ...}`) would side-
+   step that entirely — leaving as a follow-up if anyone hits it.
+
+Working tree is clean; five commits on `n2/ntfy-notifications`; nothing
 merged.
