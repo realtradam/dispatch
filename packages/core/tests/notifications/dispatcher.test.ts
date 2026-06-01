@@ -17,7 +17,7 @@ const { NotificationDispatcher } = await import("../../src/notifications/dispatc
 function makeConfig(overrides: Partial<NtfyConfig> = {}): NtfyConfig {
 	return {
 		enabled: true,
-		topicUrl: "https://ntfy.sh/topic",
+		topic: "test-topic",
 		authToken: "",
 		events: {
 			"turn-completed": true,

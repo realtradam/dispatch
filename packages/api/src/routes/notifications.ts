@@ -10,7 +10,6 @@ import {
 	redactNtfyConfig,
 	saveNtfyConfig,
 	sendNtfy,
-	validateTopicUrl,
 } from "@dispatch/core";
 import { Hono } from "hono";
 
@@ -37,14 +36,21 @@ notificationsRoutes.put("/", async (c) => {
 
 	const merged = normalizeNtfyConfig({
 		enabled: typeof body.enabled === "boolean" ? body.enabled : existing.enabled,
-		topicUrl: typeof body.topicUrl === "string" ? body.topicUrl : existing.topicUrl,
+		topic: typeof body.topic === "string" ? body.topic : existing.topic,
 		authToken: nextAuthToken,
 		events: { ...existing.events, ...(body.events ?? {}) },
+		notifySubagents:
+			typeof body.notifySubagents === "boolean" ? body.notifySubagents : existing.notifySubagents,
 	});
 
-	if (merged.enabled) {
-		const err = validateTopicUrl(merged.topicUrl);
-		if (err) return c.json({ error: err }, 400);
+	// Only validation: if notifications are turned on, the topic must be
+	// non-empty. Any other "is this a valid ntfy topic name?" check is
+	// punted to the ntfy server itself — its rules vary and have changed
+	// over time, and a syntactically-valid name still might be rejected
+	// (e.g. reserved words), so a clear server error is more useful than
+	// a client-side guess.
+	if (merged.enabled && !merged.topic.trim()) {
+		return c.json({ error: "Topic is required" }, 400);
 	}
 
 	saveNtfyConfig(merged);
@@ -56,8 +62,9 @@ notificationsRoutes.post("/test", async (c) => {
 	if (!config.enabled) {
 		return c.json({ ok: false, error: "Notifications are disabled" }, 400);
 	}
-	const err = validateTopicUrl(config.topicUrl);
-	if (err) return c.json({ ok: false, error: err }, 400);
+	if (!config.topic.trim()) {
+		return c.json({ ok: false, error: "Topic is required" }, 400);
+	}
 
 	// Use a real event type so the per-event toggle is honored when wiring
 	// is tested end-to-end; pick `turn-completed` since it's the most

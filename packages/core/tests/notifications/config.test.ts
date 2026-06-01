@@ -28,7 +28,7 @@ describe("defaultNtfyConfig", () => {
 	it("disables notifications and ships sane per-event defaults", () => {
 		const cfg = defaultNtfyConfig();
 		expect(cfg.enabled).toBe(false);
-		expect(cfg.topicUrl).toBe("");
+		expect(cfg.topic).toBe("");
 		expect(cfg.authToken).toBe("");
 		expect(cfg.events["turn-completed"]).toBe(true);
 		expect(cfg.events["turn-error"]).toBe(true);
@@ -48,7 +48,7 @@ describe("normalizeNtfyConfig", () => {
 	it("fills in missing event toggles with defaults (newly-added types default OFF)", () => {
 		const normalized = normalizeNtfyConfig({
 			enabled: true,
-			topicUrl: "https://ntfy.sh/x",
+			topic: "https://ntfy.sh/x",
 			events: { "turn-completed": false },
 		});
 		expect(normalized.events["turn-completed"]).toBe(false);
@@ -60,13 +60,13 @@ describe("normalizeNtfyConfig", () => {
 	it("ignores extraneous fields and wrong-typed values", () => {
 		const normalized = normalizeNtfyConfig({
 			enabled: "yes", // wrong type ⇒ default
-			topicUrl: 42, // wrong type ⇒ default
+			topic: 42, // wrong type ⇒ default
 			authToken: null, // wrong type ⇒ default
 			events: { "turn-completed": "no", bogus: true },
 			extra: "ignored",
 		});
 		expect(normalized.enabled).toBe(false);
-		expect(normalized.topicUrl).toBe("");
+		expect(normalized.topic).toBe("");
 		expect(normalized.authToken).toBe("");
 		expect(normalized.events["turn-completed"]).toBe(true); // default kept
 		expect((normalized.events as Record<string, boolean>).bogus).toBeUndefined();
@@ -77,7 +77,7 @@ describe("normalizeNtfyConfig — notifySubagents", () => {
 	it("defaults notifySubagents to false when absent", () => {
 		const normalized = normalizeNtfyConfig({
 			enabled: true,
-			topicUrl: "https://ntfy.sh/x",
+			topic: "https://ntfy.sh/x",
 		});
 		expect(normalized.notifySubagents).toBe(false);
 	});
@@ -85,7 +85,7 @@ describe("normalizeNtfyConfig — notifySubagents", () => {
 	it("respects an explicit notifySubagents=true", () => {
 		const normalized = normalizeNtfyConfig({
 			enabled: true,
-			topicUrl: "https://ntfy.sh/x",
+			topic: "https://ntfy.sh/x",
 			notifySubagents: true,
 		});
 		expect(normalized.notifySubagents).toBe(true);
@@ -94,7 +94,7 @@ describe("normalizeNtfyConfig — notifySubagents", () => {
 	it("falls back to default when notifySubagents is wrong-typed", () => {
 		const normalized = normalizeNtfyConfig({
 			enabled: true,
-			topicUrl: "https://ntfy.sh/x",
+			topic: "https://ntfy.sh/x",
 			notifySubagents: "yes" as unknown,
 		});
 		expect(normalized.notifySubagents).toBe(false);
@@ -113,7 +113,7 @@ describe("load/save round-trip", () => {
 	it("round-trips a complete config", () => {
 		const cfg = {
 			enabled: true,
-			topicUrl: "https://ntfy.sh/team",
+			topic: "https://ntfy.sh/team",
 			authToken: "tk_abc",
 			events: {
 				"turn-completed": false,
@@ -136,7 +136,7 @@ describe("load/save round-trip", () => {
 	});
 
 	it("clearNtfyConfig removes the persisted entry", () => {
-		saveNtfyConfig({ ...defaultNtfyConfig(), enabled: true, topicUrl: "https://ntfy.sh/x" });
+		saveNtfyConfig({ ...defaultNtfyConfig(), enabled: true, topic: "https://ntfy.sh/x" });
 		expect(fakeSettings.has(NTFY_CONFIG_KEY)).toBe(true);
 		clearNtfyConfig();
 		expect(fakeSettings.has(NTFY_CONFIG_KEY)).toBe(false);

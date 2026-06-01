@@ -32,7 +32,7 @@ type NotificationEventType =
 
 interface NtfyConfigView {
 	enabled: boolean;
-	topicUrl: string;
+	topic: string;
 	authToken: string;
 	hasAuthToken?: boolean;
 	events: Record<NotificationEventType, boolean>;
@@ -48,7 +48,7 @@ const NTFY_EVENT_LABELS: Record<NotificationEventType, string> = {
 
 const DEFAULT_NTFY: NtfyConfigView = {
 	enabled: false,
-	topicUrl: "",
+	topic: "",
 	authToken: "",
 	hasAuthToken: false,
 	events: {
@@ -162,7 +162,7 @@ async function saveNtfy(): Promise<void> {
 		// `authToken: ""` ⇒ explicit clear (the user typed and cleared).
 		const payload: Partial<NtfyConfigView> & { authToken?: string } = {
 			enabled: ntfy.enabled,
-			topicUrl: ntfy.topicUrl,
+			topic: ntfy.topic,
 			events: ntfy.events,
 			notifySubagents: ntfy.notifySubagents,
 		};
@@ -421,15 +421,15 @@ $effect(() => {
 		</label>
 
 		<label class="text-xs text-base-content/60 flex flex-col gap-1">
-			Topic URL
+			Topic
 			<input
 				type="text"
 				class="input input-bordered input-sm w-full"
-				placeholder="https://ntfy.sh/your-secret-topic"
-				bind:value={ntfy.topicUrl}
+				placeholder="your-secret-topic"
+				bind:value={ntfy.topic}
 			/>
 			<span class="text-[10px] text-base-content/40">
-				Pick something unguessable — anyone with the URL can read your notifications.
+				Any string — pick something unguessable, since anyone with the topic name can read your notifications. Subscribe to the same topic in the ntfy app.
 			</span>
 		</label>
 

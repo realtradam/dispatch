@@ -17,7 +17,13 @@ export {
 	type TabParentLookup,
 	type TabTitleLookup,
 } from "./dispatcher.js";
-export { type FetchLike, type NtfySendResult, sendNtfy, validateTopicUrl } from "./ntfy.js";
+export {
+	buildNtfyUrl,
+	type FetchLike,
+	NTFY_BASE_URL,
+	type NtfySendResult,
+	sendNtfy,
+} from "./ntfy.js";
 export {
 	type NotificationEvent,
 	type NotificationEventType,
