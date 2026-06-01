@@ -1,6 +1,7 @@
 <script lang="ts">
 import { config } from "../config.js";
 import { appSettings } from "../settings.svelte.js";
+import { applyTheme, loadStoredTheme, THEMES, type Theme } from "../theme.js";
 import type { KeyInfo } from "../types.js";
 
 const {
@@ -10,6 +11,17 @@ const {
 	keys?: KeyInfo[];
 	apiBase?: string;
 } = $props();
+
+// Theme picker — was a header-triggered modal (`ThemeSwitcher.svelte`);
+// inlined here so theme picking lives in Settings alongside other UI
+// preferences. Theme constants and apply/persist live in `../theme.ts`
+// so the boot-time apply in `App.svelte` and this picker can't drift.
+let currentTheme = $state<Theme>(loadStoredTheme());
+
+function selectTheme(theme: Theme): void {
+	currentTheme = theme;
+	applyTheme(theme);
+}
 
 let titleKeyId = $state<string | null>(null);
 let titleModelId = $state<string | null>(null);
@@ -316,6 +328,22 @@ $effect(() => {
 	<div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Settings</div>
 
 	<div class="flex flex-col gap-2">
+		<p class="text-xs text-base-content/70">Theme</p>
+		<label class="text-xs text-base-content/60">
+			Appearance
+			<select
+				class="select select-bordered select-sm w-full capitalize"
+				value={currentTheme}
+				onchange={(e) => selectTheme(e.currentTarget.value as Theme)}
+			>
+				{#each THEMES as theme (theme)}
+					<option value={theme} class="capitalize">{theme}</option>
+				{/each}
+			</select>
+		</label>
+
+		<div class="divider my-0"></div>
+
 		<p class="text-xs text-base-content/70">Title Generation Model</p>
 		<p class="text-xs text-base-content/40">Used to generate short titles for new tabs after the first message.</p>
 
