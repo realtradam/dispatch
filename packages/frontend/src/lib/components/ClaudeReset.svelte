@@ -351,7 +351,7 @@ const pmRow2 = Array.from({ length: 6 }, (_, i) => i + 18); // 18–23
 		<div class="flex flex-col gap-0.5 mt-1">
 			{#each markedHours as hour}
 				<div class="flex items-center gap-1.5 text-xs text-base-content/70">
-					<span class="badge badge-xs badge-primary">{formatHour(hour)} {hour < 12 ? "AM" : "PM"}</span>
+					<span class="badge badge-xs badge-primary whitespace-nowrap shrink-0">{formatHour(hour)} {hour < 12 ? "AM" : "PM"}</span>
 					<span>Probes {probeLabels} → reset by {formatAmPm(resetHour(hour))}</span>
 				</div>
 			{/each}
