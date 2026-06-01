@@ -6,6 +6,10 @@ const { apiBase = "" }: { apiBase?: string } = $props();
 /** Fixed offset (hours) from a wake to the "Claude session reset" display.
  *  Mirrors the backend constant — kept in sync via the GET response. */
 const DEFAULT_RESET_OFFSET_HOURS = 5;
+const DEFAULT_PROBE_SLOT_MINUTES = [0, 15, 30, 45] as const;
+
+type ProbeMinute = number; // 0 | 15 | 30 | 45 in practice
+type HourSlots = Record<ProbeMinute, number>; // slot minute → next fire ms
 
 interface WakeResult {
 	label: string;
@@ -26,15 +30,18 @@ interface PendingRetry {
 }
 
 interface ScheduleSnapshot {
-	schedule: Record<string, number>;
+	/** hour (0-23) → { slotMinute → next fire ms }. */
+	schedule: Record<string, Record<string, number>>;
 	resetOffsetHours?: number;
+	probeSlotMinutes?: number[];
 	lastWake?: LastWake | null;
 	pendingRetry?: PendingRetry | null;
 }
 
-// Map of hour (0-23) → scheduled wake timestamp (ms)
-let schedule = $state<Record<number, number>>({});
+// Marked hours: hour → { slotMinute → next fire ms }. Empty inner record = not marked.
+let schedule = $state<Record<number, HourSlots>>({});
 let resetOffsetHours = $state<number>(DEFAULT_RESET_OFFSET_HOURS);
+let probeSlotMinutes = $state<readonly number[]>(DEFAULT_PROBE_SLOT_MINUTES);
 let lastWake = $state<LastWake | null>(null);
 let pendingRetry = $state<PendingRetry | null>(null);
 
@@ -48,10 +55,9 @@ let pendingHours = $state<Set<number>>(new Set());
  */
 const inFlightSeq: Record<number, number> = {};
 
-/** Live "now" used for the current-hour ring. Bumped by an interval. */
+/** Live "now" used for the current-hour ring + relative timestamps. */
 let nowMs = $state<number>(Date.now());
 
-// Re-derive current hour every minute (cheap; we don't need second-precision).
 const nowTimer = setInterval(() => {
 	nowMs = Date.now();
 }, 30_000);
@@ -65,10 +71,13 @@ function formatHour(h: number): string {
 	return display === 0 ? "12" : String(display);
 }
 
-function nextOccurrenceAt15(hour: number): number {
-	const now = new Date();
-	const target = new Date(now);
-	target.setHours(hour, 15, 0, 0);
+/**
+ * Compute the next occurrence of HH:MM in the user's local timezone.
+ * Today if still future, else tomorrow.
+ */
+function nextOccurrenceAt(hour: number, minute: number): number {
+	const target = new Date();
+	target.setHours(hour, minute, 0, 0);
 	if (target.getTime() <= Date.now()) {
 		target.setDate(target.getDate() + 1);
 	}
@@ -76,13 +85,20 @@ function nextOccurrenceAt15(hour: number): number {
 }
 
 function applySnapshot(data: ScheduleSnapshot): void {
-	const parsed: Record<number, number> = {};
-	for (const [k, v] of Object.entries(data.schedule ?? {})) {
-		parsed[Number(k)] = v;
+	const parsed: Record<number, HourSlots> = {};
+	for (const [hourStr, slots] of Object.entries(data.schedule ?? {})) {
+		const inner: HourSlots = {};
+		for (const [slotStr, ts] of Object.entries(slots ?? {})) {
+			inner[Number(slotStr)] = ts;
+		}
+		parsed[Number(hourStr)] = inner;
 	}
 	schedule = parsed;
 	if (typeof data.resetOffsetHours === "number") {
 		resetOffsetHours = data.resetOffsetHours;
+	}
+	if (Array.isArray(data.probeSlotMinutes) && data.probeSlotMinutes.length > 0) {
+		probeSlotMinutes = data.probeSlotMinutes;
 	}
 	lastWake = data.lastWake ?? null;
 	pendingRetry = data.pendingRetry ?? null;
@@ -106,21 +122,23 @@ function markPending(hour: number, isPending: boolean): void {
 	pendingHours = next;
 }
 
-async function postToggle(hour: number, ts?: number): Promise<void> {
-	// Bump the per-hour sequence; only the most-recent response wins.
+async function postToggle(hour: number, timestamps?: Record<number, number>): Promise<void> {
 	const mySeq = (inFlightSeq[hour] ?? 0) + 1;
 	inFlightSeq[hour] = mySeq;
 	markPending(hour, true);
 
 	try {
-		const body: { hour: number; timestamp?: number } = { hour };
-		if (typeof ts === "number") body.timestamp = ts;
+		const body: { hour: number; timestamps?: Record<string, number> } = { hour };
+		if (timestamps) {
+			const stringKeyed: Record<string, number> = {};
+			for (const [k, v] of Object.entries(timestamps)) stringKeyed[k] = v;
+			body.timestamps = stringKeyed;
+		}
 		const res = await fetch(`${apiBase}/models/wake-schedule/toggle`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
-		// Drop stale responses (newer click in flight or completed).
 		if (inFlightSeq[hour] !== mySeq) return;
 		if (!res.ok) return;
 		const data = (await res.json()) as ScheduleSnapshot;
@@ -137,11 +155,15 @@ async function postToggle(hour: number, ts?: number): Promise<void> {
 function toggleHour(hour: number): void {
 	if (pendingHours.has(hour)) return;
 	if (schedule[hour] !== undefined) {
-		// Toggle off
+		// Toggle off — backend deletes all 4 slots for this hour.
 		void postToggle(hour);
 	} else {
-		// Toggle on
-		void postToggle(hour, nextOccurrenceAt15(hour));
+		// Toggle on — compute first occurrence of HH:MM for each probe slot.
+		const timestamps: Record<number, number> = {};
+		for (const minute of probeSlotMinutes) {
+			timestamps[minute] = nextOccurrenceAt(hour, minute);
+		}
+		void postToggle(hour, timestamps);
 	}
 }
 
@@ -151,9 +173,8 @@ $effect(() => {
 
 /**
  * Faded hours: the `resetOffsetHours - 1` hours immediately after each
- * scheduled wake (the "active session window"). Excludes hours that have
- * their own scheduled wake. Stored as a real Set, not a getter — the old
- * code accidentally wrapped this in a function and called it 24× per render.
+ * marked hour (the "active session window"). Excludes hours that are
+ * themselves marked.
  */
 const fadedHours = $derived.by((): Set<number> => {
 	const result = new Set<number>();
@@ -172,7 +193,7 @@ const fadedHours = $derived.by((): Set<number> => {
 const currentHour = $derived(new Date(nowMs).getHours());
 
 function blockClass(hour: number, faded: Set<number>): string {
-	const isScheduled = schedule[hour] !== undefined;
+	const isMarked = schedule[hour] !== undefined;
 	const isCurrent = hour === currentHour;
 	const isFaded = faded.has(hour);
 	const isPending = pendingHours.has(hour);
@@ -186,7 +207,7 @@ function blockClass(hour: number, faded: Set<number>): string {
 		base += " cursor-pointer";
 	}
 
-	if (isScheduled) {
+	if (isMarked) {
 		base += " bg-primary text-primary-content";
 	} else if (isFaded) {
 		base += " bg-primary/25 text-base-content";
@@ -225,11 +246,17 @@ function formatRelative(ts: number, now: number): string {
 	return `${Math.round(diff / 86_400_000)} d ago`;
 }
 
-const scheduledHours = $derived(
+const markedHours = $derived(
 	Object.keys(schedule)
 		.map(Number)
-		.sort((a, b) => (schedule[a] ?? 0) - (schedule[b] ?? 0)),
+		.sort((a, b) => a - b),
 );
+
+function probeLabel(minute: number): string {
+	return `:${String(minute).padStart(2, "0")}`;
+}
+
+const probeLabels = $derived(probeSlotMinutes.map(probeLabel).join(" "));
 
 const amRow1 = Array.from({ length: 6 }, (_, i) => i); // 0–5
 const amRow2 = Array.from({ length: 6 }, (_, i) => i + 6); // 6–11
@@ -246,14 +273,14 @@ const pmRow2 = Array.from({ length: 6 }, (_, i) => i + 18); // 18–23
 		<div class="flex flex-col gap-0.5">
 			<div class="flex gap-0.5">
 				{#each amRow1 as hour}
-					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)}:15 AM">
+					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)} AM — probes at {probeLabels}">
 						{formatHour(hour)}
 					</button>
 				{/each}
 			</div>
 			<div class="flex gap-0.5">
 				{#each amRow2 as hour}
-					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)}:15 AM">
+					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)} AM — probes at {probeLabels}">
 						{formatHour(hour)}
 					</button>
 				{/each}
@@ -267,14 +294,14 @@ const pmRow2 = Array.from({ length: 6 }, (_, i) => i + 18); // 18–23
 		<div class="flex flex-col gap-0.5">
 			<div class="flex gap-0.5">
 				{#each pmRow1 as hour}
-					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)}:15 PM">
+					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)} PM — probes at {probeLabels}">
 						{formatHour(hour)}
 					</button>
 				{/each}
 			</div>
 			<div class="flex gap-0.5">
 				{#each pmRow2 as hour}
-					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)}:15 PM">
+					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)} PM — probes at {probeLabels}">
 						{formatHour(hour)}
 					</button>
 				{/each}
@@ -282,18 +309,18 @@ const pmRow2 = Array.from({ length: 6 }, (_, i) => i + 18); // 18–23
 		</div>
 	</div>
 
-	<!-- Scheduled summary -->
-	{#if scheduledHours.length > 0}
+	<!-- Marked hours summary -->
+	{#if markedHours.length > 0}
 		<div class="flex flex-col gap-0.5 mt-1">
-			{#each scheduledHours as hour}
+			{#each markedHours as hour}
 				<div class="flex items-center gap-1.5 text-xs text-base-content/70">
-					<span class="badge badge-xs badge-primary">{formatHour(hour)}:15</span>
-					<span>Reset at {formatAmPm(resetHour(hour))}</span>
+					<span class="badge badge-xs badge-primary">{formatHour(hour)} {hour < 12 ? "AM" : "PM"}</span>
+					<span>Probes {probeLabels} → reset by {formatAmPm(resetHour(hour))}</span>
 				</div>
 			{/each}
 		</div>
 	{:else}
-		<p class="text-xs text-base-content/40 italic">No wake times scheduled. Click a block to schedule.</p>
+		<p class="text-xs text-base-content/40 italic">No wake hours marked. Click a block to probe at {probeLabels} that hour.</p>
 	{/if}
 
 	<!-- Status: last wake / pending retry -->
