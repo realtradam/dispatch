@@ -309,3 +309,67 @@ route tests for the 4-slot wake schedule.)
     `recoverScheduleEntry` unit tests and the route surface end-to-end
     via HTTP tests. A follow-up could refactor `loadScheduleFromDB` to
     take a `db` parameter and write a fixture-backed integration test.
+
+---
+
+## Review followup (Gemini review pass — `notes/claude-reset-review.md`)
+
+A Gemini code-review pass after the initial 4-slot work surfaced 3 real
+bugs (2 High, 1 Medium) and 2 nits. All are now fixed on this branch.
+
+| # | Sev | Where | Symptom | Fix |
+|---|---|---|---|---|
+| 1 | High | `models.ts` POST toggle | `raw <= now` rejected legitimate toggles whenever client clock skew or request latency made an imminent slot land in the past → 400 → UI toggle silently fails | Dropped the `<= now` check; kept `Number.isFinite`. The scheduler's `recoverScheduleEntry` already fires within `MISSED_WAKE_GRACE_MS` and rolls forward. |
+| 2 | High | `ClaudeReset.svelte` | Per-hour `inFlightSeq` couldn't stop an older snapshot from clobbering a newer one when the two requests covered *different* hours (or initial-load racing a click). `applySnapshot` replaces the whole `schedule` → newest click vanishes. | Replaced per-hour counter with a single global `SnapshotSequencer` (`src/lib/snapshot-sequencer.ts`) used by `loadFromServer` AND `postToggle`. Older `accept(seq)` calls return false and are dropped. |
+| 3 | Med | `models.ts` `persistSchedule` | `DELETE` + N `INSERT`s with no transaction; an insert failure left the table empty (DELETE already committed) → schedule silently wiped on next boot, error swallowed. | Wrapped both in `db.transaction(...)`. On failure the DELETE rolls back and the previously persisted snapshot stays intact. |
+| 4 | Nit | `ClaudeReset.svelte` | `inFlightSeq` was effectively dead code for user clicks (the `pendingHours.has(hour)` early-return blocks them) but still mattered for initial-load vs first-click. | Subsumed by the new global `SnapshotSequencer` (cleaner than two parallel mechanisms). |
+| 5 | Nit | `models.ts` `schedulerTick` | Boot-recovery `reason` was masked whenever boot recovery + due slots coincided in the same tick. | Capture `bootFireRequested` before clearing the flag and append `" (boot recovery)"` to the reason. |
+
+### Files added/changed in the followup
+
+- **New:** `packages/frontend/src/lib/snapshot-sequencer.ts` — 47 LoC, the
+  reusable "most-recent request wins" race guard. Pure class, no Svelte
+  deps; usable from any component that fans out snapshot-style HTTP calls.
+- **New:** `packages/frontend/tests/snapshot-sequencer.test.ts` — 8 unit
+  tests covering the core race, the initial-load-vs-click race, monotonic
+  ordering, equal-seq idempotency, and the watermark inspector.
+- **New:** `notes/claude-reset-review.md` — the original review (kept for
+  audit trail).
+- **Modified:** `packages/api/src/routes/models.ts` — fixes #1, #3, #5
+  (~30 LoC delta).
+- **Modified:** `packages/frontend/src/lib/components/ClaudeReset.svelte`
+  — fix #2 / nit #4 (~20 LoC delta).
+- **Modified:** `packages/api/tests/routes.test.ts` — replaced the
+  "POST toggle rejects past timestamp" test with two new tests:
+  - "POST toggle ACCEPTS a slightly-past timestamp (clock skew / latency)"
+    regression-guards finding #1.
+  - "POST toggle rejects NaN / Infinity / non-number slot values" guards
+    that we still reject *malformed* inputs.
+  - Plus "snapshot remains consistent across toggle round-trips" guards
+    finding #3 (the transactional persist path).
+
+### Verification (after followup)
+
+```
+$ bun run check
+Checked 144 files in 167ms. No fixes applied.
+
+$ bun run test
+Test Files  26 passed (26)
+     Tests  427 passed (427)
+
+$ bun run --cwd packages/frontend typecheck
+svelte-check found 0 errors and 0 warnings
+```
+
+### Still deferred (not addressed in followup)
+
+These were noted in the review as design pushback rather than bugs and
+remain as documented in §"Assumptions / known gaps" above:
+
+- **Snapshot polling.** UI may show stale "Retrying…" forever if a retry
+  eventually succeeds in the background without user interaction. Adding
+  a slow 60s poll is still a one-liner; left off to avoid quiet background
+  traffic. (Documented in gap #8.)
+- **DST drift.** Adding `24h` to an absolute Unix ts ignores DST
+  transitions; documented in gap #1.
