@@ -397,3 +397,95 @@ describe("POST /chat/stop", () => {
 		expect(res.status).toBe(400);
 	});
 });
+describe("Wake schedule routes", () => {
+	async function getSchedule() {
+		const res = await app.request("/models/wake-schedule");
+		expect(res.status).toBe(200);
+		return (await res.json()) as {
+			schedule: Record<string, number>;
+			resetOffsetHours: number;
+			lastWake: unknown;
+			pendingRetry: unknown;
+		};
+	}
+
+	async function toggle(body: Record<string, unknown>) {
+		return app.request("/models/wake-schedule/toggle", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	}
+
+	it("GET returns the full snapshot shape with resetOffsetHours, lastWake, pendingRetry", async () => {
+		const snap = await getSchedule();
+		expect(snap.schedule).toBeDefined();
+		// CLAUDE_RESET_OFFSET_HOURS is currently 5; keep this loose in case the
+		// product changes the constant, but verify it's a positive integer.
+		expect(Number.isInteger(snap.resetOffsetHours)).toBe(true);
+		expect(snap.resetOffsetHours).toBeGreaterThan(0);
+		expect(snap.lastWake).toBeNull();
+		expect(snap.pendingRetry).toBeNull();
+	});
+
+	it("POST toggle adds and removes a wake hour", async () => {
+		const future = Date.now() + 60 * 60 * 1000; // 1 h ahead
+
+		const addRes = await toggle({ hour: 9, timestamp: future });
+		expect(addRes.status).toBe(200);
+		const addBody = (await addRes.json()) as { schedule: Record<string, number> };
+		expect(addBody.schedule["9"]).toBe(future);
+
+		const removeRes = await toggle({ hour: 9 });
+		expect(removeRes.status).toBe(200);
+		const removeBody = (await removeRes.json()) as { schedule: Record<string, number> };
+		expect(removeBody.schedule["9"]).toBeUndefined();
+	});
+
+	it("POST toggle rejects out-of-range hour", async () => {
+		const res = await toggle({ hour: 24, timestamp: Date.now() + 60_000 });
+		expect(res.status).toBe(400);
+	});
+
+	it("POST toggle rejects negative hour", async () => {
+		const res = await toggle({ hour: -1, timestamp: Date.now() + 60_000 });
+		expect(res.status).toBe(400);
+	});
+
+	it("POST toggle rejects non-integer hour", async () => {
+		const res = await toggle({ hour: 4.5, timestamp: Date.now() + 60_000 });
+		expect(res.status).toBe(400);
+	});
+
+	it("POST toggle rejects past timestamp on add", async () => {
+		const res = await toggle({ hour: 7, timestamp: Date.now() - 1000 });
+		expect(res.status).toBe(400);
+	});
+
+	it("POST toggle rejects missing timestamp on add", async () => {
+		const res = await toggle({ hour: 8 });
+		expect(res.status).toBe(400);
+	});
+
+	it("POST toggle: a delete does NOT require a timestamp", async () => {
+		const future = Date.now() + 60 * 60 * 1000;
+		const addRes = await toggle({ hour: 11, timestamp: future });
+		expect(addRes.status).toBe(200);
+		const delRes = await toggle({ hour: 11 });
+		expect(delRes.status).toBe(200);
+		const body = (await delRes.json()) as { schedule: Record<string, number> };
+		expect(body.schedule["11"]).toBeUndefined();
+	});
+
+	it("snapshot reflects multiple scheduled hours independently", async () => {
+		const future = Date.now() + 2 * 60 * 60 * 1000;
+		await toggle({ hour: 14, timestamp: future });
+		await toggle({ hour: 19, timestamp: future + 60_000 });
+		const snap = await getSchedule();
+		expect(snap.schedule["14"]).toBe(future);
+		expect(snap.schedule["19"]).toBe(future + 60_000);
+		// Cleanup so later tests start clean.
+		await toggle({ hour: 14 });
+		await toggle({ hour: 19 });
+	});
+});

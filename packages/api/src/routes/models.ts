@@ -21,6 +21,11 @@ import {
 	validateAccountCredentials,
 } from "@dispatch/core";
 import { Hono } from "hono";
+import {
+	CLAUDE_RESET_OFFSET_HOURS,
+	nextDailyAfter,
+	recoverScheduleEntry,
+} from "../wake-scheduler.js";
 
 let getRegistry: () => ModelRegistry | null = () => null;
 let getAccounts: () => ClaudeAccount[] = () => [];
@@ -608,19 +613,23 @@ modelsRoutes.post("/wake", async (c) => {
 type WakeSchedule = Record<number, number>; // hour → next wake timestamp (ms)
 
 interface PendingRetry {
-	retriesLeft: number; // starts at 6 (5 min × 6 = 30 min)
-	nextRetryAt: number; // timestamp for next retry attempt
+	/** Remaining attempts. Starts at MAX_RETRIES (e.g. 6 → 30 min of retries). */
+	retriesLeft: number;
+	/** Absolute timestamp (ms) of the next retry attempt. */
+	nextRetryAt: number;
+	/** Why we entered retry mode — surfaced on /wake-schedule. */
+	reason: string;
 }
 
-function nextOccurrenceAt15(hour: number): number {
-	const now = new Date();
-	const target = new Date(now);
-	target.setHours(hour, 15, 0, 0);
-	if (target.getTime() <= Date.now()) {
-		target.setDate(target.getDate() + 1);
-	}
-	return target.getTime();
+interface LastWake {
+	firedAt: number;
+	ok: boolean;
+	results: Array<{ label: string; ok: boolean; error?: string }>;
 }
+
+const MAX_RETRIES = 6;
+const RETRY_INTERVAL_MS = 5 * 60 * 1000;
+const TICK_INTERVAL_MS = 30_000;
 
 function loadScheduleFromDB(): WakeSchedule {
 	try {
@@ -630,16 +639,23 @@ function loadScheduleFromDB(): WakeSchedule {
 			next_wake_at: number;
 		}>;
 		const schedule: WakeSchedule = {};
-		let needsUpdate = false;
+		const now = Date.now();
+		let needsPersist = false;
 		for (const row of rows) {
-			if (row.next_wake_at > Date.now()) {
-				schedule[row.hour] = row.next_wake_at;
-			} else {
-				schedule[row.hour] = nextOccurrenceAt15(row.hour);
-				needsUpdate = true;
+			const recovered = recoverScheduleEntry(row.next_wake_at, now);
+			schedule[row.hour] = recovered.nextWakeAt;
+			if (recovered.nextWakeAt !== row.next_wake_at) {
+				needsPersist = true;
+			}
+			if (recovered.shouldFireNow) {
+				// Mark the entry as "due immediately" so the next tick fires it.
+				// We accomplish this by setting next_wake_at = now; the tick will
+				// see ts <= now, fire, and advance via nextDailyAfter().
+				schedule[row.hour] = now;
+				needsPersist = true;
 			}
 		}
-		if (needsUpdate) {
+		if (needsPersist) {
 			persistSchedule(schedule);
 		}
 		return schedule;
@@ -660,82 +676,130 @@ function persistSchedule(scheduleToSave?: WakeSchedule): void {
 			insert.run({ $hour: Number(hour), $nextWakeAt: nextWakeAt });
 		}
 	} catch {
-		// Ignore DB errors
+		// Ignore DB errors — schedule still lives in-memory for this process.
 	}
 }
 
 const wakeSchedule: WakeSchedule = loadScheduleFromDB();
-const pendingRetries: PendingRetry[] = [];
 
-// HMR-safe: clear previous tick before starting a new one
-(globalThis as Record<string, unknown>)._dispatchWakeTimer ??= undefined;
+/**
+ * A single shared retry slot. We deliberately do NOT queue one retry per
+ * failed wake — multiple back-to-back failures (e.g. the network is down for
+ * five minutes) used to spawn retries that all converged on the same instant
+ * and hammered the upstream. One in-flight retry covers all accounts.
+ */
+let pendingRetry: PendingRetry | null = null;
+let lastWake: LastWake | null = null;
+
+// HMR-safe: track the scheduler timer on globalThis so re-imports during dev
+// don't leave orphaned timers running.
 const timerKey = "_dispatchWakeTimer";
+(globalThis as Record<string, unknown>)[timerKey] ??= undefined;
 let isTickRunning = false;
 
+function recordWake(results: Array<{ label: string; ok: boolean; error?: string }>): boolean {
+	const ok = results.length > 0 && results.every((r) => r.ok);
+	lastWake = { firedAt: Date.now(), ok, results };
+	return ok;
+}
+
+function scheduleRetry(reason: string): void {
+	if (pendingRetry) {
+		// Already retrying — reset the budget so the next failure window covers
+		// the new incident too, but don't compound timers.
+		pendingRetry.retriesLeft = MAX_RETRIES;
+		pendingRetry.nextRetryAt = Date.now() + RETRY_INTERVAL_MS;
+		pendingRetry.reason = reason;
+		return;
+	}
+	pendingRetry = {
+		retriesLeft: MAX_RETRIES,
+		nextRetryAt: Date.now() + RETRY_INTERVAL_MS,
+		reason,
+	};
+}
+
+async function fireWake(reason: string): Promise<void> {
+	try {
+		const results = await wakeAllClaudeAccounts();
+		const ok = recordWake(results);
+		if (!ok) scheduleRetry(reason);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		lastWake = {
+			firedAt: Date.now(),
+			ok: false,
+			results: [{ label: "(scheduler)", ok: false, error: message }],
+		};
+		scheduleRetry(reason);
+	}
+}
+
+async function processPendingRetry(now: number): Promise<void> {
+	// Capture into a local so TS narrowing survives across awaits, and so a
+	// racing toggle that clears `pendingRetry` mid-flight can't NPE us.
+	const retry = pendingRetry;
+	if (!retry || retry.nextRetryAt > now) return;
+	try {
+		const results = await wakeAllClaudeAccounts();
+		const ok = recordWake(results);
+		if (ok || retry.retriesLeft <= 1) {
+			pendingRetry = null;
+		} else {
+			retry.retriesLeft -= 1;
+			retry.nextRetryAt = Date.now() + RETRY_INTERVAL_MS;
+		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		lastWake = {
+			firedAt: Date.now(),
+			ok: false,
+			results: [{ label: "(retry)", ok: false, error: message }],
+		};
+		if (retry.retriesLeft <= 1) {
+			pendingRetry = null;
+		} else {
+			retry.retriesLeft -= 1;
+			retry.nextRetryAt = Date.now() + RETRY_INTERVAL_MS;
+		}
+	}
+}
+
 async function schedulerTick(): Promise<void> {
-	// Prevent concurrent tick execution (e.g. toggle called mid-tick)
+	// Prevent concurrent tick execution (e.g. toggle called mid-tick).
 	if (isTickRunning) return;
 	isTickRunning = true;
 
 	try {
 		const now = Date.now();
+		// Snapshot hours so we don't iterate while mutating (toggle can race).
 		const hours = Object.keys(wakeSchedule).map(Number);
+		let anyFiredThisTick = false;
 
 		for (const hour of hours) {
 			const ts = wakeSchedule[hour];
-			if (ts !== undefined && ts <= now) {
-				// Reschedule for next day (recurring daily)
-				wakeSchedule[hour] = nextOccurrenceAt15(hour);
-				persistSchedule();
+			if (ts === undefined || ts > now) continue;
 
-				// Wake accounts and track failures for retry
-				try {
-					const results = await wakeAllClaudeAccounts();
-					const anyFailed = results.some((r) => !r.ok);
-					if (anyFailed) {
-						pendingRetries.push({
-							retriesLeft: 6,
-							nextRetryAt: now + 5 * 60 * 1000,
-						});
-					}
-				} catch {
-					// Total failure — schedule retry
-					pendingRetries.push({
-						retriesLeft: 6,
-						nextRetryAt: now + 5 * 60 * 1000,
-					});
-				}
-			}
+			// Advance the next fire to strictly > now (skips any missed days,
+			// e.g. if the tick was paused for hours).
+			wakeSchedule[hour] = nextDailyAfter(ts, now);
+			persistSchedule();
+			anyFiredThisTick = true;
+			await fireWake(`scheduled wake at hour ${hour}`);
 		}
 
-		// Process pending retries (iterate backwards for safe splicing)
-		for (let i = pendingRetries.length - 1; i >= 0; i--) {
-			const retry = pendingRetries[i];
-			if (!retry || retry.nextRetryAt > now) continue;
-
-			try {
-				const results = await wakeAllClaudeAccounts();
-				const anyFailed = results.some((r) => !r.ok);
-				if (!anyFailed || retry.retriesLeft <= 1) {
-					// All succeeded or out of retries — remove
-					pendingRetries.splice(i, 1);
-				} else {
-					retry.retriesLeft--;
-					retry.nextRetryAt = now + 5 * 60 * 1000;
-				}
-			} catch {
-				if (retry.retriesLeft <= 1) {
-					pendingRetries.splice(i, 1);
-				} else {
-					retry.retriesLeft--;
-					retry.nextRetryAt = now + 5 * 60 * 1000;
-				}
-			}
+		// Only attempt a retry on ticks that didn't *just* fire — otherwise we'd
+		// race the retry against a fresh attempt within the same loop iteration.
+		if (!anyFiredThisTick) {
+			await processPendingRetry(Date.now());
 		}
 
-		// Schedule next tick while there's work to monitor
-		if (Object.keys(wakeSchedule).length > 0 || pendingRetries.length > 0) {
-			(globalThis as Record<string, unknown>)[timerKey] = setTimeout(schedulerTick, 30_000);
+		// Keep ticking while there's anything to monitor.
+		if (Object.keys(wakeSchedule).length > 0 || pendingRetry !== null) {
+			(globalThis as Record<string, unknown>)[timerKey] = setTimeout(
+				schedulerTick,
+				TICK_INTERVAL_MS,
+			);
 		}
 	} finally {
 		isTickRunning = false;
@@ -743,10 +807,25 @@ async function schedulerTick(): Promise<void> {
 }
 
 export function startWakeScheduler(): void {
-	// Clear any previous timer (HMR-safe — works with Bun's Timer objects)
+	// Clear any previous timer (HMR-safe — works with Bun's Timer objects).
 	const prev = (globalThis as Record<string, unknown>)[timerKey];
 	if (prev != null) clearTimeout(prev as ReturnType<typeof setTimeout>);
-	schedulerTick();
+	// Fire-and-forget; the tick re-arms itself.
+	void schedulerTick();
+}
+
+function scheduleSnapshot(): {
+	schedule: WakeSchedule;
+	resetOffsetHours: number;
+	lastWake: LastWake | null;
+	pendingRetry: PendingRetry | null;
+} {
+	return {
+		schedule: wakeSchedule,
+		resetOffsetHours: CLAUDE_RESET_OFFSET_HOURS,
+		lastWake,
+		pendingRetry,
+	};
 }
 
 modelsRoutes.post("/wake-schedule/toggle", async (c) => {
@@ -755,26 +834,31 @@ modelsRoutes.post("/wake-schedule/toggle", async (c) => {
 	if (typeof hour !== "number" || !Number.isFinite(hour) || hour < 0 || hour > 23) {
 		return c.json({ error: "hour must be a number 0-23" }, 400);
 	}
+	// Integer-only; reject 4.7, NaN coercions, etc.
+	if (!Number.isInteger(hour)) {
+		return c.json({ error: "hour must be an integer 0-23" }, 400);
+	}
 
 	if (wakeSchedule[hour] !== undefined) {
-		// Delete
+		// Toggle off — remove the entry.
 		delete wakeSchedule[hour];
 	} else {
-		// Add — require a future timestamp
+		// Toggle on — require a future absolute timestamp from the client. The
+		// client is the source of truth for *local* wall-clock intent; the
+		// server just stores the ms and rolls it forward by 24h cycles.
 		const ts = body.timestamp;
-		if (typeof ts !== "number" || ts <= Date.now()) {
+		if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= Date.now()) {
 			return c.json({ error: "timestamp must be a future Unix ms value" }, 400);
 		}
 		wakeSchedule[hour] = ts;
 	}
 
-	// Persist and restart the tick loop
 	persistSchedule();
 	startWakeScheduler();
 
-	return c.json({ schedule: wakeSchedule });
+	return c.json(scheduleSnapshot());
 });
 
 modelsRoutes.get("/wake-schedule", (c) => {
-	return c.json({ schedule: wakeSchedule });
+	return c.json(scheduleSnapshot());
 });
