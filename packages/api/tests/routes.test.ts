@@ -481,16 +481,56 @@ describe("Wake schedule routes", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("POST toggle rejects past timestamp in any slot", async () => {
-		const future = Date.now() + 60_000;
-		const badTimestamps: Record<string, number> = {
-			"0": future,
-			"15": Date.now() - 1000, // past
-			"30": future + 60_000,
-			"45": future + 120_000,
+	it("POST toggle ACCEPTS a slightly-past timestamp (clock skew / latency)", async () => {
+		// Regression guard for Gemini-review finding #1: the old code rejected
+		// any slot timestamp <= server now, which broke legitimate toggles when
+		// network latency made an imminent slot land "in the past". The HTTP
+		// layer must accept it; the scheduler then either fires it immediately
+		// (if within MISSED_WAKE_GRACE_MS) or rolls it forward by 24h × N. By
+		// the time the response returns, the scheduler tick has already run
+		// synchronously up to its first await — so the snapshot reflects the
+		// post-advance ts (strictly > now), not the original past ts.
+		await toggle({ hour: 22 }); // ensure clean
+		const now = Date.now();
+		const timestamps: Record<string, number> = {
+			"0": now - 5_000, // 5s in the past — well within any plausible skew
+			"15": now + 60_000,
+			"30": now + 120_000,
+			"45": now + 180_000,
 		};
-		const res = await toggle({ hour: 7, timestamps: badTimestamps });
-		expect(res.status).toBe(400);
+		const res = await toggle({ hour: 22, timestamps });
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			schedule: Record<string, Record<string, number>>;
+		};
+		const slot0 = body.schedule["22"]?.["0"];
+		expect(typeof slot0).toBe("number");
+		expect((slot0 ?? 0) > now).toBe(true); // slot :00 was advanced by the tick
+		expect(body.schedule["22"]?.["15"]).toBe(now + 60_000); // future slot kept
+		await toggle({ hour: 22 }); // cleanup
+	});
+
+	it("POST toggle rejects NaN / Infinity / non-number slot values", async () => {
+		// Use a dedicated hour and ALWAYS clean it up, even on assertion failure,
+		// so we don't leak state into the next iteration (which would otherwise
+		// interpret the next toggle as a DELETE and return 200).
+		const hour = 23;
+		await toggle({ hour }); // ensure clean
+		for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "x", null]) {
+			const now = Date.now();
+			const timestamps: Record<string, unknown> = {
+				"0": now + 60_000,
+				"15": bad,
+				"30": now + 180_000,
+				"45": now + 240_000,
+			};
+			const res = await toggle({ hour, timestamps });
+			try {
+				expect(res.status, `bad value: ${String(bad)}`).toBe(400);
+			} finally {
+				await toggle({ hour }); // ensure clean for next iteration
+			}
+		}
 	});
 
 	it("POST toggle rejects missing timestamps on add", async () => {
@@ -548,5 +588,32 @@ describe("Wake schedule routes", () => {
 		expect(body.schedule["5"]?.["0"]).toBe(base2);
 		expect(body.schedule["5"]?.["45"]).toBe(base2 + 180_000);
 		await toggle({ hour: 5 });
+	});
+
+	it("snapshot remains consistent across toggle round-trips (persistSchedule atomicity)", async () => {
+		// Regression guard for Gemini-review finding #3: persistSchedule
+		// originally did DELETE + N INSERTs without a transaction. A mid-loop
+		// failure would commit the DELETE and lose the schedule. We can't
+		// directly induce a SQLite mid-INSERT failure from here without
+		// monkey-patching getDatabase, but we CAN assert that the steady-state
+		// round-trip never drops rows — and a transactional impl must agree
+		// with itself across GET/POST cycles.
+		const base = Date.now() + 60 * 60 * 1000;
+		await toggle({ hour: 1, timestamps: buildTimestamps(base) });
+		await toggle({ hour: 2, timestamps: buildTimestamps(base + 60_000) });
+		await toggle({ hour: 3, timestamps: buildTimestamps(base + 120_000) });
+		const snap = await getSchedule();
+		for (const h of ["1", "2", "3"]) {
+			expect(Object.keys(snap.schedule[h] ?? {}).sort()).toEqual(["0", "15", "30", "45"]);
+		}
+		// Remove one; the others must be untouched.
+		await toggle({ hour: 2 });
+		const snap2 = await getSchedule();
+		expect(snap2.schedule["1"]).toBeDefined();
+		expect(snap2.schedule["2"]).toBeUndefined();
+		expect(snap2.schedule["3"]).toBeDefined();
+		// Cleanup.
+		await toggle({ hour: 1 });
+		await toggle({ hour: 3 });
 	});
 });

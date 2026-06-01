@@ -688,22 +688,31 @@ function persistSchedule(scheduleToSave?: WakeSchedule): void {
 	try {
 		const db = getDatabase();
 		const data = scheduleToSave ?? wakeSchedule;
-		db.run("DELETE FROM wake_schedule");
 		const insert = db.query(
 			"INSERT INTO wake_schedule (hour, slot_minute, next_wake_at) VALUES ($hour, $slot, $nextWakeAt)",
 		);
-		for (const [hour, slots] of Object.entries(data)) {
-			for (const [slotMinute, nextWakeAt] of Object.entries(slots)) {
-				if (nextWakeAt === undefined) continue;
-				insert.run({
-					$hour: Number(hour),
-					$slot: Number(slotMinute),
-					$nextWakeAt: nextWakeAt,
-				});
+		// One atomic transaction: DELETE + every INSERT either all commit or all
+		// roll back. Without this, an INSERT failure (disk full, bad row, etc.)
+		// would leave the table empty — silently wiping the user's schedule on
+		// next boot since the DELETE has already committed.
+		const writeAll = db.transaction(() => {
+			db.run("DELETE FROM wake_schedule");
+			for (const [hour, slots] of Object.entries(data)) {
+				for (const [slotMinute, nextWakeAt] of Object.entries(slots)) {
+					if (nextWakeAt === undefined) continue;
+					insert.run({
+						$hour: Number(hour),
+						$slot: Number(slotMinute),
+						$nextWakeAt: nextWakeAt,
+					});
+				}
 			}
-		}
+		});
+		writeAll();
 	} catch {
-		// Ignore DB errors — schedule still lives in-memory for this process.
+		// Ignore DB errors — schedule still lives in-memory for this process,
+		// and the previously persisted snapshot stays intact thanks to the
+		// transaction rollback above.
 	}
 }
 
@@ -825,7 +834,8 @@ async function schedulerTick(): Promise<void> {
 		const due = collectDueSlots(now);
 
 		let firedThisTick = false;
-		if (due.length > 0 || needsBootFire) {
+		const bootFireRequested = needsBootFire;
+		if (due.length > 0 || bootFireRequested) {
 			needsBootFire = false;
 			// Advance every due slot before firing — so a slow upstream call
 			// can't cause us to re-fire the same slot on the next tick.
@@ -836,8 +846,11 @@ async function schedulerTick(): Promise<void> {
 			persistSchedule();
 
 			const reasonParts = due.map((d) => `${d.hour}:${String(d.minute).padStart(2, "0")}`);
+			const fromBoot = bootFireRequested ? " (boot recovery)" : "";
 			const reason =
-				reasonParts.length > 0 ? `scheduled probe(s) ${reasonParts.join(", ")}` : "boot recovery";
+				reasonParts.length > 0
+					? `scheduled probe(s) ${reasonParts.join(", ")}${fromBoot}`
+					: "boot recovery";
 			firedThisTick = true;
 			// COALESCED: one upstream call covers all slots due this tick.
 			await fireWake(reason);
@@ -912,12 +925,18 @@ modelsRoutes.post("/wake-schedule/toggle", async (c) => {
 				400,
 			);
 		}
-		const now = Date.now();
 		const parsed: Partial<Record<ProbeSlotMinute, number>> = {};
 		for (const slot of PROBE_SLOT_MINUTES) {
 			const raw = (timestamps as Record<string, unknown>)[String(slot)];
-			if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= now) {
-				return c.json({ error: `timestamps['${slot}'] must be a future Unix ms value` }, 400);
+			// Accept any finite Unix-ms number. We deliberately do NOT reject
+			// past timestamps: client-server clock skew + request latency mean
+			// a freshly-computed `nextOccurrenceAt(HH:MM)` for an imminent slot
+			// can land "in the past" by the time the server validates it. The
+			// scheduler tick handles past entries correctly via
+			// `recoverScheduleEntry` — fires within MISSED_WAKE_GRACE_MS, then
+			// advances by 24h * N to the next future occurrence.
+			if (typeof raw !== "number" || !Number.isFinite(raw)) {
+				return c.json({ error: `timestamps['${slot}'] must be a finite Unix ms value` }, 400);
 			}
 			parsed[slot] = raw;
 		}
