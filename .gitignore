@@ -23,3 +23,6 @@ packaging/electron/pkg/
 packaging/electron/*.pkg.tar.zst
 packaging/electron/*.tar.zst
 packages/frontend/release/
+
+# Code-review artifacts
+claude-report.md
