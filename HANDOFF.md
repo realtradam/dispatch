@@ -373,3 +373,70 @@ remain as documented in §"Assumptions / known gaps" above:
   traffic. (Documented in gap #8.)
 - **DST drift.** Adding `24h` to an absolute Unix ts ignores DST
   transitions; documented in gap #1.
+
+---
+
+## Review followup — Round 2 (Gemini review pass — `notes/claude-reset-review-2.md`)
+
+After the round-1 fixes shipped, a second Gemini review pass surfaced one
+**Critical** and one **High** finding which together exposed a real desync
+hazard: the round-1 SnapshotSequencer only protected against RESPONSE
+reordering, but the toggle endpoint was vulnerable to REQUEST reordering,
+and the toggle endpoint itself ignored client intent — combining into
+"clicks feel inverted" when the UI got desynced.
+
+Both are now fixed on this branch.
+
+| # | Sev | Where | Symptom | Fix |
+|---|---|---|---|---|
+| R2-1 | Critical | `ClaudeReset.svelte` + `snapshot-sequencer.ts` | If two concurrent toggle POSTs reorder on the WIRE (B reaches server first), the server's truer post-A snapshot carries the OLDER client seq → SnapshotSequencer discards it as stale → UI permanently desyncs from server. Round-1's per-hour-counter fix was replaced with a global sequencer but BOTH had this blind spot. | Replaced per-hour `pendingHours: Set<number>` with a single global `pendingHour: number \| null` mutation lock. While any POST is in flight, ALL toggle buttons are disabled — mutations are now serialized on the client, so the server never sees two concurrent toggle requests. Sequencer retained for the GET-on-mount vs first-click race (which the global lock doesn't cover). |
+| R2-2 | High | `models.ts` POST `/wake-schedule/toggle` | Server decided add-vs-remove from its own in-memory state instead of an explicit request field. Any UI desync (from R2-1 or any future cause) → user clicks to turn on an hour the UI shows off, server sees it on, deletes it → "click inverted" UX, recoverable only by reload. | Toggle endpoint now requires explicit `action: 'on' \| 'off'`. Idempotent: `'off'` on already-off is a no-op success; `'on'` on already-on REPLACES timestamps (so a recovering UI can re-assert wall-clock intent without a delete-then-add round trip). Missing/invalid action → 400. |
+| R2-3 | Low (deferred) | `models.ts` `wakeAllClaudeAccounts` / `processPendingRetry` | If 1 of N accounts fails a probe, the 6 × 5min retry loop re-probes ALL accounts (including the ones that already succeeded). Wastes bandwidth, but the probe payload is tiny (~16 tok) and the constant 30-min budget caps the blast radius. | **Not fixed** — explicit deliberate trade-off; per-account success tracking inside `PendingRetry` would meaningfully complicate the retry path for marginal savings. Noted in §"Assumptions / known gaps". |
+
+### Files changed in round 2
+
+- **Modified:** `packages/api/src/routes/models.ts` — toggle endpoint
+  rewritten to require explicit `action` (`+27 / -6` LoC, idempotency rules
+  documented inline).
+- **Modified:** `packages/api/tests/routes.test.ts` — `toggle()` helper
+  auto-derives `action` from `timestamps` presence so the existing 12 tests
+  stayed terse; one test (`POST toggle rejects missing timestamps on add`)
+  was renamed to `rejects action='on' with missing timestamps` and now
+  passes `action` explicitly. **+4 new contract tests** (29 / 29 routes
+  tests pass):
+  - `POST toggle requires explicit action: 'on' | 'off'` (rejects missing
+    action, rejects non-`'on'/'off'` strings/numbers/`null`).
+  - `POST toggle action='off' is idempotent on an already-off hour`.
+  - `POST toggle action='on' on an already-on hour REPLACES timestamps`
+    (the recovery-from-desync scenario).
+  - `POST toggle action='off' ignores timestamps payload`.
+- **Modified:** `packages/frontend/src/lib/components/ClaudeReset.svelte`
+  — `pendingHours: Set<number>` → `pendingHour: number | null`; all 4 row
+  buttons gated by the global lock; `toggleHour` derives `action` from
+  local state; `postToggle` sends it on the wire. Per-hour
+  `cursor-wait` class is preserved for the in-flight hour as a UX cue.
+- **New:** `notes/claude-reset-review-2.md` — the round-2 review (kept
+  for audit trail, parallel to `notes/claude-reset-review.md`).
+
+### Verification (after round-2 followup)
+
+```
+$ bun run check
+Checked 144 files in 161ms. No fixes applied.
+
+$ bun run test
+Test Files  26 passed (26)
+     Tests  431 passed (431)
+
+$ bun run --cwd packages/frontend typecheck
+svelte-check found 0 errors and 0 warnings
+```
+
+(`+4` tests vs round 1: the four explicit-action contract tests.)
+
+### What's NOT addressed in round 2
+
+- **DST drift** — unchanged design trade-off (gap #1).
+- **No snapshot polling** — unchanged design trade-off (gap #8).
+- **R2-3 (retry storm re-probes succeeded accounts)** — deliberate trade-
+  off, see table above.
