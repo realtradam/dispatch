@@ -4,6 +4,7 @@ import type { CacheStats, KeyInfo, LogEntry, TaskItem } from "../types.js";
 import CacheRatePanel from "./CacheRatePanel.svelte";
 import ClaudeReset from "./ClaudeReset.svelte";
 import ConfigPanel from "./ConfigPanel.svelte";
+import DebugPanel from "./DebugPanel.svelte";
 import KeyUsage from "./KeyUsage.svelte";
 import ModelSelector from "./ModelSelector.svelte";
 import ModelStatus from "./ModelStatus.svelte";
@@ -95,6 +96,7 @@ const viewOptions = [
 	"Skills",
 	"Tools",
 	"Settings",
+	"Debug",
 ];
 
 function addPanel() {
@@ -137,6 +139,7 @@ function contentClass(_selected: string): string {
 					<button
 						type="button"
 						class="btn btn-sm btn-ghost btn-square shrink-0"
+						aria-label="Remove panel"
 						onclick={() => {
 							panels = panels.filter((p) => p.id !== panel.id);
 						}}
@@ -181,6 +184,8 @@ function contentClass(_selected: string): string {
 					<ToolPermissions entries={permissionLog} {apiBase} />
 				{:else if panel.selected === "Settings"}
 					<SettingsPanel {keys} {apiBase} />
+				{:else if panel.selected === "Debug"}
+					<DebugPanel />
 				{/if}
 			</div>
 		</div>
