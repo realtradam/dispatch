@@ -30,6 +30,15 @@ The user toggles each one independently in Settings:
 Each notification carries a short tab tag (`tab-<first8>`) so multi-tab users
 can tell which conversation pinged them.
 
+**Subagent gating**: `turn-completed` and `turn-error` from subagent tabs
+(any tab with a `parentTabId`) are suppressed by default — a parent
+agent that spawns 8 subagents would otherwise push 9 "Turn complete"
+notifications per round. Toggle on "Include subagent tabs" in Settings
+to opt in. `permission-required` is deliberately NOT gated: a
+subagent's permission prompt still needs a human tap to proceed, so
+suppressing it would silently hang the subagent. `agent-spawned` is
+already top-level-only by construction.
+
 ### Design notes
 
 - **Non-blocking**: `dispatcher.notify` does `void Promise.resolve(send(...)).catch(warn)`.
@@ -88,9 +97,12 @@ packages/api/tests/routes.test.ts                    (add mocks for new core exp
 packages/frontend/src/lib/components/SettingsPanel.svelte  (new ntfy section)
 ```
 
-Five commits on `n2/ntfy-notifications`:
+Seven commits on `n2/ntfy-notifications`:
 
 ```
+<new> docs: update HANDOFF.md with notifySubagents
+9c93086 feat(notifications): add notifySubagents toggle to suppress subagent turn pings
+4185789 docs: update HANDOFF.md with Gemini review triage + post-fix state
 1870d0b fix(notifications): address Gemini review — tighten validation, sanitize Click, support Basic auth, non-optimistic UI clear
 29bdd00 docs: add HANDOFF.md for ntfy notifications feature
 786bc43 feat(frontend): ntfy.sh settings block in SettingsPanel
@@ -114,6 +126,7 @@ Five commits on `n2/ntfy-notifications`:
       "permission-required": boolean,
       "agent-spawned": boolean,
     },
+    notifySubagents: boolean,  // default false; gates turn-* from subagent tabs
   }
   ```
 
@@ -172,13 +185,13 @@ Checked 150 files in 158ms. No fixes applied.
 
 ```
 Test Files  28 passed (28)
-     Tests  442 passed (442)
+     Tests  451 passed (451)
   Duration  2.85s
 ```
 
-✅ Pass. Baseline was 393 tests in 24 files; this branch adds 49 tests
+✅ Pass. Baseline was 393 tests in 24 files; this branch adds 58 tests
 across 4 new files (`notifications/ntfy.test.ts` ×22,
-`notifications/config.test.ts` ×10, `notifications/dispatcher.test.ts` ×13,
+`notifications/config.test.ts` ×13, `notifications/dispatcher.test.ts` ×19,
 `permission-manager.test.ts` ×4) and modifies 0 existing tests.
 
 ### Per-package strict typecheck
@@ -223,8 +236,9 @@ bugs/flaws/edge-cases). Findings were triaged as follows:
 | 6 | Nit | "DB read on every notify()" | **Skipped.** SQLite reads are sub-millisecond, events are human-scale infrequent (one per turn at most, dominated by an LLM round-trip taking seconds). Cache adds invalidation complexity for no measurable win. |
 | OQ | — | "Support Basic auth, not just Bearer" | **Fixed.** Tokens with a scheme prefix already (`Bearer xyz`, `Basic dXNlcjpwYXNz`) now pass through verbatim; bare tokens still get the `Bearer ` prefix. |
 
-The other two open questions (click-URL deep link, subagent noise) are
-documented as known gaps below.
+The other open questions: click-URL deep link is still a known gap
+below; subagent noise was follow-up-fixed in commit 9c93086 (the
+`notifySubagents` flag, off by default).
 
 ## Assumptions / known gaps
 
@@ -263,22 +277,13 @@ single-user, single-process design):
    later by extending `NotificationEventType`, `NTFY_DEFAULT_EVENTS`,
    and adding a builder + dispatch hook.
 
-6. **Subagent completions don't get an extra opt-out.**
-   `attachToAgentManager` filters `agent-spawned` to `parentTabId === null
-   && agentSlug` (top-level user agents only). `turn-completed` /
-   `turn-error` fire for any tab including subagents, which is technically
-   what the user asked for (turn completion) but could be noisy if
-   someone runs a parent agent that spawns many short-lived subagents.
-   Toggle-off-`turn-completed` is the escape hatch today; a separate
-   "include subagents" toggle would be a trivial follow-up.
-
-7. **Ntfy server-side validation is minimal.** We only check that the
+6. **Ntfy server-side validation is minimal.** We only check that the
    topic URL is a syntactically-valid `http(s)://host/topic-segment`
    matching ntfy's documented topic-name rules. We don't ping the server
    on save (would slow the UI and confuse users behind captive portals).
    The "Send test" button is the integration check.
 
-8. **Header-based publishing (vs. JSON-body publishing).** Per the
+7. **Header-based publishing (vs. JSON-body publishing).** Per the
    Gemini-review triage above, the transport sends `Title`/`Tags`/`Click`
    as HTTP headers. UTF-8 titles work against ntfy.sh itself; non-ASCII
    tab titles through an exotic intermediate proxy could theoretically
@@ -286,5 +291,5 @@ single-user, single-process design):
    application/json`, body `{topic, message, title, ...}`) would side-
    step that entirely — leaving as a follow-up if anyone hits it.
 
-Working tree is clean; five commits on `n2/ntfy-notifications`; nothing
+Working tree is clean; seven commits on `n2/ntfy-notifications`; nothing
 merged.
