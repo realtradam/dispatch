@@ -139,6 +139,7 @@ function contentClass(_selected: string): string {
 					<button
 						type="button"
 						class="btn btn-sm btn-ghost btn-square shrink-0"
+						aria-label="Remove panel"
 						onclick={() => {
 							panels = panels.filter((p) => p.id !== panel.id);
 						}}
