@@ -268,6 +268,57 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => "mock",
 		};
 	},
+	// ── ntfy notifications stubs ──────────────────────────────────
+	NotificationDispatcher: class MockNotificationDispatcher {
+		attachToAgentManager() {
+			return () => {};
+		}
+		attachToPermissionManager() {
+			return () => {};
+		}
+		notify() {}
+		dispose() {}
+	},
+	loadNtfyConfig() {
+		return {
+			enabled: false,
+			topicUrl: "",
+			authToken: "",
+			events: {
+				"turn-completed": true,
+				"turn-error": true,
+				"permission-required": true,
+				"agent-spawned": false,
+			},
+		};
+	},
+	saveNtfyConfig() {},
+	normalizeNtfyConfig(c: unknown) {
+		return c;
+	},
+	defaultNtfyConfig() {
+		return {
+			enabled: false,
+			topicUrl: "",
+			authToken: "",
+			events: {
+				"turn-completed": true,
+				"turn-error": true,
+				"permission-required": true,
+				"agent-spawned": false,
+			},
+		};
+	},
+	redactNtfyConfig(c: { authToken?: string }) {
+		return { ...c, authToken: "", hasAuthToken: false };
+	},
+	NTFY_EVENT_TYPES: ["turn-completed", "turn-error", "permission-required", "agent-spawned"],
+	async sendNtfy() {
+		return { ok: true };
+	},
+	validateTopicUrl() {
+		return null;
+	},
 }));
 
 const { app } = await import("../src/app.js");
