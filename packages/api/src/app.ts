@@ -1,3 +1,4 @@
+import { getTab, NotificationDispatcher } from "@dispatch/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AgentManager } from "./agent-manager.js";
@@ -5,11 +6,38 @@ import { PermissionManager } from "./permission-manager.js";
 import { agentsRoutes } from "./routes/agents.js";
 import { configRoutes } from "./routes/config.js";
 import { modelsRoutes, startWakeScheduler } from "./routes/models.js";
+import { notificationsRoutes } from "./routes/notifications.js";
 import { skillsRoutes } from "./routes/skills.js";
 import { tabsRoutes } from "./routes/tabs.js";
 
 export const permissionManager = new PermissionManager();
 export const agentManager = new AgentManager(permissionManager);
+
+// ntfy.sh push notifications. The dispatcher reads its config from the
+// `settings` table on every send, so config changes apply immediately —
+// no restart, no re-attach needed.
+export const notificationDispatcher = new NotificationDispatcher({
+	getTabTitle: (tabId) => {
+		try {
+			return getTab(tabId)?.title ?? null;
+		} catch {
+			return null;
+		}
+	},
+	getTabParentId: (tabId) => {
+		try {
+			// `undefined` when the lookup fails (tab not found / DB unavailable)
+			// so the dispatcher falls back to "treat as top-level" rather than
+			// silently dropping notifications.
+			const row = getTab(tabId);
+			return row ? row.parentTabId : undefined;
+		} catch {
+			return undefined;
+		}
+	},
+});
+notificationDispatcher.attachToAgentManager(agentManager);
+notificationDispatcher.attachToPermissionManager(permissionManager);
 
 export const app = new Hono();
 
@@ -112,6 +140,7 @@ app.route("/skills", skillsRoutes);
 app.route("/models", modelsRoutes);
 app.route("/tabs", tabsRoutes);
 app.route("/agents", agentsRoutes);
+app.route("/notifications", notificationsRoutes);
 
 // Start the wake scheduler on boot (restores persisted schedule)
 startWakeScheduler();

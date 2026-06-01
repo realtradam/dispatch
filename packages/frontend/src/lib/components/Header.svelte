@@ -1,29 +1,8 @@
 <script lang="ts">
 import { router } from "../router.svelte.js";
-import { tabStore } from "../tabs.svelte.js";
 import { wsClient } from "../ws.svelte.js";
-import ThemeSwitcher from "./ThemeSwitcher.svelte";
 
 const { onToggleSidebar }: { onToggleSidebar: () => void } = $props();
-
-let showThemeSwitcher = $state(false);
-let copyLabel = $state("Copy");
-
-function resetCopyLabel() {
-	copyLabel = "Copy";
-}
-
-async function handleCopy() {
-	const text = tabStore.copyConversation();
-	try {
-		await navigator.clipboard.writeText(text);
-		copyLabel = "Copied";
-		setTimeout(resetCopyLabel, 1500);
-	} catch {
-		copyLabel = "Failed";
-		setTimeout(resetCopyLabel, 1500);
-	}
-}
 </script>
 
 <header class="navbar bg-base-200 px-4 min-h-14 flex-shrink-0">
@@ -38,22 +17,6 @@ async function handleCopy() {
 		<button
 			type="button"
 			class="btn btn-ghost btn-sm"
-			onclick={handleCopy}
-			aria-label="Copy conversation"
-		>
-			{copyLabel}
-		</button>
-		<button
-			type="button"
-			class="btn btn-ghost btn-sm"
-			onclick={() => (showThemeSwitcher = !showThemeSwitcher)}
-			aria-label="Switch theme"
-		>
-			Theme
-		</button>
-		<button
-			type="button"
-			class="btn btn-ghost btn-sm"
 			onclick={onToggleSidebar}
 			aria-label="Toggle sidebar"
 		>
@@ -61,7 +24,3 @@ async function handleCopy() {
 		</button>
 	</div>
 </header>
-
-{#if showThemeSwitcher}
-	<ThemeSwitcher onclose={() => (showThemeSwitcher = false)} />
-{/if}
