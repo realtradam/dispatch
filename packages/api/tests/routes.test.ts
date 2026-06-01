@@ -410,11 +410,21 @@ describe("Wake schedule routes", () => {
 		};
 	}
 
+	/**
+	 * Auto-derives `action` from `timestamps` presence:
+	 *   - body has `timestamps` → action = "on"
+	 *   - body has no `timestamps` → action = "off"
+	 * Tests can override by passing `action` explicitly. This keeps the
+	 * intent-vs-state contract enforced (every request carries an explicit
+	 * action) while keeping the existing test bodies short.
+	 */
 	async function toggle(body: Record<string, unknown>) {
+		const withAction: Record<string, unknown> =
+			"action" in body ? body : { ...body, action: body.timestamps !== undefined ? "on" : "off" };
 		return app.request("/models/wake-schedule/toggle", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
+			body: JSON.stringify(withAction),
 		});
 	}
 
@@ -533,8 +543,11 @@ describe("Wake schedule routes", () => {
 		}
 	});
 
-	it("POST toggle rejects missing timestamps on add", async () => {
-		const res = await toggle({ hour: 8 });
+	it("POST toggle rejects action='on' with missing timestamps", async () => {
+		// Under the explicit-action contract, the helper would otherwise
+		// auto-derive { action: 'off' } for a body with no timestamps. Pass
+		// action explicitly so we exercise the on-without-timestamps reject.
+		const res = await toggle({ hour: 8, action: "on" });
 		expect(res.status).toBe(400);
 	});
 
@@ -615,5 +628,76 @@ describe("Wake schedule routes", () => {
 		// Cleanup.
 		await toggle({ hour: 1 });
 		await toggle({ hour: 3 });
+	});
+
+	it("POST toggle requires explicit action: 'on' | 'off' (Gemini round-2 #2)", async () => {
+		// The server must reject a request that omits `action`. This is the
+		// contract that closes the desync-causes-inverted-clicks failure mode:
+		// the server is no longer allowed to guess the user's intent from its
+		// own (possibly stale-relative-to-UI) in-memory state.
+		const now = Date.now();
+		const raw = await app.request("/models/wake-schedule/toggle", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ hour: 6, timestamps: buildTimestamps(now + 60_000) }),
+		});
+		expect(raw.status).toBe(400);
+
+		for (const bad of ["toggle", "ON", "OFF", "", true, 1, null]) {
+			const res = await app.request("/models/wake-schedule/toggle", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ hour: 6, action: bad, timestamps: buildTimestamps(now + 60_000) }),
+			});
+			expect(res.status, `bad action: ${JSON.stringify(bad)}`).toBe(400);
+		}
+	});
+
+	it("POST toggle action='off' is idempotent on an already-off hour (no error)", async () => {
+		// Stale UI scenario: the UI thinks hour 4 is on and clicks to turn it
+		// off, but server state had already deleted it. Must succeed quietly,
+		// not 400 or change anything else.
+		const before = await getSchedule();
+		expect(before.schedule["4"]).toBeUndefined();
+		const res = await toggle({ hour: 4 }); // helper auto-derives action='off'
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { schedule: Record<string, unknown> };
+		expect(body.schedule["4"]).toBeUndefined();
+	});
+
+	it("POST toggle action='on' on an already-on hour REPLACES timestamps (recovery from desync)", async () => {
+		// Stale UI scenario: the UI thinks hour 12 is off and clicks to turn
+		// it on, but server state had it already on (from a snapshot the UI
+		// missed). Old behavior would have INVERTED the click (turning it
+		// off); new behavior replaces the timestamps with the user's freshly
+		// computed wall-clock intent and keeps the hour on.
+		const base1 = Date.now() + 60 * 60 * 1000;
+		const base2 = base1 + 7 * 60 * 60 * 1000;
+		const addRes = await toggle({ hour: 12, timestamps: buildTimestamps(base1) });
+		expect(addRes.status).toBe(200);
+		const reAddRes = await toggle({ hour: 12, timestamps: buildTimestamps(base2) });
+		expect(reAddRes.status).toBe(200);
+		const body = (await reAddRes.json()) as {
+			schedule: Record<string, Record<string, number>>;
+		};
+		// Hour still present (NOT inverted to off), AND timestamps refreshed.
+		expect(body.schedule["12"]?.["0"]).toBe(base2);
+		expect(body.schedule["12"]?.["45"]).toBe(base2 + 180_000);
+		await toggle({ hour: 12 }); // cleanup
+	});
+
+	it("POST toggle action='off' ignores timestamps payload (off doesn't need them)", async () => {
+		// Accepting extra fields on an off request is fine; we only fail if
+		// an action='on' lacks timestamps.
+		const base = Date.now() + 60 * 60 * 1000;
+		await toggle({ hour: 13, timestamps: buildTimestamps(base) });
+		const res = await app.request("/models/wake-schedule/toggle", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ hour: 13, action: "off", timestamps: buildTimestamps(base) }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { schedule: Record<string, unknown> };
+		expect(body.schedule["13"]).toBeUndefined();
 	});
 });
