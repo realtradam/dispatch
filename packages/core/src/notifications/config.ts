@@ -14,7 +14,7 @@ export const NTFY_CONFIG_KEY = "ntfy_config";
 export function defaultNtfyConfig(): NtfyConfig {
 	return {
 		enabled: false,
-		topicUrl: "",
+		topic: "",
 		authToken: "",
 		events: { ...NTFY_DEFAULT_EVENTS },
 		notifySubagents: false,
@@ -32,7 +32,7 @@ export function normalizeNtfyConfig(raw: unknown): NtfyConfig {
 	const obj = raw as Record<string, unknown>;
 	const out: NtfyConfig = {
 		enabled: typeof obj.enabled === "boolean" ? obj.enabled : base.enabled,
-		topicUrl: typeof obj.topicUrl === "string" ? obj.topicUrl : base.topicUrl,
+		topic: typeof obj.topic === "string" ? obj.topic : base.topic,
 		authToken: typeof obj.authToken === "string" ? obj.authToken : base.authToken,
 		events: { ...base.events },
 		notifySubagents:

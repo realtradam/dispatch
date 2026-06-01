@@ -277,11 +277,14 @@ single-user, single-process design):
    later by extending `NotificationEventType`, `NTFY_DEFAULT_EVENTS`,
    and adding a builder + dispatch hook.
 
-6. **Ntfy server-side validation is minimal.** We only check that the
-   topic URL is a syntactically-valid `http(s)://host/topic-segment`
-   matching ntfy's documented topic-name rules. We don't ping the server
-   on save (would slow the UI and confuse users behind captive portals).
-   The "Send test" button is the integration check.
+6. **No topic validation client-side.** The Settings field accepts any
+   non-empty string as the topic name and the transport posts to
+   `https://ntfy.sh/<topic>` (URL-encoded). Earlier revisions enforced
+   ntfy.sh's documented `^[A-Za-z0-9_-]{1,64}$` rule, but the project
+   relaxes those rules over time (issue #1451) and a regex here just
+   locks users out of valid configurations. The server is the final
+   authority; any rejection surfaces through the "Send test" button or
+   the first real notification.
 
 7. **Header-based publishing (vs. JSON-body publishing).** Per the
    Gemini-review triage above, the transport sends `Title`/`Tags`/`Click`
@@ -293,3 +296,16 @@ single-user, single-process design):
 
 Working tree is clean; seven commits on `n2/ntfy-notifications`; nothing
 merged.
+
+## Update — topic-only input (post-merge of this branch's seventh commit)
+
+The `topicUrl` field was replaced with `topic`. The user now enters just
+the ntfy topic name (e.g. `my-secret-topic`); the transport always posts
+to `https://ntfy.sh/<topic>`. `validateTopicUrl` is gone — only an empty
+check remains (server-side, and only when `enabled === true`). This
+eliminates the "string does not match the expected pattern" error users
+hit when entering a bare topic. Tests, the `/notifications` PUT route,
+the persisted JSON shape, and the SettingsPanel UI were updated together.
+Also fixed a small pre-existing bug: the `/notifications` PUT handler now
+honours `notifySubagents` on save (previously it was silently dropped
+because the field wasn't passed to `normalizeNtfyConfig`).

@@ -1,13 +1,15 @@
 // ntfy.sh HTTP transport.
 //
-// ntfy's API is a simple POST to `https://<server>/<topic>` with the body
+// ntfy's API is a simple POST to `https://ntfy.sh/<topic>` with the body
 // as the message and metadata passed via HTTP headers:
 //   Title:    notification title
 //   Priority: 1..5 (3 = default)
 //   Tags:     comma-separated emoji shortcodes
 //   Click:    URL opened when the notification is tapped
 //
-// We intentionally use `fetch` directly — no SDK, no extra deps.
+// The server is hardcoded to the public ntfy.sh instance; the user only
+// configures a topic name. We intentionally use `fetch` directly — no
+// SDK, no extra deps.
 
 import type { NotificationEvent, NtfyConfig } from "./types.js";
 import { NTFY_DEFAULT_PRIORITIES, NTFY_DEFAULT_TAGS } from "./types.js";
@@ -27,41 +29,20 @@ export type FetchLike = (
 	init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; statusText?: string; text(): Promise<string> }>;
 
-/**
- * ntfy topic-name rules: 1–64 chars, ASCII alphanumerics + `-` and `_`. Sourced
- * from the ntfy server (cf. binwiederhier/ntfy issue #1451 — longer names
- * silently 404). Matching this client-side keeps users from saving topic URLs
- * that look fine but only fail at publish time.
- */
-const NTFY_TOPIC_RE = /^[A-Za-z0-9_-]{1,64}$/;
+/** Base URL of the public ntfy.sh server. */
+export const NTFY_BASE_URL = "https://ntfy.sh";
 
 /**
- * Validate a ntfy topic URL. Accepts only `http(s)://host/topic` where
- * `topic` is a single path segment of 1–64 chars matching `[A-Za-z0-9_-]`.
- * Returns `null` on success, a human-readable error string on failure.
+ * Build the publish URL for a topic name.
+ *
+ * No client-side validation of the topic content: ntfy.sh's accepted
+ * character set has changed over time and a regex here only locks users
+ * out of legitimate topics. The topic is URL-encoded so the resulting
+ * URL is always syntactically valid; if ntfy rejects the name the HTTP
+ * error surfaces on the first send / `Send test`.
  */
-export function validateTopicUrl(topicUrl: string): string | null {
-	const trimmed = topicUrl.trim();
-	if (!trimmed) return "Topic URL is required";
-	let url: URL;
-	try {
-		url = new URL(trimmed);
-	} catch {
-		return "Topic URL is not a valid URL";
-	}
-	if (url.protocol !== "http:" && url.protocol !== "https:") {
-		return "Topic URL must use http:// or https://";
-	}
-	// Path must be exactly one topic segment.
-	const topic = url.pathname.replace(/^\/+|\/+$/g, "");
-	if (!topic) return "Topic URL must include a topic name (e.g. https://ntfy.sh/my-topic)";
-	if (topic.includes("/")) {
-		return "Topic URL must point at a single topic (no extra path segments)";
-	}
-	if (!NTFY_TOPIC_RE.test(topic)) {
-		return "Topic name must be 1–64 characters, letters/numbers/underscore/hyphen only";
-	}
-	return null;
+export function buildNtfyUrl(topic: string): string {
+	return `${NTFY_BASE_URL}/${encodeURIComponent(topic.trim())}`;
 }
 
 /**
@@ -81,8 +62,8 @@ export async function sendNtfy(
 	timeoutMs = 10_000,
 ): Promise<NtfySendResult> {
 	if (!config.enabled) return { ok: false, error: "Notifications are disabled" };
-	const topicErr = validateTopicUrl(config.topicUrl);
-	if (topicErr) return { ok: false, error: topicErr };
+	if (!config.topic.trim()) return { ok: false, error: "Topic is required" };
+	const targetUrl = buildNtfyUrl(config.topic);
 
 	const priority = event.priority ?? NTFY_DEFAULT_PRIORITIES[event.type] ?? 3;
 	const baseTags = event.tags ?? NTFY_DEFAULT_TAGS[event.type] ?? [];
@@ -110,7 +91,7 @@ export async function sendNtfy(
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 	try {
-		const res = await fetchImpl(config.topicUrl.trim(), {
+		const res = await fetchImpl(targetUrl, {
 			method: "POST",
 			headers,
 			body: event.message,

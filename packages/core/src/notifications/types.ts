@@ -52,9 +52,11 @@ export interface NotificationEvent {
  * existing single-user assumption (cf. `title_model_*`, `perm_*`).
  *
  * - `enabled` — master switch. Off ⇒ dispatcher never sends.
- * - `topicUrl` — full URL, e.g. `https://ntfy.sh/my-secret-topic`. Missing
- *   ⇒ dispatcher never sends.
- * - `authToken` — optional bearer token for private ntfy servers.
+ * - `topic`   — bare ntfy.sh topic name, e.g. `my-secret-topic`. The
+ *   server is hardcoded to https://ntfy.sh; the user only picks a topic.
+ *   Missing ⇒ dispatcher never sends.
+ * - `authToken` — optional bearer token (rarely needed against ntfy.sh
+ *   directly; preserved for users behind an auth-protected proxy).
  * - `events` — per-event-type enable map. Missing entries default to OFF
  *   so a newly-added event type doesn't silently start firing.
  * - `notifySubagents` — when false (default), `turn-completed` and
@@ -67,7 +69,7 @@ export interface NotificationEvent {
  */
 export interface NtfyConfig {
 	enabled: boolean;
-	topicUrl: string;
+	topic: string;
 	authToken: string;
 	events: Record<NotificationEventType, boolean>;
 	notifySubagents: boolean;

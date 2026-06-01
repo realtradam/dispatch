@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { sendNtfy, validateTopicUrl } from "../../src/notifications/ntfy.js";
+import { buildNtfyUrl, NTFY_BASE_URL, sendNtfy } from "../../src/notifications/ntfy.js";
 import type { NotificationEvent, NtfyConfig } from "../../src/notifications/types.js";
 
 function makeConfig(overrides: Partial<NtfyConfig> = {}): NtfyConfig {
 	return {
 		enabled: true,
-		topicUrl: "https://ntfy.sh/my-topic",
+		topic: "my-topic",
 		authToken: "",
 		events: {
 			"turn-completed": true,
@@ -13,6 +13,7 @@ function makeConfig(overrides: Partial<NtfyConfig> = {}): NtfyConfig {
 			"permission-required": true,
 			"agent-spawned": true,
 		},
+		notifySubagents: false,
 		...overrides,
 	};
 }
@@ -38,54 +39,26 @@ function makeFetch(
 	return fetchImpl;
 }
 
-describe("validateTopicUrl", () => {
-	it("accepts ntfy.sh-style URLs", () => {
-		expect(validateTopicUrl("https://ntfy.sh/my-topic")).toBeNull();
-		expect(validateTopicUrl("http://ntfy.example.com/team-alerts")).toBeNull();
+describe("buildNtfyUrl", () => {
+	it("prefixes the public ntfy.sh host", () => {
+		expect(buildNtfyUrl("my-topic")).toBe(`${NTFY_BASE_URL}/my-topic`);
 	});
 
-	it("rejects empty / whitespace", () => {
-		expect(validateTopicUrl("")).toMatch(/required/);
-		expect(validateTopicUrl("   ")).toMatch(/required/);
+	it("trims surrounding whitespace", () => {
+		expect(buildNtfyUrl("  hello  ")).toBe(`${NTFY_BASE_URL}/hello`);
 	});
 
-	it("rejects malformed URLs", () => {
-		expect(validateTopicUrl("not a url")).toMatch(/valid URL/);
-	});
-
-	it("rejects non-http(s) schemes", () => {
-		expect(validateTopicUrl("ftp://ntfy.sh/topic")).toMatch(/http/);
-	});
-
-	it("rejects URLs missing a topic path", () => {
-		expect(validateTopicUrl("https://ntfy.sh")).toMatch(/topic/);
-		expect(validateTopicUrl("https://ntfy.sh/")).toMatch(/topic/);
-	});
-
-	it("rejects multi-segment paths (topic must be a single segment)", () => {
-		expect(validateTopicUrl("https://ntfy.sh/team/sub")).toMatch(/single topic/);
-	});
-
-	it("rejects topic names with disallowed characters", () => {
-		expect(validateTopicUrl("https://ntfy.sh/has.dot")).toMatch(/letters\/numbers/);
-		expect(validateTopicUrl("https://ntfy.sh/has space")).toMatch(/letters\/numbers/);
-		expect(validateTopicUrl("https://ntfy.sh/has%20enc")).toMatch(/letters\/numbers/);
-	});
-
-	it("rejects topic names longer than 64 chars", () => {
-		const long = "a".repeat(65);
-		expect(validateTopicUrl(`https://ntfy.sh/${long}`)).toMatch(/64/);
-	});
-
-	it("accepts 64-char topic names and underscore/hyphen mixes", () => {
-		const maxlen = "a".repeat(64);
-		expect(validateTopicUrl(`https://ntfy.sh/${maxlen}`)).toBeNull();
-		expect(validateTopicUrl("https://ntfy.sh/My_Topic-123")).toBeNull();
+	it("URL-encodes the topic so any string yields a valid URL", () => {
+		// Spaces, slashes, unicode — all preserved as encoded bytes; the ntfy
+		// server is the final authority on what it accepts.
+		expect(buildNtfyUrl("has space")).toBe(`${NTFY_BASE_URL}/has%20space`);
+		expect(buildNtfyUrl("a/b")).toBe(`${NTFY_BASE_URL}/a%2Fb`);
+		expect(buildNtfyUrl("日本語")).toBe(`${NTFY_BASE_URL}/${encodeURIComponent("日本語")}`);
 	});
 });
 
 describe("sendNtfy", () => {
-	it("POSTs to the topic URL with Title/Priority/Tags/Content-Type headers and body", async () => {
+	it("POSTs to https://ntfy.sh/<topic> with Title/Priority/Tags/Content-Type headers and body", async () => {
 		const fetchImpl = makeFetch();
 		const result = await sendNtfy(
 			makeConfig(),
@@ -95,13 +68,28 @@ describe("sendNtfy", () => {
 		expect(result.ok).toBe(true);
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 		const [url, init] = fetchImpl.mock.calls[0];
-		expect(url).toBe("https://ntfy.sh/my-topic");
+		expect(url).toBe(`${NTFY_BASE_URL}/my-topic`);
 		expect(init.method).toBe("POST");
 		expect(init.headers.Title).toBe("Hello");
 		expect(init.headers.Priority).toBe("4");
 		expect(init.headers.Tags).toBe("bell");
 		expect(init.headers["Content-Type"]).toMatch(/text\/plain/);
 		expect(init.body).toBe("World");
+	});
+
+	it("accepts arbitrary topic strings without a client-side pattern check", async () => {
+		const fetchImpl = makeFetch();
+		// Things the old validator would have rejected — dots, spaces, unicode,
+		// a single-word "any topic". All should POST and let ntfy decide.
+		await sendNtfy(makeConfig({ topic: "release.notes" }), makeEvent(), fetchImpl);
+		await sendNtfy(makeConfig({ topic: "with space" }), makeEvent(), fetchImpl);
+		await sendNtfy(makeConfig({ topic: "Any Topic Whatsoever" }), makeEvent(), fetchImpl);
+		await sendNtfy(makeConfig({ topic: "日本語" }), makeEvent(), fetchImpl);
+		expect(fetchImpl).toHaveBeenCalledTimes(4);
+		expect(fetchImpl.mock.calls[0][0]).toBe(`${NTFY_BASE_URL}/release.notes`);
+		expect(fetchImpl.mock.calls[1][0]).toBe(`${NTFY_BASE_URL}/with%20space`);
+		expect(fetchImpl.mock.calls[2][0]).toBe(`${NTFY_BASE_URL}/Any%20Topic%20Whatsoever`);
+		expect(fetchImpl.mock.calls[3][0]).toBe(`${NTFY_BASE_URL}/${encodeURIComponent("日本語")}`);
 	});
 
 	it("uses per-event-type defaults for priority and tags", async () => {
@@ -183,11 +171,16 @@ describe("sendNtfy", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
-	it("returns ok:false on invalid topic URL without calling fetch", async () => {
+	it("returns ok:false when topic is empty / whitespace, without calling fetch", async () => {
 		const fetchImpl = makeFetch();
-		const result = await sendNtfy(makeConfig({ topicUrl: "not a url" }), makeEvent(), fetchImpl);
-		expect(result.ok).toBe(false);
-		expect(result.error).toBeDefined();
+		const empty = await sendNtfy(makeConfig({ topic: "" }), makeEvent(), fetchImpl);
+		expect(empty.ok).toBe(false);
+		expect(empty.error).toMatch(/required/i);
+
+		const ws = await sendNtfy(makeConfig({ topic: "   " }), makeEvent(), fetchImpl);
+		expect(ws.ok).toBe(false);
+		expect(ws.error).toMatch(/required/i);
+
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 

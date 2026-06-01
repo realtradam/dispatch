@@ -282,7 +282,7 @@ vi.mock("@dispatch/core", () => ({
 	loadNtfyConfig() {
 		return {
 			enabled: false,
-			topicUrl: "",
+			topic: "",
 			authToken: "",
 			events: {
 				"turn-completed": true,
@@ -300,7 +300,7 @@ vi.mock("@dispatch/core", () => ({
 	defaultNtfyConfig() {
 		return {
 			enabled: false,
-			topicUrl: "",
+			topic: "",
 			authToken: "",
 			events: {
 				"turn-completed": true,
@@ -317,9 +317,6 @@ vi.mock("@dispatch/core", () => ({
 	NTFY_EVENT_TYPES: ["turn-completed", "turn-error", "permission-required", "agent-spawned"],
 	async sendNtfy() {
 		return { ok: true };
-	},
-	validateTopicUrl() {
-		return null;
 	},
 }));
 
