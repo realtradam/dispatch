@@ -54,9 +54,28 @@ export function getDatabase(): Database {
 		updated_at        INTEGER NOT NULL
 	)`);
 
+	// Wake schedule: 4 rows per marked hour (one per :00 / :15 / :30 / :45 probe
+	// slot). The PK is (hour, slot_minute). Destructive migration off the legacy
+	// single-row-per-hour schema: detect by absence of the `slot_minute` column
+	// and drop the old table. Other tables (credentials, api_keys, usage_cache,
+	// settings, tabs, chunks) are NOT touched.
+	const legacyWakeSchema = (() => {
+		try {
+			const cols = _db.query("PRAGMA table_info(wake_schedule)").all() as Array<{ name: string }>;
+			if (cols.length === 0) return false; // table doesn't exist yet
+			return !cols.some((c) => c.name === "slot_minute");
+		} catch {
+			return false;
+		}
+	})();
+	if (legacyWakeSchema) {
+		_db.run("DROP TABLE IF EXISTS wake_schedule");
+	}
 	_db.run(`CREATE TABLE IF NOT EXISTS wake_schedule (
-		hour         INTEGER PRIMARY KEY CHECK (hour BETWEEN 0 AND 23),
-		next_wake_at INTEGER NOT NULL
+		hour         INTEGER NOT NULL CHECK (hour BETWEEN 0 AND 23),
+		slot_minute  INTEGER NOT NULL CHECK (slot_minute IN (0, 15, 30, 45)),
+		next_wake_at INTEGER NOT NULL,
+		PRIMARY KEY (hour, slot_minute)
 	)`);
 
 	_db.run(`CREATE TABLE IF NOT EXISTS usage_cache (

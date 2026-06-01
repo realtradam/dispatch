@@ -23,7 +23,10 @@ import {
 import { Hono } from "hono";
 import {
 	CLAUDE_RESET_OFFSET_HOURS,
+	isProbeSlotMinute,
 	nextDailyAfter,
+	PROBE_SLOT_MINUTES,
+	type ProbeSlotMinute,
 	recoverScheduleEntry,
 } from "../wake-scheduler.js";
 
@@ -609,8 +612,15 @@ modelsRoutes.post("/wake", async (c) => {
 });
 
 // ─── Wake scheduler (runs on backend, survives frontend close) ─
+//
+// A "marked hour" expands to 4 probe slots inside that hour: :00, :15, :30,
+// :45. Each slot is its own (hour, slot_minute) row in `wake_schedule` with
+// its own `next_wake_at`. When multiple slots come due in the same tick we
+// coalesce into a single upstream wake — no point hitting Anthropic 4× in
+// the same 30-second window.
 
-type WakeSchedule = Record<number, number>; // hour → next wake timestamp (ms)
+/** Schedule: hour (0-23) → slot minute (0/15/30/45) → next fire ms. */
+type WakeSchedule = Record<number, Partial<Record<ProbeSlotMinute, number>>>;
 
 interface PendingRetry {
 	/** Remaining attempts. Starts at MAX_RETRIES (e.g. 6 → 30 min of retries). */
@@ -631,33 +641,43 @@ const MAX_RETRIES = 6;
 const RETRY_INTERVAL_MS = 5 * 60 * 1000;
 const TICK_INTERVAL_MS = 30_000;
 
+function setSlot(schedule: WakeSchedule, hour: number, minute: ProbeSlotMinute, ts: number): void {
+	const hourEntry = schedule[hour] ?? {};
+	hourEntry[minute] = ts;
+	schedule[hour] = hourEntry;
+}
+
+function deleteHour(schedule: WakeSchedule, hour: number): void {
+	delete schedule[hour];
+}
+
+function countSlots(schedule: WakeSchedule): number {
+	let n = 0;
+	for (const slots of Object.values(schedule)) {
+		n += Object.keys(slots).length;
+	}
+	return n;
+}
+
 function loadScheduleFromDB(): WakeSchedule {
 	try {
 		const db = getDatabase();
-		const rows = db.query("SELECT hour, next_wake_at FROM wake_schedule").all() as Array<{
-			hour: number;
-			next_wake_at: number;
-		}>;
+		const rows = db
+			.query("SELECT hour, slot_minute, next_wake_at FROM wake_schedule")
+			.all() as Array<{ hour: number; slot_minute: number; next_wake_at: number }>;
 		const schedule: WakeSchedule = {};
 		const now = Date.now();
 		let needsPersist = false;
+		let anyShouldFire = false;
 		for (const row of rows) {
+			if (!isProbeSlotMinute(row.slot_minute)) continue; // defensive — schema CHECKs it
 			const recovered = recoverScheduleEntry(row.next_wake_at, now);
-			schedule[row.hour] = recovered.nextWakeAt;
-			if (recovered.nextWakeAt !== row.next_wake_at) {
-				needsPersist = true;
-			}
-			if (recovered.shouldFireNow) {
-				// Mark the entry as "due immediately" so the next tick fires it.
-				// We accomplish this by setting next_wake_at = now; the tick will
-				// see ts <= now, fire, and advance via nextDailyAfter().
-				schedule[row.hour] = now;
-				needsPersist = true;
-			}
+			setSlot(schedule, row.hour, row.slot_minute, recovered.nextWakeAt);
+			if (recovered.nextWakeAt !== row.next_wake_at) needsPersist = true;
+			if (recovered.shouldFireNow) anyShouldFire = true;
 		}
-		if (needsPersist) {
-			persistSchedule(schedule);
-		}
+		if (needsPersist) persistSchedule(schedule);
+		if (anyShouldFire) needsBootFire = true;
 		return schedule;
 	} catch {
 		return {};
@@ -670,16 +690,25 @@ function persistSchedule(scheduleToSave?: WakeSchedule): void {
 		const data = scheduleToSave ?? wakeSchedule;
 		db.run("DELETE FROM wake_schedule");
 		const insert = db.query(
-			"INSERT INTO wake_schedule (hour, next_wake_at) VALUES ($hour, $nextWakeAt)",
+			"INSERT INTO wake_schedule (hour, slot_minute, next_wake_at) VALUES ($hour, $slot, $nextWakeAt)",
 		);
-		for (const [hour, nextWakeAt] of Object.entries(data)) {
-			insert.run({ $hour: Number(hour), $nextWakeAt: nextWakeAt });
+		for (const [hour, slots] of Object.entries(data)) {
+			for (const [slotMinute, nextWakeAt] of Object.entries(slots)) {
+				if (nextWakeAt === undefined) continue;
+				insert.run({
+					$hour: Number(hour),
+					$slot: Number(slotMinute),
+					$nextWakeAt: nextWakeAt,
+				});
+			}
 		}
 	} catch {
 		// Ignore DB errors — schedule still lives in-memory for this process.
 	}
 }
 
+/** Set to true by loadScheduleFromDB when one or more slots need a boot fire. */
+let needsBootFire = false;
 const wakeSchedule: WakeSchedule = loadScheduleFromDB();
 
 /**
@@ -765,6 +794,27 @@ async function processPendingRetry(now: number): Promise<void> {
 	}
 }
 
+interface DueSlot {
+	hour: number;
+	minute: ProbeSlotMinute;
+	ts: number;
+}
+
+/** Collect every slot whose next_wake_at is at or before `now`. */
+function collectDueSlots(now: number): DueSlot[] {
+	const due: DueSlot[] = [];
+	for (const [hourStr, slots] of Object.entries(wakeSchedule)) {
+		const hour = Number(hourStr);
+		for (const [slotStr, ts] of Object.entries(slots)) {
+			if (ts === undefined) continue;
+			const slotMinute = Number(slotStr);
+			if (!isProbeSlotMinute(slotMinute)) continue;
+			if (ts <= now) due.push({ hour, minute: slotMinute, ts });
+		}
+	}
+	return due;
+}
+
 async function schedulerTick(): Promise<void> {
 	// Prevent concurrent tick execution (e.g. toggle called mid-tick).
 	if (isTickRunning) return;
@@ -772,30 +822,35 @@ async function schedulerTick(): Promise<void> {
 
 	try {
 		const now = Date.now();
-		// Snapshot hours so we don't iterate while mutating (toggle can race).
-		const hours = Object.keys(wakeSchedule).map(Number);
-		let anyFiredThisTick = false;
+		const due = collectDueSlots(now);
 
-		for (const hour of hours) {
-			const ts = wakeSchedule[hour];
-			if (ts === undefined || ts > now) continue;
-
-			// Advance the next fire to strictly > now (skips any missed days,
-			// e.g. if the tick was paused for hours).
-			wakeSchedule[hour] = nextDailyAfter(ts, now);
+		let firedThisTick = false;
+		if (due.length > 0 || needsBootFire) {
+			needsBootFire = false;
+			// Advance every due slot before firing — so a slow upstream call
+			// can't cause us to re-fire the same slot on the next tick.
+			for (const slot of due) {
+				const next = nextDailyAfter(slot.ts, now);
+				setSlot(wakeSchedule, slot.hour, slot.minute, next);
+			}
 			persistSchedule();
-			anyFiredThisTick = true;
-			await fireWake(`scheduled wake at hour ${hour}`);
+
+			const reasonParts = due.map((d) => `${d.hour}:${String(d.minute).padStart(2, "0")}`);
+			const reason =
+				reasonParts.length > 0 ? `scheduled probe(s) ${reasonParts.join(", ")}` : "boot recovery";
+			firedThisTick = true;
+			// COALESCED: one upstream call covers all slots due this tick.
+			await fireWake(reason);
 		}
 
 		// Only attempt a retry on ticks that didn't *just* fire — otherwise we'd
 		// race the retry against a fresh attempt within the same loop iteration.
-		if (!anyFiredThisTick) {
+		if (!firedThisTick) {
 			await processPendingRetry(Date.now());
 		}
 
 		// Keep ticking while there's anything to monitor.
-		if (Object.keys(wakeSchedule).length > 0 || pendingRetry !== null) {
+		if (countSlots(wakeSchedule) > 0 || pendingRetry !== null) {
 			(globalThis as Record<string, unknown>)[timerKey] = setTimeout(
 				schedulerTick,
 				TICK_INTERVAL_MS,
@@ -817,40 +872,56 @@ export function startWakeScheduler(): void {
 function scheduleSnapshot(): {
 	schedule: WakeSchedule;
 	resetOffsetHours: number;
+	probeSlotMinutes: readonly number[];
 	lastWake: LastWake | null;
 	pendingRetry: PendingRetry | null;
 } {
 	return {
 		schedule: wakeSchedule,
 		resetOffsetHours: CLAUDE_RESET_OFFSET_HOURS,
+		probeSlotMinutes: PROBE_SLOT_MINUTES,
 		lastWake,
 		pendingRetry,
 	};
 }
 
 modelsRoutes.post("/wake-schedule/toggle", async (c) => {
-	const body = await c.req.json<{ hour?: number; timestamp?: number }>();
+	const body = await c.req.json<{
+		hour?: unknown;
+		timestamps?: unknown;
+	}>();
 	const hour = body.hour;
 	if (typeof hour !== "number" || !Number.isFinite(hour) || hour < 0 || hour > 23) {
 		return c.json({ error: "hour must be a number 0-23" }, 400);
 	}
-	// Integer-only; reject 4.7, NaN coercions, etc.
 	if (!Number.isInteger(hour)) {
 		return c.json({ error: "hour must be an integer 0-23" }, 400);
 	}
 
 	if (wakeSchedule[hour] !== undefined) {
-		// Toggle off — remove the entry.
-		delete wakeSchedule[hour];
+		// Toggle off — remove all 4 slots for this hour.
+		deleteHour(wakeSchedule, hour);
 	} else {
-		// Toggle on — require a future absolute timestamp from the client. The
-		// client is the source of truth for *local* wall-clock intent; the
-		// server just stores the ms and rolls it forward by 24h cycles.
-		const ts = body.timestamp;
-		if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= Date.now()) {
-			return c.json({ error: "timestamp must be a future Unix ms value" }, 400);
+		// Toggle on — require a `timestamps` object with one absolute Unix ms
+		// per probe slot (0, 15, 30, 45). The client is the source of truth
+		// for the *local* wall-clock intent of each probe.
+		const timestamps = body.timestamps;
+		if (timestamps === null || typeof timestamps !== "object") {
+			return c.json(
+				{ error: "timestamps must be an object { '0': ms, '15': ms, '30': ms, '45': ms }" },
+				400,
+			);
 		}
-		wakeSchedule[hour] = ts;
+		const now = Date.now();
+		const parsed: Partial<Record<ProbeSlotMinute, number>> = {};
+		for (const slot of PROBE_SLOT_MINUTES) {
+			const raw = (timestamps as Record<string, unknown>)[String(slot)];
+			if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= now) {
+				return c.json({ error: `timestamps['${slot}'] must be a future Unix ms value` }, 400);
+			}
+			parsed[slot] = raw;
+		}
+		wakeSchedule[hour] = parsed;
 	}
 
 	persistSchedule();
