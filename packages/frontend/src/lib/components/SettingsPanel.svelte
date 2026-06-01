@@ -72,6 +72,7 @@ let ntfySaveOk = $state(false);
 let ntfyTesting = $state(false);
 let ntfyTestResult = $state<string | null>(null);
 let ntfyTestOk = $state(false);
+let ntfyClearingToken = $state(false);
 
 function onChunkLimitChange(e: Event): void {
 	const input = e.target as HTMLInputElement;
@@ -212,22 +213,43 @@ async function sendNtfyTest(): Promise<void> {
 	}
 }
 
-function clearNtfyAuthToken(): void {
+async function clearNtfyAuthToken(): Promise<void> {
 	// `""` ⇒ explicit clear on save (vs. `undefined` which keeps existing).
-	ntfyAuthTokenInput = "";
-	ntfy = { ...ntfy, hasAuthToken: false };
-	// Send a save with explicit empty string to clear server-side.
-	void (async () => {
-		try {
-			await fetch(`${apiBase}/notifications`, {
-				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ authToken: "" }),
-			});
-		} catch {
-			// ignore
+	// Optimistic local state on failure caused a real bug pre-review: UI showed
+	// the token cleared while the server still held it, then "Save" treated the
+	// blank input as "keep existing" and silently re-armed the old token. Await
+	// the response and only flip local state on success.
+	ntfyClearingToken = true;
+	ntfySaveError = null;
+	try {
+		const res = await fetch(`${apiBase}/notifications`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ authToken: "" }),
+		});
+		const data = (await res.json().catch(() => ({}))) as {
+			config?: NtfyConfigView;
+			error?: string;
+		};
+		if (!res.ok) {
+			ntfySaveError = data.error ?? `Clear failed (HTTP ${res.status})`;
+			return;
 		}
-	})();
+		ntfyAuthTokenInput = "";
+		if (data.config) {
+			ntfy = {
+				...DEFAULT_NTFY,
+				...data.config,
+				events: { ...DEFAULT_NTFY.events, ...(data.config.events ?? {}) },
+			};
+		} else {
+			ntfy = { ...ntfy, hasAuthToken: false };
+		}
+	} catch (e) {
+		ntfySaveError = e instanceof Error ? e.message : "Network error";
+	} finally {
+		ntfyClearingToken = false;
+	}
 }
 
 async function toggleAutoExpand(): Promise<void> {
@@ -421,9 +443,14 @@ $effect(() => {
 				<button
 					type="button"
 					class="btn btn-xs btn-ghost btn-outline self-start"
+					disabled={ntfyClearingToken}
 					onclick={clearNtfyAuthToken}
 				>
-					Clear stored token
+					{#if ntfyClearingToken}
+						<span class="loading loading-spinner loading-xs"></span>
+					{:else}
+						Clear stored token
+					{/if}
 				</button>
 			{/if}
 		</label>
