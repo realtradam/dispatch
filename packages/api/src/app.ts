@@ -24,6 +24,17 @@ export const notificationDispatcher = new NotificationDispatcher({
 			return null;
 		}
 	},
+	getTabParentId: (tabId) => {
+		try {
+			// `undefined` when the lookup fails (tab not found / DB unavailable)
+			// so the dispatcher falls back to "treat as top-level" rather than
+			// silently dropping notifications.
+			const row = getTab(tabId);
+			return row ? row.parentTabId : undefined;
+		} catch {
+			return undefined;
+		}
+	},
 });
 notificationDispatcher.attachToAgentManager(agentManager);
 notificationDispatcher.attachToPermissionManager(permissionManager);

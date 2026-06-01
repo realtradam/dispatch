@@ -34,6 +34,7 @@ describe("defaultNtfyConfig", () => {
 		expect(cfg.events["turn-error"]).toBe(true);
 		expect(cfg.events["permission-required"]).toBe(true);
 		expect(cfg.events["agent-spawned"]).toBe(false);
+		expect(cfg.notifySubagents).toBe(false);
 	});
 });
 
@@ -72,6 +73,34 @@ describe("normalizeNtfyConfig", () => {
 	});
 });
 
+describe("normalizeNtfyConfig — notifySubagents", () => {
+	it("defaults notifySubagents to false when absent", () => {
+		const normalized = normalizeNtfyConfig({
+			enabled: true,
+			topicUrl: "https://ntfy.sh/x",
+		});
+		expect(normalized.notifySubagents).toBe(false);
+	});
+
+	it("respects an explicit notifySubagents=true", () => {
+		const normalized = normalizeNtfyConfig({
+			enabled: true,
+			topicUrl: "https://ntfy.sh/x",
+			notifySubagents: true,
+		});
+		expect(normalized.notifySubagents).toBe(true);
+	});
+
+	it("falls back to default when notifySubagents is wrong-typed", () => {
+		const normalized = normalizeNtfyConfig({
+			enabled: true,
+			topicUrl: "https://ntfy.sh/x",
+			notifySubagents: "yes" as unknown,
+		});
+		expect(normalized.notifySubagents).toBe(false);
+	});
+});
+
 describe("load/save round-trip", () => {
 	beforeEach(() => {
 		fakeSettings.clear();
@@ -92,6 +121,7 @@ describe("load/save round-trip", () => {
 				"permission-required": true,
 				"agent-spawned": true,
 			},
+			notifySubagents: true,
 		} as const;
 		saveNtfyConfig({ ...cfg });
 		const loaded = loadNtfyConfig();

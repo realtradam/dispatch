@@ -25,6 +25,10 @@ function makeConfig(overrides: Partial<NtfyConfig> = {}): NtfyConfig {
 			"permission-required": true,
 			"agent-spawned": true,
 		},
+		// Default to true in the test config so existing tests (which never
+		// configure a getTabParentId lookup) keep firing for tab-1 / tab-2 / etc.
+		// Tests of the new subagent gating override this explicitly.
+		notifySubagents: true,
 		...overrides,
 	};
 }
@@ -319,5 +323,139 @@ describe("NotificationDispatcher.dispose", () => {
 		source.emit({ type: "done", tabId: "tab-1", message: { role: "assistant", chunks: [] } });
 		await flush();
 		expect(send).not.toHaveBeenCalled();
+	});
+});
+
+describe("NotificationDispatcher subagent suppression (notifySubagents flag)", () => {
+	let warnSpy: ReturnType<typeof vi.spyOn>;
+	beforeEach(() => {
+		warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+	afterEach(() => {
+		warnSpy.mockRestore();
+	});
+
+	const parents = new Map<string, string | null>([
+		["top-level", null],
+		["subagent", "top-level"],
+	]);
+	const getTabParentId = (id: string): string | null | undefined => parents.get(id);
+
+	it("suppresses turn-completed from subagent tabs when notifySubagents=false (default)", async () => {
+		const send = vi.fn(async () => ({ ok: true }));
+		const source = makeAgentSource();
+		const d = new NotificationDispatcher({
+			loadConfig: () => makeConfig({ notifySubagents: false }),
+			send,
+			getTabParentId,
+		});
+		d.attachToAgentManager(source);
+
+		source.emit({ type: "done", tabId: "subagent", message: { role: "assistant", chunks: [] } });
+		source.emit({ type: "done", tabId: "top-level", message: { role: "assistant", chunks: [] } });
+		await flush();
+
+		expect(send).toHaveBeenCalledTimes(1);
+		expect((send.mock.calls[0][1] as NotificationEvent).tabId).toBe("top-level");
+	});
+
+	it("suppresses turn-error from subagent tabs when notifySubagents=false", async () => {
+		const send = vi.fn(async () => ({ ok: true }));
+		const source = makeAgentSource();
+		const d = new NotificationDispatcher({
+			loadConfig: () => makeConfig({ notifySubagents: false }),
+			send,
+			getTabParentId,
+		});
+		d.attachToAgentManager(source);
+
+		source.emit({ type: "error", tabId: "subagent", error: "boom" });
+		source.emit({ type: "error", tabId: "top-level", error: "boom" });
+		await flush();
+
+		expect(send).toHaveBeenCalledTimes(1);
+		expect((send.mock.calls[0][1] as NotificationEvent).tabId).toBe("top-level");
+	});
+
+	it("still notifies subagents when notifySubagents=true", async () => {
+		const send = vi.fn(async () => ({ ok: true }));
+		const source = makeAgentSource();
+		const d = new NotificationDispatcher({
+			loadConfig: () => makeConfig({ notifySubagents: true }),
+			send,
+			getTabParentId,
+		});
+		d.attachToAgentManager(source);
+
+		source.emit({ type: "done", tabId: "subagent", message: { role: "assistant", chunks: [] } });
+		source.emit({ type: "done", tabId: "top-level", message: { role: "assistant", chunks: [] } });
+		await flush();
+
+		expect(send).toHaveBeenCalledTimes(2);
+	});
+
+	it("does NOT gate permission-required (subagents must still get human input)", async () => {
+		const send = vi.fn(async () => ({ ok: true }));
+		const psource = makePermissionSource();
+		const d = new NotificationDispatcher({
+			loadConfig: () => makeConfig({ notifySubagents: false }),
+			send,
+			getTabParentId,
+		});
+		d.attachToPermissionManager(psource);
+
+		psource.emit({ id: "p1", permission: "bash", description: "git status" });
+		await flush();
+
+		expect(send).toHaveBeenCalledTimes(1);
+		expect((send.mock.calls[0][1] as NotificationEvent).type).toBe("permission-required");
+	});
+
+	it("falls back to notifying when getTabParentId is not provided (treat as top-level)", async () => {
+		const send = vi.fn(async () => ({ ok: true }));
+		const source = makeAgentSource();
+		const d = new NotificationDispatcher({
+			loadConfig: () => makeConfig({ notifySubagents: false }),
+			send,
+			// intentionally NO getTabParentId
+		});
+		d.attachToAgentManager(source);
+
+		source.emit({ type: "done", tabId: "anything", message: { role: "assistant", chunks: [] } });
+		await flush();
+
+		// Without a lookup, the dispatcher can't prove this is a subagent; it
+		// must err on the side of notifying so legitimate top-level events
+		// aren't silently dropped.
+		expect(send).toHaveBeenCalledTimes(1);
+	});
+
+	it("falls back to notifying when getTabParentId throws or returns undefined", async () => {
+		const send = vi.fn(async () => ({ ok: true }));
+		const source = makeAgentSource();
+		const d = new NotificationDispatcher({
+			loadConfig: () => makeConfig({ notifySubagents: false }),
+			send,
+			getTabParentId: () => {
+				throw new Error("db unavailable");
+			},
+		});
+		d.attachToAgentManager(source);
+
+		source.emit({ type: "done", tabId: "x", message: { role: "assistant", chunks: [] } });
+		await flush();
+		expect(send).toHaveBeenCalledTimes(1);
+
+		const send2 = vi.fn(async () => ({ ok: true }));
+		const source2 = makeAgentSource();
+		const d2 = new NotificationDispatcher({
+			loadConfig: () => makeConfig({ notifySubagents: false }),
+			send: send2,
+			getTabParentId: () => undefined,
+		});
+		d2.attachToAgentManager(source2);
+		source2.emit({ type: "done", tabId: "x", message: { role: "assistant", chunks: [] } });
+		await flush();
+		expect(send2).toHaveBeenCalledTimes(1);
 	});
 });

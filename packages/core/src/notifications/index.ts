@@ -14,6 +14,7 @@ export {
 	type DispatcherOptions,
 	NotificationDispatcher,
 	type PermissionPromptSource,
+	type TabParentLookup,
 	type TabTitleLookup,
 } from "./dispatcher.js";
 export { type FetchLike, type NtfySendResult, sendNtfy, validateTopicUrl } from "./ntfy.js";

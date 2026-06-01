@@ -36,6 +36,7 @@ interface NtfyConfigView {
 	authToken: string;
 	hasAuthToken?: boolean;
 	events: Record<NotificationEventType, boolean>;
+	notifySubagents: boolean;
 }
 
 const NTFY_EVENT_LABELS: Record<NotificationEventType, string> = {
@@ -56,6 +57,7 @@ const DEFAULT_NTFY: NtfyConfigView = {
 		"permission-required": true,
 		"agent-spawned": false,
 	},
+	notifySubagents: false,
 };
 
 let ntfy = $state<NtfyConfigView>({ ...DEFAULT_NTFY, events: { ...DEFAULT_NTFY.events } });
@@ -162,6 +164,7 @@ async function saveNtfy(): Promise<void> {
 			enabled: ntfy.enabled,
 			topicUrl: ntfy.topicUrl,
 			events: ntfy.events,
+			notifySubagents: ntfy.notifySubagents,
 		};
 		if (ntfyAuthTokenInput !== "") payload.authToken = ntfyAuthTokenInput;
 		const res = await fetch(`${apiBase}/notifications`, {
@@ -467,6 +470,20 @@ $effect(() => {
 					<span class="text-xs text-base-content/70">{NTFY_EVENT_LABELS[evType] ?? evType}</span>
 				</label>
 			{/each}
+		</div>
+
+		<div class="flex flex-col gap-1 mt-1">
+			<label class="flex items-center gap-2 cursor-pointer">
+				<input
+					type="checkbox"
+					class="checkbox checkbox-sm rounded-sm"
+					bind:checked={ntfy.notifySubagents}
+				/>
+				<span class="text-xs text-base-content/70">Include subagent tabs</span>
+			</label>
+			<span class="text-[10px] text-base-content/40 pl-6">
+				Off (default): turn-completed/turn-error from subagents are suppressed. Permission prompts still fire so subagents don't silently hang.
+			</span>
 		</div>
 
 		<div class="flex gap-1 mt-1">

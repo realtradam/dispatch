@@ -290,6 +290,7 @@ vi.mock("@dispatch/core", () => ({
 				"permission-required": true,
 				"agent-spawned": false,
 			},
+			notifySubagents: false,
 		};
 	},
 	saveNtfyConfig() {},
@@ -307,6 +308,7 @@ vi.mock("@dispatch/core", () => ({
 				"permission-required": true,
 				"agent-spawned": false,
 			},
+			notifySubagents: false,
 		};
 	},
 	redactNtfyConfig(c: { authToken?: string }) {

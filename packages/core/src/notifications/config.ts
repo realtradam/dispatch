@@ -17,6 +17,7 @@ export function defaultNtfyConfig(): NtfyConfig {
 		topicUrl: "",
 		authToken: "",
 		events: { ...NTFY_DEFAULT_EVENTS },
+		notifySubagents: false,
 	};
 }
 
@@ -34,6 +35,8 @@ export function normalizeNtfyConfig(raw: unknown): NtfyConfig {
 		topicUrl: typeof obj.topicUrl === "string" ? obj.topicUrl : base.topicUrl,
 		authToken: typeof obj.authToken === "string" ? obj.authToken : base.authToken,
 		events: { ...base.events },
+		notifySubagents:
+			typeof obj.notifySubagents === "boolean" ? obj.notifySubagents : base.notifySubagents,
 	};
 	const rawEvents = obj.events;
 	if (rawEvents && typeof rawEvents === "object") {
