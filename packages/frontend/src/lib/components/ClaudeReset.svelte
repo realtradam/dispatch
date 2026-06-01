@@ -46,8 +46,21 @@ let probeSlotMinutes = $state<readonly number[]>(DEFAULT_PROBE_SLOT_MINUTES);
 let lastWake = $state<LastWake | null>(null);
 let pendingRetry = $state<PendingRetry | null>(null);
 
-/** Hours with an in-flight toggle request — disables their buttons. */
-let pendingHours = $state<Set<number>>(new Set());
+/**
+ * Global mutation lock: the hour whose toggle POST is currently in flight,
+ * or null if none. Disables ALL toggle buttons (not just this hour's) while
+ * any mutation is pending.
+ *
+ * Why global, not per-hour: snapshot responses can be reordered on the wire,
+ * but worse, requests themselves can be reordered. If two POSTs are in
+ * flight and the SERVER processes them out of order, the snapshot the
+ * SnapshotSequencer picks as "winner" (highest client-send seq) may not be
+ * the snapshot reflecting the truest server state — the UI desyncs from
+ * the server permanently. Serializing mutations on the client eliminates
+ * the reorder window entirely. (The sequencer is still useful for the
+ * GET-on-mount vs first-click race.)
+ */
+let pendingHour = $state<number | null>(null);
 
 /**
  * Single global sequencer for ALL /models/wake-schedule responses (initial
@@ -125,19 +138,24 @@ async function loadFromServer(): Promise<void> {
 	}
 }
 
-function markPending(hour: number, isPending: boolean): void {
-	const next = new Set(pendingHours);
-	if (isPending) next.add(hour);
-	else next.delete(hour);
-	pendingHours = next;
+function setPending(hour: number | null): void {
+	pendingHour = hour;
 }
 
-async function postToggle(hour: number, timestamps?: Record<number, number>): Promise<void> {
+async function postToggle(
+	hour: number,
+	action: "on" | "off",
+	timestamps?: Record<number, number>,
+): Promise<void> {
 	const mySeq = sequencer.begin();
-	markPending(hour, true);
+	setPending(hour);
 
 	try {
-		const body: { hour: number; timestamps?: Record<string, number> } = { hour };
+		const body: {
+			hour: number;
+			action: "on" | "off";
+			timestamps?: Record<string, number>;
+		} = { hour, action };
 		if (timestamps) {
 			const stringKeyed: Record<string, number> = {};
 			for (const [k, v] of Object.entries(timestamps)) stringKeyed[k] = v;
@@ -151,28 +169,36 @@ async function postToggle(hour: number, timestamps?: Record<number, number>): Pr
 		if (!res.ok) return;
 		const data = (await res.json()) as ScheduleSnapshot;
 		// Drop stale snapshots — only the most-recent request wins for ALL
-		// shared state (schedule, lastWake, pendingRetry).
+		// shared state (schedule, lastWake, pendingRetry). Even with the
+		// global mutation lock, this still catches the GET-on-mount vs
+		// first-click race.
 		if (!sequencer.accept(mySeq)) return;
 		applySnapshot(data);
 	} catch {
 		// Network error — leave local state alone; user can re-toggle.
 	} finally {
-		markPending(hour, false);
+		setPending(null);
 	}
 }
 
 function toggleHour(hour: number): void {
-	if (pendingHours.has(hour)) return;
+	// Global lock: any pending mutation on ANY hour blocks new clicks. This
+	// serializes POSTs on the wire so the server never has to choose between
+	// two concurrent requests — eliminating the request-reorder failure mode
+	// where the sequencer's "highest client seq wins" rule would discard the
+	// snapshot reflecting the true server state.
+	if (pendingHour !== null) return;
 	if (schedule[hour] !== undefined) {
-		// Toggle off — backend deletes all 4 slots for this hour.
-		void postToggle(hour);
+		// User intent: turn this hour OFF.
+		void postToggle(hour, "off");
 	} else {
-		// Toggle on — compute first occurrence of HH:MM for each probe slot.
+		// User intent: turn this hour ON — compute first occurrence of HH:MM
+		// for each probe slot, in the user's local timezone.
 		const timestamps: Record<number, number> = {};
 		for (const minute of probeSlotMinutes) {
 			timestamps[minute] = nextOccurrenceAt(hour, minute);
 		}
-		void postToggle(hour, timestamps);
+		void postToggle(hour, "on", timestamps);
 	}
 }
 
@@ -205,7 +231,9 @@ function blockClass(hour: number, faded: Set<number>): string {
 	const isMarked = schedule[hour] !== undefined;
 	const isCurrent = hour === currentHour;
 	const isFaded = faded.has(hour);
-	const isPending = pendingHours.has(hour);
+	// Only the hour whose request is in flight shows the "wait" cursor;
+	// other buttons are merely disabled (via the template `disabled={...}`).
+	const isPending = pendingHour === hour;
 
 	let base =
 		"flex items-center justify-center rounded select-none text-[10px] font-mono transition-colors";
@@ -282,14 +310,14 @@ const pmRow2 = Array.from({ length: 6 }, (_, i) => i + 18); // 18–23
 		<div class="flex flex-col gap-0.5">
 			<div class="flex gap-0.5">
 				{#each amRow1 as hour}
-					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)} AM — probes at {probeLabels}">
+					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHour !== null} onclick={() => toggleHour(hour)} title="{formatHour(hour)} AM — probes at {probeLabels}">
 						{formatHour(hour)}
 					</button>
 				{/each}
 			</div>
 			<div class="flex gap-0.5">
 				{#each amRow2 as hour}
-					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)} AM — probes at {probeLabels}">
+					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHour !== null} onclick={() => toggleHour(hour)} title="{formatHour(hour)} AM — probes at {probeLabels}">
 						{formatHour(hour)}
 					</button>
 				{/each}
@@ -303,14 +331,14 @@ const pmRow2 = Array.from({ length: 6 }, (_, i) => i + 18); // 18–23
 		<div class="flex flex-col gap-0.5">
 			<div class="flex gap-0.5">
 				{#each pmRow1 as hour}
-					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)} PM — probes at {probeLabels}">
+					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHour !== null} onclick={() => toggleHour(hour)} title="{formatHour(hour)} PM — probes at {probeLabels}">
 						{formatHour(hour)}
 					</button>
 				{/each}
 			</div>
 			<div class="flex gap-0.5">
 				{#each pmRow2 as hour}
-					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHours.has(hour)} onclick={() => toggleHour(hour)} title="{formatHour(hour)} PM — probes at {probeLabels}">
+					<button type="button" class="{blockClass(hour, fadedHours)} w-[22px] h-[24px]" disabled={pendingHour !== null} onclick={() => toggleHour(hour)} title="{formatHour(hour)} PM — probes at {probeLabels}">
 						{formatHour(hour)}
 					</button>
 				{/each}
