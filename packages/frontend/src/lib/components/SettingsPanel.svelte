@@ -11,6 +11,42 @@ const {
 	apiBase?: string;
 } = $props();
 
+// Theme picker — was a header-triggered modal (`ThemeSwitcher.svelte`);
+// inlined here so theme picking lives in Settings alongside other UI
+// preferences. The list and localStorage key must stay in sync with the
+// boot-time theme apply in `App.svelte`'s `onMount`.
+const THEMES = [
+	"light",
+	"dark",
+	"dracula",
+	"night",
+	"nord",
+	"sunset",
+	"cyberpunk",
+	"forest",
+	"cmyk",
+	"coffee",
+	"caramellatte",
+	"garden",
+	"luxury",
+] as const;
+
+const THEME_STORAGE_KEY = "dispatch-theme";
+
+let currentTheme = $state(
+	(typeof localStorage !== "undefined" && localStorage.getItem(THEME_STORAGE_KEY)) || "dark",
+);
+
+function selectTheme(theme: string): void {
+	currentTheme = theme;
+	document.documentElement.setAttribute("data-theme", theme);
+	try {
+		localStorage.setItem(THEME_STORAGE_KEY, theme);
+	} catch {
+		// Best-effort — private mode / quota.
+	}
+}
+
 let titleKeyId = $state<string | null>(null);
 let titleModelId = $state<string | null>(null);
 let availableModels = $state<string[]>([]);
@@ -136,6 +172,22 @@ $effect(() => {
 	<div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Settings</div>
 
 	<div class="flex flex-col gap-2">
+		<p class="text-xs text-base-content/70">Theme</p>
+		<label class="text-xs text-base-content/60">
+			Appearance
+			<select
+				class="select select-bordered select-sm w-full capitalize"
+				value={currentTheme}
+				onchange={(e) => selectTheme(e.currentTarget.value)}
+			>
+				{#each THEMES as theme (theme)}
+					<option value={theme} class="capitalize">{theme}</option>
+				{/each}
+			</select>
+		</label>
+
+		<div class="divider my-0"></div>
+
 		<p class="text-xs text-base-content/70">Title Generation Model</p>
 		<p class="text-xs text-base-content/40">Used to generate short titles for new tabs after the first message.</p>
 
