@@ -1,4 +1,5 @@
 <script lang="ts">
+import ListIcon from "phosphor-svelte/lib/ListIcon";
 import { router } from "../router.svelte.js";
 import { wsClient } from "../ws.svelte.js";
 
@@ -16,11 +17,11 @@ const { onToggleSidebar }: { onToggleSidebar: () => void } = $props();
 		</span>
 		<button
 			type="button"
-			class="btn btn-ghost btn-sm"
+			class="btn btn-square btn-sm btn-neutral"
 			onclick={onToggleSidebar}
 			aria-label="Toggle sidebar"
 		>
-			Sidebar
+			<ListIcon size={20} weight="bold" aria-hidden="true" />
 		</button>
 	</div>
 </header>
