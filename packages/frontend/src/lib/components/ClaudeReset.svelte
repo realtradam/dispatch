@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onDestroy } from "svelte";
+import { SnapshotSequencer } from "../snapshot-sequencer.js";
 
 const { apiBase = "" }: { apiBase?: string } = $props();
 
@@ -49,11 +50,18 @@ let pendingRetry = $state<PendingRetry | null>(null);
 let pendingHours = $state<Set<number>>(new Set());
 
 /**
- * Per-hour sequence numbers. Each toggle bumps the hour's counter; when a
- * response comes back we only apply it if it matches the latest counter,
- * so rapid double-clicks can't let an older response overwrite a newer one.
+ * Single global sequencer for ALL /models/wake-schedule responses (initial
+ * GET + every toggle POST). Each response is dropped if a newer request has
+ * already won. This protects against three races:
+ *   1. Two toggles on different hours land out of order — older snapshot
+ *      blindly overwrites the newer one, and the most-recent click vanishes
+ *      from the UI.
+ *   2. The initial loadFromServer is still in flight when the user clicks.
+ *   3. Any future fan-out (e.g. polling) racing a user action.
+ * A per-hour counter was insufficient because applySnapshot replaces the
+ * whole `schedule` object, not just one hour's slot. See snapshot-sequencer.ts.
  */
-const inFlightSeq: Record<number, number> = {};
+const sequencer = new SnapshotSequencer();
 
 /** Live "now" used for the current-hour ring + relative timestamps. */
 let nowMs = $state<number>(Date.now());
@@ -105,10 +113,12 @@ function applySnapshot(data: ScheduleSnapshot): void {
 }
 
 async function loadFromServer(): Promise<void> {
+	const mySeq = sequencer.begin();
 	try {
 		const res = await fetch(`${apiBase}/models/wake-schedule`);
 		if (!res.ok) return;
 		const data = (await res.json()) as ScheduleSnapshot;
+		if (!sequencer.accept(mySeq)) return; // a newer response already won
 		applySnapshot(data);
 	} catch {
 		// Network error — leave existing state
@@ -123,8 +133,7 @@ function markPending(hour: number, isPending: boolean): void {
 }
 
 async function postToggle(hour: number, timestamps?: Record<number, number>): Promise<void> {
-	const mySeq = (inFlightSeq[hour] ?? 0) + 1;
-	inFlightSeq[hour] = mySeq;
+	const mySeq = sequencer.begin();
 	markPending(hour, true);
 
 	try {
@@ -139,16 +148,16 @@ async function postToggle(hour: number, timestamps?: Record<number, number>): Pr
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
-		if (inFlightSeq[hour] !== mySeq) return;
 		if (!res.ok) return;
 		const data = (await res.json()) as ScheduleSnapshot;
+		// Drop stale snapshots — only the most-recent request wins for ALL
+		// shared state (schedule, lastWake, pendingRetry).
+		if (!sequencer.accept(mySeq)) return;
 		applySnapshot(data);
 	} catch {
 		// Network error — leave local state alone; user can re-toggle.
 	} finally {
-		if (inFlightSeq[hour] === mySeq) {
-			markPending(hour, false);
-		}
+		markPending(hour, false);
 	}
 }
 
