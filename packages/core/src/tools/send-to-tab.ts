@@ -44,6 +44,13 @@ export interface SendToTabCallbacks {
 	/** The calling tab's own id + handle — used to block self-sends and to
 	 *  stamp provenance onto the delivered message. */
 	self: { id: string; handle: string };
+	/**
+	 * Whether THIS calling tab also has the `read_tab` tool granted. The
+	 * tab-messaging permissions are split, so a tab can hold `send_to_tab`
+	 * without `read_tab`. When false, the tool must NOT tell the agent to use
+	 * `read_tab` (it doesn't have it) — replies only arrive on their own.
+	 */
+	canReadTab: boolean;
 }
 
 /** Render the "available tabs" hint shared by the none/ambiguous branches. */
@@ -54,6 +61,19 @@ function renderOpenHandles(handles: Array<{ handle: string; title: string }>): s
 }
 
 export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefinition {
+	// The `read_tab` follow-up hint is only truthful when this tab actually
+	// holds the `read_tab` tool (the permissions are split). When it doesn't,
+	// the only honest guidance is that a reply arrives on its own — never tell
+	// the agent to call a tool it wasn't granted.
+	const waitLine = callbacks.canReadTab
+		? "money. If the target replies it arrives on its own as a new message in a later turn; you"
+		: "money. If the target replies it arrives on its own as a new message in a later turn.";
+	const readTabLine = callbacks.canReadTab
+		? ["can also call 'read_tab' with the same ID in a FUTURE turn to check. If you have other"]
+		: [];
+	const keepGoingLine = callbacks.canReadTab
+		? "work to do, keep going; if you are ONLY waiting for the reply, end your turn now."
+		: "If you have other work to do, keep going; if you are ONLY waiting for the reply, end your turn now.";
 	return {
 		name: "send_to_tab",
 		description: [
@@ -65,9 +85,9 @@ export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefiniti
 			"",
 			"This is fire-and-forget: it returns immediately and does NOT wait for a reply.",
 			"Do NOT sleep, poll, or run shell commands to wait for a reply — that wastes turns and",
-			"money. If the target replies it arrives on its own as a new message in a later turn; you",
-			"can also call 'read_tab' with the same ID in a FUTURE turn to check. If you have other",
-			"work to do, keep going; if you are ONLY waiting for the reply, end your turn now.",
+			waitLine,
+			...readTabLine,
+			keepGoingLine,
 			"",
 			"Your tab ID is auto-added to the top of the message so the recipient knows who to reply",
 			"to. The recipient must use this same 'send_to_tab' tool (addressed to your ID) to answer;",
@@ -132,7 +152,7 @@ export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefiniti
 				"",
 				message,
 				"",
-				`[To reply to tab ${callbacks.self.handle}, use the send_to_tab tool with tab_id "${callbacks.self.handle}". Only reply if this message asks you to, or your user tells you to — it may just be context or instructions. A plain text response goes to your own user, not to this agent.]`,
+				`[To reply to tab ${callbacks.self.handle}, use the send_to_tab tool with tab_id "${callbacks.self.handle}". ONLY reply if this message asks you to, or your user tells you to — it may just be context or instructions. A plain text response goes to your own user, not to this agent.]`,
 			].join("\n");
 
 			try {
@@ -153,13 +173,22 @@ export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefiniti
 					result.status === "queued"
 						? "queued (target is busy; it will be picked up next turn)"
 						: "delivered (target was idle; a new turn has started)";
+				const tail = callbacks.canReadTab
+					? [
+							"Do NOT sleep, poll, or run commands to wait for a reply. If the target replies it",
+							`arrives on its own as a new message later; you can also call read_tab with "${target.handle}"`,
+							"in a FUTURE turn to check. Keep working if you have other tasks; if you are ONLY",
+							"waiting for this reply, end your turn now.",
+						]
+					: [
+							"Do NOT sleep, poll, or run commands to wait for a reply. If the target replies it",
+							"arrives on its own as a new message later. Keep working if you have other tasks; if",
+							"you are ONLY waiting for this reply, end your turn now.",
+						];
 				return [
 					`Message ${verb}. Target tab: ${target.handle} (${target.title}).`,
 					"",
-					"Do NOT sleep, poll, or run commands to wait for a reply. If the target replies it",
-					`arrives on its own as a new message later; you can also call read_tab with "${target.handle}"`,
-					"in a FUTURE turn to check. Keep working if you have other tasks; if you are ONLY",
-					"waiting for this reply, end your turn now.",
+					...tail,
 				].join("\n");
 			} catch (err) {
 				return `Error delivering message: ${err instanceof Error ? err.message : String(err)}`;
