@@ -70,6 +70,21 @@ describe("search_code tool", () => {
 		expect(out).toContain("outside the working directory");
 	});
 
+	it("rejects a path that points at a file, not a directory", async () => {
+		await writeFileP(join(workDir, "a-file.ts"), "const x = 1;\n");
+		const tool = createSearchCodeTool(workDir);
+		const out = await tool.execute({ query: "x", path: "a-file.ts" });
+		expect(out).toMatch(/^Error:/);
+		expect(out).toContain("is a file, not a directory");
+	});
+
+	it("rejects a path that does not exist", async () => {
+		const tool = createSearchCodeTool(workDir);
+		const out = await tool.execute({ query: "x", path: "no/such/dir" });
+		expect(out).toMatch(/^Error:/);
+		expect(out).toContain("does not exist");
+	});
+
 	it("returns an actionable error when the cs binary is missing", async () => {
 		process.env.DISPATCH_CS_BIN = "/nonexistent/path/to/cs-binary-xyz";
 		const tool = createSearchCodeTool(workDir);
@@ -139,6 +154,33 @@ describe("search_code tool", () => {
 		}
 	});
 
+	it("renders cs 'content'-shape (prose) results instead of a bare header", async () => {
+		const stubDir = await mkdtempP(join(tmpdir(), "dispatch-cs-stub-"));
+		try {
+			// cs's snippet mode emits `content` + `matchlocations` and no `lines`.
+			const csJson = JSON.stringify([
+				{
+					filename: "notes.md",
+					location: join(workDir, "docs/notes.md"),
+					score: 0.42,
+					language: "Markdown",
+					content: "Some heading\nthe orchestration paragraph that matched",
+					matchlocations: [[13, 26]],
+				},
+			]);
+			process.env.DISPATCH_CS_BIN = writeStub(stubDir, ECHO_ENV_STUB);
+			process.env.CS_STUB_OUTPUT = csJson;
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "orchestration" });
+			expect(out).toContain("docs/notes.md [Markdown] (score 0.42)");
+			// The snippet text must be present, not a bare header.
+			expect(out).toContain("the orchestration paragraph that matched");
+			expect(out).not.toContain("no snippet available");
+		} finally {
+			await rmP(stubDir, { recursive: true, force: true });
+		}
+	});
+
 	it("surfaces raw output when cs returns unparseable JSON", async () => {
 		const stubDir = await mkdtempP(join(tmpdir(), "dispatch-cs-stub-"));
 		try {
@@ -197,6 +239,41 @@ describe("search_code tool", () => {
 			// Whether or not cs ranks a hit, it must NOT error out on flag parsing.
 			expect(out).not.toContain("unknown shorthand flag");
 			expect(out).not.toMatch(/^Error: cs exited/);
+		});
+
+		it("renders snippet lines for prose (markdown) matches", async () => {
+			process.env.DISPATCH_CS_BIN = liveCsBin as string;
+			await writeFileP(
+				join(workDir, "doc.md"),
+				"# Title\n\nThis paragraph mentions widgetronics in prose.\n",
+			);
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "widgetronics" });
+			expect(out).toContain("doc.md");
+			// The matching prose text must be shown, not just a bare header.
+			expect(out).toContain("widgetronics");
+			expect(out).not.toContain("no snippet available");
+		});
+
+		it("widens the snippet window when context is given", async () => {
+			process.env.DISPATCH_CS_BIN = liveCsBin as string;
+			const body = Array.from({ length: 21 }, (_, i) => `line ${i + 1}`);
+			body[10] = "const findContextTarget = 1;";
+			await writeFileP(join(workDir, "ctx.ts"), `${body.join("\n")}\n`);
+			const tool = createSearchCodeTool(workDir);
+			const countSnippetLines = (s: string) =>
+				s.split("\n").filter((l) => /^\s+>?\s*\d+:/.test(l)).length;
+			const narrow = await tool.execute({
+				query: "findContextTarget",
+				context: 0,
+				result_limit: 1,
+			});
+			const wide = await tool.execute({
+				query: "findContextTarget",
+				context: 6,
+				result_limit: 1,
+			});
+			expect(countSnippetLines(wide)).toBeGreaterThan(countSnippetLines(narrow));
 		});
 
 		it("returns 'No matches found.' for a query with no hits", async () => {
