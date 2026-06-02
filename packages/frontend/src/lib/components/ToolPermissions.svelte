@@ -53,6 +53,12 @@ const toolPermissions: ToolPermission[] = [
 		description: "Allow the AI to search the codebase with the cs ranked code-search engine",
 	},
 	{
+		id: "key_usage",
+		label: "Key usage",
+		description:
+			"Allow the AI to read current API-key usage levels, rate-limit headroom, and reset times",
+	},
+	{
 		id: "lsp",
 		label: "LSP queries",
 		description:

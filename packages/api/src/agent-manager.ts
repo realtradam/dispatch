@@ -13,6 +13,7 @@ import {
 	clearSpillForTab,
 	configToRuleset,
 	createConfigWatcher,
+	createKeyUsageTool,
 	createListFilesTool,
 	createLspTool,
 	createReadFileSliceTool,
@@ -84,6 +85,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	search_code:
 		"Search the codebase by query using the 'cs' code search engine (relevance-ranked, structure-aware). Returns the most relevant files first with matching snippets and line numbers. Better than grep/find for exploratory 'where is X / how does Y work' searches; use run_shell with rg for exhaustive exact-match lists.",
 	todo: "Create/maintain a todo list to plan and track work. Declarative whole-list write: send the entire list in `todos` each call (it replaces the previous list). Statuses: pending, in_progress, completed, cancelled.",
+	key_usage:
+		"Report current usage levels for configured API keys: provider, active/exhausted status, remaining rate-limit headroom and reset times per window (5-hour, weekly, monthly where available), and whether the figures are live or cached. Pass key_id for one key; omit to report all. Supported for anthropic and opencode-go keys.",
 	summon:
 		"Spawn a child agent to work on a task independently. By default blocks until the child finishes. Set background=true to return immediately with an agent_id for later retrieval.",
 	retrieve:
@@ -515,10 +518,11 @@ export class AgentManager {
 		const permReadTab = getSetting("perm_read_tab") === "allow";
 		const permWebSearch = getSetting("perm_web_search") === "allow";
 		const permSearchCode = getSetting("perm_search_code") === "allow";
+		const permKeyUsage = getSetting("perm_key_usage") === "allow";
 		const permYoutubeTranscribe = getSetting("perm_youtube_transcribe") === "allow";
 		const permLsp = getSetting("perm_lsp") === "allow";
 		const sysPrompt = getSetting("system_prompt") ?? "";
-		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${permSearchCode}:${permLsp}:${sysPrompt}`;
+		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${permSearchCode}:${permKeyUsage}:${permLsp}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
@@ -609,6 +613,9 @@ export class AgentManager {
 				}
 				if (allowed.has("web_search")) {
 					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				}
+				if (allowed.has("key_usage")) {
+					toolEntries.push({ name: "key_usage", tool: this.buildKeyUsageTool() });
 				}
 				if (allowed.has("lsp") && lspServers.length > 0) {
 					toolEntries.push({
@@ -714,6 +721,9 @@ export class AgentManager {
 				}
 				if (permWebSearch) {
 					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				}
+				if (permKeyUsage) {
+					toolEntries.push({ name: "key_usage", tool: this.buildKeyUsageTool() });
 				}
 				// The `lsp` tool exposes diagnostics + navigation on demand. It is
 				// gated by `perm_lsp` AND requires at least one server configured
@@ -1403,6 +1413,19 @@ export class AgentManager {
 	// handle (a git-style prefix of the tab UUID). Delivery reuses the exact
 	// running→queue / idle→new-turn routing that `POST /chat` uses (see
 	// `deliverMessage`), so an agent message behaves identically to a user one.
+
+	/**
+	 * Build the `key_usage` tool, wired to the live model registry (key states)
+	 * and the discovered Claude accounts. The tool fetches usage live with a
+	 * cache fallback (anthropic) or a live scrape (opencode-go), reporting
+	 * remaining headroom, reset times, and data freshness per key.
+	 */
+	private buildKeyUsageTool(): ReturnType<typeof createKeyUsageTool> {
+		return createKeyUsageTool({
+			listKeys: () => this.modelRegistry?.getKeys() ?? [],
+			listClaudeAccounts: () => this.claudeAccounts,
+		});
+	}
 
 	/**
 	 * Build the `send_to_tab` + `read_tab` tool entries for `tabId`. Shared by
