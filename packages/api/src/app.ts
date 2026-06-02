@@ -3,6 +3,8 @@ import {
 	getTab,
 	isReasoningEffort,
 	NotificationDispatcher,
+	type UserContentPart,
+	validateUserContent,
 } from "@dispatch/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -35,6 +37,41 @@ function sanitizeAgentModels(raw: unknown): AgentModelEntry[] | undefined {
 		});
 	}
 	return out;
+}
+
+/**
+ * Validate and normalise the optional multimodal `content` array from the
+ * `/chat` body. Each entry is either a `{ type: "text", text }` part or a
+ * `{ type: "attachment", mediaType, data, name? }` part (base64 payload).
+ * Returns `undefined` when the input isn't a non-empty array or contains no
+ * attachment (so the plain-string path is taken — byte-identical to before).
+ * Shape only: SIZE/TYPE limits are enforced separately by `validateUserContent`.
+ */
+function sanitizeUserContent(raw: unknown): UserContentPart[] | undefined {
+	if (!Array.isArray(raw) || raw.length === 0) return undefined;
+	const out: UserContentPart[] = [];
+	let hasAttachment = false;
+	for (const p of raw) {
+		if (!p || typeof p !== "object") continue;
+		const part = p as Record<string, unknown>;
+		if (part.type === "text") {
+			if (typeof part.text === "string") out.push({ type: "text", text: part.text });
+			continue;
+		}
+		if (part.type === "attachment") {
+			if (typeof part.mediaType !== "string" || typeof part.data !== "string") continue;
+			hasAttachment = true;
+			out.push({
+				type: "attachment",
+				mediaType: part.mediaType,
+				data: part.data,
+				...(typeof part.name === "string" ? { name: part.name } : {}),
+			});
+		}
+	}
+	// No attachment → let the plain-text path handle it (avoids needlessly
+	// switching the model message to array content for a text-only turn).
+	return hasAttachment ? out : undefined;
 }
 
 export const permissionManager = new PermissionManager();
@@ -94,6 +131,7 @@ app.post("/chat", async (c) => {
 	const body = await c.req.json<{
 		tabId?: unknown;
 		message?: unknown;
+		content?: unknown;
 		keyId?: unknown;
 		modelId?: unknown;
 		agentModels?: unknown;
@@ -121,6 +159,30 @@ app.post("/chat", async (c) => {
 		? body.reasoningEffort
 		: undefined;
 
+	// Optional multimodal content (image/pdf attachments). When present, the
+	// attachments are EPHEMERAL — forwarded to the model for this turn only and
+	// never persisted (the chunk log keeps just `message`, which the frontend
+	// has already projected to text with `[image]`/`[pdf]` markers).
+	const content = sanitizeUserContent(body.content);
+	if (content) {
+		// Enforce size/type/count ceilings server-side (defence in depth; the
+		// frontend also enforces them at paste time). Reject the whole request
+		// so no tokens are spent on an over-limit payload.
+		const validation = validateUserContent(content);
+		if (!validation.ok) {
+			return c.json({ error: "invalid attachments", details: validation.errors }, 400);
+		}
+		// Attachments only attach to a FRESH turn. If the tab is mid-turn the
+		// message would queue (text-only machinery), silently dropping the
+		// images. Reject clearly instead so the user can retry once idle.
+		if (agentManager.getTabStatus(tabId) === "running") {
+			return c.json(
+				{ error: "cannot attach images while the agent is generating; wait for it to finish" },
+				409,
+			);
+		}
+	}
+
 	// Single routing decision (queue if busy, new turn if idle) shared with the
 	// `send_to_tab` tool via `AgentManager.deliverMessage`. Non-blocking — a
 	// started turn runs in the background.
@@ -131,6 +193,7 @@ app.post("/chat", async (c) => {
 		...(reasoningEffort ? { reasoningEffort } : {}),
 		...(workingDirectory !== undefined ? { workingDirectory } : {}),
 		...(queueId ? { queueId } : {}),
+		...(content ? { content } : {}),
 	});
 
 	if (outcome.status === "queued") {

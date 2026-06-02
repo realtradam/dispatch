@@ -131,6 +131,59 @@ $effect(() => {
 	})();
 });
 
+// ─── Image / PDF capability lookup ─────────────────────────────
+// Resolve whether the active model accepts image/pdf INPUT from models.dev (via
+// the API), so the chat input can block sending an unsupported attachment
+// (no tokens spent) while staying permissive when the capability is unknown.
+// `null` = unknown (catalog offline / unsupported provider) → optimistic allow.
+let imageSupport = $state<{ image: boolean; pdf: boolean } | null>(null);
+const capabilityCache = new Map<string, { image: boolean; pdf: boolean } | null>();
+
+$effect(() => {
+	const tab = tabStore.activeTab;
+	const keyId = tab?.keyId ?? null;
+	const modelId = tab?.modelId ?? null;
+	const provider = keyId ? (modelsData.keys.find((k) => k.id === keyId)?.provider ?? null) : null;
+
+	if (!provider || !modelId) {
+		imageSupport = null;
+		return;
+	}
+
+	const cacheKey = `${provider}/${modelId}`;
+	if (capabilityCache.has(cacheKey)) {
+		imageSupport = capabilityCache.get(cacheKey) ?? null;
+		return;
+	}
+
+	// Clear immediately so a slow/failed fetch can't leave the PREVIOUS model's
+	// capability on screen (which could wrongly block/allow this model).
+	imageSupport = null;
+
+	void (async () => {
+		try {
+			const res = await fetch(
+				`${config.apiBase}/models/capabilities?provider=${encodeURIComponent(provider)}&modelId=${encodeURIComponent(modelId)}`,
+			);
+			if (!res.ok) return;
+			const data = (await res.json()) as {
+				capabilities?: { image: boolean; pdf: boolean } | null;
+			};
+			const caps = data.capabilities ?? null;
+			capabilityCache.set(cacheKey, caps);
+			const current = tabStore.activeTab;
+			const currentProvider = current?.keyId
+				? (modelsData.keys.find((k) => k.id === current.keyId)?.provider ?? null)
+				: null;
+			if (currentProvider === provider && current?.modelId === modelId) {
+				imageSupport = caps;
+			}
+		} catch {
+			// Leave imageSupport as null (unknown → permissive) on network error.
+		}
+	})();
+});
+
 onMount(() => {
 	// Apply persisted theme (or the shared DEFAULT_THEME if nothing is
 	// stored) so the first paint matches what the Settings panel will
@@ -174,7 +227,7 @@ onMount(() => {
 			<div class="flex-1 overflow-hidden">
 				<ChatPanel />
 			</div>
-			<ChatInput {contextLimit} />
+			<ChatInput {contextLimit} {imageSupport} />
 		</div>
 
 		<!-- Right sidebar: overlay on small screens, inline on large -->
