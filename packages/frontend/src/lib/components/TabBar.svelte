@@ -1,11 +1,27 @@
 <script lang="ts">
 import { tick } from "svelte";
 import { tabStore } from "../tabs.svelte.js";
+import type { Tab } from "../tabs.svelte.js";
 
 function statusColor(status: string): string {
 	if (status === "running") return "bg-warning";
 	if (status === "error") return "bg-error";
 	return "bg-success";
+}
+
+/**
+ * A tab "needs attention" — and should ping to grab the user's eye — when the
+ * agent has stopped and is likely waiting on the user:
+ *   (a) the turn ended (idle) but the task list still has incomplete tasks
+ *       (pending / in_progress) — the agent probably expects a response; or
+ *   (b) the turn stopped due to an error of any kind.
+ */
+function needsAttention(tab: Tab): boolean {
+	if (tab.agentStatus === "error") return true;
+	if (tab.agentStatus === "idle") {
+		return tab.tasks.some((t) => t.status === "pending" || t.status === "in_progress");
+	}
+	return false;
 }
 
 const userTabs = $derived(tabStore.tabs.filter((t) => t.parentTabId === null));
@@ -123,7 +139,14 @@ function handleRenameKeydown(e: KeyboardEvent): void {
 				tabindex="0"
 			>
 				<span class="flex items-center gap-1.5">
-					<span class="w-1.5 h-1.5 rounded-full shrink-0 {statusColor(tab.agentStatus)}"></span>
+					{#if needsAttention(tab)}
+						<span class="relative inline-grid shrink-0 *:[grid-area:1/1]">
+							<span class="w-1.5 h-1.5 rounded-full animate-ping {statusColor(tab.agentStatus)}"></span>
+							<span class="w-1.5 h-1.5 rounded-full {statusColor(tab.agentStatus)}"></span>
+						</span>
+					{:else}
+						<span class="w-1.5 h-1.5 rounded-full shrink-0 {statusColor(tab.agentStatus)}"></span>
+					{/if}
 					<span class="font-mono text-[10px] px-1 py-0.5 rounded bg-base-300 text-base-content/60 shrink-0" title="Tab ID — agents address this tab by this handle">{tabStore.shortHandleFor(tab.id)}</span>
 					{#if editingTabId === tab.id}
 						<input
@@ -183,7 +206,14 @@ function handleRenameKeydown(e: KeyboardEvent): void {
 					tabindex="0"
 				>
 					<span class="flex items-center gap-1">
-						<span class="w-1 h-1 rounded-full shrink-0 {statusColor(tab.agentStatus)}"></span>
+						{#if needsAttention(tab)}
+							<span class="relative inline-grid shrink-0 *:[grid-area:1/1]">
+								<span class="w-1 h-1 rounded-full animate-ping {statusColor(tab.agentStatus)}"></span>
+								<span class="w-1 h-1 rounded-full {statusColor(tab.agentStatus)}"></span>
+							</span>
+						{:else}
+							<span class="w-1 h-1 rounded-full shrink-0 {statusColor(tab.agentStatus)}"></span>
+						{/if}
 						<span class="font-mono text-[10px] px-1 rounded bg-base-300 text-base-content/60 shrink-0" title="Tab ID — agents address this tab by this handle">{tabStore.shortHandleFor(tab.id)}</span>
 						<span class="max-w-28 truncate text-xs">{tab.title}</span>
 					</span>
