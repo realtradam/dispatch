@@ -24,6 +24,7 @@ export {
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
 	SYSTEM_IDENTITY,
+	selectHaikuModel,
 	validateAccountCredentials,
 } from "./claude.js";
 export {
