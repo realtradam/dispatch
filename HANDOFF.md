@@ -1,68 +1,95 @@
-# Handoff — td/todo-fix: declarative todo/task system
+# Handoff — tab/fix-tab-messaging-tool: cross-tab messaging tools usable when granted
 
 ## Summary
-Replaced Dispatch's imperative, id-based `todo` tool (actions `add`/`update`/`list`/`get`/`remove`)
-with opencode's **declarative whole-list** design, and fixed the panel blanking on reload. The tool
-name (`todo`), the `task-list-update` event, the per-tab `TaskList` store, and the sidebar **Tasks**
-panel are all preserved — only the interface, status model, and UI rendering changed.
+Agents could be granted the cross-tab messaging tools (`send_to_tab` / `read_tab`) yet
+behaved as if they didn't have them — claiming they were "incapable" and refusing to call
+them. **Root cause:** the tools were correctly registered, permission-gated, resolved
+per-tab, and executable, and their JSON schemas WERE sent to the model — but the agent's
+**system prompt** enumerates "You have access to the following tools" by filtering tool
+names through a static `TOOL_DESCRIPTIONS` map, and that map had **no entries** for
+`send_to_tab` / `read_tab`. So the prompt explicitly told the model it lacked them.
 
-## What changed (and why it's better)
-- **Declarative whole-list write** (from opencode's `todowrite`): the model sends the *entire*
-  desired list in one `todos` param each call; the store replaces its list. No model-visible ids,
-  no delta reasoning, no "task not found" spirals, no multi-call churn — the failure modes that made
-  the old CRUD tool confuse weaker models.
-- **Status lifecycle:** `pending | in_progress | completed | cancelled` (was `pending | in_progress |
-  done | blocked`; `blocked` was dead/unrendered state).
-- **No `priority`** (deliberately dropped per product decision; opencode has it, we don't).
-- **Reload reliability:** todos used to blank on page reload (broadcast only on change, absent from
-  the reconnect snapshot). Now `TabStatusSnapshot` carries per-tab `tasks`, so the panel rehydrates
-  from the backend on reload/reconnect. Still **in-memory per-tab** (no DB; does not survive a server
-  restart).
+After fixing the core bug, two follow-up behavioral/prompting issues surfaced in live
+testing and were also fixed in the tool context:
+1. The **sender busy-waited** (ran `sleep`/polled) for a reply instead of ending its turn.
+2. The **recipient replied to its own user in plain text** instead of routing the answer
+   back through `send_to_tab` to the sender.
+A third refinement made every `read_tab` mention **conditional** on the tab actually
+holding `read_tab` (the permissions are split, so a tab can have `send_to_tab` without
+`read_tab` — advertising a tool it wasn't granted is wrong).
+
+## What changed (and why)
+- **Advertise the tools (the actual bug):** added `send_to_tab` + `read_tab` entries to
+  `TOOL_DESCRIPTIONS` so the system prompt's capability list matches the granted toolset.
+- **Stop sender busy-wait:** the `send_to_tab` tool description, its delivery-result text,
+  and the system-prompt one-liner now say plainly: do NOT sleep/poll/run commands to wait;
+  if the target replies it will **WAKE you with a new message** in a later turn; keep
+  working if you have other tasks, else **end your turn**.
+- **Fix recipient reply routing:** the delivered-message wrapper now states the message is
+  from **another agent, NOT your user**, and that to reply you must use `send_to_tab`
+  addressed back to the sender's handle — and **ONLY** if asked (it may just be context).
+  A plain text response reaches only the recipient's own user.
+- **Conditional `read_tab` guidance:** `createSendToTabTool` takes a new `canReadTab`
+  callback flag. `AgentManager.buildTabCommToolEntries(tabId, canReadTab)` passes it
+  (`allowed.has("read_tab")` on the child path; `permReadTab` on the parent path). The
+  description + result text only reference `read_tab` when the tab actually has it. The
+  static `TOOL_DESCRIPTIONS.send_to_tab` one-liner dropped its `read_tab` phrasing (it
+  can't be per-tab conditional there).
 
 ## Files changed
-- `packages/core/src/types/index.ts` — `TaskStatus` union; `TaskItem = { id, content, status }`
-  (`id` internal/positional, never shown to the model); `TabStatusSnapshot.tasks?`.
-- `packages/core/src/tools/task-list.ts` — rewrote `TaskList` (declarative `setTasks`/`getTasks`/
-  `onChange`); `createTaskListTool` with a single `todos` param that echoes the stored list without
-  ids; new exported `TODO_DESCRIPTION` (adapted from opencode `todowrite.txt`).
-- `packages/core/src/index.ts` — export `TODO_DESCRIPTION`.
-- `packages/api/src/agent-manager.ts` — `TODO_GUIDANCE` → `TASK_MANAGEMENT_GUIDANCE` (system-prompt
-  section adapted from opencode `anthropic.txt`); updated `TOOL_DESCRIPTIONS.todo`; `getAllStatuses()`
-  now includes each tab's `tasks` (all tabs, omitted when empty).
-- `packages/frontend/src/lib/types.ts` — mirror `TaskItem` + `TabStatusSnapshot.tasks`.
-- `packages/frontend/src/lib/tabs.svelte.ts` — hydrate `tasks` from the snapshot in both restore
-  paths (initial `GET /status` map + `statuses` WS handler); updated debug-dump label.
-- `packages/frontend/src/lib/components/TaskListPanel.svelte` — render `content`; all four statuses
-  (completed→checked+strikethrough, in_progress→indeterminate+bold, cancelled→dim+strikethrough,
-  pending→empty); `completed/active` progress counter. Sidebar panel only — nothing relocated.
-- `packages/core/tests/tools/task-list.test.ts` — new (15 tests).
-- `packages/api/tests/agent-manager.test.ts`, `packages/api/tests/routes.test.ts` — updated
-  `TaskList` mocks to the declarative shape; added `getAllStatuses` task-snapshot coverage.
-- `notes/todo-tool-redesign-plan.md` — appended an "As-built" section.
+- `packages/api/src/agent-manager.ts`
+  - `TOOL_DESCRIPTIONS`: added `send_to_tab` + `read_tab`; `send_to_tab` one-liner carries
+    the no-busy-wait / wake-you-with-a-new-message guidance (no `read_tab` reference).
+  - `buildTabCommToolEntries(tabId, canReadTab)`: new param, forwarded into
+    `createSendToTabTool` as `canReadTab`. Both call sites updated
+    (`allowed.has("read_tab")` / `permReadTab`).
+- `packages/core/src/tools/send-to-tab.ts`
+  - `SendToTabCallbacks` gained `canReadTab: boolean`.
+  - Description built conditionally (the `read_tab` follow-up line only appears when
+    `canReadTab`); "WAKE you with a new message" phrasing; recipient reply-contract footer
+    with **ONLY** uppercased; header marks sender as another agent (not your user).
+  - Delivery-result text built conditionally (mentions `read_tab` only when `canReadTab`).
+- `packages/api/tests/agent-manager.test.ts`
+  - Agent mock now captures `config.systemPrompt`; new describe block
+    "send_to_tab / read_tab system-prompt advertisement" (5 tests) asserts the prompt lists
+    the granted tab tools (and omits ungranted ones), locking the prompt list to the schema.
+- `packages/core/tests/tools/send-to-tab.test.ts`
+  - `makeCallbacks` default `canReadTab: true`; assertions for provenance header/footer,
+    **ONLY** uppercase, no-busy-wait/end-your-turn, "wake you with a new message", and both
+    `canReadTab` branches (description + result text) for `read_tab` presence/absence.
 
 ## Public surface changed
-- **Tool `todo`**: parameters changed from `{ action, title, description, task_id, status }` to a
-  single `{ todos: Array<{ content, status }> }`. Statuses `pending|in_progress|completed|cancelled`.
-- **`@dispatch/core` exports**: added `TODO_DESCRIPTION`. `TaskItem` shape changed (`title`+
-  `description` → `content`; status union changed). `TaskList` methods changed (`addTask`/`updateTask`/
-  `removeTask`/`getTask` removed; `setTasks` added).
-- **`TabStatusSnapshot`** (wire format, core + frontend mirror) gained optional `tasks`.
-- Tool name, allowlist/loader/summon/permission wiring, agent TOMLs: **unchanged**.
+- **`@dispatch/core` — `SendToTabCallbacks`**: added required field `canReadTab: boolean`.
+  Any external caller of `createSendToTabTool` must now supply it. (In-repo, the only caller
+  is `AgentManager.buildTabCommToolEntries`, updated here.)
+- No changes to tool NAMES, permission keys, registry, execution path, wire formats, DB, or
+  the frontend. Tool behavior (delivery routing, auto-wake budget, resolution) is unchanged
+  — only the advertised/contextual text and the new `canReadTab` plumbing.
 
 ## Verification status
-- `bun run check` (biome): clean.
-- `bun run test`: **585 passing** (37 files).
-- `tsc --noEmit` (core, api) + `svelte-check` (frontend): 0 errors.
-- Verified post-merge of `dev`.
+- `bun run check` (biome): **clean** (165 files, no fixes).
+- `bun run test`: **594 passing** (37 files). (Baseline was 585; +9 new tests.)
+- `tsc --noEmit` core + api: **0 errors**.
+- `svelte-check` (frontend): **0 errors, 0 warnings**.
+- Re-verified after `git merge --no-edit dev` (already up to date) immediately before push.
 
 ## Published
-Yes. Merged `dev` down (no conflicts), re-verified all-green, fast-forwarded
-`dev` → `9d6b7a9`. User confirmed the task system works before merge.
+**Yes.** `dev` was already an ancestor of this branch (clean fast-forward, no merge commit
+needed). Fast-forwarded `dev`: `c0c0872..e4379da`. User confirmed the fix before merge.
+
+Commits (oldest→newest):
+- `9c89ec9` advertise send_to_tab/read_tab in the agent system prompt (+ regression tests)
+- `e475e52` clearer send_to_tab context to stop busy-wait + wrong-recipient replies
+- `aa295e8` only mention read_tab when the sender actually has it; CAPS on ONLY
+- `e4379da` say a reply will WAKE you with a new message
 
 ## Assumptions / known gaps
-- No DB persistence: todos are in-memory per-tab and do not survive a server restart (matches scope;
-  opencode persists to SQLite — intentionally not ported).
-- No `priority` field (dropped per decision).
-- No new UI surfaces — the existing sidebar Tasks panel only.
-- An unrelated untracked `bookmark-manager/` directory exists in the worktree root; it is not part of
-  this feature and was left untouched (never staged/committed).
+- The static `TOOL_DESCRIPTIONS.send_to_tab` system-prompt one-liner can't be per-tab
+  conditional, so it deliberately omits any `read_tab` reference. The precise, conditional
+  `read_tab` guidance lives in the tool's own description/result (which ARE per-tab).
+- `read_tab` itself was already truthful (it's only present when granted); no description
+  changes were needed there.
+- These are prompting/UX nudges — model adherence isn't guaranteed, but the wording now
+  matches actual runtime behavior (split perms, wake-on-reply, reply-via-tool).
+- Pre-existing untracked dirs in the worktree root (e.g. `bookmark-manager/` noted in a
+  prior handoff) were left untouched; not part of this feature.
