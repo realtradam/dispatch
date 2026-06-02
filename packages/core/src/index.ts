@@ -37,6 +37,7 @@ export {
 	getChunksForTab,
 	getMessagesForTab,
 	getTotalChunkCount,
+	getUsageStatsForTab,
 	groupRowsToMessages,
 	type MessageRow,
 } from "./db/chunks.js";

@@ -755,6 +755,12 @@ export function createTabStore() {
 			keyId?: string | null;
 			modelId?: string | null;
 			parentTabId?: string | null;
+			// Backend usage aggregate (GET /tabs). Structurally identical to
+			// CacheStats, so it seeds `cacheStats` directly on reload. Seeding
+			// happens ONLY here (hydrate runs when tabs.length === 0, i.e. a true
+			// reload) — never on `statuses` reconnect or `turn-sealed` — so the
+			// persisted aggregate and in-session live `usage` events never overlap.
+			usageStats?: CacheStats | null;
 		}> = [];
 		try {
 			const res = await fetch(`${config.apiBase}/tabs`);
@@ -843,6 +849,7 @@ export function createTabStore() {
 				chunkLimit: appSettings.chunkLimit,
 				oldestLoadedSeq: win.oldestSeq,
 				totalChunks: win.total,
+				cacheStats: row.usageStats ?? undefined,
 			};
 		});
 
