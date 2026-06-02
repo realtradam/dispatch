@@ -1,7 +1,7 @@
 <script lang="ts">
 import { tick } from "svelte";
-import { tabStore } from "../tabs.svelte.js";
 import type { Tab } from "../tabs.svelte.js";
+import { tabStore } from "../tabs.svelte.js";
 
 function statusColor(status: string): string {
 	if (status === "running") return "bg-warning";
