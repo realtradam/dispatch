@@ -63,11 +63,11 @@ function renderOpenHandles(handles: Array<{ handle: string; title: string }>): s
 export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefinition {
 	// The `read_tab` follow-up hint is only truthful when this tab actually
 	// holds the `read_tab` tool (the permissions are split). When it doesn't,
-	// the only honest guidance is that a reply arrives on its own — never tell
+	// the only honest guidance is that a reply will wake it as a new message — never tell
 	// the agent to call a tool it wasn't granted.
 	const waitLine = callbacks.canReadTab
-		? "money. If the target replies it arrives on its own as a new message in a later turn; you"
-		: "money. If the target replies it arrives on its own as a new message in a later turn.";
+		? "money. If the target replies it will WAKE you with a new message in a later turn; you"
+		: "money. If the target replies it will WAKE you with a new message in a later turn.";
 	const readTabLine = callbacks.canReadTab
 		? ["can also call 'read_tab' with the same ID in a FUTURE turn to check. If you have other"]
 		: [];
@@ -176,13 +176,13 @@ export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefiniti
 				const tail = callbacks.canReadTab
 					? [
 							"Do NOT sleep, poll, or run commands to wait for a reply. If the target replies it",
-							`arrives on its own as a new message later; you can also call read_tab with "${target.handle}"`,
+							`will WAKE you with a new message later; you can also call read_tab with "${target.handle}"`,
 							"in a FUTURE turn to check. Keep working if you have other tasks; if you are ONLY",
 							"waiting for this reply, end your turn now.",
 						]
 					: [
 							"Do NOT sleep, poll, or run commands to wait for a reply. If the target replies it",
-							"arrives on its own as a new message later. Keep working if you have other tasks; if",
+							"will WAKE you with a new message later. Keep working if you have other tasks; if",
 							"you are ONLY waiting for this reply, end your turn now.",
 						];
 				return [

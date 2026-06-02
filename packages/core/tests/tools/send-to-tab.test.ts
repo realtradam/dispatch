@@ -38,8 +38,8 @@ describe("createSendToTabTool — schema & description", () => {
 	it("never mentions read_tab in the description when canReadTab is false", () => {
 		const tool = createSendToTabTool(makeCallbacks({ canReadTab: false }));
 		expect(tool.description).not.toContain("read_tab");
-		// Still tells the agent a reply arrives on its own + to end its turn.
-		expect(tool.description.toLowerCase()).toContain("arrives on its own");
+		// Still tells the agent a reply will wake it + to end its turn.
+		expect(tool.description.toLowerCase()).toContain("wake you with a new message");
 		expect(tool.description.toLowerCase()).toContain("end your turn");
 	});
 });
