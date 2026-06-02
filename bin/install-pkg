@@ -5,7 +5,7 @@
 # Pass package names (without version) to install a custom set.
 #
 # Usage:
-#   bin/install-pkg                              # dispatch + dispatch-systemd
+#   bin/install-pkg                              # dispatch + dispatch-systemd + code-search
 #   bin/install-pkg dispatch dispatch-s6         # dispatch + dispatch-s6
 #   bin/install-pkg dispatch dispatch-electron   # dispatch + electron wrapper
 #   bin/install-pkg --all                        # every freshest pkg found
@@ -35,9 +35,9 @@ declare -a names
 declare -a paths
 
 if [ $# -eq 0 ]; then
-	names=(dispatch dispatch-systemd)
+	names=(dispatch dispatch-systemd code-search)
 elif [ "${1:-}" = "--all" ]; then
-	names=(dispatch dispatch-systemd dispatch-s6 dispatch-electron)
+	names=(dispatch dispatch-systemd dispatch-s6 dispatch-electron code-search)
 else
 	names=("$@")
 fi
