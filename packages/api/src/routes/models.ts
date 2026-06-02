@@ -17,6 +17,7 @@ import {
 	listStoredCredentials,
 	refreshAccountCredentialsAsync,
 	resolveApiKey,
+	resolveContextLimit,
 	setApiKey,
 	validateAccountCredentials,
 } from "@dispatch/core";
@@ -159,6 +160,21 @@ modelsRoutes.get("/available", async (c) => {
 
 	const models = data.data.map((m) => m.id.replace(/^models\//, ""));
 	return c.json({ models });
+});
+
+// Resolve a model's MAXIMUM context window (in tokens) from the models.dev
+// catalog. Returns `{ contextLimit: number | null }`; `null` means the model's
+// limit is unknown (unsupported provider, unknown model, or catalog offline),
+// which the frontend renders without a denominator/percentage.
+modelsRoutes.get("/context-limit", async (c) => {
+	const provider = c.req.query("provider");
+	const modelId = c.req.query("modelId");
+	if (!provider || !modelId) {
+		return c.json({ error: "provider and modelId query parameters are required" }, 400);
+	}
+
+	const contextLimit = await resolveContextLimit(provider, modelId);
+	return c.json({ contextLimit });
 });
 
 // List available Claude accounts with validated credentials

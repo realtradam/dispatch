@@ -68,7 +68,11 @@ export {
 } from "./llm/debug-logger.js";
 export { createProvider } from "./llm/provider.js";
 // Models
-export { ModelRegistry } from "./models/index.js";
+export {
+	getModelsCatalog,
+	ModelRegistry,
+	resolveContextLimit,
+} from "./models/index.js";
 // Notifications (ntfy.sh)
 export * from "./notifications/index.js";
 export * from "./permission/index.js";

@@ -4,6 +4,7 @@ import type { CacheStats, KeyInfo, LogEntry, TaskItem } from "../types.js";
 import CacheRatePanel from "./CacheRatePanel.svelte";
 import ClaudeReset from "./ClaudeReset.svelte";
 import ConfigPanel from "./ConfigPanel.svelte";
+import ContextWindowPanel from "./ContextWindowPanel.svelte";
 import DebugPanel from "./DebugPanel.svelte";
 import KeyUsage from "./KeyUsage.svelte";
 import ModelSelector from "./ModelSelector.svelte";
@@ -27,6 +28,7 @@ const {
 	tasks = [],
 	cacheStats = null,
 	cacheTabTitle = null,
+	contextLimit = null,
 	permissionLog = [],
 	apiBase = "",
 	activeKeyId = null,
@@ -47,6 +49,7 @@ const {
 	tasks?: TaskItem[];
 	cacheStats?: CacheStats | null;
 	cacheTabTitle?: string | null;
+	contextLimit?: number | null;
 	permissionLog?: LogEntry[];
 	apiBase?: string;
 	activeKeyId?: string | null;
@@ -89,6 +92,7 @@ const viewOptions = [
 	"Chat Settings",
 	"Key Usage",
 	"Cache Rate",
+	"Context Window",
 	"Claude Reset",
 	"Model Status",
 	"Tasks",
@@ -170,6 +174,13 @@ function contentClass(_selected: string): string {
 					<KeyUsage {keys} {apiBase} />
 				{:else if panel.selected === "Cache Rate"}
 					<CacheRatePanel {cacheStats} tabTitle={cacheTabTitle} />
+				{:else if panel.selected === "Context Window"}
+					<ContextWindowPanel
+						{cacheStats}
+						{contextLimit}
+						tabTitle={cacheTabTitle}
+						modelId={activeModelId}
+					/>
 				{:else if panel.selected === "Claude Reset"}
 					<ClaudeReset {apiBase} />
 				{:else if panel.selected === "Model Status"}
