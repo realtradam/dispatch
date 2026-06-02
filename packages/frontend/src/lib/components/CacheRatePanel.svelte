@@ -55,7 +55,7 @@ const lastHitPct = $derived(
 				{#if tabTitle}
 					<span class="badge badge-xs badge-ghost">{tabTitle}</span>
 				{/if}
-				<span class="badge badge-xs ml-auto">{cacheStats.requests} req</span>
+				<span class="badge badge-xs ml-auto whitespace-nowrap">{cacheStats.requests} req</span>
 			</div>
 
 			<!-- Headline cumulative hit rate -->
@@ -120,10 +120,5 @@ const lastHitPct = $derived(
 				</div>
 			</div>
 		</div>
-
-		<p class="text-xs text-base-content/40">
-			Cache reads cost ~10% of fresh input; writes cost ~25% more. A high hit
-			rate after the first turn means caching is working. Resets on reload.
-		</p>
 	{/if}
 </div>
