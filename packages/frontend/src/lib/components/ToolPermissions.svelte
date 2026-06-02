@@ -47,6 +47,12 @@ const toolPermissions: ToolPermission[] = [
 		label: "YouTube transcripts",
 		description: "Allow the AI to fetch YouTube video transcripts",
 	},
+	{
+		id: "lsp",
+		label: "LSP queries",
+		description:
+			"Allow the AI to query a language server for hover, go-to-definition, references, and more",
+	},
 ];
 
 const {
