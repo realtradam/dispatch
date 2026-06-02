@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { relative, sep } from "node:path";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/index.js";
@@ -41,7 +42,16 @@ interface CsResult {
 	filename: string;
 	location: string;
 	score: number;
-	lines: CsLine[];
+	/** Present in "lines"/"grep" snippet modes. */
+	lines?: CsLine[];
+	/**
+	 * Present instead of `lines` in cs's "snippet" mode (the default "auto"
+	 * mode selects it for prose). We force a lines-based mode (see buildFlags),
+	 * but this is kept as a defensive fallback so a content-shape result is
+	 * still rendered rather than shown as a bare header.
+	 */
+	content?: string;
+	matchlocations?: Array<[number, number]>;
 	language?: string;
 	total_lines?: number;
 }
@@ -91,7 +101,9 @@ export function createSearchCodeTool(workingDirectory: string): ToolDefinition {
 				.int()
 				.min(0)
 				.optional()
-				.describe(`Lines of context to show around each match (0-${MAX_CONTEXT}).`),
+				.describe(
+					`Lines of context to show before and after each matching line (0-${MAX_CONTEXT}). When set, switches to a grep-style per-line window.`,
+				),
 			result_limit: z
 				.number()
 				.int()
@@ -106,7 +118,7 @@ export function createSearchCodeTool(workingDirectory: string): ToolDefinition {
 				.min(MIN_SNIPPET_LENGTH)
 				.optional()
 				.describe(
-					`Size in bytes of each snippet shown (${MIN_SNIPPET_LENGTH}-${MAX_SNIPPET_LENGTH}). Larger = more context per match.`,
+					`Snippet size in bytes for prose/text files (${MIN_SNIPPET_LENGTH}-${MAX_SNIPPET_LENGTH}). Has little effect on code files, which use a fixed line window — use 'context' to widen code snippets.`,
 				),
 			only: z
 				.enum(["code", "comments", "strings", "declarations", "usages"])
@@ -131,6 +143,20 @@ export function createSearchCodeTool(workingDirectory: string): ToolDefinition {
 			const searchDir = await canonicalize(workingDirectory, relPath);
 			if (searchDir !== absoluteWorkDir && !searchDir.startsWith(`${absoluteWorkDir}/`)) {
 				return `Error: Path "${relPath}" is outside the working directory.`;
+			}
+
+			// cs's --dir expects a directory; pointing it at a file silently
+			// returns no matches. Catch that and give an actionable hint instead
+			// of a misleading "No matches found".
+			if (relPath !== ".") {
+				try {
+					const st = await stat(searchDir);
+					if (!st.isDirectory()) {
+						return `Error: Path "${relPath}" is a file, not a directory. The 'path' parameter scopes the search to a directory; use read_file to read a single file.`;
+					}
+				} catch {
+					return `Error: Path "${relPath}" does not exist in the working directory.`;
+				}
 			}
 
 			const flags = buildFlags(args, searchDir);
@@ -230,9 +256,20 @@ function buildFlags(args: Record<string, unknown>, searchDir: string): string[] 
 	const excludePattern = args.exclude_pattern as string | undefined;
 	if (excludePattern?.trim()) flags.push("-x", excludePattern.trim());
 
+	// Snippet mode selection. cs's default ("auto") emits a `lines[]` array for
+	// code but a single `content` string for prose (.md/.html/…), which our
+	// renderer can't show — so prose results would come back as bare headers.
+	// It also ignores -C/--context entirely in auto/lines mode.
+	//
+	//  - No `context` given → force "lines": every file type (code AND prose)
+	//    returns a `lines[]` window, so prose snippets render too.
+	//  - `context` given → use "grep": the only mode where -C actually widens
+	//    the window; it likewise returns `lines[]` for all file types.
 	if (typeof args.context === "number") {
 		const context = clamp(Math.floor(args.context), 0, MAX_CONTEXT);
-		flags.push("-C", String(context));
+		flags.push("--snippet-mode", "grep", "-C", String(context));
+	} else {
+		flags.push("--snippet-mode", "lines");
 	}
 
 	const requestedLimit =
@@ -267,12 +304,21 @@ function formatResults(results: CsResult[], absoluteWorkDir: string): string {
 		const score = typeof r.score === "number" ? ` (score ${r.score.toFixed(2)})` : "";
 		const header = `${rel}${lang}${score}`;
 
-		const lines = (r.lines ?? []).map((l) => {
-			const marker = l.match_positions && l.match_positions.length > 0 ? ">" : " ";
-			return `  ${marker} ${l.line_number}: ${l.content}`;
-		});
+		let body: string[];
+		if (r.lines && r.lines.length > 0) {
+			body = r.lines.map((l) => {
+				const marker = l.match_positions && l.match_positions.length > 0 ? ">" : " ";
+				return `  ${marker} ${l.line_number}: ${l.content}`;
+			});
+		} else if (r.content && r.content.trim() !== "") {
+			// Fallback for cs's "snippet"-mode shape (no per-line numbers): show
+			// the snippet text itself so the result isn't a bare header.
+			body = r.content.split("\n").map((line) => `    ${line}`);
+		} else {
+			body = ["    (match in file; no snippet available)"];
+		}
 
-		blocks.push([header, ...lines].join("\n"));
+		blocks.push([header, ...body].join("\n"));
 	}
 
 	const count = results.length;
