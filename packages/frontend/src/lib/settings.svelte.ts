@@ -15,6 +15,7 @@ let toolPerms = $state<Record<string, boolean>>({
 	web_search: false,
 	youtube_transcribe: false,
 	search_code: false,
+	key_usage: false,
 	lsp: false,
 });
 let savedToolPerms = $state<Record<string, boolean>>({
@@ -29,6 +30,7 @@ let savedToolPerms = $state<Record<string, boolean>>({
 	web_search: false,
 	youtube_transcribe: false,
 	search_code: false,
+	key_usage: false,
 	lsp: false,
 });
 let skillChecks = $state<Record<string, boolean>>({});

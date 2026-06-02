@@ -441,6 +441,22 @@ export interface ClaudeUsageReport {
 	orgId?: string;
 }
 
+/**
+ * A usage report paired with provenance: whether it came back from a fresh
+ * live fetch against Anthropic's `/api/oauth/usage` endpoint or was served
+ * from the local `usage_cache` table after a failed/skipped live fetch.
+ *
+ * `source: "cache"` carries `cachedAt` — the epoch-ms timestamp recording when
+ * that cached payload was last fetched FROM the source (the `usage_cache.cached_at`
+ * column). `source: "live"` omits `cachedAt` (the data is current as of now).
+ */
+export interface ClaudeUsageResult {
+	report: ClaudeUsageReport;
+	source: "live" | "cache";
+	/** Epoch-ms the cached report was last fetched from source. Only on `source: "cache"`. */
+	cachedAt?: number;
+}
+
 // ─── Well-known Anthropic models ──────────────────────────────
 
 /**
@@ -602,14 +618,23 @@ async function fetchClaudeUsage(accessToken: string): Promise<ClaudeUsageReport 
 	}
 }
 
-function getCachedUsage(keyId: string): ClaudeUsageReport | null {
+/**
+ * Read a cached usage report plus the epoch-ms it was last fetched from source.
+ * Returns `null` when there is no cached row (or on any DB/parse error).
+ */
+function getCachedUsageWithMeta(
+	keyId: string,
+): { report: ClaudeUsageReport; cachedAt: number } | null {
 	try {
 		const db = getDatabase();
 		const row = db
-			.query("SELECT report_json FROM usage_cache WHERE key_id = $keyId")
-			.get({ $keyId: keyId }) as { report_json: string } | null;
+			.query("SELECT report_json, cached_at FROM usage_cache WHERE key_id = $keyId")
+			.get({ $keyId: keyId }) as { report_json: string; cached_at: number } | null;
 		if (!row) return null;
-		return JSON.parse(row.report_json) as ClaudeUsageReport;
+		return {
+			report: JSON.parse(row.report_json) as ClaudeUsageReport,
+			cachedAt: row.cached_at,
+		};
 	} catch {
 		return null;
 	}
@@ -635,13 +660,35 @@ function setCachedUsage(keyId: string, provider: string, report: ClaudeUsageRepo
 	}
 }
 
-export async function getAccountUsage(account: ClaudeAccount): Promise<ClaudeUsageReport | null> {
+/**
+ * Fetch an account's usage report along with its provenance (live vs cache).
+ *
+ * Resolution: refresh credentials and hit the live `/api/oauth/usage` endpoint;
+ * on success the fresh report is cached and returned as `source: "live"`. If
+ * credentials cannot be refreshed OR the live fetch returns nothing, fall back
+ * to the local `usage_cache` row and return it as `source: "cache"` with the
+ * `cachedAt` timestamp recording when that payload was last fetched from source.
+ * Returns `null` only when neither a live report nor a cached row is available.
+ */
+export async function getAccountUsageWithSource(
+	account: ClaudeAccount,
+): Promise<ClaudeUsageResult | null> {
 	const creds = await refreshAccountCredentialsAsync(account);
-	if (!creds) return getCachedUsage(account.id);
-	const report = await fetchClaudeUsage(creds.accessToken);
-	if (report) {
-		setCachedUsage(account.id, "anthropic", report);
-		return report;
+	if (creds) {
+		const report = await fetchClaudeUsage(creds.accessToken);
+		if (report) {
+			setCachedUsage(account.id, "anthropic", report);
+			return { report, source: "live" };
+		}
 	}
-	return getCachedUsage(account.id);
+	const cached = getCachedUsageWithMeta(account.id);
+	if (cached) {
+		return { report: cached.report, source: "cache", cachedAt: cached.cachedAt };
+	}
+	return null;
+}
+
+export async function getAccountUsage(account: ClaudeAccount): Promise<ClaudeUsageReport | null> {
+	const result = await getAccountUsageWithSource(account);
+	return result?.report ?? null;
 }
