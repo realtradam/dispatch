@@ -8,6 +8,11 @@
 #
 # Override frontend build target with VITE_API_URL, e.g.:
 #   VITE_API_URL="https://api.example.com" bin/build-pkg
+#
+# The patched `cs` code-search binary is reused from an already-installed
+# code-search package instead of being recompiled. Force a fresh clone+build
+# (required after bumping _cs_commit in the PKGBUILD) with:
+#   DISPATCH_FORCE_CS_BUILD=1 bin/build-pkg
 
 set -euo pipefail
 
