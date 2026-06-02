@@ -4,16 +4,19 @@
 # --- cs (code spelunker) builder ---
 # Builds a patched, statically-linked `cs` binary for the search_code tool.
 # Pinned to the v3.1.0 commit for reproducibility; the patch adds Luau
-# declaration support (see docker/cs/luau-declarations.patch). cs vendors its
+# declaration support and corrects fuzzy edit-distance matching (see
+# docker/cs/luau-declarations.patch and docker/cs/fuzzy-distance.patch). cs vendors its
 # dependencies, so the `go build` step is offline after the clone.
 FROM golang:1.25-bookworm AS cs-builder
 ARG CS_COMMIT=697e0bf194bbc7a4a877e5170c70618989fc92e7
 WORKDIR /build
 COPY docker/cs/luau-declarations.patch /tmp/luau-declarations.patch
+COPY docker/cs/fuzzy-distance.patch /tmp/fuzzy-distance.patch
 RUN git clone https://github.com/boyter/cs.git src \
 	&& cd src \
 	&& git checkout "${CS_COMMIT}" \
 	&& git apply /tmp/luau-declarations.patch \
+	&& git apply /tmp/fuzzy-distance.patch \
 	&& CGO_ENABLED=0 go build -mod=vendor -ldflags="-s -w" -o /usr/local/bin/cs . \
 	&& /usr/local/bin/cs --version
 

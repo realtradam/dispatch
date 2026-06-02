@@ -12,13 +12,14 @@ feature provisions that binary on **two** deployment paths automatically:
 
 There is a **third** path — the Artix cyberdeck box — that is deployed by a
 personal script living **outside this repo**
-(`~/projects/cyberdeck/sync-dispatch.sh`). That script is not updated by this
-feature and **must be edited once** (4 small additions) so the Artix box also
-gets `cs`. Until then, `search_code` on the cyberdeck will return its graceful
+(`~/projects/cyberdeck/sync-dispatch.sh`). That script has now been edited (the
+5 small additions below) so the Artix box also gets the patched `cs`. Before the
+edit, `search_code` on the cyberdeck returned its graceful
 `Error: search_code requires the 'cs' binary ...` message on every call.
 
-This file documents that required follow-up. It is committed so the change isn't
-forgotten; the actual edit happens in the cyberdeck repo, not here.
+This file documents that follow-up (now applied). It is committed so the change
+isn't forgotten and can be re-derived if the cyberdeck script is ever reset; the
+actual edit lives in the cyberdeck repo, not here.
 
 ---
 
@@ -26,8 +27,9 @@ forgotten; the actual edit happens in the cyberdeck repo, not here.
 
 `packaging/PKGBUILD` now builds a `code-search` split package (a patched,
 statically-linked `cs` pinned to upstream commit
-`697e0bf194bbc7a4a877e5170c70618989fc92e7`, tag `v3.1.0`, plus
-`docker/cs/luau-declarations.patch` for Roblox `.luau` declaration support). It
+`697e0bf194bbc7a4a877e5170c70618989fc92e7`, tag `v3.1.0`, plus two patches:
+`docker/cs/luau-declarations.patch` for Roblox `.luau` declaration support and
+`docker/cs/fuzzy-distance.patch` for correct fuzzy edit-distance matching). It
 installs `cs` to `/usr/bin/cs`.
 
 `code-search` is a plain static binary with **no init-system coupling**, so it
@@ -43,11 +45,13 @@ and does not yet include `code-search`.
 
 ---
 
-## The required edit to `~/projects/cyberdeck/sync-dispatch.sh`
+## The edit applied to `~/projects/cyberdeck/sync-dispatch.sh`
 
-Four small additions. After applying them, run `sync-dispatch.sh --build` (the
-`--build` flag rebuilds the packages first, producing the new
-`code-search-*.pkg.tar.zst`).
+Five small additions (the four below plus mirroring `PKG_CS` into the generated
+remote-script preamble alongside `PKG_DISPATCH` / `PKG_S6`). This edit has been
+applied. To deploy, run `sync-dispatch.sh --build` (the `--build` flag rebuilds
+the packages first, producing the new `code-search-*.pkg.tar.zst` that now
+carries both the Luau and fuzzy patches).
 
 ### 1. Declare the package name (next to `PKG_DISPATCH` / `PKG_S6`)
 
@@ -110,6 +114,10 @@ it should return ranked results instead of the "cs binary not found" error.
 For a `.luau` sanity check (confirms the Luau patch is present), search a Roblox
 project with `only: "declarations"` — `function` / `type` / `export type` lines
 should be detected.
+
+For a fuzzy sanity check (confirms the fuzzy patch is present), a mid-word
+deletion should match, e.g. `cs -- 'computSlipAngle~1'` finds `computeSlipAngle`
+(returns empty on an unpatched cs).
 
 ---
 

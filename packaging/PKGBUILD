@@ -62,7 +62,8 @@ build() {
 	bun install --frozen-lockfile --production
 
 	# --- Build the patched `cs` code-search binary for the search_code tool ---
-	# Clone the pinned cs commit, apply the Luau declaration patch, and build a
+	# Clone the pinned cs commit, apply the Luau declaration + fuzzy-distance
+	# patches, and build a
 	# statically-linked binary. cs vendors its deps, so `go build -mod=vendor`
 	# needs no network beyond the clone. Mirrors the Docker cs-builder stage.
 	#
@@ -76,6 +77,7 @@ build() {
 	cd "${srcdir}/cs-src"
 	git checkout "${_cs_commit}"
 	git apply "${_projectdir}/docker/cs/luau-declarations.patch"
+	git apply "${_projectdir}/docker/cs/fuzzy-distance.patch"
 	CGO_ENABLED=0 GOFLAGS=-mod=vendor GOPATH="${srcdir}/gopath" GOCACHE="${srcdir}/gocache" \
 		go build -ldflags="-s -w" -o "${srcdir}/cs" .
 	"${srcdir}/cs" --version
