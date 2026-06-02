@@ -84,7 +84,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	youtube_transcribe:
 		"Fetch the transcript/subtitles for a YouTube video. Set background=true to start in the background and get a job_id for later retrieval.",
 	send_to_tab:
-		"Send a message to another tab (agent) by its short ID, as shown in the tab bar. Fire-and-forget: it queues/wakes the target and returns immediately without waiting for a reply. Do NOT sleep, poll, or run commands to wait — a reply arrives on its own in a later turn; if you are only waiting, end your turn.",
+		"Send a message to another tab (agent) by its short ID, as shown in the tab bar. Fire-and-forget: it queues/wakes the target and returns immediately without waiting for a reply. Do NOT sleep, poll, or run commands to wait — if the target replies it will wake you with a new message in a later turn; if you are only waiting, end your turn.",
 	read_tab:
 		"Read another tab (agent)'s most recent completed response by its short ID. Returns a non-blocking snapshot; if the target is still running you get its previous completed turn. Use after send_to_tab to collect a reply.",
 };
