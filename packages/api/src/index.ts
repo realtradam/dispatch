@@ -70,9 +70,58 @@ app.get(
 
 export { app };
 
-export default {
-	port: Number(process.env.PORT) || 3000,
-	idleTimeout: 60,
-	fetch: app.fetch,
-	websocket,
-};
+// Starting port (overridable via PORT) and the inclusive ceiling we will bump
+// up to when a port is already in use. If 3000 is taken we try 3001, 3002, …
+// up to MAX_PORT, so multiple dispatch instances (e.g. testing several
+// features at once) can coexist without manually juggling ports. The frontend
+// defaults to :3000 — point it at the chosen port via the in-app API-URL
+// field / VITE_API_URL when a bump happens.
+const START_PORT = Number(process.env.PORT) || 3000;
+const MAX_PORT = 3010;
+
+/**
+ * Bind the server to `START_PORT`, incrementing by one on EADDRINUSE until a
+ * free port is found or MAX_PORT is exceeded. Bun's `Bun.serve` throws
+ * synchronously when the port is taken, so we can catch and retry. Returns the
+ * live server (whose `.port` reflects the port actually bound).
+ */
+function serveWithPortFallback() {
+	let lastError: unknown;
+	for (let port = START_PORT; port <= MAX_PORT; port++) {
+		try {
+			const server = Bun.serve({
+				port,
+				idleTimeout: 60,
+				fetch: app.fetch,
+				websocket,
+			});
+			if (port !== START_PORT) {
+				console.warn(
+					`dispatch: port ${START_PORT} in use — bound to ${port} instead. ` +
+						`Set the frontend's API URL to http://localhost:${port}.`,
+				);
+			}
+			console.log(`dispatch: API listening on http://localhost:${server.port}`);
+			return server;
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException)?.code;
+			if (code === "EADDRINUSE") {
+				lastError = err;
+				continue;
+			}
+			throw err;
+		}
+	}
+	console.error(
+		`dispatch: no free port in range ${START_PORT}-${MAX_PORT}. ` +
+			`Free one up or set PORT to an open port.`,
+	);
+	throw lastError ?? new Error(`No free port in range ${START_PORT}-${MAX_PORT}`);
+}
+
+// Only start the server when run as the entry point — importing this module
+// (e.g. for `app`) must not bind a port. This preserves the prior
+// default-export behavior where Bun served only the entry file.
+if (import.meta.main) {
+	serveWithPortFallback();
+}

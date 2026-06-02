@@ -103,4 +103,50 @@ describe("write_file tool", () => {
 			expect(entries).toEqual([]);
 		});
 	});
+
+	describe("onAfterWrite hook", () => {
+		it("appends the hook's returned string to a successful write", async () => {
+			const tool = createWriteFileTool(workDir, async (abs) => `DIAGNOSTICS for ${abs}`);
+			const result = await tool.execute({ path: "a.luau", content: "local x = 1" });
+			expect(result).toMatch(/successfully wrote/i);
+			expect(result).toContain("DIAGNOSTICS for");
+			expect(result).toContain(join(workDir, "a.luau"));
+		});
+
+		it("does not append when the hook returns empty string", async () => {
+			const tool = createWriteFileTool(workDir, async () => "");
+			const result = await tool.execute({ path: "a.luau", content: "local x = 1" });
+			expect(result.trim()).toMatch(/^Successfully wrote to "a\.luau"\.$/);
+		});
+
+		it("does not run the hook when the write is blocked (traversal)", async () => {
+			let called = false;
+			const tool = createWriteFileTool(workDir, async () => {
+				called = true;
+				return "should not appear";
+			});
+			const result = await tool.execute({ path: "../evil.txt", content: "bad" });
+			expect(result).toMatch(/outside the working directory/i);
+			expect(called).toBe(false);
+		});
+
+		it("swallows hook errors so a throwing hook never fails the write", async () => {
+			const tool = createWriteFileTool(workDir, async () => {
+				throw new Error("lsp blew up");
+			});
+			const result = await tool.execute({ path: "a.luau", content: "local x = 1" });
+			expect(result).toMatch(/successfully wrote/i);
+			expect(result).not.toContain("lsp blew up");
+		});
+
+		it("passes the canonical absolute path to the hook", async () => {
+			let seen = "";
+			const tool = createWriteFileTool(workDir, async (abs) => {
+				seen = abs;
+				return "";
+			});
+			await tool.execute({ path: "nested/b.luau", content: "x" });
+			expect(seen).toBe(join(workDir, "nested/b.luau"));
+		});
+	});
 });
