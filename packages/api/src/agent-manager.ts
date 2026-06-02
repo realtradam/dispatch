@@ -35,6 +35,7 @@ import {
 	getMessagesForTab,
 	getSetting,
 	getTab,
+	getUsageStatsForTab,
 	listOpenTabs,
 	loadAgent,
 	loadAgents,
@@ -55,6 +56,7 @@ import {
 	toAvailableSubagents,
 	toAvailableUserAgents,
 	type UsageData,
+	type UsageStats,
 	validateConfig,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
@@ -1639,7 +1641,16 @@ export class AgentManager {
 		// above). Signal the frontend that the turn's rows — with real seqs — are
 		// durable so it can fold its live representation into the sealed log.
 		// Emitted AFTER status:idle/error (which fire before the DB write).
-		this.emit({ type: "turn-sealed", turnId }, tabId);
+		// Carry the authoritative usage aggregate (read AFTER the usage rows were
+		// persisted) so the frontend reconciles its live cacheStats to the DB truth
+		// — self-healing the live overshoot from a discarded rate-limited attempt.
+		let usageStats: UsageStats | null = null;
+		try {
+			usageStats = getUsageStatsForTab(tabId);
+		} catch {
+			// DB read failed — omit reconciliation rather than crash the turn.
+		}
+		this.emit({ type: "turn-sealed", turnId, usageStats }, tabId);
 
 		// Turn fully settled — clear the shared turn id.
 		tabAgent.currentTurnId = null;
