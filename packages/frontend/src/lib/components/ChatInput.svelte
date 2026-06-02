@@ -17,6 +17,13 @@ const inputValue = $derived(tabStore.activeTab?.draft ?? "");
 const cacheStats = $derived(tabStore.activeTab?.cacheStats ?? null);
 
 const isRunning = $derived(agentStatus === "running");
+// Lock input while this tab is mid-compaction: either it's the source
+// conversation being summarized, or it's the transient placeholder tab.
+const compactLocked = $derived(
+	(tabStore.activeTab?.isCompacting ?? false) ||
+		(tabStore.activeTab?.compactingSource ?? null) !== null ||
+		(tabStore.activeTab?.compactionError ?? null) !== null,
+);
 const hasText = $derived(inputValue.trim().length > 0);
 // While generating with an empty box, the primary action is "stop". With text
 // in the box, it stays "send" (the message is queued behind the live turn).
@@ -88,6 +95,7 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 function submit() {
+	if (compactLocked) return;
 	const text = inputValue.trim();
 	if (!text) return;
 	if (tabId) tabStore.setDraft(tabId, "");
@@ -110,7 +118,8 @@ function primaryAction() {
 			bind:this={inputEl}
 			value={inputValue}
 			rows="1"
-			placeholder="Type a message..."
+			placeholder={compactLocked ? "Compaction in progress…" : "Type a message..."}
+			disabled={compactLocked}
 			class="textarea textarea-ghost flex-1 resize-none leading-normal !min-h-0 h-auto"
 			onkeydown={handleKeydown}
 			oninput={handleInput}
@@ -120,7 +129,7 @@ function primaryAction() {
 		<button
 			type="button"
 			class="btn w-20 shrink-0 {showStop ? 'btn-error btn-outline' : 'btn-primary'}"
-			disabled={!showStop && !hasText}
+			disabled={compactLocked || (!showStop && !hasText)}
 			onclick={primaryAction}
 			title={showStop ? "Stop generation" : "Send message"}
 		>

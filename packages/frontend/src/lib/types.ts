@@ -220,7 +220,16 @@ export type AgentEvent =
 			 */
 			reason?: "interrupt" | "continuation";
 	  }
-	| { type: "message-cancelled"; tabId: string; messageId: string };
+	| { type: "message-cancelled"; tabId: string; messageId: string }
+	| { type: "compaction-started"; tempTabId: string; sourceTabId: string }
+	| {
+			type: "compaction-complete";
+			tempTabId: string;
+			sourceTabId: string;
+			backupTabId: string;
+			backupTitle: string;
+	  }
+	| { type: "compaction-error"; tempTabId: string; sourceTabId: string; error: string };
 
 export interface TaskItem {
 	/** Stable positional id for Svelte keying only; never shown to the model. */

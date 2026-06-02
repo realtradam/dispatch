@@ -26,6 +26,10 @@ function selectTheme(theme: Theme): void {
 let titleKeyId = $state<string | null>(null);
 let titleModelId = $state<string | null>(null);
 let availableModels = $state<string[]>([]);
+let compactionKeyId = $state<string | null>(null);
+let compactionModelId = $state<string | null>(null);
+let compactionModels = $state<string[]>([]);
+let loadingCompactionModels = $state(false);
 let loadingModels = $state(false);
 let autoExpandThinking = $state(appSettings.autoExpandThinking);
 let localChunkLimit = $state(appSettings.chunkLimit);
@@ -127,6 +131,19 @@ async function loadSettings(): Promise<void> {
 				await loadModelsForKey(titleKeyId);
 			}
 			titleModelId = data.modelId;
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		const res = await fetch(`${apiBase}/tabs/settings/compaction-model`);
+		if (res.ok) {
+			const data = (await res.json()) as { keyId: string | null; modelId: string | null };
+			compactionKeyId = data.keyId;
+			if (compactionKeyId) {
+				await loadCompactionModelsForKey(compactionKeyId);
+			}
+			compactionModelId = data.modelId;
 		}
 	} catch {
 		// ignore
@@ -319,6 +336,48 @@ async function onModelChange(e: Event): Promise<void> {
 	saveTitleModel();
 }
 
+async function loadCompactionModelsForKey(keyId: string): Promise<void> {
+	loadingCompactionModels = true;
+	try {
+		const res = await fetch(`${apiBase}/models/available?keyId=${encodeURIComponent(keyId)}`);
+		if (!res.ok) {
+			compactionModels = [];
+			return;
+		}
+		const data = (await res.json()) as { models: string[] };
+		compactionModels = data.models ?? [];
+	} catch {
+		compactionModels = [];
+	} finally {
+		loadingCompactionModels = false;
+	}
+}
+
+function saveCompactionModel(): void {
+	fetch(`${apiBase}/tabs/settings/compaction-model`, {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ keyId: compactionKeyId, modelId: compactionModelId }),
+	}).catch(() => {});
+}
+
+async function onCompactionKeyChange(e: Event): Promise<void> {
+	const select = e.target as HTMLSelectElement;
+	compactionKeyId = select.value || null;
+	compactionModelId = null;
+	compactionModels = [];
+	if (compactionKeyId) {
+		await loadCompactionModelsForKey(compactionKeyId);
+	}
+	saveCompactionModel();
+}
+
+function onCompactionModelChange(e: Event): void {
+	const select = e.target as HTMLSelectElement;
+	compactionModelId = select.value || null;
+	saveCompactionModel();
+}
+
 $effect(() => {
 	void loadSettings();
 });
@@ -367,6 +426,36 @@ $effect(() => {
 			>
 				<option value="">{loadingModels ? "Loading models..." : "Select a model..."}</option>
 				{#each availableModels as model (model)}
+					<option value={model}>{model}</option>
+				{/each}
+			</select>
+		</label>
+
+		<div class="divider my-0"></div>
+
+		<p class="text-xs text-base-content/70">Conversation Compaction Model</p>
+		<p class="text-xs text-base-content/40">Used to summarize a conversation when you compact it. If unset, the tab's own key/model is used.</p>
+
+		<label class="text-xs text-base-content/60">
+			Key
+			<select class="select select-bordered select-sm w-full" onchange={onCompactionKeyChange} value={compactionKeyId ?? ""}>
+				<option value="">Select a key...</option>
+				{#each keys as key (key.id)}
+					<option value={key.id}>{key.id} ({key.provider})</option>
+				{/each}
+			</select>
+		</label>
+
+		<label class="text-xs text-base-content/60">
+			Model
+			<select
+				class="select select-bordered select-sm w-full"
+				onchange={onCompactionModelChange}
+				value={compactionModelId ?? ""}
+				disabled={!compactionKeyId || loadingCompactionModels}
+			>
+				<option value="">{loadingCompactionModels ? "Loading models..." : "Select a model..."}</option>
+				{#each compactionModels as model (model)}
 					<option value={model}>{model}</option>
 				{/each}
 			</select>

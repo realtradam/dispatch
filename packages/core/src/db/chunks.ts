@@ -225,3 +225,22 @@ export function clearChunksForTab(tabId: string): void {
 	const db = getDatabase();
 	db.query("DELETE FROM chunks WHERE tab_id = $tabId").run({ $tabId: tabId });
 }
+
+/**
+ * Relocate every chunk row from one tab to another (compaction backup path).
+ *
+ * Used by conversation compaction to move the FULL pre-compaction history off
+ * the canonical tab id (`fromTabId`) onto a freshly-created backup tab id
+ * (`toTabId`), leaving the canonical id free to be re-seeded with the summary +
+ * preserved tail. `seq` values are preserved (they remain per-tab monotonic for
+ * the destination since it starts empty), as are turn ids, so the relocated
+ * history groups identically under its new tab. Returns the number of rows
+ * moved.
+ */
+export function rekeyChunks(fromTabId: string, toTabId: string): number {
+	const db = getDatabase();
+	const result = db
+		.query("UPDATE chunks SET tab_id = $to WHERE tab_id = $from")
+		.run({ $from: fromTabId, $to: toTabId });
+	return Number(result.changes ?? 0);
+}

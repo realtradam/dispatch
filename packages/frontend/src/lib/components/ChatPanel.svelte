@@ -10,6 +10,11 @@ let isLoadingMore = $state(false);
 
 const renderGroups = $derived(tabStore.activeTab?.renderGroups ?? []);
 const activeTabId = $derived(tabStore.activeTab?.id);
+// Compaction placeholder state for the active tab. `compactingSource` is set on
+// a transient placeholder tab while a conversation is being compacted;
+// `compactionError` is set if it failed.
+const compactingSource = $derived(tabStore.activeTab?.compactingSource ?? null);
+const compactionError = $derived(tabStore.activeTab?.compactionError ?? null);
 
 // Stable, turn-scoped render keys. A bubble's identity is `${turnId}:${role}:${n}`
 // (n = its index among same-(turn,role) messages) rather than the underlying
@@ -138,14 +143,28 @@ $effect(() => {
 			{#if isLoadingMore}
 				<div class="text-center text-xs text-base-content/40 py-2">Loading earlier messages...</div>
 			{/if}
-			{#if renderGroups.length === 0}
+			{#if compactingSource || compactionError}
+				<div class="flex flex-col items-center justify-center h-full gap-4 px-6 text-center">
+					{#if compactionError}
+						<div class="text-2xl font-semibold text-error">Compaction failed</div>
+						<div class="text-base text-base-content/70 max-w-md">{compactionError}</div>
+						<div class="text-sm text-base-content/50">Close this tab to dismiss — your conversation was not changed.</div>
+					{:else}
+						<span class="loading loading-spinner loading-lg text-primary"></span>
+						<div class="text-2xl font-semibold text-base-content">Please wait, compacting conversation…</div>
+						<div class="text-sm text-base-content/50">You can cancel by closing this tab.</div>
+					{/if}
+				</div>
+			{:else if renderGroups.length === 0}
 				<div class="flex items-center justify-center h-full text-base-content/40 text-sm">
 					Send a message to start a conversation
 				</div>
 			{/if}
-			{#each keyedMessages as { m, key } (key)}
-				<ChatMessageComponent message={m} tabId={activeTabId} />
-			{/each}
+			{#if !compactingSource && !compactionError}
+				{#each keyedMessages as { m, key } (key)}
+					<ChatMessageComponent message={m} tabId={activeTabId} />
+				{/each}
+			{/if}
 		</div>
 
 		<!-- Scroll-to-bottom button -->

@@ -43,6 +43,9 @@ const {
 	onReasoningChange,
 	onAgentChange = (_agent: AgentInfo | null) => {},
 	onWorkingDirectoryChange = (_dir: string | null) => {},
+	onCompact = () => {},
+	canCompact = false,
+	compacting = false,
 	onAddKey = () => {},
 }: {
 	keys?: KeyInfo[];
@@ -64,6 +67,9 @@ const {
 	onReasoningChange: (effort: string) => void;
 	onAgentChange?: (agent: AgentInfo | null) => void;
 	onWorkingDirectoryChange?: (dir: string | null) => void;
+	onCompact?: () => void;
+	canCompact?: boolean;
+	compacting?: boolean;
 	onAddKey?: () => void;
 } = $props();
 
@@ -169,6 +175,9 @@ function contentClass(_selected: string): string {
 				{onAgentChange}
 				{workingDirectory}
 				{onWorkingDirectoryChange}
+				{onCompact}
+				{canCompact}
+				{compacting}
 			/>
 				{:else if panel.selected === "Key Usage"}
 					<KeyUsage {keys} {apiBase} />
