@@ -761,6 +761,13 @@ export function createTabStore() {
 			keyId?: string | null;
 			modelId?: string | null;
 			parentTabId?: string | null;
+			// Backend usage aggregate (GET /tabs). Structurally identical to
+			// CacheStats, so it seeds `cacheStats` directly on reload. This is the
+			// initial seed (hydrate runs only when tabs.length === 0, i.e. a true
+			// reload); thereafter `turn-sealed` REPLACES cacheStats with the same
+			// aggregate each turn, keeping the live accumulator reconciled to the DB
+			// truth. Neither path ADDS to live events, so there is no double-count.
+			usageStats?: CacheStats | null;
 		}> = [];
 		try {
 			const res = await fetch(`${config.apiBase}/tabs`);
@@ -849,6 +856,7 @@ export function createTabStore() {
 				chunkLimit: appSettings.chunkLimit,
 				oldestLoadedSeq: win.oldestSeq,
 				totalChunks: win.total,
+				cacheStats: row.usageStats ?? undefined,
 			};
 		});
 
@@ -933,6 +941,15 @@ export function createTabStore() {
 				// tail into the sealed chunk log (refetch real seqs), preserving any
 				// newer in-flight turn. Deferred while scrolled up.
 				reconcileSealedTurn(tabId, event.turnId);
+				// Reconcile cacheStats to the DB source-of-truth carried on the event.
+				// REPLACE (not add): the aggregate already includes every persisted
+				// usage row for this tab, so this both lands the just-sealed turn's
+				// usage AND self-heals any live overshoot (e.g. a rate-limited
+				// fallback attempt streamed usage live but was discarded server-side).
+				// `usageStats === undefined` (older backend) leaves cacheStats as-is.
+				if (event.usageStats !== undefined) {
+					updateTab(tabId, { cacheStats: event.usageStats ?? undefined });
+				}
 				break;
 			}
 			case "statuses": {

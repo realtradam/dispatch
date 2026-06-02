@@ -98,6 +98,26 @@ function setFakeSetting(key: string, value: string): void {
 	fakeSettings.set(key, value);
 }
 
+// Capture every appendChunks(tabId, drafts) call so tests can assert what got
+// persisted (e.g. usage side-channel rows). The real explodeTurn is mocked to
+// return [], so content drafts are empty here; usage rows are pushed directly
+// by processMessage's flushAssistant, making them the visible drafts.
+interface AppendChunksCall {
+	tabId: string;
+	drafts: Array<{ turnId: string; step: number; role: string; type: string; data: unknown }>;
+}
+const appendChunksCalls: AppendChunksCall[] = [];
+function resetAppendChunksCalls(): void {
+	appendChunksCalls.length = 0;
+}
+
+// Seedable return value for the mocked getUsageStatsForTab — what the backend
+// reads (post-write) to attach to the `turn-sealed` event.
+const fakeUsageStatsByTab = new Map<string, unknown>();
+function resetFakeUsageStats(): void {
+	fakeUsageStatsByTab.clear();
+}
+
 // Allow tests to swap in a custom `run` generator (e.g. to simulate
 // a fallback failure mid-stream). Returning to undefined restores
 // the default.
@@ -358,7 +378,8 @@ vi.mock("@dispatch/core", () => ({
 			typeof value === "string" && ["none", "low", "medium", "high", "xhigh", "max"].includes(value)
 		);
 	},
-	appendChunks() {
+	appendChunks(tabId: string, drafts: AppendChunksCall["drafts"]) {
+		appendChunksCalls.push({ tabId, drafts: [...drafts] });
 		return [];
 	},
 	explodeUserText() {
@@ -369,6 +390,9 @@ vi.mock("@dispatch/core", () => ({
 	},
 	getMessagesForTab(tabId: string) {
 		return fakeMessagesByTab.get(tabId) ?? [];
+	},
+	getUsageStatsForTab(tabId: string) {
+		return fakeUsageStatsByTab.get(tabId) ?? null;
 	},
 	appendEventToChunks: appendEventToChunksSpy,
 	applySystemEvent(_messages: unknown[], _event: unknown) {
@@ -420,6 +444,8 @@ describe("AgentManager", () => {
 		resetFakeSettings();
 		setRunImpl(null);
 		appendEventToChunksSpy.mockClear();
+		resetAppendChunksCalls();
+		resetFakeUsageStats();
 	});
 
 	it("initial status is idle", () => {
@@ -1391,6 +1417,207 @@ describe("AgentManager", () => {
 			const tools = await toolsForPerms("tab-neither", {});
 			expect(tools).not.toContain("send_to_tab");
 			expect(tools).not.toContain("read_tab");
+		});
+	});
+
+	// ─── Usage side-channel persistence ──────────────────────────────
+	//
+	// `usage` AgentEvents (one per LLM round-trip) are persisted as invisible
+	// `type:"usage"` chunk rows so per-tab token/cache telemetry survives a
+	// reload. They ride the SAME atomic appendChunks call as the turn's content
+	// rows (one fsync, contiguous seqs). A superseded fallback attempt's usage is
+	// discarded with its `chunks` (per-attempt accumulator).
+	describe("usage persistence", () => {
+		it("writes one usage row per usage event emitted during a turn", async () => {
+			const manager = new AgentManager();
+			setRunImpl(async function* () {
+				yield { type: "status", status: "running" } as const;
+				yield {
+					type: "usage",
+					usage: { inputTokens: 1000, outputTokens: 40, cacheReadTokens: 0, cacheWriteTokens: 900 },
+				} as const;
+				yield { type: "text-delta", delta: "step two" } as const;
+				yield {
+					type: "usage",
+					usage: {
+						inputTokens: 1200,
+						outputTokens: 60,
+						cacheReadTokens: 1000,
+						cacheWriteTokens: 100,
+					},
+				} as const;
+				yield {
+					type: "done",
+					message: { role: "assistant", chunks: [{ type: "text", text: "step two" }] },
+				} as const;
+				yield { type: "status", status: "idle" } as const;
+			});
+
+			await manager.processMessage("tab-usage-rows", "go");
+
+			const usageDrafts = appendChunksCalls
+				.flatMap((c) => c.drafts)
+				.filter((d) => d.type === "usage");
+			expect(usageDrafts).toHaveLength(2);
+			// One row per event, role=assistant, step cosmetic (0).
+			expect(usageDrafts.every((d) => d.role === "assistant" && d.step === 0)).toBe(true);
+			expect(usageDrafts[0]?.data).toEqual({
+				inputTokens: 1000,
+				outputTokens: 40,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 900,
+			});
+			expect(usageDrafts[1]?.data).toEqual({
+				inputTokens: 1200,
+				outputTokens: 60,
+				cacheReadTokens: 1000,
+				cacheWriteTokens: 100,
+			});
+		});
+
+		it("attaches the DB usage aggregate to the turn-sealed event for live reconciliation", async () => {
+			const manager = new AgentManager();
+			const aggregate = {
+				inputTokens: 222,
+				outputTokens: 22,
+				cacheReadTokens: 100,
+				cacheWriteTokens: 5,
+				requests: 1,
+				last: { inputTokens: 222, outputTokens: 22, cacheReadTokens: 100, cacheWriteTokens: 5 },
+			};
+			fakeUsageStatsByTab.set("tab-sealed-usage", aggregate);
+
+			const events: AgentEvent[] = [];
+			manager.onEvent((event) => {
+				events.push(event);
+			});
+
+			await manager.processMessage("tab-sealed-usage", "go");
+
+			const sealed = events.find((e) => e.type === "turn-sealed") as
+				| Extract<AgentEvent, { type: "turn-sealed" }>
+				| undefined;
+			expect(sealed).toBeDefined();
+			// The aggregate read AFTER the write is carried on the event so the
+			// frontend can REPLACE its live cacheStats with the DB truth.
+			expect(sealed?.usageStats).toEqual(aggregate);
+		});
+
+		it("emits usage rows in the SAME appendChunks call as the turn's content (one atomic write)", async () => {
+			const manager = new AgentManager();
+			setRunImpl(async function* () {
+				yield { type: "status", status: "running" } as const;
+				yield { type: "text-delta", delta: "hi" } as const;
+				yield {
+					type: "usage",
+					usage: { inputTokens: 5, outputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 3 },
+				} as const;
+				yield {
+					type: "done",
+					message: { role: "assistant", chunks: [{ type: "text", text: "hi" }] },
+				} as const;
+				yield { type: "status", status: "idle" } as const;
+			});
+
+			await manager.processMessage("tab-usage-atomic", "go");
+
+			// Exactly one appendChunks call carries the usage draft (the flush). The
+			// user-message append and any system-row appends carry no usage rows.
+			const callsWithUsage = appendChunksCalls.filter((c) =>
+				c.drafts.some((d) => d.type === "usage"),
+			);
+			expect(callsWithUsage).toHaveLength(1);
+			expect(callsWithUsage[0]?.tabId).toBe("tab-usage-atomic");
+		});
+
+		it("discards a superseded (rate-limited) attempt's usage on fallback", async () => {
+			const manager = new AgentManager();
+			// Inject a minimal model registry so the rate-limit fallback path is
+			// taken (real `processMessage` requires modelRegistry + a resolved
+			// keyId + a next fallback entry to retry).
+			const markKeyExhausted = vi.fn();
+			(
+				manager as unknown as {
+					modelRegistry: {
+						getKeys(): Array<{ definition: Record<string, unknown> }>;
+						markKeyExhausted(): void;
+					};
+				}
+			).modelRegistry = {
+				getKeys: () => [
+					{
+						definition: {
+							id: "k1",
+							provider: "openai-compatible",
+							env: "ENV1",
+							base_url: "http://x",
+						},
+					},
+					{
+						definition: {
+							id: "k2",
+							provider: "openai-compatible",
+							env: "ENV2",
+							base_url: "http://y",
+						},
+					},
+				],
+				markKeyExhausted,
+			};
+
+			let attempt = 0;
+			setRunImpl(async function* () {
+				attempt++;
+				yield { type: "status", status: "running" } as const;
+				if (attempt === 1) {
+					// Attempt 1 emits usage then rate-limits — its usage must be dropped.
+					yield {
+						type: "usage",
+						usage: { inputTokens: 999, outputTokens: 9, cacheReadTokens: 0, cacheWriteTokens: 0 },
+					} as const;
+					yield { type: "error", error: "rate limit exceeded (status=429)" } as const;
+					return;
+				}
+				// Attempt 2 succeeds — only its usage should persist.
+				yield {
+					type: "usage",
+					usage: { inputTokens: 222, outputTokens: 22, cacheReadTokens: 100, cacheWriteTokens: 5 },
+				} as const;
+				yield {
+					type: "done",
+					message: { role: "assistant", chunks: [{ type: "text", text: "recovered" }] },
+				} as const;
+				yield { type: "status", status: "idle" } as const;
+			});
+
+			const agentModels = [
+				{ key_id: "k1", model_id: "m1" },
+				{ key_id: "k2", model_id: "m2" },
+			];
+			await manager.processMessage(
+				"tab-usage-fallback",
+				"go",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				agentModels,
+			);
+
+			expect(attempt).toBe(2); // confirm the fallback retry actually happened
+			expect(markKeyExhausted).toHaveBeenCalled();
+
+			const usageDrafts = appendChunksCalls
+				.flatMap((c) => c.drafts)
+				.filter((d) => d.type === "usage");
+			// Only attempt 2's usage survives.
+			expect(usageDrafts).toHaveLength(1);
+			expect(usageDrafts[0]?.data).toEqual({
+				inputTokens: 222,
+				outputTokens: 22,
+				cacheReadTokens: 100,
+				cacheWriteTokens: 5,
+			});
 		});
 	});
 });

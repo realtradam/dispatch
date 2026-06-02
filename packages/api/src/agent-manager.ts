@@ -36,6 +36,7 @@ import {
 	getMessagesForTab,
 	getSetting,
 	getTab,
+	getUsageStatsForTab,
 	listOpenTabs,
 	loadAgent,
 	loadAgents,
@@ -56,6 +57,8 @@ import {
 	TaskList,
 	toAvailableSubagents,
 	toAvailableUserAgents,
+	type UsageData,
+	type UsageStats,
 	validateConfig,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
@@ -1483,6 +1486,10 @@ export class AgentManager {
 			// turn (text / thinking / tool-batch / error / system), folded from
 			// the stream via the shared `appendEventToChunks` helper.
 			const chunks: Chunk[] = [];
+			// Per-attempt usage accumulator. Reset each fallback attempt so a
+			// superseded (rate-limited) attempt's usage is discarded alongside its
+			// `chunks`. One `usage` event → one UsageData row.
+			const usageRows: UsageData[] = [];
 			const assistantId = crypto.randomUUID();
 			let assistantPersisted = false;
 			tabAgent.currentChunks = chunks;
@@ -1493,8 +1500,17 @@ export class AgentManager {
 			// `tool-batch` into separate `tool_call` + `tool_result` rows and
 			// tags every row with `turn_id` + derived `step`.
 			const flushAssistant = (): void => {
-				if (assistantPersisted || chunks.length === 0) return;
-				appendChunks(tabId, explodeTurn(turnId, chunks));
+				if (assistantPersisted) return;
+				// Append usage as extra drafts in the SAME appendChunks call as the
+				// turn's content rows: one atomic write, one fsync, contiguous seqs.
+				// Usage rows are an invisible side channel (excluded from
+				// getChunksForTab); `step` is cosmetic for usage (never grouped).
+				const drafts = explodeTurn(turnId, chunks);
+				for (const u of usageRows) {
+					drafts.push({ turnId, step: 0, role: "assistant", type: "usage", data: u });
+				}
+				if (drafts.length === 0) return;
+				appendChunks(tabId, drafts);
 				assistantPersisted = true;
 			};
 
@@ -1546,6 +1562,15 @@ export class AgentManager {
 					// flat string copy of plain text output.
 					if (event.type === "text-delta") {
 						allOutput += event.delta;
+					}
+
+					// Capture per-step usage as a side-channel row to persist with the
+					// turn (one row per `usage` event). The live `this.emit(event)`
+					// above still drives in-session accumulation; this is the reload-
+					// persistence path. `appendEventToChunks` intentionally ignores
+					// `usage`, so it never becomes message content.
+					if (event.type === "usage") {
+						usageRows.push({ ...event.usage });
 					}
 
 					// Route every content-bearing event through the shared helper.
@@ -1622,7 +1647,16 @@ export class AgentManager {
 		// above). Signal the frontend that the turn's rows — with real seqs — are
 		// durable so it can fold its live representation into the sealed log.
 		// Emitted AFTER status:idle/error (which fire before the DB write).
-		this.emit({ type: "turn-sealed", turnId }, tabId);
+		// Carry the authoritative usage aggregate (read AFTER the usage rows were
+		// persisted) so the frontend reconciles its live cacheStats to the DB truth
+		// — self-healing the live overshoot from a discarded rate-limited attempt.
+		let usageStats: UsageStats | null = null;
+		try {
+			usageStats = getUsageStatsForTab(tabId);
+		} catch {
+			// DB read failed — omit reconciliation rather than crash the turn.
+		}
+		this.emit({ type: "turn-sealed", turnId, usageStats }, tabId);
 
 		// Turn fully settled — clear the shared turn id.
 		tabAgent.currentTurnId = null;

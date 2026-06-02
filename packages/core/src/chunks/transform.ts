@@ -209,6 +209,11 @@ export function groupRowsToMessages(rows: ChunkRow[]): MessageRow[] {
 			continue;
 		}
 
+		// Usage rows are an invisible side channel (persisted for the backend
+		// aggregate only). They're already query-excluded from getChunksForTab,
+		// so this is defensive insurance: never let one leak into render grouping.
+		if (row.type === "usage") continue;
+
 		// assistant / tool rows → part of the current assistant message
 		const c = ensureAssistant(row);
 		switch (row.type) {
