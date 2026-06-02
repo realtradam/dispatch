@@ -351,7 +351,29 @@ export type AgentEvent =
 			 */
 			reason?: "interrupt" | "continuation";
 	  }
-	| { type: "message-cancelled"; tabId: string; messageId: string };
+	| { type: "message-cancelled"; tabId: string; messageId: string }
+	/**
+	 * Conversation-compaction lifecycle (UI-driven, not an agent tool). A
+	 * compaction summarizes a tab's older history into an anchored summary while
+	 * preserving the most recent turns verbatim.
+	 *
+	 * `compaction-started` fires on the temporary placeholder tab when the
+	 * summary request begins. `compaction-complete` fires when the summary has
+	 * been generated and the history relocated: the compacted continuation now
+	 * lives on `sourceTabId` (the canonical id, with its key/model/working-dir
+	 * preserved), the FULL pre-compaction history was moved to `backupTabId`, and
+	 * `tempTabId` (the placeholder) should be discarded by the frontend.
+	 * `compaction-error` reports a failure (or cancellation) on `tempTabId`.
+	 */
+	| { type: "compaction-started"; tempTabId: string; sourceTabId: string }
+	| {
+			type: "compaction-complete";
+			tempTabId: string;
+			sourceTabId: string;
+			backupTabId: string;
+			backupTitle: string;
+	  }
+	| { type: "compaction-error"; tempTabId: string; sourceTabId: string; error: string };
 
 // ─── Tool Types ──────────────────────────────────────────────────
 

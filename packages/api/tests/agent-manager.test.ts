@@ -115,6 +115,38 @@ function resetAppendChunksCalls(): void {
 	appendChunksCalls.length = 0;
 }
 
+// ── Compaction test scaffolding ────────────────────────────────────
+// Fake chunk store (per tab) feeding getChunksForTab / rekeyChunks.
+const fakeChunksByTab = new Map<string, Array<{ tabId: string }>>();
+// Records of createTab(id, title, opts) and rekeyChunks(from, to) calls.
+const createTabCalls: Array<{ id: string; title: string }> = [];
+const rekeyCalls: Array<{ from: string; to: string }> = [];
+// Configurable buildCompactionRequest result per source tab. Default: a
+// compactable conversation (non-empty prompt + a one-message tail).
+const fakeCompactionByTab = new Map<
+	string,
+	{ prompt?: string; tail: Array<{ turnId: string; role: string; chunks: unknown[] }> }
+>();
+// Configurable registry keys + env-key resolution so resolveConnection can
+// succeed in compaction tests. Default empty (preserves existing behaviour).
+const fakeRegistryKeys: Array<{
+	id: string;
+	provider: string;
+	base_url: string;
+	env?: string;
+}> = [];
+const fakeApiKeys = new Map<string, string>();
+const fakeConfigKeys: Array<{ id: string; provider: string; base_url: string; env?: string }> = [];
+function resetCompactionScaffolding(): void {
+	fakeRegistryKeys.length = 0;
+	fakeApiKeys.clear();
+	fakeConfigKeys.length = 0;
+	fakeChunksByTab.clear();
+	createTabCalls.length = 0;
+	rekeyCalls.length = 0;
+	fakeCompactionByTab.clear();
+}
+
 // Seedable return value for the mocked getUsageStatsForTab — what the backend
 // reads (post-write) to attach to the `turn-sealed` event.
 const fakeUsageStatsByTab = new Map<string, unknown>();
@@ -267,7 +299,9 @@ vi.mock("@dispatch/core", () => ({
 		};
 	},
 	loadConfig(_dir: string) {
-		return { permissions: {} };
+		return fakeConfigKeys.length > 0
+			? { permissions: {}, keys: [...fakeConfigKeys] }
+			: { permissions: {} };
 	},
 	configToRuleset(_config: unknown) {
 		return [];
@@ -289,7 +323,7 @@ vi.mock("@dispatch/core", () => ({
 			return [];
 		}
 		getKeys() {
-			return [];
+			return fakeRegistryKeys.map((k) => ({ definition: k, status: "active" }));
 		}
 		getModelsByTag(_tag: string) {
 			return [];
@@ -372,7 +406,10 @@ vi.mock("@dispatch/core", () => ({
 		return [];
 	},
 	GLOBAL_AGENTS_DIR: "/tmp/global-agents",
-	createTab() {},
+	createTab(id: string, title: string) {
+		createTabCalls.push({ id, title });
+		return { id, title };
+	},
 	getTab(id: string) {
 		return fakeTabs.get(id) ?? null;
 	},
@@ -417,8 +454,8 @@ vi.mock("@dispatch/core", () => ({
 	refreshAccountCredentialsAsync() {
 		return Promise.resolve(null);
 	},
-	resolveApiKey() {
-		return null;
+	resolveApiKey(keyId: string) {
+		return fakeApiKeys.get(keyId) ?? null;
 	},
 	getSetting(key: string) {
 		return fakeSettings.get(key) ?? null;
@@ -436,7 +473,35 @@ vi.mock("@dispatch/core", () => ({
 		return [];
 	},
 	explodeTurn() {
-		return [];
+		return [{ turnId: "t", step: 0, role: "assistant", type: "text", data: { text: "" } }];
+	},
+	getChunksForTab(tabId: string) {
+		return fakeChunksByTab.get(tabId) ?? [];
+	},
+	groupRowsToMessages(rows: Array<{ tabId: string }>) {
+		return rows;
+	},
+	rekeyChunks(from: string, to: string) {
+		rekeyCalls.push({ from, to });
+		const rows = fakeChunksByTab.get(from) ?? [];
+		fakeChunksByTab.set(to, rows);
+		fakeChunksByTab.delete(from);
+		return rows.length;
+	},
+	buildCompactionRequest(input: { messages: unknown[] }) {
+		// Resolve the seeded result by matching the first row's tabId.
+		const first = (input.messages as Array<{ tabId?: string }>)[0];
+		const tabId = first?.tabId ?? "";
+		const seeded = fakeCompactionByTab.get(tabId);
+		if (seeded) return { head: [], tail: seeded.tail, prompt: seeded.prompt };
+		return {
+			head: [],
+			tail: [{ turnId: "tail-turn", role: "user", chunks: [{ type: "text", text: "recent" }] }],
+			prompt: "SUMMARY PROMPT",
+		};
+	},
+	buildSummaryTurnText(summary: string) {
+		return `[CONVERSATION SUMMARY]\n\n${summary}`;
 	},
 	getMessagesForTab(tabId: string) {
 		return fakeMessagesByTab.get(tabId) ?? [];
@@ -504,6 +569,7 @@ describe("AgentManager", () => {
 		appendEventToChunksSpy.mockClear();
 		resetAppendChunksCalls();
 		resetFakeUsageStats();
+		resetCompactionScaffolding();
 	});
 
 	it("initial status is idle", () => {
@@ -1827,5 +1893,153 @@ describe("AgentManager", () => {
 				cacheWriteTokens: 5,
 			});
 		});
+	});
+});
+
+describe("AgentManager.compactTab", () => {
+	beforeEach(() => {
+		resetFakeMessages();
+		resetConstructedAgents();
+		resetCapturedRunOptions();
+		resetFakeTabs();
+		resetFakeSettings();
+		setRunImpl(null);
+		appendEventToChunksSpy.mockClear();
+		resetAppendChunksCalls();
+		resetFakeUsageStats();
+		resetCompactionScaffolding();
+	});
+
+	/** Seed a usable compaction model (config key + registry key + env key). */
+	function seedCompactorModel(keyId = "k1", modelId = "m1"): void {
+		fakeConfigKeys.push({ id: keyId, provider: "opencode-go", base_url: "https://x", env: "K1" });
+		fakeRegistryKeys.push({ id: keyId, provider: "opencode-go", base_url: "https://x", env: "K1" });
+		fakeApiKeys.set(keyId, "secret");
+		setFakeSetting("compaction_model_key_id", keyId);
+		setFakeSetting("compaction_model_id", modelId);
+	}
+
+	it("errors when the conversation is too short to compact (empty prompt)", async () => {
+		const manager = new AgentManager();
+		const events: AgentEvent[] = [];
+		manager.onEvent((e) => events.push(e));
+
+		setFakeTab({ id: "src", title: "Chat" });
+		fakeChunksByTab.set("src", [{ tabId: "src" }]);
+		// No prompt → nothing to compact.
+		fakeCompactionByTab.set("src", { tail: [], prompt: undefined });
+
+		await manager.compactTab("temp", "src");
+
+		const err = events.find((e) => e.type === "compaction-error");
+		expect(err).toMatchObject({ type: "compaction-error", tempTabId: "temp", sourceTabId: "src" });
+		// No backup tab created, no rekey.
+		expect(createTabCalls).toHaveLength(0);
+		expect(rekeyCalls).toHaveLength(0);
+	});
+
+	it("errors when no compaction model can be resolved", async () => {
+		const manager = new AgentManager();
+		const events: AgentEvent[] = [];
+		manager.onEvent((e) => events.push(e));
+
+		setFakeTab({ id: "src", title: "Chat", keyId: null, modelId: null });
+		fakeChunksByTab.set("src", [{ tabId: "src" }]);
+		// Compactable, but no configured model and the tab has no key/model.
+		// (no seedCompactorModel call)
+
+		await manager.compactTab("temp", "src");
+
+		expect(events.some((e) => e.type === "compaction-error")).toBe(true);
+		expect(rekeyCalls).toHaveLength(0);
+	});
+
+	it("refuses to compact while the source tab is running", async () => {
+		const manager = new AgentManager();
+		const events: AgentEvent[] = [];
+		manager.onEvent((e) => events.push(e));
+
+		setFakeTab({ id: "src", title: "Chat" });
+		fakeChunksByTab.set("src", [{ tabId: "src" }]);
+		// Start a (never-finishing) turn so the tab is "running".
+		setRunImpl(async function* () {
+			yield { type: "status", status: "running" } as const;
+			await new Promise<void>((r) => setTimeout(r, 50));
+			yield { type: "status", status: "idle" } as const;
+		});
+		void manager.processMessage("src", "hi");
+		// Give processMessage a tick to flip status to running.
+		await new Promise<void>((r) => setTimeout(r, 5));
+
+		await manager.compactTab("temp", "src");
+		const err = events.find((e) => e.type === "compaction-error");
+		expect(err).toBeDefined();
+		expect(rekeyCalls).toHaveLength(0);
+	});
+
+	it("happy path: summarizes, relocates history to a backup, re-seeds the source", async () => {
+		seedCompactorModel();
+		const manager = new AgentManager();
+		const events: AgentEvent[] = [];
+		manager.onEvent((e) => events.push(e));
+
+		setFakeTab({ id: "src", title: "My Chat", keyId: "k1", modelId: "m1" });
+		fakeChunksByTab.set("src", [{ tabId: "src" }, { tabId: "src" }]);
+		fakeCompactionByTab.set("src", {
+			prompt: "SUMMARY PROMPT",
+			tail: [
+				{ turnId: "tail-u", role: "user", chunks: [{ type: "text", text: "recent q" }] },
+				{ turnId: "tail-a", role: "assistant", chunks: [{ type: "text", text: "recent a" }] },
+			],
+		});
+
+		await manager.compactTab("temp", "src");
+
+		// started + complete emitted; no error.
+		expect(events.some((e) => e.type === "compaction-started")).toBe(true);
+		const complete = events.find((e) => e.type === "compaction-complete") as
+			| (AgentEvent & { backupTabId: string; backupTitle: string })
+			| undefined;
+		expect(complete).toBeDefined();
+		expect(events.some((e) => e.type === "compaction-error")).toBe(false);
+
+		// A backup tab was created and history was relocated onto it.
+		expect(createTabCalls).toHaveLength(1);
+		expect(rekeyCalls).toHaveLength(1);
+		expect(rekeyCalls[0]).toMatchObject({ from: "src", to: createTabCalls[0]?.id });
+		expect(complete?.backupTabId).toBe(createTabCalls[0]?.id);
+		expect(complete?.backupTitle).toContain("pre-compaction");
+
+		// The source was re-seeded: appendChunks was called for "src" after rekey
+		// (summary turn + preserved tail).
+		const srcAppends = appendChunksCalls.filter((c) => c.tabId === "src");
+		expect(srcAppends.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("queues messages sent to the source while compaction is in flight", async () => {
+		seedCompactorModel();
+		const manager = new AgentManager();
+		setFakeTab({ id: "src", title: "Chat", keyId: "k1", modelId: "m1" });
+		fakeChunksByTab.set("src", [{ tabId: "src" }]);
+		fakeCompactionByTab.set("src", {
+			prompt: "SUMMARY PROMPT",
+			tail: [{ turnId: "t", role: "user", chunks: [{ type: "text", text: "recent" }] }],
+		});
+
+		// Make the summary generation slow so we can deliver mid-compaction.
+		setRunImpl(async function* () {
+			yield { type: "status", status: "running" } as const;
+			await new Promise<void>((r) => setTimeout(r, 40));
+			yield { type: "text-delta", delta: "summary text" } as const;
+			yield { type: "status", status: "idle" } as const;
+		});
+
+		const compaction = manager.compactTab("temp", "src");
+		await new Promise<void>((r) => setTimeout(r, 10));
+		// While compacting, a human message should be QUEUED, not started.
+		const result = manager.deliverMessage("src", "hello during compaction");
+		expect(result.status).toBe("queued");
+
+		await compaction;
 	});
 });

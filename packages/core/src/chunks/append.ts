@@ -210,6 +210,9 @@ export function appendEventToChunks(chunks: Chunk[], event: AgentEvent): void {
 		case "message-queued":
 		case "message-consumed":
 		case "message-cancelled":
+		case "compaction-started":
+		case "compaction-complete":
+		case "compaction-error":
 			return;
 
 		default: {

@@ -19,11 +19,18 @@ import { Hono } from "hono";
 
 export const tabsRoutes = new Hono();
 
-let getAgentManager: () => { stopTab(id: string): void; deleteTab(id: string): void } | null = () =>
-	null;
+let getAgentManager: () => {
+	stopTab(id: string): void;
+	deleteTab(id: string): void;
+	compactTab(tempTabId: string, sourceTabId: string): Promise<void>;
+} | null = () => null;
 
 export function setTabsAgentManager(
-	getter: () => { stopTab(id: string): void; deleteTab(id: string): void } | null,
+	getter: () => {
+		stopTab(id: string): void;
+		deleteTab(id: string): void;
+		compactTab(tempTabId: string, sourceTabId: string): Promise<void>;
+	} | null,
 ): void {
 	getAgentManager = getter;
 }
@@ -60,6 +67,28 @@ tabsRoutes.put("/settings/title-model", async (c) => {
 	if (body.modelId !== undefined) {
 		if (body.modelId) setSetting("title_model_id", body.modelId);
 		else deleteSetting("title_model_id");
+	}
+	return c.json({ success: true });
+});
+
+// Conversation-compaction model (key+model used to generate the summary).
+// Mirrors the title-model setting. When unset, compaction falls back to the
+// source tab's own key+model.
+tabsRoutes.get("/settings/compaction-model", (c) => {
+	const keyId = getSetting("compaction_model_key_id");
+	const modelId = getSetting("compaction_model_id");
+	return c.json({ keyId, modelId });
+});
+
+tabsRoutes.put("/settings/compaction-model", async (c) => {
+	const body = await c.req.json<{ keyId?: string | null; modelId?: string | null }>();
+	if (body.keyId !== undefined) {
+		if (body.keyId) setSetting("compaction_model_key_id", body.keyId);
+		else deleteSetting("compaction_model_key_id");
+	}
+	if (body.modelId !== undefined) {
+		if (body.modelId) setSetting("compaction_model_id", body.modelId);
+		else deleteSetting("compaction_model_id");
 	}
 	return c.json({ success: true });
 });
@@ -132,6 +161,28 @@ tabsRoutes.get("/:id/chunks", (c) => {
 	const oldestSeq = chunks.length > 0 ? (chunks[0]?.seq ?? null) : null;
 	const total = getTotalChunkCount(id);
 	return c.json({ chunks, total, oldestSeq });
+});
+
+// Trigger conversation compaction. The `:id` is the TRANSIENT placeholder tab
+// hosting the "compacting…" UI; `sourceTabId` (body) is the conversation being
+// compacted. Fire-and-forget on the server: progress/outcome is delivered via
+// the `compaction-*` WS events. Returns 202 once the run is kicked off.
+tabsRoutes.post("/:id/compact", async (c) => {
+	const tempTabId = c.req.param("id");
+	const body = await c.req
+		.json<{ sourceTabId?: string }>()
+		.catch(() => ({}) as { sourceTabId?: string });
+	const sourceTabId = body.sourceTabId;
+	if (!sourceTabId || typeof sourceTabId !== "string") {
+		return c.json({ error: "sourceTabId is required" }, 400);
+	}
+	const mgr = getAgentManager();
+	if (!mgr) return c.json({ error: "agent manager unavailable" }, 503);
+	// Run in the background; outcome is emitted over WS.
+	void mgr.compactTab(tempTabId, sourceTabId).catch((err) => {
+		console.error(`[dispatch] compactTab error for ${sourceTabId}:`, err);
+	});
+	return c.json({ success: true }, 202);
 });
 
 tabsRoutes.patch("/:id", async (c) => {

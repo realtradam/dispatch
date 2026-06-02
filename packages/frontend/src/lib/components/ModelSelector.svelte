@@ -63,6 +63,9 @@ const modelCache = new Map<string, string[]>();
 		onReasoningChange,
 		onAgentChange = (_agent: AgentInfo | null) => {},
 		onWorkingDirectoryChange = (_dir: string | null) => {},
+		onCompact = () => {},
+		canCompact = false,
+		compacting = false,
 	}: {
 		keys?: KeyInfo[];
 		activeKeyId?: string | null;
@@ -77,6 +80,9 @@ const modelCache = new Map<string, string[]>();
 		onReasoningChange: (effort: string) => void;
 		onAgentChange?: (agent: AgentInfo | null) => void;
 		onWorkingDirectoryChange?: (dir: string | null) => void;
+		onCompact?: () => void;
+		canCompact?: boolean;
+		compacting?: boolean;
 	} = $props();
 
 	let showKeyModal = $state(false);
@@ -222,6 +228,24 @@ const modelCache = new Map<string, string[]>();
 				{/if}
 			{/if}
 		</div>
+	</div>
+
+	<!-- Compact conversation -->
+	<div class="mb-3">
+		<button
+			type="button"
+			class="btn btn-sm btn-outline w-full"
+			disabled={!canCompact || compacting}
+			onclick={onCompact}
+			title="Summarize older turns into a compact anchor, preserving the most recent turns. Opens a new tab while it works; the conversation continues here once done."
+		>
+			{#if compacting}
+				<span class="loading loading-spinner loading-xs"></span>
+				Compacting…
+			{:else}
+				Compact conversation
+			{/if}
+		</button>
 	</div>
 
 	<!-- Toggle -->

@@ -195,6 +195,16 @@ export interface Tab {
 	 * `usage` event arrives. Drives the "Cache Rate" sidebar view.
 	 */
 	cacheStats?: CacheStats;
+	/**
+	 * Compaction UI state. `compactingSource` is set on a TRANSIENT placeholder
+	 * tab while it hosts the "compacting…" screen, naming the conversation being
+	 * compacted. `isCompacting` is set on the SOURCE tab while its compaction is
+	 * in flight (input locked). Both clear when compaction settles.
+	 */
+	compactingSource?: string | null;
+	isCompacting?: boolean;
+	/** Error message shown on a placeholder tab when compaction fails. */
+	compactionError?: string | null;
 }
 
 /**
@@ -315,6 +325,9 @@ export function createTabStore() {
 			manualTitle: false,
 			oldestLoadedSeq: null,
 			totalChunks: 0,
+			compactingSource: null,
+			isCompacting: false,
+			compactionError: null,
 		};
 		tabs = [...tabs, tab];
 		activeTabId = id;
@@ -947,6 +960,145 @@ export function createTabStore() {
 		return restored.length;
 	}
 
+	/**
+	 * Start a conversation compaction (UI-driven). Creates a TRANSIENT
+	 * placeholder tab that shows the "compacting…" screen, switches to it, and
+	 * kicks off the backend compaction of `sourceTabId`. Outcome arrives via the
+	 * `compaction-*` WS events (see handleEvent). Closing the placeholder tab
+	 * before completion cancels it (DELETE aborts the in-flight summary).
+	 */
+	async function startCompaction(sourceTabId: string): Promise<void> {
+		const source = getTabById(sourceTabId);
+		if (!source) return;
+		if (source.isCompacting) return;
+
+		const tempId = generateId();
+		// Create the placeholder tab on the backend (so DELETE-on-close can
+		// abort the run) and locally (so we can switch to it and show the UI).
+		try {
+			await fetch(`${config.apiBase}/tabs`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ id: tempId, title: "Compacting…" }),
+			});
+		} catch {
+			// Continue — the run is driven server-side via the compact endpoint.
+		}
+
+		const placeholder: Tab = {
+			id: tempId,
+			title: "Compacting…",
+			chunks: [],
+			live: [],
+			renderGroups: [],
+			liveTurnId: null,
+			agentStatus: "idle",
+			keyId: null,
+			modelId: null,
+			reasoningEffort: DEFAULT_REASONING_EFFORT,
+			currentAssistantId: null,
+			tasks: [],
+			injectedSkills: [],
+			parentTabId: null,
+			persistent: true,
+			agentSlug: null,
+			agentScope: null,
+			agentModels: null,
+			workingDirectory: null,
+			queuedMessages: [],
+			chunkLimit: appSettings.chunkLimit,
+			draft: "",
+			manualTitle: true,
+			oldestLoadedSeq: null,
+			totalChunks: 0,
+			compactingSource: sourceTabId,
+			isCompacting: false,
+			compactionError: null,
+		};
+		tabs = [...tabs, placeholder];
+		activeTabId = tempId;
+		updateTab(sourceTabId, { isCompacting: true });
+
+		try {
+			const res = await fetch(`${config.apiBase}/tabs/${tempId}/compact`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ sourceTabId }),
+			});
+			if (!res.ok) {
+				const msg = `Compaction request failed (HTTP ${res.status}).`;
+				updateTab(sourceTabId, { isCompacting: false });
+				if (getTabById(tempId)) updateTab(tempId, { compactionError: msg, compactingSource: null });
+			}
+		} catch {
+			const msg = "Could not reach the server to start compaction.";
+			updateTab(sourceTabId, { isCompacting: false });
+			if (getTabById(tempId)) updateTab(tempId, { compactionError: msg, compactingSource: null });
+		}
+	}
+
+	/**
+	 * Finish a completed compaction: the canonical conversation now lives on
+	 * `sourceTabId` (re-seeded with summary + preserved tail), the full prior
+	 * history was relocated to `backupTabId`. Reload the source tab's chunks,
+	 * insert the backup tab into the sidebar, switch focus back to the source,
+	 * and discard the transient placeholder.
+	 */
+	async function finishCompaction(ev: {
+		tempTabId: string;
+		sourceTabId: string;
+		backupTabId: string;
+		backupTitle: string;
+	}): Promise<void> {
+		// Reload the re-seeded source conversation from the backend.
+		updateTab(ev.sourceTabId, { isCompacting: false });
+		await reloadChunksFromApi(ev.sourceTabId);
+
+		// Insert the backup tab (full pre-compaction history) if not present.
+		if (!getTabById(ev.backupTabId)) {
+			const win = await fetchChunkWindow(ev.backupTabId, { limit: 100 });
+			const src = getTabById(ev.sourceTabId);
+			const backup: Tab = {
+				id: ev.backupTabId,
+				title: ev.backupTitle,
+				chunks: win.chunks,
+				live: [],
+				renderGroups: deriveRenderGroups(win.chunks, []),
+				liveTurnId: null,
+				agentStatus: "idle",
+				keyId: src?.keyId ?? null,
+				modelId: src?.modelId ?? null,
+				reasoningEffort: src?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+				currentAssistantId: null,
+				tasks: [],
+				injectedSkills: [],
+				parentTabId: null,
+				persistent: true,
+				agentSlug: src?.agentSlug ?? null,
+				agentScope: src?.agentScope ?? null,
+				agentModels: src?.agentModels ?? null,
+				workingDirectory: src?.workingDirectory ?? null,
+				queuedMessages: [],
+				chunkLimit: appSettings.chunkLimit,
+				draft: "",
+				manualTitle: true,
+				oldestLoadedSeq: win.oldestSeq,
+				totalChunks: win.total,
+				compactingSource: null,
+				isCompacting: false,
+				compactionError: null,
+			};
+			tabs = [...tabs, backup];
+			evictChunks(ev.backupTabId);
+		}
+
+		// Switch focus back to the (compacted) source tab and drop the
+		// placeholder. If the placeholder was the active tab, focus moves to
+		// the source conversation.
+		if (activeTabId === ev.tempTabId) activeTabId = ev.sourceTabId;
+		tabs = tabs.filter((t) => t.id !== ev.tempTabId);
+	}
+
 	function handleEvent(event: AgentEvent & { tabId?: string }): void {
 		const tabId = event.tabId;
 
@@ -1448,6 +1600,48 @@ export function createTabStore() {
 						(m) => !(m.role === "user" && m.id === `queued-${cancelEvent.messageId}`),
 					),
 				});
+				break;
+			}
+			case "compaction-started": {
+				const ev = event as AgentEvent & { tempTabId: string; sourceTabId: string };
+				// Lock the source tab's input while compaction runs.
+				if (getTabById(ev.sourceTabId)) {
+					updateTab(ev.sourceTabId, { isCompacting: true });
+				}
+				// Mark the placeholder tab so it shows the "compacting…" screen.
+				if (getTabById(ev.tempTabId)) {
+					updateTab(ev.tempTabId, { compactingSource: ev.sourceTabId });
+				}
+				break;
+			}
+			case "compaction-complete": {
+				const ev = event as AgentEvent & {
+					tempTabId: string;
+					sourceTabId: string;
+					backupTabId: string;
+					backupTitle: string;
+				};
+				void finishCompaction(ev);
+				break;
+			}
+			case "compaction-error": {
+				const ev = event as AgentEvent & {
+					tempTabId: string;
+					sourceTabId: string;
+					error: string;
+				};
+				if (getTabById(ev.sourceTabId)) {
+					updateTab(ev.sourceTabId, { isCompacting: false });
+				}
+				// Surface the error on the placeholder tab (if still open) so the
+				// user sees why it failed; the source conversation is untouched.
+				const tmp = getTabById(ev.tempTabId);
+				if (tmp) {
+					updateTab(ev.tempTabId, {
+						compactingSource: null,
+						compactionError: ev.error,
+					});
+				}
 				break;
 			}
 		}
@@ -2130,6 +2324,7 @@ export function createTabStore() {
 		promoteTab,
 		openAgentTab,
 		setWorkingDirectory,
+		startCompaction,
 		// Exposed so tests can drive the real reactive code path that the
 		// WS callback uses in production. Not intended for use in
 		// components — they should rely on the WS subscription instead.
