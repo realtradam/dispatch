@@ -11,6 +11,7 @@ import {
 	listOpenTabs,
 	setSetting,
 	updateTabModel,
+	updateTabPositions,
 	updateTabStatus,
 	updateTabTitle,
 } from "@dispatch/core";
@@ -60,6 +61,18 @@ tabsRoutes.put("/settings/title-model", async (c) => {
 		if (body.modelId) setSetting("title_model_id", body.modelId);
 		else deleteSetting("title_model_id");
 	}
+	return c.json({ success: true });
+});
+
+// Reorder open tabs. Body `{ ids }` is the new left-to-right order of tab ids;
+// each tab's `position` is rewritten to its index. Must be declared before the
+// `/:id` routes so "reorder" isn't captured as an id param.
+tabsRoutes.patch("/reorder", async (c) => {
+	const body = await c.req.json<{ ids?: string[] }>();
+	if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string")) {
+		return c.json({ error: "ids must be an array of strings" }, 400);
+	}
+	updateTabPositions(body.ids);
 	return c.json({ success: true });
 });
 
