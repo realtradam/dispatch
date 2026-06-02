@@ -131,6 +131,17 @@ function progressClass(utilization: number): string {
 	return "progress-success";
 }
 
+// Pace-aware coloring for cycle bars that show a "time dot" (elapsed % of the
+// reset window). Red once usage hits 90%, otherwise green when usage is at or
+// behind the dot and orange when it has run ahead of it. Falls back to the
+// plain threshold coloring when no dot is present (elapsedPct < 0).
+function pacedProgressClass(percentUsed: number, elapsedPct: number): string {
+	if (percentUsed >= 90) return "progress-error";
+	if (elapsedPct < 0) return progressClass(percentUsed / 100);
+	if (percentUsed <= elapsedPct) return "progress-success";
+	return "progress-warning";
+}
+
 function formatDate(ts: number): string {
 	const diff = ts - Date.now();
 	const days = Math.floor(diff / 86400000);
@@ -245,7 +256,7 @@ function hasBucketData(bucket: UsageBucket | undefined): boolean {
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
 									<div class="relative w-full h-2">
-										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										<progress class="progress w-full h-2 {pacedProgressClass(p, tp)} absolute inset-0" value={p} max="100"></progress>
 										{#if tp >= 0}
 											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
 										{/if}
@@ -266,7 +277,7 @@ function hasBucketData(bucket: UsageBucket | undefined): boolean {
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
 									<div class="relative w-full h-2">
-										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										<progress class="progress w-full h-2 {pacedProgressClass(p, tp)} absolute inset-0" value={p} max="100"></progress>
 										{#if tp >= 0}
 											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
 										{/if}
@@ -330,7 +341,7 @@ function hasBucketData(bucket: UsageBucket | undefined): boolean {
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
 									<div class="relative w-full h-2">
-										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										<progress class="progress w-full h-2 {pacedProgressClass(p, tp)} absolute inset-0" value={p} max="100"></progress>
 										{#if tp >= 0}
 											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
 										{/if}
@@ -351,7 +362,7 @@ function hasBucketData(bucket: UsageBucket | undefined): boolean {
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
 									<div class="relative w-full h-2">
-										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										<progress class="progress w-full h-2 {pacedProgressClass(p, tp)} absolute inset-0" value={p} max="100"></progress>
 										{#if tp >= 0}
 											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
 										{/if}
@@ -372,7 +383,7 @@ function hasBucketData(bucket: UsageBucket | undefined): boolean {
 										<span class="text-xs font-mono">{p}%</span>
 									</div>
 									<div class="relative w-full h-2">
-										<progress class="progress w-full h-2 {progressClass(u)} absolute inset-0" value={p} max="100"></progress>
+										<progress class="progress w-full h-2 {pacedProgressClass(p, tp)} absolute inset-0" value={p} max="100"></progress>
 										{#if tp >= 0}
 											<div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-info bg-info-content pointer-events-none box-border" style="left: {tp}%"></div>
 										{/if}
