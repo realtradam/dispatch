@@ -174,7 +174,7 @@ onMount(() => {
 			<div class="flex-1 overflow-hidden">
 				<ChatPanel />
 			</div>
-			<ChatInput />
+			<ChatInput {contextLimit} />
 		</div>
 
 		<!-- Right sidebar: overlay on small screens, inline on large -->
