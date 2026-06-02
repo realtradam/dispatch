@@ -35,7 +35,15 @@ declare -a names
 declare -a paths
 
 if [ $# -eq 0 ]; then
-	names=(dispatch dispatch-systemd code-search)
+	names=(dispatch dispatch-systemd)
+	# code-search ships a self-contained `cs` binary pinned to _cs_commit in the
+	# PKGBUILD; it rarely changes. Skip reinstalling it if it's already present —
+	# run `bin/install-pkg code-search` to force a reinstall (e.g. after a bump).
+	if pacman -Qq code-search &>/dev/null; then
+		echo "code-search already installed — skipping (run 'bin/install-pkg code-search' to force)"
+	else
+		names+=(code-search)
+	fi
 elif [ "${1:-}" = "--all" ]; then
 	names=(dispatch dispatch-systemd dispatch-s6 dispatch-electron code-search)
 else
