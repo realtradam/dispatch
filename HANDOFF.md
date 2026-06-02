@@ -1,73 +1,68 @@
-# Handoff — cr/claude-reset-fix
+# Handoff — td/todo-fix: declarative todo/task system
 
-## Objective
-Make the Claude Wake Schedule ("Claude reset") system work reliably end to end.
+## Summary
+Replaced Dispatch's imperative, id-based `todo` tool (actions `add`/`update`/`list`/`get`/`remove`)
+with opencode's **declarative whole-list** design, and fixed the panel blanking on reload. The tool
+name (`todo`), the `task-list-update` event, the per-tab `TaskList` store, and the sidebar **Tasks**
+panel are all preserved — only the interface, status model, and UI rendering changed.
 
-## Root cause found
-The two issues named in the task brief (toggle endpoint ignoring client intent;
-server-side request reordering desyncing the UI) were **already fixed** in this
-worktree from prior rounds — the toggle endpoint requires an explicit
-`action: 'on' | 'off'`, and the frontend serializes mutations behind a global
-`pendingHour` lock (verified: tests + code present, suite green).
-
-The *actual* live failure (reproduced by the user: `✗ Last wake 4 min ago —
-failed`, blank reason, then `Retrying (6 left…)`) was in the **wake probe
-itself**, not the scheduler or UI:
-
-`wakeAllClaudeAccounts()` POSTed a bare body
-`{ model, max_tokens, messages: [{role:"user",content:"hi"}] }` with **no
-`system[]`**. These accounts are OAuth (Claude Pro/Max) subscriptions, and
-Anthropic validates `system[]` on Claude-Code-billed OAuth requests — it
-rejects (401/403) any request whose system block lacks the verbatim Claude Code
-identity string. So **every** scheduled wake and the manual "Wake now" button
-failed. The old code recorded only `ok: res.ok` with no error text, surfacing as
-a blank "— failed" that then burned the 6×5-min retry budget.
+## What changed (and why it's better)
+- **Declarative whole-list write** (from opencode's `todowrite`): the model sends the *entire*
+  desired list in one `todos` param each call; the store replaces its list. No model-visible ids,
+  no delta reasoning, no "task not found" spirals, no multi-call churn — the failure modes that made
+  the old CRUD tool confuse weaker models.
+- **Status lifecycle:** `pending | in_progress | completed | cancelled` (was `pending | in_progress |
+  done | blocked`; `blocked` was dead/unrendered state).
+- **No `priority`** (deliberately dropped per product decision; opencode has it, we don't).
+- **Reload reliability:** todos used to blank on page reload (broadcast only on change, absent from
+  the reconnect snapshot). Now `TabStatusSnapshot` carries per-tab `tasks`, so the panel rehydrates
+  from the backend on reload/reconnect. Still **in-memory per-tab** (no DB; does not survive a server
+  restart).
 
 ## Files changed
-- **`packages/core/src/credentials/claude.ts`** — new pure
-  `buildWakeProbeBody(model)` that mirrors a genuine Claude Code request:
-  `system: [{billing-header}, {identity}]` + `messages:[{role:"user",content:"hi"}]`,
-  `max_tokens: 16`. Reuses existing `buildBillingHeaderValue` + `SYSTEM_IDENTITY`.
-- **`packages/core/src/credentials/index.ts`** — export `buildWakeProbeBody`
-  (reachable as `@dispatch/core`).
-- **`packages/api/src/routes/models.ts`** — `wakeAllClaudeAccounts` now sends
-  `buildWakeProbeBody(WAKE_PROBE_MODEL)` plus the CLI session headers
-  (`X-Claude-Code-Session-Id`, `x-client-request-id`), and on `!res.ok` records
-  `HTTP <status>: <message>` via new `describeFailedResponse(res)` so the panel
-  never shows a bare "failed" again and breakage stays debuggable.
-- **`packages/core/tests/credentials/wake-probe.test.ts`** — new: 4 unit tests
-  asserting the probe body shape (model/tokens, billing-first/identity-second
-  system[], single "hi" user message, determinism).
+- `packages/core/src/types/index.ts` — `TaskStatus` union; `TaskItem = { id, content, status }`
+  (`id` internal/positional, never shown to the model); `TabStatusSnapshot.tasks?`.
+- `packages/core/src/tools/task-list.ts` — rewrote `TaskList` (declarative `setTasks`/`getTasks`/
+  `onChange`); `createTaskListTool` with a single `todos` param that echoes the stored list without
+  ids; new exported `TODO_DESCRIPTION` (adapted from opencode `todowrite.txt`).
+- `packages/core/src/index.ts` — export `TODO_DESCRIPTION`.
+- `packages/api/src/agent-manager.ts` — `TODO_GUIDANCE` → `TASK_MANAGEMENT_GUIDANCE` (system-prompt
+  section adapted from opencode `anthropic.txt`); updated `TOOL_DESCRIPTIONS.todo`; `getAllStatuses()`
+  now includes each tab's `tasks` (all tabs, omitted when empty).
+- `packages/frontend/src/lib/types.ts` — mirror `TaskItem` + `TabStatusSnapshot.tasks`.
+- `packages/frontend/src/lib/tabs.svelte.ts` — hydrate `tasks` from the snapshot in both restore
+  paths (initial `GET /status` map + `statuses` WS handler); updated debug-dump label.
+- `packages/frontend/src/lib/components/TaskListPanel.svelte` — render `content`; all four statuses
+  (completed→checked+strikethrough, in_progress→indeterminate+bold, cancelled→dim+strikethrough,
+  pending→empty); `completed/active` progress counter. Sidebar panel only — nothing relocated.
+- `packages/core/tests/tools/task-list.test.ts` — new (15 tests).
+- `packages/api/tests/agent-manager.test.ts`, `packages/api/tests/routes.test.ts` — updated
+  `TaskList` mocks to the declarative shape; added `getAllStatuses` task-snapshot coverage.
+- `notes/todo-tool-redesign-plan.md` — appended an "As-built" section.
 
 ## Public surface changed
-- New export `@dispatch/core` → `buildWakeProbeBody(model: string)`.
-- No API route signatures changed. `POST /models/wake`, `POST
-  /models/wake-schedule/toggle`, `GET /models/wake-schedule` request/response
-  shapes are unchanged. The only externally visible behavior change: failed
-  wakes now carry a descriptive `error` string (`HTTP <status>: <message>`)
-  instead of an empty one, which the panel already renders.
-- DB schema: unchanged.
+- **Tool `todo`**: parameters changed from `{ action, title, description, task_id, status }` to a
+  single `{ todos: Array<{ content, status }> }`. Statuses `pending|in_progress|completed|cancelled`.
+- **`@dispatch/core` exports**: added `TODO_DESCRIPTION`. `TaskItem` shape changed (`title`+
+  `description` → `content`; status union changed). `TaskList` methods changed (`addTask`/`updateTask`/
+  `removeTask`/`getTask` removed; `setTasks` added).
+- **`TabStatusSnapshot`** (wire format, core + frontend mirror) gained optional `tasks`.
+- Tool name, allowlist/loader/summon/permission wiring, agent TOMLs: **unchanged**.
 
-## Verification
-- `bun run check` (biome) → clean, 164 files.
-- `bun run test` (vitest) → **568 passed** (post-merge with dev; +4 from this
-  branch's new probe-body tests).
-- `tsc -p packages/core` and `tsc -p packages/api` → exit 0.
-- `svelte-check` (frontend) → 0 errors, 0 warnings.
+## Verification status
+- `bun run check` (biome): clean.
+- `bun run test`: **585 passing** (37 files).
+- `tsc --noEmit` (core, api) + `svelte-check` (frontend): 0 errors.
+- Verified post-merge of `dev`.
 
 ## Published
-Yes. Merged `dev` down into `cr/claude-reset-fix` (clean merge, no conflicts),
-re-verified all-green, then `git push . HEAD:dev` (fast-forward, accepted).
+Yes. Merged `dev` down (no conflicts), re-verified all-green, fast-forwarded
+`dev` → `9d6b7a9`. User confirmed the task system works before merge.
 
 ## Assumptions / known gaps
-- **Live API not testable from the agent sandbox.** The fix is verified offline
-  (body shape + headers match the real `transformClaudeOAuthBody` provider path
-  and unit tests). The actual "200 OK wake" requires real OAuth credentials and
-  was deferred to the user-test gate. If a probe still fails, the panel now shows
-  a concrete `HTTP <status>: <message>` reason to diagnose from.
-- **Probe model** is hardcoded `claude-3-5-haiku-20241022` (`WAKE_PROBE_MODEL`
-  in `models.ts`). Cheap/small by design — only needs to register activity.
-- **Deferred (unchanged design trade-offs, pre-existing):** DST drift on the
-  24h advance; no background snapshot polling (UI may show stale "Retrying…"
-  until next user interaction); retry storm re-probes already-succeeded accounts.
-  None of these block reliable wakes; the probe fix addresses the live failure.
+- No DB persistence: todos are in-memory per-tab and do not survive a server restart (matches scope;
+  opencode persists to SQLite — intentionally not ported).
+- No `priority` field (dropped per decision).
+- No new UI surfaces — the existing sidebar Tasks panel only.
+- An unrelated untracked `bookmark-manager/` directory exists in the worktree root; it is not part of
+  this feature and was left untouched (never staged/committed).
