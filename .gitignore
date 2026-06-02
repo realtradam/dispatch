@@ -26,3 +26,6 @@ packages/frontend/release/
 
 # Code-review artifacts
 claude-report.md
+
+# wishlist is untracked (updated by agents)
+notes/wishlist.md
