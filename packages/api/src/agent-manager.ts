@@ -575,7 +575,13 @@ export class AgentManager {
 					});
 				}
 				toolEntries.push({ name: "todo", tool: createTaskListTool(tabAgent.taskList) });
-				if (permSummon) {
+				// The `summon` tool is registered when EITHER the subagent
+				// permission (`perm_summon`) OR the user-agent permission
+				// (`perm_user_agent`) is granted — the two are independent.
+				// `perm_summon` enables ordinary subagent spawning; granting
+				// only `perm_user_agent` exposes summon in user-agent-only mode
+				// (spawns top-level user agents exclusively).
+				if (permSummon || permUserAgent) {
 					// Capture parent's allowed tool names for child permission enforcement
 					const parentAllowedTools = new Set(toolEntries.map((e) => e.name));
 					const allAgentDefs = loadAgents(workingDirectory);
@@ -609,19 +615,25 @@ export class AgentManager {
 							availableUserAgents,
 							agentDirPaths,
 							permUserAgent,
+							permSummon,
 						),
 					});
-					toolEntries.push({
-						name: "retrieve",
-						tool: createRetrieveTool({
-							getResult: (id) =>
-								tabAgent.shellStore.has(id)
-									? tabAgent.shellStore.getResult(id)
-									: tabAgent.transcriptStore.has(id)
-										? tabAgent.transcriptStore.getResult(id)
-										: this.getChildResult(id),
-						}),
-					});
+					// `retrieve` collects subagent results. User agents are
+					// fire-and-forget, so it is bundled with the subagent
+					// permission only — a user-agent-only grant doesn't get it.
+					if (permSummon) {
+						toolEntries.push({
+							name: "retrieve",
+							tool: createRetrieveTool({
+								getResult: (id) =>
+									tabAgent.shellStore.has(id)
+										? tabAgent.shellStore.getResult(id)
+										: tabAgent.transcriptStore.has(id)
+											? tabAgent.transcriptStore.getResult(id)
+											: this.getChildResult(id),
+							}),
+						});
+					}
 				}
 				if (permSendToTab || permReadTab) {
 					const tabCommAllowed = new Set<string>();

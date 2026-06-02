@@ -239,3 +239,111 @@ describe("createSummonTool — execute() argument forwarding", () => {
 		expect(getResult).toHaveBeenCalled();
 	});
 });
+
+describe("createSummonTool — user-agent-only mode (perm_user_agent without perm_summon)", () => {
+	// userAgentEnabled=true, subagentEnabled=false → the tool spawns ONLY
+	// top-level user agents. `top_level` is implied (and forced), the
+	// subagent/parallel-work prose is dropped, and only the user-agent
+	// catalog group is shown.
+	const subagents: AvailableAgent[] = [
+		{
+			slug: "programmer",
+			name: "Programmer",
+			description: "Codes things",
+			path: "/agents/programmer.toml",
+		},
+	];
+	const userAgents: AvailableAgent[] = [
+		{
+			slug: "default",
+			name: "Default",
+			description: "Default agent",
+			path: "/agents/default.toml",
+		},
+	];
+
+	function userAgentOnlyTool(
+		spawn = vi.fn(async () => "ua-1"),
+		getResult = vi.fn(async () => ({ status: "done" as const, result: "nope" })),
+	) {
+		return {
+			spawn,
+			getResult,
+			tool: createSummonTool(
+				"/tmp/work",
+				{ spawn, getResult },
+				subagents,
+				userAgents,
+				["/agents"],
+				true, // userAgentEnabled
+				false, // subagentEnabled
+			),
+		};
+	}
+
+	it("describes spawning user agents and omits subagent/parallel-work prose", () => {
+		const { tool } = userAgentOnlyTool();
+		expect(tool.description).toContain("Spawn an independent top-level user agent");
+		expect(tool.description).toContain("fire-and-forget");
+		expect(tool.description).not.toContain("Pattern for parallel work");
+		expect(tool.description).not.toContain("Set background=true");
+	});
+
+	it("lists only the user-agent catalog group, not subagents", () => {
+		const { tool } = userAgentOnlyTool();
+		expect(tool.description).toContain("User agents (spawned as independent top-level tabs):");
+		expect(tool.description).toContain("default");
+		// Subagents must not be advertised in user-agent-only mode.
+		expect(tool.description).not.toContain("Subagents (spawned as child tabs):");
+		expect(tool.description).not.toContain("- programmer: Programmer");
+	});
+
+	it("only lists user-agent slugs in the 'agent' parameter description", () => {
+		const { tool } = userAgentOnlyTool();
+		const agentParam = (tool.parameters as unknown as { shape: { agent: { description: string } } })
+			.shape.agent;
+		expect(agentParam.description).toContain("default");
+		expect(agentParam.description).not.toContain("programmer");
+	});
+
+	it("omits the top_level parameter (it is implied)", () => {
+		const { tool } = userAgentOnlyTool();
+		const shape = (tool.parameters as unknown as { shape: Record<string, unknown> }).shape;
+		expect("top_level" in shape).toBe(false);
+	});
+
+	it("omits the background parameter (user agents are fire-and-forget)", () => {
+		const { tool } = userAgentOnlyTool();
+		const shape = (tool.parameters as unknown as { shape: Record<string, unknown> }).shape;
+		expect("background" in shape).toBe(false);
+	});
+
+	it("forces topLevel=true on spawn even when top_level is not passed", async () => {
+		const spawn = vi.fn(async () => "ua-99");
+		const getResult = vi.fn(async () => ({ status: "done" as const, result: "nope" }));
+		const { tool } = userAgentOnlyTool(spawn, getResult);
+		const out = await tool.execute({ task: "do stuff", agent: "default" });
+		expect(out).toContain("User agent spawned successfully");
+		expect(out).toContain("ua-99");
+		expect(out).toContain("fire-and-forget");
+		// Never blocks on a result for fire-and-forget user agents.
+		expect(getResult).not.toHaveBeenCalled();
+		const callArg = spawn.mock.calls[0]?.[0];
+		expect(callArg).toMatchObject({ topLevel: true, agentSlug: "default" });
+	});
+});
+
+describe("createSummonTool — subagentEnabled defaults preserve legacy behavior", () => {
+	it("defaults subagentEnabled=true so omitting it keeps subagent spawning", async () => {
+		const spawn = vi.fn(async () => "tab-1");
+		const getResult = vi.fn(async () => ({ status: "done" as const, result: "child" }));
+		// No userAgentEnabled/subagentEnabled args → legacy subagent-only mode.
+		const tool = createSummonTool("/tmp/work", { spawn, getResult }, [], []);
+		const out = await tool.execute({ task: "x", agent: "programmer" });
+		// Foreground subagent summon blocks and returns the child result.
+		expect(out).toBe("agent_id: tab-1\n\nchild");
+		expect(getResult).toHaveBeenCalled();
+		const callArg = spawn.mock.calls[0]?.[0];
+		expect(callArg).not.toHaveProperty("topLevel");
+	});
+});

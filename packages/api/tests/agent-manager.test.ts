@@ -319,6 +319,22 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => "mock",
 		};
 	},
+	// Summon parent-path dependencies. The real implementations load agent
+	// definitions from disk; tests only need the summon/retrieve tool entries
+	// to appear, so these return empty projections.
+	loadAgents() {
+		return [];
+	},
+	toAvailableSubagents() {
+		return [];
+	},
+	toAvailableUserAgents() {
+		return [];
+	},
+	getAgentDirPaths() {
+		return [];
+	},
+	GLOBAL_AGENTS_DIR: "/tmp/global-agents",
 	createTab() {},
 	getTab(id: string) {
 		return fakeTabs.get(id) ?? null;
@@ -1438,6 +1454,51 @@ describe("AgentManager", () => {
 			const tools = await toolsForPerms("tab-neither", {});
 			expect(tools).not.toContain("send_to_tab");
 			expect(tools).not.toContain("read_tab");
+		});
+	});
+
+	describe("summon / user_agent permission split", () => {
+		// Drives the real parent-path tool construction in
+		// getOrCreateAgentForTab by toggling perm_summon and perm_user_agent
+		// independently, then inspecting which tools the constructed Agent
+		// received. The summon tool must be registered when EITHER permission
+		// is granted; `retrieve` rides with the subagent permission only
+		// (user agents are fire-and-forget).
+		async function toolsForPerms(tabId: string, perms: Record<string, string>): Promise<string[]> {
+			for (const [k, v] of Object.entries(perms)) setFakeSetting(k, v);
+			const manager = new AgentManager();
+			await manager.processMessage(tabId, "go");
+			return constructedAgents.at(-1)?.toolNames ?? [];
+		}
+
+		it("grants summon + retrieve when only perm_summon is allowed", async () => {
+			const tools = await toolsForPerms("tab-summon-only", { perm_summon: "allow" });
+			expect(tools).toContain("summon");
+			expect(tools).toContain("retrieve");
+		});
+
+		it("grants summon WITHOUT retrieve when only perm_user_agent is allowed", async () => {
+			// Regression: granting only the user-agent permission used to leave
+			// the agent unable to summon user agents because the whole summon
+			// tool was gated behind perm_summon.
+			const tools = await toolsForPerms("tab-user-agent-only", { perm_user_agent: "allow" });
+			expect(tools).toContain("summon");
+			expect(tools).not.toContain("retrieve");
+		});
+
+		it("grants summon + retrieve when both permissions are allowed", async () => {
+			const tools = await toolsForPerms("tab-summon-both", {
+				perm_summon: "allow",
+				perm_user_agent: "allow",
+			});
+			expect(tools).toContain("summon");
+			expect(tools).toContain("retrieve");
+		});
+
+		it("grants neither summon nor retrieve when both permissions are off", async () => {
+			const tools = await toolsForPerms("tab-summon-neither", {});
+			expect(tools).not.toContain("summon");
+			expect(tools).not.toContain("retrieve");
 		});
 	});
 
