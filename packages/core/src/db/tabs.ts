@@ -115,6 +115,20 @@ export function updateTabStatus(id: string, status: string): void {
 	});
 }
 
+export function updateTabPositions(idsInOrder: string[]): void {
+	const db = getDatabase();
+	const now = Date.now();
+	const update = db.query("UPDATE tabs SET position = $position, updated_at = $now WHERE id = $id");
+	// One transaction so a reorder is atomic: either every tab lands at its new
+	// slot or none does, never a half-applied ordering.
+	const applyAll = db.transaction(() => {
+		idsInOrder.forEach((id, index) => {
+			update.run({ $id: id, $position: index, $now: now });
+		});
+	});
+	applyAll();
+}
+
 export function archiveTab(id: string): void {
 	const db = getDatabase();
 	db.query("UPDATE tabs SET is_open = 0, updated_at = $now WHERE id = $id").run({

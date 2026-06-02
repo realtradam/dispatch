@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ModelRegistry } from "@dispatch/core";
 import {
 	ANTHROPIC_MODELS_FALLBACK,
+	buildWakeProbeBody,
 	type ClaudeAccount,
 	fetchAnthropicModels,
 	fetchCopilotUsage,
@@ -566,6 +568,39 @@ modelsRoutes.post("/remove-key", async (c) => {
 
 // ─── Shared wake function ─────────────────────────────────────
 
+/**
+ * Model used for the wake probe. A small/cheap model is enough — the only
+ * purpose is to register activity against the subscription so its rate-limit
+ * window keeps resetting on schedule.
+ */
+const WAKE_PROBE_MODEL = "claude-3-5-haiku-20241022";
+
+/** Max chars of upstream error body to keep in the surfaced message. */
+const MAX_ERROR_BODY_CHARS = 200;
+
+/**
+ * Turn a non-OK probe response into a short, human-readable reason. Anthropic
+ * returns a JSON error envelope (`{ error: { message } }`); fall back to a
+ * truncated raw body, then to the bare status. Never throws.
+ */
+async function describeFailedResponse(res: Response): Promise<string> {
+	let detail = "";
+	try {
+		const text = await res.text();
+		try {
+			const parsed = JSON.parse(text) as { error?: { message?: unknown } };
+			const message = parsed?.error?.message;
+			detail = typeof message === "string" ? message : text;
+		} catch {
+			detail = text;
+		}
+	} catch {
+		detail = "";
+	}
+	detail = detail.trim().slice(0, MAX_ERROR_BODY_CHARS);
+	return detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status}`;
+}
+
 async function wakeAllClaudeAccounts(): Promise<
 	Array<{ label: string; ok: boolean; error?: string }>
 > {
@@ -596,20 +631,37 @@ async function wakeAllClaudeAccounts(): Promise<
 				continue;
 			}
 
+			// Mirror a genuine Claude Code CLI request. These are OAuth
+			// (Pro/Max) subscription accounts: Anthropic validates the
+			// `system[]` array and rejects (401/403) any request whose system
+			// block lacks the verbatim Claude Code identity string. A bare
+			// `{ model, messages }` body — what this probe used to send —
+			// always failed, which is why scheduled wakes silently died with a
+			// blank "failed" status. `buildWakeProbeBody` produces the correct
+			// shape (billing header + identity); the session/request-id headers
+			// match what the real CLI stamps so the probe isn't flagged.
 			const res = await fetch("https://api.anthropic.com/v1/messages", {
 				method: "POST",
 				headers: {
 					...getAnthropicHeaders(creds.accessToken),
 					"content-type": "application/json",
+					"X-Claude-Code-Session-Id": randomUUID(),
+					"x-client-request-id": randomUUID(),
 				},
-				body: JSON.stringify({
-					model: "claude-3-5-haiku-20241022",
-					max_tokens: 16,
-					messages: [{ role: "user", content: "hi" }],
-				}),
+				body: JSON.stringify(buildWakeProbeBody(WAKE_PROBE_MODEL)),
 			});
 
-			results.push({ label: acct.label, ok: res.ok });
+			if (res.ok) {
+				results.push({ label: acct.label, ok: true });
+			} else {
+				// Surface WHY it failed so the panel never shows a bare
+				// "failed" again and breakage stays debuggable.
+				results.push({
+					label: acct.label,
+					ok: false,
+					error: await describeFailedResponse(res),
+				});
+			}
 		} catch (err) {
 			results.push({
 				label: acct.label,
