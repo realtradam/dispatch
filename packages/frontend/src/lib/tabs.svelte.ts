@@ -11,13 +11,14 @@ import {
 // DB-free; safe in the browser bundle. The flat chunk log is the frontend's
 // source of truth for HISTORY; `groupRowsToMessages` derives render bubbles.
 import { groupRowsToMessages, type MessageRow } from "@dispatch/core/src/chunks/transform.js";
-import type { ChunkRow } from "@dispatch/core/src/types/index.js";
+import type { ChunkRow, UserContentPart } from "@dispatch/core/src/types/index.js";
 import {
 	type AgentModelEntry,
 	DEFAULT_REASONING_EFFORT,
 	isReasoningEffort,
 	type ReasoningEffort,
 } from "@dispatch/core/src/types/index.js";
+import { intactTokenIds, type StagedAttachment } from "./attachment-tokens.js";
 import { config } from "./config.js";
 import { appSettings } from "./settings.svelte.js";
 import type {
@@ -183,6 +184,13 @@ export interface Tab {
 	 */
 	draft: string;
 	/**
+	 * Staged image/PDF attachments for THIS tab's unsent draft (in-memory only —
+	 * never persisted). Each corresponds to an inline `【image:…】`/`【pdf:…】`
+	 * token in `draft`; removing the token detaches the attachment (reconciled on
+	 * every keystroke). Ephemeral: sent to the model for one turn, then cleared.
+	 */
+	attachments: StagedAttachment[];
+	/**
 	 * True once the user has manually renamed this tab (double-click rename).
 	 * Suppresses the first-message auto-title so a chosen name is never
 	 * clobbered. In-memory only — a renamed tab is no longer "New Tab" on
@@ -312,6 +320,7 @@ export function createTabStore() {
 			queuedMessages: [],
 			chunkLimit: appSettings.chunkLimit,
 			draft: "",
+			attachments: [],
 			manualTitle: false,
 			oldestLoadedSeq: null,
 			totalChunks: 0,
@@ -389,6 +398,7 @@ export function createTabStore() {
 				queuedMessages: [],
 				chunkLimit: appSettings.chunkLimit,
 				draft: "",
+				attachments: [],
 				manualTitle: false,
 				oldestLoadedSeq: win.oldestSeq,
 				totalChunks: win.total,
@@ -493,8 +503,31 @@ export function createTabStore() {
 	 * target tab shows its own text. No-op if the tab is gone.
 	 */
 	function setDraft(id: string, text: string): void {
-		if (!getTabById(id)) return;
-		updateTab(id, { draft: text });
+		const tab = getTabById(id);
+		if (!tab) return;
+		// Detach any staged attachment whose inline token is no longer intact in
+		// the new draft text (covers atomic-delete, manual mid-token edits, cut,
+		// select-all-delete, etc.). The token in the textarea is the ONLY handle
+		// on an attachment, so reconciling here keeps the two in lockstep.
+		const intact = intactTokenIds(text);
+		const keep = tab.attachments.filter((a) => intact.has(a.id));
+		if (keep.length !== tab.attachments.length) {
+			updateTab(id, { draft: text, attachments: keep });
+		} else {
+			updateTab(id, { draft: text });
+		}
+	}
+
+	/**
+	 * Stage a pasted attachment on a tab. The caller is responsible for also
+	 * inserting the matching `【image:…】`/`【pdf:…】` token into the draft (the
+	 * token is what keeps the attachment alive through reconciliation). No-op if
+	 * the tab is gone.
+	 */
+	function addAttachment(id: string, attachment: StagedAttachment): void {
+		const tab = getTabById(id);
+		if (!tab) return;
+		updateTab(id, { attachments: [...tab.attachments, attachment] });
 	}
 
 	/**
@@ -929,6 +962,7 @@ export function createTabStore() {
 				queuedMessages: [],
 				chunkLimit: appSettings.chunkLimit,
 				draft: "",
+				attachments: [],
 				manualTitle: false,
 				oldestLoadedSeq: win.oldestSeq,
 				totalChunks: win.total,
@@ -1284,6 +1318,7 @@ export function createTabStore() {
 						queuedMessages: [],
 						chunkLimit: appSettings.chunkLimit,
 						draft: "",
+						attachments: [],
 						manualTitle: false,
 						oldestLoadedSeq: null,
 						totalChunks: 0,
@@ -1604,7 +1639,7 @@ export function createTabStore() {
 		}
 	}
 
-	async function sendMessage(text: string): Promise<void> {
+	async function sendMessage(text: string, content?: UserContentPart[]): Promise<void> {
 		let tab = getActiveTab();
 		if (!tab) return;
 
@@ -1615,8 +1650,11 @@ export function createTabStore() {
 			if (!tab) return;
 		}
 
-		// Fetch content for checked skills and build the message to send
-		let messageToSend = text;
+		// Fetch content for checked skills and build the message to send.
+		// `skillPrefix` (when non-empty) is prepended to BOTH the text projection
+		// that gets persisted/rendered AND the multimodal content array, so an
+		// image turn still carries the activated skills to the model.
+		let skillPrefix = "";
 		const checkedKeys = Object.entries(appSettings.skillChecks)
 			.filter(([, v]) => v)
 			.map(([k]) => k);
@@ -1627,13 +1665,13 @@ export function createTabStore() {
 				const [scope, ...nameParts] = key.split(":");
 				const name = nameParts.join(":");
 				if (!scope || !name) continue;
-				const content = await fetchSkillContent(scope, name);
-				if (content) {
-					skillSections.push(`<skill name="${name}">\n${content}\n</skill>`);
+				const skillContent = await fetchSkillContent(scope, name);
+				if (skillContent) {
+					skillSections.push(`<skill name="${name}">\n${skillContent}\n</skill>`);
 				}
 			}
 			if (skillSections.length > 0) {
-				messageToSend = `[The following skills have been activated for this message]\n\n${skillSections.join("\n\n")}\n\n---\n\n${text}`;
+				skillPrefix = `[The following skills have been activated for this message]\n\n${skillSections.join("\n\n")}\n\n---\n\n`;
 			}
 
 			// Track injected skills on the tab
@@ -1643,6 +1681,12 @@ export function createTabStore() {
 			// Clear all checks
 			appSettings.skillChecks = {};
 		}
+
+		const messageToSend = `${skillPrefix}${text}`;
+		// Prepend the skill prefix to the multimodal content as a leading text
+		// part so the model sees the activated skills before the attachments.
+		const contentToSend =
+			content && skillPrefix ? [{ type: "text" as const, text: skillPrefix }, ...content] : content;
 
 		const userMsg: ChatMessage = {
 			id: generateId(),
@@ -1720,6 +1764,7 @@ export function createTabStore() {
 				body: JSON.stringify({
 					tabId: tab.id,
 					message: messageToSend,
+					...(contentToSend ? { content: contentToSend } : {}),
 					...(tab.keyId ? { keyId: tab.keyId } : {}),
 					...(tab.modelId ? { modelId: tab.modelId } : {}),
 					...(tab.agentModels ? { agentModels: tab.agentModels } : {}),
@@ -2118,6 +2163,7 @@ export function createTabStore() {
 		renameTab,
 		reorderTabs,
 		setDraft,
+		addAttachment,
 		sendMessage,
 		cancelQueuedMessage,
 		stopGeneration,

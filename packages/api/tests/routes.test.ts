@@ -219,6 +219,16 @@ vi.mock("@dispatch/core", () => ({
 			typeof value === "string" && ["none", "low", "medium", "high", "xhigh", "max"].includes(value)
 		);
 	},
+	// Lightweight stand-in for the real validator: accept the supported media
+	// types, reject everything else. Enough to exercise the /chat attachment
+	// validation branch (the real validator is unit-tested in core).
+	validateUserContent(content: Array<{ type: string; mediaType?: string }>) {
+		const accepted = ["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"];
+		const errors = content
+			.filter((p) => p.type === "attachment" && !accepted.includes(p.mediaType ?? ""))
+			.map((p) => ({ code: "unsupported-type", mediaType: p.mediaType }));
+		return { ok: errors.length === 0, errors };
+	},
 	listOpenTabs() {
 		return [...fakeOpenTabs];
 	},
@@ -447,6 +457,59 @@ describe("POST /chat", () => {
 		});
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ status: "ok" });
+	});
+
+	it("accepts a valid image attachment and starts a turn", async () => {
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				tabId: "tab-img-ok",
+				message: "look: [image]",
+				content: [
+					{ type: "text", text: "look: " },
+					{ type: "attachment", mediaType: "image/png", data: "QQ==" },
+				],
+			}),
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ status: "ok" });
+	});
+
+	it("returns 400 for an unsupported attachment media type", async () => {
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				tabId: "tab-img-bad",
+				message: "look: [image]",
+				content: [{ type: "attachment", mediaType: "image/svg+xml", data: "QQ==" }],
+			}),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json();
+		expect(body.error).toBe("invalid attachments");
+	});
+
+	it("returns 409 when attaching while the agent is generating", async () => {
+		// Kick off a turn so the tab is running.
+		await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ tabId: "tab-img-busy", message: "first" }),
+		});
+		await new Promise<void>((r) => setTimeout(r, 20));
+
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				tabId: "tab-img-busy",
+				message: "second [image]",
+				content: [{ type: "attachment", mediaType: "image/png", data: "QQ==" }],
+			}),
+		});
+		expect(res.status).toBe(409);
 	});
 
 	it("returns 400 with empty message", async () => {

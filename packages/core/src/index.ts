@@ -82,9 +82,26 @@ export {
 } from "./lsp/index.js";
 // Models
 export {
+	ACCEPTED_ATTACHMENT_MEDIA_TYPES,
+	ACCEPTED_IMAGE_MEDIA_TYPES,
+	ACCEPTED_PDF_MEDIA_TYPE,
+	type AttachmentValidationError,
+	type AttachmentValidationResult,
+	base64ByteLength,
 	getModelsCatalog,
+	hasAttachments,
+	isAcceptedAttachmentMediaType,
+	isImageMediaType,
+	isPdfMediaType,
+	MAX_ATTACHMENTS,
+	MAX_IMAGE_BYTES,
+	MAX_PDF_BYTES,
+	MAX_TOTAL_ATTACHMENT_BYTES,
+	type ModelInputCapabilities,
 	ModelRegistry,
 	resolveContextLimit,
+	resolveModelCapabilities,
+	validateUserContent,
 } from "./models/index.js";
 // Notifications (ntfy.sh)
 export * from "./notifications/index.js";

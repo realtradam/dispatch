@@ -2126,3 +2126,78 @@ describe("tabStore — per-tab chat input draft", () => {
 		expect(store.tabs.every((t) => t.draft === "")).toBe(true);
 	});
 });
+
+describe("tabStore — image/pdf attachments", () => {
+	function imgAttachment(id: string) {
+		return { id, kind: "image" as const, mediaType: "image/png", data: "QQ==" };
+	}
+
+	it("stages attachments and reconciles them against intact draft tokens", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
+		);
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		store.switchTab(a.id);
+
+		store.addAttachment(a.id, imgAttachment("aaaaaa"));
+		// Draft carries the token → attachment survives.
+		store.setDraft(a.id, "look 【image:aaaaaa】");
+		expect(store.activeTab?.attachments.map((x) => x.id)).toEqual(["aaaaaa"]);
+
+		// Remove the token from the draft → attachment is detached.
+		store.setDraft(a.id, "look ");
+		expect(store.activeTab?.attachments).toHaveLength(0);
+	});
+
+	it("sendMessage posts ordered multimodal content and clears the draft", async () => {
+		const fetchMock = vi.fn((url: string) => {
+			if (typeof url === "string" && url.endsWith("/chat")) {
+				return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "ok" }) });
+			}
+			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		store.switchTab(a.id);
+
+		await store.sendMessage("here is A: [image]", [
+			{ type: "text", text: "here is A: " },
+			{ type: "attachment", mediaType: "image/png", data: "QQ==" },
+		]);
+
+		const chatCall = fetchMock.mock.calls.find(
+			(c) => typeof c[0] === "string" && (c[0] as string).endsWith("/chat"),
+		);
+		expect(chatCall).toBeDefined();
+		const body = JSON.parse((chatCall?.[1] as { body: string }).body);
+		expect(body.message).toBe("here is A: [image]");
+		expect(body.content).toEqual([
+			{ type: "text", text: "here is A: " },
+			{ type: "attachment", mediaType: "image/png", data: "QQ==" },
+		]);
+	});
+
+	it("sendMessage omits content for a plain-text message", async () => {
+		const fetchMock = vi.fn((url: string) => {
+			if (typeof url === "string" && url.endsWith("/chat")) {
+				return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "ok" }) });
+			}
+			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const store = createTabStore();
+		await store.createNewTab();
+		await store.sendMessage("just text");
+
+		const chatCall = fetchMock.mock.calls.find(
+			(c) => typeof c[0] === "string" && (c[0] as string).endsWith("/chat"),
+		);
+		const body = JSON.parse((chatCall?.[1] as { body: string }).body);
+		expect(body.content).toBeUndefined();
+	});
+});

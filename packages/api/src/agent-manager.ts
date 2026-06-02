@@ -65,6 +65,7 @@ import {
 	toAvailableUserAgents,
 	type UsageData,
 	type UsageStats,
+	type UserContentPart,
 	validateConfig,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
@@ -1536,6 +1537,13 @@ export class AgentManager {
 			workingDirectory?: string;
 			queueId?: string;
 			/**
+			 * Ephemeral ordered multimodal content (image/pdf attachments) for a
+			 * FRESH human turn. Forwarded to `processMessage` → `agent.run` only
+			 * when the tab is idle (a started turn); never carried into the queue
+			 * path (attachments require a fresh turn — the caller guards that).
+			 */
+			content?: UserContentPart[];
+			/**
 			 * Who is sending this message. `"human"` (default) is unrestricted
 			 * and REFILLS the target's agent-to-agent auto-wake budget. `"agent"`
 			 * (from the `send_to_tab` tool) is governed by that budget: an
@@ -1606,6 +1614,7 @@ export class AgentManager {
 			opts.reasoningEffort,
 			opts.workingDirectory,
 			agentModels,
+			opts.content,
 		).catch((err) => {
 			console.error(`[dispatch] deliverMessage processMessage error for tab ${tabId}:`, err);
 		});
@@ -1620,6 +1629,7 @@ export class AgentManager {
 		reasoningEffort?: ReasoningEffort,
 		workingDirectory?: string,
 		agentModels?: AgentModelEntry[],
+		content?: UserContentPart[],
 	): Promise<void> {
 		const tabAgent = this._getOrCreateTabAgent(tabId);
 
@@ -1731,6 +1741,7 @@ export class AgentManager {
 				for await (const event of agent.run(message, {
 					...(effortForEntry ? { reasoningEffort: effortForEntry } : {}),
 					abortSignal: tabAgent.abortController?.signal,
+					...(content ? { content } : {}),
 				})) {
 					// Stop processing if the tab was aborted (closed/stopped).
 					// stopTab() already injected a `cancelled` system chunk into
