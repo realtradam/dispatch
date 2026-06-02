@@ -131,6 +131,8 @@ export interface TabStatusSnapshot {
 	currentAssistantId?: string;
 	/** turn_id of the in-flight turn; present iff status === "running". */
 	currentTurnId?: string;
+	/** The tab's todo list, for rehydrating the Tasks panel on reload. */
+	tasks?: TaskItem[];
 }
 
 export type AgentEvent =
@@ -221,10 +223,10 @@ export type AgentEvent =
 	| { type: "message-cancelled"; tabId: string; messageId: string };
 
 export interface TaskItem {
+	/** Stable positional id for Svelte keying only; never shown to the model. */
 	id: string;
-	title: string;
-	description: string;
-	status: "pending" | "in_progress" | "done";
+	content: string;
+	status: "pending" | "in_progress" | "completed" | "cancelled";
 }
 
 export interface PermissionPrompt {

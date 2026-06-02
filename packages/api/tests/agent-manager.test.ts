@@ -279,20 +279,17 @@ vi.mock("@dispatch/core", () => ({
 		}
 	},
 	TaskList: class MockTaskList {
+		private tasks: Array<{ id: string; content: string; status: string }> = [];
 		getTasks() {
-			return [];
+			return this.tasks.map((t) => ({ ...t }));
 		}
-		getTask() {
-			return undefined;
-		}
-		addTask() {
-			return { id: "task-1", title: "", description: "", status: "pending" };
-		}
-		updateTask() {
-			return undefined;
-		}
-		removeTask() {
-			return false;
+		setTasks(items: Array<{ content: string; status?: string }>) {
+			this.tasks = items.map((item, i) => ({
+				id: `task-${i + 1}`,
+				content: item.content,
+				status: item.status ?? "pending",
+			}));
+			return this.getTasks();
 		}
 		onChange(_cb: unknown) {
 			return () => {};
@@ -907,7 +904,7 @@ describe("AgentManager", () => {
 					status: "running" | "idle" | "error";
 					keyId: null;
 					modelId: null;
-					taskList: { onChange: (cb: unknown) => void };
+					taskList: { onChange: (cb: unknown) => void; getTasks: () => unknown[] };
 					messageQueue: unknown[];
 					queueListeners: unknown[];
 					shellStore: unknown;
@@ -922,7 +919,7 @@ describe("AgentManager", () => {
 			status: "running",
 			keyId: null,
 			modelId: null,
-			taskList: { onChange: () => {} },
+			taskList: { onChange: () => {}, getTasks: () => [] },
 			messageQueue: [],
 			queueListeners: [],
 			shellStore: {},
@@ -954,7 +951,7 @@ describe("AgentManager", () => {
 					status: "running";
 					keyId: null;
 					modelId: null;
-					taskList: { onChange: (cb: unknown) => void };
+					taskList: { onChange: (cb: unknown) => void; getTasks: () => unknown[] };
 					messageQueue: unknown[];
 					queueListeners: unknown[];
 					shellStore: unknown;
@@ -970,7 +967,7 @@ describe("AgentManager", () => {
 			status: "running",
 			keyId: null,
 			modelId: null,
-			taskList: { onChange: () => {} },
+			taskList: { onChange: () => {}, getTasks: () => [] },
 			messageQueue: [],
 			queueListeners: [],
 			shellStore: {},
@@ -996,7 +993,7 @@ describe("AgentManager", () => {
 					status: "running";
 					keyId: null;
 					modelId: null;
-					taskList: { onChange: (cb: unknown) => void };
+					taskList: { onChange: (cb: unknown) => void; getTasks: () => unknown[] };
 					messageQueue: unknown[];
 					queueListeners: unknown[];
 					shellStore: unknown;
@@ -1011,7 +1008,7 @@ describe("AgentManager", () => {
 			status: "running",
 			keyId: null,
 			modelId: null,
-			taskList: { onChange: () => {} },
+			taskList: { onChange: () => {}, getTasks: () => [] },
 			messageQueue: [],
 			queueListeners: [],
 			shellStore: {},
@@ -1024,6 +1021,30 @@ describe("AgentManager", () => {
 		expect(snap["tab-early"]?.status).toBe("running");
 		expect(snap["tab-early"]).not.toHaveProperty("currentChunks");
 		expect(snap["tab-early"]).not.toHaveProperty("currentAssistantId");
+	});
+
+	it("getAllStatuses includes a tab's todo list (for reload rehydration)", () => {
+		const manager = new AgentManager();
+		// Public API: getTaskList creates+returns the tab's list. setTasks is
+		// the declarative whole-list write.
+		const list = manager.getTaskList("tab-todos");
+		list.setTasks([
+			{ content: "plan", status: "completed" },
+			{ content: "build", status: "in_progress" },
+		]);
+		const snap = manager.getAllStatuses();
+		expect(snap["tab-todos"]?.tasks).toEqual([
+			{ id: "task-1", content: "plan", status: "completed" },
+			{ id: "task-2", content: "build", status: "in_progress" },
+		]);
+	});
+
+	it("getAllStatuses omits tasks for a tab with an empty todo list", () => {
+		const manager = new AgentManager();
+		manager.getTaskList("tab-empty");
+		const snap = manager.getAllStatuses();
+		expect(snap["tab-empty"]).toBeDefined();
+		expect(snap["tab-empty"]).not.toHaveProperty("tasks");
 	});
 
 	// ─── Tab-to-tab communication ─────────────────────────────────
@@ -1054,7 +1075,7 @@ describe("AgentManager", () => {
 				status: "running",
 				keyId: null,
 				modelId: null,
-				taskList: { onChange: () => {} },
+				taskList: { onChange: () => {}, getTasks: () => [] },
 				messageQueue: [],
 				queueListeners: [],
 				shellStore: {},
@@ -1175,7 +1196,7 @@ describe("AgentManager", () => {
 				status: "running",
 				keyId: null,
 				modelId: null,
-				taskList: { onChange: () => {} },
+				taskList: { onChange: () => {}, getTasks: () => [] },
 				messageQueue: [],
 				queueListeners: [],
 				shellStore: {},
