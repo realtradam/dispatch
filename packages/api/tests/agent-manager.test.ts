@@ -75,7 +75,11 @@ function makeRow(
 // because the production code reassigns `agent.messages =
 // rows.slice(...)` AFTER `new Agent()` returns — capturing a
 // reference at construction would yield a stale empty array.
-const constructedAgents: Array<{ initialMessages: unknown[]; toolNames: string[] }> = [];
+const constructedAgents: Array<{
+	initialMessages: unknown[];
+	toolNames: string[];
+	systemPrompt: string;
+}> = [];
 function resetConstructedAgents(): void {
 	constructedAgents.length = 0;
 }
@@ -159,8 +163,10 @@ vi.mock("@dispatch/core", () => ({
 		status = "idle";
 		messages: unknown[] = [];
 		toolNames: string[] = [];
-		constructor(config: { tools?: Array<{ name: string }> }) {
+		systemPrompt = "";
+		constructor(config: { tools?: Array<{ name: string }>; systemPrompt?: string }) {
 			this.toolNames = (config?.tools ?? []).map((t) => t.name);
+			this.systemPrompt = config?.systemPrompt ?? "";
 		}
 		async *run(message: string, options?: { reasoningEffort?: string }): AsyncGenerator<unknown> {
 			// Snapshot the post-construction pre-populated message list
@@ -170,6 +176,7 @@ vi.mock("@dispatch/core", () => ({
 			constructedAgents.push({
 				initialMessages: [...this.messages],
 				toolNames: [...this.toolNames],
+				systemPrompt: this.systemPrompt,
 			});
 			capturedRunOptions.push(options);
 			if (runImpl) {
@@ -319,6 +326,22 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => "mock",
 		};
 	},
+	// Summon parent-path dependencies. The real implementations load agent
+	// definitions from disk; tests only need the summon/retrieve tool entries
+	// to appear, so these return empty projections.
+	loadAgents() {
+		return [];
+	},
+	toAvailableSubagents() {
+		return [];
+	},
+	toAvailableUserAgents() {
+		return [];
+	},
+	getAgentDirPaths() {
+		return [];
+	},
+	GLOBAL_AGENTS_DIR: "/tmp/global-agents",
 	createTab() {},
 	getTab(id: string) {
 		return fakeTabs.get(id) ?? null;
@@ -1438,6 +1461,111 @@ describe("AgentManager", () => {
 			const tools = await toolsForPerms("tab-neither", {});
 			expect(tools).not.toContain("send_to_tab");
 			expect(tools).not.toContain("read_tab");
+		});
+	});
+
+	describe("summon / user_agent permission split", () => {
+		// Drives the real parent-path tool construction in
+		// getOrCreateAgentForTab by toggling perm_summon and perm_user_agent
+		// independently, then inspecting which tools the constructed Agent
+		// received. The summon tool must be registered when EITHER permission
+		// is granted; `retrieve` rides with the subagent permission only
+		// (user agents are fire-and-forget).
+		async function toolsForPerms(tabId: string, perms: Record<string, string>): Promise<string[]> {
+			for (const [k, v] of Object.entries(perms)) setFakeSetting(k, v);
+			const manager = new AgentManager();
+			await manager.processMessage(tabId, "go");
+			return constructedAgents.at(-1)?.toolNames ?? [];
+		}
+
+		it("grants summon + retrieve when only perm_summon is allowed", async () => {
+			const tools = await toolsForPerms("tab-summon-only", { perm_summon: "allow" });
+			expect(tools).toContain("summon");
+			expect(tools).toContain("retrieve");
+		});
+
+		it("grants summon WITHOUT retrieve when only perm_user_agent is allowed", async () => {
+			// Regression: granting only the user-agent permission used to leave
+			// the agent unable to summon user agents because the whole summon
+			// tool was gated behind perm_summon.
+			const tools = await toolsForPerms("tab-user-agent-only", { perm_user_agent: "allow" });
+			expect(tools).toContain("summon");
+			expect(tools).not.toContain("retrieve");
+		});
+
+		it("grants summon + retrieve when both permissions are allowed", async () => {
+			const tools = await toolsForPerms("tab-summon-both", {
+				perm_summon: "allow",
+				perm_user_agent: "allow",
+			});
+			expect(tools).toContain("summon");
+			expect(tools).toContain("retrieve");
+		});
+
+		it("grants neither summon nor retrieve when both permissions are off", async () => {
+			const tools = await toolsForPerms("tab-summon-neither", {});
+			expect(tools).not.toContain("summon");
+			expect(tools).not.toContain("retrieve");
+		});
+	});
+
+	// Regression: granted tab-messaging tools must also be ADVERTISED in the
+	// agent's system prompt. The tools were registered in the API tool payload
+	// but `buildSystemPrompt` filtered its "You have access to the following
+	// tools" list through TOOL_DESCRIPTIONS, which lacked send_to_tab/read_tab
+	// — so the model was told it didn't have them and refused to use them. This
+	// locks the prompt's capability list to the granted toolset.
+	describe("send_to_tab / read_tab system-prompt advertisement", () => {
+		async function promptForPerms(tabId: string, perms: Record<string, string>): Promise<string> {
+			for (const [k, v] of Object.entries(perms)) setFakeSetting(k, v);
+			const manager = new AgentManager();
+			await manager.processMessage(tabId, "go");
+			return constructedAgents.at(-1)?.systemPrompt ?? "";
+		}
+
+		it("lists send_to_tab in the system prompt when granted", async () => {
+			const prompt = await promptForPerms("tab-prompt-send", { perm_send_to_tab: "allow" });
+			expect(prompt).toContain("- send_to_tab:");
+			expect(prompt).not.toContain("- read_tab:");
+		});
+
+		it("lists read_tab in the system prompt when granted", async () => {
+			const prompt = await promptForPerms("tab-prompt-read", { perm_read_tab: "allow" });
+			expect(prompt).toContain("- read_tab:");
+			expect(prompt).not.toContain("- send_to_tab:");
+		});
+
+		it("lists both tab-messaging tools when both are granted", async () => {
+			const prompt = await promptForPerms("tab-prompt-both", {
+				perm_send_to_tab: "allow",
+				perm_read_tab: "allow",
+			});
+			expect(prompt).toContain("- send_to_tab:");
+			expect(prompt).toContain("- read_tab:");
+		});
+
+		it("omits both from the system prompt when neither is granted", async () => {
+			const prompt = await promptForPerms("tab-prompt-neither", {});
+			expect(prompt).not.toContain("- send_to_tab:");
+			expect(prompt).not.toContain("- read_tab:");
+		});
+
+		it("advertises exactly the granted tab tools (prompt list matches schema)", async () => {
+			for (const [k, v] of Object.entries({
+				perm_send_to_tab: "allow",
+				perm_read_tab: "allow",
+			})) {
+				setFakeSetting(k, v);
+			}
+			const manager = new AgentManager();
+			await manager.processMessage("tab-prompt-match", "go");
+			const inst = constructedAgents.at(-1);
+			// Every granted tab-messaging tool surfaced in the schema must also be
+			// advertised in the prompt, so the model never believes it lacks one.
+			for (const name of ["send_to_tab", "read_tab"]) {
+				expect(inst?.toolNames).toContain(name);
+				expect(inst?.systemPrompt).toContain(`- ${name}:`);
+			}
 		});
 	});
 
