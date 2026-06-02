@@ -435,6 +435,55 @@ export interface AgentConfig {
 export interface DispatchConfig {
 	keys?: KeyDefinition[];
 	permissions: Record<string, string | Record<string, string>>;
+	/**
+	 * Language Server Protocol servers, keyed by an arbitrary server id (e.g.
+	 * `"luau-lsp"`). Project-scoped: read from the `dispatch.toml` in a tab's
+	 * effective working directory and re-consulted when that directory (or the
+	 * config) changes. Config-driven only — there is no builtin server registry
+	 * and no auto-download; the declared `command[0]` must be on PATH.
+	 */
+	lsp?: Record<string, LspServerConfig>;
+}
+
+/**
+ * A single LSP server entry as expressed in `dispatch.toml`'s `[lsp.<id>]`
+ * block. Mirrors opencode's custom-server schema so the Roblox Luau config
+ * (and any other server) is portable between the two.
+ *
+ * Example (`dispatch.toml`):
+ * ```toml
+ * [lsp.luau-lsp]
+ * command = ["luau-lsp", "lsp", "--definitions=globalTypes.d.luau", "--docs=api-docs.json"]
+ * extensions = [".luau"]
+ *
+ * [lsp.luau-lsp.initialization.luau-lsp.platform]
+ * type = "roblox"
+ * ```
+ */
+export interface LspServerConfig {
+	/**
+	 * Argv to launch the server over stdio. `command[0]` is the executable
+	 * (resolved via PATH); the rest are arguments. Required for every non-
+	 * disabled entry.
+	 */
+	command: string[];
+	/**
+	 * File extensions (with leading dot, e.g. `".luau"`) this server attaches
+	 * to. Required for custom servers — without it the client never knows which
+	 * files should activate the server.
+	 */
+	extensions: string[];
+	/** Extra environment variables merged onto `process.env` for the child. */
+	env?: Record<string, string>;
+	/**
+	 * `initializationOptions` forwarded verbatim in the LSP `initialize`
+	 * request (and echoed back for `workspace/configuration` /
+	 * `didChangeConfiguration`). For luau-lsp this carries the
+	 * `{ "luau-lsp": { platform, sourcemap, types, diagnostics, ... } }` block.
+	 */
+	initialization?: Record<string, unknown>;
+	/** When true, the entry is parsed but skipped (no server launched). */
+	disabled?: boolean;
 }
 
 export interface KeyDefinition {

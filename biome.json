@@ -53,6 +53,7 @@
 			"!**/dist",
 			"!**/build",
 			"!references",
+			"!roblox-opencode-config-sample",
 			"!packaging",
 			"!**/release"
 		]

@@ -228,6 +228,36 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => ["file1.ts"],
 		};
 	},
+	createLspTool(_getContext: unknown): ToolDefinition {
+		return {
+			name: "lsp",
+			description: "query the language server",
+			parameters: { _type: "z.ZodObject", shape: {} } as unknown as ToolDefinition["parameters"],
+			execute: async () => "mock lsp",
+		};
+	},
+	LspManager: class MockLspManager {
+		hasServerForFile() {
+			return false;
+		}
+		async getClients() {
+			return [];
+		}
+		async touchFile() {}
+		getDiagnostics() {
+			return {};
+		}
+		async request() {
+			return [];
+		}
+		async shutdownAll() {}
+	},
+	resolveServersFromConfig(_lsp: unknown) {
+		return [];
+	},
+	reportDiagnostics(_file: string, _issues: unknown) {
+		return "";
+	},
 	createRunShellTool(_wd: string): ToolDefinition {
 		return {
 			name: "run_shell",

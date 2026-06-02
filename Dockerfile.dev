@@ -2,6 +2,37 @@ FROM oven/bun:1
 
 WORKDIR /app
 
+# ─── Roblox Luau tooling (luau-lsp + rojo) ──────────────────────
+# The LSP test bed under references/stunt-olympics/ drives Dispatch's
+# luau-lsp integration: diagnostics-on-write and the `lsp` tool. Both
+# `luau-lsp` and `rojo` must be on PATH inside the container (luau-lsp's
+# sourcemap.autogenerate shells out to `rojo sourcemap --watch`). The base
+# oven/bun image ships neither curl nor unzip, so install those first.
+#
+# Versions are pinned for reproducible builds; bump via --build-arg.
+ARG LUAU_LSP_VERSION=1.68.0
+ARG ROJO_VERSION=7.6.1
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl unzip ca-certificates; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+        x86_64)  luau_asset="luau-lsp-linux-x86_64.zip"; rojo_asset="rojo-${ROJO_VERSION}-linux-x86_64.zip" ;; \
+        aarch64) luau_asset="luau-lsp-linux-arm64.zip";   rojo_asset="rojo-${ROJO_VERSION}-linux-aarch64.zip" ;; \
+        *) echo "Unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    tmp="$(mktemp -d)"; \
+    curl -fsSL "https://github.com/JohnnyMorganz/luau-lsp/releases/download/${LUAU_LSP_VERSION}/${luau_asset}" -o "$tmp/luau-lsp.zip"; \
+    unzip -q "$tmp/luau-lsp.zip" -d "$tmp/luau-lsp"; \
+    install -m 0755 "$tmp/luau-lsp/luau-lsp" /usr/local/bin/luau-lsp; \
+    curl -fsSL "https://github.com/rojo-rbx/rojo/releases/download/v${ROJO_VERSION}/${rojo_asset}" -o "$tmp/rojo.zip"; \
+    unzip -q "$tmp/rojo.zip" -d "$tmp/rojo"; \
+    install -m 0755 "$tmp/rojo/rojo" /usr/local/bin/rojo; \
+    rm -rf "$tmp"; \
+    luau-lsp --version; \
+    rojo --version
+
 # Copy dependency files for layer caching
 COPY package.json bun.lock ./
 COPY packages/core/package.json packages/core/package.json
