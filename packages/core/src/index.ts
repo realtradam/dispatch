@@ -68,6 +68,18 @@ export {
 	logStreamEvent,
 } from "./llm/debug-logger.js";
 export { createProvider } from "./llm/provider.js";
+// LSP (Language Server Protocol)
+export {
+	createLspClient,
+	type Diagnostic as LspDiagnostic,
+	type LspClient,
+	LspManager,
+	type LspServerHandle,
+	pretty as prettyDiagnostic,
+	type ResolvedLspServer,
+	report as reportDiagnostics,
+	resolveServersFromConfig,
+} from "./lsp/index.js";
 // Models
 export {
 	getModelsCatalog,
@@ -88,6 +100,7 @@ export {
 export { prefix as bashArityPrefix } from "./tools/bash-arity.js";
 // Tools
 export { createListFilesTool } from "./tools/list-files.js";
+export { createLspTool, type LspToolContext } from "./tools/lsp.js";
 export { createReadFileTool } from "./tools/read-file.js";
 export { createReadFileSliceTool } from "./tools/read-file-slice.js";
 export { createReadTabTool, type ReadTabCallbacks } from "./tools/read-tab.js";
@@ -112,7 +125,7 @@ export {
 export { createTaskListTool, TaskList, TODO_DESCRIPTION } from "./tools/task-list.js";
 export { clearSpillForTab } from "./tools/truncate.js";
 export { createWebSearchTool } from "./tools/web-search.js";
-export { createWriteFileTool } from "./tools/write-file.js";
+export { type AfterWriteHook, createWriteFileTool } from "./tools/write-file.js";
 export {
 	BackgroundTranscriptStore,
 	createYoutubeTranscribeTool,

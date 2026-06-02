@@ -44,6 +44,13 @@ export interface SendToTabCallbacks {
 	/** The calling tab's own id + handle — used to block self-sends and to
 	 *  stamp provenance onto the delivered message. */
 	self: { id: string; handle: string };
+	/**
+	 * Whether THIS calling tab also has the `read_tab` tool granted. The
+	 * tab-messaging permissions are split, so a tab can hold `send_to_tab`
+	 * without `read_tab`. When false, the tool must NOT tell the agent to use
+	 * `read_tab` (it doesn't have it) — replies only arrive on their own.
+	 */
+	canReadTab: boolean;
 }
 
 /** Render the "available tabs" hint shared by the none/ambiguous branches. */
@@ -54,6 +61,19 @@ function renderOpenHandles(handles: Array<{ handle: string; title: string }>): s
 }
 
 export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefinition {
+	// The `read_tab` follow-up hint is only truthful when this tab actually
+	// holds the `read_tab` tool (the permissions are split). When it doesn't,
+	// the only honest guidance is that a reply will wake it as a new message — never tell
+	// the agent to call a tool it wasn't granted.
+	const waitLine = callbacks.canReadTab
+		? "money. If the target replies it will WAKE you with a new message in a later turn; you"
+		: "money. If the target replies it will WAKE you with a new message in a later turn.";
+	const readTabLine = callbacks.canReadTab
+		? ["can also call 'read_tab' with the same ID in a FUTURE turn to check. If you have other"]
+		: [];
+	const keepGoingLine = callbacks.canReadTab
+		? "work to do, keep going; if you are ONLY waiting for the reply, end your turn now."
+		: "If you have other work to do, keep going; if you are ONLY waiting for the reply, end your turn now.";
 	return {
 		name: "send_to_tab",
 		description: [
@@ -64,9 +84,14 @@ export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefiniti
 			"  - If the target tab is idle, your message WAKES it and starts a new turn.",
 			"",
 			"This is fire-and-forget: it returns immediately and does NOT wait for a reply.",
-			"Use the 'read_tab' tool with the same ID later to read the target's latest response.",
+			"Do NOT sleep, poll, or run shell commands to wait for a reply — that wastes turns and",
+			waitLine,
+			...readTabLine,
+			keepGoingLine,
 			"",
-			"Your tab ID is auto-added to the top of the message so the recipient can reply to you.",
+			"Your tab ID is auto-added to the top of the message so the recipient knows who to reply",
+			"to. The recipient must use this same 'send_to_tab' tool (addressed to your ID) to answer;",
+			"a plain text response reaches only their own user, not you.",
 			"IDs are git-style prefixes: pass any length that uniquely identifies the target (min 4 chars).",
 			"If the ID is ambiguous you'll be asked to add a character.",
 		].join("\n"),
@@ -117,8 +142,18 @@ export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefiniti
 			}
 
 			// Stamp provenance so the recipient (and the watching user) can see
-			// which tab the message came from and reply back via its handle.
-			const delivered = `[message from tab ${callbacks.self.handle}]\n\n${message}`;
+			// which tab the message came from and how to reply. The header makes
+			// clear this is a PEER AGENT, not the recipient's own user, and the
+			// footer states the reply contract: a reply (only if warranted) must
+			// go back through `send_to_tab`, since a plain text answer reaches
+			// only the recipient's own user — not this sender.
+			const delivered = [
+				`[message from tab ${callbacks.self.handle} — this is another agent, NOT your user]`,
+				"",
+				message,
+				"",
+				`[To reply to tab ${callbacks.self.handle}, use the send_to_tab tool with tab_id "${callbacks.self.handle}". ONLY reply if this message asks you to, or your user tells you to — it may just be context or instructions. A plain text response goes to your own user, not to this agent.]`,
+			].join("\n");
 
 			try {
 				const result = await callbacks.deliver(target.id, delivered);
@@ -138,7 +173,23 @@ export function createSendToTabTool(callbacks: SendToTabCallbacks): ToolDefiniti
 					result.status === "queued"
 						? "queued (target is busy; it will be picked up next turn)"
 						: "delivered (target was idle; a new turn has started)";
-				return `Message ${verb}. Target tab: ${target.handle} (${target.title}). Use read_tab with "${target.handle}" to read its reply later.`;
+				const tail = callbacks.canReadTab
+					? [
+							"Do NOT sleep, poll, or run commands to wait for a reply. If the target replies it",
+							`will WAKE you with a new message later; you can also call read_tab with "${target.handle}"`,
+							"in a FUTURE turn to check. Keep working if you have other tasks; if you are ONLY",
+							"waiting for this reply, end your turn now.",
+						]
+					: [
+							"Do NOT sleep, poll, or run commands to wait for a reply. If the target replies it",
+							"will WAKE you with a new message later. Keep working if you have other tasks; if",
+							"you are ONLY waiting for this reply, end your turn now.",
+						];
+				return [
+					`Message ${verb}. Target tab: ${target.handle} (${target.title}).`,
+					"",
+					...tail,
+				].join("\n");
 			} catch (err) {
 				return `Error delivering message: ${err instanceof Error ? err.message : String(err)}`;
 			}

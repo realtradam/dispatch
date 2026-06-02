@@ -89,10 +89,11 @@ function handleRenameKeydown(e: KeyboardEvent): void {
 		class="tabs tabs-lift min-w-max"
 		ondblclick={(e) => { if (e.target === e.currentTarget) tabStore.createNewTab(); }}
 	>
-		<!-- New tab button — always first -->
+		<!-- New tab button — sticky-pinned to the left edge so it stays reachable
+		     at any horizontal scroll; opaque bg + right-side shadow as a floating cue. -->
 		<button
 			type="button"
-			class="tab"
+			class="tab tab-active !sticky left-0 z-10 !rounded-ss-none !border-l-0 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.2)]"
 			onclick={() => tabStore.createNewTab()}
 			aria-label="New tab"
 		>
@@ -152,6 +153,16 @@ function handleRenameKeydown(e: KeyboardEvent): void {
 				</button>
 			</div>
 		{/each}
+
+		<!-- Trailing padding after the last tab. Fills remaining space (big target),
+		     shrinks to a small minimum when the bar overflows and scrolls.
+		     Double-click anywhere in it to open a new tab. -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="flex-1 min-w-12 self-stretch cursor-default"
+			ondblclick={() => tabStore.createNewTab()}
+			title="Double-click to open a new tab"
+		></div>
 	</div>
 </div>
 

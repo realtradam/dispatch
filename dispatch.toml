@@ -49,3 +49,45 @@ read = "allow"
 [permissions.external_directory]
 "~/*" = "ask"
 "/tmp/*" = "allow"
+
+# ─── Language Servers (LSP) ──────────────────────────────────────
+# Optional. Declare LSP servers to give agents diagnostics (and, with the
+# `lsp` tool, hover/definition/references) for the files they edit. This block
+# is PROJECT-SCOPED: it is read from the `dispatch.toml` in a tab's effective
+# working directory (re-consulted when you change the CWD). Config-driven only —
+# there is no builtin server registry and no auto-download, so the executable
+# in `command[0]` must already be on PATH.
+#
+# After `write_file` edits a file whose extension matches a server below,
+# dispatch opens it through the server and appends any error diagnostics to the
+# tool result ("LSP errors detected in this file, please fix: ..."). Grant the
+# `perm_lsp` permission to also expose the on-demand `lsp` tool.
+#
+# The example below is the Roblox Luau setup using luau-lsp
+# (https://github.com/JohnnyMorganz/luau-lsp). Uncomment and adapt for your
+# project. luau-lsp's `sourcemap.autogenerate` makes luau-lsp run
+# `rojo sourcemap --watch` itself, so `rojo` must be on PATH (or set
+# `[lsp.luau-lsp.env]` PATH / luau-lsp's sourcemap.rojoPath accordingly).
+#
+# [lsp.luau-lsp]
+# command = ["luau-lsp", "lsp", "--definitions=globalTypes.d.luau", "--docs=api-docs.json"]
+# extensions = [".luau"]
+#
+# [lsp.luau-lsp.initialization.luau-lsp.platform]
+# type = "roblox"
+#
+# [lsp.luau-lsp.initialization.luau-lsp.sourcemap]
+# enabled = true
+# autogenerate = true
+# rojoProjectFile = "default.project.json"
+#
+# [lsp.luau-lsp.initialization.luau-lsp.types]
+# roblox = true
+# definitionFiles = ["globalTypes.d.luau"]
+# documentationFiles = ["api-docs.json"]
+#
+# [lsp.luau-lsp.initialization.luau-lsp.diagnostics]
+# strictDatamodelTypes = false
+#
+# [lsp.luau-lsp.initialization.luau-lsp.completion.imports]
+# useConst = true
