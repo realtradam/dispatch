@@ -169,6 +169,11 @@ vi.mock("@dispatch/core", () => ({
 	getTab() {
 		return null;
 	},
+	isReasoningEffort(value: unknown) {
+		return (
+			typeof value === "string" && ["none", "low", "medium", "high", "xhigh", "max"].includes(value)
+		);
+	},
 	listOpenTabs() {
 		return [];
 	},
@@ -351,6 +356,34 @@ describe("POST /chat", () => {
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body).toEqual({ status: "ok" });
+	});
+
+	it("accepts xhigh as a valid reasoningEffort", async () => {
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				tabId: "tab-xhigh",
+				message: "hello",
+				reasoningEffort: "xhigh",
+			}),
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ status: "ok" });
+	});
+
+	it("tolerates an invalid agentModels effort (sanitized, not rejected)", async () => {
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				tabId: "tab-badeffort",
+				message: "hello",
+				agentModels: [{ key_id: "k", model_id: "m", effort: "turbo" }],
+			}),
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ status: "ok" });
 	});
 
 	it("returns 400 with empty message", async () => {

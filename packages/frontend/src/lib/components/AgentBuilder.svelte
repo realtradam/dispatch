@@ -4,6 +4,11 @@ const modelCache = new Map();
 </script>
 
 <script lang="ts">
+	import {
+		DEFAULT_REASONING_EFFORT,
+		REASONING_EFFORTS,
+		REASONING_EFFORT_LABELS,
+	} from "@dispatch/core/src/types/index.js";
 	import { config } from "../config.js";
 	import { router } from "../router.svelte.js";
 	import type { KeyInfo } from "../types.js";
@@ -13,6 +18,7 @@ const modelCache = new Map();
 	interface AgentModelEntry {
 		key_id: string;
 		model_id: string;
+		effort?: string;
 	}
 
 	interface AgentDefinition {
@@ -171,6 +177,10 @@ const modelCache = new Map();
 
 	function removeModelEntry(i: number) {
 		formModels = formModels.filter((_, idx) => idx !== i);
+	}
+
+	function setEffortEntry(i: number, effort: string) {
+		formModels = formModels.map((m, idx) => (idx === i ? { ...m, effort } : m));
 	}
 
 	async function openKeyModal(i: number) {
@@ -546,6 +556,16 @@ const modelCache = new Map();
 								>
 									{entry.model_id || "Select Model"}
 								</button>
+								<select
+									class="select select-bordered select-sm shrink-0 w-28"
+									title="Reasoning effort for this model"
+									value={entry.effort ?? DEFAULT_REASONING_EFFORT}
+									onchange={(e) => setEffortEntry(i, e.currentTarget.value)}
+								>
+									{#each REASONING_EFFORTS as effort}
+										<option value={effort}>{REASONING_EFFORT_LABELS[effort]}</option>
+									{/each}
+								</select>
 								<button
 									type="button"
 									class="btn btn-sm btn-ghost text-error"

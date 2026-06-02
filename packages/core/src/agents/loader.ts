@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseTOML, stringify as stringifyTOML } from "smol-toml";
-import type { AgentDefinition, AgentModelEntry } from "../types/index.js";
+import { type AgentDefinition, type AgentModelEntry, isReasoningEffort } from "../types/index.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -192,6 +192,7 @@ export function saveAgent(agent: AgentDefinition): void {
 		tomlContent.models = agent.models.map((m) => ({
 			key_id: m.key_id,
 			model_id: m.model_id,
+			...(m.effort ? { effort: m.effort } : {}),
 		}));
 	}
 
@@ -246,9 +247,14 @@ function loadAgentsFromDir(dir: string, scope: string): AgentDefinition[] {
 			if (Array.isArray(parsed.models)) {
 				for (const m of parsed.models) {
 					if (m && typeof m === "object" && "key_id" in m && "model_id" in m) {
+						const rawEffort = (m as Record<string, unknown>).effort;
 						models.push({
 							key_id: String((m as Record<string, unknown>).key_id),
 							model_id: String((m as Record<string, unknown>).model_id),
+							// Only carry `effort` when it's a recognised level; an
+							// unset or invalid value falls back to the per-tab /
+							// default effort at the call site.
+							...(isReasoningEffort(rawEffort) ? { effort: rawEffort } : {}),
 						});
 					}
 				}

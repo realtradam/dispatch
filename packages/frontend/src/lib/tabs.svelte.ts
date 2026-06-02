@@ -12,6 +12,12 @@ import {
 // source of truth for HISTORY; `groupRowsToMessages` derives render bubbles.
 import { groupRowsToMessages, type MessageRow } from "@dispatch/core/src/chunks/transform.js";
 import type { ChunkRow } from "@dispatch/core/src/types/index.js";
+import {
+	type AgentModelEntry,
+	DEFAULT_REASONING_EFFORT,
+	isReasoningEffort,
+	type ReasoningEffort,
+} from "@dispatch/core/src/types/index.js";
 import { config } from "./config.js";
 import { appSettings } from "./settings.svelte.js";
 import type {
@@ -154,7 +160,7 @@ export interface Tab {
 	agentStatus: "idle" | "running" | "error";
 	keyId: string | null;
 	modelId: string | null;
-	reasoningEffort: string;
+	reasoningEffort: ReasoningEffort;
 	currentAssistantId: string | null;
 	tasks: TaskItem[];
 	injectedSkills: string[];
@@ -162,7 +168,7 @@ export interface Tab {
 	persistent: boolean;
 	agentSlug: string | null;
 	agentScope: string | null;
-	agentModels: Array<{ key_id: string; model_id: string }> | null;
+	agentModels: AgentModelEntry[] | null;
 	workingDirectory: string | null;
 	queuedMessages: QueuedMessage[];
 	chunkLimit: number;
@@ -280,7 +286,7 @@ export function createTabStore() {
 			agentStatus: "idle",
 			keyId: null,
 			modelId: null,
-			reasoningEffort: "max",
+			reasoningEffort: DEFAULT_REASONING_EFFORT,
 			currentAssistantId: null,
 			tasks: [],
 			injectedSkills: [],
@@ -355,7 +361,7 @@ export function createTabStore() {
 				agentStatus: "idle",
 				keyId: tabData.keyId ?? null,
 				modelId: tabData.modelId ?? null,
-				reasoningEffort: "max",
+				reasoningEffort: DEFAULT_REASONING_EFFORT,
 				currentAssistantId: null,
 				tasks: [],
 				injectedSkills: [],
@@ -829,7 +835,7 @@ export function createTabStore() {
 				agentStatus,
 				keyId: row.keyId ?? null,
 				modelId: row.modelId ?? null,
-				reasoningEffort: "max",
+				reasoningEffort: DEFAULT_REASONING_EFFORT,
 				currentAssistantId,
 				tasks: [],
 				injectedSkills: [],
@@ -1154,7 +1160,7 @@ export function createTabStore() {
 					parentTabId: string | null;
 					agentSlug?: string | null;
 					workingDirectory: string | null;
-					agentModels?: Array<{ key_id: string; model_id: string }> | null;
+					agentModels?: AgentModelEntry[] | null;
 				};
 				// Only add if we don't already have this tab
 				if (!getTabById(newTabEvent.id)) {
@@ -1168,7 +1174,7 @@ export function createTabStore() {
 						agentStatus: "running",
 						keyId: newTabEvent.keyId ?? null,
 						modelId: newTabEvent.modelId ?? null,
-						reasoningEffort: "max",
+						reasoningEffort: DEFAULT_REASONING_EFFORT,
 						currentAssistantId: null,
 						tasks: [],
 						injectedSkills: [],
@@ -1382,7 +1388,7 @@ export function createTabStore() {
 					name: string;
 					skills: string[];
 					tools: string[];
-					models: Array<{ key_id: string; model_id: string }>;
+					models: AgentModelEntry[];
 					cwd?: string;
 				}>;
 			};
@@ -1451,7 +1457,7 @@ export function createTabStore() {
 				agents?: Array<{
 					slug: string;
 					scope: string;
-					models: Array<{ key_id: string; model_id: string }>;
+					models: AgentModelEntry[];
 					cwd?: string;
 				}>;
 			};
@@ -1733,6 +1739,19 @@ export function createTabStore() {
 		}).catch(() => {});
 	}
 
+	/**
+	 * Update the per-tab reasoning-effort selector. Ignores unrecognised
+	 * values so an out-of-range string from the UI can't corrupt the tab
+	 * state. This is the per-tab effort in the per-model → per-tab → default
+	 * resolution chain.
+	 */
+	function setReasoningEffort(effort: string): void {
+		if (!isReasoningEffort(effort)) return;
+		const tab = getActiveTab();
+		if (!tab) return;
+		updateTab(tab.id, { reasoningEffort: effort });
+	}
+
 	function setWorkingDirectory(dir: string | null): void {
 		const tab = getActiveTab();
 		if (!tab) return;
@@ -1745,7 +1764,7 @@ export function createTabStore() {
 			scope: string;
 			skills: string[];
 			tools: string[];
-			models: Array<{ key_id: string; model_id: string }>;
+			models: AgentModelEntry[];
 			cwd?: string;
 		} | null,
 	): void {
@@ -2002,6 +2021,7 @@ export function createTabStore() {
 		stopGeneration,
 		changeModel,
 		setKey,
+		setReasoningEffort,
 		setAgent,
 		replyPermission,
 		copyConversation,

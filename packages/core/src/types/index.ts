@@ -308,7 +308,43 @@ export interface ToolDefinition {
 
 // ─── Agent Configuration ─────────────────────────────────────────
 
-export type ReasoningEffort = "none" | "low" | "medium" | "high" | "max";
+/**
+ * Canonical, ordered list of reasoning-effort levels — the SINGLE SOURCE OF
+ * TRUTH for effort values across the whole codebase (core LLM call site, API
+ * validation, agent TOML persistence, and the frontend UI). Ordered from least
+ * to most effort.
+ *
+ * `none` disables reasoning. `low`/`medium`/`high`/`xhigh` are forwarded
+ * verbatim to providers that accept them (OpenAI-compatible `reasoning_effort`,
+ * Anthropic adaptive `effort`) — `xhigh` is accepted by newer OpenAI reasoning
+ * models. `max` is Dispatch's own top tier, mapped per-provider at the call
+ * site (e.g. classic-thinking Claude budget tokens).
+ */
+export const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/**
+ * Default effort applied when nothing more specific is configured (no per-model
+ * effort and no per-tab selection). Resolution order is
+ * per-model → per-tab → this default.
+ */
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
+
+/** Human-readable labels for each effort level (UI display). */
+export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, string> = {
+	none: "Off",
+	low: "Low",
+	medium: "Medium",
+	high: "High",
+	xhigh: "X-High",
+	max: "Max",
+};
+
+/** Runtime type guard for narrowing an arbitrary value to a `ReasoningEffort`. */
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+	return typeof value === "string" && (REASONING_EFFORTS as readonly string[]).includes(value);
+}
 
 export interface AgentConfig {
 	model: string;
@@ -416,6 +452,12 @@ export interface QueueCallbacks {
 export interface AgentModelEntry {
 	key_id: string;
 	model_id: string;
+	/**
+	 * Per-model/key reasoning effort. When set, overrides the per-tab effort
+	 * selector for generations that use this entry (resolution order:
+	 * per-model → per-tab → DEFAULT_REASONING_EFFORT). Omitted when unset.
+	 */
+	effort?: ReasoningEffort;
 }
 
 export interface AgentDefinition {

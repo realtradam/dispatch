@@ -2,7 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { expandAgentToolNames, getAgentDirPaths, loadAgent } from "../../src/agents/loader.js";
+import {
+	expandAgentToolNames,
+	getAgentDirPaths,
+	loadAgent,
+	saveAgent,
+} from "../../src/agents/loader.js";
 
 describe("expandAgentToolNames", () => {
 	it("expands 'read' into the granular read tools", () => {
@@ -143,6 +148,76 @@ describe("loadAgent — project-scoped sandbox", () => {
 		expect(agent?.is_subagent).toBe(true);
 		expect(agent?.models).toEqual([{ key_id: "opencode-1", model_id: "deepseek-v4-flash" }]);
 		expect(agent?.scope).toBe(tmpProject);
+	});
+
+	it("parses a per-model effort when it is a recognised level", () => {
+		writeAgentToml(
+			TEST_SLUG,
+			[
+				'name = "Fixture"',
+				"skills = []",
+				'tools = ["read"]',
+				"",
+				"[[models]]",
+				'key_id = "opencode-1"',
+				'model_id = "deepseek-v4-flash"',
+				'effort = "low"',
+				"",
+				"[[models]]",
+				'key_id = "claude-max"',
+				'model_id = "claude-opus-4-8"',
+				'effort = "xhigh"',
+				"",
+			].join("\n"),
+		);
+
+		const agent = loadAgent(TEST_SLUG, tmpProject);
+		expect(agent?.models).toEqual([
+			{ key_id: "opencode-1", model_id: "deepseek-v4-flash", effort: "low" },
+			{ key_id: "claude-max", model_id: "claude-opus-4-8", effort: "xhigh" },
+		]);
+	});
+
+	it("drops an invalid effort value so the call site falls back to the default", () => {
+		writeAgentToml(
+			TEST_SLUG,
+			[
+				'name = "Fixture"',
+				"skills = []",
+				'tools = ["read"]',
+				"",
+				"[[models]]",
+				'key_id = "opencode-1"',
+				'model_id = "deepseek-v4-flash"',
+				'effort = "turbo"',
+				"",
+			].join("\n"),
+		);
+
+		const agent = loadAgent(TEST_SLUG, tmpProject);
+		expect(agent?.models).toEqual([{ key_id: "opencode-1", model_id: "deepseek-v4-flash" }]);
+		expect(agent?.models[0]).not.toHaveProperty("effort");
+	});
+
+	it("round-trips effort through saveAgent → loadAgent", () => {
+		saveAgent({
+			name: "Fixture",
+			description: "",
+			skills: [],
+			tools: ["read"],
+			models: [
+				{ key_id: "opencode-1", model_id: "deepseek-v4-flash", effort: "medium" },
+				{ key_id: "claude-max", model_id: "claude-opus-4-8" },
+			],
+			scope: tmpProject,
+			slug: TEST_SLUG,
+		});
+
+		const agent = loadAgent(TEST_SLUG, tmpProject);
+		expect(agent?.models).toEqual([
+			{ key_id: "opencode-1", model_id: "deepseek-v4-flash", effort: "medium" },
+			{ key_id: "claude-max", model_id: "claude-opus-4-8" },
+		]);
 	});
 
 	it("sanitizes the slug so path traversal can't reach outside the agents dir", () => {

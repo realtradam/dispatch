@@ -2,7 +2,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentDefinition } from "@dispatch/core";
-import { deleteAgent, getAgentDirs, loadAgents, saveAgent } from "@dispatch/core";
+import {
+	deleteAgent,
+	getAgentDirs,
+	isReasoningEffort,
+	loadAgents,
+	saveAgent,
+} from "@dispatch/core";
 import { Hono } from "hono";
 
 const SAFE_SLUG_RE = /^[a-zA-Z0-9_-]+$/;
@@ -52,7 +58,12 @@ agentsRoutes.post("/", async (c) => {
 			description: body.description || "",
 			skills: body.skills || [],
 			tools: body.tools || [],
-			models: body.models || [],
+			models: (body.models || []).map((m) => ({
+				key_id: m.key_id,
+				model_id: m.model_id,
+				// Keep `effort` only when it's a recognised level; drop anything else.
+				...(isReasoningEffort(m.effort) ? { effort: m.effort } : {}),
+			})),
 			scope: body.scope,
 			slug: body.slug,
 			...(body.cwd ? { cwd: body.cwd } : {}),

@@ -1,6 +1,7 @@
 import {
 	Agent,
 	type AgentEvent,
+	type AgentModelEntry,
 	type AgentSkillMapping,
 	type AgentStatus,
 	appendChunks,
@@ -42,6 +43,7 @@ import {
 	loadSkills,
 	ModelRegistry,
 	type QueuedMessage,
+	type ReasoningEffort,
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
 	resolveApiKey,
@@ -172,7 +174,7 @@ interface TabAgent {
 	taskList: TaskList;
 	_lastPermKey?: string;
 	/** Ordered key+model fallback hierarchy from the agent definition. */
-	agentModels?: Array<{ key_id: string; model_id: string }>;
+	agentModels?: AgentModelEntry[];
 	/** Abort controller for cancelling a running agent. */
 	abortController?: AbortController;
 	/** For child agents: resolves when the agent finishes its task. */
@@ -1333,8 +1335,8 @@ export class AgentManager {
 		opts: {
 			keyId?: string;
 			modelId?: string;
-			agentModels?: Array<{ key_id: string; model_id: string }>;
-			reasoningEffort?: "none" | "low" | "medium" | "high" | "max";
+			agentModels?: AgentModelEntry[];
+			reasoningEffort?: ReasoningEffort;
 			workingDirectory?: string;
 			queueId?: string;
 			/**
@@ -1419,9 +1421,9 @@ export class AgentManager {
 		message: string,
 		keyId?: string,
 		modelId?: string,
-		reasoningEffort?: "none" | "low" | "medium" | "high" | "max",
+		reasoningEffort?: ReasoningEffort,
 		workingDirectory?: string,
-		agentModels?: Array<{ key_id: string; model_id: string }>,
+		agentModels?: AgentModelEntry[],
 	): Promise<void> {
 		const tabAgent = this._getOrCreateTabAgent(tabId);
 
@@ -1471,6 +1473,10 @@ export class AgentManager {
 			// to the tabAgent's stored defaults via the `?? tabAgent.keyId` chain.
 			currentKeyId = entry.key_id || undefined;
 			currentModelId = entry.model_id || undefined;
+			// Effort precedence: per-model (agent definition) → per-tab selector
+			// (the `reasoningEffort` arg) → the Agent's own DEFAULT_REASONING_EFFORT
+			// floor (applied inside `agent.run`).
+			const effortForEntry = entry.effort ?? reasoningEffort;
 			allOutput = "";
 
 			// Single ordered chunk list accumulating this attempt's assistant
@@ -1514,7 +1520,7 @@ export class AgentManager {
 				}
 
 				for await (const event of agent.run(message, {
-					...(reasoningEffort ? { reasoningEffort } : {}),
+					...(effortForEntry ? { reasoningEffort: effortForEntry } : {}),
 					abortSignal: tabAgent.abortController?.signal,
 				})) {
 					// Stop processing if the tab was aborted (closed/stopped).
@@ -1703,7 +1709,7 @@ export class AgentManager {
 		tabAgent: TabAgent,
 		keyId?: string,
 		modelId?: string,
-	): Array<{ key_id: string; model_id: string }> {
+	): AgentModelEntry[] {
 		// Agent mode: use the agent's configured fallback hierarchy in strict order
 		const models = tabAgent.agentModels;
 		if (models && models.length > 0) {
