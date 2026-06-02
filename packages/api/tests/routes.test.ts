@@ -289,6 +289,13 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => "mock",
 		};
 	},
+	// ── models.dev context-limit stub ─────────────────────────────
+	resolveContextLimit(provider: string, modelId: string) {
+		if (provider === "anthropic" && modelId === "claude-sonnet-4-5") {
+			return Promise.resolve(200000);
+		}
+		return Promise.resolve(null);
+	},
 	// ── ntfy notifications stubs ──────────────────────────────────
 	NotificationDispatcher: class MockNotificationDispatcher {
 		attachToAgentManager() {
@@ -829,5 +836,30 @@ describe("Wake schedule routes", () => {
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as { schedule: Record<string, unknown> };
 		expect(body.schedule["13"]).toBeUndefined();
+	});
+});
+
+describe("GET /models/context-limit", () => {
+	it("returns the resolved context limit for a known model", async () => {
+		const res = await app.request(
+			"/models/context-limit?provider=anthropic&modelId=claude-sonnet-4-5",
+		);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { contextLimit: number | null };
+		expect(body.contextLimit).toBe(200000);
+	});
+
+	it("returns null contextLimit for an unknown model", async () => {
+		const res = await app.request("/models/context-limit?provider=anthropic&modelId=mystery");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { contextLimit: number | null };
+		expect(body.contextLimit).toBeNull();
+	});
+
+	it("400s when provider or modelId is missing", async () => {
+		const res1 = await app.request("/models/context-limit?provider=anthropic");
+		expect(res1.status).toBe(400);
+		const res2 = await app.request("/models/context-limit?modelId=claude-sonnet-4-5");
+		expect(res2.status).toBe(400);
 	});
 });

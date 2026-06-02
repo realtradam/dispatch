@@ -74,6 +74,62 @@ $effect(() => {
 	}
 });
 
+// ─── Context-window max lookup ─────────────────────────────────
+// Resolve the active model's MAXIMUM context window from models.dev (via the
+// API), so the Context Window sidebar view can show `current / max`. Cached
+// per provider+model; `null` when unknown (the view then hides the
+// denominator/percentage). Only Claude-backed providers are resolvable.
+let contextLimit = $state<number | null>(null);
+const contextLimitCache = new Map<string, number | null>();
+
+$effect(() => {
+	const tab = tabStore.activeTab;
+	const keyId = tab?.keyId ?? null;
+	const modelId = tab?.modelId ?? null;
+	const provider = keyId ? (modelsData.keys.find((k) => k.id === keyId)?.provider ?? null) : null;
+
+	if (!provider || !modelId) {
+		contextLimit = null;
+		return;
+	}
+
+	const cacheKey = `${provider}/${modelId}`;
+	if (contextLimitCache.has(cacheKey)) {
+		contextLimit = contextLimitCache.get(cacheKey) ?? null;
+		return;
+	}
+
+	// Clear immediately so a slow/failed fetch can't leave the PREVIOUS
+	// model's max on screen (which would render this model's tokens against
+	// the wrong denominator). The view degrades to a bare token count until
+	// the fetch resolves.
+	contextLimit = null;
+
+	// Fetch is async; guard against a stale response overwriting a newer
+	// selection by re-checking the active tab's key/model on resolve.
+	void (async () => {
+		try {
+			const res = await fetch(
+				`${config.apiBase}/models/context-limit?provider=${encodeURIComponent(provider)}&modelId=${encodeURIComponent(modelId)}`,
+			);
+			if (!res.ok) return;
+			const data = (await res.json()) as { contextLimit?: number | null };
+			const limit = data.contextLimit ?? null;
+			contextLimitCache.set(cacheKey, limit);
+			const current = tabStore.activeTab;
+			const currentProvider = current?.keyId
+				? (modelsData.keys.find((k) => k.id === current.keyId)?.provider ?? null)
+				: null;
+			if (currentProvider === provider && current?.modelId === modelId) {
+				contextLimit = limit;
+			}
+		} catch {
+			// Leave contextLimit as-is on network error; view falls back to
+			// showing the bare token count.
+		}
+	})();
+});
+
 onMount(() => {
 	// Apply persisted theme (or the shared DEFAULT_THEME if nothing is
 	// stored) so the first paint matches what the Settings panel will
@@ -137,6 +193,7 @@ onMount(() => {
 				tasks={tabStore.activeTab?.tasks ?? []}
 				cacheStats={tabStore.activeTab?.cacheStats ?? null}
 				cacheTabTitle={tabStore.activeTab?.title ?? null}
+				{contextLimit}
 				permissionLog={tabStore.permissionLog}
 				apiBase={config.apiBase}
 				activeKeyId={tabStore.activeTab?.keyId ?? null}
