@@ -177,6 +177,19 @@ export interface Tab {
 	/** Total chunk count for this tab on the backend (drives "more to load?"). */
 	totalChunks: number;
 	/**
+	 * Unsent chat-input text for THIS tab (in-memory only — never persisted).
+	 * Saved/restored on tab switch so a draft is never lost or clobbered by
+	 * switching tabs. Cleared on send.
+	 */
+	draft: string;
+	/**
+	 * True once the user has manually renamed this tab (double-click rename).
+	 * Suppresses the first-message auto-title so a chosen name is never
+	 * clobbered. In-memory only — a renamed tab is no longer "New Tab" on
+	 * reload, so the auto-title guard already won't fire for it.
+	 */
+	manualTitle: boolean;
+	/**
 	 * Cumulative prompt-cache token telemetry for this tab since the page
 	 * loaded (in-memory only — resets on reload). Undefined until the first
 	 * `usage` event arrives. Drives the "Cache Rate" sidebar view.
@@ -298,6 +311,8 @@ export function createTabStore() {
 			workingDirectory: null,
 			queuedMessages: [],
 			chunkLimit: appSettings.chunkLimit,
+			draft: "",
+			manualTitle: false,
 			oldestLoadedSeq: null,
 			totalChunks: 0,
 		};
@@ -373,6 +388,8 @@ export function createTabStore() {
 				workingDirectory: null,
 				queuedMessages: [],
 				chunkLimit: appSettings.chunkLimit,
+				draft: "",
+				manualTitle: false,
 				oldestLoadedSeq: win.oldestSeq,
 				totalChunks: win.total,
 			};
@@ -423,6 +440,61 @@ export function createTabStore() {
 			}
 			return next;
 		});
+	}
+
+	/**
+	 * Rename a tab. Records `manualTitle` so the first-message auto-title never
+	 * clobbers the user's chosen name, and persists the new title to the DB
+	 * (fire-and-forget — the optimistic local update is the source of truth for
+	 * the open session).
+	 */
+	function renameTab(id: string, title: string): void {
+		const trimmed = title.trim();
+		if (!trimmed) return;
+		updateTab(id, { title: trimmed, manualTitle: true });
+		fetch(`${config.apiBase}/tabs/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: trimmed }),
+		}).catch(() => {});
+	}
+
+	/**
+	 * Reorder the top-row USER tabs to match `orderedUserTabIds`. Subagent tabs
+	 * (those with a `parentTabId`) keep their relative order untouched — they
+	 * live in a separate row and aren't draggable. The new left-to-right user
+	 * order is persisted via `PATCH /tabs/reorder`, which rewrites each open
+	 * tab's `position` (fire-and-forget, matching the title-persist style).
+	 */
+	function reorderTabs(orderedUserTabIds: string[]): void {
+		const byId = new Map(tabs.map((t) => [t.id, t]));
+		const ordered = orderedUserTabIds
+			.map((id) => byId.get(id))
+			.filter((t): t is Tab => t !== undefined && t.parentTabId === null);
+		// Bail if the requested order doesn't cover exactly the current user tabs
+		// (stale drag against a since-changed tab set) — never drop tabs.
+		const currentUserCount = tabs.filter((t) => t.parentTabId === null).length;
+		if (ordered.length !== currentUserCount) return;
+		const subagentTabs = tabs.filter((t) => t.parentTabId !== null);
+		tabs = [...ordered, ...subagentTabs];
+		// Persist the full open-tab order (user tabs first, then subagents) so the
+		// backend `position` column matches what the user sees on reload.
+		const persistOrder = [...ordered, ...subagentTabs].map((t) => t.id);
+		fetch(`${config.apiBase}/tabs/reorder`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ ids: persistOrder }),
+		}).catch(() => {});
+	}
+
+	/**
+	 * Persist the unsent chat-input text for a tab (in-memory only). Saved on
+	 * every keystroke so switching tabs preserves the draft and restoring the
+	 * target tab shows its own text. No-op if the tab is gone.
+	 */
+	function setDraft(id: string, text: string): void {
+		if (!getTabById(id)) return;
+		updateTab(id, { draft: text });
 	}
 
 	/**
@@ -854,6 +926,8 @@ export function createTabStore() {
 				workingDirectory: null,
 				queuedMessages: [],
 				chunkLimit: appSettings.chunkLimit,
+				draft: "",
+				manualTitle: false,
 				oldestLoadedSeq: win.oldestSeq,
 				totalChunks: win.total,
 				cacheStats: row.usageStats ?? undefined,
@@ -1203,6 +1277,8 @@ export function createTabStore() {
 						workingDirectory: newTabEvent.workingDirectory ?? null,
 						queuedMessages: [],
 						chunkLimit: appSettings.chunkLimit,
+						draft: "",
+						manualTitle: false,
 						oldestLoadedSeq: null,
 						totalChunks: 0,
 					};
@@ -1589,7 +1665,7 @@ export function createTabStore() {
 		updateTab(tab.id, { live: [...tab.live, userMsg] });
 		// Generate a title from the first user message of an empty tab.
 		const isFirstMessage = tab.chunks.length === 0 && tab.live.length === 0;
-		if (isFirstMessage || tab.title === "New Tab") {
+		if (!tab.manualTitle && (isFirstMessage || tab.title === "New Tab")) {
 			const titleText = text.length > 50 ? `${text.slice(0, 47)}...` : text;
 			updateTab(tab.id, { title: titleText });
 			fetch(`${config.apiBase}/tabs/${tab.id}`, {
@@ -2033,6 +2109,9 @@ export function createTabStore() {
 		createNewTab,
 		switchTab,
 		closeTab,
+		renameTab,
+		reorderTabs,
+		setDraft,
 		sendMessage,
 		cancelQueuedMessage,
 		stopGeneration,
