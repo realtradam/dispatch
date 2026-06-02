@@ -5,7 +5,14 @@ import {
 	groupRowsToMessages,
 	type MessageRow,
 } from "../chunks/transform.js";
-import type { ChunkData, ChunkRow, ChunkRowDraft, TextData } from "../types/index.js";
+import type {
+	ChunkData,
+	ChunkRow,
+	ChunkRowDraft,
+	TextData,
+	UsageData,
+	UsageStats,
+} from "../types/index.js";
 import { getDatabase } from "./index.js";
 
 // Re-export the DB-free transforms so existing barrel consumers
@@ -101,7 +108,7 @@ export function getChunksForTab(
 	const db = getDatabase();
 	if (!options) {
 		const rows = db
-			.query("SELECT * FROM chunks WHERE tab_id = $tabId ORDER BY seq ASC")
+			.query("SELECT * FROM chunks WHERE tab_id = $tabId AND type != 'usage' ORDER BY seq ASC")
 			.all({ $tabId: tabId }) as Array<Record<string, unknown>>;
 		return rows.map(mapRow);
 	}
@@ -110,24 +117,28 @@ export function getChunksForTab(
 		if (limit !== undefined) {
 			const rows = db
 				.query(
-					"SELECT * FROM chunks WHERE tab_id = $tabId AND seq < $before ORDER BY seq DESC LIMIT $limit",
+					"SELECT * FROM chunks WHERE tab_id = $tabId AND type != 'usage' AND seq < $before ORDER BY seq DESC LIMIT $limit",
 				)
 				.all({ $tabId: tabId, $before: before, $limit: limit }) as Array<Record<string, unknown>>;
 			return rows.map(mapRow).reverse();
 		}
 		const rows = db
-			.query("SELECT * FROM chunks WHERE tab_id = $tabId AND seq < $before ORDER BY seq DESC")
+			.query(
+				"SELECT * FROM chunks WHERE tab_id = $tabId AND type != 'usage' AND seq < $before ORDER BY seq DESC",
+			)
 			.all({ $tabId: tabId, $before: before }) as Array<Record<string, unknown>>;
 		return rows.map(mapRow).reverse();
 	}
 	if (limit !== undefined) {
 		const rows = db
-			.query("SELECT * FROM chunks WHERE tab_id = $tabId ORDER BY seq DESC LIMIT $limit")
+			.query(
+				"SELECT * FROM chunks WHERE tab_id = $tabId AND type != 'usage' ORDER BY seq DESC LIMIT $limit",
+			)
 			.all({ $tabId: tabId, $limit: limit }) as Array<Record<string, unknown>>;
 		return rows.map(mapRow).reverse();
 	}
 	const rows = db
-		.query("SELECT * FROM chunks WHERE tab_id = $tabId ORDER BY seq ASC")
+		.query("SELECT * FROM chunks WHERE tab_id = $tabId AND type != 'usage' ORDER BY seq ASC")
 		.all({ $tabId: tabId }) as Array<Record<string, unknown>>;
 	return rows.map(mapRow);
 }
@@ -145,9 +156,69 @@ export function getMessagesForTab(tabId: string): MessageRow[] {
 export function getTotalChunkCount(tabId: string): number {
 	const db = getDatabase();
 	const row = db
-		.query("SELECT COUNT(*) as count FROM chunks WHERE tab_id = $tabId")
+		.query("SELECT COUNT(*) as count FROM chunks WHERE tab_id = $tabId AND type != 'usage'")
 		.get({ $tabId: tabId }) as { count: number } | null;
 	return row?.count ?? 0;
+}
+
+/**
+ * Aggregate per-tab token/cache usage across ALL persisted `usage` chunk rows.
+ *
+ * Usage rows are written as an invisible side channel (one row per `usage`
+ * AgentEvent) and are query-excluded from `getChunksForTab`/`getTotalChunkCount`,
+ * so this aggregate is the read path. Because it sums server-side over every
+ * row, it stays complete even after the frontend evicts/pages out old turns
+ * (eviction is in-memory only). The return shape is structurally identical to
+ * the frontend `CacheStats`, so reload can seed it directly.
+ *
+ *   - cumulative `inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`
+ *     = SUM over all usage rows;
+ *   - `requests` = COUNT of usage rows;
+ *   - `last` = the highest-seq usage row's split (most recent request);
+ *   - `null` when the tab has no usage rows.
+ *
+ * Sums in JS after selecting the rows (mirroring `mapRow`) to avoid relying on
+ * `json_extract` over the freeform `data_json`.
+ */
+export function getUsageStatsForTab(tabId: string): UsageStats | null {
+	const db = getDatabase();
+	const rows = db
+		.query("SELECT data_json FROM chunks WHERE tab_id = $tabId AND type = 'usage' ORDER BY seq ASC")
+		.all({ $tabId: tabId }) as Array<{ data_json: string }>;
+	if (rows.length === 0) return null;
+
+	let inputTokens = 0;
+	let outputTokens = 0;
+	let cacheReadTokens = 0;
+	let cacheWriteTokens = 0;
+	let last: UsageData | null = null;
+	for (const row of rows) {
+		let u: UsageData;
+		try {
+			u = JSON.parse(row.data_json) as UsageData;
+		} catch {
+			continue;
+		}
+		inputTokens += u.inputTokens ?? 0;
+		outputTokens += u.outputTokens ?? 0;
+		cacheReadTokens += u.cacheReadTokens ?? 0;
+		cacheWriteTokens += u.cacheWriteTokens ?? 0;
+		last = {
+			inputTokens: u.inputTokens ?? 0,
+			outputTokens: u.outputTokens ?? 0,
+			cacheReadTokens: u.cacheReadTokens ?? 0,
+			cacheWriteTokens: u.cacheWriteTokens ?? 0,
+		};
+	}
+
+	return {
+		inputTokens,
+		outputTokens,
+		cacheReadTokens,
+		cacheWriteTokens,
+		requests: rows.length,
+		last,
+	};
 }
 
 export function clearChunksForTab(tabId: string): void {

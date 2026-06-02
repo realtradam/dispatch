@@ -6,6 +6,7 @@ import {
 	getSetting,
 	getTab,
 	getTotalChunkCount,
+	getUsageStatsForTab,
 	groupRowsToMessages,
 	listOpenTabs,
 	setSetting,
@@ -27,7 +28,10 @@ export function setTabsAgentManager(
 }
 
 tabsRoutes.get("/", (c) => {
-	const tabs = listOpenTabs();
+	// Enrich each tab with its persisted usage aggregate so the frontend can
+	// seed `cacheStats` on reload without an extra round-trip. N small indexed
+	// queries — fine for tab counts.
+	const tabs = listOpenTabs().map((t) => ({ ...t, usageStats: getUsageStatsForTab(t.id) }));
 	return c.json({ tabs });
 });
 

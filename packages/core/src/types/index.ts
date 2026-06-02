@@ -90,7 +90,14 @@ export interface ChatMessage {
 export type ChunkRole = "user" | "assistant" | "tool" | "system";
 
 /** Discriminator for a persisted chunk row's payload. */
-export type ChunkType = "text" | "thinking" | "tool_call" | "tool_result" | "error" | "system";
+export type ChunkType =
+	| "text"
+	| "thinking"
+	| "tool_call"
+	| "tool_result"
+	| "error"
+	| "system"
+	| "usage";
 
 export interface TextData {
 	text: string;
@@ -119,6 +126,45 @@ export interface SystemData {
 	kind: SystemChunkKind;
 	text: string;
 }
+/**
+ * Per-request token usage persisted as a SIDE-CHANNEL chunk row (one row per
+ * `usage` AgentEvent, i.e. one per LLM round-trip). These rows are deliberately
+ * EXCLUDED from `getChunksForTab`/`getTotalChunkCount` so they never enter the
+ * render, pagination, eviction, or agent-history-rebuild paths — they exist
+ * only to feed the backend aggregate `getUsageStatsForTab`, which seeds the
+ * frontend's `cacheStats` on reload. `inputTokens` is the TOTAL prompt
+ * (cached + fresh); `cacheReadTokens`/`cacheWriteTokens` are Anthropic's
+ * prompt-cache split. Mirrors the `usage` AgentEvent payload.
+ */
+export interface UsageData {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+}
+
+/**
+ * Aggregate per-tab usage telemetry: the cumulative sum across ALL persisted
+ * `usage` rows, the request count, and the most recent request's split. This is
+ * the server-side source of truth (complete regardless of frontend
+ * eviction/pagination) returned by `getUsageStatsForTab`. Structurally
+ * identical to the frontend `CacheStats` so it can seed it directly. `null` when
+ * the tab has no usage rows.
+ */
+export interface UsageStats {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	/** Number of LLM requests (usage rows) counted. */
+	requests: number;
+	last: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens: number;
+		cacheWriteTokens: number;
+	} | null;
+}
 
 export type ChunkData =
 	| TextData
@@ -126,7 +172,8 @@ export type ChunkData =
 	| ToolCallData
 	| ToolResultData
 	| ErrorData
-	| SystemData;
+	| SystemData
+	| UsageData;
 
 /**
  * A persisted chunk row — the append-only unit of conversation storage and
@@ -225,8 +272,16 @@ export type AgentEvent =
 	 * fold its transient live representation into the sealed chunk log. Emitted
 	 * after `status: idle`/`error` (which fire before the DB write). Display/sync
 	 * only — not conversation content.
+	 *
+	 * Carries `usageStats`: the tab's authoritative usage aggregate read from the
+	 * DB AFTER the turn's usage rows were written. The frontend REPLACES (not adds)
+	 * its live `cacheStats` with this, reconciling the live accumulator to the
+	 * persisted truth every turn. This self-heals the live overshoot that occurs
+	 * when a rate-limited fallback attempt's usage is streamed live but then
+	 * discarded server-side (never persisted). `null` ⇒ tab has no usage rows;
+	 * absent ⇒ leave `cacheStats` untouched (back-compat).
 	 */
-	| { type: "turn-sealed"; turnId: string }
+	| { type: "turn-sealed"; turnId: string; usageStats?: UsageStats | null }
 	| { type: "text-delta"; delta: string }
 	| { type: "reasoning-delta"; delta: string }
 	/**
