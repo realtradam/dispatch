@@ -83,6 +83,10 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	web_search: "Search the web and optionally scrape full page content from results.",
 	youtube_transcribe:
 		"Fetch the transcript/subtitles for a YouTube video. Set background=true to start in the background and get a job_id for later retrieval.",
+	send_to_tab:
+		"Send a message to another tab (agent) by its short ID, as shown in the tab bar. Fire-and-forget: it queues/wakes the target and returns immediately without waiting for a reply. Do NOT sleep, poll, or run commands to wait — if the target replies it will wake you with a new message in a later turn; if you are only waiting, end your turn.",
+	read_tab:
+		"Read another tab (agent)'s most recent completed response by its short ID. Returns a non-blocking snapshot; if the target is still running you get its previous completed turn. Use after send_to_tab to collect a reply.",
 };
 
 /**
@@ -542,7 +546,7 @@ export class AgentManager {
 				}
 				// Tab-to-tab communication — gated on the child whitelist.
 				if (allowed.has("send_to_tab") || allowed.has("read_tab")) {
-					for (const entry of this.buildTabCommToolEntries(tabId)) {
+					for (const entry of this.buildTabCommToolEntries(tabId, allowed.has("read_tab"))) {
 						if (allowed.has(entry.name)) toolEntries.push(entry);
 					}
 				}
@@ -639,7 +643,7 @@ export class AgentManager {
 					const tabCommAllowed = new Set<string>();
 					if (permSendToTab) tabCommAllowed.add("send_to_tab");
 					if (permReadTab) tabCommAllowed.add("read_tab");
-					for (const entry of this.buildTabCommToolEntries(tabId)) {
+					for (const entry of this.buildTabCommToolEntries(tabId, permReadTab)) {
 						if (tabCommAllowed.has(entry.name)) toolEntries.push(entry);
 					}
 				}
@@ -1249,9 +1253,15 @@ export class AgentManager {
 	 * both tool-construction paths (child whitelist + permission-gated parent).
 	 * `selfHandle` is computed once so the calling tab can stamp provenance and
 	 * reject self-sends.
+	 *
+	 * `canReadTab` reflects whether THIS tab will also be granted `read_tab`
+	 * (the permissions are split). It is forwarded into `send_to_tab` so the
+	 * tool only points the agent at `read_tab` when it actually has it — never
+	 * advertising a tool the agent wasn't granted.
 	 */
 	private buildTabCommToolEntries(
 		tabId: string,
+		canReadTab: boolean,
 	): Array<{ name: string; tool: ReturnType<typeof createSendToTabTool> }> {
 		const selfHandle = shortestUniquePrefix(tabId);
 		return [
@@ -1265,6 +1275,7 @@ export class AgentManager {
 						this.deliverMessage(targetId, message, { origin: "agent" }),
 					listOpenHandles: () => this.listOpenHandles(tabId),
 					self: { id: tabId, handle: selfHandle },
+					canReadTab,
 				}),
 			},
 			{

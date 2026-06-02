@@ -14,6 +14,7 @@ function makeCallbacks(overrides: Partial<SendToTabCallbacks> = {}): SendToTabCa
 		deliver: () => ({ status: "started" }),
 		listOpenHandles: () => [{ handle: "targ", title: "Target" }],
 		self: { id: "self-id", handle: "self" },
+		canReadTab: true,
 		...overrides,
 	};
 }
@@ -24,6 +25,22 @@ describe("createSendToTabTool — schema & description", () => {
 		expect(tool.name).toBe("send_to_tab");
 		expect(tool.description).toContain("fire-and-forget");
 		expect(tool.description.toLowerCase()).toContain("queued");
+		// Description must steer the model away from busy-waiting for a reply.
+		expect(tool.description.toLowerCase()).toContain("do not sleep");
+		expect(tool.description.toLowerCase()).toContain("end your turn");
+	});
+
+	it("mentions read_tab in the description only when canReadTab is true", () => {
+		const tool = createSendToTabTool(makeCallbacks({ canReadTab: true }));
+		expect(tool.description).toContain("read_tab");
+	});
+
+	it("never mentions read_tab in the description when canReadTab is false", () => {
+		const tool = createSendToTabTool(makeCallbacks({ canReadTab: false }));
+		expect(tool.description).not.toContain("read_tab");
+		// Still tells the agent a reply will wake it + to end its turn.
+		expect(tool.description.toLowerCase()).toContain("wake you with a new message");
+		expect(tool.description.toLowerCase()).toContain("end your turn");
 	});
 });
 
@@ -35,11 +52,37 @@ describe("createSendToTabTool — execute()", () => {
 		expect(deliver).toHaveBeenCalledTimes(1);
 		const [targetId, delivered] = deliver.mock.calls[0] ?? [];
 		expect(targetId).toBe("target-id");
-		// Provenance prefix names the sending tab's handle.
-		expect(delivered).toContain("[message from tab self]");
+		// Provenance header names the sending tab's handle and marks it as a
+		// peer agent (not the recipient's own user).
+		expect(delivered).toContain("[message from tab self");
+		expect(delivered).toContain("another agent");
 		expect(delivered).toContain("hello there");
+		// Reply contract: the recipient must answer via send_to_tab back to the
+		// sender's handle, not as a plain text reply to its own user.
+		expect(delivered).toContain('send_to_tab tool with tab_id "self"');
+		expect(delivered).toContain("ONLY reply if");
 		expect(out).toContain("idle");
 		expect(out).toContain("targ");
+		// Sender is steered away from busy-waiting and told to end its turn.
+		expect(out.toLowerCase()).toContain("do not sleep");
+		expect(out.toLowerCase()).toContain("end your turn");
+	});
+
+	it("points the sender at read_tab in the result only when canReadTab is true", async () => {
+		const deliver = vi.fn(() => ({ status: "started" as const }));
+		const tool = createSendToTabTool(makeCallbacks({ deliver, canReadTab: true }));
+		const out = await tool.execute({ tab_id: "targ", message: "hi" });
+		expect(out).toContain("read_tab");
+	});
+
+	it("omits read_tab from the result when canReadTab is false", async () => {
+		const deliver = vi.fn(() => ({ status: "started" as const }));
+		const tool = createSendToTabTool(makeCallbacks({ deliver, canReadTab: false }));
+		const out = await tool.execute({ tab_id: "targ", message: "hi" });
+		expect(out).not.toContain("read_tab");
+		// Still steers away from busy-waiting and toward ending the turn.
+		expect(out.toLowerCase()).toContain("do not sleep");
+		expect(out.toLowerCase()).toContain("end your turn");
 	});
 
 	it("reports the queued status when the target is busy", async () => {
