@@ -140,20 +140,17 @@ vi.mock("@dispatch/core", () => ({
 		}
 	},
 	TaskList: class MockTaskList {
+		private tasks: Array<{ id: string; content: string; status: string }> = [];
 		getTasks() {
-			return [];
+			return this.tasks.map((t) => ({ ...t }));
 		}
-		getTask() {
-			return undefined;
-		}
-		addTask() {
-			return { id: "task-1", title: "", description: "", status: "pending" };
-		}
-		updateTask() {
-			return undefined;
-		}
-		removeTask() {
-			return false;
+		setTasks(items: Array<{ content: string; status?: string }>) {
+			this.tasks = items.map((item, i) => ({
+				id: `task-${i + 1}`,
+				content: item.content,
+				status: item.status ?? "pending",
+			}));
+			return this.getTasks();
 		}
 		onChange(_cb: unknown) {
 			return () => {};

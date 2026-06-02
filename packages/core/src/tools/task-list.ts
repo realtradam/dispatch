@@ -1,9 +1,37 @@
 import { z } from "zod";
 import type { TaskItem, TaskStatus, ToolDefinition } from "../types/index.js";
 
+/**
+ * Valid task statuses. Matches opencode's todo lifecycle:
+ *   - pending     not started
+ *   - in_progress actively working (exactly ONE at a time)
+ *   - completed   finished successfully
+ *   - cancelled   no longer needed
+ */
+const VALID_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+	"pending",
+	"in_progress",
+	"completed",
+	"cancelled",
+]);
+
+function normalizeStatus(value: unknown): TaskStatus {
+	return typeof value === "string" && VALID_STATUSES.has(value as TaskStatus)
+		? (value as TaskStatus)
+		: "pending";
+}
+
+/**
+ * Declarative, whole-list task store (ported from opencode's `todowrite`).
+ *
+ * The model never sees ids and never issues per-item mutations. Instead it
+ * sends the ENTIRE desired list on every call and {@link setTasks} rebuilds the
+ * stored list, assigning fresh positional ids. This is idempotent and
+ * eliminates the id-bookkeeping / "task not found" / delta-reasoning failure
+ * modes of the old imperative CRUD interface.
+ */
 export class TaskList {
 	private tasks: TaskItem[] = [];
-	private counter = 0;
 	private listeners: Array<(tasks: TaskItem[]) => void> = [];
 
 	private notify(): void {
@@ -14,40 +42,22 @@ export class TaskList {
 	}
 
 	getTasks(): TaskItem[] {
-		return [...this.tasks];
+		return this.tasks.map((t) => ({ ...t }));
 	}
 
-	getTask(id: string): TaskItem | undefined {
-		return this.tasks.find((t) => t.id === id);
-	}
-
-	addTask(title: string, description: string): TaskItem {
-		this.counter++;
-		const task: TaskItem = {
-			id: `task-${this.counter}`,
-			title,
-			description,
-			status: "pending",
-		};
-		this.tasks.push(task);
+	/**
+	 * Replace the entire list. Each item is assigned a fresh positional id
+	 * (`task-1`, `task-2`, …). Invalid/missing statuses fall back to
+	 * `pending`; an empty array clears the list. Always notifies listeners.
+	 */
+	setTasks(items: Array<{ content: string; status?: unknown }>): TaskItem[] {
+		this.tasks = items.map((item, index) => ({
+			id: `task-${index + 1}`,
+			content: item.content,
+			status: normalizeStatus(item.status),
+		}));
 		this.notify();
-		return task;
-	}
-
-	updateTask(id: string, status: TaskStatus): TaskItem | undefined {
-		const task = this.tasks.find((t) => t.id === id);
-		if (!task) return undefined;
-		task.status = status;
-		this.notify();
-		return { ...task };
-	}
-
-	removeTask(id: string): boolean {
-		const index = this.tasks.findIndex((t) => t.id === id);
-		if (index === -1) return false;
-		this.tasks.splice(index, 1);
-		this.notify();
-		return true;
+		return this.getTasks();
 	}
 
 	onChange(callback: (tasks: TaskItem[]) => void): () => void {
@@ -58,86 +68,82 @@ export class TaskList {
 	}
 }
 
+/**
+ * Rich tool description adapted from opencode's `todowrite.txt`. Teaches the
+ * declarative whole-list cadence and the status lifecycle.
+ */
+export const TODO_DESCRIPTION = `Create and maintain a structured todo list for the current session to track progress and surface your plan to the user.
+
+This is a DECLARATIVE, whole-list tool. There are no ids and no per-item actions: every call sends the ENTIRE list in the \`todos\` parameter and REPLACES the previous list. To change one item, resend the whole list with that item changed. To clear the list, send an empty array.
+
+## When to use
+- The task requires 3+ distinct steps and benefits from planning
+- The user provides multiple tasks (numbered or comma-separated) or asks for a todo list
+- New instructions arrive — capture them as todos
+- You start a task — mark it in_progress (only one at a time) before working
+- You finish a task — mark it completed and add any follow-ups discovered
+
+## When NOT to use
+- A single, straightforward task (or fewer than 3 trivial steps)
+- Purely informational or conversational requests
+- When tracking adds no organizational value
+
+## States
+- pending — not started
+- in_progress — actively working (exactly ONE at a time)
+- completed — finished successfully
+- cancelled — no longer needed
+
+## Rules
+- Send the full desired list every time; the tool replaces the stored list
+- Update status in real time; do not batch completions
+- Mark completed only after the work is actually done (including any required verification), never on intent
+- Keep exactly one in_progress while work remains
+- If blocked or partial, keep it in_progress and add a follow-up todo describing the blocker
+- Items should be specific and actionable; break large work into smaller steps`;
+
 export function createTaskListTool(taskList: TaskList): ToolDefinition {
 	return {
 		name: "todo",
-		description:
-			"Manage a todo list for planning and tracking work. Add items, update their status, list all items, or get details on a specific item.",
+		description: TODO_DESCRIPTION,
 		parameters: z.object({
-			action: z.enum(["add", "update", "list", "get", "remove"]).describe("The action to perform"),
-			title: z.string().optional().describe("Task title (required for 'add')"),
-			description: z
-				.string()
-				.optional()
-				.describe("Task description (for 'add', defaults to empty)"),
-			task_id: z.string().optional().describe("Task ID (required for 'update', 'get', 'remove')"),
-			status: z
-				.enum(["pending", "in_progress", "done"])
-				.optional()
-				.describe("New status (required for 'update')"),
+			todos: z
+				.array(
+					z.object({
+						content: z.string().describe("Brief, actionable description of the task"),
+						status: z
+							.enum(["pending", "in_progress", "completed", "cancelled"])
+							.describe("Current status of the task"),
+					}),
+				)
+				.describe("The complete, updated todo list. Replaces the previous list entirely."),
 		}),
 		execute: async (args: Record<string, unknown>): Promise<string> => {
-			const action = args.action as string;
-
-			if (action === "add") {
-				const title = args.title as string | undefined;
-				if (!title) {
-					return "Error: 'title' is required for the 'add' action.";
-				}
-				const description = (args.description as string | undefined) ?? "";
-				const task = taskList.addTask(title, description);
-				return JSON.stringify(task);
+			const rawTodos = args.todos;
+			if (!Array.isArray(rawTodos)) {
+				return "Error: 'todos' must be an array of { content, status } items (send the whole list).";
 			}
 
-			if (action === "update") {
-				const task_id = args.task_id as string | undefined;
-				const status = args.status as TaskStatus | undefined;
-				if (!task_id) {
-					return "Error: 'task_id' is required for the 'update' action.";
+			const items: Array<{ content: string; status?: unknown }> = [];
+			for (const entry of rawTodos) {
+				if (!entry || typeof entry !== "object") {
+					return "Error: each todo must be an object with a 'content' string and a 'status'.";
 				}
-				if (!status) {
-					return "Error: 'status' is required for the 'update' action.";
+				const content = (entry as Record<string, unknown>).content;
+				if (typeof content !== "string" || content.trim() === "") {
+					return "Error: each todo requires a non-empty 'content' string.";
 				}
-				const updated = taskList.updateTask(task_id, status);
-				if (!updated) {
-					return `Error: Task with ID '${task_id}' not found.`;
-				}
-				return JSON.stringify(updated);
+				items.push({
+					content,
+					status: (entry as Record<string, unknown>).status,
+				});
 			}
 
-			if (action === "get") {
-				const task_id = args.task_id as string | undefined;
-				if (!task_id) {
-					return "Error: 'task_id' is required for the 'get' action.";
-				}
-				const task = taskList.getTask(task_id);
-				if (!task) {
-					return `Error: Task with ID '${task_id}' not found.`;
-				}
-				return JSON.stringify(task);
-			}
-
-			if (action === "list") {
-				const tasks = taskList.getTasks();
-				if (tasks.length === 0) {
-					return "No tasks.";
-				}
-				return JSON.stringify(tasks);
-			}
-
-			if (action === "remove") {
-				const task_id = args.task_id as string | undefined;
-				if (!task_id) {
-					return "Error: 'task_id' is required for the 'remove' action.";
-				}
-				const removed = taskList.removeTask(task_id);
-				if (!removed) {
-					return `Error: Task with ID '${task_id}' not found.`;
-				}
-				return `Task '${task_id}' removed successfully.`;
-			}
-
-			return `Error: Unknown action '${action}'.`;
+			const stored = taskList.setTasks(items);
+			// Echo the canonical stored list back WITHOUT ids — the model must
+			// never start tracking ids; it always resends the whole list.
+			const echo = stored.map((t) => ({ content: t.content, status: t.status }));
+			return JSON.stringify(echo);
 		},
 	};
 }

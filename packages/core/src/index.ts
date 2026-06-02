@@ -107,7 +107,7 @@ export {
 	toAvailableSubagents,
 	toAvailableUserAgents,
 } from "./tools/summon.js";
-export { createTaskListTool, TaskList } from "./tools/task-list.js";
+export { createTaskListTool, TaskList, TODO_DESCRIPTION } from "./tools/task-list.js";
 export { clearSpillForTab } from "./tools/truncate.js";
 export { createWebSearchTool } from "./tools/web-search.js";
 export { createWriteFileTool } from "./tools/write-file.js";

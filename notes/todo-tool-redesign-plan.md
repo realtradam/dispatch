@@ -84,3 +84,29 @@ in the allowlist/summon/loader/permission wiring and existing agent TOMLs.
   untouched.
 - Persistence to DB (opencode stores todos in SQLite) is **not** added — Dispatch keeps the existing
   in-memory per-tab `TaskList`; the visible/UX behaviour is what was failing, and that's what we fix.
+
+---
+
+## As-built (implemented on branch td/todo-fix)
+
+Implemented the opencode-style declarative whole-list `todo` tool. **Deviations from the plan above:**
+
+- **No `priority`.** Dropped per product decision. `TaskItem = { id, content, status }`;
+  the tool param is `todos: Array<{ content, status }>`.
+- **Reload reliability fix (new).** Todos previously blanked on page reload because they were
+  broadcast only via the `task-list-update` change event and were absent from the reconnect
+  snapshot. `TabStatusSnapshot` now carries an optional `tasks` field (core + frontend mirror);
+  `getAllStatuses()` includes each tab's `taskList.getTasks()` for ALL tabs (omitted when empty).
+  The frontend hydrates `tasks` from the snapshot in both restore paths (initial `GET /status`
+  map and the `statuses` WS handler) instead of hardcoding `tasks: []`. Still in-memory per-tab
+  (no DB; does not survive a server restart).
+- **Statuses:** `pending | in_progress | completed | cancelled` (as planned).
+- **UI:** the existing sidebar **Tasks** panel (`TaskListPanel.svelte`) was upgraded to render
+  `content`, all four statuses (completed→checked+strikethrough, in_progress→indeterminate+bold,
+  cancelled→dim+strikethrough, pending→empty) and a `completed/active` progress counter. No new
+  UI surfaces were added (panel only).
+- **System prompt:** `TODO_GUIDANCE` replaced by a `TASK_MANAGEMENT_GUIDANCE` "Task Management"
+  section adapted from opencode's `anthropic.txt`; `TOOL_DESCRIPTIONS.todo` and the tool's own
+  `TODO_DESCRIPTION` adapted from `todowrite.txt`.
+
+Verification: `bun run check` clean; `bun run test` 569 passing; all three packages typecheck.

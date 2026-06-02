@@ -75,7 +75,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	write_file: "Write content to a file (creates parent directories if needed)",
 	run_shell:
 		"Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Set background=true to run in the background and get a job_id for later retrieval. Do NOT run destructive or irreversible commands unless the user explicitly requests them.",
-	todo: "Manage a todo list for planning and tracking work. Actions: add, update, list, get, remove. Statuses: pending, in_progress, done.",
+	todo: "Create/maintain a todo list to plan and track work. Declarative whole-list write: send the entire list in `todos` each call (it replaces the previous list). Statuses: pending, in_progress, completed, cancelled.",
 	summon:
 		"Spawn a child agent to work on a task independently. By default blocks until the child finishes. Set background=true to return immediately with an agent_id for later retrieval.",
 	retrieve:
@@ -98,44 +98,47 @@ const MAX_AGENT_AUTO_WAKES = 6;
 const DEFAULT_SYSTEM_PROMPT =
 	"You are Dispatch, an agent designed to help with any task that the user asks for. Be helpful and concise.";
 
-const TODO_GUIDANCE = `
-## Todo List
+const TASK_MANAGEMENT_GUIDANCE = `
+## Task Management
 
-The user can see your todo list in real-time. Use it to communicate your plan and progress.
+You have access to the \`todo\` tool to plan and track tasks. Use it VERY frequently so the user can see your plan and progress in real time. It is also a powerful planning aid: breaking larger work into smaller steps keeps you from forgetting important tasks — that is unacceptable.
+
+The \`todo\` tool is DECLARATIVE: every call sends the ENTIRE list in the \`todos\` parameter and replaces the previous list. There are no ids and no per-item actions — to change one item, resend the whole list with that item updated. To clear the list, send an empty array.
 
 ### When to use
-- Tasks that require 3 or more steps
-- When the user provides multiple things to do
-- Complex work that benefits from planning before starting
-- After receiving new instructions, capture them as todos immediately
+- A task needs 3+ distinct steps, or benefits from planning
+- The user gives multiple tasks (numbered or comma-separated) or asks for a todo list
+- New instructions arrive — capture them as todos
+- You start a task — mark it in_progress (only one at a time) before working
+- You finish a task — mark it completed and add any follow-ups discovered
 
 ### When NOT to use
-- Single, straightforward tasks that need no tracking
-- Purely conversational or informational responses
-- Anything completable in under 3 trivial steps
+- A single, straightforward task (or fewer than 3 trivial steps)
+- Purely informational or conversational requests
+- When tracking adds no organizational value
 
-### State management
-- Only ONE item should be "in_progress" at a time. Finish current work before starting the next item.
-- Mark items "done" IMMEDIATELY after completing them. Do not batch completions.
-- When starting work on an item, mark it "in_progress" first.
-- Add new items as you discover sub-tasks during execution.
+### States
+- pending — not started
+- in_progress — actively working (exactly ONE at a time)
+- completed — finished successfully
+- cancelled — no longer needed
+
+### Rules
+- Send the full desired list every time; the tool replaces the stored list
+- Update status in real time; do NOT batch completions
+- Mark completed only after the work is actually done (including any required verification), never on intent
+- Keep exactly one in_progress while work remains; if blocked, keep it in_progress and add a follow-up todo describing the blocker
 
 ### Examples
 
 User: "Run the build and fix any type errors"
-Good approach:
-1. Add todo: "Run the build" -> mark in_progress -> run build -> mark done
-2. If 5 errors found, add 5 todos for each error
-3. Work through each one sequentially, marking in_progress then done
+Write the list, then work it: send [{content:"Run the build", status:"in_progress"}, {content:"Fix any type errors", status:"pending"}]. Run the build. If it surfaces 10 errors, resend the whole list — the build item completed, plus one item per error — then drive each to completed one at a time.
 
-User: "What does the git status command do?"
-No todo needed — this is a simple informational question.
+User: "How do I print Hello World in Python?"
+No todo needed — this is a single informational question.
 
-User: "Rename the function getUser to fetchUser across the project"
-Good approach:
-1. Add todo: "Search for all occurrences of getUser"
-2. After searching, add a todo per file that needs changes
-3. Work through each file sequentially
+User: "Rename getUser to fetchUser across the project"
+Send [{content:"Search for all occurrences of getUser", status:"in_progress"}, ...]. After the grep reveals the files, resend the whole list with one item per file, then work through them, resending the list as each flips to completed.
 `.trim();
 
 /**
@@ -160,7 +163,7 @@ function buildSystemPrompt(toolNames: string[], basePrompt?: string): string {
 	const hasSummon = toolNames.includes("summon");
 	let prompt = `${base}\n\nYou have access to the following tools:\n\n${toolList}\n\nWhen asked to work with files, use these tools. Always confirm what you did after completing an action.`;
 	if (hasTodo) {
-		prompt += `\n\n${TODO_GUIDANCE}`;
+		prompt += `\n\n${TASK_MANAGEMENT_GUIDANCE}`;
 	}
 	if (hasSummon) {
 		prompt +=
@@ -847,7 +850,11 @@ export class AgentManager {
 	 *     row. The frontend aligns its local assistant message id with
 	 *     this so the next `done` event lands on the right message.
 	 *
-	 * For idle/error tabs, only `status` is present. Tabs not in
+	 * Every tab additionally carries its `tasks` (the current todo list) when
+	 * non-empty, so a reloaded frontend rehydrates the Tasks panel from the
+	 * backend rather than blanking it.
+	 *
+	 * For idle/error tabs, only `status` (plus any `tasks`) is present. Tabs not in
 	 * `this.tabAgents` (e.g. tabs in the DB that have never been touched
 	 * since server start) are absent from the returned record — the
 	 * caller infers their status from the DB row (always "idle" at rest).
@@ -856,6 +863,13 @@ export class AgentManager {
 		const result: Record<string, TabStatusSnapshot> = {};
 		for (const [tabId, tabAgent] of this.tabAgents.entries()) {
 			const snap: TabStatusSnapshot = { status: tabAgent.status };
+			// Include the tab's todo list (for ALL tabs, not just running ones)
+			// so a reloaded frontend rehydrates the Tasks panel from the backend
+			// instead of blanking it. Omit when empty to keep the payload lean.
+			const tasks = tabAgent.taskList.getTasks();
+			if (tasks.length > 0) {
+				snap.tasks = tasks;
+			}
 			if (tabAgent.status === "running") {
 				if (tabAgent.currentChunks) {
 					// Defensive shallow copy: callers may serialize/mutate.

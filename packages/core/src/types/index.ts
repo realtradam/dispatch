@@ -252,6 +252,12 @@ export interface TabStatusSnapshot {
 	 * way `turn-start` would, so they reconcile cleanly when the turn seals.
 	 */
 	currentTurnId?: string;
+	/**
+	 * The tab's current todo list. Included for ALL tabs (not just running
+	 * ones) so a freshly-reloaded frontend rehydrates the Tasks panel from the
+	 * backend instead of blanking it. Omitted when the list is empty.
+	 */
+	tasks?: TaskItem[];
 }
 
 export type AgentEvent =
@@ -473,12 +479,18 @@ export interface AgentSkillMapping {
 
 // ─── Task List Types ─────────────────────────────────────────────
 
-export type TaskStatus = "pending" | "in_progress" | "done" | "blocked";
+export type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
 export interface TaskItem {
+	/**
+	 * Stable positional id used purely for UI keying and the
+	 * `task-list-update` event contract. It is NEVER exposed to the model:
+	 * the `todo` tool is a declarative whole-list write (the model sends the
+	 * entire desired list every call), so there are no ids for the model to
+	 * track. Ids are reassigned positionally on every `setTasks`.
+	 */
 	id: string;
-	title: string;
-	description: string;
+	content: string;
 	status: TaskStatus;
 }
 

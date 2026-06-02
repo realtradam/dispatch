@@ -844,7 +844,9 @@ export function createTabStore() {
 				modelId: row.modelId ?? null,
 				reasoningEffort: DEFAULT_REASONING_EFFORT,
 				currentAssistantId,
-				tasks: [],
+				// Rehydrate the todo list from the backend snapshot so a reload
+				// doesn't blank the Tasks panel mid-task.
+				tasks: snap?.tasks ?? [],
 				injectedSkills: [],
 				parentTabId: row.parentTabId ?? null,
 				persistent: true,
@@ -973,6 +975,10 @@ export function createTabStore() {
 					if (t.agentStatus !== backendStatus) {
 						updateTab(t.id, { agentStatus: backendStatus });
 					}
+
+					// Rehydrate the todo list from the snapshot (backend truth)
+					// so a reconnect/reload doesn't blank the Tasks panel.
+					updateTab(t.id, { tasks: snap?.tasks ?? [] });
 
 					if (backendStatus === "running") {
 						// Seed the in-flight assistant message from the snapshot.
@@ -1940,7 +1946,7 @@ export function createTabStore() {
 			`Persistent: ${tab.persistent}`,
 			`Working directory: ${tab.workingDirectory ?? "default"}`,
 			`Reasoning effort: ${tab.reasoningEffort}`,
-			`Pending tasks: ${tab.tasks.length}`,
+			`Todos: ${tab.tasks.length} (${tab.tasks.filter((t) => t.status === "completed").length} completed)`,
 			"",
 		];
 		const TOOL_RESULT_MAX = 300;
