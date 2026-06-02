@@ -60,10 +60,13 @@ function renderAgentGroup(label: string, agents: AvailableAgent[]): string[] {
  * the disk locations where they live, injected into the summon tool's
  * description.
  *
- * When `userAgentEnabled` is false only subagents are shown (under the
- * generic "Available agents" heading). When it is true, subagents and
- * user agents are listed as two labelled groups so the LLM understands
- * which slugs require `top_level=true`.
+ * `subagentEnabled` and `userAgentEnabled` independently control which
+ * groups are shown — they mirror the `perm_summon` and `perm_user_agent`
+ * permissions respectively:
+ *   - subagents only → generic "Available agents" heading;
+ *   - user agents only → a single user-agent group (top_level is implied);
+ *   - both → two labelled groups so the LLM understands which slugs
+ *     require `top_level=true`.
  *
  * Returns a compact "no agents defined" notice when nothing is visible.
  */
@@ -72,6 +75,7 @@ function buildAgentsCatalog(
 	userAgents: AvailableAgent[],
 	agentDirs: string[],
 	userAgentEnabled: boolean,
+	subagentEnabled: boolean,
 ): string {
 	const lines: string[] = [];
 	lines.push("");
@@ -80,8 +84,9 @@ function buildAgentsCatalog(
 		lines.push(`  - ${d}`);
 	}
 
+	const visibleSubagents = subagentEnabled ? subagents : [];
 	const visibleUserAgents = userAgentEnabled ? userAgents : [];
-	if (subagents.length === 0 && visibleUserAgents.length === 0) {
+	if (visibleSubagents.length === 0 && visibleUserAgents.length === 0) {
 		lines.push("");
 		lines.push("No agent definitions are currently defined.");
 		return lines.join("\n");
@@ -93,12 +98,26 @@ function buildAgentsCatalog(
 	lines.push("and working directory; the 'tools' parameter is ignored.");
 	lines.push("");
 
-	if (!userAgentEnabled) {
-		lines.push(...renderAgentGroup("Available agents:", subagents));
+	// User-agent-only mode: list just the user agents. top_level is implied
+	// (it is the only thing this grant can spawn), so the heading omits it.
+	if (!subagentEnabled && userAgentEnabled) {
+		lines.push(
+			...renderAgentGroup(
+				"User agents (spawned as independent top-level tabs):",
+				visibleUserAgents,
+			),
+		);
 		return lines.join("\n");
 	}
 
-	const subagentLines = renderAgentGroup("Subagents (spawned as child tabs):", subagents);
+	// Subagent-only mode: single generic heading.
+	if (!userAgentEnabled) {
+		lines.push(...renderAgentGroup("Available agents:", visibleSubagents));
+		return lines.join("\n");
+	}
+
+	// Both enabled: two labelled groups.
+	const subagentLines = renderAgentGroup("Subagents (spawned as child tabs):", visibleSubagents);
 	const userAgentLines = renderAgentGroup(
 		"User agents (spawned as independent top-level tabs, requires top_level=true):",
 		visibleUserAgents,
@@ -122,9 +141,14 @@ function buildAgentsCatalog(
  * its description; this is information-only — the runtime resolves
  * slugs through `loadAgent` independently.
  *
- * `userAgentEnabled` controls whether the `top_level` parameter and the
- * user-agent catalog are surfaced to the LLM. It mirrors the
- * `perm_user_agent` permission.
+ * `userAgentEnabled` mirrors the `perm_user_agent` permission and
+ * `subagentEnabled` mirrors the `perm_summon` permission. They are
+ * independent: the tool is registered whenever at least one is granted.
+ *   - subagentEnabled only → spawn ordinary subagents (no `top_level`);
+ *   - userAgentEnabled only → spawn ONLY top-level user agents
+ *     (`top_level` is forced on, the `background` knob is dropped, and
+ *     the catalog lists user agents only);
+ *   - both → full behavior (subagents plus `top_level` user agents).
  */
 export function createSummonTool(
 	_defaultWorkingDirectory: string,
@@ -133,39 +157,29 @@ export function createSummonTool(
 	availableUserAgents: AvailableAgent[] = [],
 	agentDirs: string[] = [],
 	userAgentEnabled = false,
+	subagentEnabled = true,
 ): ToolDefinition {
+	// When only the user-agent permission is granted the tool spawns user
+	// agents exclusively: `top_level` is implied (and forced), subagent
+	// mechanics (background, retrieve, parallel work) are irrelevant.
+	const userAgentOnly = userAgentEnabled && !subagentEnabled;
+
 	const catalog = buildAgentsCatalog(
 		availableSubagents,
 		availableUserAgents,
 		agentDirs,
 		userAgentEnabled,
+		subagentEnabled,
 	);
 	const subagentSlugs = availableSubagents.map((a) => a.slug);
 	const userAgentSlugs = availableUserAgents.map((a) => a.slug);
-	const allSlugs = userAgentEnabled ? [...subagentSlugs, ...userAgentSlugs] : subagentSlugs;
+	const allSlugs = userAgentOnly
+		? userAgentSlugs
+		: userAgentEnabled
+			? [...subagentSlugs, ...userAgentSlugs]
+			: subagentSlugs;
 
-	const description = [
-		"Spawn a new child agent to work on a task independently.",
-		"",
-		"By default, blocks until the child agent finishes and returns the result directly.",
-		"Set background=true to return immediately with an agent_id instead — use retrieve to collect the result later.",
-		"",
-		"The child agent runs in its own tab visible to the user. Use the 'retrieve' tool with the returned agent_id to get the result when needed.",
-		"",
-		"Pattern for parallel work:",
-		"  1. Call summon multiple times with background=true to start several agents",
-		"  2. Do your own work or wait",
-		"  3. Call retrieve for each agent_id to collect results",
-		...(userAgentEnabled
-			? [
-					"",
-					"Set top_level=true to spawn an independent user agent — a first-class",
-					"top-level tab with no parent. User agents are fire-and-forget: you get",
-					"an agent_id back but cannot retrieve their result. top_level requires an",
-					"'agent' definition listed under 'User agents' below.",
-				]
-			: []),
-		"",
+	const toolNamesList = [
 		"The 'tools' parameter controls what the child can do. Available tool names:",
 		"  - read_file: Read file contents",
 		"  - read_file_slice: Read a character-range slice of a single line",
@@ -180,11 +194,50 @@ export function createSummonTool(
 		"  - youtube_transcribe: Fetch YouTube video transcripts",
 		"  - send_to_tab: Send a message to another tab/agent by its ID",
 		"  - read_tab: Read another tab/agent's latest response by its ID",
-		"",
-		"The 'agent' parameter is required — every spawned agent must use a definition.",
-		"Tools default to the agent definition's tools, intersected with your own tools (you can't grant capabilities you don't have).",
-		catalog,
-	].join("\n");
+	];
+
+	const description = userAgentOnly
+		? [
+				"Spawn an independent top-level user agent to work on a task.",
+				"",
+				"User agents are first-class top-level tabs with no parent. They are",
+				"fire-and-forget: you get an agent_id back but cannot retrieve their result.",
+				"The user agent runs in its own tab visible to the user.",
+				"",
+				...toolNamesList,
+				"",
+				"The 'agent' parameter is required — every spawned agent must use a definition.",
+				"Tools default to the agent definition's tools, intersected with your own tools (you can't grant capabilities you don't have).",
+				catalog,
+			].join("\n")
+		: [
+				"Spawn a new child agent to work on a task independently.",
+				"",
+				"By default, blocks until the child agent finishes and returns the result directly.",
+				"Set background=true to return immediately with an agent_id instead — use retrieve to collect the result later.",
+				"",
+				"The child agent runs in its own tab visible to the user. Use the 'retrieve' tool with the returned agent_id to get the result when needed.",
+				"",
+				"Pattern for parallel work:",
+				"  1. Call summon multiple times with background=true to start several agents",
+				"  2. Do your own work or wait",
+				"  3. Call retrieve for each agent_id to collect results",
+				...(userAgentEnabled
+					? [
+							"",
+							"Set top_level=true to spawn an independent user agent — a first-class",
+							"top-level tab with no parent. User agents are fire-and-forget: you get",
+							"an agent_id back but cannot retrieve their result. top_level requires an",
+							"'agent' definition listed under 'User agents' below.",
+						]
+					: []),
+				"",
+				...toolNamesList,
+				"",
+				"The 'agent' parameter is required — every spawned agent must use a definition.",
+				"Tools default to the agent definition's tools, intersected with your own tools (you can't grant capabilities you don't have).",
+				catalog,
+			].join("\n");
 
 	const parametersShape = {
 		task: z
@@ -206,7 +259,10 @@ export function createSummonTool(
 					.filter(Boolean)
 					.join(" "),
 			),
-		...(userAgentEnabled
+		// `top_level` is only an explicit choice when BOTH subagents and user
+		// agents are available. In user-agent-only mode it is implied (forced
+		// on), so the knob is omitted entirely.
+		...(userAgentEnabled && !userAgentOnly
 			? {
 					top_level: z
 						.boolean()
@@ -250,12 +306,18 @@ export function createSummonTool(
 			.describe(
 				"Absolute path for the child to work in. Defaults to the agent definition's cwd (or the spawning agent's directory).",
 			),
-		background: z
-			.boolean()
-			.optional()
-			.describe(
-				"If true, returns immediately with an agent_id for later retrieval. If false (default), blocks until the child agent finishes and returns the result directly. Ignored when top_level is true.",
-			),
+		// `background` is meaningless for fire-and-forget user agents, so the
+		// knob is omitted in user-agent-only mode.
+		...(userAgentOnly
+			? {}
+			: {
+					background: z
+						.boolean()
+						.optional()
+						.describe(
+							"If true, returns immediately with an agent_id for later retrieval. If false (default), blocks until the child agent finishes and returns the result directly. Ignored when top_level is true.",
+						),
+				}),
 	};
 
 	return {
@@ -268,9 +330,14 @@ export function createSummonTool(
 			const tools = args.tools as string[] | undefined;
 			const workingDirectory = args.working_directory as string | undefined;
 			const background = (args.background as boolean | undefined) ?? false;
-			const topLevel = userAgentEnabled
-				? ((args.top_level as boolean | undefined) ?? false)
-				: false;
+			// User-agent-only mode always spawns top-level user agents. When both
+			// capabilities are present the caller chooses via `top_level`. When
+			// only subagents are available, top-level spawning is unavailable.
+			const topLevel = userAgentOnly
+				? true
+				: userAgentEnabled
+					? ((args.top_level as boolean | undefined) ?? false)
+					: false;
 
 			try {
 				const agentId = await callbacks.spawn({

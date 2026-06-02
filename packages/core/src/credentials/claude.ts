@@ -483,6 +483,23 @@ export const ANTHROPIC_MODELS_FALLBACK = [
 	"claude-3-opus-20240229",
 ];
 
+/**
+ * Pick the model to use for a Claude "wake" probe from a list of model ids.
+ *
+ * The probe only needs a small/cheap model to register activity against the
+ * subscription, so we target Haiku. Model ids change over time (the old
+ * hardcoded `claude-3-5-haiku-20241022` started returning HTTP 404), so the
+ * caller fetches the live list from `/v1/models` and we resolve by substring.
+ *
+ * Selection: the FIRST id whose name contains "haiku" (case-insensitive).
+ * Anthropic's `/v1/models` returns models newest-first, so first-match
+ * naturally prefers the newest Haiku. Returns `null` when nothing matches so
+ * the caller can surface a clear error instead of probing an invalid model.
+ */
+export function selectHaikuModel(models: string[]): string | null {
+	return models.find((id) => id.toLowerCase().includes("haiku")) ?? null;
+}
+
 // ─── Credential Validation ────────────────────────────────────
 
 export interface ClaudeProfile {

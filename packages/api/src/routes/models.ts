@@ -20,6 +20,7 @@ import {
 	refreshAccountCredentialsAsync,
 	resolveApiKey,
 	resolveContextLimit,
+	selectHaikuModel,
 	setApiKey,
 	validateAccountCredentials,
 } from "@dispatch/core";
@@ -568,13 +569,6 @@ modelsRoutes.post("/remove-key", async (c) => {
 
 // ─── Shared wake function ─────────────────────────────────────
 
-/**
- * Model used for the wake probe. A small/cheap model is enough — the only
- * purpose is to register activity against the subscription so its rate-limit
- * window keeps resetting on schedule.
- */
-const WAKE_PROBE_MODEL = "claude-3-5-haiku-20241022";
-
 /** Max chars of upstream error body to keep in the surfaced message. */
 const MAX_ERROR_BODY_CHARS = 200;
 
@@ -631,6 +625,25 @@ async function wakeAllClaudeAccounts(): Promise<
 				continue;
 			}
 
+			// Resolve the probe model dynamically. A fixed model id (the old
+			// `claude-3-5-haiku-20241022`) eventually stops being served and
+			// the probe 404s, so pull the live list from `/v1/models` and pick
+			// the current Haiku. Fall back to the well-known list if the live
+			// fetch comes back empty (network blip, transient upstream error).
+			let availableModels = await fetchAnthropicModels(creds.accessToken);
+			if (availableModels.length === 0) {
+				availableModels = ANTHROPIC_MODELS_FALLBACK;
+			}
+			const probeModel = selectHaikuModel(availableModels);
+			if (!probeModel) {
+				results.push({
+					label: acct.label,
+					ok: false,
+					error: "no 'haiku' model available from /v1/models",
+				});
+				continue;
+			}
+
 			// Mirror a genuine Claude Code CLI request. These are OAuth
 			// (Pro/Max) subscription accounts: Anthropic validates the
 			// `system[]` array and rejects (401/403) any request whose system
@@ -648,7 +661,7 @@ async function wakeAllClaudeAccounts(): Promise<
 					"X-Claude-Code-Session-Id": randomUUID(),
 					"x-client-request-id": randomUUID(),
 				},
-				body: JSON.stringify(buildWakeProbeBody(WAKE_PROBE_MODEL)),
+				body: JSON.stringify(buildWakeProbeBody(probeModel)),
 			});
 
 			if (res.ok) {

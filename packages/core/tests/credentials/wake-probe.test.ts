@@ -9,7 +9,7 @@ vi.mock("../../src/db/index.js", () => ({
 	}),
 }));
 
-const { buildWakeProbeBody } = await import("../../src/credentials/claude.js");
+const { buildWakeProbeBody, selectHaikuModel } = await import("../../src/credentials/claude.js");
 
 const IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
@@ -45,5 +45,29 @@ describe("buildWakeProbeBody", () => {
 		const a = buildWakeProbeBody("claude-3-5-haiku-20241022");
 		const b = buildWakeProbeBody("claude-3-5-haiku-20241022");
 		expect(a).toEqual(b);
+	});
+});
+describe("selectHaikuModel", () => {
+	it("returns the id whose name contains 'haiku'", () => {
+		const models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"];
+		expect(selectHaikuModel(models)).toBe("claude-haiku-4-5-20251001");
+	});
+
+	it("matches case-insensitively", () => {
+		expect(selectHaikuModel(["Claude-HAIKU-Latest"])).toBe("Claude-HAIKU-Latest");
+	});
+
+	it("returns the FIRST match when several models contain 'haiku'", () => {
+		// `/v1/models` returns newest-first, so first-match prefers the newest.
+		const models = ["claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022"];
+		expect(selectHaikuModel(models)).toBe("claude-haiku-4-5-20251001");
+	});
+
+	it("returns null when no model contains 'haiku'", () => {
+		expect(selectHaikuModel(["claude-sonnet-4-20250514", "claude-opus-4-20250514"])).toBeNull();
+	});
+
+	it("returns null for an empty list", () => {
+		expect(selectHaikuModel([])).toBeNull();
 	});
 });

@@ -52,6 +52,12 @@ const toolPermissions: ToolPermission[] = [
 		label: "Search code",
 		description: "Allow the AI to search the codebase with the cs ranked code-search engine",
 	},
+	{
+		id: "lsp",
+		label: "LSP queries",
+		description:
+			"Allow the AI to query a language server for hover, go-to-definition, references, and more",
+	},
 ];
 
 const {
