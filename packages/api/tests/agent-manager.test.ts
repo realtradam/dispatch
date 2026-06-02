@@ -80,6 +80,13 @@ function resetConstructedAgents(): void {
 	constructedAgents.length = 0;
 }
 
+// Capture the per-call `run()` options (notably reasoningEffort) so tests can
+// assert the per-model → per-tab → default effort resolution.
+const capturedRunOptions: Array<{ reasoningEffort?: string } | undefined> = [];
+function resetCapturedRunOptions(): void {
+	capturedRunOptions.length = 0;
+}
+
 // Configurable settings store so tests can toggle tool permissions
 // (perm_send_to_tab / perm_read_tab / ...) and assert which tools the
 // constructed Agent receives. Defaults to empty (getSetting → null).
@@ -135,7 +142,7 @@ vi.mock("@dispatch/core", () => ({
 		constructor(config: { tools?: Array<{ name: string }> }) {
 			this.toolNames = (config?.tools ?? []).map((t) => t.name);
 		}
-		async *run(message: string): AsyncGenerator<unknown> {
+		async *run(message: string, options?: { reasoningEffort?: string }): AsyncGenerator<unknown> {
 			// Snapshot the post-construction pre-populated message list
 			// the first thing `run()` does, before the real `Agent.run`
 			// would push the current user message at line 546. Tests
@@ -144,6 +151,7 @@ vi.mock("@dispatch/core", () => ({
 				initialMessages: [...this.messages],
 				toolNames: [...this.toolNames],
 			});
+			capturedRunOptions.push(options);
 			if (runImpl) {
 				for await (const ev of runImpl(message)) yield ev;
 				return;
@@ -345,6 +353,11 @@ vi.mock("@dispatch/core", () => ({
 	getSetting(key: string) {
 		return fakeSettings.get(key) ?? null;
 	},
+	isReasoningEffort(value: unknown) {
+		return (
+			typeof value === "string" && ["none", "low", "medium", "high", "xhigh", "max"].includes(value)
+		);
+	},
 	appendChunks() {
 		return [];
 	},
@@ -402,6 +415,7 @@ describe("AgentManager", () => {
 	beforeEach(() => {
 		resetFakeMessages();
 		resetConstructedAgents();
+		resetCapturedRunOptions();
 		resetFakeTabs();
 		resetFakeSettings();
 		setRunImpl(null);
@@ -517,6 +531,54 @@ describe("AgentManager", () => {
 
 		expect(listener1).toHaveBeenCalled();
 		expect(listener2).toHaveBeenCalled();
+	});
+
+	// ─── per-model reasoning effort precedence ───────────────────────
+
+	describe("reasoning effort precedence (per-model → per-tab → default)", () => {
+		it("uses the per-model effort over the per-tab selector for that fallback entry", async () => {
+			const manager = new AgentManager();
+			// Agent definition supplies a fallback chain where each entry has its
+			// own configured effort; the per-tab selector ("low") must NOT win.
+			await manager.processMessage(
+				"tab-effort-permodel",
+				"go",
+				"key-a",
+				"model-a",
+				"low",
+				undefined,
+				[{ key_id: "key-a", model_id: "model-a", effort: "xhigh" }],
+			);
+			expect(capturedRunOptions.at(-1)?.reasoningEffort).toBe("xhigh");
+		});
+
+		it("falls back to the per-tab selector when the model entry has no effort", async () => {
+			const manager = new AgentManager();
+			await manager.processMessage(
+				"tab-effort-tab",
+				"go",
+				"key-a",
+				"model-a",
+				"medium",
+				undefined,
+				[{ key_id: "key-a", model_id: "model-a" }],
+			);
+			expect(capturedRunOptions.at(-1)?.reasoningEffort).toBe("medium");
+		});
+
+		it("passes no effort (Agent applies its default) when neither is set", async () => {
+			const manager = new AgentManager();
+			await manager.processMessage(
+				"tab-effort-default",
+				"go",
+				"key-a",
+				"model-a",
+				undefined,
+				undefined,
+				[{ key_id: "key-a", model_id: "model-a" }],
+			);
+			expect(capturedRunOptions.at(-1)?.reasoningEffort).toBeUndefined();
+		});
 	});
 
 	// ─── v6 reasoning-end tests ───────────────────────────────────────

@@ -1,4 +1,9 @@
-import { getTab, NotificationDispatcher } from "@dispatch/core";
+import {
+	type AgentModelEntry,
+	getTab,
+	isReasoningEffort,
+	NotificationDispatcher,
+} from "@dispatch/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AgentManager } from "./agent-manager.js";
@@ -9,6 +14,28 @@ import { modelsRoutes, startWakeScheduler } from "./routes/models.js";
 import { notificationsRoutes } from "./routes/notifications.js";
 import { skillsRoutes } from "./routes/skills.js";
 import { tabsRoutes } from "./routes/tabs.js";
+
+/**
+ * Validate and normalise the `agentModels` fallback chain coming from the
+ * frontend. Each entry must carry string `key_id`/`model_id`; an `effort` is
+ * kept only when it's a recognised level (otherwise dropped so the per-tab /
+ * default effort applies). Returns `undefined` when the input isn't an array.
+ */
+function sanitizeAgentModels(raw: unknown): AgentModelEntry[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const out: AgentModelEntry[] = [];
+	for (const m of raw) {
+		if (!m || typeof m !== "object") continue;
+		const entry = m as Record<string, unknown>;
+		if (typeof entry.key_id !== "string" || typeof entry.model_id !== "string") continue;
+		out.push({
+			key_id: entry.key_id,
+			model_id: entry.model_id,
+			...(isReasoningEffort(entry.effort) ? { effort: entry.effort } : {}),
+		});
+	}
+	return out;
+}
 
 export const permissionManager = new PermissionManager();
 export const agentManager = new AgentManager(permissionManager);
@@ -86,15 +113,13 @@ app.post("/chat", async (c) => {
 
 	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
 	const modelId = typeof body.modelId === "string" ? body.modelId : undefined;
-	const agentModels = Array.isArray(body.agentModels) ? body.agentModels : undefined;
+	const agentModels = sanitizeAgentModels(body.agentModels);
 	const workingDirectory =
 		typeof body.workingDirectory === "string" ? body.workingDirectory : undefined;
 	const queueId = typeof body.queueId === "string" ? body.queueId : undefined;
-	const validEfforts = ["none", "low", "medium", "high", "max"];
-	const reasoningEffort =
-		typeof body.reasoningEffort === "string" && validEfforts.includes(body.reasoningEffort)
-			? (body.reasoningEffort as "none" | "low" | "medium" | "high" | "max")
-			: undefined;
+	const reasoningEffort = isReasoningEffort(body.reasoningEffort)
+		? body.reasoningEffort
+		: undefined;
 
 	// Single routing decision (queue if busy, new turn if idle) shared with the
 	// `send_to_tab` tool via `AgentManager.deliverMessage`. Non-blocking — a

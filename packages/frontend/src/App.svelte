@@ -1,4 +1,5 @@
 <script lang="ts">
+import { DEFAULT_REASONING_EFFORT } from "@dispatch/core/src/types/index.js";
 import { onMount } from "svelte";
 import AgentBuilder from "./lib/components/AgentBuilder.svelte";
 import ChatInput from "./lib/components/ChatInput.svelte";
@@ -141,20 +142,14 @@ onMount(() => {
 				apiBase={config.apiBase}
 				activeKeyId={tabStore.activeTab?.keyId ?? null}
 				activeModelId={tabStore.activeTab?.modelId ?? null}
-				reasoningEffort={tabStore.activeTab?.reasoningEffort ?? "max"}
+				reasoningEffort={tabStore.activeTab?.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
 				activeAgentSlug={tabStore.activeTab?.agentSlug ?? null}
 				activeTabParentId={tabStore.activeTab?.parentTabId ?? null}
 				activeAgentModels={tabStore.activeTab?.agentModels ?? null}
 				workingDirectory={tabStore.activeTab?.workingDirectory ?? null}
 				onKeyChange={(keyId) => tabStore.setKey(keyId)}
 				onModelChange={(keyId, modelId) => tabStore.changeModel(keyId, modelId)}
-				onReasoningChange={(effort) => {
-					const tab = tabStore.activeTab;
-					if (tab) {
-						// Update reasoning effort for active tab
-						tabStore.tabs.find(t => t.id === tab.id)!.reasoningEffort = effort;
-					}
-				}}
+				onReasoningChange={(effort) => tabStore.setReasoningEffort(effort)}
 				onAgentChange={(agent) => tabStore.setAgent(agent)}
 				onWorkingDirectoryChange={(dir) => tabStore.setWorkingDirectory(dir)}
 			onAddKey={() => { showAddKeyModal = true; addKeyId = ""; addKeyProvider = "anthropic"; addKeyError = null; }}

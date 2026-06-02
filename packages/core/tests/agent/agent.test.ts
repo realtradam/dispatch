@@ -1514,7 +1514,7 @@ describe("anthropicThinkingProviderOptions — adaptive-thinking model detection
 	});
 
 	it("maps reasoning effort → budgetTokens for enabled (non-adaptive) models", () => {
-		const budget = (e: "low" | "medium" | "high" | "max") => {
+		const budget = (e: "low" | "medium" | "high" | "xhigh" | "max") => {
 			const opts = anthropicThinkingProviderOptions("claude-3-7-sonnet", e) as {
 				thinking: { type: "enabled"; budgetTokens: number };
 			};
@@ -1523,6 +1523,25 @@ describe("anthropicThinkingProviderOptions — adaptive-thinking model detection
 		expect(budget("low")).toBe(2000);
 		expect(budget("medium")).toBe(5000);
 		expect(budget("high")).toBe(16000);
+		expect(budget("xhigh")).toBe(24000);
 		expect(budget("max")).toBe(31999);
+	});
+
+	it("xhigh budget sits strictly between high and max (ordering invariant)", () => {
+		const budget = (e: "high" | "xhigh" | "max") => {
+			const opts = anthropicThinkingProviderOptions("claude-3-7-sonnet", e) as {
+				thinking: { type: "enabled"; budgetTokens: number };
+			};
+			return opts.thinking.budgetTokens;
+		};
+		expect(budget("high")).toBeLessThan(budget("xhigh"));
+		expect(budget("xhigh")).toBeLessThan(budget("max"));
+	});
+
+	it("forwards xhigh verbatim as the adaptive effort sibling (Opus 4.7+)", () => {
+		expect(anthropicThinkingProviderOptions("claude-opus-4-8", "xhigh")).toEqual({
+			thinking: { type: "adaptive", display: "summarized" },
+			effort: "xhigh",
+		});
 	});
 });

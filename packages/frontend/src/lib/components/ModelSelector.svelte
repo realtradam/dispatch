@@ -3,6 +3,12 @@ const modelCache = new Map<string, string[]>();
 </script>
 
 <script lang="ts">
+	import {
+		DEFAULT_REASONING_EFFORT,
+		isReasoningEffort,
+		REASONING_EFFORTS,
+		REASONING_EFFORT_LABELS,
+	} from "@dispatch/core/src/types/index.js";
 	import type { KeyInfo } from "../types.js";
 	import { config } from "../config.js";
 	import { router } from "../router.svelte.js";
@@ -14,7 +20,7 @@ const modelCache = new Map<string, string[]>();
 		description: string;
 		skills: string[];
 		tools: string[];
-		models: Array<{ key_id: string; model_id: string }>;
+		models: Array<{ key_id: string; model_id: string; effort?: string }>;
 		cwd?: string;
 		is_subagent?: boolean;
 	}
@@ -30,6 +36,15 @@ const modelCache = new Map<string, string[]>();
 		};
 	}
 
+	/**
+	 * Human-readable effort label for a (possibly-unset / arbitrary) effort
+	 * string. Falls back to the default level's label when unset/invalid so the
+	 * displayed badge always reflects what will actually be used.
+	 */
+	function effortLabel(effort: string | undefined): string {
+		return REASONING_EFFORT_LABELS[isReasoningEffort(effort) ? effort : DEFAULT_REASONING_EFFORT];
+	}
+
 	const {
 		keys = [],
 		activeKeyId = null,
@@ -37,7 +52,7 @@ const modelCache = new Map<string, string[]>();
 		reasoningEffort = "max",
 		activeAgentSlug = null,
 		activeTabParentId = null as string | null,
-		activeAgentModels = null as Array<{ key_id: string; model_id: string }> | null,
+		activeAgentModels = null as Array<{ key_id: string; model_id: string; effort?: string }> | null,
 		workingDirectory = null,
 		onKeyChange,
 		onModelChange,
@@ -51,7 +66,7 @@ const modelCache = new Map<string, string[]>();
 		reasoningEffort?: string;
 		activeAgentSlug?: string | null;
 		activeTabParentId?: string | null;
-		activeAgentModels?: Array<{ key_id: string; model_id: string }> | null;
+		activeAgentModels?: Array<{ key_id: string; model_id: string; effort?: string }> | null;
 		workingDirectory?: string | null;
 		onKeyChange: (keyId: string) => void;
 		onModelChange: (keyId: string, modelId: string) => void;
@@ -264,11 +279,9 @@ const modelCache = new Map<string, string[]>();
 					value={reasoningEffort}
 					onchange={(e) => onReasoningChange(e.currentTarget.value)}
 				>
-					<option value="none">Off</option>
-					<option value="low">Low</option>
-					<option value="medium">Medium</option>
-					<option value="high">High</option>
-					<option value="max">Max</option>
+					{#each REASONING_EFFORTS as effort}
+						<option value={effort}>{REASONING_EFFORT_LABELS[effort]}</option>
+					{/each}
 				</select>
 			</div>
 		{/if}
@@ -312,8 +325,9 @@ const modelCache = new Map<string, string[]>();
 					</div>
 					<div class="mt-1 flex flex-col gap-0.5">
 						{#each subModels as m, i}
-							<div class="text-xs font-mono truncate {i === displayIdx ? 'opacity-100 font-semibold' : 'opacity-50'}">
-								{i + 1}. {m.key_id} / {m.model_id}
+							<div class="text-xs font-mono truncate flex items-center gap-1 {i === displayIdx ? 'opacity-100 font-semibold' : 'opacity-50'}">
+								<span class="truncate">{i + 1}. {m.key_id} / {m.model_id}</span>
+								<span class="badge badge-xs badge-ghost shrink-0">{effortLabel(m.effort)}</span>
 							</div>
 						{/each}
 					</div>
@@ -373,8 +387,9 @@ const modelCache = new Map<string, string[]>();
 							{@const displayIdx = sliderDragging !== null ? sliderDragging : (currentIdx >= 0 ? currentIdx : 0)}
 							{@const displayModel = agent.models[displayIdx]}
 							<div class="mt-2 pt-2 border-t border-primary-content/20">
-								<div class="text-xs font-semibold mb-1 truncate">
-									{displayModel ? `${displayModel.key_id} / ${displayModel.model_id}` : `${activeKeyId} / ${activeModelId}`}
+								<div class="text-xs font-semibold mb-1 truncate flex items-center gap-1">
+									<span class="truncate">{displayModel ? `${displayModel.key_id} / ${displayModel.model_id}` : `${activeKeyId} / ${activeModelId}`}</span>
+									<span class="badge badge-xs shrink-0">{effortLabel(displayModel?.effort)}</span>
 								</div>
 								<input
 									type="range"

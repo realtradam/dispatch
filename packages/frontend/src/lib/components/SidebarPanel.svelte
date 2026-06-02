@@ -34,7 +34,7 @@ const {
 	reasoningEffort = "max",
 	activeAgentSlug = null as string | null,
 	activeTabParentId = null as string | null,
-	activeAgentModels = null as Array<{ key_id: string; model_id: string }> | null,
+	activeAgentModels = null as Array<{ key_id: string; model_id: string; effort?: string }> | null,
 	workingDirectory = null as string | null,
 	onKeyChange,
 	onModelChange,
@@ -54,7 +54,7 @@ const {
 	reasoningEffort?: string;
 	activeAgentSlug?: string | null;
 	activeTabParentId?: string | null;
-	activeAgentModels?: Array<{ key_id: string; model_id: string }> | null;
+	activeAgentModels?: Array<{ key_id: string; model_id: string; effort?: string }> | null;
 	workingDirectory?: string | null;
 	onKeyChange: (keyId: string) => void;
 	onModelChange: (keyId: string, modelId: string) => void;
