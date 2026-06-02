@@ -50,6 +50,15 @@ class FakeDatabase {
 		};
 	}
 
+	/**
+	 * Match Bun's `db.transaction(fn)` shape: returns a callable that runs
+	 * `fn` synchronously. The fake is in-memory and single-threaded, so we
+	 * don't emulate rollback — callers just need the wrapper to be invocable.
+	 */
+	transaction(fn: () => void): () => void {
+		return () => fn();
+	}
+
 	private execSelect(sql: string, params?: Record<string, unknown>): unknown[] {
 		const norm = sql.replace(/\s+/g, " ").trim();
 
@@ -87,6 +96,11 @@ class FakeDatabase {
 		// shortestUniquePrefix: all open tab ids.
 		if (norm === "SELECT id FROM tabs WHERE is_open = 1") {
 			return this.rows.filter((r) => r.is_open === 1).map((r) => ({ id: r.id }));
+		}
+
+		// listOpenTabs: every open tab ordered by position.
+		if (norm === "SELECT * FROM tabs WHERE is_open = 1 ORDER BY position ASC") {
+			return this.rows.filter((r) => r.is_open === 1).sort((a, b) => a.position - b.position);
 		}
 
 		throw new Error(`FakeDatabase: unsupported SELECT: ${norm}`);
@@ -129,6 +143,16 @@ class FakeDatabase {
 			return;
 		}
 
+		// updateTabPositions: rewrite a single tab's position (run per id inside a txn)
+		if (norm === "UPDATE tabs SET position = $position, updated_at = $now WHERE id = $id") {
+			const row = this.rows.find((r) => r.id === params?.$id);
+			if (row) {
+				row.position = (params?.$position as number) ?? row.position;
+				row.updated_at = (params?.$now as number) ?? Date.now();
+			}
+			return;
+		}
+
 		throw new Error(`FakeDatabase: unsupported mutation: ${norm}`);
 	}
 }
@@ -150,8 +174,16 @@ vi.mock("../../src/db/index.js", () => ({
 // Dynamic import AFTER `vi.mock` registers (vitest hoists `vi.mock` to
 // the very top of the file, so by the time this line runs the mock is
 // active for `./index.js` resolution inside `tabs.ts`).
-const { archiveTab, createTab, getDescendantIds, getTab, resolveTabPrefix, shortestUniquePrefix } =
-	await import("../../src/db/tabs.js");
+const {
+	archiveTab,
+	createTab,
+	getDescendantIds,
+	getTab,
+	listOpenTabs,
+	resolveTabPrefix,
+	shortestUniquePrefix,
+	updateTabPositions,
+} = await import("../../src/db/tabs.js");
 
 beforeAll(() => {
 	fakeDb = new FakeDatabase();
@@ -349,5 +381,38 @@ describe("shortestUniquePrefix", () => {
 		archiveTab("abcd2222-0000-4000-8000-000000000000");
 		// With Two closed, One no longer collides → back to 4 chars.
 		expect(shortestUniquePrefix("abcd1111-0000-4000-8000-000000000000")).toBe("abcd");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// updateTabPositions — drag-and-drop reorder persistence
+// ---------------------------------------------------------------------------
+describe("updateTabPositions", () => {
+	it("rewrites each tab's position to its index in the given order", () => {
+		createTab("a", "A"); // position 0
+		createTab("b", "B"); // position 1
+		createTab("c", "C"); // position 2
+
+		updateTabPositions(["c", "a", "b"]);
+
+		// listOpenTabs orders by position → reflects the new order.
+		expect(listOpenTabs().map((t) => t.id)).toEqual(["c", "a", "b"]);
+		expect(getTab("c")?.position).toBe(0);
+		expect(getTab("a")?.position).toBe(1);
+		expect(getTab("b")?.position).toBe(2);
+	});
+
+	it("is a no-op for an empty list", () => {
+		createTab("a", "A");
+		createTab("b", "B");
+		updateTabPositions([]);
+		expect(listOpenTabs().map((t) => t.id)).toEqual(["a", "b"]);
+	});
+
+	it("ignores ids that don't exist without throwing", () => {
+		createTab("a", "A");
+		expect(() => updateTabPositions(["ghost", "a"])).not.toThrow();
+		// "a" took index 1 in the requested order.
+		expect(getTab("a")?.position).toBe(1);
 	});
 });

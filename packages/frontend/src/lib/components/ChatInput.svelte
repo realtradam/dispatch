@@ -4,12 +4,17 @@ import { tabStore } from "../tabs.svelte.js";
 const MAX_LINES = 7;
 
 let inputEl: HTMLTextAreaElement | undefined;
-let inputValue = $state("");
 
 const agentStatus = $derived(tabStore.activeTab?.agentStatus ?? "idle");
 const tabId = $derived(tabStore.activeTab?.id ?? "");
+// The current input text lives on the active tab (in-memory draft), so
+// switching tabs saves the current draft and restores the target tab's text
+// automatically — drafts are never lost or clobbered by tab switching.
+const inputValue = $derived(tabStore.activeTab?.draft ?? "");
 
 $effect(() => {
+	// Re-focus when switching tabs.
+	void tabId;
 	inputEl?.focus();
 });
 
@@ -29,12 +34,18 @@ function resize() {
 	el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
 }
 
-// Re-run resize whenever the value changes (covers programmatic clears too).
+// Re-run resize whenever the value changes (covers tab switches and
+// programmatic clears too).
 $effect(() => {
 	// Touch inputValue so this effect tracks it.
 	void inputValue;
 	resize();
 });
+
+function handleInput(e: Event) {
+	if (!tabId) return;
+	tabStore.setDraft(tabId, (e.currentTarget as HTMLTextAreaElement).value);
+}
 
 function handleKeydown(e: KeyboardEvent) {
 	if (e.key === "Enter" && !e.shiftKey) {
@@ -46,7 +57,7 @@ function handleKeydown(e: KeyboardEvent) {
 function submit() {
 	const text = inputValue.trim();
 	if (!text) return;
-	inputValue = "";
+	if (tabId) tabStore.setDraft(tabId, "");
 	tabStore.sendMessage(text);
 }
 </script>
@@ -75,12 +86,12 @@ function submit() {
 	{/if}
 	<textarea
 		bind:this={inputEl}
-		bind:value={inputValue}
+		value={inputValue}
 		rows="1"
 		placeholder="Type a message..."
 		class="textarea textarea-ghost flex-1 resize-none leading-normal !min-h-0 h-auto"
 		onkeydown={handleKeydown}
-		oninput={resize}
+		oninput={handleInput}
 	></textarea>
 	<button
 		type="button"

@@ -1972,3 +1972,157 @@ describe("tabStore — chunk-native eviction / pagination / reconcile", () => {
 		expect(tab?.live.some((m) => m.turnId === "turn-a")).toBe(false);
 	});
 });
+
+describe("tabStore — tab reorder", () => {
+	it("reorders user tabs and persists the new order", async () => {
+		const calls: Array<{ url: string; body: string }> = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string, opts?: { body?: string }) => {
+				calls.push({ url, body: opts?.body ?? "" });
+				return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) });
+			}),
+		);
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		const b = await store.createNewTab();
+		const c = await store.createNewTab();
+		expect(store.tabs.map((t) => t.id)).toEqual([a.id, b.id, c.id]);
+
+		// Move the last tab to the front.
+		store.reorderTabs([c.id, a.id, b.id]);
+		expect(store.tabs.map((t) => t.id)).toEqual([c.id, a.id, b.id]);
+
+		const reorderCall = calls.find((call) => call.url.endsWith("/tabs/reorder"));
+		expect(reorderCall).toBeTruthy();
+		expect(JSON.parse(reorderCall?.body ?? "{}")).toEqual({ ids: [c.id, a.id, b.id] });
+	});
+
+	it("ignores a stale order that doesn't cover all user tabs", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
+		);
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		const b = await store.createNewTab();
+		store.reorderTabs([a.id]); // missing b → no-op
+		expect(store.tabs.map((t) => t.id)).toEqual([a.id, b.id]);
+	});
+
+	it("keeps subagent tabs after the user tabs when reordering", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
+		);
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		const b = await store.createNewTab();
+		// A subagent tab arrives via WS (parentTabId set).
+		store.handleEvent({
+			type: "tab-created",
+			id: "sub",
+			title: "Sub",
+			keyId: null,
+			modelId: null,
+			parentTabId: a.id,
+		});
+		store.reorderTabs([b.id, a.id]);
+		const ids = store.tabs.map((t) => t.id);
+		expect(ids).toEqual([b.id, a.id, "sub"]);
+	});
+});
+
+describe("tabStore — rename + auto-title guard", () => {
+	it("renameTab sets the title and persists it", async () => {
+		const calls: Array<{ url: string; method?: string; body: string }> = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string, opts?: { method?: string; body?: string }) => {
+				calls.push({ url, method: opts?.method, body: opts?.body ?? "" });
+				return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+			}),
+		);
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		store.renameTab(a.id, "  My Tab  ");
+		expect(store.tabs[0]?.title).toBe("My Tab");
+		expect(store.tabs[0]?.manualTitle).toBe(true);
+		const patch = calls.find(
+			(call) => call.url.endsWith(`/tabs/${a.id}`) && call.method === "PATCH",
+		);
+		expect(JSON.parse(patch?.body ?? "{}")).toEqual({ title: "My Tab" });
+	});
+
+	it("renameTab ignores an empty/whitespace name", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
+		);
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		store.renameTab(a.id, "   ");
+		expect(store.tabs[0]?.title).toBe("New Tab");
+		expect(store.tabs[0]?.manualTitle).toBe(false);
+	});
+
+	it("sendMessage does NOT auto-title a manually renamed tab", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "ok" }) })),
+		);
+		const store = createTabStore();
+		await store.createNewTab();
+		store.renameTab(store.tabs[0]?.id ?? "", "Keep Me");
+		await store.sendMessage("hello there this is the first message");
+		expect(store.tabs[0]?.title).toBe("Keep Me");
+	});
+
+	it("sendMessage still auto-titles a tab that was never renamed", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "ok" }) })),
+		);
+		const store = createTabStore();
+		await store.createNewTab();
+		await store.sendMessage("first message becomes the title");
+		expect(store.tabs[0]?.title).toBe("first message becomes the title");
+		expect(store.tabs[0]?.manualTitle).toBe(false);
+	});
+});
+
+describe("tabStore — per-tab chat input draft", () => {
+	it("stores drafts per tab and restores them on switch", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
+		);
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		const b = await store.createNewTab();
+
+		store.switchTab(a.id);
+		store.setDraft(a.id, "draft for A");
+		store.switchTab(b.id);
+		store.setDraft(b.id, "draft for B");
+
+		// Active tab is B → its draft is exposed.
+		expect(store.activeTab?.draft).toBe("draft for B");
+		// Switching back to A restores A's draft without clobbering B's.
+		store.switchTab(a.id);
+		expect(store.activeTab?.draft).toBe("draft for A");
+		expect(store.tabs.find((t) => t.id === b.id)?.draft).toBe("draft for B");
+	});
+
+	it("new tabs start with an empty draft and setDraft no-ops for unknown tabs", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
+		);
+		const store = createTabStore();
+		const a = await store.createNewTab();
+		expect(a.draft).toBe("");
+		store.setDraft("nope", "ignored"); // unknown tab → no throw, no effect
+		expect(store.tabs.every((t) => t.draft === "")).toBe(true);
+	});
+});
