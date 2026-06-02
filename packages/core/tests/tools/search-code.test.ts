@@ -20,6 +20,13 @@ const ECHO_ENV_STUB = `#!/usr/bin/env bash
 printf '%s' "$CS_STUB_OUTPUT"
 `;
 
+// A stub that writes to stderr and exits non-zero, impersonating a cs failure
+// (bad flag, invalid regex, etc.).
+const FAIL_STUB = `#!/usr/bin/env bash
+echo "cs: simulated failure on stderr" >&2
+exit 3
+`;
+
 describe("search_code tool", () => {
 	let workDir: string;
 	const savedBin = process.env.DISPATCH_CS_BIN;
@@ -147,6 +154,22 @@ describe("search_code tool", () => {
 		}
 	});
 
+	it("reports an error (not 'No matches') when cs exits non-zero", async () => {
+		const stubDir = await mkdtempP(join(tmpdir(), "dispatch-cs-stub-"));
+		try {
+			process.env.DISPATCH_CS_BIN = writeStub(stubDir, FAIL_STUB);
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "x" });
+			expect(out).toMatch(/^Error:/);
+			expect(out).toContain("exited with code 3");
+			// stderr from cs is surfaced to the caller.
+			expect(out).toContain("simulated failure on stderr");
+			expect(out).not.toContain("No matches found");
+		} finally {
+			await rmP(stubDir, { recursive: true, force: true });
+		}
+	});
+
 	// ── Live integration: only runs when a real `cs` binary is available. ──
 	const liveCsBin = findRealCs();
 	describe.runIf(liveCsBin)("live cs binary", () => {
@@ -163,6 +186,17 @@ describe("search_code tool", () => {
 			expect(out).toContain("alpha.ts");
 			expect(out).toContain("findTheNeedle");
 			expect(out).not.toContain("Error:");
+		});
+
+		it("treats a dash-leading query as a search term, not a cs flag", async () => {
+			process.env.DISPATCH_CS_BIN = liveCsBin as string;
+			// A literal token beginning with '-' must not be parsed as a flag.
+			await writeFileP(join(workDir, "dash.ts"), "const dashToken = 1;\n");
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "-dashToken" });
+			// Whether or not cs ranks a hit, it must NOT error out on flag parsing.
+			expect(out).not.toContain("unknown shorthand flag");
+			expect(out).not.toMatch(/^Error: cs exited/);
 		});
 
 		it("returns 'No matches found.' for a query with no hits", async () => {

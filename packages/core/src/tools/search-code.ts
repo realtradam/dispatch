@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { relative } from "node:path";
+import { relative, sep } from "node:path";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/index.js";
 import { canonicalize } from "./path-utils.js";
@@ -134,11 +134,19 @@ export function createSearchCodeTool(workingDirectory: string): ToolDefinition {
 			}
 
 			const flags = buildFlags(args, searchDir);
-			const spawnArgs = [...flags, query];
+			// `--` terminates cs flag parsing so a query that begins with "-"
+			// (e.g. "-hello" or "--foo") is treated as the positional search term
+			// rather than parsed as a (possibly invalid) cs flag.
+			const spawnArgs = [...flags, "--", query];
 
 			let stdout = "";
 			let stderr = "";
-			const result = await new Promise<{ error?: string; errorCode?: string }>((resolve) => {
+			const result = await new Promise<{
+				code: number | null;
+				signal: NodeJS.Signals | null;
+				error?: string;
+				errorCode?: string;
+			}>((resolve) => {
 				const child = spawn(resolveCsBin(), spawnArgs, {
 					cwd: workingDirectory,
 					env: process.env,
@@ -151,9 +159,14 @@ export function createSearchCodeTool(workingDirectory: string): ToolDefinition {
 				child.stderr?.on("data", (d: Buffer) => {
 					stderr += d.toString();
 				});
-				child.on("close", () => resolve({}));
+				child.on("close", (code, signal) => resolve({ code, signal }));
 				child.on("error", (err) =>
-					resolve({ error: err.message, errorCode: (err as NodeJS.ErrnoException).code }),
+					resolve({
+						code: null,
+						signal: null,
+						error: err.message,
+						errorCode: (err as NodeJS.ErrnoException).code,
+					}),
 				);
 			});
 
@@ -163,6 +176,22 @@ export function createSearchCodeTool(workingDirectory: string): ToolDefinition {
 					return missingBinaryError();
 				}
 				return `Error: failed to run cs: ${result.error}`;
+			}
+
+			// A signal kill (e.g. SIGTERM from the spawn timeout) or a non-zero
+			// exit means cs failed — surface it (with stderr) instead of silently
+			// reporting "No matches found". cs exits 0 even when there are no
+			// matches, so a clean exit always falls through to the parsing below.
+			if (result.signal) {
+				const detail = stderr.trim() ? `\n${stderr.trim()}` : "";
+				if (result.signal === "SIGTERM") {
+					return `Error: cs search timed out after ${TIMEOUT_MS / 1000}s. Try a narrower query or a smaller path.${detail}`;
+				}
+				return `Error: cs was terminated by signal ${result.signal}.${detail}`;
+			}
+			if (result.code !== 0) {
+				const detail = stderr.trim() ? `\n${stderr.trim()}` : "";
+				return `Error: cs exited with code ${result.code}.${detail}`;
 			}
 
 			// cs prints `null` (and exit 0) when there are no matches.
@@ -226,11 +255,14 @@ function buildFlags(args: Record<string, unknown>, searchDir: string): string[] 
 /** Render cs JSON results into compact, readable per-file blocks. */
 function formatResults(results: CsResult[], absoluteWorkDir: string): string {
 	const blocks: string[] = [];
+	// Match the workdir only at a path boundary so a sibling dir that merely
+	// shares the prefix (e.g. workdir "/app" vs "/app-secrets") isn't treated
+	// as nested and rendered as a "../app-secrets/..." relative path.
+	const workdirPrefix = absoluteWorkDir.endsWith(sep) ? absoluteWorkDir : absoluteWorkDir + sep;
 	for (const r of results) {
 		// Present paths relative to the workdir so output is portable and compact.
-		const rel = r.location.startsWith(absoluteWorkDir)
-			? relative(absoluteWorkDir, r.location) || r.filename
-			: r.location;
+		const insideWorkdir = r.location === absoluteWorkDir || r.location.startsWith(workdirPrefix);
+		const rel = insideWorkdir ? relative(absoluteWorkDir, r.location) || r.filename : r.location;
 		const lang = r.language ? ` [${r.language}]` : "";
 		const score = typeof r.score === "number" ? ` (score ${r.score.toFixed(2)})` : "";
 		const header = `${rel}${lang}${score}`;
