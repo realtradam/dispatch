@@ -1,95 +1,99 @@
-# Handoff — tab/fix-tab-messaging-tool: cross-tab messaging tools usable when granted
+# Handoff — perm/fix-user-agent-summon-permission
 
 ## Summary
-Agents could be granted the cross-tab messaging tools (`send_to_tab` / `read_tab`) yet
-behaved as if they didn't have them — claiming they were "incapable" and refusing to call
-them. **Root cause:** the tools were correctly registered, permission-gated, resolved
-per-tab, and executable, and their JSON schemas WERE sent to the model — but the agent's
-**system prompt** enumerates "You have access to the following tools" by filtering tool
-names through a static `TOOL_DESCRIPTIONS` map, and that map had **no entries** for
-`send_to_tab` / `read_tab`. So the prompt explicitly told the model it lacked them.
+Fixed a permissions bug: granting **only** the user-agent (top-level) permission
+(`perm_user_agent`) without the subagent-summon permission (`perm_summon`) left
+the agent unable to summon user agents. The whole `summon` tool was gated behind
+`perm_summon`, so `perm_user_agent` alone produced no summon tool at all.
 
-After fixing the core bug, two follow-up behavioral/prompting issues surfaced in live
-testing and were also fixed in the tool context:
-1. The **sender busy-waited** (ran `sleep`/polled) for a reply instead of ending its turn.
-2. The **recipient replied to its own user in plain text** instead of routing the answer
-   back through `send_to_tab` to the sender.
-A third refinement made every `read_tab` mention **conditional** on the tab actually
-holding `read_tab` (the permissions are split, so a tab can have `send_to_tab` without
-`read_tab` — advertising a tool it wasn't granted is wrong).
+The two permissions are now fully independent in **both** directions:
+- **`perm_summon` only** → spawn ordinary subagents (unchanged; no `top_level`).
+- **`perm_user_agent` only** → `summon` is registered in *user-agent-only* mode:
+  it spawns **only** top-level user agents (`top_level` forced on; the
+  `top_level`/`background` params are dropped; the catalog lists user agents only;
+  `retrieve` is NOT granted since user agents are fire-and-forget). This prevents
+  the inverse leak (a user-agent-only grant cannot spawn plain subagents).
+- **both** → full behavior, byte-for-byte identical to before.
+- **neither** → no `summon` tool (unchanged).
 
-## What changed (and why)
-- **Advertise the tools (the actual bug):** added `send_to_tab` + `read_tab` entries to
-  `TOOL_DESCRIPTIONS` so the system prompt's capability list matches the granted toolset.
-- **Stop sender busy-wait:** the `send_to_tab` tool description, its delivery-result text,
-  and the system-prompt one-liner now say plainly: do NOT sleep/poll/run commands to wait;
-  if the target replies it will **WAKE you with a new message** in a later turn; keep
-  working if you have other tasks, else **end your turn**.
-- **Fix recipient reply routing:** the delivered-message wrapper now states the message is
-  from **another agent, NOT your user**, and that to reply you must use `send_to_tab`
-  addressed back to the sender's handle — and **ONLY** if asked (it may just be context).
-  A plain text response reaches only the recipient's own user.
-- **Conditional `read_tab` guidance:** `createSendToTabTool` takes a new `canReadTab`
-  callback flag. `AgentManager.buildTabCommToolEntries(tabId, canReadTab)` passes it
-  (`allowed.has("read_tab")` on the child path; `permReadTab` on the parent path). The
-  description + result text only reference `read_tab` when the tab actually has it. The
-  static `TOOL_DESCRIPTIONS.send_to_tab` one-liner dropped its `read_tab` phrasing (it
-  can't be per-tab conditional there).
+## Root cause
+`packages/api/src/agent-manager.ts`, parent tool-build path: `if (permSummon) { … }`
+built the entire `summon` (+`retrieve`) tool. `perm_user_agent` only flipped the
+`userAgentEnabled` flag *inside* that block, so without `perm_summon` the tool was
+never created.
 
 ## Files changed
+- `packages/core/src/tools/summon.ts`
+  - `createSummonTool(...)` gained a trailing `subagentEnabled = true` param
+    (mirrors `perm_summon`) alongside `userAgentEnabled` (mirrors `perm_user_agent`).
+    Default `true` keeps every existing call site / mock behaving as before.
+  - New internal `userAgentOnly = userAgentEnabled && !subagentEnabled` mode:
+    description leads with user-agent spawning and omits subagent/parallel-work
+    prose; `top_level` and `background` params are omitted; `execute()` forces
+    `topLevel: true`; `agent` param lists only user-agent slugs.
+  - `buildAgentsCatalog(...)` gained a `subagentEnabled` param and a user-agent-only
+    branch ("User agents (spawned as independent top-level tabs):", no
+    `requires top_level=true` suffix since it is implied).
 - `packages/api/src/agent-manager.ts`
-  - `TOOL_DESCRIPTIONS`: added `send_to_tab` + `read_tab`; `send_to_tab` one-liner carries
-    the no-busy-wait / wake-you-with-a-new-message guidance (no `read_tab` reference).
-  - `buildTabCommToolEntries(tabId, canReadTab)`: new param, forwarded into
-    `createSendToTabTool` as `canReadTab`. Both call sites updated
-    (`allowed.has("read_tab")` / `permReadTab`).
-- `packages/core/src/tools/send-to-tab.ts`
-  - `SendToTabCallbacks` gained `canReadTab: boolean`.
-  - Description built conditionally (the `read_tab` follow-up line only appears when
-    `canReadTab`); "WAKE you with a new message" phrasing; recipient reply-contract footer
-    with **ONLY** uppercased; header marks sender as another agent (not your user).
-  - Delivery-result text built conditionally (mentions `read_tab` only when `canReadTab`).
+  - Parent path: `if (permSummon)` → `if (permSummon || permUserAgent)`.
+  - Passes `permSummon` as the new `subagentEnabled` arg to `createSummonTool`.
+  - `retrieve` is now only registered when `permSummon` is granted (bundled with
+    the subagent capability; user agents are fire-and-forget).
+  - Child/subagent path (`toolsOverride`, whitelist-driven) left untouched — out of
+    scope per agreement.
+- `packages/core/tests/tools/summon.test.ts`
+  - New `user-agent-only mode` describe block (description content, catalog groups,
+    `agent` slug list, omitted `top_level`/`background` params, forced
+    `topLevel: true` on spawn).
+  - New regression block asserting the `subagentEnabled` default keeps legacy
+    subagent spawning unchanged.
 - `packages/api/tests/agent-manager.test.ts`
-  - Agent mock now captures `config.systemPrompt`; new describe block
-    "send_to_tab / read_tab system-prompt advertisement" (5 tests) asserts the prompt lists
-    the granted tab tools (and omits ungranted ones), locking the prompt list to the schema.
-- `packages/core/tests/tools/send-to-tab.test.ts`
-  - `makeCallbacks` default `canReadTab: true`; assertions for provenance header/footer,
-    **ONLY** uppercase, no-busy-wait/end-your-turn, "wake you with a new message", and both
-    `canReadTab` branches (description + result text) for `read_tab` presence/absence.
+  - New `summon / user_agent permission split` describe block: summon+retrieve when
+    only `perm_summon`; **summon WITHOUT retrieve** when only `perm_user_agent`
+    (the bug-fix regression); both → summon+retrieve; neither → neither.
+  - `@dispatch/core` test mock gained `loadAgents`, `toAvailableSubagents`,
+    `toAvailableUserAgents`, `getAgentDirPaths`, `GLOBAL_AGENTS_DIR` (the summon
+    parent-branch was never exercised before, so these were missing).
 
 ## Public surface changed
-- **`@dispatch/core` — `SendToTabCallbacks`**: added required field `canReadTab: boolean`.
-  Any external caller of `createSendToTabTool` must now supply it. (In-repo, the only caller
-  is `AgentManager.buildTabCommToolEntries`, updated here.)
-- No changes to tool NAMES, permission keys, registry, execution path, wire formats, DB, or
-  the frontend. Tool behavior (delivery routing, auto-wake budget, resolution) is unchanged
-  — only the advertised/contextual text and the new `canReadTab` plumbing.
+- `createSummonTool(defaultWorkingDirectory, callbacks, availableSubagents?,
+  availableUserAgents?, agentDirs?, userAgentEnabled?, subagentEnabled?)` — added a
+  final optional `subagentEnabled` param (default `true`). Backward compatible:
+  all existing callers omit it and keep prior behavior.
+- No DB/schema/migration changes; both settings (`perm_summon`, `perm_user_agent`)
+  already existed. No frontend changes (the "Spawn user agents" checkbox and
+  independent `perm_user_agent` persistence already existed).
 
-## Verification status
-- `bun run check` (biome): **clean** (165 files, no fixes).
-- `bun run test`: **594 passing** (37 files). (Baseline was 585; +9 new tests.)
-- `tsc --noEmit` core + api: **0 errors**.
-- `svelte-check` (frontend): **0 errors, 0 warnings**.
-- Re-verified after `git merge --no-edit dev` (already up to date) immediately before push.
+## Verification (post-merge with `dev`, all green)
+- `bun run test` → **605 passed** (37 files). +15 net new tests on this branch
+  (the +9 over the pre-merge 596 are from `dev`'s send_to_tab/read_tab prompt suite).
+- `bun run check` (biome) → clean, "No fixes applied."
+- `bun run --cwd packages/core typecheck` → clean.
+- `bun run --cwd packages/api typecheck` → clean.
+- `bun run --cwd packages/frontend typecheck` → 0 errors, 0 warnings.
+
+## User test
+Confirmed by the user: with only "Spawn user agents" granted (Summon agents OFF),
+the agent receives the `summon` tool and can spawn a top-level user agent. ✅
 
 ## Published
-**Yes.** `dev` was already an ancestor of this branch (clean fast-forward, no merge commit
-needed). Fast-forwarded `dev`: `c0c0872..e4379da`. User confirmed the fix before merge.
+Yes. Merged `dev` down into `perm/fix-user-agent-summon-permission` (resolved one
+test-file conflict where this branch's new describe block and `dev`'s new
+send_to_tab/read_tab system-prompt block landed at the same location — kept both),
+re-ran all verification (green), and fast-forwarded:
+`git push . HEAD:dev` → `e0b63c0..a243976  HEAD -> dev`.
 
-Commits (oldest→newest):
-- `9c89ec9` advertise send_to_tab/read_tab in the agent system prompt (+ regression tests)
-- `e475e52` clearer send_to_tab context to stop busy-wait + wrong-recipient replies
-- `aa295e8` only mention read_tab when the sender actually has it; CAPS on ONLY
-- `e4379da` say a reply will WAKE you with a new message
+Commits:
+- `3ff2db6` fix(perm): decouple perm_user_agent from perm_summon for spawning user agents
+- `a243976` Merge branch 'dev' into perm/fix-user-agent-summon-permission
 
 ## Assumptions / known gaps
-- The static `TOOL_DESCRIPTIONS.send_to_tab` system-prompt one-liner can't be per-tab
-  conditional, so it deliberately omits any `read_tab` reference. The precise, conditional
-  `read_tab` guidance lives in the tool's own description/result (which ARE per-tab).
-- `read_tab` itself was already truthful (it's only present when granted); no description
-  changes were needed there.
-- These are prompting/UX nudges — model adherence isn't guaranteed, but the wording now
-  matches actual runtime behavior (split perms, wake-on-reply, reply-via-tool).
-- Pre-existing untracked dirs in the worktree root (e.g. `bookmark-manager/` noted in a
-  prior handoff) were left untouched; not part of this feature.
+- **Child/nested summon path unchanged** (per agreement #3): a spawned subagent gets
+  `summon` only if `"summon"` is in its tool whitelist, and `userAgentEnabled` there
+  still tracks the `perm_user_agent` DB setting. Decoupling nested user-agent
+  spawning was deliberately out of scope.
+- **`hasSummon` system-prompt note** (agent-manager ~line 163) still says "You have
+  pre-configured subagent types… delegate to a subagent." In user-agent-only mode
+  this wording is slightly off, but the `summon` tool's own (mode-correct)
+  description carries the authoritative instructions. Left as-is to limit scope —
+  flag if you want it tailored.
