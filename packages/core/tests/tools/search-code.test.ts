@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp as mkdtempP, rm as rmP, writeFile as writeFileP } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -331,6 +331,110 @@ describe("search_code tool", () => {
 			const out = await tool.execute({ query: "zzz_nonexistent_token_qqq" });
 			expect(out).toBe("No matches found.");
 		});
+
+		it("tags .luau files as Luau", async () => {
+			process.env.DISPATCH_CS_BIN = liveCsBin as string;
+			await writeFileP(join(workDir, "mod.luau"), "function Mod.doThing()\n\treturn 1\nend\n");
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "doThing" });
+			expect(out).toContain("mod.luau");
+			expect(out).toContain("[Luau]");
+		});
+	});
+
+	// ── Luau declaration detection: needs a cs built with the Luau patch
+	// (docker/cs/luau-declarations.patch). Skipped on an unpatched/older cs. ──
+	const luauCsBin = findLuauCapableCs(liveCsBin);
+	describe.runIf(luauCsBin)("live cs binary (Luau declaration patch)", () => {
+		// A small Luau module exercising every declaration form the patch adds.
+		const LUAU_MODULE = [
+			"local Mod = {}",
+			"",
+			"export type StuntResult = {",
+			"\tscore: number,",
+			"}",
+			"",
+			"type LaunchConfig = StuntResult",
+			"",
+			"function Mod.getDefaults(): LaunchConfig",
+			"\treturn { score = 0 }",
+			"end",
+			"",
+			"local function helperThing(x: number): number",
+			"\treturn x + 1",
+			"end",
+			"",
+			"Mod.live = Mod.getDefaults()",
+			"local used = helperThing(1)",
+			"",
+		].join("\n");
+
+		beforeEach(async () => {
+			process.env.DISPATCH_CS_BIN = luauCsBin as string;
+			await writeFileP(join(workDir, "Mod.luau"), LUAU_MODULE);
+		});
+
+		it("detects `function Mod.x` declarations in .luau files", async () => {
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "getDefaults", only: "declarations" });
+			expect(out).toContain("Mod.luau");
+			expect(out).toContain("function Mod.getDefaults");
+			expect(out).not.toContain("No matches found");
+		});
+
+		it("detects `local function` declarations in .luau files", async () => {
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "helperThing", only: "declarations" });
+			expect(out).toContain("Mod.luau");
+			expect(out).toContain("local function helperThing");
+		});
+
+		it("detects `type` / `export type` declarations in .luau files", async () => {
+			const tool = createSearchCodeTool(workDir);
+			const exportType = await tool.execute({ query: "StuntResult", only: "declarations" });
+			expect(exportType).toContain("export type StuntResult");
+			const aliasType = await tool.execute({ query: "LaunchConfig", only: "declarations" });
+			expect(aliasType).toContain("type LaunchConfig");
+		});
+
+		it("excludes declaration lines when only=usages", async () => {
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "getDefaults", only: "usages" });
+			// The call site is a usage; the `function Mod.getDefaults` definition is not.
+			expect(out).toContain("Mod.live = Mod.getDefaults()");
+			expect(out).not.toContain("function Mod.getDefaults");
+		});
+	});
+
+	// ── Fuzzy mid-word matching: needs a cs built with the fuzzy patch
+	// (docker/cs/fuzzy-distance.patch). Skipped on an unpatched/older cs. ──
+	const fuzzyCsBin = findFuzzyCapableCs(liveCsBin);
+	describe.runIf(fuzzyCsBin)("live cs binary (fuzzy edit-distance patch)", () => {
+		beforeEach(() => {
+			process.env.DISPATCH_CS_BIN = fuzzyCsBin as string;
+		});
+
+		it("matches a mid-word deletion within distance 1", async () => {
+			await writeFileP(
+				join(workDir, "phys.ts"),
+				"export function computeSlipAngle() {\n\treturn 0;\n}\n",
+			);
+			const tool = createSearchCodeTool(workDir);
+			// "computSlipAngle" drops the 'e' mid-word — edit distance 1.
+			const out = await tool.execute({ query: "computSlipAngle~1" });
+			expect(out).toContain("phys.ts");
+			expect(out).toContain("computeSlipAngle");
+			expect(out).not.toBe("No matches found.");
+		});
+
+		it("matches a mid-word insertion within distance 1", async () => {
+			await writeFileP(join(workDir, "tire.ts"), "const tireFriction = 1;\n");
+			const tool = createSearchCodeTool(workDir);
+			// "tireFricction" has an extra 'c' — edit distance 1.
+			const out = await tool.execute({ query: "tireFricction~1" });
+			expect(out).toContain("tire.ts");
+			expect(out).toContain("tireFriction");
+		});
 	});
 });
 
@@ -350,4 +454,58 @@ function findRealCs(): string | null {
 		}
 	}
 	return null;
+}
+
+/**
+ * Probe a `cs` binary against a throwaway corpus and return its trimmed stdout
+ * (or "" on any failure). Used by the capability gates below so patch-dependent
+ * live tests run only on a cs that actually has the patch — and skip (not fail)
+ * on an unpatched/older binary.
+ */
+function probeCs(bin: string, files: Record<string, string>, args: string[]): string {
+	let dir: string | undefined;
+	try {
+		dir = mkdtempSync(join(tmpdir(), "dispatch-cs-probe-"));
+		for (const [name, body] of Object.entries(files)) {
+			writeFileSync(join(dir, name), body);
+		}
+		const res = spawnSync(bin, ["-f", "json", "--dir", dir, ...args], {
+			encoding: "utf8",
+		});
+		if (res.status !== 0 || !res.stdout) return "";
+		return res.stdout.trim();
+	} catch {
+		return "";
+	} finally {
+		if (dir) rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Return the cs binary only if it recognises Luau declarations (i.e. was built
+ * with docker/cs/luau-declarations.patch): a `--only-declarations` search for a
+ * top-level `function` in a .luau file yields a result. Otherwise null → skip.
+ */
+function findLuauCapableCs(bin: string | null): string | null {
+	if (!bin) return null;
+	const out = probeCs(bin, { "probe.luau": "function Probe.thing()\n\treturn 1\nend\n" }, [
+		"--only-declarations",
+		"--",
+		"thing",
+	]);
+	return out !== "" && out !== "null" ? bin : null;
+}
+
+/**
+ * Return the cs binary only if its fuzzy matcher honours mid-word edits (i.e.
+ * was built with docker/cs/fuzzy-distance.patch): a distance-1 deletion matches.
+ * Otherwise null → skip.
+ */
+function findFuzzyCapableCs(bin: string | null): string | null {
+	if (!bin) return null;
+	const out = probeCs(bin, { "probe.txt": "const x = computeSlipAngle;\n" }, [
+		"--",
+		"computSlipAngle~1",
+	]);
+	return out !== "" && out !== "null" ? bin : null;
 }

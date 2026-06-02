@@ -1,0 +1,159 @@
+Fix cs fuzzy matching to honour true Levenshtein edit distance (insertions and
+deletions), not just same-length substitutions.
+
+Upstream cs (v3.1.0) implements `term~N` fuzzy search by scanning only
+same-length windows of the content: for a term of length L it compares every
+L-character substring and keeps those within N edits. Because every candidate
+window is exactly L long, the only edits it can ever observe are substitutions.
+A mid-word insertion or deletion — e.g. `computSlipAngle~1` for the real symbol
+`computeSlipAngle` (a dropped 'e'), or `houss~1` vs `house` — changes the length
+by one and so is never matched, even though it is edit distance 1. This
+contradicts cs's own documentation ("fuzzy match within 1 or 2 distance").
+
+The fix scans windows of every plausible length in
+[termLen-maxDist, termLen+maxDist] (clamped at 1) at each offset and keeps the
+best (lowest-distance) match, so insertions and deletions match too. fuzzyFind
+records the best window per start and advances past it to avoid emitting a swarm
+of overlapping locations for one logical match.
+
+Purely localised to the two fuzzy helpers in pkg/search/executor.go (plus a
+test update: the pre-existing `hovze~2` case asserted the old substitution-only
+behaviour, where the distance-2 term coincidentally failed to match a shorter
+window that is in fact within distance 2; it is replaced with an unambiguous
+distance-1 case and new mid-word insertion/deletion cases). Passes cs's own
+pkg/search + pkg/ranker test suites. Applied during the Docker build and the
+native package build via `git apply` against the pinned v3.1.0 checkout (see
+Dockerfile / Dockerfile.dev / packaging/PKGBUILD). Candidate for upstreaming to
+boyter/cs (the defect is unreported there).
+
+diff --git a/pkg/search/executor.go b/pkg/search/executor.go
+index 175d458..1c422d2 100644
+--- a/pkg/search/executor.go
++++ b/pkg/search/executor.go
+@@ -632,17 +632,67 @@ func min3(a, b, c int) int {
+ 	return c
+ }
+ 
+-// fuzzyContains checks if any same-length substring of content matches
+-// the term within the given edit distance (substitution-based matching).
++// fuzzyWindowBounds returns the inclusive range of substring lengths that
++// could be within maxDist edits of a term of length termLen. A Levenshtein
++// distance of d can only be achieved between strings whose lengths differ by
++// at most d (each insertion or deletion changes the length by one), so any
++// candidate window must have a length in [termLen-maxDist, termLen+maxDist].
++// The lower bound is clamped to 1 so we never form a zero-length window.
++func fuzzyWindowBounds(termLen, maxDist int) (int, int) {
++	minLen := termLen - maxDist
++	if minLen < 1 {
++		minLen = 1
++	}
++	return minLen, termLen + maxDist
++}
++
++// bestFuzzyMatchAt returns the length of the best (lowest-distance) substring
++// of content starting at offset i that is within maxDist edits of term, or -1
++// if none is. Windows of every plausible length are tried (see
++// fuzzyWindowBounds) so insertions and deletions match, not just
++// substitutions — e.g. "computSlipAngle" (a dropped 'e') matches
++// "computeSlipAngle" at distance 1. Ties prefer the length closest to termLen.
++func bestFuzzyMatchAt(content, term string, i, maxDist, minLen, maxLen int) int {
++	contentLen := len(content)
++	bestLen := -1
++	bestDist := maxDist + 1
++	bestDelta := 0
++	for wl := minLen; wl <= maxLen; wl++ {
++		if i+wl > contentLen {
++			break
++		}
++		d := levenshtein(content[i:i+wl], term)
++		if d > maxDist {
++			continue
++		}
++		delta := wl - len(term)
++		if delta < 0 {
++			delta = -delta
++		}
++		if d < bestDist || (d == bestDist && delta < bestDelta) {
++			bestDist = d
++			bestLen = wl
++			bestDelta = delta
++		}
++	}
++	return bestLen
++}
++
++// fuzzyContains reports whether any substring of content is within maxDist
++// edits (true Levenshtein: insertions, deletions, and substitutions) of term.
+ func fuzzyContains(content, term string, maxDist, termLen int) bool {
+ 	contentLen := len(content)
+-	if contentLen == 0 || termLen == 0 || termLen > contentLen {
++	if contentLen == 0 || termLen == 0 {
++		return false
++	}
++
++	minLen, maxLen := fuzzyWindowBounds(termLen, maxDist)
++	if minLen > contentLen {
+ 		return false
+ 	}
+ 
+-	for i := 0; i <= contentLen-termLen; i++ {
+-		window := content[i : i+termLen]
+-		if levenshtein(window, term) <= maxDist {
++	for i := 0; i <= contentLen-minLen; i++ {
++		if bestFuzzyMatchAt(content, term, i, maxDist, minLen, maxLen) >= 0 {
+ 			return true
+ 		}
+ 	}
+@@ -651,18 +701,30 @@ func fuzzyContains(content, term string, maxDist, termLen int) bool {
+ 
+ // fuzzyFind finds all match locations in content that are within the given
+ // edit distance of the term. Returns [][]int where each entry is [start, end].
++// Like fuzzyContains it considers variable-length windows so insertions and
++// deletions match. To avoid emitting a swarm of overlapping windows for one
++// logical match, it records the best window at each start and then advances
++// past it.
+ func fuzzyFind(content, term string, maxDist, termLen int) [][]int {
+ 	contentLen := len(content)
+-	if contentLen == 0 || termLen == 0 || termLen > contentLen {
++	if contentLen == 0 || termLen == 0 {
++		return nil
++	}
++
++	minLen, maxLen := fuzzyWindowBounds(termLen, maxDist)
++	if minLen > contentLen {
+ 		return nil
+ 	}
+ 
+ 	var locs [][]int
+-	for i := 0; i <= contentLen-termLen; i++ {
+-		window := content[i : i+termLen]
+-		if levenshtein(window, term) <= maxDist {
+-			locs = append(locs, []int{i, i + termLen})
+-		}
++	for i := 0; i <= contentLen-minLen; {
++		wl := bestFuzzyMatchAt(content, term, i, maxDist, minLen, maxLen)
++		if wl < 0 {
++			i++
++			continue
++		}
++		locs = append(locs, []int{i, i + wl})
++		i += wl
+ 	}
+ 	return locs
+ }
+diff --git a/pkg/search/search_test.go b/pkg/search/search_test.go
+index 6cbd01f..eacbd75 100644
+--- a/pkg/search/search_test.go
++++ b/pkg/search/search_test.go
+@@ -57,7 +57,10 @@ func TestExecutor(t *testing.T) {
+ 		{"Fuzzy Distance 1", "houss~1", false, []string{"src/main/file1.go"}}, // "houss" is distance 1 from "house" (only in file1)
+ 		{"Fuzzy Distance 1 No Match", "zzz~1", false, []string{}},
+ 		{"Fuzzy AND Keyword", "houss~1 AND brown", false, []string{"src/main/file1.go"}},
+-		{"Fuzzy Distance 2", "hovze~2", false, []string{"src/main/file1.go"}}, // "hovze" is distance 2 from "house" (u→v, s→z), only in file1
++		{"Fuzzy Distance 2", "houze~2", false, []string{"src/main/file1.go"}}, // "houze" is distance 1 from "house" (s→z), only in file1
++		// Mid-word insertion/deletion must match (true Levenshtein, not just same-length substitution).
++		{"Fuzzy Distance 1 deletion", "hose~1", false, []string{"src/main/file1.go"}},   // "hose" -> "house" (insert 'u'), distance 1
++		{"Fuzzy Distance 1 insertion", "houxse~1", false, []string{"src/main/file1.go"}}, // "houxse" -> "house" (delete 'x'), distance 1
+ 
+ 		// Colon filter syntax
+ 		{"Colon file filter", "cat file:file1", false, []string{"src/main/file1.go"}},
