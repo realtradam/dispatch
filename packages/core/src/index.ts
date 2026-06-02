@@ -116,6 +116,7 @@ export {
 } from "./skills/index.js";
 export { prefix as bashArityPrefix } from "./tools/bash-arity.js";
 // Tools
+export { createKeyUsageTool, type KeyUsageCallbacks } from "./tools/key-usage.js";
 export { createListFilesTool } from "./tools/list-files.js";
 export { createLspTool, type LspToolContext } from "./tools/lsp.js";
 export { createReadFileTool } from "./tools/read-file.js";
