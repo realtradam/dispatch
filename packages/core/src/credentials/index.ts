@@ -9,6 +9,7 @@ export {
 export {
 	ANTHROPIC_MODELS_FALLBACK,
 	buildBillingHeaderValue,
+	buildWakeProbeBody,
 	type ClaudeAccount,
 	type ClaudeCredentials,
 	type ClaudeProfile,

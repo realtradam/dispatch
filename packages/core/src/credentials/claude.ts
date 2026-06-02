@@ -373,6 +373,44 @@ export function buildBillingHeaderValue(
 
 export const SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
+/**
+ * Build the request body for a Claude "wake" probe — a tiny, cheap message
+ * whose only purpose is to keep the subscription's rate-limit window warm.
+ *
+ * This MUST mirror the shape of a genuine Claude Code CLI request, because
+ * Anthropic validates the `system[]` array on OAuth (Pro/Max) -authenticated,
+ * Claude-Code-billed requests. A bare `{ model, messages }` body (no system
+ * identity) is rejected (401/403) — which is exactly how the old probe silently
+ * failed. The valid shape is:
+ *
+ *   system: [
+ *     { type: "text", text: "x-anthropic-billing-header: ..." },  // billing, no cache_control
+ *     { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+ *   ]
+ *   messages: [ { role: "user", content: "hi" } ]
+ *
+ * Mirrors the runtime `transformClaudeOAuthBody` output for a single short user
+ * turn. Pure: deterministic given its inputs (the billing header samples only
+ * the user text), so it can be unit-tested without touching the network.
+ */
+export function buildWakeProbeBody(model: string): {
+	model: string;
+	max_tokens: number;
+	system: Array<{ type: "text"; text: string }>;
+	messages: Array<{ role: "user"; content: string }>;
+} {
+	const messages = [{ role: "user" as const, content: "hi" }];
+	return {
+		model,
+		max_tokens: 16,
+		system: [
+			{ type: "text", text: buildBillingHeaderValue(messages) },
+			{ type: "text", text: SYSTEM_IDENTITY },
+		],
+		messages,
+	};
+}
+
 // ─── Anthropic Request Headers ────────────────────────────────
 
 export function getAnthropicHeaders(accessToken: string): Record<string, string> {

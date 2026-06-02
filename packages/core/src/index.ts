@@ -56,6 +56,7 @@ export {
 	shortestUniquePrefix,
 	type TabRow,
 	updateTabModel,
+	updateTabPositions,
 	updateTabStatus,
 	updateTabTitle,
 } from "./db/tabs.js";

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { tick } from "svelte";
 import { tabStore } from "../tabs.svelte.js";
 
 function statusColor(status: string): string {
@@ -20,6 +21,59 @@ const activeUserTabId = $derived(
 		? activeTab.parentTabId
 		: tabStore.activeTabId,
 );
+
+// ── Drag-and-drop reorder (user tabs only) ──
+// Mirrors the native HTML5 DnD pattern used in AgentBuilder.svelte.
+let dragIndex = $state<number | null>(null);
+let dragOverIndex = $state<number | null>(null);
+
+function dropReorder(targetIndex: number): void {
+	if (dragIndex !== null && dragIndex !== targetIndex) {
+		const ids = userTabs.map((t) => t.id);
+		const moved = ids.splice(dragIndex, 1)[0];
+		if (moved) {
+			ids.splice(targetIndex, 0, moved);
+			tabStore.reorderTabs(ids);
+		}
+	}
+	dragIndex = null;
+	dragOverIndex = null;
+}
+
+// ── Double-click rename (user tabs only) ──
+let editingTabId = $state<string | null>(null);
+let editValue = $state("");
+let editInputEl = $state<HTMLInputElement | undefined>(undefined);
+
+async function startRename(tab: { id: string; title: string }): Promise<void> {
+	editingTabId = tab.id;
+	editValue = tab.title;
+	await tick();
+	editInputEl?.focus();
+	editInputEl?.select();
+}
+
+function commitRename(): void {
+	if (editingTabId === null) return;
+	const id = editingTabId;
+	editingTabId = null;
+	const next = editValue.trim();
+	if (next) tabStore.renameTab(id, next);
+}
+
+function cancelRename(): void {
+	editingTabId = null;
+}
+
+function handleRenameKeydown(e: KeyboardEvent): void {
+	if (e.key === "Enter") {
+		e.preventDefault();
+		commitRename();
+	} else if (e.key === "Escape") {
+		e.preventDefault();
+		cancelRename();
+	}
+}
 </script>
 
 <!-- Top row: user tabs -->
@@ -45,19 +99,48 @@ const activeUserTabId = $derived(
 			+
 		</button>
 
-		{#each userTabs as tab (tab.id)}
+		{#each userTabs as tab, i (tab.id)}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				role="tab"
-				class="tab !flex items-stretch gap-1.5 {tab.id === activeUserTabId ? 'tab-active' : ''}"
+				class="tab !flex items-stretch gap-1.5 {tab.id === activeUserTabId ? 'tab-active' : ''} {dragOverIndex === i ? 'bg-primary/10' : ''} {dragIndex === i ? 'opacity-50' : ''}"
+				draggable={editingTabId === tab.id ? "false" : "true"}
 				onclick={() => tabStore.switchTab(tab.id)}
 				onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') tabStore.switchTab(tab.id); }}
+				ondragstart={(e) => {
+					dragIndex = i;
+					if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+				}}
+				ondragover={(e) => {
+					e.preventDefault();
+					if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+					dragOverIndex = i;
+				}}
+				ondragleave={() => { if (dragOverIndex === i) dragOverIndex = null; }}
+				ondrop={(e) => { e.preventDefault(); dropReorder(i); }}
+				ondragend={() => { dragIndex = null; dragOverIndex = null; }}
 				tabindex="0"
 			>
 				<span class="flex items-center gap-1.5">
 					<span class="w-1.5 h-1.5 rounded-full shrink-0 {statusColor(tab.agentStatus)}"></span>
 					<span class="font-mono text-[10px] px-1 py-0.5 rounded bg-base-300 text-base-content/60 shrink-0" title="Tab ID — agents address this tab by this handle">{tabStore.shortHandleFor(tab.id)}</span>
-					<span class="max-w-32 truncate text-xs">{tab.title}</span>
+					{#if editingTabId === tab.id}
+						<input
+							bind:this={editInputEl}
+							bind:value={editValue}
+							class="max-w-32 text-xs bg-base-100 rounded px-1 outline-none ring-1 ring-primary/40"
+							onclick={(e) => e.stopPropagation()}
+							ondblclick={(e) => e.stopPropagation()}
+							onkeydown={handleRenameKeydown}
+							onblur={commitRename}
+						/>
+					{:else}
+						<span
+							class="max-w-32 truncate text-xs"
+							ondblclick={(e) => { e.stopPropagation(); startRename(tab); }}
+							title="Double-click to rename"
+						>{tab.title}</span>
+					{/if}
 				</span>
 				<button
 					type="button"
