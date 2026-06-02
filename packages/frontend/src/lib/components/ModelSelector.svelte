@@ -37,12 +37,16 @@ const modelCache = new Map<string, string[]>();
 	}
 
 	/**
-	 * Human-readable effort label for a (possibly-unset / arbitrary) effort
-	 * string. Falls back to the default level's label when unset/invalid so the
-	 * displayed badge always reflects what will actually be used.
+	 * Human-readable effort label for a (possibly-unset) per-model effort. When
+	 * the model has no explicit override, the badge reflects what will ACTUALLY
+	 * run: the per-tab selector if valid, else the system default. This mirrors
+	 * the backend resolution order (per-model → per-tab → default) so the UI
+	 * never misrepresents the effective effort.
 	 */
 	function effortLabel(effort: string | undefined): string {
-		return REASONING_EFFORT_LABELS[isReasoningEffort(effort) ? effort : DEFAULT_REASONING_EFFORT];
+		if (isReasoningEffort(effort)) return REASONING_EFFORT_LABELS[effort];
+		const tab = isReasoningEffort(reasoningEffort) ? reasoningEffort : DEFAULT_REASONING_EFFORT;
+		return REASONING_EFFORT_LABELS[tab];
 	}
 
 	const {
