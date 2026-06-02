@@ -90,7 +90,14 @@ export interface ChatMessage {
 export type ChunkRole = "user" | "assistant" | "tool" | "system";
 
 /** Discriminator for a persisted chunk row's payload. */
-export type ChunkType = "text" | "thinking" | "tool_call" | "tool_result" | "error" | "system";
+export type ChunkType =
+	| "text"
+	| "thinking"
+	| "tool_call"
+	| "tool_result"
+	| "error"
+	| "system"
+	| "usage";
 
 export interface TextData {
 	text: string;
@@ -119,6 +126,22 @@ export interface SystemData {
 	kind: SystemChunkKind;
 	text: string;
 }
+/**
+ * Per-request token usage persisted as a SIDE-CHANNEL chunk row (one row per
+ * `usage` AgentEvent, i.e. one per LLM round-trip). These rows are deliberately
+ * EXCLUDED from `getChunksForTab`/`getTotalChunkCount` so they never enter the
+ * render, pagination, eviction, or agent-history-rebuild paths — they exist
+ * only to feed the backend aggregate `getUsageStatsForTab`, which seeds the
+ * frontend's `cacheStats` on reload. `inputTokens` is the TOTAL prompt
+ * (cached + fresh); `cacheReadTokens`/`cacheWriteTokens` are Anthropic's
+ * prompt-cache split. Mirrors the `usage` AgentEvent payload.
+ */
+export interface UsageData {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+}
 
 export type ChunkData =
 	| TextData
@@ -126,7 +149,8 @@ export type ChunkData =
 	| ToolCallData
 	| ToolResultData
 	| ErrorData
-	| SystemData;
+	| SystemData
+	| UsageData;
 
 /**
  * A persisted chunk row — the append-only unit of conversation storage and

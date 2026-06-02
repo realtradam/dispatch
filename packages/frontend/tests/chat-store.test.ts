@@ -1005,6 +1005,192 @@ describe("hydrateFromBackend", () => {
 		expect(tC?.renderGroups.length).toBe(0);
 		expect(tC?.agentStatus).toBe("idle");
 	});
+
+	// ─── usage persistence: seed cacheStats from the backend aggregate ──
+	it("seeds cacheStats from a tab's usageStats on hydrate (reload persistence)", async () => {
+		const usageStats = {
+			inputTokens: 2200,
+			outputTokens: 100,
+			cacheReadTokens: 1000,
+			cacheWriteTokens: 1000,
+			requests: 2,
+			last: { inputTokens: 1200, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 100 },
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								tabs: [
+									{
+										id: "tu",
+										title: "Has usage",
+										keyId: null,
+										modelId: null,
+										parentTabId: null,
+										usageStats,
+									},
+									{
+										id: "tn",
+										title: "No usage",
+										keyId: null,
+										modelId: null,
+										parentTabId: null,
+										usageStats: null,
+									},
+								],
+							}),
+					});
+				}
+				if (url.endsWith("/status")) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
+				}
+				if (url.split("?")[0]?.endsWith("/tabs/tu/chunks")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ chunks: [], total: 0, oldestSeq: null }),
+					});
+				}
+				if (url.split("?")[0]?.endsWith("/tabs/tn/chunks")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ chunks: [], total: 0, oldestSeq: null }),
+					});
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+
+		const store = createTabStore();
+		const n = await store.hydrateFromBackend();
+		expect(n).toBe(2);
+		// Tab with persisted usage → cacheStats seeded directly from the aggregate.
+		expect(store.tabs.find((t) => t.id === "tu")?.cacheStats).toEqual(usageStats);
+		// Tab with null usageStats → cacheStats stays undefined (no usage yet).
+		expect(store.tabs.find((t) => t.id === "tn")?.cacheStats).toBeUndefined();
+	});
+
+	it("does not re-seed or double-count cacheStats on a statuses reconnect after hydrate", async () => {
+		const usageStats = {
+			inputTokens: 1000,
+			outputTokens: 40,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 900,
+			requests: 1,
+			last: { inputTokens: 1000, outputTokens: 40, cacheReadTokens: 0, cacheWriteTokens: 900 },
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								tabs: [
+									{
+										id: "tr",
+										title: "Reconnect",
+										keyId: null,
+										modelId: null,
+										parentTabId: null,
+										usageStats,
+									},
+								],
+							}),
+					});
+				}
+				if (url.endsWith("/status")) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
+				}
+				if (url.split("?")[0]?.endsWith("/tabs/tr/chunks")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ chunks: [], total: 0, oldestSeq: null }),
+					});
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+
+		const store = createTabStore();
+		await store.hydrateFromBackend();
+		expect(store.tabs.find((t) => t.id === "tr")?.cacheStats).toEqual(usageStats);
+
+		// A WS reconnect snapshot must NOT touch cacheStats (in-session live
+		// `usage` events own the running totals; the aggregate seed is reload-only).
+		store.handleEvent({ type: "statuses", statuses: { tr: { status: "idle" } } });
+		expect(store.tabs.find((t) => t.id === "tr")?.cacheStats).toEqual(usageStats);
+	});
+
+	it("keeps accumulating live usage events after a hydrate seed", async () => {
+		const usageStats = {
+			inputTokens: 1000,
+			outputTokens: 40,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 900,
+			requests: 1,
+			last: { inputTokens: 1000, outputTokens: 40, cacheReadTokens: 0, cacheWriteTokens: 900 },
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								tabs: [
+									{
+										id: "tl",
+										title: "Live after hydrate",
+										keyId: null,
+										modelId: null,
+										parentTabId: null,
+										usageStats,
+									},
+								],
+							}),
+					});
+				}
+				if (url.endsWith("/status")) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
+				}
+				if (url.split("?")[0]?.endsWith("/tabs/tl/chunks")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ chunks: [], total: 0, oldestSeq: null }),
+					});
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+
+		const store = createTabStore();
+		await store.hydrateFromBackend();
+
+		// A new in-session usage event folds ON TOP of the seeded aggregate.
+		store.handleEvent({
+			type: "usage",
+			tabId: "tl",
+			usage: { inputTokens: 200, outputTokens: 10, cacheReadTokens: 150, cacheWriteTokens: 0 },
+		});
+		const stats = store.tabs.find((t) => t.id === "tl")?.cacheStats;
+		expect(stats?.requests).toBe(2);
+		expect(stats?.inputTokens).toBe(1200);
+		expect(stats?.outputTokens).toBe(50);
+		expect(stats?.cacheReadTokens).toBe(150);
+		expect(stats?.cacheWriteTokens).toBe(900);
+		expect(stats?.last).toEqual({
+			inputTokens: 200,
+			outputTokens: 10,
+			cacheReadTokens: 150,
+			cacheWriteTokens: 0,
+		});
+	});
 });
 
 // ─── statuses WS event with the wider TabStatusSnapshot shape ───

@@ -1,6 +1,24 @@
 import type { ToolDefinition } from "@dispatch/core";
 import { describe, expect, it, vi } from "vitest";
 
+// Seedable backing stores for the tabs route (GET /tabs enrichment). Declared
+// before vi.mock so the hoisted factory closure can reference them; populated
+// per-test.
+interface FakeOpenTab {
+	id: string;
+	title: string;
+	keyId: string | null;
+	modelId: string | null;
+	parentTabId: string | null;
+	status: string;
+	isOpen: boolean;
+	position: number;
+	createdAt: number;
+	updatedAt: number;
+}
+const fakeOpenTabs: FakeOpenTab[] = [];
+const fakeUsageStats = new Map<string, unknown>();
+
 // Mock @dispatch/core's Agent to avoid real LLM calls
 vi.mock("@dispatch/core", () => ({
 	Agent: class MockAgent {
@@ -170,7 +188,7 @@ vi.mock("@dispatch/core", () => ({
 		return null;
 	},
 	listOpenTabs() {
-		return [];
+		return [...fakeOpenTabs];
 	},
 	resolveTabPrefix() {
 		return { status: "none" };
@@ -229,6 +247,9 @@ vi.mock("@dispatch/core", () => ({
 	},
 	getTotalChunkCount() {
 		return 0;
+	},
+	getUsageStatsForTab(tabId: string) {
+		return fakeUsageStats.get(tabId) ?? null;
 	},
 	appendEventToChunks(_chunks: unknown[], _event: unknown) {
 		// no-op stub
@@ -410,6 +431,65 @@ describe("POST /chat", () => {
 		const body = await res.json();
 		expect(body.status).toBe("queued");
 		expect(typeof body.messageId).toBe("string");
+	});
+});
+
+describe("GET /tabs", () => {
+	it("enriches each open tab with its persisted usageStats aggregate", async () => {
+		fakeOpenTabs.length = 0;
+		fakeUsageStats.clear();
+		fakeOpenTabs.push({
+			id: "tab-u",
+			title: "Has usage",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+			status: "idle",
+			isOpen: true,
+			position: 0,
+			createdAt: 0,
+			updatedAt: 0,
+		});
+		fakeOpenTabs.push({
+			id: "tab-none",
+			title: "No usage",
+			keyId: null,
+			modelId: null,
+			parentTabId: null,
+			status: "idle",
+			isOpen: true,
+			position: 1,
+			createdAt: 0,
+			updatedAt: 0,
+		});
+		fakeUsageStats.set("tab-u", {
+			inputTokens: 2200,
+			outputTokens: 100,
+			cacheReadTokens: 1000,
+			cacheWriteTokens: 1000,
+			requests: 2,
+			last: { inputTokens: 1200, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 100 },
+		});
+
+		const res = await app.request("/tabs");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(Array.isArray(body.tabs)).toBe(true);
+		const tabU = body.tabs.find((t: { id: string }) => t.id === "tab-u");
+		const tabNone = body.tabs.find((t: { id: string }) => t.id === "tab-none");
+		expect(tabU.usageStats).toEqual({
+			inputTokens: 2200,
+			outputTokens: 100,
+			cacheReadTokens: 1000,
+			cacheWriteTokens: 1000,
+			requests: 2,
+			last: { inputTokens: 1200, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 100 },
+		});
+		// A tab with no usage rows surfaces null (not undefined/missing).
+		expect(tabNone.usageStats).toBeNull();
+
+		fakeOpenTabs.length = 0;
+		fakeUsageStats.clear();
 	});
 });
 
