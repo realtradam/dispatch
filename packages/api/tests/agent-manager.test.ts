@@ -75,7 +75,11 @@ function makeRow(
 // because the production code reassigns `agent.messages =
 // rows.slice(...)` AFTER `new Agent()` returns — capturing a
 // reference at construction would yield a stale empty array.
-const constructedAgents: Array<{ initialMessages: unknown[]; toolNames: string[] }> = [];
+const constructedAgents: Array<{
+	initialMessages: unknown[];
+	toolNames: string[];
+	systemPrompt: string;
+}> = [];
 function resetConstructedAgents(): void {
 	constructedAgents.length = 0;
 }
@@ -159,8 +163,10 @@ vi.mock("@dispatch/core", () => ({
 		status = "idle";
 		messages: unknown[] = [];
 		toolNames: string[] = [];
-		constructor(config: { tools?: Array<{ name: string }> }) {
+		systemPrompt = "";
+		constructor(config: { tools?: Array<{ name: string }>; systemPrompt?: string }) {
 			this.toolNames = (config?.tools ?? []).map((t) => t.name);
+			this.systemPrompt = config?.systemPrompt ?? "";
 		}
 		async *run(message: string, options?: { reasoningEffort?: string }): AsyncGenerator<unknown> {
 			// Snapshot the post-construction pre-populated message list
@@ -170,6 +176,7 @@ vi.mock("@dispatch/core", () => ({
 			constructedAgents.push({
 				initialMessages: [...this.messages],
 				toolNames: [...this.toolNames],
+				systemPrompt: this.systemPrompt,
 			});
 			capturedRunOptions.push(options);
 			if (runImpl) {
@@ -1499,6 +1506,66 @@ describe("AgentManager", () => {
 			const tools = await toolsForPerms("tab-summon-neither", {});
 			expect(tools).not.toContain("summon");
 			expect(tools).not.toContain("retrieve");
+		});
+	});
+
+	// Regression: granted tab-messaging tools must also be ADVERTISED in the
+	// agent's system prompt. The tools were registered in the API tool payload
+	// but `buildSystemPrompt` filtered its "You have access to the following
+	// tools" list through TOOL_DESCRIPTIONS, which lacked send_to_tab/read_tab
+	// — so the model was told it didn't have them and refused to use them. This
+	// locks the prompt's capability list to the granted toolset.
+	describe("send_to_tab / read_tab system-prompt advertisement", () => {
+		async function promptForPerms(tabId: string, perms: Record<string, string>): Promise<string> {
+			for (const [k, v] of Object.entries(perms)) setFakeSetting(k, v);
+			const manager = new AgentManager();
+			await manager.processMessage(tabId, "go");
+			return constructedAgents.at(-1)?.systemPrompt ?? "";
+		}
+
+		it("lists send_to_tab in the system prompt when granted", async () => {
+			const prompt = await promptForPerms("tab-prompt-send", { perm_send_to_tab: "allow" });
+			expect(prompt).toContain("- send_to_tab:");
+			expect(prompt).not.toContain("- read_tab:");
+		});
+
+		it("lists read_tab in the system prompt when granted", async () => {
+			const prompt = await promptForPerms("tab-prompt-read", { perm_read_tab: "allow" });
+			expect(prompt).toContain("- read_tab:");
+			expect(prompt).not.toContain("- send_to_tab:");
+		});
+
+		it("lists both tab-messaging tools when both are granted", async () => {
+			const prompt = await promptForPerms("tab-prompt-both", {
+				perm_send_to_tab: "allow",
+				perm_read_tab: "allow",
+			});
+			expect(prompt).toContain("- send_to_tab:");
+			expect(prompt).toContain("- read_tab:");
+		});
+
+		it("omits both from the system prompt when neither is granted", async () => {
+			const prompt = await promptForPerms("tab-prompt-neither", {});
+			expect(prompt).not.toContain("- send_to_tab:");
+			expect(prompt).not.toContain("- read_tab:");
+		});
+
+		it("advertises exactly the granted tab tools (prompt list matches schema)", async () => {
+			for (const [k, v] of Object.entries({
+				perm_send_to_tab: "allow",
+				perm_read_tab: "allow",
+			})) {
+				setFakeSetting(k, v);
+			}
+			const manager = new AgentManager();
+			await manager.processMessage("tab-prompt-match", "go");
+			const inst = constructedAgents.at(-1);
+			// Every granted tab-messaging tool surfaced in the schema must also be
+			// advertised in the prompt, so the model never believes it lacks one.
+			for (const name of ["send_to_tab", "read_tab"]) {
+				expect(inst?.toolNames).toContain(name);
+				expect(inst?.systemPrompt).toContain(`- ${name}:`);
+			}
 		});
 	});
 
