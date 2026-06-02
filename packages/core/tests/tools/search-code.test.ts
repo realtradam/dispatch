@@ -63,6 +63,28 @@ describe("search_code tool", () => {
 		expect(out).toContain("query is required");
 	});
 
+	it("does not crash when params are the wrong type (model hallucination)", async () => {
+		const tool = createSearchCodeTool(workDir);
+		// A non-string query must be rejected gracefully, not throw.
+		const q = await tool.execute({ query: ["a", "b"] as unknown as string });
+		expect(q).toMatch(/^Error:/);
+		expect(q).toContain("query is required");
+		// A non-string include_ext (array) must not throw "x.trim is not a function".
+		const stubDir = await mkdtempP(join(tmpdir(), "dispatch-cs-stub-"));
+		try {
+			process.env.DISPATCH_CS_BIN = writeStub(stubDir, ECHO_ENV_STUB);
+			process.env.CS_STUB_OUTPUT = "null";
+			const out = await tool.execute({
+				query: "x",
+				include_ext: ["ts", "go"] as unknown as string,
+				exclude_pattern: { a: 1 } as unknown as string,
+			});
+			expect(out).toBe("No matches found.");
+		} finally {
+			await rmP(stubDir, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects a path outside the working directory", async () => {
 		const tool = createSearchCodeTool(workDir);
 		const out = await tool.execute({ query: "anything", path: "../../etc" });
@@ -176,6 +198,32 @@ describe("search_code tool", () => {
 			// The snippet text must be present, not a bare header.
 			expect(out).toContain("the orchestration paragraph that matched");
 			expect(out).not.toContain("no snippet available");
+		} finally {
+			await rmP(stubDir, { recursive: true, force: true });
+		}
+	});
+
+	it("truncates an excessively long snippet line", async () => {
+		const stubDir = await mkdtempP(join(tmpdir(), "dispatch-cs-stub-"));
+		try {
+			const longContent = `const x = "${"Z".repeat(5000)}";`;
+			const csJson = JSON.stringify([
+				{
+					filename: "big.ts",
+					location: join(workDir, "big.ts"),
+					score: 1,
+					language: "TypeScript",
+					lines: [{ line_number: 1, content: longContent, match_positions: [[10, 14]] }],
+				},
+			]);
+			process.env.DISPATCH_CS_BIN = writeStub(stubDir, ECHO_ENV_STUB);
+			process.env.CS_STUB_OUTPUT = csJson;
+			const tool = createSearchCodeTool(workDir);
+			const out = await tool.execute({ query: "x" });
+			expect(out).toContain("line truncated");
+			// No single output line should approach the raw 5k length.
+			const longest = Math.max(...out.split("\n").map((l) => l.length));
+			expect(longest).toBeLessThan(700);
 		} finally {
 			await rmP(stubDir, { recursive: true, force: true });
 		}

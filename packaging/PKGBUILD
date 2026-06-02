@@ -65,6 +65,13 @@ build() {
 	# Clone the pinned cs commit, apply the Luau declaration patch, and build a
 	# statically-linked binary. cs vendors its deps, so `go build -mod=vendor`
 	# needs no network beyond the clone. Mirrors the Docker cs-builder stage.
+	#
+	# rm -rf first so a rerun (makepkg -e, or two invocations without -C) that
+	# reuses $srcdir doesn't abort on "destination path already exists". This
+	# PKGBUILD intentionally avoids source=() (the s6 service files share
+	# basenames and would collide in $srcdir), so we clone here rather than via
+	# makepkg's VCS source handling.
+	rm -rf "${srcdir}/cs-src"
 	git clone https://github.com/boyter/cs.git "${srcdir}/cs-src"
 	cd "${srcdir}/cs-src"
 	git checkout "${_cs_commit}"
@@ -237,6 +244,10 @@ package_dispatch-s6() {
 package_code-search() {
 	pkgdesc='code spelunker (cs) — fast, relevance-ranked code search CLI (patched for Luau)'
 	depends=()
+	# Both this package and the unrelated AUR `cs` (a colored ls) own /usr/bin/cs;
+	# declare the conflict so pacman reports it cleanly instead of a raw file
+	# collision. We do NOT `provides=('cs')` — this is a different program.
+	conflicts=('cs')
 	url='https://github.com/boyter/cs'
 
 	install -Dm755 "${srcdir}/cs" "${pkgdir}/usr/bin/cs"

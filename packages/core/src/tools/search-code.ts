@@ -20,6 +20,10 @@ const MAX_CONTEXT = 20;
 const MIN_SNIPPET_LENGTH = 50;
 const MAX_SNIPPET_LENGTH = 2000;
 const TIMEOUT_MS = 30_000;
+// Hard cap on any single rendered snippet line. Mirrors read-file.ts so a
+// matched minified/generated line (e.g. a 2 MB bundle line) can't blow up the
+// payload. The universal truncator bounds total output; this bounds per-line.
+const MAX_LINE_CHARS = 500;
 
 /** Maps the `only` enum to the corresponding cs flag. */
 const ONLY_FLAGS: Record<string, string> = {
@@ -130,15 +134,15 @@ export function createSearchCodeTool(workingDirectory: string): ToolDefinition {
 				),
 		}),
 		execute: async (args: Record<string, unknown>): Promise<string> => {
-			const query = args.query as string;
-			if (typeof query !== "string" || query.trim() === "") {
-				return "Error: query is required.";
+			const query = typeof args.query === "string" ? args.query : "";
+			if (query.trim() === "") {
+				return "Error: query is required (a non-empty string).";
 			}
 
 			// Resolve and contain the optional search path within the workdir.
 			// Canonicalize so a symlink-in-workdir pointing outside is detected,
 			// matching the containment semantics of list_files / read_file.
-			const relPath = (args.path as string | undefined) ?? ".";
+			const relPath = asString(args.path) ?? ".";
 			const absoluteWorkDir = await canonicalize(workingDirectory);
 			const searchDir = await canonicalize(workingDirectory, relPath);
 			if (searchDir !== absoluteWorkDir && !searchDir.startsWith(`${absoluteWorkDir}/`)) {
@@ -250,11 +254,11 @@ function buildFlags(args: Record<string, unknown>, searchDir: string): string[] 
 
 	if (args.case_sensitive === true) flags.push("-c");
 
-	const includeExt = args.include_ext as string | undefined;
-	if (includeExt?.trim()) flags.push("-i", includeExt.trim());
+	const includeExt = asString(args.include_ext);
+	if (includeExt) flags.push("-i", includeExt);
 
-	const excludePattern = args.exclude_pattern as string | undefined;
-	if (excludePattern?.trim()) flags.push("-x", excludePattern.trim());
+	const excludePattern = asString(args.exclude_pattern);
+	if (excludePattern) flags.push("-x", excludePattern);
 
 	// Snippet mode selection. cs's default ("auto") emits a `lines[]` array for
 	// code but a single `content` string for prose (.md/.html/…), which our
@@ -283,7 +287,7 @@ function buildFlags(args: Record<string, unknown>, searchDir: string): string[] 
 		flags.push("-n", String(snippet));
 	}
 
-	const only = args.only as string | undefined;
+	const only = asString(args.only);
 	if (only && ONLY_FLAGS[only]) flags.push(ONLY_FLAGS[only]);
 
 	return flags;
@@ -308,12 +312,12 @@ function formatResults(results: CsResult[], absoluteWorkDir: string): string {
 		if (r.lines && r.lines.length > 0) {
 			body = r.lines.map((l) => {
 				const marker = l.match_positions && l.match_positions.length > 0 ? ">" : " ";
-				return `  ${marker} ${l.line_number}: ${l.content}`;
+				return `  ${marker} ${l.line_number}: ${truncateLine(l.content)}`;
 			});
 		} else if (r.content && r.content.trim() !== "") {
 			// Fallback for cs's "snippet"-mode shape (no per-line numbers): show
 			// the snippet text itself so the result isn't a bare header.
-			body = r.content.split("\n").map((line) => `    ${line}`);
+			body = r.content.split("\n").map((line) => `    ${truncateLine(line)}`);
 		} else {
 			body = ["    (match in file; no snippet available)"];
 		}
@@ -328,6 +332,24 @@ function formatResults(results: CsResult[], absoluteWorkDir: string): string {
 
 function clamp(n: number, min: number, max: number): number {
 	return Math.min(max, Math.max(min, n));
+}
+
+/** Cap an individual snippet line so a minified/generated line can't bloat output. */
+function truncateLine(line: string): string {
+	if (line.length <= MAX_LINE_CHARS) return line;
+	return `${line.slice(0, MAX_LINE_CHARS)}… [line truncated, ${line.length.toLocaleString()} chars]`;
+}
+
+/**
+ * Coerce a tool argument to a trimmed string, or undefined. Guards against a
+ * model hallucinating a non-string (e.g. an array `["ts","go"]`) for a
+ * string-typed param: returning undefined makes the flag a no-op instead of
+ * throwing `x.trim is not a function` and crashing the tool call.
+ */
+function asString(v: unknown): string | undefined {
+	if (typeof v !== "string") return undefined;
+	const t = v.trim();
+	return t === "" ? undefined : t;
 }
 
 function missingBinaryError(): string {
