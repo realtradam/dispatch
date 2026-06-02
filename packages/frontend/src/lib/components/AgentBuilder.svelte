@@ -180,7 +180,17 @@ const modelCache = new Map();
 	}
 
 	function setEffortEntry(i: number, effort: string) {
-		formModels = formModels.map((m, idx) => (idx === i ? { ...m, effort } : m));
+		formModels = formModels.map((m, idx) => {
+			if (idx !== i) return m;
+			// Empty string = "inherit" (no per-model override). Strip the key so
+			// the saved TOML omits `effort` and the call site falls back to the
+			// per-tab selector / default.
+			if (!effort) {
+				const { effort: _dropped, ...rest } = m;
+				return rest;
+			}
+			return { ...m, effort };
+		});
 	}
 
 	async function openKeyModal(i: number) {
@@ -557,11 +567,12 @@ const modelCache = new Map();
 									{entry.model_id || "Select Model"}
 								</button>
 								<select
-									class="select select-bordered select-sm shrink-0 w-28"
-									title="Reasoning effort for this model"
-									value={entry.effort ?? DEFAULT_REASONING_EFFORT}
+									class="select select-bordered select-sm shrink-0 w-36"
+									title="Reasoning effort for this model. 'Inherit' uses the per-tab selector / default."
+									value={entry.effort ?? ""}
 									onchange={(e) => setEffortEntry(i, e.currentTarget.value)}
 								>
+									<option value="">Inherit ({REASONING_EFFORT_LABELS[DEFAULT_REASONING_EFFORT]})</option>
 									{#each REASONING_EFFORTS as effort}
 										<option value={effort}>{REASONING_EFFORT_LABELS[effort]}</option>
 									{/each}
