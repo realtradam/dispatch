@@ -472,6 +472,14 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => "mock",
 		};
 	},
+	createKeyUsageTool(_callbacks: unknown) {
+		return {
+			name: "key_usage",
+			description: "key usage",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
 	createSearchCodeTool(_wd: string) {
 		return {
 			name: "search_code",
@@ -1565,6 +1573,28 @@ describe("AgentManager", () => {
 			const tools = await toolsForPerms("tab-summon-neither", {});
 			expect(tools).not.toContain("summon");
 			expect(tools).not.toContain("retrieve");
+		});
+	});
+
+	describe("key_usage permission gate", () => {
+		// The key_usage tool is conditionally useful, so it must be COMPLETELY
+		// absent from the toolset (and thus the model's context) unless
+		// perm_key_usage is explicitly allowed.
+		async function toolsForPerms(tabId: string, perms: Record<string, string>): Promise<string[]> {
+			for (const [k, v] of Object.entries(perms)) setFakeSetting(k, v);
+			const manager = new AgentManager();
+			await manager.processMessage(tabId, "go");
+			return constructedAgents.at(-1)?.toolNames ?? [];
+		}
+
+		it("registers key_usage when perm_key_usage is allowed", async () => {
+			const tools = await toolsForPerms("tab-key-usage-on", { perm_key_usage: "allow" });
+			expect(tools).toContain("key_usage");
+		});
+
+		it("omits key_usage when perm_key_usage is not allowed", async () => {
+			const tools = await toolsForPerms("tab-key-usage-off", {});
+			expect(tools).not.toContain("key_usage");
 		});
 	});
 

@@ -287,6 +287,7 @@ export function createSummonTool(
 					"write_file",
 					"run_shell",
 					"search_code",
+					"key_usage",
 					"todo",
 					"summon",
 					"retrieve",
