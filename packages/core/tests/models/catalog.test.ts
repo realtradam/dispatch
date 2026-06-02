@@ -4,6 +4,7 @@ import {
 	__resetCatalogCacheForTests,
 	getModelsCatalog,
 	resolveContextLimit,
+	resolveModelCapabilities,
 } from "../../src/models/catalog.js";
 
 const CACHE_PATH = "/tmp/dispatch/models-dev.json";
@@ -13,14 +14,30 @@ const CATALOG = {
 	anthropic: {
 		id: "anthropic",
 		models: {
-			"claude-sonnet-4-5": { limit: { context: 200000, output: 64000 } },
-			"claude-sonnet-4-6": { limit: { context: 1000000, output: 64000 } },
+			"claude-sonnet-4-5": {
+				limit: { context: 200000, output: 64000 },
+				modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+			},
+			"claude-sonnet-4-6": {
+				limit: { context: 1000000, output: 64000 },
+				modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+			},
+			// A text-only model: definitively no image/pdf input.
+			"text-only-model": {
+				limit: { context: 100000, output: 8192 },
+				modalities: { input: ["text"], output: ["text"] },
+			},
+			// An entry predating the modalities field → capability unknown.
+			"legacy-model": { limit: { context: 100000, output: 8192 } },
 		},
 	},
 	opencode: {
 		id: "opencode",
 		models: {
-			"glm-4-6": { limit: { context: 131072, output: 8192 } },
+			"glm-4-6": {
+				limit: { context: 131072, output: 8192 },
+				modalities: { input: ["text", "image"], output: ["text"] },
+			},
 		},
 	},
 };
@@ -153,6 +170,58 @@ describe("getModelsCatalog caching", () => {
 		expect(await resolveContextLimit("anthropic", "claude-sonnet-4-6")).toBeNull();
 		await getModelsCatalog();
 		expect(fetchFn).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+});
+
+describe("resolveModelCapabilities", () => {
+	it("reports image + pdf for a vision model", async () => {
+		mockFetchOnce(CATALOG);
+		expect(await resolveModelCapabilities("anthropic", "claude-sonnet-4-5")).toEqual({
+			image: true,
+			pdf: true,
+		});
+	});
+
+	it("reports image-only for a model whose modalities omit pdf", async () => {
+		mockFetchOnce(CATALOG);
+		// glm-4-6 lists image but not pdf (resolved via the opencode fallback).
+		expect(await resolveModelCapabilities("opencode-anthropic", "glm-4-6")).toEqual({
+			image: true,
+			pdf: false,
+		});
+	});
+
+	it("reports a definitive no for a text-only model", async () => {
+		mockFetchOnce(CATALOG);
+		expect(await resolveModelCapabilities("anthropic", "text-only-model")).toEqual({
+			image: false,
+			pdf: false,
+		});
+	});
+
+	it("returns null (unknown) for an entry without modalities", async () => {
+		mockFetchOnce(CATALOG);
+		expect(await resolveModelCapabilities("anthropic", "legacy-model")).toBeNull();
+	});
+
+	it("returns null (unknown) for an unknown model id", async () => {
+		mockFetchOnce(CATALOG);
+		expect(await resolveModelCapabilities("anthropic", "no-such-model")).toBeNull();
+	});
+
+	it("returns null for an unsupported provider without hitting the network", async () => {
+		const fetchFn = mockFetchOnce(CATALOG);
+		expect(await resolveModelCapabilities("google", "gemini-2.5-pro")).toBeNull();
+		expect(await resolveModelCapabilities("anthropic", "")).toBeNull();
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it("returns null (unknown) when the catalog is offline with no cache", async () => {
+		const fetchFn = vi.fn(() => Promise.reject(new Error("offline")));
+		vi.stubGlobal("fetch", fetchFn);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		expect(await resolveModelCapabilities("anthropic", "claude-sonnet-4-5")).toBeNull();
 		warn.mockRestore();
 	});
 });

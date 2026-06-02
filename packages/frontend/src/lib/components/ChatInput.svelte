@@ -1,12 +1,40 @@
 <script lang="ts">
+import {
+	ACCEPTED_PDF_MEDIA_TYPE,
+	isImageMediaType,
+	isPdfMediaType,
+	MAX_ATTACHMENTS,
+	MAX_IMAGE_BYTES,
+	MAX_PDF_BYTES,
+} from "@dispatch/core/src/models/attachments.js";
+import {
+	type AttachmentKind,
+	computeTokenDeletion,
+	generateTokenId,
+	makeAttachmentToken,
+	parseDraft,
+	type StagedAttachment,
+} from "../attachment-tokens.js";
 import { computeContextUsage } from "../context-window.js";
 import { tabStore } from "../tabs.svelte.js";
 
-const { contextLimit = null }: { contextLimit?: number | null } = $props();
+const {
+	contextLimit = null,
+	imageSupport = null,
+}: {
+	contextLimit?: number | null;
+	// Image/PDF INPUT capability for the active model, or `null` when unknown
+	// (catalog offline / unsupported provider) — null means "can't verify"
+	// (optimistic allow), not a hard no.
+	imageSupport?: { image: boolean; pdf: boolean } | null;
+} = $props();
 
 const MAX_LINES = 7;
 
 let inputEl: HTMLTextAreaElement | undefined;
+// Transient error shown when a paste is rejected (bad type / too large / too
+// many). Cleared on the next successful paste or any keystroke.
+let pasteError = $state<string | null>(null);
 
 const agentStatus = $derived(tabStore.activeTab?.agentStatus ?? "idle");
 const tabId = $derived(tabStore.activeTab?.id ?? "");
@@ -14,6 +42,7 @@ const tabId = $derived(tabStore.activeTab?.id ?? "");
 // switching tabs saves the current draft and restores the target tab's text
 // automatically — drafts are never lost or clobbered by tab switching.
 const inputValue = $derived(tabStore.activeTab?.draft ?? "");
+const attachments = $derived(tabStore.activeTab?.attachments ?? []);
 const cacheStats = $derived(tabStore.activeTab?.cacheStats ?? null);
 
 const isRunning = $derived(agentStatus === "running");
@@ -25,9 +54,42 @@ const compactLocked = $derived(
 		(tabStore.activeTab?.compactionError ?? null) !== null,
 );
 const hasText = $derived(inputValue.trim().length > 0);
+const hasAttachments = $derived(attachments.length > 0);
 // While generating with an empty box, the primary action is "stop". With text
 // in the box, it stays "send" (the message is queued behind the live turn).
-const showStop = $derived(isRunning && !hasText);
+const showStop = $derived(isRunning && !hasText && !hasAttachments);
+
+// ─── Attachment capability gating ──────────────────────────────
+// A definitive "no" from the catalog (imageSupport.image === false with an
+// image staged, or .pdf === false with a pdf staged) blocks the send so no
+// tokens are spent. Unknown capability (imageSupport === null) is permissive.
+const hasImageAttachment = $derived(attachments.some((a) => a.kind === "image"));
+const hasPdfAttachment = $derived(attachments.some((a) => a.kind === "pdf"));
+const imageBlocked = $derived(
+	hasImageAttachment && imageSupport !== null && imageSupport.image === false,
+);
+const pdfBlocked = $derived(
+	hasPdfAttachment && imageSupport !== null && imageSupport.pdf === false,
+);
+// Attachments require a fresh turn — they can't ride the queue path (which is
+// text-only), so block sending an attachment while the agent is generating.
+const attachmentsWhileRunning = $derived(hasAttachments && isRunning);
+
+const attachmentWarning = $derived.by(() => {
+	if (pasteError) return pasteError;
+	if (attachmentsWhileRunning)
+		return "Wait for the current response to finish before sending images.";
+	if (imageBlocked && pdfBlocked)
+		return "The selected model doesn't support image or PDF input. Remove the attachments to send.";
+	if (imageBlocked)
+		return "The selected model doesn't support image input. Remove the image to send.";
+	if (pdfBlocked) return "The selected model doesn't support PDF input. Remove the PDF to send.";
+	return null;
+});
+
+// Send is blocked (but not the box) when an attachment is definitively
+// unsupported or when attachments are staged mid-generation.
+const sendBlocked = $derived(imageBlocked || pdfBlocked || attachmentsWhileRunning);
 
 const usage = $derived(computeContextUsage(cacheStats, contextLimit));
 const hasUsage = $derived((cacheStats?.last ?? null) !== null);
@@ -84,22 +146,155 @@ $effect(() => {
 
 function handleInput(e: Event) {
 	if (!tabId) return;
+	pasteError = null;
+	// setDraft also reconciles staged attachments against the surviving tokens,
+	// so deleting a token (by any means) detaches its attachment.
 	tabStore.setDraft(tabId, (e.currentTarget as HTMLTextAreaElement).value);
+}
+
+function kindForMediaType(mediaType: string): AttachmentKind | null {
+	if (isImageMediaType(mediaType)) return "image";
+	if (isPdfMediaType(mediaType)) return "pdf";
+	return null;
+}
+
+function readAsBase64(file: File): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => {
+			const result = reader.result;
+			if (typeof result !== "string") {
+				reject(new Error("unexpected reader result"));
+				return;
+			}
+			// Strip the `data:<mediaType>;base64,` prefix → bare base64.
+			const comma = result.indexOf(",");
+			resolve(comma === -1 ? result : result.slice(comma + 1));
+		};
+		reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+		reader.readAsDataURL(file);
+	});
+}
+
+/** Insert `insert` at the textarea's caret, returning the new caret offset. */
+function insertAtCaret(insert: string): number {
+	const el = inputEl;
+	const text = inputValue;
+	const start = el?.selectionStart ?? text.length;
+	const end = el?.selectionEnd ?? text.length;
+	const next = text.slice(0, start) + insert + text.slice(end);
+	if (tabId) tabStore.setDraft(tabId, next);
+	return start + insert.length;
+}
+
+async function handlePaste(e: ClipboardEvent) {
+	if (!tabId) return;
+	const items = e.clipboardData?.items;
+	if (!items) return;
+	const files: File[] = [];
+	for (const item of items) {
+		if (item.kind === "file") {
+			const file = item.getAsFile();
+			if (file) files.push(file);
+		}
+	}
+	// No files in the clipboard → let the default text paste happen.
+	if (files.length === 0) return;
+	// We're handling at least one file; stop the browser from also pasting a
+	// filename / image fallback into the textarea.
+	e.preventDefault();
+	pasteError = null;
+
+	for (const file of files) {
+		const kind = kindForMediaType(file.type);
+		if (!kind) {
+			pasteError = `Unsupported file type: ${file.type || "unknown"}. Allowed: PNG, JPEG, WebP, GIF, PDF.`;
+			continue;
+		}
+		const current = tabStore.activeTab?.attachments ?? [];
+		if (current.length >= MAX_ATTACHMENTS) {
+			pasteError = `You can attach at most ${MAX_ATTACHMENTS} files per message.`;
+			break;
+		}
+		const limit = kind === "pdf" ? MAX_PDF_BYTES : MAX_IMAGE_BYTES;
+		if (file.size > limit) {
+			const mb = Math.round(limit / (1024 * 1024));
+			pasteError = `${kind === "pdf" ? "PDF" : "Image"} is too large (max ${mb} MB).`;
+			continue;
+		}
+		try {
+			const data = await readAsBase64(file);
+			const id = generateTokenId();
+			const mediaType = kind === "pdf" ? ACCEPTED_PDF_MEDIA_TYPE : file.type;
+			const staged: StagedAttachment = {
+				id,
+				kind,
+				mediaType,
+				data,
+				...(file.name ? { name: file.name } : {}),
+			};
+			// Stage first, then insert the token — `setDraft` reconciles against
+			// staged attachments, so the attachment must exist before its token
+			// appears in the draft.
+			tabStore.addAttachment(tabId, staged);
+			const caret = insertAtCaret(makeAttachmentToken(kind, id));
+			// Restore the caret after the value updates.
+			requestAnimationFrame(() => {
+				const el = inputEl;
+				if (el) {
+					el.focus();
+					el.setSelectionRange(caret, caret);
+				}
+			});
+		} catch {
+			pasteError = "Failed to read the pasted file.";
+		}
+	}
 }
 
 function handleKeydown(e: KeyboardEvent) {
 	if (e.key === "Enter" && !e.shiftKey) {
 		e.preventDefault();
 		submit();
+		return;
+	}
+	if ((e.key === "Backspace" || e.key === "Delete") && inputEl && tabId) {
+		// Atomic token delete: a single Backspace/Delete next to (or a selection
+		// overlapping) a `【…】` token removes the whole token in one stroke.
+		const result = computeTokenDeletion(
+			inputValue,
+			inputEl.selectionStart ?? 0,
+			inputEl.selectionEnd ?? 0,
+			e.key,
+		);
+		if (result) {
+			e.preventDefault();
+			tabStore.setDraft(tabId, result.text);
+			requestAnimationFrame(() => {
+				const el = inputEl;
+				if (el) {
+					el.focus();
+					el.setSelectionRange(result.caret, result.caret);
+				}
+			});
+		}
 	}
 }
 
 function submit() {
+	if (!tabId) return;
+	// Block sending while this tab is mid-compaction (source or placeholder).
 	if (compactLocked) return;
-	const text = inputValue.trim();
-	if (!text) return;
-	if (tabId) tabStore.setDraft(tabId, "");
-	tabStore.sendMessage(text);
+	const map = new Map(attachments.map((a) => [a.id, a] as const));
+	const { displayText, content } = parseDraft(inputValue, map);
+	const trimmed = displayText.trim();
+	// Nothing to send (no text and no usable attachment).
+	if (!trimmed && !content) return;
+	// Don't send when a staged attachment is unsupported / mid-generation.
+	if (sendBlocked) return;
+	const text = trimmed || displayText;
+	tabStore.setDraft(tabId, "");
+	void tabStore.sendMessage(text, content ?? undefined);
 }
 
 function primaryAction() {
@@ -112,26 +307,39 @@ function primaryAction() {
 </script>
 
 <div class="flex flex-col">
+	{#if attachmentWarning}
+		<div class="px-3 pt-2 text-xs text-warning flex items-start gap-1">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true">
+				<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+				<line x1="12" y1="9" x2="12" y2="13"></line>
+				<line x1="12" y1="17" x2="12.01" y2="17"></line>
+			</svg>
+			<span>{attachmentWarning}</span>
+		</div>
+	{/if}
 	<!-- Top bar: expanding textarea + send/stop action -->
 	<div class="flex items-end gap-2 px-3 pt-3 pb-2">
 		<textarea
 			bind:this={inputEl}
 			value={inputValue}
 			rows="1"
-			placeholder={compactLocked ? "Compaction in progress…" : "Type a message..."}
+			placeholder={compactLocked
+				? "Compaction in progress…"
+				: "Type a message... (paste an image or PDF to attach)"}
 			disabled={compactLocked}
 			class="textarea textarea-ghost flex-1 resize-none leading-normal !min-h-0 h-auto"
 			onkeydown={handleKeydown}
 			oninput={handleInput}
+			onpaste={handlePaste}
 		></textarea>
 		<!-- Single fixed-width button across all states so the layout never
 		     shifts when it morphs between Send and Stop. -->
 		<button
 			type="button"
 			class="btn w-20 shrink-0 {showStop ? 'btn-error btn-outline' : 'btn-primary'}"
-			disabled={compactLocked || (!showStop && !hasText)}
+			disabled={compactLocked || (!showStop && !hasText && !hasAttachments) || sendBlocked}
 			onclick={primaryAction}
-			title={showStop ? "Stop generation" : "Send message"}
+			title={showStop ? "Stop generation" : sendBlocked ? (attachmentWarning ?? "Cannot send") : "Send message"}
 		>
 			{#if showStop}
 				<span class="loading loading-spinner loading-sm"></span>

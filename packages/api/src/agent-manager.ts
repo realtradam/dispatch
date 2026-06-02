@@ -15,6 +15,7 @@ import {
 	clearSpillForTab,
 	configToRuleset,
 	createConfigWatcher,
+	createKeyUsageTool,
 	createListFilesTool,
 	createLspTool,
 	createReadFileSliceTool,
@@ -71,6 +72,7 @@ import {
 	toAvailableUserAgents,
 	type UsageData,
 	type UsageStats,
+	type UserContentPart,
 	validateConfig,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
@@ -90,6 +92,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	search_code:
 		"Search the codebase by query using the 'cs' code search engine (relevance-ranked, structure-aware). Returns the most relevant files first with matching snippets and line numbers. Better than grep/find for exploratory 'where is X / how does Y work' searches; use run_shell with rg for exhaustive exact-match lists.",
 	todo: "Create/maintain a todo list to plan and track work. Declarative whole-list write: send the entire list in `todos` each call (it replaces the previous list). Statuses: pending, in_progress, completed, cancelled.",
+	key_usage:
+		"Report current usage levels for configured API keys: provider, active/exhausted status, remaining rate-limit headroom and reset times per window (5-hour, weekly, monthly where available), and whether the figures are live or cached. Pass key_id for one key; omit to report all. Supported for anthropic and opencode-go keys.",
 	summon:
 		"Spawn a child agent to work on a task independently. By default blocks until the child finishes. Set background=true to return immediately with an agent_id for later retrieval.",
 	retrieve:
@@ -527,10 +531,11 @@ export class AgentManager {
 		const permReadTab = getSetting("perm_read_tab") === "allow";
 		const permWebSearch = getSetting("perm_web_search") === "allow";
 		const permSearchCode = getSetting("perm_search_code") === "allow";
+		const permKeyUsage = getSetting("perm_key_usage") === "allow";
 		const permYoutubeTranscribe = getSetting("perm_youtube_transcribe") === "allow";
 		const permLsp = getSetting("perm_lsp") === "allow";
 		const sysPrompt = getSetting("system_prompt") ?? "";
-		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${permSearchCode}:${permLsp}:${sysPrompt}`;
+		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${permSearchCode}:${permKeyUsage}:${permLsp}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
@@ -621,6 +626,9 @@ export class AgentManager {
 				}
 				if (allowed.has("web_search")) {
 					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				}
+				if (allowed.has("key_usage")) {
+					toolEntries.push({ name: "key_usage", tool: this.buildKeyUsageTool() });
 				}
 				if (allowed.has("lsp") && lspServers.length > 0) {
 					toolEntries.push({
@@ -726,6 +734,9 @@ export class AgentManager {
 				}
 				if (permWebSearch) {
 					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				}
+				if (permKeyUsage) {
+					toolEntries.push({ name: "key_usage", tool: this.buildKeyUsageTool() });
 				}
 				// The `lsp` tool exposes diagnostics + navigation on demand. It is
 				// gated by `perm_lsp` AND requires at least one server configured
@@ -1665,6 +1676,19 @@ export class AgentManager {
 	// `deliverMessage`), so an agent message behaves identically to a user one.
 
 	/**
+	 * Build the `key_usage` tool, wired to the live model registry (key states)
+	 * and the discovered Claude accounts. The tool fetches usage live with a
+	 * cache fallback (anthropic) or a live scrape (opencode-go), reporting
+	 * remaining headroom, reset times, and data freshness per key.
+	 */
+	private buildKeyUsageTool(): ReturnType<typeof createKeyUsageTool> {
+		return createKeyUsageTool({
+			listKeys: () => this.modelRegistry?.getKeys() ?? [],
+			listClaudeAccounts: () => this.claudeAccounts,
+		});
+	}
+
+	/**
 	 * Build the `send_to_tab` + `read_tab` tool entries for `tabId`. Shared by
 	 * both tool-construction paths (child whitelist + permission-gated parent).
 	 * `selfHandle` is computed once so the calling tab can stamp provenance and
@@ -1796,6 +1820,13 @@ export class AgentManager {
 			workingDirectory?: string;
 			queueId?: string;
 			/**
+			 * Ephemeral ordered multimodal content (image/pdf attachments) for a
+			 * FRESH human turn. Forwarded to `processMessage` → `agent.run` only
+			 * when the tab is idle (a started turn); never carried into the queue
+			 * path (attachments require a fresh turn — the caller guards that).
+			 */
+			content?: UserContentPart[];
+			/**
 			 * Who is sending this message. `"human"` (default) is unrestricted
 			 * and REFILLS the target's agent-to-agent auto-wake budget. `"agent"`
 			 * (from the `send_to_tab` tool) is governed by that budget: an
@@ -1874,6 +1905,7 @@ export class AgentManager {
 			opts.reasoningEffort,
 			opts.workingDirectory,
 			agentModels,
+			opts.content,
 		).catch((err) => {
 			console.error(`[dispatch] deliverMessage processMessage error for tab ${tabId}:`, err);
 		});
@@ -1888,6 +1920,7 @@ export class AgentManager {
 		reasoningEffort?: ReasoningEffort,
 		workingDirectory?: string,
 		agentModels?: AgentModelEntry[],
+		content?: UserContentPart[],
 	): Promise<void> {
 		const tabAgent = this._getOrCreateTabAgent(tabId);
 
@@ -1999,6 +2032,7 @@ export class AgentManager {
 				for await (const event of agent.run(message, {
 					...(effortForEntry ? { reasoningEffort: effortForEntry } : {}),
 					abortSignal: tabAgent.abortController?.signal,
+					...(content ? { content } : {}),
 				})) {
 					// Stop processing if the tab was aborted (closed/stopped).
 					// stopTab() already injected a `cancelled` system chunk into

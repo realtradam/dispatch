@@ -18,6 +18,15 @@ interface ModelsDevModel {
 		context?: number;
 		output?: number;
 	};
+	/**
+	 * Input/output modalities the model accepts. We read `input` to decide
+	 * whether the model can take image / pdf attachments. Absent on older
+	 * catalog entries — treated as "unknown" (capability resolves to `null`).
+	 */
+	modalities?: {
+		input?: string[];
+		output?: string[];
+	};
 }
 
 interface ModelsDevProvider {
@@ -168,6 +177,47 @@ export async function resolveContextLimit(
 	for (const providerId of candidates) {
 		const ctx = catalog[providerId]?.models?.[modelId]?.limit?.context;
 		if (typeof ctx === "number" && ctx > 0) return ctx;
+	}
+	return null;
+}
+
+/**
+ * Image / PDF input capabilities for a model, resolved from the models.dev
+ * catalog's `modalities.input` list.
+ */
+export interface ModelInputCapabilities {
+	/** Model accepts image input (vision). */
+	image: boolean;
+	/** Model accepts PDF/document input. */
+	pdf: boolean;
+}
+
+/**
+ * Resolve whether a model accepts image / pdf input for the given Dispatch
+ * provider + model id. Returns `null` when the capability is UNKNOWN — i.e. the
+ * provider is unsupported/unmapped, the model is absent from the catalog, the
+ * entry predates the `modalities` field, or the catalog is unavailable. Callers
+ * should treat `null` as "can't verify" (optimistic allow) rather than a
+ * definitive "no", so a temporary catalog outage never disables a known-good
+ * vision model.
+ *
+ * A non-null result means the catalog DID describe the model's input modalities
+ * — `{ image, pdf }` then reflects exactly what it advertises (a definitive
+ * yes/no for each).
+ */
+export async function resolveModelCapabilities(
+	provider: string,
+	modelId: string,
+): Promise<ModelInputCapabilities | null> {
+	const candidates = PROVIDER_MAP[provider];
+	if (!candidates || !modelId) return null;
+
+	const catalog = await getModelsCatalog();
+	for (const providerId of candidates) {
+		const input = catalog[providerId]?.models?.[modelId]?.modalities?.input;
+		if (Array.isArray(input)) {
+			return { image: input.includes("image"), pdf: input.includes("pdf") };
+		}
 	}
 	return null;
 }

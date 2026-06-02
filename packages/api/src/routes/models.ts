@@ -20,6 +20,7 @@ import {
 	refreshAccountCredentialsAsync,
 	resolveApiKey,
 	resolveContextLimit,
+	resolveModelCapabilities,
 	selectHaikuModel,
 	setApiKey,
 	validateAccountCredentials,
@@ -178,6 +179,23 @@ modelsRoutes.get("/context-limit", async (c) => {
 
 	const contextLimit = await resolveContextLimit(provider, modelId);
 	return c.json({ contextLimit });
+});
+
+// Resolve a model's image / PDF INPUT capabilities from the models.dev catalog.
+// Returns `{ capabilities: { image, pdf } | null }`. `null` means UNKNOWN — the
+// provider is unmapped, the model is absent, the catalog predates the
+// `modalities` field, or the catalog is offline. The frontend treats `null` as
+// "can't verify" (optimistic allow) and a definitive `{ image: false }` as a
+// hard block (no tokens spent).
+modelsRoutes.get("/capabilities", async (c) => {
+	const provider = c.req.query("provider");
+	const modelId = c.req.query("modelId");
+	if (!provider || !modelId) {
+		return c.json({ error: "provider and modelId query parameters are required" }, 400);
+	}
+
+	const capabilities = await resolveModelCapabilities(provider, modelId);
+	return c.json({ capabilities });
 });
 
 // List available Claude accounts with validated credentials

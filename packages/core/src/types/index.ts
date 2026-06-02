@@ -76,7 +76,56 @@ export interface SystemChunk {
 export interface ChatMessage {
 	role: MessageRole;
 	chunks: Chunk[];
+	/**
+	 * Ephemeral ORDERED multimodal content for a user turn (interleaved text +
+	 * image/pdf attachments). Set ONLY transiently on the in-flight user message
+	 * so `toModelMessages` can emit multimodal `ImagePart`/`FilePart` content to
+	 * the provider. Never persisted (the chunk log stores only the text, with
+	 * `[image]`/`[pdf]` markers), so it's absent on history-rebuilt messages.
+	 * When absent, the message is plain text built from its `chunks`.
+	 */
+	content?: UserContentPart[];
 }
+
+// ─── Multimodal user content (image / PDF attachments) ───────────
+//
+// When a user pastes one or more images/PDFs into the chat input, the turn's
+// user message carries an ORDERED list of content parts instead of a plain
+// string. The ordering is meaningful — the user can interleave text and
+// attachments ("here is image A: <A>, here is image B: <B>") and the model
+// sees them in exactly that sequence.
+//
+// These parts are EPHEMERAL: they are forwarded to the model for the turn that
+// produced them but are NOT persisted as raw bytes in the chunk log. History
+// stores only the user's text (with `[image]` / `[pdf]` markers in place of
+// each attachment), so a later reload re-renders the text but never re-sends
+// the binary payload. This keeps the persisted log small and avoids re-billing
+// image tokens on every subsequent turn.
+
+/** A plain-text segment of a multimodal user message. */
+export interface UserTextPart {
+	type: "text";
+	text: string;
+}
+
+/**
+ * A binary attachment (image or PDF) in a multimodal user message. `data` is a
+ * base64-encoded payload (no `data:` URI prefix); `mediaType` is the IANA media
+ * type (e.g. `image/png`, `application/pdf`). `name` is an optional original
+ * filename, used only for PDF `filename` passthrough and diagnostics.
+ */
+export interface UserAttachmentPart {
+	type: "attachment";
+	/** IANA media type, e.g. `image/png`, `image/jpeg`, `application/pdf`. */
+	mediaType: string;
+	/** Base64-encoded bytes WITHOUT a `data:` URI prefix. */
+	data: string;
+	/** Optional original filename (mainly for PDFs). */
+	name?: string;
+}
+
+/** One ordered part of a multimodal user message. */
+export type UserContentPart = UserTextPart | UserAttachmentPart;
 
 // ─── Append-only chunk log (persisted model) ─────────────────────
 //
