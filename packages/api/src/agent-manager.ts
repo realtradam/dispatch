@@ -14,6 +14,7 @@ import {
 	configToRuleset,
 	createConfigWatcher,
 	createListFilesTool,
+	createLspTool,
 	createReadFileSliceTool,
 	createReadFileTool,
 	createReadTabTool,
@@ -37,6 +38,7 @@ import {
 	getSetting,
 	getTab,
 	getUsageStatsForTab,
+	LspManager,
 	listOpenTabs,
 	loadAgent,
 	loadAgents,
@@ -45,9 +47,12 @@ import {
 	ModelRegistry,
 	type QueuedMessage,
 	type ReasoningEffort,
+	type ResolvedLspServer,
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
+	reportDiagnostics,
 	resolveApiKey,
+	resolveServersFromConfig,
 	resolveTabPrefix,
 	type SkillDefinition,
 	type SystemChunkKind,
@@ -87,6 +92,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 		"Send a message to another tab (agent) by its short ID, as shown in the tab bar. Fire-and-forget: it queues/wakes the target and returns immediately without waiting for a reply. Do NOT sleep, poll, or run commands to wait — if the target replies it will wake you with a new message in a later turn; if you are only waiting, end your turn.",
 	read_tab:
 		"Read another tab (agent)'s most recent completed response by its short ID. Returns a non-blocking snapshot; if the target is still running you get its previous completed turn. Use after send_to_tab to collect a reply.",
+	lsp: "Query the configured Language Server (e.g. luau-lsp for Roblox Luau) about a file: diagnostics, hover, definition, references, or documentSymbol. Line/character are 1-based.",
 };
 
 /**
@@ -98,6 +104,14 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
  * tokens unbounded with no human in the loop. See notes/plan-tab-comm.md.
  */
 const MAX_AGENT_AUTO_WAKES = 6;
+
+/**
+ * Cap on how many OTHER files' LSP error blocks are appended to a write_file
+ * result, after the written file's own errors. Bounds context spend when a
+ * single edit surfaces project-wide diagnostics. Mirrors opencode's
+ * MAX_PROJECT_DIAGNOSTICS_FILES.
+ */
+const MAX_LSP_OTHER_FILE_DIAGNOSTICS = 5;
 
 const DEFAULT_SYSTEM_PROMPT =
 	"You are Dispatch, an agent designed to help with any task that the user asks for. Be helpful and concise.";
@@ -251,6 +265,21 @@ export class AgentManager {
 
 	private claudeAccounts: ClaudeAccount[] = [];
 
+	/**
+	 * Process-wide owner of LSP client lifecycles. Servers are declared in the
+	 * `dispatch.toml` of a tab's effective working directory; clients are
+	 * spawned lazily per (root + server) and reused across tabs/turns. Shut
+	 * down in `destroy()`.
+	 */
+	private lspManager: LspManager = new LspManager();
+	/**
+	 * Cache of resolved LSP servers per working directory, so we parse each
+	 * directory's `dispatch.toml` `[lsp]` block once. Cleared wholesale on any
+	 * config hot-reload (the watcher fires for the root config; directory-level
+	 * configs are re-read on demand after a clear).
+	 */
+	private lspServersByDir: Map<string, ResolvedLspServer[]> = new Map();
+
 	constructor(permissionManager?: PermissionManager) {
 		this.permissionManager = permissionManager;
 
@@ -292,6 +321,10 @@ export class AgentManager {
 			}
 			// Update model registry with new config
 			this._initModelRegistry(newConfig);
+			// LSP server config may have changed — drop the per-directory cache
+			// so the next tool build re-reads each working directory's
+			// `dispatch.toml` `[lsp]` block.
+			this.lspServersByDir.clear();
 			// Re-discover Claude accounts: a config reload may accompany freshly
 			// imported credentials, and (critically) lets a process that failed
 			// account discovery at boot recover without a full restart.
@@ -332,6 +365,77 @@ export class AgentManager {
 				`dispatch: failed to discover Claude accounts: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
+	}
+
+	/**
+	 * Resolve (and cache) the LSP servers configured for a working directory.
+	 *
+	 * LSP config is project-scoped: it lives in the `dispatch.toml` of the
+	 * tab's effective working directory, NOT the global config. We read that
+	 * directory's config once and cache the resolved servers; the cache is
+	 * cleared on config hot-reload. Returns `[]` when the directory has no
+	 * `[lsp]` block (the common case).
+	 */
+	private getLspServersForDir(dir: string): ResolvedLspServer[] {
+		const cached = this.lspServersByDir.get(dir);
+		if (cached) return cached;
+		let servers: ResolvedLspServer[] = [];
+		try {
+			const dirConfig = loadConfig(dir);
+			servers = resolveServersFromConfig(dirConfig.lsp);
+		} catch (err) {
+			console.warn(
+				`dispatch: failed to load LSP config for ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			servers = [];
+		}
+		this.lspServersByDir.set(dir, servers);
+		return servers;
+	}
+
+	/**
+	 * Build the `onAfterWrite` hook for `createWriteFileTool` when the tab's
+	 * working directory has LSP servers configured. The hook touches the
+	 * just-written file through the LSP and returns a formatted diagnostics
+	 * block (the written file's errors first, then a small cap of other-file
+	 * errors) — opencode's diagnostics-on-write pattern. Returns `undefined`
+	 * when no server matches, so writes stay zero-overhead for non-LSP files.
+	 */
+	private buildAfterWriteHook(
+		workingDirectory: string,
+		servers: ResolvedLspServer[],
+	): ((absolutePath: string) => Promise<string>) | undefined {
+		if (servers.length === 0) return undefined;
+		const manager = this.lspManager;
+		return async (absolutePath: string): Promise<string> => {
+			if (!manager.hasServerForFile(absolutePath, servers)) return "";
+			await manager.touchFile({
+				file: absolutePath,
+				root: workingDirectory,
+				servers,
+				mode: "document",
+			});
+			const diagnostics = manager.getDiagnostics({
+				root: workingDirectory,
+				servers,
+				file: absolutePath,
+			});
+			let output = "";
+			let otherFileCount = 0;
+			for (const [file, issues] of Object.entries(diagnostics)) {
+				const current = file === absolutePath;
+				if (!current && otherFileCount >= MAX_LSP_OTHER_FILE_DIAGNOSTICS) continue;
+				const block = reportDiagnostics(file, issues);
+				if (!block) continue;
+				if (current) {
+					output += `${output ? "\n\n" : ""}LSP errors detected in this file, please fix:\n${block}`;
+				} else {
+					otherFileCount++;
+					output += `${output ? "\n\n" : ""}LSP errors detected in other files:\n${block}`;
+				}
+			}
+			return output;
+		};
 	}
 
 	private _initModelRegistry(config: DispatchConfig): void {
@@ -408,8 +512,9 @@ export class AgentManager {
 		const permReadTab = getSetting("perm_read_tab") === "allow";
 		const permWebSearch = getSetting("perm_web_search") === "allow";
 		const permYoutubeTranscribe = getSetting("perm_youtube_transcribe") === "allow";
+		const permLsp = getSetting("perm_lsp") === "allow";
 		const sysPrompt = getSetting("system_prompt") ?? "";
-		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${sysPrompt}`;
+		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${permLsp}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
@@ -451,6 +556,12 @@ export class AgentManager {
 				// Ignore — tool execution will surface the error naturally
 			}
 
+			// Resolve LSP servers for this working directory once (cached).
+			// Drives both diagnostics-on-write (the write_file hook) and the
+			// optional `lsp` tool. Empty for directories with no `[lsp]` block.
+			const lspServers = this.getLspServersForDir(workingDirectory);
+			const afterWriteHook = this.buildAfterWriteHook(workingDirectory, lspServers);
+
 			// Build tools list — child agents use their toolsOverride whitelist,
 			// parent agents use permission settings from DB
 			const toolEntries: Array<{ name: string; tool: ReturnType<typeof createReadFileTool> }> = [];
@@ -475,7 +586,10 @@ export class AgentManager {
 					toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
 				}
 				if (allowed.has("write_file")) {
-					toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
+					toolEntries.push({
+						name: "write_file",
+						tool: createWriteFileTool(workingDirectory, afterWriteHook),
+					});
 				}
 				if (allowed.has("run_shell")) {
 					toolEntries.push({
@@ -485,6 +599,16 @@ export class AgentManager {
 				}
 				if (allowed.has("web_search")) {
 					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				}
+				if (allowed.has("lsp") && lspServers.length > 0) {
+					toolEntries.push({
+						name: "lsp",
+						tool: createLspTool(() => ({
+							manager: this.lspManager,
+							workingDirectory,
+							servers: lspServers,
+						})),
+					});
 				}
 				if (allowed.has("youtube_transcribe")) {
 					toolEntries.push({
@@ -561,7 +685,10 @@ export class AgentManager {
 					toolEntries.push({ name: "list_files", tool: createListFilesTool(workingDirectory) });
 				}
 				if (permEdit) {
-					toolEntries.push({ name: "write_file", tool: createWriteFileTool(workingDirectory) });
+					toolEntries.push({
+						name: "write_file",
+						tool: createWriteFileTool(workingDirectory, afterWriteHook),
+					});
 				}
 				if (permBash) {
 					toolEntries.push({
@@ -571,6 +698,19 @@ export class AgentManager {
 				}
 				if (permWebSearch) {
 					toolEntries.push({ name: "web_search", tool: createWebSearchTool() });
+				}
+				// The `lsp` tool exposes diagnostics + navigation on demand. It is
+				// gated by `perm_lsp` AND requires at least one server configured
+				// in the working directory's `dispatch.toml`.
+				if (permLsp && lspServers.length > 0) {
+					toolEntries.push({
+						name: "lsp",
+						tool: createLspTool(() => ({
+							manager: this.lspManager,
+							workingDirectory,
+							servers: lspServers,
+						})),
+					});
 				}
 				if (permYoutubeTranscribe) {
 					toolEntries.push({
@@ -1858,5 +1998,9 @@ export class AgentManager {
 	destroy(): void {
 		this.configWatcher?.close();
 		this.skillsWatcher?.close();
+		// Shut down all long-lived LSP server processes. Fire-and-forget: the
+		// promise is detached so `destroy()` stays synchronous (matching its
+		// existing contract), but every client gets `shutdown()` called.
+		void this.lspManager.shutdownAll();
 	}
 }
