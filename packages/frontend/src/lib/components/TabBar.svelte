@@ -93,7 +93,7 @@ function handleRenameKeydown(e: KeyboardEvent): void {
 		     at any horizontal scroll; opaque bg + right-side shadow as a floating cue. -->
 		<button
 			type="button"
-			class="tab !sticky left-0 z-10 bg-base-200 !rounded-ss-none shadow-[2px_0_4px_-1px_rgba(0,0,0,0.2)]"
+			class="tab tab-active !sticky left-0 z-10 !rounded-ss-none !border-l-0 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.2)]"
 			onclick={() => tabStore.createNewTab()}
 			aria-label="New tab"
 		>
