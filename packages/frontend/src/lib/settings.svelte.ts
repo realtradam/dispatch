@@ -14,6 +14,7 @@ let toolPerms = $state<Record<string, boolean>>({
 	external_directory: false,
 	web_search: false,
 	youtube_transcribe: false,
+	search_code: false,
 });
 let savedToolPerms = $state<Record<string, boolean>>({
 	read: true,
@@ -26,6 +27,7 @@ let savedToolPerms = $state<Record<string, boolean>>({
 	external_directory: false,
 	web_search: false,
 	youtube_transcribe: false,
+	search_code: false,
 });
 let skillChecks = $state<Record<string, boolean>>({});
 let chunkLimit = $state(100);

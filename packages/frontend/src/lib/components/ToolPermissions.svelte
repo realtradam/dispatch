@@ -47,6 +47,11 @@ const toolPermissions: ToolPermission[] = [
 		label: "YouTube transcripts",
 		description: "Allow the AI to fetch YouTube video transcripts",
 	},
+	{
+		id: "search_code",
+		label: "Search code",
+		description: "Allow the AI to search the codebase with the cs ranked code-search engine",
+	},
 ];
 
 const {

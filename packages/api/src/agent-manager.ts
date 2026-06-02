@@ -19,6 +19,7 @@ import {
 	createReadTabTool,
 	createRetrieveTool,
 	createRunShellTool,
+	createSearchCodeTool,
 	createSendToTabTool,
 	createSkillsWatcher,
 	createSummonTool,
@@ -75,6 +76,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	write_file: "Write content to a file (creates parent directories if needed)",
 	run_shell:
 		"Execute shell commands in the working directory (bash). Returns stdout, stderr, and exit code. Set background=true to run in the background and get a job_id for later retrieval. Do NOT run destructive or irreversible commands unless the user explicitly requests them.",
+	search_code:
+		"Search the codebase by query using the 'cs' code search engine (relevance-ranked, structure-aware). Returns the most relevant files first with matching snippets and line numbers. Better than grep/find for exploratory 'where is X / how does Y work' searches; use run_shell with rg for exhaustive exact-match lists.",
 	todo: "Create/maintain a todo list to plan and track work. Declarative whole-list write: send the entire list in `todos` each call (it replaces the previous list). Statuses: pending, in_progress, completed, cancelled.",
 	summon:
 		"Spawn a child agent to work on a task independently. By default blocks until the child finishes. Set background=true to return immediately with an agent_id for later retrieval.",
@@ -403,9 +406,10 @@ export class AgentManager {
 		const permSendToTab = getSetting("perm_send_to_tab") === "allow";
 		const permReadTab = getSetting("perm_read_tab") === "allow";
 		const permWebSearch = getSetting("perm_web_search") === "allow";
+		const permSearchCode = getSetting("perm_search_code") === "allow";
 		const permYoutubeTranscribe = getSetting("perm_youtube_transcribe") === "allow";
 		const sysPrompt = getSetting("system_prompt") ?? "";
-		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${sysPrompt}`;
+		const permKey = `${permRead}:${permEdit}:${permBash}:${permSummon}:${permUserAgent}:${permSendToTab}:${permReadTab}:${permWebSearch}:${permYoutubeTranscribe}:${permSearchCode}:${sysPrompt}`;
 
 		// If the override differs or permissions changed, invalidate the cached agent
 		if (
@@ -477,6 +481,12 @@ export class AgentManager {
 					toolEntries.push({
 						name: "run_shell",
 						tool: createRunShellTool(workingDirectory, tabAgent.shellStore),
+					});
+				}
+				if (allowed.has("search_code")) {
+					toolEntries.push({
+						name: "search_code",
+						tool: createSearchCodeTool(workingDirectory),
 					});
 				}
 				if (allowed.has("web_search")) {
@@ -563,6 +573,12 @@ export class AgentManager {
 					toolEntries.push({
 						name: "run_shell",
 						tool: createRunShellTool(workingDirectory, tabAgent.shellStore),
+					});
+				}
+				if (permSearchCode) {
+					toolEntries.push({
+						name: "search_code",
+						tool: createSearchCodeTool(workingDirectory),
 					});
 				}
 				if (permWebSearch) {

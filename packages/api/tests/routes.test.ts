@@ -283,6 +283,14 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => "mock",
 		};
 	},
+	createSearchCodeTool(_wd: string) {
+		return {
+			name: "search_code",
+			description: "search code",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
 	createYoutubeTranscribeTool() {
 		return {
 			name: "youtube_transcribe",

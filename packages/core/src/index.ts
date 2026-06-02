@@ -94,6 +94,7 @@ export { createReadTabTool, type ReadTabCallbacks } from "./tools/read-tab.js";
 export { createToolRegistry } from "./tools/registry.js";
 export { createRetrieveTool, type RetrieveCallbacks } from "./tools/retrieve.js";
 export { BackgroundShellStore, createRunShellTool } from "./tools/run-shell.js";
+export { createSearchCodeTool } from "./tools/search-code.js";
 export {
 	createSendToTabTool,
 	type ResolvedTabRef,
