@@ -48,7 +48,13 @@
 
 - `[pending]` **Key usage levels tool.** Add a tool that lets the agent read the current usage levels of API keys — including request counts, token consumption, rate limit proximity, and any other relevant metrics. This would allow the agent to make informed decisions about key selection, proactively warn about approaching limits, and help troubleshoot when requests start failing due to exhausted keys.
 
+## Workspaces
+
+- `[pending]` **Workspaces feature.** Allow users to organize tabs into separate workspaces. The homepage (`/`) shows a workspaces dashboard with all existing workspaces listed, where the user can click to open one. Any other sub-path (e.g., `/my_project`) acts as a new workspace — if the user visits a path that doesn't exist yet, prompt them to create it. Each workspace maintains its own set of open tabs, independent of other workspaces.
+  - `[pending]` **Workspace-scoped agents.** There is a general global agents configuration, but each workspace can also define agents scoped specifically to that workspace, overriding or extending the global set.
+
 ## Reliability & Bug Fixes
+
 
 - `[partial]` **Fix the todo system.** The current task list tool and its UI have bugs or limitations that need addressing. *(The TaskList class and todo tool work with clean validation, but there's no dedicated frontend UI panel for todos beyond sidebar references.)*
 
