@@ -1544,4 +1544,102 @@ describe("anthropicThinkingProviderOptions — adaptive-thinking model detection
 			effort: "xhigh",
 		});
 	});
+
+	describe("multimodal user content", () => {
+		it("emits ordered text + image parts to the model when content is provided", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "ok" }, finishStop]),
+			);
+
+			const agent = new Agent(makeConfig());
+			for await (const _ of agent.run("here is image A: [image]", {
+				content: [
+					{ type: "text", text: "here is image A: " },
+					{ type: "attachment", mediaType: "image/png", data: "QQ==" },
+				],
+			})) {
+				// consume
+			}
+
+			const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+			const messages = callArgs?.messages as Array<{ role: string; content: unknown }>;
+			const userMsg = messages.find((m) => m.role === "user");
+			expect(userMsg).toBeDefined();
+			// Multimodal turn → content is an ordered parts array, not a string.
+			expect(Array.isArray(userMsg?.content)).toBe(true);
+			const parts = userMsg?.content as Array<Record<string, unknown>>;
+			expect(parts[0]).toMatchObject({ type: "text", text: "here is image A: " });
+			expect(parts[1]).toMatchObject({ type: "image", mediaType: "image/png" });
+			expect(String(parts[1]?.image)).toBe("data:image/png;base64,QQ==");
+		});
+
+		it("emits a FilePart for a PDF attachment with its filename", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "ok" }, finishStop]),
+			);
+
+			const agent = new Agent(makeConfig());
+			for await (const _ of agent.run("see [pdf]", {
+				content: [
+					{ type: "text", text: "see " },
+					{ type: "attachment", mediaType: "application/pdf", data: "QQ==", name: "doc.pdf" },
+				],
+			})) {
+				// consume
+			}
+
+			const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+			const messages = callArgs?.messages as Array<{ role: string; content: unknown }>;
+			const userMsg = messages.find((m) => m.role === "user");
+			const parts = userMsg?.content as Array<Record<string, unknown>>;
+			const filePart = parts.find((p) => p.type === "file");
+			expect(filePart).toMatchObject({
+				type: "file",
+				mediaType: "application/pdf",
+				filename: "doc.pdf",
+			});
+			expect(String(filePart?.data)).toBe("data:application/pdf;base64,QQ==");
+		});
+
+		it("persists the user turn as text only (no content) for history", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "ok" }, finishStop]),
+			);
+
+			const agent = new Agent(makeConfig());
+			for await (const _ of agent.run("look: [image]", {
+				content: [
+					{ type: "text", text: "look: " },
+					{ type: "attachment", mediaType: "image/png", data: "QQ==" },
+				],
+			})) {
+				// consume
+			}
+
+			// The in-memory user message keeps the text chunk for the render/persist
+			// path; the ephemeral `content` rides alongside it but isn't a chunk.
+			const userMsg = agent.messages.find((m) => m.role === "user");
+			expect(userMsg?.chunks).toEqual([{ type: "text", text: "look: [image]" }]);
+		});
+
+		it("falls back to a plain string when content has no attachment", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "ok" }, finishStop]),
+			);
+
+			const agent = new Agent(makeConfig());
+			for await (const _ of agent.run("plain text", {
+				content: [{ type: "text", text: "plain text" }],
+			})) {
+				// consume
+			}
+
+			const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+			const messages = callArgs?.messages as Array<{ role: string; content: unknown }>;
+			const userMsg = messages.find((m) => m.role === "user");
+			// No attachment → plain string content (byte-identical to text-only path).
+			expect(typeof userMsg?.content).toBe("string");
+			expect(userMsg?.content).toBe("plain text");
+		});
+	});
 });
