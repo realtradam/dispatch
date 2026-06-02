@@ -71,6 +71,7 @@ beforeEach(() => {
 	);
 });
 
+import { computeContextUsage } from "../src/lib/context-window.js";
 import { appSettings } from "../src/lib/settings.svelte.js";
 import { createTabStore } from "../src/lib/tabs.svelte.js";
 import type { Chunk, PermissionPrompt } from "../src/lib/types.js";
@@ -1190,6 +1191,71 @@ describe("hydrateFromBackend", () => {
 			cacheReadTokens: 150,
 			cacheWriteTokens: 0,
 		});
+	});
+
+	// Cross-feature contract (Context Window view, branch u2): the panel derives
+	// current context size from `cacheStats.last` via computeContextUsage. This
+	// test proves persistence restores that field on hydrate, so the view shows a
+	// real "x / max" immediately after a reload on a NEW DEVICE — not "No context
+	// data yet". Guards the contract so neither side can silently break it.
+	it("restores cacheStats.last on hydrate so the Context Window view has data after reload", async () => {
+		const usageStats = {
+			inputTokens: 90000,
+			outputTokens: 3000,
+			cacheReadTokens: 40000,
+			cacheWriteTokens: 5000,
+			requests: 3,
+			// Most recent request's snapshot — the numerator the view reads.
+			last: { inputTokens: 47000, outputTokens: 1200, cacheReadTokens: 30000, cacheWriteTokens: 0 },
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((url: string) => {
+				if (url.endsWith("/tabs")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								tabs: [
+									{
+										id: "tc",
+										title: "Context after reload",
+										keyId: null,
+										modelId: null,
+										parentTabId: null,
+										usageStats,
+									},
+								],
+							}),
+					});
+				}
+				if (url.endsWith("/status")) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve({ statuses: {} }) });
+				}
+				if (url.split("?")[0]?.endsWith("/tabs/tc/chunks")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ chunks: [], total: 0, oldestSeq: null }),
+					});
+				}
+				return Promise.reject(new Error(`unexpected fetch ${url}`));
+			}),
+		);
+
+		const store = createTabStore();
+		await store.hydrateFromBackend();
+
+		// What App.svelte passes into ContextWindowPanel: the active tab's cacheStats
+		// plus the model's max (re-resolved from models.dev on load — here 200k).
+		const cacheStats = store.tabs.find((t) => t.id === "tc")?.cacheStats ?? null;
+		expect(cacheStats?.last).not.toBeNull();
+
+		const usage = computeContextUsage(cacheStats, 200000);
+		// current = last.inputTokens + last.outputTokens (47000 + 1200), NOT the
+		// cumulative session totals (which would double-count history).
+		expect(usage.current).toBe(48200);
+		expect(usage.max).toBe(200000);
+		expect(usage.percent).toBeCloseTo(24.1, 5);
 	});
 });
 
