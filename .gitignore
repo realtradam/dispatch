@@ -27,5 +27,5 @@ packages/frontend/release/
 # Code-review artifacts
 claude-report.md
 
-# wishlist is untracked (updated by agents)
-notes/wishlist.md
+# notes/ is local-only scratch (plans, reports, wishlist)
+notes/
