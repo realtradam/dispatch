@@ -419,6 +419,14 @@ vi.mock("@dispatch/core", () => ({
 			execute: async () => "mock",
 		};
 	},
+	createSearchCodeTool(_wd: string) {
+		return {
+			name: "search_code",
+			description: "search code",
+			parameters: { _type: "z.ZodObject", shape: {} },
+			execute: async () => "mock",
+		};
+	},
 	createYoutubeTranscribeTool() {
 		return {
 			name: "youtube_transcribe",
@@ -1438,6 +1446,27 @@ describe("AgentManager", () => {
 			const tools = await toolsForPerms("tab-neither", {});
 			expect(tools).not.toContain("send_to_tab");
 			expect(tools).not.toContain("read_tab");
+		});
+	});
+
+	describe("search_code permission gating", () => {
+		// Reuses the parent-path tool construction to confirm the perm flag wires
+		// the search_code tool on/off correctly.
+		async function toolsForPerms(tabId: string, perms: Record<string, string>): Promise<string[]> {
+			for (const [k, v] of Object.entries(perms)) setFakeSetting(k, v);
+			const manager = new AgentManager();
+			await manager.processMessage(tabId, "go");
+			return constructedAgents.at(-1)?.toolNames ?? [];
+		}
+
+		it("grants search_code when perm_search_code is allowed", async () => {
+			const tools = await toolsForPerms("tab-cs-on", { perm_search_code: "allow" });
+			expect(tools).toContain("search_code");
+		});
+
+		it("omits search_code when perm_search_code is not allowed", async () => {
+			const tools = await toolsForPerms("tab-cs-off", {});
+			expect(tools).not.toContain("search_code");
 		});
 	});
 

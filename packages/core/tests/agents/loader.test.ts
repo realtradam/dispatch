@@ -43,6 +43,7 @@ describe("expandAgentToolNames", () => {
 			"retrieve",
 			"web_search",
 			"youtube_transcribe",
+			"search_code",
 			"send_to_tab",
 			"read_tab",
 		]);
@@ -52,6 +53,7 @@ describe("expandAgentToolNames", () => {
 				"retrieve",
 				"web_search",
 				"youtube_transcribe",
+				"search_code",
 				"send_to_tab",
 				"read_tab",
 			]),
