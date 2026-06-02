@@ -1306,6 +1306,87 @@ describe("tabStore — cache rate (usage events)", () => {
 		});
 		expect(store.tabs[0]?.cacheStats).toBeUndefined();
 	});
+
+	it("turn-sealed REPLACES cacheStats with the carried DB aggregate (reconcile to truth)", async () => {
+		const { store, tabId } = await setupStoreWithTab();
+		// Live events accumulate during the turn.
+		store.handleEvent({
+			type: "usage",
+			tabId,
+			usage: { inputTokens: 1000, outputTokens: 40, cacheReadTokens: 0, cacheWriteTokens: 900 },
+		});
+		expect(store.tabs.find((t) => t.id === tabId)?.cacheStats?.inputTokens).toBe(1000);
+
+		// turn-sealed carries the authoritative aggregate → cacheStats is REPLACED.
+		const aggregate = {
+			inputTokens: 1000,
+			outputTokens: 40,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 900,
+			requests: 1,
+			last: { inputTokens: 1000, outputTokens: 40, cacheReadTokens: 0, cacheWriteTokens: 900 },
+		};
+		store.handleEvent({ type: "turn-sealed", turnId: "t1", tabId, usageStats: aggregate });
+		expect(store.tabs.find((t) => t.id === tabId)?.cacheStats).toEqual(aggregate);
+	});
+
+	it("turn-sealed self-heals a live overshoot from a discarded fallback attempt", async () => {
+		const { store, tabId } = await setupStoreWithTab();
+		// Attempt 1 streamed usage live (overshoot), then rate-limited & discarded
+		// server-side; attempt 2's usage also streamed live. Live = sum of BOTH.
+		store.handleEvent({
+			type: "usage",
+			tabId,
+			usage: { inputTokens: 999, outputTokens: 9, cacheReadTokens: 0, cacheWriteTokens: 0 },
+		});
+		store.handleEvent({
+			type: "usage",
+			tabId,
+			usage: { inputTokens: 222, outputTokens: 22, cacheReadTokens: 100, cacheWriteTokens: 5 },
+		});
+		const overshoot = store.tabs.find((t) => t.id === tabId)?.cacheStats;
+		expect(overshoot?.requests).toBe(2);
+		expect(overshoot?.inputTokens).toBe(1221); // inflated: includes discarded attempt
+
+		// The DB only persisted attempt 2 (the survivor). turn-sealed reconciles.
+		const persisted = {
+			inputTokens: 222,
+			outputTokens: 22,
+			cacheReadTokens: 100,
+			cacheWriteTokens: 5,
+			requests: 1,
+			last: { inputTokens: 222, outputTokens: 22, cacheReadTokens: 100, cacheWriteTokens: 5 },
+		};
+		store.handleEvent({ type: "turn-sealed", turnId: "t1", tabId, usageStats: persisted });
+		// Overshoot healed: cacheStats now matches the DB truth exactly.
+		expect(store.tabs.find((t) => t.id === tabId)?.cacheStats).toEqual(persisted);
+	});
+
+	it("turn-sealed without usageStats leaves cacheStats untouched (back-compat)", async () => {
+		const { store, tabId } = await setupStoreWithTab();
+		store.handleEvent({
+			type: "usage",
+			tabId,
+			usage: { inputTokens: 500, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 },
+		});
+		const before = store.tabs.find((t) => t.id === tabId)?.cacheStats;
+		// Older backend: turn-sealed carries no usageStats field.
+		store.handleEvent({ type: "turn-sealed", turnId: "t1", tabId });
+		expect(store.tabs.find((t) => t.id === tabId)?.cacheStats).toEqual(before);
+	});
+
+	it("turn-sealed with usageStats: null clears cacheStats", async () => {
+		const { store, tabId } = await setupStoreWithTab();
+		store.handleEvent({
+			type: "usage",
+			tabId,
+			usage: { inputTokens: 500, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 },
+		});
+		expect(store.tabs.find((t) => t.id === tabId)?.cacheStats).toBeDefined();
+		// A null aggregate (no persisted usage rows) explicitly clears live stats.
+		store.handleEvent({ type: "turn-sealed", turnId: "t1", tabId, usageStats: null });
+		expect(store.tabs.find((t) => t.id === tabId)?.cacheStats).toBeUndefined();
+	});
 });
 
 // ─── chunk-native store: eviction, pagination, reconcile ────────

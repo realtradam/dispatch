@@ -140,7 +140,12 @@ export type AgentEvent =
 	| { type: "turn-start"; turnId: string }
 	// Fires after the turn settled AND its chunks were persisted (after the DB
 	// write, post status:idle). Triggers the frontend's reconcile-from-DB.
-	| { type: "turn-sealed"; turnId: string }
+	// `usageStats` carries the tab's authoritative usage aggregate (read after the
+	// usage rows were persisted); the store REPLACES `cacheStats` with it,
+	// reconciling the live accumulator to the DB truth (self-heals the live
+	// overshoot from a discarded rate-limited fallback attempt). null ⇒ no usage
+	// rows; absent ⇒ leave cacheStats untouched.
+	| { type: "turn-sealed"; turnId: string; usageStats?: CacheStats | null }
 	// Sent on every WS (re)connect: a snapshot of every tab the backend is
 	// currently tracking and its live status. The frontend uses this to
 	// detect desync after a reconnect (e.g. bun --watch restart killed the

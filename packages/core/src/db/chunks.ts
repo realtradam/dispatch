@@ -5,7 +5,14 @@ import {
 	groupRowsToMessages,
 	type MessageRow,
 } from "../chunks/transform.js";
-import type { ChunkData, ChunkRow, ChunkRowDraft, TextData, UsageData } from "../types/index.js";
+import type {
+	ChunkData,
+	ChunkRow,
+	ChunkRowDraft,
+	TextData,
+	UsageData,
+	UsageStats,
+} from "../types/index.js";
 import { getDatabase } from "./index.js";
 
 // Re-export the DB-free transforms so existing barrel consumers
@@ -173,19 +180,7 @@ export function getTotalChunkCount(tabId: string): number {
  * Sums in JS after selecting the rows (mirroring `mapRow`) to avoid relying on
  * `json_extract` over the freeform `data_json`.
  */
-export function getUsageStatsForTab(tabId: string): {
-	inputTokens: number;
-	outputTokens: number;
-	cacheReadTokens: number;
-	cacheWriteTokens: number;
-	requests: number;
-	last: {
-		inputTokens: number;
-		outputTokens: number;
-		cacheReadTokens: number;
-		cacheWriteTokens: number;
-	} | null;
-} | null {
+export function getUsageStatsForTab(tabId: string): UsageStats | null {
 	const db = getDatabase();
 	const rows = db
 		.query("SELECT data_json FROM chunks WHERE tab_id = $tabId AND type = 'usage' ORDER BY seq ASC")

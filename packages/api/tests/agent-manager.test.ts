@@ -104,6 +104,13 @@ function resetAppendChunksCalls(): void {
 	appendChunksCalls.length = 0;
 }
 
+// Seedable return value for the mocked getUsageStatsForTab — what the backend
+// reads (post-write) to attach to the `turn-sealed` event.
+const fakeUsageStatsByTab = new Map<string, unknown>();
+function resetFakeUsageStats(): void {
+	fakeUsageStatsByTab.clear();
+}
+
 // Allow tests to swap in a custom `run` generator (e.g. to simulate
 // a fallback failure mid-stream). Returning to undefined restores
 // the default.
@@ -371,6 +378,9 @@ vi.mock("@dispatch/core", () => ({
 	getMessagesForTab(tabId: string) {
 		return fakeMessagesByTab.get(tabId) ?? [];
 	},
+	getUsageStatsForTab(tabId: string) {
+		return fakeUsageStatsByTab.get(tabId) ?? null;
+	},
 	appendEventToChunks: appendEventToChunksSpy,
 	applySystemEvent(_messages: unknown[], _event: unknown) {
 		return { messageId: "mock-system-msg" };
@@ -421,6 +431,7 @@ describe("AgentManager", () => {
 		setRunImpl(null);
 		appendEventToChunksSpy.mockClear();
 		resetAppendChunksCalls();
+		resetFakeUsageStats();
 	});
 
 	it("initial status is idle", () => {
@@ -1400,6 +1411,34 @@ describe("AgentManager", () => {
 				cacheReadTokens: 1000,
 				cacheWriteTokens: 100,
 			});
+		});
+
+		it("attaches the DB usage aggregate to the turn-sealed event for live reconciliation", async () => {
+			const manager = new AgentManager();
+			const aggregate = {
+				inputTokens: 222,
+				outputTokens: 22,
+				cacheReadTokens: 100,
+				cacheWriteTokens: 5,
+				requests: 1,
+				last: { inputTokens: 222, outputTokens: 22, cacheReadTokens: 100, cacheWriteTokens: 5 },
+			};
+			fakeUsageStatsByTab.set("tab-sealed-usage", aggregate);
+
+			const events: AgentEvent[] = [];
+			manager.onEvent((event) => {
+				events.push(event);
+			});
+
+			await manager.processMessage("tab-sealed-usage", "go");
+
+			const sealed = events.find((e) => e.type === "turn-sealed") as
+				| Extract<AgentEvent, { type: "turn-sealed" }>
+				| undefined;
+			expect(sealed).toBeDefined();
+			// The aggregate read AFTER the write is carried on the event so the
+			// frontend can REPLACE its live cacheStats with the DB truth.
+			expect(sealed?.usageStats).toEqual(aggregate);
 		});
 
 		it("emits usage rows in the SAME appendChunks call as the turn's content (one atomic write)", async () => {
