@@ -263,6 +263,9 @@ onMount(() => {
 				onReasoningChange={(effort) => tabStore.setReasoningEffort(effort)}
 				onAgentChange={(agent) => tabStore.setAgent(agent)}
 				onWorkingDirectoryChange={(dir) => tabStore.setWorkingDirectory(dir)}
+				onCompact={() => { const id = tabStore.activeTab?.id; if (id) void tabStore.startCompaction(id); }}
+				canCompact={(tabStore.activeTab?.agentStatus ?? "idle") === "idle" && (tabStore.activeTab?.chunks.length ?? 0) > 0 && !(tabStore.activeTab?.compactingSource) && !(tabStore.activeTab?.isCompacting)}
+				compacting={tabStore.activeTab?.isCompacting ?? false}
 			onAddKey={() => { showAddKeyModal = true; addKeyId = ""; addKeyProvider = "anthropic"; addKeyError = null; }}
 			/>
 		</div>

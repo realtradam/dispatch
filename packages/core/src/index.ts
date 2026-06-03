@@ -20,6 +20,21 @@ export {
 	type IdentifiedMessage,
 	type SystemEventLike,
 } from "./chunks/append.js";
+// Compaction
+export {
+	buildCompactionPrompt,
+	buildCompactionRequest,
+	buildSummaryTurnText,
+	type CompactionRequest,
+	DEFAULT_TAIL_TURNS,
+	extractPreviousSummary,
+	type HeadTailSelection,
+	renderTranscript,
+	SUMMARY_MARKER,
+	SUMMARY_TEMPLATE,
+	selectHeadTail,
+	TOOL_OUTPUT_MAX_CHARS,
+} from "./compaction/index.js";
 // Config
 export {
 	configToRuleset,
@@ -40,6 +55,7 @@ export {
 	getUsageStatsForTab,
 	groupRowsToMessages,
 	type MessageRow,
+	rekeyChunks,
 } from "./db/chunks.js";
 // Database
 export { closeDatabase, getDatabase, getDatabasePath } from "./db/index.js";
