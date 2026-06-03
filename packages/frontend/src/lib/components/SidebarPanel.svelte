@@ -31,6 +31,7 @@ const {
 	contextLimit = null,
 	permissionLog = [],
 	apiBase = "",
+	activeTabId = null as string | null,
 	activeKeyId = null,
 	activeModelId = null,
 	reasoningEffort = "max",
@@ -52,6 +53,7 @@ const {
 	contextLimit?: number | null;
 	permissionLog?: LogEntry[];
 	apiBase?: string;
+	activeTabId?: string | null;
 	activeKeyId?: string | null;
 	activeModelId?: string | null;
 	reasoningEffort?: string;
@@ -157,6 +159,7 @@ function contentClass(_selected: string): string {
 				{#if panel.selected === "Chat Settings"}
 			<ModelSelector
 				{keys}
+				{activeTabId}
 				{activeKeyId}
 				{activeModelId}
 				{reasoningEffort}

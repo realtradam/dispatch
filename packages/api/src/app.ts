@@ -224,6 +224,43 @@ app.post("/chat/stop", async (c) => {
 	return c.json({ success: true });
 });
 
+// Prompt-cache WARMING (see AgentManager.warmCacheForTab / Agent.warmCache).
+//
+// Replays the tab's exact cached prefix + one trivial throwaway turn so the
+// provider's ~5-min prompt-cache TTL is refreshed while the tab sits idle.
+// The frontend's cache-warming timer drives this every ~4 minutes. The
+// warming request is NEVER persisted, NEVER emitted, and NEVER folded into the
+// real usage aggregate — we return ONLY its `usage` so the UI can show a
+// warming-specific "last request" cache rate without polluting the real
+// Cache Rate metric. Returns 409 when the tab is mid-turn (caller also gates).
+app.post("/chat/warm", async (c) => {
+	const body = await c.req.json<{
+		tabId?: unknown;
+		keyId?: unknown;
+		modelId?: unknown;
+		agentModels?: unknown;
+	}>();
+	const { tabId } = body;
+	if (typeof tabId !== "string" || tabId.trim() === "") {
+		return c.json({ error: "tabId must be a non-empty string" }, 400);
+	}
+	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
+	const modelId = typeof body.modelId === "string" ? body.modelId : undefined;
+	const agentModels = sanitizeAgentModels(body.agentModels);
+
+	const result = await agentManager.warmCacheForTab(tabId, {
+		...(keyId ? { keyId } : {}),
+		...(modelId ? { modelId } : {}),
+		...(agentModels ? { agentModels } : {}),
+	});
+	if (!result.ok) {
+		// "tab is generating" is an expected race (not a server fault) → 409.
+		const status = result.error === "tab is generating" ? 409 : 500;
+		return c.json({ error: result.error }, status);
+	}
+	return c.json({ usage: result.usage });
+});
+
 app.route("/skills", skillsRoutes);
 app.route("/models", modelsRoutes);
 app.route("/tabs", tabsRoutes);

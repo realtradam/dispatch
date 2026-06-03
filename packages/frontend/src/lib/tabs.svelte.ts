@@ -19,6 +19,7 @@ import {
 	type ReasoningEffort,
 } from "@dispatch/core/src/types/index.js";
 import { intactTokenIds, type StagedAttachment } from "./attachment-tokens.js";
+import { cacheWarming } from "./cache-warming.svelte.js";
 import { config } from "./config.js";
 import { appSettings } from "./settings.svelte.js";
 import type {
@@ -245,6 +246,14 @@ export function createTabStore() {
 		handleEvent(event as AgentEvent & { tabId?: string });
 	});
 
+	// Let the cache-warming store resolve a tab's provider request params
+	// (key/model/fallback chain) at fire time, straight from live tab state.
+	cacheWarming.setRequestResolver((tabId) => {
+		const t = getTabById(tabId);
+		if (!t) return null;
+		return { keyId: t.keyId, modelId: t.modelId, agentModels: t.agentModels };
+	});
+
 	$effect.root(() => {
 		$effect(() => {
 			isConnected = wsClient.connectionStatus === "connected";
@@ -327,6 +336,7 @@ export function createTabStore() {
 		};
 		tabs = [...tabs, tab];
 		activeTabId = id;
+		cacheWarming.initTab(id);
 
 		// Auto-check default skills then apply default agent (sequential to avoid race)
 		void (async () => {
@@ -405,6 +415,7 @@ export function createTabStore() {
 			};
 			tabs = [...tabs, newTab];
 			activeTabId = agentId;
+			cacheWarming.initTab(agentId);
 			evictChunks(agentId);
 		} catch (err) {
 			console.error("openAgentTab failed:", err);
@@ -414,6 +425,8 @@ export function createTabStore() {
 	async function closeTab(id: string): Promise<void> {
 		const tab = getTabById(id);
 		if (!tab) return;
+
+		cacheWarming.forgetTab(id);
 
 		// Archive on backend (also stops any running agent)
 		try {
@@ -974,6 +987,11 @@ export function createTabStore() {
 		// Trim each restored tab down to the chunk limit (user starts at bottom).
 		for (const t of restored) {
 			evictChunks(t.id);
+			// Seed warming from persisted per-tab preference. Arms the 4-minute
+			// countdown for idle+enabled tabs; running tabs stay paused until
+			// their next `status`/`statuses` reconcile flips them idle.
+			cacheWarming.initTab(t.id);
+			if (t.agentStatus === "running") cacheWarming.onTurnActive(t.id);
 		}
 		// Activate the first restored tab (the list is already ordered by
 		// `position` from the backend).
@@ -988,6 +1006,11 @@ export function createTabStore() {
 			case "status": {
 				if (!tabId) break;
 				updateTab(tabId, { agentStatus: event.status });
+				// Cache warming never fires mid-turn: pause it while running, and
+				// re-arm the 4-minute countdown once the turn ends (idle/error).
+				if (event.status === "running") {
+					cacheWarming.onTurnActive(tabId);
+				}
 				if (event.status === "idle" || event.status === "error") {
 					// Stop the streaming cursor immediately; the fold of the live
 					// tail into the sealed chunk log happens on `turn-sealed`
@@ -998,7 +1021,10 @@ export function createTabStore() {
 					updateTab(tabId, { currentAssistantId: null });
 					const tab = getTabById(tabId);
 					if (tab && !tab.persistent && tabId !== activeTabId) {
+						cacheWarming.removeTab(tabId);
 						tabs = tabs.filter((t) => t.id !== tabId);
+					} else {
+						cacheWarming.onTurnEnded(tabId);
 					}
 				}
 				break;
@@ -1082,6 +1108,14 @@ export function createTabStore() {
 					// Status alignment.
 					if (t.agentStatus !== backendStatus) {
 						updateTab(t.id, { agentStatus: backendStatus });
+					}
+
+					// Sync cache warming to the reconciled status: pause it while a
+					// tab is (still) running, otherwise (re-)arm the idle countdown.
+					if (backendStatus === "running") {
+						cacheWarming.onTurnActive(t.id);
+					} else {
+						cacheWarming.onTurnEnded(t.id);
 					}
 
 					// Rehydrate the todo list from the snapshot (backend truth)
@@ -1643,6 +1677,12 @@ export function createTabStore() {
 		let tab = getActiveTab();
 		if (!tab) return;
 
+		// A real user message disables+resets the warming timer immediately, so
+		// the genuine turn appends to the real history with NO throwaway turns
+		// present (it lands on the warm cache). Warming re-arms when this turn
+		// ends (see the `status` handler → cacheWarming.onTurnEnded).
+		cacheWarming.onUserMessage(tab.id);
+
 		// Refresh agent config to pick up any changes made in AgentBuilder
 		if (tab.agentSlug && tab.agentScope) {
 			await refreshAgentConfig(tab.id);
@@ -1900,6 +1940,14 @@ export function createTabStore() {
 		const tab = getActiveTab();
 		if (!tab) return;
 		updateTab(tab.id, { workingDirectory: dir || null });
+	}
+
+	/**
+	 * Enable/disable prompt-cache warming for a tab (persisted per-tab). The
+	 * warming store arms or cancels its 4-minute idle timer accordingly.
+	 */
+	function setCacheWarmingEnabled(tabId: string, enabled: boolean): void {
+		cacheWarming.setEnabled(tabId, enabled);
 	}
 
 	function setAgent(
@@ -2176,6 +2224,7 @@ export function createTabStore() {
 		promoteTab,
 		openAgentTab,
 		setWorkingDirectory,
+		setCacheWarmingEnabled,
 		// Exposed so tests can drive the real reactive code path that the
 		// WS callback uses in production. Not intended for use in
 		// components — they should rely on the WS subscription instead.

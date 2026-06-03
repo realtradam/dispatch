@@ -1642,4 +1642,111 @@ describe("anthropicThinkingProviderOptions — adaptive-thinking model detection
 			expect(userMsg?.content).toBe("plain text");
 		});
 	});
+
+	describe("warmCache (prompt-cache warming replay)", () => {
+		function makeWarmStream(usage: {
+			inputTokens: number;
+			cacheReadTokens: number;
+			cacheWriteTokens: number;
+		}) {
+			return makeMockStreamResult([
+				{ type: "text-delta", id: "t0", text: "." },
+				{
+					type: "finish-step",
+					finishReason: "stop",
+					rawFinishReason: "stop",
+					usage: {
+						inputTokens: usage.inputTokens,
+						outputTokens: 1,
+						inputTokenDetails: {
+							noCacheTokens: usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens,
+							cacheReadTokens: usage.cacheReadTokens,
+							cacheWriteTokens: usage.cacheWriteTokens,
+						},
+					},
+				},
+				finishStop,
+			]);
+		}
+
+		const history = [
+			{ role: "user" as const, chunks: [{ type: "text" as const, text: "hello" }] },
+			{ role: "assistant" as const, chunks: [{ type: "text" as const, text: "hi there" }] },
+		];
+
+		it("returns the request usage (cache read/write split) without throwing", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeWarmStream({ inputTokens: 1000, cacheReadTokens: 950, cacheWriteTokens: 0 }),
+			);
+			const agent = new Agent(makeConfig({ provider: "anthropic" }));
+			const usage = await agent.warmCache(history);
+			expect(usage).toEqual({
+				inputTokens: 1000,
+				outputTokens: 1,
+				cacheReadTokens: 950,
+				cacheWriteTokens: 0,
+			});
+		});
+
+		it("appends a single trivial throwaway user turn at the END of the history", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeWarmStream({ inputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 0 }),
+			);
+			const agent = new Agent(makeConfig({ provider: "anthropic" }));
+			await agent.warmCache(history);
+
+			const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+			const messages = callArgs?.messages as Array<{ role: string; content: unknown }>;
+			// system + 2 history messages + 1 throwaway user turn.
+			expect(messages[0]?.role).toBe("system");
+			const last = messages.at(-1);
+			expect(last?.role).toBe("user");
+			// The throwaway turn's text must be the trivial probe.
+			const lastText = JSON.stringify(last?.content);
+			expect(lastText).toContain("reply with just a .");
+			// Exactly one extra user turn beyond the genuine history's single user msg.
+			const userMsgs = messages.filter((m) => m.role === "user");
+			expect(userMsgs).toHaveLength(2);
+		});
+
+		it("sends Anthropic cache_control breakpoints + toolChoice none", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeWarmStream({ inputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 0 }),
+			);
+			const agent = new Agent(makeConfig({ provider: "anthropic" }));
+			await agent.warmCache(history);
+
+			const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+			expect(callArgs?.toolChoice).toBe("none");
+			const messages = callArgs?.messages as Array<{
+				role: string;
+				providerOptions?: { anthropic?: { cacheControl?: unknown } };
+			}>;
+			const hasBreakpoint = messages.some(
+				(m) => m.providerOptions?.anthropic?.cacheControl !== undefined,
+			);
+			expect(hasBreakpoint).toBe(true);
+		});
+
+		it("does NOT mutate the agent's own message history", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeWarmStream({ inputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 0 }),
+			);
+			const agent = new Agent(makeConfig({ provider: "anthropic" }));
+			expect(agent.messages).toHaveLength(0);
+			await agent.warmCache(history);
+			// warmCache takes history as an argument and never touches `this.messages`.
+			expect(agent.messages).toHaveLength(0);
+			// And it must not have flipped the agent into a running state.
+			expect(agent.status).toBe("idle");
+		});
+
+		it("throws a formatted error when the stream errors", async () => {
+			vi.mocked(streamText).mockReturnValue(
+				makeMockStreamResult([{ type: "error", error: new Error("boom") }]),
+			);
+			const agent = new Agent(makeConfig({ provider: "anthropic" }));
+			await expect(agent.warmCache(history)).rejects.toThrow(/boom/);
+		});
+	});
 });

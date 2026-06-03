@@ -10,8 +10,13 @@ const modelCache = new Map<string, string[]>();
 		REASONING_EFFORT_LABELS,
 	} from "@dispatch/core/src/types/index.js";
 	import type { KeyInfo } from "../types.js";
+	import {
+		cacheWarming,
+		WARM_INTERVAL_MS,
+	} from "../cache-warming.svelte.js";
 	import { config } from "../config.js";
 	import { router } from "../router.svelte.js";
+	import { tabStore } from "../tabs.svelte.js";
 
 	interface AgentInfo {
 		name: string;
@@ -51,6 +56,7 @@ const modelCache = new Map<string, string[]>();
 
 	const {
 		keys = [],
+		activeTabId = null,
 		activeKeyId = null,
 		activeModelId = null,
 		reasoningEffort = "max",
@@ -65,6 +71,7 @@ const modelCache = new Map<string, string[]>();
 		onWorkingDirectoryChange = (_dir: string | null) => {},
 	}: {
 		keys?: KeyInfo[];
+		activeTabId?: string | null;
 		activeKeyId?: string | null;
 		activeModelId?: string | null;
 		reasoningEffort?: string;
@@ -86,6 +93,26 @@ const modelCache = new Map<string, string[]>();
 	let modelError = $state<string | null>(null);
 	let sliderDragging = $state<number | null>(null);
 	let modelSearch = $state("");
+
+	// ─── Prompt-cache warming (debug strip lives at the bottom) ──────
+	// Reactive per-tab warming state from the singleton store. `warm.now` is a
+	// 1s ticking clock so the countdown re-renders while a fire is pending.
+	const warm = $derived(cacheWarming.stateFor(activeTabId));
+	const warmCountdown = $derived.by(() => {
+		const next = warm.nextFireAt;
+		if (next === null) return null;
+		const ms = Math.max(0, next - cacheWarming.now);
+		const total = Math.round(ms / 1000);
+		const m = Math.floor(total / 60);
+		const s = total % 60;
+		return `${m}:${s.toString().padStart(2, "0")}`;
+	});
+	const warmIntervalLabel = `${Math.round(WARM_INTERVAL_MS / 60000)} min`;
+
+	function toggleCacheWarming(enabled: boolean): void {
+		if (!activeTabId) return;
+		tabStore.setCacheWarmingEnabled(activeTabId, enabled);
+	}
 
 	let cwdExists = $state<boolean | null>(null);
 	let cwdCheckTimer: ReturnType<typeof setTimeout> | null = null;
@@ -434,6 +461,68 @@ const modelCache = new Map<string, string[]>();
 			Agent Settings
 		</button>
 	{/if}
+
+	<!-- Prompt-cache warming (bottom of the Chat Settings panel) -->
+	<div class="mt-3 pt-3 border-t border-base-300">
+		<label class="flex items-center gap-2 cursor-pointer">
+			<input
+				type="checkbox"
+				class="checkbox checkbox-sm rounded-sm"
+				checked={warm.enabled}
+				disabled={!activeTabId}
+				onchange={(e) => toggleCacheWarming(e.currentTarget.checked)}
+			/>
+			<span class="text-xs font-semibold">Keep prompt cache warm</span>
+		</label>
+		<p class="text-[10px] text-base-content/40 mt-1 leading-snug">
+			While this tab is idle, replays the cached conversation every {warmIntervalLabel}
+			so the provider cache stays warm for your next message. Warming traffic is
+			debug-only — it never touches history, the Cache Rate metric, or context size.
+		</p>
+
+		{#if warm.enabled}
+			<div class="mt-2 flex flex-col gap-2 bg-base-300/40 rounded-lg p-2">
+				<!-- Warming "last request" cache rate (separate from the real metric) -->
+				<div class="flex flex-col gap-0.5">
+					<div class="flex items-center justify-between">
+						<span class="text-xs text-base-content/50">Last request (warming)</span>
+						<span class="text-xs font-mono">{warm.lastPct === null ? "-%" : `${warm.lastPct}%`}</span>
+					</div>
+					<progress
+						class="progress w-full h-2 {warm.lastPct === null
+							? ''
+							: warm.lastPct >= 70
+								? 'progress-success'
+								: warm.lastPct >= 30
+									? 'progress-warning'
+									: 'progress-error'}"
+						value={warm.lastPct ?? 0}
+						max="100"
+					></progress>
+				</div>
+
+				<!-- Countdown to the next warming fire -->
+				<div class="flex items-center justify-between">
+					<span class="text-xs text-base-content/50">Next warm in</span>
+					<span class="text-xs font-mono">
+						{#if warm.firing}
+							warming…
+						{:else if warmCountdown !== null}
+							{warmCountdown}
+						{:else}
+							—
+						{/if}
+					</span>
+				</div>
+
+				{#if warm.error}
+					<div class="text-[10px] text-error break-words">
+						{warm.error}
+					</div>
+				{/if}
+			</div>
+		{/if}
+	</div>
 </div>
 
 {#if showKeyModal}
