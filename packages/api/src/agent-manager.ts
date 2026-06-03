@@ -1040,7 +1040,12 @@ export class AgentManager {
 	 */
 	async warmCacheForTab(
 		tabId: string,
-		opts: { keyId?: string; modelId?: string; agentModels?: AgentModelEntry[] } = {},
+		opts: {
+			keyId?: string;
+			modelId?: string;
+			agentModels?: AgentModelEntry[];
+			reasoningEffort?: ReasoningEffort;
+		} = {},
 	): Promise<{ ok: true; usage: UsageData } | { ok: false; error: string }> {
 		if (this.getTabStatus(tabId) === "running") {
 			return { ok: false, error: "tab is generating" };
@@ -1060,6 +1065,13 @@ export class AgentManager {
 				primary?.model_id || opts.modelId,
 			);
 
+			// Resolve the SAME reasoning effort the next real turn would use:
+			// per-model (agent definition) → per-tab selector → Agent default.
+			// This drives the thinking providerOptions, which is an Anthropic
+			// message-cache key — warming MUST match it or it warms a different
+			// cache bucket than the real turn reads (the 0%-on-switch bug).
+			const effort = primary?.effort ?? opts.reasoningEffort;
+
 			// Rebuild the genuine history exactly as `getOrCreateAgentForTab`'s
 			// pre-population does, but keep the FULL history (no trailing-user
 			// trim): warming replays the complete cached prefix as-is.
@@ -1071,7 +1083,9 @@ export class AgentManager {
 				history = [...agent.messages];
 			}
 
-			const usage = await agent.warmCache(history);
+			const usage = await agent.warmCache(history, {
+				...(effort ? { reasoningEffort: effort } : {}),
+			});
 			return { ok: true, usage };
 		} catch (err) {
 			return { ok: false, error: err instanceof Error ? err.message : String(err) };

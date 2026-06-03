@@ -1709,7 +1709,12 @@ describe("anthropicThinkingProviderOptions — adaptive-thinking model detection
 			expect(userMsgs).toHaveLength(2);
 		});
 
-		it("sends Anthropic cache_control breakpoints + toolChoice none", async () => {
+		it("sends Anthropic cache_control breakpoints with the SAME toolChoice/thinking as a real turn", async () => {
+			// Anthropic keys the MESSAGE cache on `tool_choice` AND the extended-
+			// thinking parameters. If warming sent a different value than a real
+			// turn, it would warm a DIFFERENT message-cache bucket and the user's
+			// next real message would still miss. So warming MUST mirror run():
+			// toolChoice "auto" + the thinking providerOptions for the effort.
 			vi.mocked(streamText).mockReturnValue(
 				makeWarmStream({ inputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 0 }),
 			);
@@ -1717,7 +1722,9 @@ describe("anthropicThinkingProviderOptions — adaptive-thinking model detection
 			await agent.warmCache(history);
 
 			const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
-			expect(callArgs?.toolChoice).toBe("none");
+			expect(callArgs?.toolChoice).toBe("auto");
+			// Thinking providerOptions present (effort defaults to "max").
+			expect(callArgs?.providerOptions?.anthropic).toBeDefined();
 			const messages = callArgs?.messages as Array<{
 				role: string;
 				providerOptions?: { anthropic?: { cacheControl?: unknown } };
@@ -1726,6 +1733,38 @@ describe("anthropicThinkingProviderOptions — adaptive-thinking model detection
 				(m) => m.providerOptions?.anthropic?.cacheControl !== undefined,
 			);
 			expect(hasBreakpoint).toBe(true);
+		});
+
+		it("warming and a real turn send IDENTICAL cache-affecting params (same bucket)", async () => {
+			// The core invariant of the whole feature: warmCache() and run() must
+			// produce the same toolChoice + thinking providerOptions + maxOutputTokens
+			// so the warming replay refreshes the EXACT cache the next real message
+			// reads. Drive both and compare the cache-key inputs streamText receives.
+			const cfg = makeConfig({ provider: "anthropic" });
+
+			// 1) Real turn for the same history + the probe text as the user msg.
+			const realAgent = new Agent(cfg);
+			realAgent.messages.push(...history.map((m) => ({ ...m })));
+			vi.mocked(streamText).mockReturnValue(
+				makeMockStreamResult([{ type: "text-delta", id: "t0", text: "." }, finishStop]),
+			);
+			for await (const _ of realAgent.run("reply with just a .")) {
+				// consume
+			}
+			const realArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+
+			// 2) Warming replay for the same history.
+			const warmAgent = new Agent(cfg);
+			vi.mocked(streamText).mockReturnValue(
+				makeWarmStream({ inputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 0 }),
+			);
+			await warmAgent.warmCache(history);
+			const warmArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0];
+
+			// The cache-affecting parameters must be byte-identical.
+			expect(warmArgs?.toolChoice).toEqual(realArgs?.toolChoice);
+			expect(warmArgs?.maxOutputTokens).toEqual(realArgs?.maxOutputTokens);
+			expect(warmArgs?.providerOptions).toEqual(realArgs?.providerOptions);
 		});
 
 		it("does NOT mutate the agent's own message history", async () => {

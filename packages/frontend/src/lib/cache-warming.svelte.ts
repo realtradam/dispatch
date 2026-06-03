@@ -41,6 +41,12 @@ export interface WarmRequestParams {
 	keyId: string | null;
 	modelId: string | null;
 	agentModels: AgentModelEntry[] | null;
+	/**
+	 * The SAME reasoning effort the next real turn would use. It drives the
+	 * Anthropic thinking providerOptions, which is a message-cache key — warming
+	 * must match it so it refreshes the bucket the real message reads.
+	 */
+	reasoningEffort: string | null;
 }
 
 /** Reactive, per-tab warming UI state (read by the Chat Settings debug strip). */
@@ -177,6 +183,7 @@ export function createCacheWarmingStore() {
 					...(params?.keyId ? { keyId: params.keyId } : {}),
 					...(params?.modelId ? { modelId: params.modelId } : {}),
 					...(params?.agentModels ? { agentModels: params.agentModels } : {}),
+					...(params?.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
 				}),
 			});
 			// A newer cancel/fire superseded this request — drop its result so it

@@ -251,7 +251,12 @@ export function createTabStore() {
 	cacheWarming.setRequestResolver((tabId) => {
 		const t = getTabById(tabId);
 		if (!t) return null;
-		return { keyId: t.keyId, modelId: t.modelId, agentModels: t.agentModels };
+		return {
+			keyId: t.keyId,
+			modelId: t.modelId,
+			agentModels: t.agentModels,
+			reasoningEffort: t.reasoningEffort,
+		};
 	});
 
 	$effect.root(() => {
