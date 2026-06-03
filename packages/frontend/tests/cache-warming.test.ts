@@ -98,7 +98,12 @@ describe("firing cadence", () => {
 		const fetchMock = makeFetchOk({ inputTokens: 1000, cacheReadTokens: 900 });
 		vi.stubGlobal("fetch", fetchMock);
 
-		store.setRequestResolver(() => ({ keyId: "k", modelId: "m", agentModels: null }));
+		store.setRequestResolver(() => ({
+			keyId: "k",
+			modelId: "m",
+			agentModels: null,
+			reasoningEffort: "high",
+		}));
 		store.setEnabled("tab-1", true);
 
 		await vi.advanceTimersByTimeAsync(WARM_INTERVAL_MS);
@@ -108,7 +113,15 @@ describe("firing cadence", () => {
 		const [url, opts] = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock
 			.calls[0] as [string, { body: string }];
 		expect(url).toContain("/chat/warm");
-		expect(JSON.parse(opts.body)).toMatchObject({ tabId: "tab-1", keyId: "k", modelId: "m" });
+		// The request forwards the SAME effort the real turn uses — it's an
+		// Anthropic message-cache key, so warming must match it to refresh the
+		// bucket the next real message reads.
+		expect(JSON.parse(opts.body)).toMatchObject({
+			tabId: "tab-1",
+			keyId: "k",
+			modelId: "m",
+			reasoningEffort: "high",
+		});
 
 		const s = store.stateFor("tab-1");
 		expect(s.lastPct).toBe(90); // 900 / 1000

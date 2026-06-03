@@ -239,6 +239,7 @@ app.post("/chat/warm", async (c) => {
 		keyId?: unknown;
 		modelId?: unknown;
 		agentModels?: unknown;
+		reasoningEffort?: unknown;
 	}>();
 	const { tabId } = body;
 	if (typeof tabId !== "string" || tabId.trim() === "") {
@@ -247,11 +248,17 @@ app.post("/chat/warm", async (c) => {
 	const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
 	const modelId = typeof body.modelId === "string" ? body.modelId : undefined;
 	const agentModels = sanitizeAgentModels(body.agentModels);
+	// Same effort the real turn would use — a message-cache key, so warming must
+	// match it to refresh the SAME bucket the next real message reads.
+	const reasoningEffort = isReasoningEffort(body.reasoningEffort)
+		? body.reasoningEffort
+		: undefined;
 
 	const result = await agentManager.warmCacheForTab(tabId, {
 		...(keyId ? { keyId } : {}),
 		...(modelId ? { modelId } : {}),
 		...(agentModels ? { agentModels } : {}),
+		...(reasoningEffort ? { reasoningEffort } : {}),
 	});
 	if (!result.ok) {
 		// "tab is generating" is an expected race (not a server fault) → 409.
