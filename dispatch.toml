@@ -1,6 +1,23 @@
 # Dispatch — Key & Permission Configuration
 # Credentials and API keys are stored in the SQLite database.
 # Use the Model Status panel to import credentials, or run bin/import-credentials.ts.
+#
+# ─── Global defaults ─────────────────────────────────────────────
+# A HOME-directory config at ~/.config/dispatch/dispatch.toml (override with
+# the DISPATCH_GLOBAL_CONFIG env var) is loaded and MERGED underneath this
+# project config, so machine-wide settings (e.g. globally available LSP
+# servers) work in any repository without per-repo setup. This LOCAL file
+# always takes PRECEDENCE on conflicts:
+#   [lsp]          merged by server id — a local [lsp.<id>] overrides the
+#                  global one of the same id; non-conflicting ids from both
+#                  stay active.
+#   [[keys]]       merged by id — a local key overrides the global key of the
+#                  same id; non-conflicting ids from both stay active.
+#   [permissions]  merged per group: nested { pattern = action } groups merge
+#                  pattern-by-pattern (local patterns win), and a local value
+#                  replaces a global one of the same key. Global patterns are
+#                  emitted first so local rules win at evaluation time.
+# Both files hot-reload: editing either re-merges and applies live.
 
 # ─── API Keys ───────────────────────────────────────────────────
 
@@ -24,7 +41,9 @@ base_url = "https://opencode.ai/zen/go/v1"
 [[keys]]
 id = "opencode-2"
 provider = "opencode-go"
-base_url = "https://opencode.ai/zen/go/v1"# ─── Permissions ─────────────────────────────────────────────────
+base_url = "https://opencode.ai/zen/go/v1"
+
+# ─── Permissions ─────────────────────────────────────────────────
 
 [permissions]
 read = "allow"
@@ -51,43 +70,14 @@ read = "allow"
 "/tmp/*" = "allow"
 
 # ─── Language Servers (LSP) ──────────────────────────────────────
-# Optional. Declare LSP servers to give agents diagnostics (and, with the
-# `lsp` tool, hover/definition/references) for the files they edit. This block
-# is PROJECT-SCOPED: it is read from the `dispatch.toml` in a tab's effective
-# working directory (re-consulted when you change the CWD). Config-driven only —
-# there is no builtin server registry and no auto-download, so the executable
-# in `command[0]` must already be on PATH.
-#
-# After `write_file` edits a file whose extension matches a server below,
-# dispatch opens it through the server and appends any error diagnostics to the
-# tool result ("LSP errors detected in this file, please fix: ..."). Grant the
-# `perm_lsp` permission to also expose the on-demand `lsp` tool.
-#
-# The example below is the Roblox Luau setup using luau-lsp
-# (https://github.com/JohnnyMorganz/luau-lsp). Uncomment and adapt for your
-# project. luau-lsp's `sourcemap.autogenerate` makes luau-lsp run
-# `rojo sourcemap --watch` itself, so `rojo` must be on PATH (or set
-# `[lsp.luau-lsp.env]` PATH / luau-lsp's sourcemap.rojoPath accordingly).
-#
-# [lsp.luau-lsp]
-# command = ["luau-lsp", "lsp", "--definitions=globalTypes.d.luau", "--docs=api-docs.json"]
-# extensions = [".luau"]
-#
-# [lsp.luau-lsp.initialization.luau-lsp.platform]
-# type = "roblox"
-#
-# [lsp.luau-lsp.initialization.luau-lsp.sourcemap]
-# enabled = true
-# autogenerate = true
-# rojoProjectFile = "default.project.json"
-#
-# [lsp.luau-lsp.initialization.luau-lsp.types]
-# roblox = true
-# definitionFiles = ["globalTypes.d.luau"]
-# documentationFiles = ["api-docs.json"]
-#
-# [lsp.luau-lsp.initialization.luau-lsp.diagnostics]
-# strictDatamodelTypes = false
-#
-# [lsp.luau-lsp.initialization.luau-lsp.completion.imports]
-# useConst = true
+# After `write_file` edits a matching file, dispatch appends any diagnostics.
+# Grant `perm_lsp` to also expose the on-demand `lsp` tool for hover/definition/references.
+
+[lsp.biome]
+command = ["/home/tradam/projects/dispatch/dispatch-source/node_modules/.bin/biome", "lsp-proxy"]
+extensions = [".ts", ".tsx", ".js", ".jsx", ".svelte", ".css", ".json"]
+
+[lsp.typescript-language-server]
+command = ["/home/tradam/.local/bin/typescript-language-server", "--stdio"]
+extensions = [".ts", ".tsx"]
+env = { PATH = "/home/tradam/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin" }

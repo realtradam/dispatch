@@ -1,16 +1,28 @@
 import { join } from "node:path";
 import { watch } from "chokidar";
 import type { DispatchConfig } from "../types/index.js";
-import { loadConfig } from "./loader.js";
+import { getGlobalConfigPath, loadConfig } from "./loader.js";
 
+/**
+ * Watch BOTH the HOME-directory global `dispatch.toml` and the project/working-
+ * directory `dispatch.toml`. Either file changing triggers a reload that
+ * re-merges global + local (via {@link loadConfig}), so hot-reload works for
+ * global defaults and per-project overrides alike.
+ *
+ * When the global and local paths coincide (e.g. the working directory IS
+ * `~/.config/dispatch`, or `DISPATCH_GLOBAL_CONFIG` points at the local file)
+ * the duplicate is collapsed so chokidar only watches it once.
+ */
 export function createConfigWatcher(
 	dir: string,
 	onChange: (config: DispatchConfig) => void,
 ): { close(): void } {
-	const tomlPath = join(dir, "dispatch.toml");
+	const localPath = join(dir, "dispatch.toml");
+	const globalPath = getGlobalConfigPath();
+	const paths = globalPath === localPath ? [localPath] : [globalPath, localPath];
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-	const watcher = watch(tomlPath, {
+	const watcher = watch(paths, {
 		ignoreInitial: true,
 		persistent: false,
 	});
@@ -21,7 +33,7 @@ export function createConfigWatcher(
 		}
 		debounceTimer = setTimeout(() => {
 			debounceTimer = null;
-			console.log(`dispatch: reloading config from ${tomlPath}`);
+			console.log(`dispatch: reloading config (global + ${localPath})`);
 			try {
 				const config = loadConfig(dir);
 				onChange(config);

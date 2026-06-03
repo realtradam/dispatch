@@ -508,10 +508,13 @@ export interface DispatchConfig {
 	permissions: Record<string, string | Record<string, string>>;
 	/**
 	 * Language Server Protocol servers, keyed by an arbitrary server id (e.g.
-	 * `"luau-lsp"`). Project-scoped: read from the `dispatch.toml` in a tab's
-	 * effective working directory and re-consulted when that directory (or the
-	 * config) changes. Config-driven only — there is no builtin server registry
-	 * and no auto-download; the declared `command[0]` must be on PATH.
+	 * `"luau-lsp"`). Resolved by merging the HOME-directory global
+	 * `dispatch.toml` (`~/.config/dispatch/dispatch.toml`) underneath the
+	 * `dispatch.toml` in a tab's effective working directory — local entries
+	 * override global ones sharing the same id, and global-only servers stay
+	 * active in every repository. Re-consulted when either config (or the
+	 * directory) changes. Config-driven only — there is no builtin server
+	 * registry and no auto-download; the declared `command[0]` must be on PATH.
 	 */
 	lsp?: Record<string, LspServerConfig>;
 }

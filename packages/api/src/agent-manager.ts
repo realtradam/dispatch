@@ -390,11 +390,14 @@ export class AgentManager {
 	/**
 	 * Resolve (and cache) the LSP servers configured for a working directory.
 	 *
-	 * LSP config is project-scoped: it lives in the `dispatch.toml` of the
-	 * tab's effective working directory, NOT the global config. We read that
-	 * directory's config once and cache the resolved servers; the cache is
-	 * cleared on config hot-reload. Returns `[]` when the directory has no
-	 * `[lsp]` block (the common case).
+	 * LSP config is resolved by `loadConfig`, which merges the HOME-directory
+	 * global `dispatch.toml` (`~/.config/dispatch/dispatch.toml`) underneath the
+	 * tab's effective working-directory `dispatch.toml` — local `[lsp.<id>]`
+	 * entries override global ones sharing the same id, while global-only
+	 * servers stay active in every repository. We read+merge that config once
+	 * per directory and cache the resolved servers; the cache is cleared on
+	 * config hot-reload. Returns `[]` when neither config declares an `[lsp]`
+	 * block (the common case).
 	 */
 	private getLspServersForDir(dir: string): ResolvedLspServer[] {
 		const cached = this.lspServersByDir.get(dir);

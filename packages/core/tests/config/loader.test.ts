@@ -6,12 +6,20 @@ import { configToRuleset, loadConfig } from "../../src/config/loader.js";
 
 const TMP = join("/tmp/opencode", "dispatch-config-test");
 
+// Point the global config at a path that does not exist so these tests are
+// hermetic — they must not pick up this machine's real
+// ~/.config/dispatch/dispatch.toml.
+const prevGlobal = process.env.DISPATCH_GLOBAL_CONFIG;
+
 beforeEach(() => {
 	mkdirSync(TMP, { recursive: true });
+	process.env.DISPATCH_GLOBAL_CONFIG = join(TMP, "__no_such_global__.toml");
 });
 
 afterEach(() => {
 	rmSync(TMP, { recursive: true, force: true });
+	if (prevGlobal === undefined) delete process.env.DISPATCH_GLOBAL_CONFIG;
+	else process.env.DISPATCH_GLOBAL_CONFIG = prevGlobal;
 });
 
 function writeToml(content: string): void {
