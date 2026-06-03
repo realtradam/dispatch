@@ -105,13 +105,17 @@ export function loadConfig(dir: string): DispatchConfig {
  * - A key present only in one side is carried over verbatim.
  * - A key whose value is a string on either side: local replaces global.
  * - A key that is a nested `{ pattern -> action }` object on BOTH sides is
- *   merged pattern-by-pattern (local patterns override global patterns of the
- *   same name; non-conflicting patterns from both survive).
+ *   merged pattern-by-pattern: global patterns the local block does NOT also
+ *   define come first (original order), then EVERY local pattern is appended
+ *   last (overriding any same-named global pattern).
  *
- * Global groups are emitted before local-only groups, and global patterns
- * before local patterns within a shared group. This ordering matters because
- * `configToRuleset` flattens in iteration order and `evaluate` uses `findLast`
- * (last match wins) — so local rules naturally win.
+ * Emitting all local patterns after the global ones is essential, not
+ * cosmetic: `configToRuleset` flattens patterns in iteration order and
+ * `evaluate` uses `findLast` (last match wins). If an overridden pattern were
+ * updated in place, a more-general global pattern (e.g. "*") could remain AFTER
+ * it and silently shadow the local override. Appending local patterns last
+ * reproduces a clean "global rules then local rules" concatenation so local
+ * always wins.
  */
 function mergePermissions(
 	global: DispatchConfig["permissions"],
@@ -124,8 +128,25 @@ function mergePermissions(
 	for (const [key, value] of Object.entries(local)) {
 		const existing = result[key];
 		if (existing !== undefined && typeof existing !== "string" && typeof value !== "string") {
-			// Both nested objects — merge patterns, local wins on conflicts.
-			result[key] = { ...existing, ...value };
+			// Both nested objects — merge patterns so that ALL local patterns
+			// are emitted AFTER the global ones. This matters because
+			// `configToRuleset` flattens patterns in insertion order and
+			// `evaluate` uses `findLast` (last match wins): a naive
+			// `{ ...existing, ...value }` would update an overridden pattern
+			// IN PLACE, leaving a more-general global pattern (e.g. "*") sitting
+			// AFTER it and silently shadowing the local override. We therefore
+			// drop any global pattern that the local block also defines, keep the
+			// remaining global patterns in their original order, then append every
+			// local pattern last — reproducing a clean "global rules then local
+			// rules" concatenation where local always wins.
+			const merged: Record<string, string> = {};
+			for (const [pattern, action] of Object.entries(existing)) {
+				if (!(pattern in value)) merged[pattern] = action;
+			}
+			for (const [pattern, action] of Object.entries(value)) {
+				merged[pattern] = action;
+			}
+			result[key] = merged;
 		} else {
 			// Local string, brand-new key, or a string/object type mismatch:
 			// local replaces global wholesale.

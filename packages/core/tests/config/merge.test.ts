@@ -157,6 +157,23 @@ describe("mergeConfigs — permissions", () => {
 		const ruleset = configToRuleset(merged);
 		expect(evaluate("bash", "anything", ruleset).action).toBe("allow");
 	});
+
+	// Regression: a SPECIFIC local override must not be shadowed by a more
+	// GENERAL global pattern (e.g. "*") that happened to be declared lower in
+	// the global block. `evaluate` uses findLast, so every local pattern must be
+	// emitted AFTER all global patterns of the same group.
+	it("specific local override beats a general global wildcard regardless of declaration order", () => {
+		const merged = mergeConfigs(
+			{ permissions: { bash: { "npm test": "allow", "*": "ask" } } },
+			{ permissions: { bash: { "npm test": "deny" } } },
+		);
+		// Local "npm test" must be emitted after global "*".
+		expect(Object.keys(merged.permissions.bash as object)).toEqual(["*", "npm test"]);
+		const ruleset = configToRuleset(merged);
+		expect(evaluate("bash", "npm test", ruleset).action).toBe("deny");
+		// And the inherited global wildcard still applies to other commands.
+		expect(evaluate("bash", "rm -rf /", ruleset).action).toBe("ask");
+	});
 });
 
 // ─── loadConfig (filesystem integration) ─────────────────────────
