@@ -8,6 +8,8 @@ import {
 	appendEventToChunks,
 	BackgroundShellStore,
 	BackgroundTranscriptStore,
+	buildCompactionRequest,
+	buildSummaryTurnText,
 	type ChatMessage,
 	type Chunk,
 	type ClaudeAccount,
@@ -26,6 +28,7 @@ import {
 	createSendToTabTool,
 	createSkillsWatcher,
 	createSummonTool,
+	createTab,
 	createTaskListTool,
 	createWebSearchTool,
 	createWriteFileTool,
@@ -36,11 +39,13 @@ import {
 	explodeUserText,
 	GLOBAL_AGENTS_DIR,
 	getAgentDirPaths,
+	getChunksForTab,
 	getClaudeAccountsFromDB,
 	getMessagesForTab,
 	getSetting,
 	getTab,
 	getUsageStatsForTab,
+	groupRowsToMessages,
 	LspManager,
 	listOpenTabs,
 	loadAgent,
@@ -53,6 +58,7 @@ import {
 	type ResolvedLspServer,
 	refreshAccountCredentials,
 	refreshAccountCredentialsAsync,
+	rekeyChunks,
 	reportDiagnostics,
 	resolveApiKey,
 	resolveServersFromConfig,
@@ -256,6 +262,12 @@ interface TabAgent {
 	 * it hits 0, further agent messages are queued but do NOT start a turn.
 	 */
 	autoWakeBudget: number;
+	/**
+	 * True while this tab is the SOURCE of an in-flight compaction. New
+	 * messages are queued (not started) until compaction settles so the
+	 * conversation can't mutate mid-summary.
+	 */
+	compacting?: boolean;
 }
 
 export class AgentManager {
@@ -1015,6 +1027,254 @@ export class AgentManager {
 		return tabAgent.agent;
 	}
 
+	/**
+	 * Resolve connection parameters (apiKey / baseURL / model / provider /
+	 * Claude OAuth credentials) for a key+model pair WITHOUT mutating any tab
+	 * state. Mirrors the resolution in `getOrCreateAgentForTab` (Anthropic
+	 * account refresh, env-var keys, OpenCode-Go anthropic-route detection) but
+	 * is side-effect-free so it can be reused by compaction. Returns `null` when
+	 * the key/model can't be resolved to a usable connection.
+	 */
+	private async resolveConnection(
+		keyId: string,
+		modelId: string,
+	): Promise<{
+		apiKey: string;
+		baseURL: string;
+		model: string;
+		provider?: string;
+		claudeCredentials?: { accessToken: string };
+	} | null> {
+		if (!keyId || !modelId || !this.modelRegistry) return null;
+		const keyState = this.modelRegistry.getKeys().find((k) => k.definition.id === keyId);
+		if (!keyState) return null;
+		const key = keyState.definition;
+
+		if (key.provider === "anthropic") {
+			const credFile = key.credentials_file;
+			const findAccount = () =>
+				this.claudeAccounts.find((a) => a.id === keyId) ??
+				(credFile
+					? this.claudeAccounts.find((a) => a.source === credFile)
+					: this.claudeAccounts[0]);
+			let account = findAccount();
+			if (!account) {
+				this._refreshClaudeAccounts();
+				account = findAccount();
+			}
+			if (!account) return null;
+			let creds = refreshAccountCredentials(account);
+			if (!creds || creds.expiresAt <= Date.now() + 60_000) {
+				const fresh = await refreshAccountCredentialsAsync(account);
+				if (fresh) {
+					account.credentials = fresh;
+					creds = fresh;
+				}
+			}
+			const accessToken = creds?.accessToken ?? account.credentials.accessToken;
+			return {
+				apiKey: accessToken,
+				baseURL: key.base_url,
+				model: modelId,
+				provider: "anthropic",
+				claudeCredentials: { accessToken },
+			};
+		}
+
+		// Standard key resolved from env var.
+		const envKey = resolveApiKey(key.id, key.env);
+		if (!envKey) return null;
+		let provider: string | undefined;
+		if (key.provider === "opencode-go" && isOpencodeGoAnthropicModel(modelId)) {
+			provider = "opencode-anthropic";
+		}
+		return { apiKey: envKey, baseURL: key.base_url, model: modelId, provider };
+	}
+
+	/**
+	 * Resolve the compactor model: the configured `compaction_model_*` setting
+	 * when present, otherwise fall back to the source tab's own key+model. Used
+	 * to run the summary generation request.
+	 */
+	private resolveCompactorKeyModel(sourceTabId: string): { keyId: string; modelId: string } | null {
+		const cfgKey = getSetting("compaction_model_key_id");
+		const cfgModel = getSetting("compaction_model_id");
+		if (cfgKey && cfgModel) return { keyId: cfgKey, modelId: cfgModel };
+		const tabAgent = this.tabAgents.get(sourceTabId);
+		const row = getTab(sourceTabId);
+		const keyId = tabAgent?.keyId ?? row?.keyId ?? null;
+		const modelId = tabAgent?.modelId ?? row?.modelId ?? null;
+		if (keyId && modelId) return { keyId, modelId };
+		return null;
+	}
+
+	/**
+	 * Run a one-shot, tool-less summary generation using a transient Agent. The
+	 * Agent loop handles Claude-OAuth billing/identity/caching correctly. The
+	 * prompt is the entire summary request (transcript + template); no tools are
+	 * registered so the model can only produce text. Returns the concatenated
+	 * assistant text, or throws on error/abort.
+	 */
+	private async generateSummary(
+		conn: {
+			apiKey: string;
+			baseURL: string;
+			model: string;
+			provider?: string;
+			claudeCredentials?: { accessToken: string };
+		},
+		prompt: string,
+		abortSignal: AbortSignal,
+	): Promise<string> {
+		const agent = new Agent({
+			model: conn.model,
+			apiKey: conn.apiKey,
+			baseURL: conn.baseURL,
+			systemPrompt:
+				"You are a conversation-summarization assistant. Follow the user's instructions and output ONLY the requested Markdown summary.",
+			tools: [],
+			workingDirectory: process.env.DISPATCH_WORKING_DIR ?? process.cwd(),
+			provider: conn.provider,
+			...(conn.claudeCredentials ? { claudeCredentials: conn.claudeCredentials } : {}),
+		});
+		let out = "";
+		let errored: string | null = null;
+		for await (const event of agent.run(prompt, { abortSignal })) {
+			if (abortSignal.aborted) break;
+			if (event.type === "text-delta") out += event.delta;
+			else if (event.type === "error") errored = event.error;
+		}
+		if (abortSignal.aborted) throw new Error("Compaction cancelled");
+		if (errored) throw new Error(errored);
+		const trimmed = out.trim();
+		if (!trimmed) throw new Error("Compaction produced an empty summary");
+		return trimmed;
+	}
+
+	/**
+	 * Compact a conversation (UI-driven). Summarizes the older "head" of
+	 * `sourceTabId` into an anchored Markdown summary while preserving the last
+	 * N turns verbatim, then performs the id-relocation the product requires:
+	 *
+	 *   - The FULL pre-compaction history is moved to a fresh `backupTabId`
+	 *     (so nothing is destroyed — fully reversible).
+	 *   - `sourceTabId` (the canonical id, with its key/model/working-dir/agent
+	 *     and the global tool permissions intact) is re-seeded with the summary
+	 *     turn + the preserved tail.
+	 *
+	 * `tempTabId` is the frontend placeholder tab hosting the "compacting…"
+	 * message; it is discarded on completion. Cancellation = the caller aborts
+	 * via `tempTabId`'s abort controller (e.g. closing the placeholder tab).
+	 *
+	 * Returns when the compaction settles; emits `compaction-started`,
+	 * `compaction-complete`, or `compaction-error`.
+	 */
+	async compactTab(tempTabId: string, sourceTabId: string): Promise<void> {
+		const tempAgent = this._getOrCreateTabAgent(tempTabId);
+		const abortController = new AbortController();
+		tempAgent.abortController = abortController;
+
+		const fail = (error: string): void => {
+			const src = this.tabAgents.get(sourceTabId);
+			if (src) src.compacting = false;
+			this.emit({ type: "compaction-error", tempTabId, sourceTabId, error }, tempTabId);
+			// Drain anything queued on the source while it was locked.
+			this.continueFromQueue(sourceTabId);
+		};
+
+		try {
+			// Refuse to compact a running tab (turn must have ended).
+			if (this.getTabStatus(sourceTabId) === "running") {
+				fail("Cannot compact while a turn is in progress.");
+				return;
+			}
+
+			// Lock the source so new messages queue instead of starting turns.
+			const sourceAgent = this._getOrCreateTabAgent(sourceTabId);
+			sourceAgent.compacting = true;
+			this.emit({ type: "compaction-started", tempTabId, sourceTabId }, tempTabId);
+
+			// Read the full history as grouped messages (preserves turnId/seq).
+			const rows = groupRowsToMessages(getChunksForTab(sourceTabId));
+			const { tail, prompt } = buildCompactionRequest({ messages: rows });
+			if (!prompt) {
+				fail("Not enough conversation history to compact.");
+				return;
+			}
+
+			// Resolve the compactor model (configured, else source tab's own).
+			const compactor = this.resolveCompactorKeyModel(sourceTabId);
+			if (!compactor) {
+				fail("No model available to run compaction. Configure a compaction model in Settings.");
+				return;
+			}
+			const conn = await this.resolveConnection(compactor.keyId, compactor.modelId);
+			if (!conn) {
+				fail("Could not resolve credentials for the compaction model.");
+				return;
+			}
+
+			// Generate the summary (abortable).
+			const summary = await this.generateSummary(conn, prompt, abortController.signal);
+			if (abortController.signal.aborted) {
+				fail("Compaction cancelled");
+				return;
+			}
+
+			// Relocate the FULL history to a backup tab, then re-seed the source.
+			const sourceRow = getTab(sourceTabId);
+			const backupTabId = crypto.randomUUID();
+			const baseTitle = sourceRow?.title ?? "Conversation";
+			const backupTitle = `${baseTitle} (pre-compaction)`;
+			createTab(backupTabId, backupTitle, {
+				keyId: sourceRow?.keyId ?? null,
+				modelId: sourceRow?.modelId ?? null,
+			});
+			rekeyChunks(sourceTabId, backupTabId);
+
+			// Re-seed the canonical (source) id: a summary user turn followed by
+			// the preserved tail rows (turnId/step/role/type/data preserved).
+			const summaryTurnId = crypto.randomUUID();
+			appendChunks(sourceTabId, explodeUserText(summaryTurnId, buildSummaryTurnText(summary)));
+			for (const msg of tail) {
+				const drafts = explodeTurn(msg.turnId, msg.chunks);
+				if (msg.role === "user") {
+					// groupRowsToMessages collapses a user message to a single text
+					// chunk; explodeTurn only handles assistant/system shapes, so
+					// rebuild the user row explicitly.
+					const text = msg.chunks.find((c) => c.type === "text");
+					appendChunks(
+						sourceTabId,
+						explodeUserText(msg.turnId, text && text.type === "text" ? text.text : ""),
+					);
+					continue;
+				}
+				if (drafts.length > 0) appendChunks(sourceTabId, drafts);
+			}
+
+			// Reset the source Agent so its in-memory history reloads from the
+			// freshly re-seeded chunk log on the next turn.
+			sourceAgent.agent = null;
+			sourceAgent.compacting = false;
+
+			this.emit(
+				{ type: "compaction-complete", tempTabId, sourceTabId, backupTabId, backupTitle },
+				sourceTabId,
+			);
+			// Drain any messages queued while the source was locked.
+			this.continueFromQueue(sourceTabId);
+		} catch (err) {
+			if (abortController.signal.aborted) {
+				fail("Compaction cancelled");
+				return;
+			}
+			fail(err instanceof Error ? err.message : String(err));
+		} finally {
+			// The placeholder tab is transient; drop its in-memory agent state.
+			this.tabAgents.delete(tempTabId);
+		}
+	}
+
 	getTabStatus(tabId: string): AgentStatus {
 		return this.tabAgents.get(tabId)?.status ?? "idle";
 	}
@@ -1665,6 +1925,14 @@ export class AgentManager {
 			// Busy target → always queue (consumed like a user interrupt),
 			// regardless of origin. Queuing does not itself start a turn, so it
 			// can't drive a runaway loop; we don't spend budget here.
+			const { messageId } = this.queueMessage(tabId, message, opts.queueId);
+			return { status: "queued", messageId };
+		}
+
+		// Tab is mid-compaction → hold the message (queue, never start a turn)
+		// until compaction settles. continueFromQueue (called after compaction)
+		// drains it onto the compacted continuation.
+		if (this.tabAgents.get(tabId)?.compacting) {
 			const { messageId } = this.queueMessage(tabId, message, opts.queueId);
 			return { status: "queued", messageId };
 		}

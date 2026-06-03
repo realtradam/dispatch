@@ -278,6 +278,8 @@ vi.mock("@dispatch/core", () => ({
 	getSetting(_key: string) {
 		return null;
 	},
+	setSetting(_key: string, _value: string) {},
+	deleteSetting(_key: string) {},
 	appendChunks() {
 		return [];
 	},
@@ -650,6 +652,49 @@ describe("GET /tabs/:id/chunks", () => {
 		expect(body.chunks).toEqual([]);
 		expect(body.total).toBe(0);
 		expect(body.oldestSeq).toBeNull();
+	});
+});
+
+describe("POST /tabs/:id/compact", () => {
+	it("returns 400 when sourceTabId is missing", async () => {
+		const res = await app.request("/tabs/temp-1/compact", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 202 and kicks off compaction when sourceTabId is provided", async () => {
+		const res = await app.request("/tabs/temp-1/compact", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ sourceTabId: "src-1" }),
+		});
+		expect(res.status).toBe(202);
+		const body = await res.json();
+		expect(body).toEqual({ success: true });
+	});
+});
+
+describe("GET/PUT /tabs/settings/compaction-model", () => {
+	it("GET returns the persisted compaction-model setting shape", async () => {
+		const res = await app.request("/tabs/settings/compaction-model");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		// Mocked getSetting → null, so both fields are null.
+		expect(body).toEqual({ keyId: null, modelId: null });
+	});
+
+	it("PUT accepts a key/model pair", async () => {
+		const res = await app.request("/tabs/settings/compaction-model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ keyId: "k1", modelId: "m1" }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body).toEqual({ success: true });
 	});
 });
 

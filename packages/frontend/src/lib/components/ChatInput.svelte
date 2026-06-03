@@ -46,6 +46,13 @@ const attachments = $derived(tabStore.activeTab?.attachments ?? []);
 const cacheStats = $derived(tabStore.activeTab?.cacheStats ?? null);
 
 const isRunning = $derived(agentStatus === "running");
+// Lock input while this tab is mid-compaction: either it's the source
+// conversation being summarized, or it's the transient placeholder tab.
+const compactLocked = $derived(
+	(tabStore.activeTab?.isCompacting ?? false) ||
+		(tabStore.activeTab?.compactingSource ?? null) !== null ||
+		(tabStore.activeTab?.compactionError ?? null) !== null,
+);
 const hasText = $derived(inputValue.trim().length > 0);
 const hasAttachments = $derived(attachments.length > 0);
 // While generating with an empty box, the primary action is "stop". With text
@@ -276,6 +283,8 @@ function handleKeydown(e: KeyboardEvent) {
 
 function submit() {
 	if (!tabId) return;
+	// Block sending while this tab is mid-compaction (source or placeholder).
+	if (compactLocked) return;
 	const map = new Map(attachments.map((a) => [a.id, a] as const));
 	const { displayText, content } = parseDraft(inputValue, map);
 	const trimmed = displayText.trim();
@@ -314,7 +323,10 @@ function primaryAction() {
 			bind:this={inputEl}
 			value={inputValue}
 			rows="1"
-			placeholder="Type a message... (paste an image or PDF to attach)"
+			placeholder={compactLocked
+				? "Compaction in progress…"
+				: "Type a message... (paste an image or PDF to attach)"}
+			disabled={compactLocked}
 			class="textarea textarea-ghost flex-1 resize-none leading-normal !min-h-0 h-auto"
 			onkeydown={handleKeydown}
 			oninput={handleInput}
@@ -325,7 +337,7 @@ function primaryAction() {
 		<button
 			type="button"
 			class="btn w-20 shrink-0 {showStop ? 'btn-error btn-outline' : 'btn-primary'}"
-			disabled={!showStop && !hasText && !hasAttachments || sendBlocked}
+			disabled={compactLocked || (!showStop && !hasText && !hasAttachments) || sendBlocked}
 			onclick={primaryAction}
 			title={showStop ? "Stop generation" : sendBlocked ? (attachmentWarning ?? "Cannot send") : "Send message"}
 		>
