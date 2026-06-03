@@ -39,7 +39,10 @@ export {
 export {
 	configToRuleset,
 	createConfigWatcher,
+	getGlobalConfigPath,
 	loadConfig,
+	loadGlobalConfig,
+	mergeConfigs,
 	validateConfig,
 } from "./config/index.js";
 // Credentials
