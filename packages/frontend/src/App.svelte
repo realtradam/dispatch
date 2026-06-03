@@ -250,6 +250,7 @@ onMount(() => {
 				{contextLimit}
 				permissionLog={tabStore.permissionLog}
 				apiBase={config.apiBase}
+				activeTabId={tabStore.activeTabId}
 				activeKeyId={tabStore.activeTab?.keyId ?? null}
 				activeModelId={tabStore.activeTab?.modelId ?? null}
 				reasoningEffort={tabStore.activeTab?.reasoningEffort ?? DEFAULT_REASONING_EFFORT}

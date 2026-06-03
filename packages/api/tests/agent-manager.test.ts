@@ -91,6 +91,13 @@ function resetCapturedRunOptions(): void {
 	capturedRunOptions.length = 0;
 }
 
+// Capture every warmCache(history) call so tests can assert the warming replay
+// receives the genuine (FULL) history and returns its usage unmodified.
+const capturedWarmHistories: unknown[][] = [];
+function resetCapturedWarmHistories(): void {
+	capturedWarmHistories.length = 0;
+}
+
 // Configurable settings store so tests can toggle tool permissions
 // (perm_send_to_tab / perm_read_tab / ...) and assert which tools the
 // constructed Agent receives. Defaults to empty (getSetting → null).
@@ -184,6 +191,15 @@ vi.mock("@dispatch/core", () => ({
 				return;
 			}
 			for await (const ev of defaultRun(message)) yield ev;
+		}
+		async warmCache(history: unknown[]) {
+			capturedWarmHistories.push([...history]);
+			return {
+				inputTokens: 1200,
+				outputTokens: 1,
+				cacheReadTokens: 1100,
+				cacheWriteTokens: 0,
+			};
 		}
 	},
 	PermissionService: class MockPermissionService {
@@ -512,6 +528,7 @@ describe("AgentManager", () => {
 		appendEventToChunksSpy.mockClear();
 		resetAppendChunksCalls();
 		resetFakeUsageStats();
+		resetCapturedWarmHistories();
 	});
 
 	it("initial status is idle", () => {
@@ -1856,6 +1873,53 @@ describe("AgentManager", () => {
 				cacheReadTokens: 100,
 				cacheWriteTokens: 5,
 			});
+		});
+	});
+
+	describe("warmCacheForTab (prompt-cache warming)", () => {
+		it("returns the warm request usage and forwards the FULL genuine history", async () => {
+			const manager = new AgentManager();
+			setFakeMessages("tab-warm", [
+				makeRow("tab-warm", 1, "user", [{ type: "text", text: "hello" }]),
+				makeRow("tab-warm", 2, "assistant", [{ type: "text", text: "hi" }]),
+			]);
+
+			const result = await manager.warmCacheForTab("tab-warm");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.usage).toEqual({
+					inputTokens: 1200,
+					outputTokens: 1,
+					cacheReadTokens: 1100,
+					cacheWriteTokens: 0,
+				});
+			}
+			// The genuine history is forwarded UNTRIMMED (both turns), so the
+			// replayed prefix matches the next real turn exactly.
+			expect(capturedWarmHistories).toHaveLength(1);
+			expect(capturedWarmHistories[0]).toHaveLength(2);
+		});
+
+		it("does NOT persist anything (no appendChunks for the warm request)", async () => {
+			const manager = new AgentManager();
+			setFakeMessages("tab-warm-2", [
+				makeRow("tab-warm-2", 1, "user", [{ type: "text", text: "hello" }]),
+			]);
+			await manager.warmCacheForTab("tab-warm-2");
+			// Warming must never write chunk rows (history / usage / anything).
+			expect(appendChunksCalls).toHaveLength(0);
+		});
+
+		it("refuses to warm while the tab is generating", async () => {
+			const manager = new AgentManager();
+			// Start a turn (status flips to running) but don't await it.
+			const running = manager.processMessage("tab-warm-busy", "go");
+			// Let the mock run() yield its first running status.
+			await new Promise<void>((r) => setTimeout(r, 1));
+			const result = await manager.warmCacheForTab("tab-warm-busy");
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.error).toBe("tab is generating");
+			await running;
 		});
 	});
 });

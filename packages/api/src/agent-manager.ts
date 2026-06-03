@@ -8,6 +8,7 @@ import {
 	appendEventToChunks,
 	BackgroundShellStore,
 	BackgroundTranscriptStore,
+	type ChatMessage,
 	type Chunk,
 	type ClaudeAccount,
 	clearSpillForTab,
@@ -1016,6 +1017,65 @@ export class AgentManager {
 
 	getTabStatus(tabId: string): AgentStatus {
 		return this.tabAgents.get(tabId)?.status ?? "idle";
+	}
+
+	/**
+	 * Prompt-cache WARMING for an idle tab (see `Agent.warmCache`).
+	 *
+	 * Reconstructs the tab's genuine conversation from the persisted chunk log,
+	 * resolves the SAME agent (model/key/tools/system prompt) the next real turn
+	 * would use, and replays the exact cached prefix plus one trivial throwaway
+	 * turn so the provider's ~5-min prompt-cache TTL is refreshed. The warming
+	 * request and its response are NOT persisted, NOT emitted, and NOT folded
+	 * into the real usage aggregate — its `usage` is returned to the caller so a
+	 * warming-only "last request" cache rate can be shown without polluting the
+	 * real Cache Rate metric.
+	 *
+	 * Refuses to fire while the tab is generating (`running`): the prefix would
+	 * be mid-mutation and the request would contend with the live turn. Callers
+	 * gate on idle anyway; this is defence in depth.
+	 *
+	 * Returns `{ ok: true, usage }` on success or `{ ok: false, error }` so the
+	 * route can surface a debug-strip error string. Never throws.
+	 */
+	async warmCacheForTab(
+		tabId: string,
+		opts: { keyId?: string; modelId?: string; agentModels?: AgentModelEntry[] } = {},
+	): Promise<{ ok: true; usage: UsageData } | { ok: false; error: string }> {
+		if (this.getTabStatus(tabId) === "running") {
+			return { ok: false, error: "tab is generating" };
+		}
+		try {
+			const tabAgent = this._getOrCreateTabAgent(tabId);
+			if (opts.agentModels) tabAgent.agentModels = opts.agentModels;
+
+			// Resolve the agent the next REAL turn would use. The fallback chain's
+			// first entry mirrors `processMessage`'s primary attempt; we only warm
+			// the primary (warming a fallback model would write a DIFFERENT prefix).
+			const fallbackSequence = this.buildFallbackSequence(tabAgent, opts.keyId, opts.modelId);
+			const primary = fallbackSequence[0];
+			const agent = await this.getOrCreateAgentForTab(
+				tabId,
+				primary?.key_id || opts.keyId,
+				primary?.model_id || opts.modelId,
+			);
+
+			// Rebuild the genuine history exactly as `getOrCreateAgentForTab`'s
+			// pre-population does, but keep the FULL history (no trailing-user
+			// trim): warming replays the complete cached prefix as-is.
+			let history: ChatMessage[] = [];
+			try {
+				history = getMessagesForTab(tabId).map((r) => ({ role: r.role, chunks: r.chunks }));
+			} catch {
+				// DB read failed — warm with whatever in-memory history the agent has.
+				history = [...agent.messages];
+			}
+
+			const usage = await agent.warmCache(history);
+			return { ok: true, usage };
+		} catch (err) {
+			return { ok: false, error: err instanceof Error ? err.message : String(err) };
+		}
 	}
 
 	/**

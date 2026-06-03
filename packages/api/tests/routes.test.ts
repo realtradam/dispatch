@@ -24,6 +24,15 @@ vi.mock("@dispatch/core", () => ({
 	Agent: class MockAgent {
 		status = "idle";
 		messages: unknown[] = [];
+		async warmCache(_history: unknown[]) {
+			// Simulate a warm replay that read most of the prompt from cache.
+			return {
+				inputTokens: 1000,
+				outputTokens: 1,
+				cacheReadTokens: 900,
+				cacheWriteTokens: 0,
+			};
+		}
 		async *run(_message: string) {
 			yield { type: "status", status: "running" } as const;
 			// Simulate some processing time so status stays "running"
@@ -665,6 +674,50 @@ describe("POST /chat/stop", () => {
 		expect(res.status).toBe(400);
 	});
 });
+
+describe("POST /chat/warm", () => {
+	it("returns ONLY the warming request usage (never persisted/emitted)", async () => {
+		const res = await app.request("/chat/warm", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ tabId: "tab-warm-1" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { usage?: Record<string, number> };
+		expect(body.usage).toEqual({
+			inputTokens: 1000,
+			outputTokens: 1,
+			cacheReadTokens: 900,
+			cacheWriteTokens: 0,
+		});
+	});
+
+	it("returns 400 when tabId is missing", async () => {
+		const res = await app.request("/chat/warm", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 409 while the tab is generating", async () => {
+		// Kick off a real (mock) turn so the tab is "running", then immediately
+		// attempt to warm it — warming must refuse mid-turn.
+		await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ tabId: "tab-warm-busy", message: "hi" }),
+		});
+		const res = await app.request("/chat/warm", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ tabId: "tab-warm-busy" }),
+		});
+		expect(res.status).toBe(409);
+	});
+});
+
 describe("Wake schedule routes", () => {
 	async function getSchedule() {
 		const res = await app.request("/models/wake-schedule");
