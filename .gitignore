@@ -6,7 +6,8 @@ build/
 # Local test credentials — never commit.
 .env
 
-# Agent work reports — local only.
+# Agent prompts (orchestrator→subagent) and work reports — local only.
+prompts/
 reports/
 
 # OS / editor noise
