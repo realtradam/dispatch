@@ -584,6 +584,56 @@ describe("createHost", () => {
 		});
 	});
 
+	describe("HostAPI registry access", () => {
+		it("getTools returns registered tools via HostAPI", async () => {
+			const tool = createFakeTool("read-file");
+			let capturedTools: ReadonlyMap<string, ToolContract> | undefined;
+
+			const producer = createExtension("tools-fs", {
+				activate: (host) => {
+					host.defineTool(tool);
+				},
+			});
+			const consumer = createExtension("consumer", {
+				dependsOn: ["tools-fs"],
+				activate: (host) => {
+					capturedTools = host.getTools();
+				},
+			});
+
+			const host = createHost([producer, consumer], deps);
+			await host.activate();
+
+			expect(capturedTools).toBeDefined();
+			expect(capturedTools?.size).toBe(1);
+			expect(capturedTools?.get("read-file")).toBe(tool);
+		});
+
+		it("getProviders returns registered providers via HostAPI", async () => {
+			const provider = createFakeProvider("anthropic");
+			let capturedProviders: ReadonlyMap<string, ProviderContract> | undefined;
+
+			const producer = createExtension("provider-anthropic", {
+				activate: (host) => {
+					host.defineProvider(provider);
+				},
+			});
+			const consumer = createExtension("consumer", {
+				dependsOn: ["provider-anthropic"],
+				activate: (host) => {
+					capturedProviders = host.getProviders();
+				},
+			});
+
+			const host = createHost([producer, consumer], deps);
+			await host.activate();
+
+			expect(capturedProviders).toBeDefined();
+			expect(capturedProviders?.size).toBe(1);
+			expect(capturedProviders?.get("anthropic")).toBe(provider);
+		});
+	});
+
 	describe("DAG errors", () => {
 		it("throws on missing dependency", () => {
 			const ext = createExtension("a", { dependsOn: ["missing"] });

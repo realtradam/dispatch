@@ -52,6 +52,36 @@ const userMessage: ChatMessage = {
 };
 
 describe("runTurn", () => {
+	it("emits events with the tabId and turnId from input", async () => {
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "hi" },
+				{ type: "usage", usage: { inputTokens: 1, outputTokens: 1 } },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const { events, emit } = createCollectingEmit();
+
+		await runTurn({
+			provider,
+			messages: [userMessage],
+			tools: [],
+			dispatch: { maxConcurrent: 1, eager: false },
+			tabId: "conv-42",
+			turnId: "turn-99",
+			emit,
+		});
+
+		expect(events.length).toBeGreaterThan(0);
+		for (const event of events) {
+			expect(event.tabId).toBe("conv-42");
+			if (event.type !== "status") {
+				expect(event.turnId).toBe("turn-99");
+			}
+		}
+	});
+
 	it("text-only turn emits correct events and returns correct result", async () => {
 		const provider = createFakeProvider([
 			[

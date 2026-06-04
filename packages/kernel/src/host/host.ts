@@ -126,6 +126,12 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 			permissions: deps.permissions,
 			events: deps.events,
 			logger: deps.logger,
+			getProviders() {
+				return providers;
+			},
+			getTools() {
+				return tools;
+			},
 			scheduler: {
 				register(job: ScheduledJob) {
 					scheduledJobs.push(job);
