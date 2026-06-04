@@ -12,7 +12,8 @@
 		"test:watch": "vitest",
 		"typecheck": "tsc -b --pretty",
 		"test:bun": "bun test packages/storage-sqlite/src",
-		"test:all": "bun run test && bun run test:bun"
+		"test:all": "bun run test && bun run test:bun",
+		"dev": "bun packages/host-bin/src/main.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.15",

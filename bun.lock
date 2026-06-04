@@ -25,6 +25,19 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/host-bin": {
+      "name": "@dispatch/host-bin",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/auth-apikey": "workspace:*",
+        "@dispatch/conversation-store": "workspace:*",
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/provider-openai-compat": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/storage-sqlite": "workspace:*",
+        "@dispatch/transport-http": "workspace:*",
+      },
+    },
     "packages/kernel": {
       "name": "@dispatch/kernel",
       "version": "0.0.0",
@@ -83,6 +96,8 @@
     "@dispatch/auth-apikey": ["@dispatch/auth-apikey@workspace:packages/auth-apikey"],
 
     "@dispatch/conversation-store": ["@dispatch/conversation-store@workspace:packages/conversation-store"],
+
+    "@dispatch/host-bin": ["@dispatch/host-bin@workspace:packages/host-bin"],
 
     "@dispatch/kernel": ["@dispatch/kernel@workspace:packages/kernel"],
 
