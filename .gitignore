@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Local test credentials — never commit.
+.env
+
+# Agent work reports — local only.
+reports/
+
+# OS / editor noise
+.DS_Store
+*.log

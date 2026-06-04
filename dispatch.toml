@@ -1,0 +1,7 @@
+# Dispatch (arch-rewrite) project config.
+#
+# LSP servers (typescript-language-server, biome) are inherited from the global
+# ~/.config/dispatch/dispatch.toml — no per-repo LSP block needed. Agents can use
+# the `lsp` tool (diagnostics / references / definition) on .ts files directly.
+#
+# Credentials for the rewrite live in .env (gitignored), read by auth-apikey.
