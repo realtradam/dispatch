@@ -84,3 +84,19 @@ returned a real response with auth-apikey on the path (boot log shows auth-apike
 activates before provider; provider registered = creds resolved through contract).
 NOTE: host-bin's `buildPostActivationHostAPI` stub is slated for removal in Step 3
 (host CR-1). Summons: prompts/step1-kernel-host.md, prompts/step1-provider.md (mimo-v2.5-pro).
+
+### Step 2 — First TOOL extension (read_file)  [x] DONE (verified live)
+New unit `packages/tool-read-file/` (owner-agent, mimo-v2.5-pro). Pure-core/shell
+split: `createReadFileTool(workdir)` → `ToolContract` named `read_file` (offset/
+limit pagination, 1-indexed; two-layer workdir containment incl. realpath symlink
+guard); `activate` calls `host.defineTool`. 29 unit tests. session-orchestrator's
+`resolveTools: () => [...host.getTools().values()]` flows it into runTurn for free.
+Orchestrator wiring CRs (done): root tsconfig ref, host-bin dep + import +
+CORE_EXTENSIONS (before session-orchestrator), bun install, biome import-sort.
+
+**Step 2 RESULT:** done + verified. typecheck clean, **214 tests pass** (185→+29),
+biome clean. LIVE: booted on 24203, asked flash to read a test file → stream
+contained a real **`tool-call` + `tool-result`** round-trip and the final answer
+quoted the file's secret passphrase (MAGENTA-OTTER-42) correctly. The kernel
+tool-dispatch loop is now proven end-to-end against a live model (§3.3). Summon:
+prompts/step2-tool-read-file.md, report: reports/step2-tool-read-file.md.

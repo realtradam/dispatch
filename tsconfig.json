@@ -8,6 +8,7 @@
 		{ "path": "./packages/conversation-store" },
 		{ "path": "./packages/session-orchestrator" },
 		{ "path": "./packages/transport-http" },
+		{ "path": "./packages/tool-read-file" },
 		{ "path": "./packages/host-bin" }
 	]
 }
