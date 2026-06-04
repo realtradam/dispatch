@@ -1,4 +1,17 @@
 {
 	"files": [],
-	"references": [{ "path": "./packages/kernel" }]
+	"references": [
+		{
+			"path": "./packages/auth-apikey"
+		},
+		{
+			"path": "./packages/kernel"
+		},
+		{
+			"path": "./packages/provider-openai-compat"
+		},
+		{
+			"path": "./packages/storage-sqlite"
+		}
+	]
 }
