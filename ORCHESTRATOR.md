@@ -67,20 +67,30 @@ OpenCode CLI is the summon mechanism (see `notes/opencode-agents.md`).
 `/home/tradam/projects/dispatch/arch-rewrite` (so the agents' `lsp` tool works —
 TS language server is configured globally).
 
-**Model:** use `opencode-go/qwen3.7-max` for BUILDING agents (capable coder).
+**Model:** use `opencode-go/mimo-v2.5-pro` for BUILDING agents (capable coder).
 `deepseek-v4-flash` is reserved as the *app's own runtime testbench*, not for
 building.
 
-**Canonical invocation** (inline the prompt — do NOT use `-f`, see gotcha):
+**Canonical invocation** (inline the prompt — do NOT use `-f`, see gotcha;
+ALWAYS redirect output to a file — do NOT let it stream to your terminal):
 ```bash
 cd /home/tradam/projects/dispatch/arch-rewrite && \
 opencode run --dir /home/tradam/projects/dispatch/arch-rewrite \
-  -m opencode-go/qwen3.7-max \
+  -m opencode-go/mimo-v2.5-pro \
   "$(cat prompts/<unit>.md)
 
 ---
-Follow the above exactly. You own ONLY <files>. When done, write reports/<unit>.md."
+Follow the above exactly. You own ONLY <files>. When done, write reports/<unit>.md." \
+  > reports/<unit>.run.log 2>&1
 ```
+
+**MANDATORY — capture output to a file, never display it.** The agent's streamed
+output is enormous and will overwhelm and CRASH this harness if it lands in your
+terminal. ALWAYS redirect the summon's stdout+stderr to a log file (e.g.
+`> reports/<unit>.run.log 2>&1`) and do NOT echo/`cat` that log back wholesale.
+You don't need the raw stream: read the agent's `reports/<unit>.md` report (and,
+if you must, `grep`/`tail` the log for a specific error). Treat dumping a full run
+log into context as a hard failure.
 
 **Run discipline (from the tool harness):**
 - **Do NOT background it. Use a large timeout** (e.g. 1800000 ms = 30 min) — these
@@ -93,7 +103,7 @@ Follow the above exactly. You own ONLY <files>. When done, write reports/<unit>.
 **GOTCHAS (learned the hard way):**
 - `-f/--file` is an ARRAY flag and greedily eats your trailing message as another
   filename → "File not found". **Inline with `"$(cat prompts/X.md)"` instead.**
-- A quick smoke test works: `opencode run -m opencode-go/qwen3.7-max "Reply with
+- A quick smoke test works: `opencode run -m opencode-go/mimo-v2.5-pro "Reply with
   exactly SMOKE_OK"` should print `SMOKE_OK`.
 - `opencode models` lists models; `opencode agent list` lists agent profiles;
   `opencode run --help` for flags.
@@ -110,6 +120,10 @@ Write self-contained prompts. Structure:
 3. **Ownership (strict):** the EXACT files it may create/edit, and an explicit
    "do not touch anything else; if you need a change elsewhere, write a change-
    request in your report — do NOT edit it."
+   - **Visibility (state it in EVERY prompt):** "Read ONLY the surfaces
+     (contracts/hooks/manifests/public signatures) of OTHER units; do NOT read
+     their implementation files. You MAY read the implementation files of YOUR
+     assigned unit only." (Mirrors §6 — keeps the agent's context clean too.)
 4. **The job + algorithm:** precise, with the contract types named.
 5. **Engineering constraints:** pure-core/inject-effects (P2), no ambient state
    (P3), no internal mocks (the test rule), strict-mode TS, typed handles for any
@@ -133,12 +147,15 @@ the project-specific, non-inferable rules.
 trust mechanism, and it works precisely because the boundaries are testable. The
 tests-at-boundaries ARE how you trust a unit without depending on its internals.
 
-**Pragmatic addendum (current phase):** while the system is young, ALSO skim the
-key files an agent produced — agents can report "clean" while making subtle
-contract mistakes, and catching them now is cheap. This is a deliberate,
-phase-appropriate overlay on the §3.6 protocol, not a replacement: the
-authoritative signals remain green typecheck + passing boundary tests + clean
-lint. As the harness matures, lean harder on the tests and less on reading code.
+**Stay out of implementation files (§6 Visibility).** Your trust signals are the
+agent's report, the contract/surface it exposes (contracts, hooks, public types),
+and the build/test/lint output you re-run yourself — NOT its implementation code.
+Do NOT open an extension's implementation files just to "skim" or double-check
+them; that floods your context and is exactly the overwhelm we are avoiding.
+Read ONLY the surfaces (contracts, hooks, manifests, public signatures). The one
+exception: open implementation files when there is an actual implementation
+CONFLICT or trouble — an integration bug, a contract gap, or an agent that is
+stuck — and then only the specific files in question.
 
 After every agent, independently:
 ```bash
@@ -148,8 +165,11 @@ bun run test        # vitest — note the pass count
 bun run check       # biome — must be clean
 git status --short  # confirm the agent stayed in its lane (no out-of-scope edits)
 ```
-- **Read the actual key files**, don't just trust the report. Agents can report
-  "clean" while making subtle contract mistakes.
+- **Read ONLY the surfaces** (the contracts/hooks/public signatures the unit
+  exposes), not its implementation files — unless an implementation conflict or
+  trouble forces you in (§6). The surface plus green checks is enough to trust a
+  unit; subtle contract mistakes show up at the boundary, which is what the
+  contract + boundary tests are for.
 - Confirm the agent touched ONLY its assigned files (one-owner rule).
 - For pure units, confirm tests use NO internal `vi.mock("@dispatch/*")`.
 
@@ -187,6 +207,17 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
   another unit's code is a signal that contract is underspecified — fix the
   contract, don't grant code access. (Exception: the temporary multi-knowledge
   integration agent, §5 / ORCHESTRATOR §5, which MAY read implementation.)
+- **The orchestrator obeys the visibility rule too.** You read ONLY surfaces of
+  the extensions implemented (contracts, hooks, manifests, public signatures) —
+  this is sufficient to do your job. Do NOT read implementation files as a
+  routine habit; only open them during an actual implementation conflict or
+  trouble (integration bug, contract gap, a stuck agent), and only the specific
+  files involved. Clean context = level-headed decisions; let the subagents do
+  the grunt work in the implementation.
+- **Subagents inherit this restriction.** Every prompt you write must instruct the
+  agent to read ONLY the surfaces (contracts/hooks) of OTHER units, with the sole
+  exception that it MAY read the implementation files of the task/extension it is
+  assigned to. It must not go spelunking through sibling units' implementations.
 - **`onAny` is the ONLY allowed dynamic hook subscription** (observability/logging
   firehose). All other cross-extension coupling is typed-symbol anchored (§5.4).
 - **Contracts are static TYPES; loading is dynamic** (manifests via host). This
