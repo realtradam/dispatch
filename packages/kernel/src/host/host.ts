@@ -54,6 +54,7 @@ export interface Host {
 	readonly getScheduledJobs: () => readonly ScheduledJob[];
 	readonly getMigrations: () => readonly string[];
 	readonly getDisabled: () => readonly DisabledExtension[];
+	readonly getHostAPI: () => HostAPI;
 }
 
 export function createHost(extensions: readonly Extension[], deps: HostDeps): Host {
@@ -95,15 +96,19 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 		}
 	}
 
-	function buildHostAPI(): HostAPI {
+	function buildHostAPI(opts?: { readonly registrationClosed?: boolean }): HostAPI {
+		const closed = opts?.registrationClosed ?? false;
 		return {
 			defineTool(tool: ToolContract) {
+				if (closed) throw new Error("Registration not available after activation");
 				tools.set(tool.name, tool);
 			},
 			defineProvider(provider: ProviderContract) {
+				if (closed) throw new Error("Registration not available after activation");
 				providers.set(provider.id, provider);
 			},
 			defineAuth(auth: AuthContract) {
+				if (closed) throw new Error("Registration not available after activation");
 				authProviders.set(auth.id, auth);
 			},
 			on<TPayload>(hook: EventHookDescriptor<TPayload>, handler: EventHandler<TPayload>) {
@@ -200,6 +205,9 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 		},
 		getDisabled() {
 			return disabled;
+		},
+		getHostAPI() {
+			return buildHostAPI({ registrationClosed: true });
 		},
 	};
 }

@@ -7,11 +7,11 @@ export const manifest: Manifest = {
 	apiVersion: "^0.1.0",
 	trust: "bundled",
 	capabilities: { db: true },
-	contributes: { services: ["storage"] },
 	activation: "eager",
 };
 
 export const extension: Extension = {
 	manifest,
+	// No-op: the SQLite backend is a kernel bootstrap dep injected via HostDeps.storageFactory, not a bus service.
 	activate: async (_host: HostAPI) => {},
 };

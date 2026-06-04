@@ -687,4 +687,67 @@ describe("createHost", () => {
 			expect(host.getDisabled()).toHaveLength(0);
 		});
 	});
+
+	describe("getHostAPI", () => {
+		it("returns a HostAPI whose read-views reflect registrations from activation", async () => {
+			const tool = createFakeTool("read-file");
+			const provider = createFakeProvider("anthropic");
+			const auth = createFakeAuth("apikey");
+
+			const ext = createExtension("multi-ext", {
+				activate: (host) => {
+					host.defineTool(tool);
+					host.defineProvider(provider);
+					host.defineAuth(auth);
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+
+			expect(api.getTools().size).toBe(1);
+			expect(api.getTools().get("read-file")).toBe(tool);
+
+			expect(api.getProviders().size).toBe(1);
+			expect(api.getProviders().get("anthropic")).toBe(provider);
+
+			expect(api.getAuthProviders().size).toBe(1);
+			expect(api.getAuthProvider("apikey")).toBe(auth);
+		});
+
+		it("throws on defineTool after activation", async () => {
+			const ext = createExtension("ext", { activate: () => {} });
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+			expect(() => api.defineTool(createFakeTool("late"))).toThrow(
+				"Registration not available after activation",
+			);
+		});
+
+		it("throws on defineProvider after activation", async () => {
+			const ext = createExtension("ext", { activate: () => {} });
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+			expect(() => api.defineProvider(createFakeProvider("late"))).toThrow(
+				"Registration not available after activation",
+			);
+		});
+
+		it("throws on defineAuth after activation", async () => {
+			const ext = createExtension("ext", { activate: () => {} });
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+			expect(() => api.defineAuth(createFakeAuth("late"))).toThrow(
+				"Registration not available after activation",
+			);
+		});
+	});
 });
