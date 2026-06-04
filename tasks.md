@@ -19,11 +19,9 @@ drive fan-out); extension **loading is dynamic** (manifests via the host).
 - [x] **storage-sqlite** — bun:sqlite StorageNamespace + migrations (21 bun tests). `9b611d6`
 - [x] **auth-apikey** — pure resolver env → ApiKeyCredentials (4 tests). `9b611d6`
 - [x] **provider-openai-compat** — OpenAI-compatible SSE → ProviderEvents. `9b611d6`
-- [~] **conversation-store** — append-only turn/chunk persistence on host.storage
-      (multi-turn = target B). RUNNING.
-- [ ] **session-orchestrator** — on message: load history → resolve provider/tools
-      → runTurn → persist. Depends on host + conversation-store + runtime.
-- [ ] **transport-http** — Hono `/chat` route; composes via host/bus.
+- [x] **conversation-store** — append-only persistence + pure reconcile (16 tests). `8b9cc0c`
+- [~] **session-orchestrator** — load history → resolve provider/tools → runTurn → persist. RUNNING (parallel).
+- [~] **transport-http** — Hono `/chat` NDJSON stream; calls orchestrator seam. RUNNING (parallel).
 
 ### Integration
 - [ ] **host-bin** — boot: load config (.env → config), discover+activate
