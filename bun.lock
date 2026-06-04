@@ -18,6 +18,13 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/conversation-store": {
+      "name": "@dispatch/conversation-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/kernel": {
       "name": "@dispatch/kernel",
       "version": "0.0.0",
@@ -29,11 +36,28 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/session-orchestrator": {
+      "name": "@dispatch/session-orchestrator",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/storage-sqlite": {
       "name": "@dispatch/storage-sqlite",
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/transport-http": {
+      "name": "@dispatch/transport-http",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
+        "hono": "^4.0.0",
       },
     },
   },
@@ -58,11 +82,17 @@
 
     "@dispatch/auth-apikey": ["@dispatch/auth-apikey@workspace:packages/auth-apikey"],
 
+    "@dispatch/conversation-store": ["@dispatch/conversation-store@workspace:packages/conversation-store"],
+
     "@dispatch/kernel": ["@dispatch/kernel@workspace:packages/kernel"],
 
     "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
 
+    "@dispatch/session-orchestrator": ["@dispatch/session-orchestrator@workspace:packages/session-orchestrator"],
+
     "@dispatch/storage-sqlite": ["@dispatch/storage-sqlite@workspace:packages/storage-sqlite"],
+
+    "@dispatch/transport-http": ["@dispatch/transport-http@workspace:packages/transport-http"],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.27.7", "", { "os": "aix", "cpu": "ppc64" }, "sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg=="],
 
@@ -217,6 +247,8 @@
     "fdir": ["fdir@6.5.0", "", { "peerDependencies": { "picomatch": "^3 || ^4" }, "optionalPeers": ["picomatch"] }, "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg=="],
 
     "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
+
+    "hono": ["hono@4.12.23", "", {}, "sha512-eIaZ9qDgu7XV0pxOCrg7/WhnQ6Ivm22UcxhXx/A3dcbqbbYgBEkc6e/J/s7j2tS96zoB0S9VBdLwQNCWwUo4LA=="],
 
     "js-tokens": ["js-tokens@9.0.1", "", {}, "sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ=="],
 
