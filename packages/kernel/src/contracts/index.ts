@@ -82,6 +82,7 @@ export type {
 } from "./provider.js";
 export type {
 	EventEmitter,
+	FinishReason,
 	RunTurnInput,
 	RunTurnResult,
 } from "./runtime.js";

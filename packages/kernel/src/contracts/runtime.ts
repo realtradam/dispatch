@@ -10,7 +10,7 @@
 import type { ChatMessage } from "./conversation.js";
 import type { ToolDispatchPolicy } from "./dispatch.js";
 import type { AgentEvent } from "./events.js";
-import type { ProviderContract, Usage } from "./provider.js";
+import type { ProviderContract, ProviderStreamOptions, Usage } from "./provider.js";
 import type { ToolContract } from "./tool.js";
 
 /**
@@ -18,6 +18,21 @@ import type { ToolContract } from "./tool.js";
  * The session-orchestrator provides this, wiring it to transport + persistence.
  */
 export type EventEmitter = (event: AgentEvent) => void;
+
+/**
+ * Why a turn ended. Known kernel/provider reasons are enumerated for ergonomics;
+ * the trailing `(string & {})` keeps the type open for provider-specific reasons
+ * passed through verbatim without losing autocomplete on the known values.
+ */
+export type FinishReason =
+	| "stop"
+	| "tool-calls"
+	| "length"
+	| "content-filter"
+	| "max-steps"
+	| "error"
+	| "aborted"
+	| (string & {});
 
 /**
  * Input to `runTurn` — everything the kernel needs to execute one turn.
@@ -40,6 +55,22 @@ export interface RunTurnInput {
 	/** The emitter the kernel calls for each outward event. */
 	readonly emit: EventEmitter;
 
+	/**
+	 * Identifiers used to attribute every emitted `AgentEvent`. The kernel does
+	 * not generate these — the session-orchestrator owns turn/tab identity and
+	 * passes them in, so events are traceable to their conversation.
+	 */
+	readonly tabId: string;
+	readonly turnId: string;
+
+	/**
+	 * Optional per-turn provider options (model, temperature, maxTokens,
+	 * systemPrompt). The orchestrator resolves these; the kernel forwards them
+	 * verbatim to `provider.stream` and never interprets them. A provider may
+	 * also be pre-configured at construction and ignore these.
+	 */
+	readonly providerOpts?: ProviderStreamOptions;
+
 	/** Cancellation signal for the entire turn. */
 	readonly signal?: AbortSignal;
 }
@@ -55,6 +86,6 @@ export interface RunTurnResult {
 	/** Aggregated token usage across all steps in the turn. */
 	readonly usage: Usage;
 
-	/** Why the turn ended (e.g. "stop", "max-steps", "error", "aborted"). */
-	readonly finishReason: string;
+	/** Why the turn ended. */
+	readonly finishReason: FinishReason;
 }
