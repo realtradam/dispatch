@@ -230,6 +230,12 @@ export interface HostAPI {
 	/** Read-only view of all registered tools. */
 	readonly getTools: () => ReadonlyMap<string, ToolContract>;
 
+	/** Read-only view of all registered auth providers. */
+	readonly getAuthProviders: () => ReadonlyMap<string, AuthContract>;
+
+	/** Look up a single auth provider by id. */
+	readonly getAuthProvider: (id: string) => AuthContract | undefined;
+
 	/** Register a scheduled job with the host's scheduler. */
 	readonly scheduler: {
 		readonly register: (job: ScheduledJob) => void;

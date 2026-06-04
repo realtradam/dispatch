@@ -632,6 +632,33 @@ describe("createHost", () => {
 			expect(capturedProviders?.size).toBe(1);
 			expect(capturedProviders?.get("anthropic")).toBe(provider);
 		});
+
+		it("getAuthProviders/getAuthProvider returns registered auth via HostAPI", async () => {
+			const auth = createFakeAuth("apikey");
+			let capturedAuth: ReadonlyMap<string, AuthContract> | undefined;
+			let capturedSingle: AuthContract | undefined;
+
+			const producer = createExtension("auth-apikey", {
+				activate: (host) => {
+					host.defineAuth(auth);
+				},
+			});
+			const consumer = createExtension("consumer", {
+				dependsOn: ["auth-apikey"],
+				activate: (host) => {
+					capturedAuth = host.getAuthProviders();
+					capturedSingle = host.getAuthProvider("apikey");
+				},
+			});
+
+			const host = createHost([producer, consumer], deps);
+			await host.activate();
+
+			expect(capturedAuth).toBeDefined();
+			expect(capturedAuth?.size).toBe(1);
+			expect(capturedAuth?.get("apikey")).toBe(auth);
+			expect(capturedSingle).toBe(auth);
+		});
 	});
 
 	describe("DAG errors", () => {

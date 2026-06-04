@@ -132,6 +132,12 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 			getTools() {
 				return tools;
 			},
+			getAuthProviders() {
+				return authProviders;
+			},
+			getAuthProvider(id: string) {
+				return authProviders.get(id);
+			},
 			scheduler: {
 				register(job: ScheduledJob) {
 					scheduledJobs.push(job);
