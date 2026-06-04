@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
-# Stop containers, remove volumes, remove images, and clear build cache
-sudo docker compose -f "$PROJECT_DIR/docker-compose.yml" down --volumes --rmi local "$@"
-sudo docker builder prune -f --filter "label=com.docker.compose.project=dispatch"
