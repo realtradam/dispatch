@@ -100,3 +100,25 @@ contained a real **`tool-call` + `tool-result`** round-trip and the final answer
 quoted the file's secret passphrase (MAGENTA-OTTER-42) correctly. The kernel
 tool-dispatch loop is now proven end-to-end against a live model (§3.3). Summon:
 prompts/step2-tool-read-file.md, report: reports/step2-tool-read-file.md.
+
+### Step 3 — Small CRs / hygiene  [x] DONE (verified live)
+Parallel summons (disjoint file sets, mimo-v2.5-pro; output→reports/*.run.log):
+- **host CR-1** (kernel-host owner): `createHost` exposes `getHostAPI()` (registration
+  closed post-activation) so host-bin drops its `buildPostActivationHostAPI` duplicate.
+  prompts/step3-kernel-host.md. Files: packages/kernel/src/host/{host.ts,host.test.ts}.
+- **storage-sqlite CR-2** (owner): remove false `contributes.services:["storage"]`
+  from manifest (backend is a kernel bootstrap dep via HostDeps.storageFactory, not a
+  bus service); document the intentional no-op activate. prompts/step3-storage-sqlite.md.
+  Files: packages/storage-sqlite/src/extension.ts.
+After both land: orchestrator wires host-bin to use `host.getHostAPI()` (deletes adapter).
+
+**Step 3 RESULT:** done + verified. (1) kernel-host: `createHost` now exposes
+`getHostAPI()` returning the canonical post-activation HostAPI with registration
+methods closed (single builder w/ `registrationClosed` flag — zero duplication);
++4 host tests. (2) storage-sqlite: removed false `contributes.services:["storage"]`;
+documented the intentional no-op activate (backend is a kernel bootstrap dep via
+HostDeps.storageFactory). (3) host-bin wiring (orchestrator): deleted the
+`buildPostActivationHostAPI` adapter, now calls `host.getHostAPI()`; dropped the
+now-unused `HostAPI` import. typecheck clean, **218 tests pass**, biome clean.
+Live boot: all 7 extensions activate, curl returns real responses. Summons:
+prompts/step3-{kernel-host,storage-sqlite}.md (mimo-v2.5-pro, parallel, disjoint).

@@ -8,7 +8,6 @@ import {
 	createHost,
 	type EventsEmitter,
 	type Extension,
-	type HostAPI,
 	type HostDeps,
 	type Logger,
 	type PermissionGate,
@@ -54,41 +53,6 @@ function createNoopEvents(): EventsEmitter {
 	return { emit: () => {} };
 }
 
-function buildPostActivationHostAPI(
-	host: {
-		getProviders: () => ReadonlyMap<string, unknown>;
-		getTools: () => ReadonlyMap<string, unknown>;
-		getAuthProviders: () => ReadonlyMap<string, unknown>;
-		getAuthProvider: (id: string) => unknown;
-	},
-	deps: HostDeps,
-): HostAPI {
-	const notAvailable = () => {
-		throw new Error("Registration not available after activation");
-	};
-	return {
-		defineTool: notAvailable,
-		defineProvider: notAvailable,
-		defineAuth: notAvailable,
-		on: (hook, handler) => deps.bus.on(hook, handler),
-		addFilter: (hook, fn) => deps.bus.addFilter(hook, fn),
-		provideService: (handle, impl) => deps.bus.provideService(handle, impl),
-		getService: (handle) => deps.bus.getService(handle),
-		storage: (namespace: string) => deps.storageFactory(namespace),
-		config: deps.config,
-		secrets: deps.secrets,
-		permissions: deps.permissions,
-		events: deps.events,
-		logger: deps.logger,
-		getProviders: () => host.getProviders() as ReturnType<HostAPI["getProviders"]>,
-		getTools: () => host.getTools() as ReturnType<HostAPI["getTools"]>,
-		getAuthProviders: () => host.getAuthProviders() as ReturnType<HostAPI["getAuthProviders"]>,
-		getAuthProvider: (id: string) =>
-			host.getAuthProvider(id) as ReturnType<HostAPI["getAuthProvider"]>,
-		scheduler: { register: (job: ScheduledJob) => deps.scheduler.register(job) },
-	};
-}
-
 const CORE_EXTENSIONS: readonly Extension[] = [
 	storageSqliteExt,
 	conversationStoreExt,
@@ -131,7 +95,7 @@ async function boot(): Promise<void> {
 		}
 	}
 
-	const hostAPI = buildPostActivationHostAPI(host, deps);
+	const hostAPI = host.getHostAPI();
 	const app = createServer(hostAPI);
 
 	// Port precedence: BACKEND_PORT (the rewrite's assigned port) → PORT → default.
