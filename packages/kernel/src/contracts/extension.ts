@@ -224,6 +224,12 @@ export interface HostAPI {
 	/** Logger — always available, even before other extensions activate. */
 	readonly logger: Logger;
 
+	/** Read-only view of all registered providers. */
+	readonly getProviders: () => ReadonlyMap<string, ProviderContract>;
+
+	/** Read-only view of all registered tools. */
+	readonly getTools: () => ReadonlyMap<string, ToolContract>;
+
 	/** Register a scheduled job with the host's scheduler. */
 	readonly scheduler: {
 		readonly register: (job: ScheduledJob) => void;

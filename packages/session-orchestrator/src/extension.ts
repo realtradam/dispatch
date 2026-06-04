@@ -1,11 +1,5 @@
 import { conversationStoreHandle } from "@dispatch/conversation-store";
-import type {
-	Extension,
-	HostAPI,
-	Manifest,
-	ProviderContract,
-	ToolContract,
-} from "@dispatch/kernel";
+import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import {
 	createSessionOrchestrator,
@@ -27,31 +21,13 @@ export const manifest: Manifest = {
 	},
 };
 
-interface ProviderResolvingHostAPI extends HostAPI {
-	readonly getProviders?: () => ReadonlyMap<string, ProviderContract>;
-	readonly getTools?: () => ReadonlyMap<string, ToolContract>;
-}
-
 export function activate(host: HostAPI): void {
 	const conversationStore = host.getService(conversationStoreHandle);
-	const extendedHost = host as ProviderResolvingHostAPI;
 
 	const orchestrator: SessionOrchestrator = createSessionOrchestrator({
 		conversationStore,
-		resolveProvider: () => {
-			if (extendedHost.getProviders !== undefined) {
-				return selectFirstProvider(extendedHost.getProviders());
-			}
-			throw new Error(
-				"HostAPI does not expose getProviders() — change-request: add provider resolution to HostAPI",
-			);
-		},
-		resolveTools: () => {
-			if (extendedHost.getTools !== undefined) {
-				return [...extendedHost.getTools().values()];
-			}
-			return [];
-		},
+		resolveProvider: () => selectFirstProvider(host.getProviders()),
+		resolveTools: () => [...host.getTools().values()],
 		runTurn,
 	});
 

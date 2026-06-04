@@ -217,8 +217,8 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 		toolMap.set(tool.name, tool);
 	}
 
-	const tabId = "";
-	const turnId = "";
+	const tabId = input.tabId;
+	const turnId = input.turnId;
 	const signal = input.signal ?? new AbortController().signal;
 
 	for (let step = 0; step < MAX_STEPS; step++) {
