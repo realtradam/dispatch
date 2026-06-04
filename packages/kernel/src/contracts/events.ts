@@ -25,24 +25,24 @@ export type AgentEvent =
 	| TurnDoneEvent
 	| TurnSealedEvent;
 
-/** Status change for a tab / session (e.g. idle → running). */
+/** Status change for a conversation (e.g. idle → running). */
 export interface StatusEvent {
 	readonly type: "status";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly status: string;
 }
 
 /** A turn has begun. */
 export interface TurnStartEvent {
 	readonly type: "turn-start";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 }
 
 /** Incremental text content from the model during a turn. */
 export interface TurnTextDeltaEvent {
 	readonly type: "text-delta";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 	readonly delta: string;
 }
@@ -50,7 +50,7 @@ export interface TurnTextDeltaEvent {
 /** Incremental reasoning / thinking content during a turn. */
 export interface TurnReasoningDeltaEvent {
 	readonly type: "reasoning-delta";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 	readonly delta: string;
 }
@@ -58,7 +58,7 @@ export interface TurnReasoningDeltaEvent {
 /** The model has requested a tool to be run. */
 export interface TurnToolCallEvent {
 	readonly type: "tool-call";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 	readonly toolCallId: string;
 	readonly toolName: string;
@@ -68,7 +68,7 @@ export interface TurnToolCallEvent {
 /** A tool has completed execution. */
 export interface TurnToolResultEvent {
 	readonly type: "tool-result";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 	readonly toolCallId: string;
 	readonly toolName: string;
@@ -79,7 +79,7 @@ export interface TurnToolResultEvent {
 /** Streaming output from a tool execution (e.g. shell stdout/stderr). */
 export interface TurnToolOutputEvent {
 	readonly type: "tool-output";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 	readonly toolCallId: string;
 	readonly data: string;
@@ -89,7 +89,7 @@ export interface TurnToolOutputEvent {
 /** Token usage for the current step or turn. */
 export interface TurnUsageEvent {
 	readonly type: "usage";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 	readonly usage: Usage;
 }
@@ -97,7 +97,7 @@ export interface TurnUsageEvent {
 /** An error occurred during the turn. */
 export interface TurnErrorEvent {
 	readonly type: "error";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 	readonly message: string;
 	readonly code?: string;
@@ -106,7 +106,7 @@ export interface TurnErrorEvent {
 /** The turn has completed (model finished generating). */
 export interface TurnDoneEvent {
 	readonly type: "done";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 	readonly reason: string;
 }
@@ -117,6 +117,6 @@ export interface TurnDoneEvent {
  */
 export interface TurnSealedEvent {
 	readonly type: "turn-sealed";
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 }

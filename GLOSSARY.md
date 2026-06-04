@@ -29,12 +29,9 @@
 | **provider** | An extension wrapping an LLM backend (`stream(messages, tools)`), provider-agnostic to the kernel. | — |
 | **AgentEvent** | An outward event the runtime emits during a turn (text-delta, tool-call, usage, done, etc.). Carries `conversationId` + `turnId`. | — |
 
-## Known vocabulary drift (tracked, not yet fixed)
+## Known vocabulary drift
 
-- **`tabId` in `AgentEvent`s and `runTurn` input.** The events contract
-  (`packages/kernel/src/contracts/events.ts`) and `RunTurnInput` still use
-  **`tabId`** where the canonical term is now **`conversationId`**. The
-  session-orchestrator maps `conversationId → tabId` as a bridge. This is a
-  CONTRACT change (kernel + every consumer) — to be done as a scoped fan-out via
-  `lsp references` (see HANDOFF.md), not a silent edit. Until then, `tabId` in
-  emitted events == the `conversationId`.
+- _None._ The former `tabId` drift in `AgentEvent`s and `RunTurnInput` was fully
+  resolved (renamed to `conversationId` across contracts + every consumer; see
+  tasks.md Step 4). `tabId` is retained only in the "Aliases to avoid" column
+  above so it is never reintroduced.

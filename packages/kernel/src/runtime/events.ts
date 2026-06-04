@@ -1,57 +1,61 @@
 import type { AgentEvent } from "../contracts/events.js";
 import type { Usage } from "../contracts/provider.js";
 
-export function textDeltaEvent(tabId: string, turnId: string, delta: string): AgentEvent {
-	return { type: "text-delta", tabId, turnId, delta };
+export function textDeltaEvent(conversationId: string, turnId: string, delta: string): AgentEvent {
+	return { type: "text-delta", conversationId, turnId, delta };
 }
 
-export function reasoningDeltaEvent(tabId: string, turnId: string, delta: string): AgentEvent {
-	return { type: "reasoning-delta", tabId, turnId, delta };
+export function reasoningDeltaEvent(
+	conversationId: string,
+	turnId: string,
+	delta: string,
+): AgentEvent {
+	return { type: "reasoning-delta", conversationId, turnId, delta };
 }
 
 export function toolCallEvent(
-	tabId: string,
+	conversationId: string,
 	turnId: string,
 	toolCallId: string,
 	toolName: string,
 	input: unknown,
 ): AgentEvent {
-	return { type: "tool-call", tabId, turnId, toolCallId, toolName, input };
+	return { type: "tool-call", conversationId, turnId, toolCallId, toolName, input };
 }
 
 export function toolResultEvent(
-	tabId: string,
+	conversationId: string,
 	turnId: string,
 	toolCallId: string,
 	toolName: string,
 	content: string,
 	isError: boolean,
 ): AgentEvent {
-	return { type: "tool-result", tabId, turnId, toolCallId, toolName, content, isError };
+	return { type: "tool-result", conversationId, turnId, toolCallId, toolName, content, isError };
 }
 
 export function toolOutputEvent(
-	tabId: string,
+	conversationId: string,
 	turnId: string,
 	toolCallId: string,
 	data: string,
 	stream: "stdout" | "stderr",
 ): AgentEvent {
-	return { type: "tool-output", tabId, turnId, toolCallId, data, stream };
+	return { type: "tool-output", conversationId, turnId, toolCallId, data, stream };
 }
 
-export function usageEvent(tabId: string, turnId: string, usage: Usage): AgentEvent {
-	return { type: "usage", tabId, turnId, usage };
+export function usageEvent(conversationId: string, turnId: string, usage: Usage): AgentEvent {
+	return { type: "usage", conversationId, turnId, usage };
 }
 
 export function errorEvent(
-	tabId: string,
+	conversationId: string,
 	turnId: string,
 	message: string,
 	code?: string,
 ): AgentEvent {
 	if (code !== undefined) {
-		return { type: "error", tabId, turnId, message, code };
+		return { type: "error", conversationId, turnId, message, code };
 	}
-	return { type: "error", tabId, turnId, message };
+	return { type: "error", conversationId, turnId, message };
 }

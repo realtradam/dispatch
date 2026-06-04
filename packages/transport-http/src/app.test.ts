@@ -66,10 +66,10 @@ describe("POST /chat", () => {
 
 	it("streams events as NDJSON", async () => {
 		const events: AgentEvent[] = [
-			{ type: "turn-start", tabId: "tab1", turnId: "turn1" },
-			{ type: "text-delta", tabId: "tab1", turnId: "turn1", delta: "Hello" },
-			{ type: "text-delta", tabId: "tab1", turnId: "turn1", delta: " world" },
-			{ type: "done", tabId: "tab1", turnId: "turn1", reason: "stop" },
+			{ type: "turn-start", conversationId: "tab1", turnId: "turn1" },
+			{ type: "text-delta", conversationId: "tab1", turnId: "turn1", delta: "Hello" },
+			{ type: "text-delta", conversationId: "tab1", turnId: "turn1", delta: " world" },
+			{ type: "done", conversationId: "tab1", turnId: "turn1", reason: "stop" },
 		];
 		const app = createApp({ orchestrator: createFakeOrchestrator(events) });
 
@@ -98,7 +98,7 @@ describe("POST /chat", () => {
 	it("generates conversationId when not provided", async () => {
 		const app = createApp({
 			orchestrator: createFakeOrchestrator([
-				{ type: "done", tabId: "tab1", turnId: "turn1", reason: "stop" },
+				{ type: "done", conversationId: "tab1", turnId: "turn1", reason: "stop" },
 			]),
 			generateId: () => "generated-uuid",
 		});
