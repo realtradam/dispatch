@@ -5,6 +5,9 @@
 			"path": "./packages/auth-apikey"
 		},
 		{
+			"path": "./packages/conversation-store"
+		},
+		{
 			"path": "./packages/kernel"
 		},
 		{
