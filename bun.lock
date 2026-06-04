@@ -11,9 +11,30 @@
         "vitest": "^3.0.0",
       },
     },
+    "packages/auth-apikey": {
+      "name": "@dispatch/auth-apikey",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/kernel": {
       "name": "@dispatch/kernel",
       "version": "0.0.0",
+    },
+    "packages/provider-openai-compat": {
+      "name": "@dispatch/provider-openai-compat",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/storage-sqlite": {
+      "name": "@dispatch/storage-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
     },
   },
   "packages": {
@@ -35,7 +56,13 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.4.16", "", { "os": "win32", "cpu": "x64" }, "sha512-Kp85jgoBHa05gix6UIRjfCDiUV3w/8VIdZ247VyyO2gEjaw12WEVhdIjlxp/AMzXxqxQwbxNTDVZ3Mwd2RG5rw=="],
 
+    "@dispatch/auth-apikey": ["@dispatch/auth-apikey@workspace:packages/auth-apikey"],
+
     "@dispatch/kernel": ["@dispatch/kernel@workspace:packages/kernel"],
+
+    "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
+
+    "@dispatch/storage-sqlite": ["@dispatch/storage-sqlite@workspace:packages/storage-sqlite"],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.27.7", "", { "os": "aix", "cpu": "ppc64" }, "sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg=="],
 
