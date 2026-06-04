@@ -1,7 +1,7 @@
 // @dispatch/kernel — the minimal runtime core.
 //
 // Exposes the ABI (contracts) that every extension and the runtime compile
-// against. Host, runtime, and bus implementations are added by their own
-// owner-agents and re-exported here as they land.
+// against, plus kernel implementations (bus, host, runtime) as they land.
 
+export * from "./bus/index.js";
 export * from "./contracts/index.js";
