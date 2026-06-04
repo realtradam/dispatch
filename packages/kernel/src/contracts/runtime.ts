@@ -57,10 +57,10 @@ export interface RunTurnInput {
 
 	/**
 	 * Identifiers used to attribute every emitted `AgentEvent`. The kernel does
-	 * not generate these — the session-orchestrator owns turn/tab identity and
-	 * passes them in, so events are traceable to their conversation.
+	 * not generate these — the session-orchestrator owns turn/conversation identity
+	 * and passes them in, so events are traceable to their conversation.
 	 */
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 
 	/**

@@ -13,7 +13,7 @@ export async function executeToolCall(
 	tool: ToolContract | undefined,
 	signal: AbortSignal,
 	emit: EventEmitter,
-	tabId: string,
+	conversationId: string,
 	turnId: string,
 ): Promise<ToolResult> {
 	if (tool === undefined) {
@@ -26,7 +26,7 @@ export async function executeToolCall(
 		toolCallId: call.id,
 		signal,
 		onOutput: (data, stream) => {
-			emit(toolOutputEvent(tabId, turnId, call.id, data, stream));
+			emit(toolOutputEvent(conversationId, turnId, call.id, data, stream));
 		},
 	};
 	try {
@@ -48,7 +48,7 @@ export function createStepDispatcher(
 	policy: ToolDispatchPolicy,
 	signal: AbortSignal,
 	emit: EventEmitter,
-	tabId: string,
+	conversationId: string,
 	turnId: string,
 ): StepDispatcher {
 	let activeCount = 0;
@@ -78,7 +78,14 @@ export function createStepDispatcher(
 	}
 
 	async function runAndResolve(entry: QueueEntry): Promise<void> {
-		const result = await executeToolCall(entry.call, entry.tool, signal, emit, tabId, turnId);
+		const result = await executeToolCall(
+			entry.call,
+			entry.tool,
+			signal,
+			emit,
+			conversationId,
+			turnId,
+		);
 		activeCount--;
 		if (entry.tool?.concurrencySafe === false) unsafeRunning = false;
 		entry.resolve(result);

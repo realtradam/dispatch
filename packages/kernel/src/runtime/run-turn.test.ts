@@ -52,7 +52,7 @@ const userMessage: ChatMessage = {
 };
 
 describe("runTurn", () => {
-	it("emits events with the tabId and turnId from input", async () => {
+	it("emits events with the conversationId and turnId from input", async () => {
 		const provider = createFakeProvider([
 			[
 				{ type: "text-delta", delta: "hi" },
@@ -68,14 +68,14 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "conv-42",
+			conversationId: "conv-42",
 			turnId: "turn-99",
 			emit,
 		});
 
 		expect(events.length).toBeGreaterThan(0);
 		for (const event of events) {
-			expect(event.tabId).toBe("conv-42");
+			expect(event.conversationId).toBe("conv-42");
 			if (event.type !== "status") {
 				expect(event.turnId).toBe("turn-99");
 			}
@@ -100,7 +100,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit,
 		});
@@ -143,7 +143,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [tool],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit,
 		});
@@ -201,7 +201,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [tool],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 		});
@@ -250,7 +250,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [toolA, toolB],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 		});
@@ -294,7 +294,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [toolA, toolB],
 			dispatch: { maxConcurrent: 2, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 		});
@@ -352,7 +352,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [toolA, toolB, toolC],
 			dispatch: { maxConcurrent: 0, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 		});
@@ -413,7 +413,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [tool],
 			dispatch: { maxConcurrent: 1, eager: true },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 		});
@@ -464,7 +464,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [tool],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 		});
@@ -513,7 +513,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [tool],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit,
 			signal: ac.signal,
@@ -545,7 +545,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 			signal: ac.signal,
@@ -583,7 +583,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [tool],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit,
 		});
@@ -657,7 +657,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [unsafeTool, safeTool],
 			dispatch: { maxConcurrent: 5, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 		});
@@ -691,7 +691,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit,
 		});
@@ -724,7 +724,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit,
 		});
@@ -759,7 +759,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [tool],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit: () => {},
 		});
@@ -797,7 +797,7 @@ describe("runTurn", () => {
 			messages: [userMessage],
 			tools: [tool],
 			dispatch: { maxConcurrent: 1, eager: false },
-			tabId: "tab-test",
+			conversationId: "tab-test",
 			turnId: "turn-test",
 			emit,
 		});

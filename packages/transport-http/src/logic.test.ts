@@ -79,7 +79,7 @@ describe("serializeEventLine", () => {
 	it("serializes an event as JSON followed by newline", () => {
 		const event: AgentEvent = {
 			type: "text-delta",
-			tabId: "tab1",
+			conversationId: "tab1",
 			turnId: "turn1",
 			delta: "hello",
 		};
@@ -90,7 +90,7 @@ describe("serializeEventLine", () => {
 	it("serializes a done event", () => {
 		const event: AgentEvent = {
 			type: "done",
-			tabId: "tab1",
+			conversationId: "tab1",
 			turnId: "turn1",
 			reason: "stop",
 		};

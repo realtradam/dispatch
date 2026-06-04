@@ -48,7 +48,7 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 				tools,
 				dispatch,
 				emit: onEvent,
-				tabId: conversationId,
+				conversationId,
 				turnId,
 				...(signal !== undefined ? { signal } : {}),
 			});

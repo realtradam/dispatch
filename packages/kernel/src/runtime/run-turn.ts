@@ -74,7 +74,7 @@ interface StepContext {
 	readonly dispatch: RunTurnInput["dispatch"];
 	readonly emit: EventEmitter;
 	readonly signal: AbortSignal;
-	readonly tabId: string;
+	readonly conversationId: string;
 	readonly turnId: string;
 }
 
@@ -96,11 +96,11 @@ function processEvent(
 	switch (event.type) {
 		case "text-delta":
 			appendTextDelta(chunks, event.delta);
-			ctx.emit(textDeltaEvent(ctx.tabId, ctx.turnId, event.delta));
+			ctx.emit(textDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
 			break;
 		case "reasoning-delta":
 			appendThinkingDelta(chunks, event.delta);
-			ctx.emit(reasoningDeltaEvent(ctx.tabId, ctx.turnId, event.delta));
+			ctx.emit(reasoningDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
 			break;
 		case "tool-call": {
 			const call: ToolCall = {
@@ -115,14 +115,22 @@ function processEvent(
 				toolName: event.toolName,
 				input: event.input,
 			});
-			ctx.emit(toolCallEvent(ctx.tabId, ctx.turnId, event.toolCallId, event.toolName, event.input));
+			ctx.emit(
+				toolCallEvent(
+					ctx.conversationId,
+					ctx.turnId,
+					event.toolCallId,
+					event.toolName,
+					event.input,
+				),
+			);
 			if (ctx.dispatch.eager) {
 				dispatcher.submit(call);
 			}
 			break;
 		}
 		case "usage":
-			ctx.emit(usageEvent(ctx.tabId, ctx.turnId, event.usage));
+			ctx.emit(usageEvent(ctx.conversationId, ctx.turnId, event.usage));
 			break;
 		case "finish":
 			break;
@@ -132,7 +140,7 @@ function processEvent(
 			} else {
 				chunks.push({ type: "error", message: event.message });
 			}
-			ctx.emit(errorEvent(ctx.tabId, ctx.turnId, event.message, event.code));
+			ctx.emit(errorEvent(ctx.conversationId, ctx.turnId, event.message, event.code));
 			break;
 	}
 }
@@ -148,7 +156,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		ctx.dispatch,
 		ctx.signal,
 		ctx.emit,
-		ctx.tabId,
+		ctx.conversationId,
 		ctx.turnId,
 	);
 
@@ -167,7 +175,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		chunks.push({ type: "error", message });
-		ctx.emit(errorEvent(ctx.tabId, ctx.turnId, message));
+		ctx.emit(errorEvent(ctx.conversationId, ctx.turnId, message));
 		finishReason = "error";
 	}
 
@@ -184,7 +192,16 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		const result = results.get(call.id);
 		if (result !== undefined) {
 			const isError = result.isError ?? false;
-			ctx.emit(toolResultEvent(ctx.tabId, ctx.turnId, call.id, call.name, result.content, isError));
+			ctx.emit(
+				toolResultEvent(
+					ctx.conversationId,
+					ctx.turnId,
+					call.id,
+					call.name,
+					result.content,
+					isError,
+				),
+			);
 			toolMessages.push({
 				role: "tool",
 				chunks: [
@@ -217,7 +234,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 		toolMap.set(tool.name, tool);
 	}
 
-	const tabId = input.tabId;
+	const conversationId = input.conversationId;
 	const turnId = input.turnId;
 	const signal = input.signal ?? new AbortController().signal;
 
@@ -235,7 +252,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 			dispatch: input.dispatch,
 			emit: input.emit,
 			signal,
-			tabId,
+			conversationId,
 			turnId,
 		});
 

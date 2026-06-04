@@ -48,7 +48,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 			.catch((err) => {
 				events.push({
 					type: "error",
-					tabId: conversationId,
+					conversationId,
 					turnId: "",
 					message: err instanceof Error ? err.message : String(err),
 				});

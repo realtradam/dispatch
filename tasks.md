@@ -122,3 +122,35 @@ HostDeps.storageFactory). (3) host-bin wiring (orchestrator): deleted the
 now-unused `HostAPI` import. typecheck clean, **218 tests pass**, biome clean.
 Live boot: all 7 extensions activate, curl returns real responses. Summons:
 prompts/step3-{kernel-host,storage-sqlite}.md (mimo-v2.5-pro, parallel, disjoint).
+
+### Step 4 — Vocab drift: tabId → conversationId  [x] DONE (verified)
+Interlocked contract rename (every consumer breaks at once) → ONE coordinated
+multi-file owner-agent (mimo-v2.5-pro, output→reports/step4-*.run.log) owns the
+full 10-file set; orchestrator updates GLOSSARY + tasks separately.
+Files: contracts/{events,runtime}.ts, runtime/{events,run-turn,dispatch,run-turn.test}.ts,
+session-orchestrator/orchestrator.ts, transport-http/{app,app.test,logic.test}.ts.
+External `/chat` field is ALREADY conversationId — unchanged; only the internal
+field + emitted NDJSON event field flip tabId→conversationId. prompts/step4-rename-conversationid.md.
+
+**Step 4 RESULT:** done + verified. The agent renamed `tabId` → `conversationId`
+across all 10 files in one atomic change: all 11 `AgentEvent` variants
+(`contracts/events.ts`) + `RunTurnInput` (`contracts/runtime.ts`), the runtime
+event factories/`run-turn`/`dispatch`, the session-orchestrator bridge (dropped
+the redundant `tabId: conversationId` line), transport-http emit wiring, and all
+three test files (inputs + assertions). Doc comments updated ("turn/tab identity"
+→ "turn/conversation identity"; StatusEvent "tab / session" → "conversation").
+Orchestrator re-verified independently: **typecheck clean (EXIT 0)**, **218 tests
+pass** (unchanged count — pure rename, no behavior change), **biome clean**, and
+`grep tabId packages/` → **zero matches**. Agent stayed in-lane (exactly the 10
+owned files). External `/chat` request field + `X-Conversation-Id` response header
+untouched (already canonical); emitted NDJSON events now carry `conversationId`.
+GLOSSARY drift note removed. Report: reports/step4-rename-conversationid.md.
+
+---
+
+## 🏁 Post-MVP backlog COMPLETE (Steps 1–4 all done + verified)
+All four ordered HANDOFF steps landed: auth→provider seam wired, first live tool
+extension (read_file), hygiene CRs (getHostAPI + manifest honesty), and the
+tabId→conversationId vocab rename. typecheck + biome clean; 218 tests green.
+Remaining work is the parked design decisions (persistent waking agents, etc.) —
+non-blocking. See HANDOFF.md "Open design decisions still parked".
