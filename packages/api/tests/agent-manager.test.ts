@@ -328,6 +328,9 @@ vi.mock("@dispatch/core", () => ({
 	createConfigWatcher(_dir: string, _onChange: unknown) {
 		return { close() {} };
 	},
+	watchDirConfig(_dir: string, _onChange: unknown) {
+		return { close() {} };
+	},
 	loadSkills(_dir: string) {
 		return { skills: [], mappings: [] };
 	},

@@ -44,6 +44,7 @@ export {
 	loadGlobalConfig,
 	mergeConfigs,
 	validateConfig,
+	watchDirConfig,
 } from "./config/index.js";
 // Credentials
 export * from "./credentials/index.js";
