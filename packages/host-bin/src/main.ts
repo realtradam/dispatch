@@ -57,6 +57,8 @@ function buildPostActivationHostAPI(
 	host: {
 		getProviders: () => ReadonlyMap<string, unknown>;
 		getTools: () => ReadonlyMap<string, unknown>;
+		getAuthProviders: () => ReadonlyMap<string, unknown>;
+		getAuthProvider: (id: string) => unknown;
 	},
 	deps: HostDeps,
 ): HostAPI {
@@ -79,6 +81,9 @@ function buildPostActivationHostAPI(
 		logger: deps.logger,
 		getProviders: () => host.getProviders() as ReturnType<HostAPI["getProviders"]>,
 		getTools: () => host.getTools() as ReturnType<HostAPI["getTools"]>,
+		getAuthProviders: () => host.getAuthProviders() as ReturnType<HostAPI["getAuthProviders"]>,
+		getAuthProvider: (id: string) =>
+			host.getAuthProvider(id) as ReturnType<HostAPI["getAuthProvider"]>,
 		scheduler: { register: (job: ScheduledJob) => deps.scheduler.register(job) },
 	};
 }

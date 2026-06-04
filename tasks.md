@@ -54,3 +54,33 @@ drive fan-out); extension **loading is dynamic** (manifests via the host).
 - host + conversation-store ran in parallel (disjoint). ✓
 - session-orchestrator + transport-http ran in parallel (disjoint). ✓
 - kernel-crs solo (touched shared contracts/extension.ts).
+
+---
+
+## Post-MVP backlog (orchestrator: mimo-v2.5-pro summons)
+
+### Step 1 — Wire auth → provider properly  [x] DONE (verified live)
+Design: provider self-registers in `activate` (full-fidelity), so it must reach
+the `AuthContract` via the HostAPI. HostAPI exposes `getProviders`/`getTools` but
+NOT auth. Fix = small contract addition mirroring the existing provider/tool
+precedent.
+- **kernel-host** (owner of `host.ts`/`extension.ts`/`host.test.ts`): add
+  `getAuthProviders()`/`getAuthProvider(id)` to `HostAPI` + implement in
+  `buildHostAPI()` + tests. `lsp references` drives fan-out.
+- **provider-openai-compat** (owner): in `activate`, resolve creds via
+  `host.getAuthProvider("apikey").resolve()` (ApiKeyCredentials → baseURL/apiKey)
+  instead of reading `host.config` apiKey/baseURL. Add `dependsOn:["auth-apikey"]`.
+  Model stays config-driven (not a credential).
+- **host-bin** (orchestrator CR wiring): mirror the two getters in
+  `buildPostActivationHostAPI`.
+Sequence: kernel-host FIRST (adds contract surface), THEN provider (consumes it),
+THEN host-bin wiring. NOT parallel (provider depends on kernel surface).
+
+**Step 1 RESULT:** done + verified. kernel-host added `getAuthProviders`/
+`getAuthProvider` to HostAPI; provider-openai-compat `activate` now resolves creds
+via `host.getAuthProvider("apikey").resolve()` (`dependsOn:["auth-apikey"]`);
+host-bin stub mirrors the getters. 185 tests, typecheck+biome clean. Live curl
+returned a real response with auth-apikey on the path (boot log shows auth-apikey
+activates before provider; provider registered = creds resolved through contract).
+NOTE: host-bin's `buildPostActivationHostAPI` stub is slated for removal in Step 3
+(host CR-1). Summons: prompts/step1-kernel-host.md, prompts/step1-provider.md (mimo-v2.5-pro).
