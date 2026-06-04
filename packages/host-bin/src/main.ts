@@ -19,6 +19,7 @@ import {
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
+import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
 import { createServer, extension as transportHttpExt } from "@dispatch/transport-http";
 import { configMapToAccess, envToConfigMap } from "./config.js";
 
@@ -93,6 +94,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	conversationStoreExt,
 	authApikeyExt,
 	providerOpenaiCompatExt,
+	toolReadFileExt,
 	sessionOrchestratorExt,
 	transportHttpExt,
 ];
