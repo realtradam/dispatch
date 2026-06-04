@@ -1,6 +1,0 @@
-#!/bin/sh
-# Logger for dispatch-api. Reads stdout from dispatch-api-srv and writes to
-# /var/log/dispatch-api/ using s6-log (auto-rotation, timestamping).
-
-exec /usr/bin/s6-setuidgid tradam \
-    /usr/bin/s6-log -b -d3 -- n10 s10000000 T /var/log/dispatch-api
