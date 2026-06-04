@@ -13,6 +13,8 @@
 | **contract** | An extension's typed, exported surface: what it exposes + what it requires. The ONLY thing other units see. | interface (when meaning the whole surface), API |
 | **manifest** | An extension's declaration: id, version, apiVersion, dependsOn, contributions, capabilities, trust. | — |
 | **Host API** | The object an extension receives in `activate(host)`. | host context |
+| **conversation** | A single thread of turns with its own persisted history, identified by a `conversationId`. The backend unit of continuity. (The frontend "tab" concept is out of scope for the backend rewrite.) | tab, session, thread, chat |
+| **conversationId** | The string identifier for a conversation. Threads multi-turn history; the `/chat` request field that continues an existing conversation. | tabId, sessionId, chatId |
 | **turn** | One user message → assistant response cycle (may span multiple steps). | — |
 | **step** | One LLM round-trip within a turn (may emit multiple tool calls). | iteration |
 | **tool call** | A model's request to run a tool within a step. | function call (when meaning a tool call) |
@@ -25,3 +27,14 @@
 | **session-orchestrator** | The core extension that drives a turn: load history → resolve provider/tools → call `runTurn` → persist. | — |
 | **conversation-store** | The core extension persisting the append-only turn/chunk log. | message store |
 | **provider** | An extension wrapping an LLM backend (`stream(messages, tools)`), provider-agnostic to the kernel. | — |
+| **AgentEvent** | An outward event the runtime emits during a turn (text-delta, tool-call, usage, done, etc.). Carries `conversationId` + `turnId`. | — |
+
+## Known vocabulary drift (tracked, not yet fixed)
+
+- **`tabId` in `AgentEvent`s and `runTurn` input.** The events contract
+  (`packages/kernel/src/contracts/events.ts`) and `RunTurnInput` still use
+  **`tabId`** where the canonical term is now **`conversationId`**. The
+  session-orchestrator maps `conversationId → tabId` as a bridge. This is a
+  CONTRACT change (kernel + every consumer) — to be done as a scoped fan-out via
+  `lsp references` (see HANDOFF.md), not a silent edit. Until then, `tabId` in
+  emitted events == the `conversationId`.

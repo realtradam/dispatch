@@ -126,7 +126,19 @@ the project-specific, non-inferable rules.
 
 ---
 
-## 4. Verification (trust nothing — re-run it yourself)
+## 4. Verification (the orchestrator's trust protocol)
+
+**Plan principle (§3.6 / §5 last row):** the orchestrator confirms work from
+**contracts + test results + build/diagnostics output** — that is the *designed*
+trust mechanism, and it works precisely because the boundaries are testable. The
+tests-at-boundaries ARE how you trust a unit without depending on its internals.
+
+**Pragmatic addendum (current phase):** while the system is young, ALSO skim the
+key files an agent produced — agents can report "clean" while making subtle
+contract mistakes, and catching them now is cheap. This is a deliberate,
+phase-appropriate overlay on the §3.6 protocol, not a replacement: the
+authoritative signals remain green typecheck + passing boundary tests + clean
+lint. As the harness matures, lean harder on the tests and less on reading code.
 
 After every agent, independently:
 ```bash
@@ -169,6 +181,14 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
 - **Single-writer:** never let two agents edit the same file concurrently.
 - **Kernel purity:** no I/O / no concrete feature names in `packages/kernel`
   (`.dispatch/rules/kernel-purity.md`).
+- **Visibility rule (§5.1):** agents see only other units' CONTRACTS, never their
+  implementation. A contract documents **behavior & guarantees a consumer can
+  rely on, not just types** (P6 applied to contracts). An agent *needing* to read
+  another unit's code is a signal that contract is underspecified — fix the
+  contract, don't grant code access. (Exception: the temporary multi-knowledge
+  integration agent, §5 / ORCHESTRATOR §5, which MAY read implementation.)
+- **`onAny` is the ONLY allowed dynamic hook subscription** (observability/logging
+  firehose). All other cross-extension coupling is typed-symbol anchored (§5.4).
 - **Contracts are static TYPES; loading is dynamic** (manifests via host). This
   split is load-bearing — it's what makes `lsp references` fan-out work.
 - **Full fidelity:** every core feature is a real extension with a manifest,

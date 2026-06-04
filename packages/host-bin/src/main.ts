@@ -127,7 +127,8 @@ async function boot(): Promise<void> {
 	const hostAPI = buildPostActivationHostAPI(host, deps);
 	const app = createServer(hostAPI);
 
-	const port = Number(process.env.PORT) || 3000;
+	// Port precedence: BACKEND_PORT (the rewrite's assigned port) → PORT → default.
+	const port = Number(process.env.BACKEND_PORT) || Number(process.env.PORT) || 24203;
 	const server = Bun.serve({ fetch: app.fetch, port });
 	logger.info(`Dispatch listening on http://localhost:${server.port}`);
 }
