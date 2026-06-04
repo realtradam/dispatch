@@ -48,11 +48,18 @@ base_url = "https://opencode.ai/zen/go/v1"
 [permissions]
 read = "allow"
 
+# NOTE on ordering: rules are flattened in file order and the LAST matching
+# rule wins (see evaluate()'s findLast). So a broad fallback like "*" must be
+# placed FIRST and the more-specific overrides AFTER it — otherwise a trailing
+# "*" would shadow every specific rule above it. (Global+local merge preserves
+# this: global patterns are emitted before local ones so local overrides win.)
+
 [permissions.edit]
 "*" = "ask"
 "src/**" = "allow"
 
 [permissions.bash]
+"*" = "ask"
 "npm test" = "allow"
 "npm run *" = "allow"
 "git status" = "allow"
@@ -63,7 +70,6 @@ read = "allow"
 "git commit *" = "allow"
 "git push *" = "allow"
 "ls *" = "allow"
-"*" = "ask"
 
 [permissions.external_directory]
 "~/*" = "ask"

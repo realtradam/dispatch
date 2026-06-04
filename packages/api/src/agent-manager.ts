@@ -75,6 +75,7 @@ import {
 	type UsageStats,
 	type UserContentPart,
 	validateConfig,
+	watchDirConfig,
 } from "@dispatch/core";
 import type { PermissionManager } from "./permission-manager.js";
 import { setConfigGetter } from "./routes/config.js";
@@ -299,11 +300,23 @@ export class AgentManager {
 	 * configs are re-read on demand after a clear).
 	 */
 	private lspServersByDir: Map<string, ResolvedLspServer[]> = new Map();
+	/**
+	 * One file watcher per distinct SUBDIRECTORY config we've cached in
+	 * `lspServersByDir`. The main `configWatcher` only watches the root +
+	 * global `dispatch.toml`; a tab whose effective working directory is a
+	 * subdirectory with its own `dispatch.toml` needs its cache entry cleared
+	 * when THAT file changes. Keyed by directory; closed on full reload (the
+	 * cache is dropped wholesale then) and in `destroy()`.
+	 */
+	private lspDirWatchers: Map<string, { close(): void }> = new Map();
+	/** Root working directory watched by `configWatcher` (constructor). */
+	private rootWorkingDirectory = "";
 
 	constructor(permissionManager?: PermissionManager) {
 		this.permissionManager = permissionManager;
 
 		const workingDirectory = process.env.DISPATCH_WORKING_DIR ?? process.cwd();
+		this.rootWorkingDirectory = workingDirectory;
 
 		// Load initial config
 		this.config = loadConfig(workingDirectory);
@@ -345,6 +358,10 @@ export class AgentManager {
 			// so the next tool build re-reads each working directory's
 			// `dispatch.toml` `[lsp]` block.
 			this.lspServersByDir.clear();
+			// Tear down the per-subdirectory LSP watchers too; they are lazily
+			// re-registered by `getLspServersForDir` as directories are re-cached.
+			for (const watcher of this.lspDirWatchers.values()) watcher.close();
+			this.lspDirWatchers.clear();
 			// Re-discover Claude accounts: a config reload may accompany freshly
 			// imported credentials, and (critically) lets a process that failed
 			// account discovery at boot recover without a full restart.
@@ -413,7 +430,40 @@ export class AgentManager {
 			servers = [];
 		}
 		this.lspServersByDir.set(dir, servers);
+		// Hot-reload for SUBDIRECTORY configs: the root/global watcher in the
+		// constructor does not cover a nested `dispatch.toml`. Register a
+		// one-per-dir watcher the first time we cache a directory so editing
+		// its config invalidates just this entry (and cached agents) without a
+		// restart. The root working directory is already covered by
+		// `configWatcher`, so skip it to avoid a redundant watch.
+		this.ensureLspDirWatcher(dir);
 		return servers;
+	}
+
+	/**
+	 * Register (once) a file watcher on `<dir>/dispatch.toml` so a change to a
+	 * subdirectory config invalidates that directory's LSP cache entry and
+	 * any cached agents. No-op for the root working directory (already watched
+	 * by `configWatcher`) and for directories already being watched.
+	 */
+	private ensureLspDirWatcher(dir: string): void {
+		if (dir === this.rootWorkingDirectory) return;
+		if (this.lspDirWatchers.has(dir)) return;
+		const watcher = watchDirConfig(dir, () => {
+			// Drop just this directory's resolved servers; the next tool build
+			// re-reads (and re-merges global) for it.
+			this.lspServersByDir.delete(dir);
+			// Invalidate cached agents so the next message rebuilds tools with
+			// the updated server set.
+			for (const tabAgent of this.tabAgents.values()) {
+				tabAgent.agent = null;
+			}
+			for (const tabId of this.tabAgents.keys()) {
+				this.emit({ type: "config-reload" }, tabId);
+				this.routeSystemEventToTab(tabId, "config-reload", "Configuration reloaded");
+			}
+		});
+		this.lspDirWatchers.set(dir, watcher);
 	}
 
 	/**
@@ -2393,6 +2443,8 @@ export class AgentManager {
 	destroy(): void {
 		this.configWatcher?.close();
 		this.skillsWatcher?.close();
+		for (const watcher of this.lspDirWatchers.values()) watcher.close();
+		this.lspDirWatchers.clear();
 		// Shut down all long-lived LSP server processes. Fire-and-forget: the
 		// promise is detached so `destroy()` stays synchronous (matching its
 		// existing contract), but every client gets `shutdown()` called.

@@ -69,3 +69,61 @@ export function createConfigWatcher(
 		},
 	};
 }
+
+/**
+ * Watch a SINGLE directory's `dispatch.toml` (no global merge, no reload — just
+ * a debounced change signal). Used by the agent manager to invalidate its
+ * per-directory LSP cache when a tab's effective working directory is a
+ * SUBDIRECTORY with its own `dispatch.toml`: the main `createConfigWatcher`
+ * only watches the root + global configs, so without this a nested config edit
+ * would never clear `lspServersByDir[subdir]` and agents there would keep using
+ * stale LSP servers until a root-config change or restart.
+ *
+ * `onChange` fires (debounced) on add/change/unlink of `<dir>/dispatch.toml`.
+ */
+export function watchDirConfig(dir: string, onChange: () => void): { close(): void } {
+	const tomlPath = join(dir, "dispatch.toml");
+	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+	const watcher = watch(tomlPath, {
+		ignoreInitial: true,
+		persistent: false,
+	});
+
+	const handleChange = () => {
+		if (debounceTimer !== null) clearTimeout(debounceTimer);
+		debounceTimer = setTimeout(() => {
+			debounceTimer = null;
+			try {
+				onChange();
+			} catch (err) {
+				console.warn(
+					`dispatch: dir config watcher onChange error: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}, 300);
+	};
+
+	watcher.on("change", handleChange);
+	watcher.on("add", handleChange);
+	watcher.on("unlink", handleChange);
+	watcher.on("error", (err) => {
+		console.warn(
+			`dispatch: dir config watcher error: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	});
+
+	return {
+		close() {
+			if (debounceTimer !== null) {
+				clearTimeout(debounceTimer);
+				debounceTimer = null;
+			}
+			watcher.close().catch((err) => {
+				console.warn(
+					`dispatch: error closing dir config watcher: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
+		},
+	};
+}
