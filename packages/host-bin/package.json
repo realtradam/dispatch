@@ -1,0 +1,15 @@
+{
+	"name": "@dispatch/host-bin",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"dependencies": {
+		"@dispatch/kernel": "workspace:*",
+		"@dispatch/storage-sqlite": "workspace:*",
+		"@dispatch/conversation-store": "workspace:*",
+		"@dispatch/auth-apikey": "workspace:*",
+		"@dispatch/provider-openai-compat": "workspace:*",
+		"@dispatch/session-orchestrator": "workspace:*",
+		"@dispatch/transport-http": "workspace:*"
+	}
+}
