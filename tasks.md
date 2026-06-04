@@ -10,35 +10,54 @@ drive fan-out); extension **loading is dynamic** (manifests via the host).
 ## Legend: [ ] todo  [~] in progress  [x] done (verified + committed)
 
 ### Kernel
-- [x] **contracts** — the ABI. `fd855ff` (+ `974ce6f` RunTurnInput tabId/turnId/providerOpts, FinishReason)
+- [x] **contracts** — the ABI. `fd855ff` (+ `974ce6f`)
 - [x] **bus** — event/hook/service bus. `669c269`
-- [x] **runtime** — `runTurn` turn loop (dispatch policy §3.3), 16 tests. `ae22da5`
-- [~] **host** — discovery→DAG→activate→registries; builds HostAPI (wraps bus). RUNNING.
+- [x] **runtime** — `runTurn` turn loop (dispatch §3.3), 16 tests. `ae22da5`
+- [x] **host** — discovery→DAG→activate→registries; builds HostAPI (wraps bus). `dbcf219` (50 tests)
 
 ### Core extensions (each ships a real manifest, loaded via the host)
-- [~] **storage-sqlite** — concrete backend behind host.storage (bun:sqlite). RUNNING.
-- [~] **auth-apikey** — resolves `{ apiKey, baseURL }` from env (.env). RUNNING.
-- [~] **provider-openai-compat** — OpenAI-compatible streaming → ProviderEvents (OpenCode Go flash). RUNNING.
-- [ ] **conversation-store** — append-only turn/chunk persistence on host.storage (multi-turn = target B). (after storage-sqlite)
-- [ ] **session-orchestrator** — on message: load history → resolve provider/tools → runTurn → persist.
+- [x] **storage-sqlite** — bun:sqlite StorageNamespace + migrations (21 bun tests). `9b611d6`
+- [x] **auth-apikey** — pure resolver env → ApiKeyCredentials (4 tests). `9b611d6`
+- [x] **provider-openai-compat** — OpenAI-compatible SSE → ProviderEvents. `9b611d6`
+- [~] **conversation-store** — append-only turn/chunk persistence on host.storage
+      (multi-turn = target B). RUNNING.
+- [ ] **session-orchestrator** — on message: load history → resolve provider/tools
+      → runTurn → persist. Depends on host + conversation-store + runtime.
 - [ ] **transport-http** — Hono `/chat` route; composes via host/bus.
 
 ### Integration
-- [ ] **host-bin** — boot: load config, discover+activate extensions, start transport.
-- [ ] **curl smoke test** — `curl -d '{...}' /chat` → real response from flash; verify multi-turn.
+- [ ] **host-bin** — boot: load config (.env → config), discover+activate
+      extensions, start transport.
+- [ ] **curl smoke test** — `curl -d '{...}' /chat` → real response from flash;
+      verify multi-turn.
 
-## Parallel batch in flight
-host + storage-sqlite + auth-apikey + provider-openai-compat (disjoint files).
-Shared resource: root `tsconfig.json` references — agents NOTE only; orchestrator
-adds the 3 package refs after they land (avoids write race).
+## Verified state (this session)
+- Full `bun run typecheck` clean; `bun run test` 66 pass (vitest);
+  `bun run test:bun` 21 pass (storage); `bun run check` clean.
+- Root `tsconfig.json` references all 4 packages. `vitest.config.ts` excludes
+  storage-sqlite (bun:sqlite) → `test:bun`.
 
-## Open contract-watch
-- Provider credentials/model: how provider receives creds (construction vs stream
-  opts). auth-apikey + provider agents building in parallel — RECONCILE on return.
-- `host` deps injection shape (storageFactory, logger, config, secrets, perms) —
-  defines what host-bin must wire.
+## Resolved decisions
+- **Import path:** everything imports from `@dispatch/kernel` root barrel (NOT a
+  `/contracts` subpath). Standardized; provider was fixed to match.
+- **Test runner split:** Bun-runtime packages (bun:sqlite) test via `bun test`;
+  the rest via vitest. `test:all` runs both.
 
-## Build order
-contracts → bus → runtime → host → storage-sqlite → conversation-store →
-auth-apikey → provider-openai-compat → session-orchestrator → transport-http →
-host-bin → curl.
+## Open contract-watch (decide at composition)
+- **Provider credentials path:** provider currently reads creds from
+  `host.config.get("provider.openai-compat.*")` and does NOT use the
+  `AuthContract` from auth-apikey. For full fidelity the **session-orchestrator/
+  host-bin** should resolve `AuthContract.resolve()` → feed the provider, OR we
+  keep config-driven and auth-apikey stays vestigial for MVP. PREFER: orchestrator
+  wires auth→provider. Decide when building host-bin.
+- **host dependency-injection shape:** what host-bin must wire (storageFactory,
+  logger, config, secrets, perms). Defined by the host agent — review on return.
+
+## Build order (remaining)
+host → conversation-store → session-orchestrator → transport-http → host-bin → curl.
+
+## Parallelization notes
+- host + conversation-store CAN run in parallel (disjoint files; conversation-store
+  builds against the StorageNamespace contract, not the host impl).
+- session-orchestrator + transport-http + host-bin are more sequential (compose
+  the others) — do after host lands.
