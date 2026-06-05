@@ -277,7 +277,32 @@ independent of the SQLite trace-store; the lib is redaction-free (caller self-re
   Mitigation already DESIGNED, not built: D5 "Volume control" (persist body only when
   `prefix.fingerprint` changed) + §6 retention/rotation/compression; thin/fat split already
   built. `cacheReadTokens` (just added) + the future `prefix.fingerprint` are the cheap dedup
-  signals. Revisit when cache-warming / longer conversations land.
+  signals. **Sequenced AFTER the Frontend MVP** (user-set roadmap below); also relevant
+  once cache-warming / longer conversations land.
 
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.
+
+---
+
+## ROADMAP — what's next (user-decided, §5.2)
+
+### Next: Frontend MVP
+Svelte + DaisyUI (same stack as old Dispatch). **Careful design pass FIRST** — the FE
+must be built with the SAME methodology as the backend (minimal core + feature modules,
+typed contracts as the only cross-unit surface, pure-core / inject-effects / no ambient
+state, one owner per unit, asymmetric testing). A dedicated design scratch lives at
+`notes/frontend-design.md` (IDEATION mode — design WITH the user before any summon).
+
+The old Dispatch frontend (`/home/tradam/projects/dispatch/dispatch-source`) is
+REFERENCE-ONLY for UX/tech — do NOT copy its architecture. Port `FRONTEND_PORT=24204` is
+reserved in `.env`. When frontend BUILD begins: retire the AGENTS.md "Backend only for
+now (no frontend)" line, author new scoped `.dispatch/rules/frontend-*.md`, and update
+ORCHESTRATOR.md §7 (repo geography) + §3 (rule scoping map).
+
+### After Frontend MVP: dedup / storage growth
+The deferred trace-body de-duplication + rotation/compression (D5 volume-control +
+`prefix.fingerprint` + §6 retention strategy) — already designed in
+`notes/observability-design.md`, not yet built. `cacheReadTokens` (committed) is the
+cheap dedup signal; the workspace is ready. Prioritized AFTER the frontend per user
+roadmap.
