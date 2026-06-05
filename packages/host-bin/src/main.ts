@@ -22,6 +22,8 @@ import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestra
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
 import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
 import { createServer, extension as transportHttpExt } from "@dispatch/transport-http";
+import type { ChildHandle } from "./collector-supervisor.js";
+import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
 
 function createEmptySecrets(): SecretsAccess {
@@ -63,6 +65,23 @@ async function boot(): Promise<void> {
 	const logDeps: LogDeps = { now: () => Date.now(), newId: () => crypto.randomUUID() };
 	const logger = createLogger({ extensionId: "host-bin" }, logSink, logDeps);
 
+	const traceDbPath = process.env.DISPATCH_TRACE_DB ?? "./.dispatch-data/traces.db";
+
+	const supervisor = createCollectorSupervisor({
+		spawn: (cmd: string[]) => {
+			const proc = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit" });
+			const handle: ChildHandle = {
+				kill: (signal?: string) => proc.kill(signal as NodeJS.Signals),
+				exited: proc.exited,
+			};
+			return handle;
+		},
+		journalPath,
+		dbPath: traceDbPath,
+		logger: logger.child({ extensionId: "collector-supervisor" }),
+	});
+	supervisor.start();
+
 	const dbPath = process.env.DISPATCH_DB ?? "./.dispatch-data/dispatch.db";
 	mkdirSync(dirname(dbPath), { recursive: true });
 	const sqliteBackend = createSqliteStorage({ path: dbPath });
@@ -100,6 +119,15 @@ async function boot(): Promise<void> {
 	// Port precedence: BACKEND_PORT (the rewrite's assigned port) → PORT → default.
 	const port = Number(process.env.BACKEND_PORT) || Number(process.env.PORT) || 24203;
 	const server = Bun.serve({ fetch: app.fetch, port });
+
+	const shutdown = async () => {
+		logger.info("Shutting down — draining collector");
+		await supervisor.stop();
+		process.exit(0);
+	};
+	process.on("SIGINT", shutdown);
+	process.on("SIGTERM", shutdown);
+
 	logger.info(`Dispatch listening on http://localhost:${server.port}`);
 	console.info(`Dispatch listening on http://localhost:${server.port}`);
 }
