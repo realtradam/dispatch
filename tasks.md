@@ -219,14 +219,40 @@ per-extension self-redaction (no shared helper — isolation over DRY).
   app → journal → collector → SQLite → `trace <turnId>` easy-view.
   Summons: prompts/phase-b-{trace-store,observability-collector}.md.
 
-### Next (observability)
-- **Span nesting fix (kernel run-turn):** spans are currently flat (all `parent=ROOT`);
-  nest `step`←`turn` and `prompt`/`provider.request`←`step` (pass the step span's logger
-  into `provider.stream`) so the trace is a tree. (`renderEasyView` already nests once
-  parents exist.)
-- **host-bin supervision** (deferred): spawn-first / drain-last / restart the collector.
-- **Record/replay test fixtures** (goal): captured verbatim provider.request/response
-  traces → hermetic `stream.test.ts` fixtures (mock `fetch`, replay real flash). D5; §7.
+### Phase B — span nesting + supervision ✅ DONE + verified live
+- [x] **Span nesting fix (kernel run-turn):** `step`←`turn` (`turnSpan.child`),
+  `prompt`/`provider.request`←`step` (step span's logger into `provider.stream`) →
+  the trace is now a tree. Also fixed a latent `buildSpanOpen` parent-propagation bug
+  in `logging/logger.ts`. 279 tests. `2bf8f9e`
+- [x] **host-bin supervision:** `collector-supervisor.ts` (injected spawn → unit-tested
+  with a fake): spawn-first before `Bun.serve`, restart on unexpected exit (backoff +
+  restart-guard cap), drain-last on SIGINT/SIGTERM (collector final-drain, SIGKILL
+  fallback). Collector failure never crashes the app (D3). 288 tests. `dded4cc`
+- [x] **Orchestrator scar-doc:** the `[x]` bracket trick for `ps`/`pgrep`/`pkill`
+  (avoids self-match killing the parent shell) — ORCHESTRATOR.md §8. `966caf7`
+- typecheck clean, **288 tests** (279 vitest + 9 supervisor) + 72 bun, biome 0/0.
+  **Live (clean run):** supervisor spawns exactly 1 collector; trace DB auto-populated
+  with the nested turn→step→{prompt,provider.request} easy-view; 0 collectors after
+  graceful shutdown. Summons: prompts/phase-b-{span-nesting,supervision}.md.
+
+### Record/replay fixtures — IN PROGRESS (user chose: shared library unit, §5.2)
+Boundary call (user): build a reusable **`trace-replay`** library (NOT provider-local),
+so future edge extensions can reuse it. Realizes the §7 / D5 replay affordance as
+hermetic fixtures: capture one real flash exchange → commit → replay via a fixture-driven
+`fetch` double (mock `fetch`, no network). NOTE: "trace" here = a captured HTTP exchange,
+independent of the SQLite trace-store; the lib is redaction-free (caller self-redacts).
+- [x] **Unit 1 — `trace-replay`** (`packages/trace-replay/`, mimo-v2.5-pro): generic
+  HTTP-exchange record/replay lib — DONE + verified. `replayFetch` (PURE: fixture → fetch
+  double + captured request), `recordFetch` (tee real fetch → fixture), `serialize/parse`
+  + `save/load` fixture I/O. **Redaction-free** (caller self-redacts — isolation over DRY),
+  zero `@dispatch/*` deps, NO `bun:sqlite`. 39 tests (replay 12 / record 8 / fixture 19);
+  root tsconfig ref wired → **327 vitest**, typecheck + biome 0/0. reports/trace-replay.md.
+- [ ] **Unit 2 — provider-openai-compat consumer**: env-gated record mode at its fetch
+  edge (self-redacts auth in its OWN code before `saveFixture`); `stream.test.ts` replays
+  a committed real-flash fixture via `replayFetch` → asserts ProviderEvents + that the
+  outgoing request still matches (transform-drift regression). Summon AFTER Unit 1 lands.
+- [~] **Build wiring** (orchestrator): root tsconfig ref for trace-replay ✓ + `bun install` ✓;
+  provider dep on `@dispatch/trace-replay` pending (with Unit 2).
 
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.

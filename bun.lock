@@ -88,6 +88,10 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/trace-replay": {
+      "name": "@dispatch/trace-replay",
+      "version": "0.0.0",
+    },
     "packages/trace-store": {
       "name": "@dispatch/trace-store",
       "version": "0.0.0",
@@ -143,6 +147,8 @@
     "@dispatch/storage-sqlite": ["@dispatch/storage-sqlite@workspace:packages/storage-sqlite"],
 
     "@dispatch/tool-read-file": ["@dispatch/tool-read-file@workspace:packages/tool-read-file"],
+
+    "@dispatch/trace-replay": ["@dispatch/trace-replay@workspace:packages/trace-replay"],
 
     "@dispatch/trace-store": ["@dispatch/trace-store@workspace:packages/trace-store"],
 
