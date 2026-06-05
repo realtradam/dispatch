@@ -11,7 +11,7 @@ import {
 	validateArgs,
 } from "./read-file.js";
 
-function stubCtx(): ToolExecuteContext {
+function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
 	return {
 		toolCallId: "test-call-1",
 		onOutput: () => {},
@@ -21,6 +21,7 @@ function stubCtx(): ToolExecuteContext {
 			{ emit: () => {} },
 			{ now: () => 0, newId: () => "id" },
 		),
+		...overrides,
 	};
 }
 
@@ -249,5 +250,70 @@ describe("createReadFileTool", () => {
 		expect(tool.parameters.type).toBe("object");
 		expect(tool.parameters.required).toEqual(["path"]);
 		expect(tool.parameters.properties?.path?.type).toBe("string");
+	});
+
+	it("reads file under ctx.cwd when set (not baked workdir)", async () => {
+		const ctxDir = await mkdtemp(join(tmpdir(), "ctx-cwd-test-"));
+		try {
+			const filePath = join(ctxDir, "ctx-file.txt");
+			await writeFile(filePath, "from ctx cwd", "utf8");
+
+			const tool = createReadFileTool(workdir); // baked workdir is different
+			const result = await tool.execute({ path: "ctx-file.txt" }, stubCtx({ cwd: ctxDir }));
+
+			expect(result.isError).toBeUndefined();
+			expect(result.content).toContain("1: from ctx cwd");
+		} finally {
+			await rm(ctxDir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects path escaping ctx.cwd via ..", async () => {
+		const ctxDir = await mkdtemp(join(tmpdir(), "ctx-escape-test-"));
+		try {
+			const tool = createReadFileTool(workdir);
+			const result = await tool.execute({ path: "../escape.txt" }, stubCtx({ cwd: ctxDir }));
+
+			expect(result.isError).toBe(true);
+			expect(result.content).toContain("outside the working directory");
+		} finally {
+			await rm(ctxDir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects symlink escaping ctx.cwd", async () => {
+		const ctxDir = await mkdtemp(join(tmpdir(), "ctx-symlink-test-"));
+		const outsideDir = await mkdtemp(join(tmpdir(), "ctx-outside-"));
+		try {
+			const outsideFile = join(outsideDir, "secret.txt");
+			await writeFile(outsideFile, "secret data", "utf8");
+
+			const symlinkPath = join(ctxDir, "link.txt");
+			const { symlink } = await import("node:fs/promises");
+			await symlink(outsideFile, symlinkPath);
+
+			const tool = createReadFileTool(workdir);
+			const result = await tool.execute({ path: "link.txt" }, stubCtx({ cwd: ctxDir }));
+
+			expect(result.isError).toBe(true);
+			expect(result.content).toContain("outside the working directory");
+		} finally {
+			await rm(ctxDir, { recursive: true, force: true });
+			await rm(outsideDir, { recursive: true, force: true });
+		}
+	});
+
+	it("falls back to baked workdir when ctx.cwd is omitted", async () => {
+		const filePath = join(workdir, "baked-file.txt");
+		await writeFile(filePath, "from baked workdir", "utf8");
+
+		const tool = createReadFileTool(workdir);
+		const ctx = stubCtx();
+		// Ensure cwd is undefined
+		expect(ctx.cwd).toBeUndefined();
+		const result = await tool.execute({ path: "baked-file.txt" }, ctx);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toContain("1: from baked workdir");
 	});
 });

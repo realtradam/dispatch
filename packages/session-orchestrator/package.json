@@ -7,6 +7,7 @@
 	"types": "dist/index.d.ts",
 	"dependencies": {
 		"@dispatch/kernel": "workspace:*",
-		"@dispatch/conversation-store": "workspace:*"
+		"@dispatch/conversation-store": "workspace:*",
+		"@dispatch/credential-store": "workspace:*"
 	}
 }

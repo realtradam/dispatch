@@ -6,6 +6,7 @@
 		{ "path": "./packages/storage-sqlite" },
 		{ "path": "./packages/auth-apikey" },
 		{ "path": "./packages/provider-openai-compat" },
+		{ "path": "./packages/credential-store" },
 		{ "path": "./packages/conversation-store" },
 		{ "path": "./packages/session-orchestrator" },
 		{ "path": "./packages/transport-http" },

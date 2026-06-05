@@ -103,7 +103,7 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 			required: ["path"],
 		},
 		concurrencySafe: true,
-		async execute(args: unknown, _ctx): Promise<ToolResult> {
+		async execute(args: unknown, ctx): Promise<ToolResult> {
 			const validated = validateArgs(args);
 			if ("error" in validated) {
 				return { content: validated.error, isError: true };
@@ -111,11 +111,14 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 
 			const { path: relPath, offset, limit } = validated;
 
-			// Resolve the requested path against the working directory.
-			const resolvedPath = resolve(workdir, relPath);
+			// Effective base: per-turn ctx.cwd overrides the baked workdir.
+			const effectiveBase = ctx.cwd ? resolve(ctx.cwd) : workdir;
 
-			// Basic prefix check (catches ".." and absolute paths outside workdir).
-			if (!isPathWithinWorkdir(resolvedPath, workdir)) {
+			// Resolve the requested path against the effective base.
+			const resolvedPath = resolve(effectiveBase, relPath);
+
+			// Basic prefix check (catches ".." and absolute paths outside effectiveBase).
+			if (!isPathWithinWorkdir(resolvedPath, effectiveBase)) {
 				return {
 					content: `Error: Path "${relPath}" is outside the working directory.`,
 					isError: true,
@@ -124,11 +127,11 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 
 			// Symlink hardening: realpath both and re-check containment.
 			let realResolved: string;
-			let realWorkdir: string;
+			let realBase: string;
 			try {
-				[realResolved, realWorkdir] = await Promise.all([
+				[realResolved, realBase] = await Promise.all([
 					realpath(resolvedPath),
-					realpath(workdir),
+					realpath(effectiveBase),
 				]);
 			} catch (err: unknown) {
 				const code = (err as NodeJS.ErrnoException).code;
@@ -141,7 +144,7 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 				};
 			}
 
-			if (!isPathWithinWorkdir(realResolved, realWorkdir)) {
+			if (!isPathWithinWorkdir(realResolved, realBase)) {
 				return {
 					content: `Error: Path "${relPath}" is outside the working directory.`,
 					isError: true,

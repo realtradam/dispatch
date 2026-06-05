@@ -1,7 +1,7 @@
 import type { AgentEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
-import type { SessionOrchestrator } from "./seam.js";
+import type { CredentialStore, SessionOrchestrator } from "./seam.js";
 
 function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
 	return {
@@ -9,6 +9,22 @@ function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
 			for (const event of events) {
 				input.onEvent(event);
 			}
+		},
+	};
+}
+
+function createCapturingOrchestrator(): SessionOrchestrator & {
+	received: Parameters<SessionOrchestrator["handleMessage"]>[0] | undefined;
+} {
+	const state: {
+		received: Parameters<SessionOrchestrator["handleMessage"]>[0] | undefined;
+	} = { received: undefined };
+	return {
+		get received() {
+			return state.received;
+		},
+		async handleMessage(input) {
+			state.received = input;
 		},
 	};
 }
@@ -21,9 +37,34 @@ function createThrowingOrchestrator(error: Error): SessionOrchestrator {
 	};
 }
 
+function createFakeCredentialStore(models: string[]): CredentialStore {
+	return {
+		resolve() {
+			return undefined;
+		},
+		async listCatalog() {
+			return models;
+		},
+	};
+}
+
+function createThrowingCredentialStore(error: Error): CredentialStore {
+	return {
+		resolve() {
+			return undefined;
+		},
+		async listCatalog() {
+			throw error;
+		},
+	};
+}
+
 describe("GET /health", () => {
 	it("returns ok", async () => {
-		const app = createApp({ orchestrator: createFakeOrchestrator([]) });
+		const app = createApp({
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
 		const res = await app.request("/health");
 		expect(res.status).toBe(200);
 		const body = await res.json();
@@ -31,9 +72,47 @@ describe("GET /health", () => {
 	});
 });
 
+describe("GET /models", () => {
+	it("returns model catalog", async () => {
+		const app = createApp({
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore(["opencode/m1", "openai/gpt-4"]),
+		});
+		const res = await app.request("/models");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { models: readonly string[] };
+		expect(body.models).toEqual(["opencode/m1", "openai/gpt-4"]);
+	});
+
+	it("returns empty array when no models", async () => {
+		const app = createApp({
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+		const res = await app.request("/models");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { models: readonly string[] };
+		expect(body.models).toEqual([]);
+	});
+
+	it("returns 502 when listCatalog throws", async () => {
+		const app = createApp({
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createThrowingCredentialStore(new Error("db down")),
+		});
+		const res = await app.request("/models");
+		expect(res.status).toBe(502);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("Failed to retrieve model catalog");
+	});
+});
+
 describe("POST /chat", () => {
 	it("returns 400 for invalid JSON", async () => {
-		const app = createApp({ orchestrator: createFakeOrchestrator([]) });
+		const app = createApp({
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -43,7 +122,10 @@ describe("POST /chat", () => {
 	});
 
 	it("returns 400 for missing message", async () => {
-		const app = createApp({ orchestrator: createFakeOrchestrator([]) });
+		const app = createApp({
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -55,7 +137,10 @@ describe("POST /chat", () => {
 	});
 
 	it("returns 400 for empty message", async () => {
-		const app = createApp({ orchestrator: createFakeOrchestrator([]) });
+		const app = createApp({
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
 		const res = await app.request("/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -71,7 +156,10 @@ describe("POST /chat", () => {
 			{ type: "text-delta", conversationId: "tab1", turnId: "turn1", delta: " world" },
 			{ type: "done", conversationId: "tab1", turnId: "turn1", reason: "stop" },
 		];
-		const app = createApp({ orchestrator: createFakeOrchestrator(events) });
+		const app = createApp({
+			orchestrator: createFakeOrchestrator(events),
+			credentialStore: createFakeCredentialStore([]),
+		});
 
 		const res = await app.request("/chat", {
 			method: "POST",
@@ -100,6 +188,7 @@ describe("POST /chat", () => {
 			orchestrator: createFakeOrchestrator([
 				{ type: "done", conversationId: "tab1", turnId: "turn1", reason: "stop" },
 			]),
+			credentialStore: createFakeCredentialStore([]),
 			generateId: () => "generated-uuid",
 		});
 
@@ -116,6 +205,7 @@ describe("POST /chat", () => {
 	it("emits error event when orchestrator throws", async () => {
 		const app = createApp({
 			orchestrator: createThrowingOrchestrator(new Error("provider unavailable")),
+			credentialStore: createFakeCredentialStore([]),
 		});
 
 		const res = await app.request("/chat", {
@@ -139,7 +229,10 @@ describe("POST /chat", () => {
 	});
 
 	it("handles empty event list", async () => {
-		const app = createApp({ orchestrator: createFakeOrchestrator([]) });
+		const app = createApp({
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
 
 		const res = await app.request("/chat", {
 			method: "POST",
@@ -150,5 +243,50 @@ describe("POST /chat", () => {
 		expect(res.status).toBe(200);
 		const text = await res.text();
 		expect(text).toBe("");
+	});
+
+	it("forwards modelName and cwd to orchestrator", async () => {
+		const cap = createCapturingOrchestrator();
+		const app = createApp({
+			orchestrator: cap,
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				message: "hi",
+				conversationId: "conv1",
+				model: "opencode/m1",
+				cwd: "/tmp",
+			}),
+		});
+
+		expect(res.status).toBe(200);
+		expect(cap.received).toBeDefined();
+		expect(cap.received?.conversationId).toBe("conv1");
+		expect(cap.received?.text).toBe("hi");
+		expect(cap.received?.modelName).toBe("opencode/m1");
+		expect(cap.received?.cwd).toBe("/tmp");
+	});
+
+	it("omits modelName and cwd when not provided", async () => {
+		const cap = createCapturingOrchestrator();
+		const app = createApp({
+			orchestrator: cap,
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message: "hi", conversationId: "conv1" }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(cap.received).toBeDefined();
+		expect(cap.received?.modelName).toBeUndefined();
+		expect(cap.received?.cwd).toBeUndefined();
 	});
 });

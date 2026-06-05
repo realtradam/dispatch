@@ -3,6 +3,8 @@ import type { AgentEvent } from "@dispatch/kernel";
 export interface ChatCommand {
 	readonly conversationId: string;
 	readonly message: string;
+	readonly model?: string;
+	readonly cwd?: string;
 }
 
 export interface ParseError {
@@ -28,7 +30,23 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
 			? obj.conversationId
 			: generateId();
 
-	return { conversationId, message: message.trim() };
+	const result: ChatCommand = { conversationId, message: message.trim() };
+
+	if (obj.model !== undefined) {
+		if (typeof obj.model !== "string") {
+			return { error: "Field 'model' must be a string" };
+		}
+		(result as { model?: string }).model = obj.model;
+	}
+
+	if (obj.cwd !== undefined) {
+		if (typeof obj.cwd !== "string") {
+			return { error: "Field 'cwd' must be a string" };
+		}
+		(result as { cwd?: string }).cwd = obj.cwd;
+	}
+
+	return result;
 }
 
 export function isParseError(result: ParseResult): result is ParseError {
