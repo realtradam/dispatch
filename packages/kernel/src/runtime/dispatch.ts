@@ -1,4 +1,5 @@
 import type { ToolDispatchPolicy } from "../contracts/dispatch.js";
+import type { Logger, Span } from "../contracts/logging.js";
 import type { EventEmitter } from "../contracts/runtime.js";
 import type { ToolCall, ToolContract, ToolExecuteContext, ToolResult } from "../contracts/tool.js";
 import { toolOutputEvent } from "./events.js";
@@ -15,6 +16,7 @@ export async function executeToolCall(
 	emit: EventEmitter,
 	conversationId: string,
 	turnId: string,
+	toolSpan?: Span,
 ): Promise<ToolResult> {
 	if (tool === undefined) {
 		return { content: `Unknown tool: ${call.name}`, isError: true };
@@ -28,6 +30,7 @@ export async function executeToolCall(
 		onOutput: (data, stream) => {
 			emit(toolOutputEvent(conversationId, turnId, call.id, data, stream));
 		},
+		log: toolSpan?.log ?? createNoopLogger(),
 	};
 	try {
 		return await tool.execute(call.input, ctx);
@@ -50,6 +53,7 @@ export function createStepDispatcher(
 	emit: EventEmitter,
 	conversationId: string,
 	turnId: string,
+	toolSpans: Map<string, Span>,
 ): StepDispatcher {
 	let activeCount = 0;
 	let unsafeRunning = false;
@@ -78,6 +82,7 @@ export function createStepDispatcher(
 	}
 
 	async function runAndResolve(entry: QueueEntry): Promise<void> {
+		const tcSpan = toolSpans.get(entry.call.id);
 		const result = await executeToolCall(
 			entry.call,
 			entry.tool,
@@ -85,6 +90,7 @@ export function createStepDispatcher(
 			emit,
 			conversationId,
 			turnId,
+			tcSpan,
 		);
 		activeCount--;
 		if (entry.tool?.concurrencySafe === false) unsafeRunning = false;
@@ -128,4 +134,28 @@ export function createStepDispatcher(
 	}
 
 	return { submit, drain };
+}
+
+function createNoopLogger(): Logger {
+	return {
+		debug() {},
+		info() {},
+		warn() {},
+		error() {},
+		child() {
+			return createNoopLogger();
+		},
+		span() {
+			return {
+				id: "noop",
+				log: createNoopLogger(),
+				setAttributes() {},
+				addLink() {},
+				child() {
+					return this;
+				},
+				end() {},
+			};
+		},
+	};
 }

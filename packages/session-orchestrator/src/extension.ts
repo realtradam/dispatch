@@ -29,6 +29,7 @@ export function activate(host: HostAPI): void {
 		resolveProvider: () => selectFirstProvider(host.getProviders()),
 		resolveTools: () => [...host.getTools().values()],
 		runTurn,
+		logger: host.logger,
 	});
 
 	host.provideService(sessionOrchestratorHandle, orchestrator);

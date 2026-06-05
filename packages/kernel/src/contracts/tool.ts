@@ -7,6 +7,8 @@
  * Extensions may use zod internally and convert to this shape.
  */
 
+import type { Logger } from "./logging.js";
+
 /**
  * Structural JSON Schema subset for tool parameter declarations.
  * The kernel does not validate against this — the provider serializes it for
@@ -53,6 +55,13 @@ export interface ToolExecuteContext {
 	 * can clean up rather than leak.
 	 */
 	readonly signal: AbortSignal;
+
+	/**
+	 * Pre-bound Logger scoped to this tool-call span. Tools log correlated
+	 * without a global (P3). The kernel stamps extensionId, conversationId,
+	 * turnId, and spanId automatically.
+	 */
+	readonly log: Logger;
 }
 
 /**

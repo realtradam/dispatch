@@ -16,3 +16,6 @@ reports/
 
 # Local runtime DB
 .dispatch-data/
+
+# Local observability journal (runtime artifact)
+.dispatch/journal/

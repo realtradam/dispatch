@@ -2,14 +2,16 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { extension as authApikeyExt } from "@dispatch/auth-apikey";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
+import { createJournalSink } from "@dispatch/journal-sink";
 import {
 	type ConfigAccess,
 	createBus,
 	createHost,
+	createLogger,
 	type EventsEmitter,
 	type Extension,
 	type HostDeps,
-	type Logger,
+	type LogDeps,
 	type PermissionGate,
 	type ScheduledJob,
 	type SecretsAccess,
@@ -21,15 +23,6 @@ import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/st
 import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
 import { createServer, extension as transportHttpExt } from "@dispatch/transport-http";
 import { configMapToAccess, envToConfigMap } from "./config.js";
-
-function createConsoleLogger(): Logger {
-	return {
-		debug: (message: string, ...args: unknown[]) => console.debug(`[debug] ${message}`, ...args),
-		info: (message: string, ...args: unknown[]) => console.info(`[info] ${message}`, ...args),
-		warn: (message: string, ...args: unknown[]) => console.warn(`[warn] ${message}`, ...args),
-		error: (message: string, ...args: unknown[]) => console.error(`[error] ${message}`, ...args),
-	};
-}
 
 function createEmptySecrets(): SecretsAccess {
 	return {
@@ -64,7 +57,11 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 ];
 
 async function boot(): Promise<void> {
-	const logger = createConsoleLogger();
+	const journalPath = process.env.DISPATCH_JOURNAL ?? "./.dispatch/journal/app.ndjson";
+	mkdirSync(dirname(journalPath), { recursive: true });
+	const logSink = createJournalSink({ path: journalPath });
+	const logDeps: LogDeps = { now: () => Date.now(), newId: () => crypto.randomUUID() };
+	const logger = createLogger({ extensionId: "host-bin" }, logSink, logDeps);
 
 	const dbPath = process.env.DISPATCH_DB ?? "./.dispatch-data/dispatch.db";
 	mkdirSync(dirname(dbPath), { recursive: true });
@@ -83,6 +80,8 @@ async function boot(): Promise<void> {
 		scheduler: createNoopScheduler(),
 		bus: createBus(logger),
 		events: createNoopEvents(),
+		logSink,
+		logDeps,
 	};
 
 	const host = createHost(CORE_EXTENSIONS, deps);
@@ -102,6 +101,7 @@ async function boot(): Promise<void> {
 	const port = Number(process.env.BACKEND_PORT) || Number(process.env.PORT) || 24203;
 	const server = Bun.serve({ fetch: app.fetch, port });
 	logger.info(`Dispatch listening on http://localhost:${server.port}`);
+	console.info(`Dispatch listening on http://localhost:${server.port}`);
 }
 
 boot().catch((err) => {

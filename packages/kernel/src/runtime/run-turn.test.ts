@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../contracts/conversation.js";
 import type { AgentEvent } from "../contracts/events.js";
+import type { LogDeps, Logger, LogRecord, LogSink } from "../contracts/logging.js";
+import { createLogger } from "../contracts/logging.js";
 import type { ProviderContract, ProviderEvent } from "../contracts/provider.js";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "../contracts/tool.js";
 import { runTurn } from "./run-turn.js";
@@ -813,5 +815,229 @@ describe("runTurn", () => {
 			expect(outputs[1]?.data).toBe("err 1\n");
 			expect(outputs[1]?.stream).toBe("stderr");
 		}
+	});
+
+	describe("span instrumentation", () => {
+		function createTestLogger(): {
+			logger: Logger;
+			sink: LogSink & { records: LogRecord[] };
+			deps: LogDeps;
+		} {
+			let idCounter = 0;
+			const deps: LogDeps = {
+				now: () => 1000 + idCounter * 100,
+				newId: () => `span-${++idCounter}`,
+			};
+			const records: LogRecord[] = [];
+			const sink: LogSink & { records: LogRecord[] } = {
+				records,
+				emit: (record) => records.push(record),
+			};
+			const logger = createLogger({ extensionId: "test" }, sink, deps);
+			return { logger, sink, deps };
+		}
+
+		it("emits turn + step span open/close in order", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "usage", usage: { inputTokens: 1, outputTokens: 1 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const spanOpens = sink.records.filter((r) => r.kind === "span-open");
+			const spanCloses = sink.records.filter((r) => r.kind === "span-close");
+
+			expect(spanOpens.length).toBeGreaterThanOrEqual(2); // turn + step
+			expect(spanCloses.length).toBeGreaterThanOrEqual(2);
+
+			const turnOpen = spanOpens.find((r) => r.kind === "span-open" && r.name === "turn");
+			const stepOpen = spanOpens.find((r) => r.kind === "span-open" && r.name === "step");
+			expect(turnOpen).toBeDefined();
+			expect(stepOpen).toBeDefined();
+
+			if (turnOpen?.kind === "span-open") {
+				expect(turnOpen.extensionId).toBe("test");
+				expect(turnOpen.attributes?.conversationId).toBe("conv-1");
+				expect(turnOpen.attributes?.turnId).toBe("turn-1");
+			}
+
+			const turnClose = spanCloses.find((r) => r.kind === "span-close" && r.name === "turn");
+			expect(turnClose).toBeDefined();
+			if (turnClose?.kind === "span-close") {
+				expect(turnClose.status).toBe("ok");
+				expect(turnClose.durationMs).toBeGreaterThanOrEqual(0);
+			}
+		});
+
+		it("emits tool-call spans for dispatched tools", async () => {
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const toolCallSpans = sink.records.filter(
+				(r) => r.kind === "span-open" && r.name === "tool-call",
+			);
+			expect(toolCallSpans).toHaveLength(1);
+			if (toolCallSpans[0]?.kind === "span-open") {
+				expect(toolCallSpans[0].attributes?.name).toBe("echo");
+				expect(toolCallSpans[0].attributes?.toolCallId).toBe("tc1");
+			}
+
+			const toolCallCloses = sink.records.filter(
+				(r) => r.kind === "span-close" && r.name === "tool-call",
+			);
+			expect(toolCallCloses).toHaveLength(1);
+			if (toolCallCloses[0]?.kind === "span-close") {
+				expect(toolCallCloses[0].status).toBe("ok");
+			}
+		});
+
+		it("tools receive ctx.log (correlated logger)", async () => {
+			let capturedLog: Logger | undefined;
+
+			const tool = createFakeTool("logtest", async (_input, ctx) => {
+				capturedLog = ctx.log;
+				ctx.log.info("tool ran", { key: "value" });
+				return { content: "ok" };
+			});
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "logtest", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			expect(capturedLog).toBeDefined();
+
+			const toolLogs = sink.records.filter(
+				(r) => r.kind === "log" && r.kind === "log" && (r as { msg: string }).msg === "tool ran",
+			);
+			expect(toolLogs).toHaveLength(1);
+			if (toolLogs[0]?.kind === "log") {
+				expect(toolLogs[0].attributes?.key).toBe("value");
+				expect(toolLogs[0].extensionId).toBe("test");
+			}
+		});
+
+		it("an aborted turn still closes its turn span", async () => {
+			const ac = new AbortController();
+			ac.abort();
+
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "should not appear" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				signal: ac.signal,
+				logger,
+			});
+
+			const turnCloses = sink.records.filter((r) => r.kind === "span-close" && r.name === "turn");
+			expect(turnCloses).toHaveLength(1);
+			if (turnCloses[0]?.kind === "span-close") {
+				expect(turnCloses[0].attributes?.finishReason).toBe("aborted");
+			}
+		});
+
+		it("a provider error closes the step span with error status", async () => {
+			const provider: ProviderContract = {
+				id: "fake",
+				stream() {
+					return (async function* () {
+						yield { type: "text-delta", delta: "partial" } as ProviderEvent;
+						throw new Error("provider exploded");
+					})();
+				},
+			};
+
+			const { logger, sink } = createTestLogger();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			expect(result.finishReason).toBe("error");
+
+			const stepCloses = sink.records.filter((r) => r.kind === "span-close" && r.name === "step");
+			expect(stepCloses).toHaveLength(1);
+			if (stepCloses[0]?.kind === "span-close") {
+				expect(stepCloses[0].status).toBe("error");
+				expect(stepCloses[0].attributes?.["error.message"]).toContain("provider exploded");
+			}
+		});
 	});
 });

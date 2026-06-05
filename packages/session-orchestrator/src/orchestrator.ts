@@ -2,6 +2,7 @@ import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
 	AgentEvent,
 	ChatMessage,
+	Logger,
 	ProviderContract,
 	RunTurnInput,
 	RunTurnResult,
@@ -30,6 +31,8 @@ export interface SessionOrchestratorDeps {
 	readonly resolveTools: () => readonly ToolContract[];
 	readonly resolveDispatch?: () => ToolDispatchPolicy;
 	readonly runTurn: (input: RunTurnInput) => Promise<RunTurnResult>;
+	/** Base logger (auto-scoped to this extension); childed per turn for span capture. */
+	readonly logger?: Logger;
 }
 
 export function createSessionOrchestrator(deps: SessionOrchestratorDeps): SessionOrchestrator {
@@ -41,6 +44,7 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 			const tools = deps.resolveTools();
 			const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
 			const turnId = generateTurnId();
+			const turnLogger = deps.logger?.child({ conversationId, turnId });
 
 			const result = await deps.runTurn({
 				provider,
@@ -50,6 +54,7 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 				emit: onEvent,
 				conversationId,
 				turnId,
+				...(turnLogger !== undefined ? { logger: turnLogger } : {}),
 				...(signal !== undefined ? { signal } : {}),
 			});
 

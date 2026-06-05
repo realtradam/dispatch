@@ -114,9 +114,10 @@ log into context as a hard failure.
 
 Write self-contained prompts. Structure:
 1. **Role:** "You are the owner-agent for <unit>."
-2. **Read first (ordered):** `AGENTS.md`, `.dispatch/rules/`, `GLOSSARY.md`, the
-   relevant `notes/restructure-plan.md` §-sections, and **the exact contract
-   files under `packages/kernel/src/contracts/` it builds against**.
+2. **Read first (ordered):** `AGENTS.md`, the **scoped `.dispatch/rules/`** for this
+   unit's layer (the scoping map is below the recipe), `GLOSSARY.md`, the relevant
+   `notes/restructure-plan.md` §-sections, and **the exact contract files under
+   `packages/kernel/src/contracts/` it builds against**.
 3. **Ownership (strict):** the EXACT files it may create/edit, and an explicit
    "do not touch anything else; if you need a change elsewhere, write a change-
    request in your report — do NOT edit it."
@@ -137,6 +138,17 @@ Write self-contained prompts. Structure:
 
 Keep the prompt scoped (P6): don't restate what a frontier model knows; do state
 the project-specific, non-inferable rules.
+
+**`.dispatch/rules/` scoping map** — include ONLY the rows matching the unit (per §0
+"scoped rules beat general rules"); do NOT dump every rule on every agent:
+- **Every agent:** `one-owner.md`, `isolation-over-dry.md`.
+- **Kernel unit:** `kernel-purity.md` + `pure-core.md` + `no-internal-mocks.md`.
+- **Pure-core unit:** `pure-core.md` + `no-internal-mocks.md`.
+- **Any extension coupling via hooks/services:** `typed-handles.md`.
+- **Any extension that emits logs/spans (≈ all of them):** `extension-logging.md`
+  *(pending — authored with the observability substrate, see
+  `notes/observability-design.md` §9; keystone: each extension self-redacts its OWN
+  secrets in its OWN code — NO shared redaction helper).*
 
 ---
 

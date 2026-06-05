@@ -154,3 +154,39 @@ extension (read_file), hygiene CRs (getHostAPI + manifest honesty), and the
 tabId→conversationId vocab rename. typecheck + biome clean; 218 tests green.
 Remaining work is the parked design decisions (persistent waking agents, etc.) —
 non-blocking. See HANDOFF.md "Open design decisions still parked".
+
+---
+
+## Observability — Phase A (logging substrate) ✅ DONE + verified live
+Goal: structured logs + spans captured durably to a journal file — the substrate
+for the agent-first observability subsystem (design: notes/observability-design.md).
+
+- [x] **Unit 1 — kernel-logging** (mimo-v2.5-pro): Logger/Span ABI
+  (`contracts/logging.ts`) — leveled/attributed/auto-scoped (host stamps
+  `extensionId`), incremental span records (open/close, crash-reconstructable, D3),
+  injected `LogSink` (pure record-builder). `ctx.log` on ToolContract; runTurn
+  opens turn/step/tool-call spans + the verbatim **"before"** prompt on the step span.
+- [x] **Unit 2 — journal-sink** (`packages/journal-sink/`, mimo-v2.5-pro): bootstrap
+  `LogSink` → NDJSON append-only journal (pure `serialize` + thin fs edge, rotation,
+  fail-safe drop — never blocks a turn). NOT an extension (HostDeps bootstrap dep).
+- [x] **Orchestrator fan-out + wiring** (direct): bus error-attrs `{ err }`,
+  FakeLogger/`ctx.log` test conformance; host-bin injects `logSink`+`logDeps`
+  (journal at `.dispatch/journal/`); session-orchestrator threads `host.logger`
+  (childed per turn) into runTurn.
+
+**Result:** typecheck clean, **250 tests** (218 → +22 journal-sink, +10 kernel),
+biome clean. **Live boot verified:** a turn's journal contains host logs + turn/step
+spans (open+close) + the `prompt:before` record carrying the verbatim messages array
+— the pre-mutation prompt is fully reconstructable. 2-process model: app + in-process
+sink → journal file; the collector (process 2) is Phase B. Redaction is
+per-extension self-redaction (no shared helper — isolation over DRY).
+
+### Next (observability)
+- **"AFTER" capture** — `provider.request` verbatim post-transform in
+  provider-openai-compat → full round-trip rebuild + before↔after diff (§10).
+- Minor refinement: move the large `prompt:before` payload from `attributes` into the
+  record `body` field (store-fat-serve-thin) — currently a stringified attribute.
+- Phase B: out-of-process collector → SQLite store + query (§11).
+
+Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
+reports/phase-a-{kernel-logging,journal-sink}.md.

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Logger } from "../contracts/extension.js";
 import { defineEventHook, defineFilter, defineService } from "../contracts/hooks.js";
+import type { Logger, Span } from "../contracts/logging.js";
 import { type Bus, createBus } from "./bus.js";
 import { applyFilterChain, dispatchEventSync, sortFilters } from "./pure.js";
 
@@ -10,15 +10,30 @@ interface FakeLogger extends Logger {
 
 function createFakeLogger(): FakeLogger {
 	const errors: Array<{ message: string; args: unknown[] }> = [];
-	return {
+	const logger: FakeLogger = {
 		errors,
 		debug: () => {},
 		info: () => {},
 		warn: () => {},
-		error: (message: string, ...args: unknown[]) => {
-			errors.push({ message, args });
+		error: (message, attrs) => {
+			errors.push({ message, args: attrs === undefined ? [] : [attrs] });
 		},
+		child: () => logger,
+		span: () => makeNoopSpan(logger),
 	};
+	return logger;
+}
+
+function makeNoopSpan(log: Logger): Span {
+	const span: Span = {
+		id: "noop",
+		log,
+		setAttributes: () => {},
+		addLink: () => {},
+		child: () => span,
+		end: () => {},
+	};
+	return span;
 }
 
 describe("event hooks", () => {
