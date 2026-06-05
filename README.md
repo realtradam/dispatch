@@ -131,29 +131,34 @@ bun run dispatch -- opencode/deepseek-v4-flash --conversation <id> --text "and i
 
 ### Kernel & extensions
 
-| Package | Tier | Description |
-|---|---|---|
-| **kernel** | kernel | The minimal runtime core — contracts (the ABI), the extension host, the turn loop (`runTurn`), and the event/hook/service bus; touches no I/O and names no concrete feature. |
-| **storage-sqlite** | core | Concrete `bun:sqlite` backend behind the kernel's storage interface (a host bootstrap dependency; its `activate` is an intentional no-op). |
-| **auth-apikey** | core | Resolves an API key (the secret) from the environment into `ApiKeyCredentials` for a provider to consume. |
-| **credential-store** | core | Owns named **credentials** and the **model catalog** — resolves a `<credential>/<model>` model name to a provider + model and aggregates `GET /models`. |
-| **provider-openai-compat** | core | Wraps an OpenAI-compatible LLM backend (streaming chat + `listModels`); the OpenCode Go path, holding opencode-go specifics for now. |
-| **conversation-store** | core | Append-only persistence of the turn/chunk log, with a pure `reconcile` that repairs any interrupted turn on load. |
-| **session-orchestrator** | core | Drives one turn end-to-end: load history → resolve provider/model/tools → call `runTurn` → persist. |
-| **transport-http** | core | Hono HTTP transport exposing `POST /chat` (NDJSON event stream) and `GET /models` (the catalog). |
-| **tool-read-file** | standard | A `read_file` tool with offset/limit pagination and two-layer workdir containment, honoring the per-turn `cwd`. |
+The **Depends on** column is each extension's manifest `dependsOn` (other extensions, resolved
+topologically at activation). Every extension also depends implicitly on the kernel ABI.
+
+| Package | Tier | Description | Depends on |
+|---|---|---|---|
+| **kernel** | kernel | The minimal runtime core — contracts (the ABI), the extension host, the turn loop (`runTurn`), and the event/hook/service bus; touches no I/O and names no concrete feature. | — |
+| **storage-sqlite** | core | Concrete `bun:sqlite` backend behind the kernel's storage interface (a host bootstrap dependency; its `activate` is an intentional no-op). | — |
+| **auth-apikey** | core | Resolves an API key (the secret) from the environment into `ApiKeyCredentials` for a provider to consume. | — |
+| **credential-store** | core | Owns named **credentials** and the **model catalog** — resolves a `<credential>/<model>` model name to a provider + model and aggregates `GET /models`. | — |
+| **provider-openai-compat** | core | Wraps an OpenAI-compatible LLM backend (streaming chat + `listModels`); the OpenCode Go path, holding opencode-go specifics for now. | auth-apikey |
+| **conversation-store** | core | Append-only persistence of the turn/chunk log, with a pure `reconcile` that repairs any interrupted turn on load. | — |
+| **session-orchestrator** | core | Drives one turn end-to-end: load history → resolve provider/model/tools → call `runTurn` → persist. | conversation-store, credential-store |
+| **transport-http** | core | Hono HTTP transport exposing `POST /chat` (NDJSON event stream) and `GET /models` (the catalog). | credential-store, session-orchestrator |
+| **tool-read-file** | standard | A `read_file` tool with offset/limit pagination and two-layer workdir containment, honoring the per-turn `cwd`. | — |
 
 ### Supporting packages (not extensions)
 
-| Package | Description |
-|---|---|
-| **transport-contract** | Types-only description of the HTTP API (`ChatRequest`, `ModelsResponse`, `AgentEvent`) shared by the server and every client. |
-| **cli** | The bundled one-shot terminal client documented above. |
-| **host-bin** | The composition root: loads config, activates all extensions through the host, serves HTTP, and supervises the observability collector. |
-| **journal-sink** | Bootstrap `LogSink` that appends structured logs/spans to an NDJSON journal (rotation, fail-safe). |
-| **observability-collector** | Out-of-process binary that tails the journal and inserts records into the trace store (idempotent, at-least-once). |
-| **trace-store** | `bun:sqlite` store for trace records/bodies, plus a `trace` CLI to render a turn's timeline. |
-| **trace-replay** | Generic HTTP-exchange record/replay library for hermetic, network-free provider tests. |
+The **Depends on** column is each package's `@dispatch/*` workspace dependencies.
+
+| Package | Description | Depends on |
+|---|---|---|
+| **transport-contract** | Types-only description of the HTTP API (`ChatRequest`, `ModelsResponse`, `AgentEvent`) shared by the server and every client. | kernel |
+| **cli** | The bundled one-shot terminal client documented above. | transport-contract |
+| **host-bin** | The composition root: loads config, activates all extensions through the host, serves HTTP, and supervises the observability collector. | kernel, all 8 extensions, journal-sink |
+| **journal-sink** | Bootstrap `LogSink` that appends structured logs/spans to an NDJSON journal (rotation, fail-safe). | kernel |
+| **observability-collector** | Out-of-process binary that tails the journal and inserts records into the trace store (idempotent, at-least-once). | kernel, trace-store |
+| **trace-store** | `bun:sqlite` store for trace records/bodies, plus a `trace` CLI to render a turn's timeline. | kernel |
+| **trace-replay** | Generic HTTP-exchange record/replay library for hermetic, network-free provider tests. | — |
 
 ---
 
