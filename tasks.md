@@ -255,16 +255,22 @@ independent of the SQLite trace-store; the lib is redaction-free (caller self-re
   44→48 tests → **331 vitest**, typecheck + biome 0/0. CR: none.
   prompts/provider-trace-replay.md, reports/provider-trace-replay.md.
 - [x] **Build wiring** (orchestrator): root tsconfig ref ✓; provider dep `@dispatch/trace-replay` ✓; `bun install` ✓.
-- [~] **Live capture** (orchestrator): FOUND A BUG (the whole point of D5). The real
+- [x] **Live capture** (orchestrator): FOUND A BUG (the whole point of D5). The first real
   capture leaked the live API key — record-mode self-redaction MISSED the `Authorization`
-  header (capital A + `Bearer ` prefix; redaction matched lowercase `authorization`).
-  Committed span/journal path is SAFE (journal + trace-DB = ZERO_LEAKS); only the
-  record-mode fixture path leaked, caught PRE-COMMIT (fixture was /tmp-only, scrubbed).
-- [ ] **Record-mode redaction fix** (provider owner): case-insensitive auth-header mask +
-  a test using the REAL `Authorization: Bearer …` representation (must fail before, pass
-  after). prompts/provider-trace-replay-fix.md.
-- [ ] **Re-capture + swap** (orchestrator): after the fix, re-run live capture → secret
-  check → re-summon to commit the clean real fixture + update assertions.
+  header (capital A + `Bearer ` prefix; redaction matched lowercase). Caught PRE-COMMIT
+  (fixture /tmp-only, scrubbed); committed span/journal path was SAFE (ZERO_LEAKS). After
+  the fix, a clean re-capture verified 0 leaks + masked `Bearer sk-…redacted…UN0`.
+- [x] **Record-mode redaction fix** (provider owner): case-insensitive auth mask + 3
+  regression tests (incl. one reproducing the exact capital-`Authorization` leak). `5ae88d4`.
+- [x] **Re-capture + swap** (orchestrator): real flash text-turn fixture installed
+  (`src/__fixtures__/flash-text-turn.json`); reply "Hello there friend"; text-turn replay
+  assertions updated to real values (inputTokens 665 / outputTokens 90); secret-free
+  re-verified pre-commit. **334 tests**, typecheck + biome 0/0.
+- [ ] **FINDING → decide** (real-data, D5): flash returns cache tokens in DeepSeek's NESTED
+  `prompt_tokens_details.cached_tokens` (665 prompt / 384 cached); the openai-compat SSE
+  parser only maps the FLAT `cache_read/creation` form, so cache tokens never surface — an
+  observability gap for the §3.1 cache-debugging goal. Surfaced to user: fix the parser
+  (provider unit) or defer?
 
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.

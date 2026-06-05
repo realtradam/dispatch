@@ -545,7 +545,7 @@ describe("streamChat — hermetic replay (trace-replay)", () => {
 			(e): e is Extract<ProviderEvent, { type: "text-delta" }> => e.type === "text-delta",
 		);
 		const fullText = textDeltas.map((e) => e.delta).join("");
-		expect(fullText).toBe("I'm doing well, thank you! How can I help you today?");
+		expect(fullText).toBe("Hello there friend");
 
 		const finishEvents = events.filter((e) => e.type === "finish");
 		expect(finishEvents).toHaveLength(1);
@@ -555,8 +555,8 @@ describe("streamChat — hermetic replay (trace-replay)", () => {
 			(e): e is Extract<ProviderEvent, { type: "usage" }> => e.type === "usage",
 		);
 		expect(usageEvents).toHaveLength(1);
-		expect(usageEvents[0]?.usage.inputTokens).toBe(12);
-		expect(usageEvents[0]?.usage.outputTokens).toBe(16);
+		expect(usageEvents[0]?.usage.inputTokens).toBe(665);
+		expect(usageEvents[0]?.usage.outputTokens).toBe(90);
 
 		const captured = getCapturedRequest();
 		assertDefined(captured);
