@@ -663,9 +663,14 @@ describe("streamChat — record-mode redaction (trace-replay)", () => {
 					headers: { "content-type": "text/event-stream" },
 				}),
 			(fx) => {
-				const redactedHeaders = { ...fx.request.headers };
-				if (redactedHeaders.authorization) {
-					redactedHeaders.authorization = `Bearer ${maskSecret(redactedHeaders.authorization.replace(/^Bearer\s+/, ""))}`;
+				const redactedHeaders: Record<string, string> = {};
+				for (const [key, value] of Object.entries(fx.request.headers)) {
+					if (key.toLowerCase() === "authorization") {
+						const token = value.replace(/^Bearer\s+/i, "");
+						redactedHeaders[key] = `Bearer ${maskSecret(token)}`;
+					} else {
+						redactedHeaders[key] = value;
+					}
 				}
 				capturedFixture = {
 					request: { ...fx.request, headers: redactedHeaders },
@@ -703,14 +708,141 @@ describe("streamChat — record-mode redaction (trace-replay)", () => {
 		expect(serialized).toContain("hi");
 	});
 
+	it("redacts capitalized Authorization header (the real leak casing)", async () => {
+		const apiKey = "sk-LIVEKEY1234567890abcdef";
+		const responseBody = "data: [DONE]\n";
+
+		let capturedFixture: HttpExchangeFixture | undefined;
+		const wrappedFetch = recordFetch(
+			async () =>
+				new Response(responseBody, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				}),
+			(fx) => {
+				const redactedHeaders: Record<string, string> = {};
+				for (const [key, value] of Object.entries(fx.request.headers)) {
+					if (key.toLowerCase() === "authorization") {
+						const token = value.replace(/^Bearer\s+/i, "");
+						redactedHeaders[key] = `Bearer ${maskSecret(token)}`;
+					} else {
+						redactedHeaders[key] = value;
+					}
+				}
+				capturedFixture = {
+					request: { ...fx.request, headers: redactedHeaders },
+					response: fx.response,
+				};
+			},
+		);
+
+		await wrappedFetch("https://api.example.com/v1/chat/completions", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${apiKey}`,
+			},
+			body: '{"model":"test","messages":[],"stream":true}',
+		});
+
+		assertDefined(capturedFixture);
+		expect(capturedFixture.request.headers.Authorization).toBe("Bearer sk-…redacted…def");
+		expect(capturedFixture.request.headers.Authorization).not.toContain("LIVEKEY1234567890abc");
+
+		const serialized = serializeFixture(capturedFixture);
+		expect(serialized).not.toContain("LIVEKEY1234567890abc");
+		expect(serialized).toContain("Bearer sk-…redacted…def");
+	});
+
+	it("redacts lowercase authorization header", async () => {
+		const apiKey = "sk-abcdefghijkmnop";
+
+		let capturedFixture: HttpExchangeFixture | undefined;
+		const wrappedFetch = recordFetch(
+			async () => new Response("data: [DONE]\n", { status: 200 }),
+			(fx) => {
+				const redactedHeaders: Record<string, string> = {};
+				for (const [key, value] of Object.entries(fx.request.headers)) {
+					if (key.toLowerCase() === "authorization") {
+						const token = value.replace(/^Bearer\s+/i, "");
+						redactedHeaders[key] = `Bearer ${maskSecret(token)}`;
+					} else {
+						redactedHeaders[key] = value;
+					}
+				}
+				capturedFixture = {
+					request: { ...fx.request, headers: redactedHeaders },
+					response: fx.response,
+				};
+			},
+		);
+
+		await wrappedFetch("https://api.example.com/v1/chat/completions", {
+			method: "POST",
+			headers: { authorization: `Bearer ${apiKey}` },
+			body: null,
+		});
+
+		assertDefined(capturedFixture);
+		expect(capturedFixture.request.headers.authorization).toBe("Bearer sk-…redacted…nop");
+		expect(capturedFixture.request.headers.authorization).not.toContain("abcdefghijkm");
+	});
+
+	it("guard: no header named authorization (any case) survives with a raw sk- token", async () => {
+		const apiKey = "sk-REALKEY_1234567890abcdef";
+
+		let capturedFixture: HttpExchangeFixture | undefined;
+		const wrappedFetch = recordFetch(
+			async () => new Response("data: [DONE]\n", { status: 200 }),
+			(fx) => {
+				const redactedHeaders: Record<string, string> = {};
+				for (const [key, value] of Object.entries(fx.request.headers)) {
+					if (key.toLowerCase() === "authorization") {
+						const token = value.replace(/^Bearer\s+/i, "");
+						redactedHeaders[key] = `Bearer ${maskSecret(token)}`;
+					} else {
+						redactedHeaders[key] = value;
+					}
+				}
+				capturedFixture = {
+					request: { ...fx.request, headers: redactedHeaders },
+					response: fx.response,
+				};
+			},
+		);
+
+		await wrappedFetch("https://api.example.com/v1/chat/completions", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${apiKey}` },
+			body: null,
+		});
+
+		assertDefined(capturedFixture);
+		for (const [key, value] of Object.entries(capturedFixture.request.headers)) {
+			if (key.toLowerCase() === "authorization") {
+				expect(value).not.toContain(apiKey);
+				expect(value).not.toMatch(/sk-[A-Za-z0-9]{10,}/);
+			}
+		}
+
+		const serialized = serializeFixture(capturedFixture);
+		expect(serialized).not.toContain(apiKey);
+		expect(serialized).not.toMatch(/sk-[A-Za-z0-9]{10,}/);
+	});
+
 	it("redacts a short API key (≤7 chars → full mask)", async () => {
 		let capturedFixture: HttpExchangeFixture | undefined;
 		const wrappedFetch = recordFetch(
 			async () => new Response("data: [DONE]\n", { status: 200 }),
 			(fx) => {
-				const redactedHeaders = { ...fx.request.headers };
-				if (redactedHeaders.authorization) {
-					redactedHeaders.authorization = `Bearer ${maskSecret(redactedHeaders.authorization.replace(/^Bearer\s+/, ""))}`;
+				const redactedHeaders: Record<string, string> = {};
+				for (const [key, value] of Object.entries(fx.request.headers)) {
+					if (key.toLowerCase() === "authorization") {
+						const token = value.replace(/^Bearer\s+/i, "");
+						redactedHeaders[key] = `Bearer ${maskSecret(token)}`;
+					} else {
+						redactedHeaders[key] = value;
+					}
 				}
 				capturedFixture = {
 					request: { ...fx.request, headers: redactedHeaders },

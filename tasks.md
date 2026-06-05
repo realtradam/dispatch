@@ -255,10 +255,16 @@ independent of the SQLite trace-store; the lib is redaction-free (caller self-re
   44→48 tests → **331 vitest**, typecheck + biome 0/0. CR: none.
   prompts/provider-trace-replay.md, reports/provider-trace-replay.md.
 - [x] **Build wiring** (orchestrator): root tsconfig ref ✓; provider dep `@dispatch/trace-replay` ✓; `bun install` ✓.
-- [ ] **Live capture** (orchestrator): boot with `DISPATCH_RECORD_FIXTURE` + real key →
-  capture a real flash exchange → secret-free check → re-summon provider to swap the
-  synthetic text-turn fixture for the real one + update expected text (validates our SSE
-  assumptions against reality — D5).
+- [~] **Live capture** (orchestrator): FOUND A BUG (the whole point of D5). The real
+  capture leaked the live API key — record-mode self-redaction MISSED the `Authorization`
+  header (capital A + `Bearer ` prefix; redaction matched lowercase `authorization`).
+  Committed span/journal path is SAFE (journal + trace-DB = ZERO_LEAKS); only the
+  record-mode fixture path leaked, caught PRE-COMMIT (fixture was /tmp-only, scrubbed).
+- [ ] **Record-mode redaction fix** (provider owner): case-insensitive auth-header mask +
+  a test using the REAL `Authorization: Bearer …` representation (must fail before, pass
+  after). prompts/provider-trace-replay-fix.md.
+- [ ] **Re-capture + swap** (orchestrator): after the fix, re-run live capture → secret
+  check → re-summon to commit the clean real fixture + update assertions.
 
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.
