@@ -12,6 +12,7 @@
 		{ "path": "./packages/journal-sink" },
 		{ "path": "./packages/trace-store" },
 		{ "path": "./packages/observability-collector" },
+		{ "path": "./packages/trace-replay" },
 		{ "path": "./packages/host-bin" }
 	]
 }
