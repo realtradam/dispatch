@@ -300,6 +300,23 @@ curl -s -X POST localhost:4567/chat -H 'content-type: application/json' \
 ```
 Note the chat field is **`conversationId`** (threads multi-turn), not `tabId`.
 
+**Live validation & process cleanup — the `[x]` bracket trick (scar tissue).** When
+you live-validate you background the app (`bun packages/host-bin/src/main.ts &`), and it
+now spawns a child **observability collector** process. To list or kill those, ALWAYS
+use the bracket trick in `ps`/`pgrep`/`pkill` patterns:
+```bash
+ps -eo pid,args | grep '[o]bservability-collector/src/main'   # list (won't self-match)
+pkill -9 -f '[h]ost-bin/src/main.ts'                          # kill the app
+pkill -9 -f '[o]bservability-collector/src/main'              # kill the collector
+```
+**Why it matters:** a plain `pkill -f 'host-bin/src/main.ts'` matches its OWN command
+line and kills the parent shell → the tool call prints NOTHING and times out, looking
+exactly like a wedged session. `[h]ost-bin` matches the target "host-bin" while the
+literal pattern `[h]ost-bin` does not match itself. ALWAYS clean up the backgrounded app
++ its spawned collector after each live run — leaked processes pollute the next run's
+counts (this is precisely what made a correct supervisor look like it spawned 3
+collectors and left 2 behind).
+
 **Next suggested work** (post-MVP, see `tasks.md` "Open items"): wire
 auth→provider properly (auth-apikey is currently vestigial), then add the first
 TOOL extension to exercise the dispatch loop (turns currently run with `tools:
