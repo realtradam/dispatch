@@ -1,3 +1,4 @@
+import type { ProviderEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { parseSSELines } from "./parse-sse.js";
 
@@ -132,6 +133,85 @@ describe("parseSSELines", () => {
 
 		const events = parseSSELines(lines);
 		expect(events).toEqual([{ type: "text-delta", delta: "before" }]);
+	});
+
+	it("parses nested prompt_tokens_details.cached_tokens → cacheReadTokens", () => {
+		const lines = [
+			'data: {"id":"chatcmpl-nested","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+			'data: {"id":"chatcmpl-nested","usage":{"prompt_tokens":665,"completion_tokens":90,"prompt_tokens_details":{"cached_tokens":384},"completion_tokens_details":{"reasoning_tokens":86}}}',
+			"data: [DONE]",
+		];
+
+		const events = parseSSELines(lines);
+		const usageEvent = events.find((e) => e.type === "usage") as Extract<
+			ProviderEvent,
+			{ type: "usage" }
+		>;
+		expect(usageEvent.usage.inputTokens).toBe(665);
+		expect(usageEvent.usage.outputTokens).toBe(90);
+		expect(usageEvent.usage.cacheReadTokens).toBe(384);
+		expect(usageEvent.usage.cacheWriteTokens).toBeUndefined();
+	});
+
+	it("flat cache_read_tokens takes precedence over nested cached_tokens", () => {
+		const lines = [
+			'data: {"id":"chatcmpl-both","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+			'data: {"id":"chatcmpl-both","usage":{"prompt_tokens":100,"completion_tokens":20,"cache_read_tokens":50,"prompt_tokens_details":{"cached_tokens":99}}}',
+			"data: [DONE]",
+		];
+
+		const events = parseSSELines(lines);
+		const usageEvent = events.find((e) => e.type === "usage") as Extract<
+			ProviderEvent,
+			{ type: "usage" }
+		>;
+		expect(usageEvent.usage.cacheReadTokens).toBe(50);
+	});
+
+	it("returns undefined for cacheReadTokens when neither flat nor nested present", () => {
+		const lines = [
+			'data: {"id":"chatcmpl-none","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+			'data: {"id":"chatcmpl-none","usage":{"prompt_tokens":10,"completion_tokens":5}}',
+			"data: [DONE]",
+		];
+
+		const events = parseSSELines(lines);
+		const usageEvent = events.find((e) => e.type === "usage") as Extract<
+			ProviderEvent,
+			{ type: "usage" }
+		>;
+		expect(usageEvent.usage.cacheReadTokens).toBeUndefined();
+		expect(usageEvent.usage.cacheWriteTokens).toBeUndefined();
+	});
+
+	it("handles missing/partial prompt_tokens_details safely", () => {
+		const lines = [
+			'data: {"id":"chatcmpl-partial","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+			'data: {"id":"chatcmpl-partial","usage":{"prompt_tokens":50,"completion_tokens":10,"prompt_tokens_details":{}}}',
+			"data: [DONE]",
+		];
+
+		const events = parseSSELines(lines);
+		const usageEvent = events.find((e) => e.type === "usage") as Extract<
+			ProviderEvent,
+			{ type: "usage" }
+		>;
+		expect(usageEvent.usage.cacheReadTokens).toBeUndefined();
+	});
+
+	it("handles empty prompt_tokens_details object safely", () => {
+		const lines = [
+			'data: {"id":"chatcmpl-empty","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+			'data: {"id":"chatcmpl-empty","usage":{"prompt_tokens":30,"completion_tokens":8,"prompt_tokens_details":null}}',
+			"data: [DONE]",
+		];
+
+		const events = parseSSELines(lines);
+		const usageEvent = events.find((e) => e.type === "usage") as Extract<
+			ProviderEvent,
+			{ type: "usage" }
+		>;
+		expect(usageEvent.usage.cacheReadTokens).toBeUndefined();
 	});
 
 	it("handles a complete turn with text, tool call, usage, and finish", () => {

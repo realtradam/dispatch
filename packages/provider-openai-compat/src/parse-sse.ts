@@ -22,6 +22,10 @@ interface SSEChunkChoice {
 	index: number;
 }
 
+interface SSEChunkUsageDetails {
+	cached_tokens?: number;
+}
+
 interface SSEChunk {
 	id?: string;
 	choices?: SSEChunkChoice[];
@@ -30,6 +34,8 @@ interface SSEChunk {
 		completion_tokens?: number;
 		cache_read_tokens?: number;
 		cache_write_tokens?: number;
+		prompt_tokens_details?: SSEChunkUsageDetails;
+		completion_tokens_details?: Record<string, unknown>;
 	};
 }
 
@@ -105,17 +111,16 @@ export function parseSSELines(lines: readonly string[]): ProviderEvent[] {
 		}
 
 		if (chunk.usage) {
+			const cacheRead =
+				chunk.usage.cache_read_tokens ?? chunk.usage.prompt_tokens_details?.cached_tokens;
+			const cacheWrite = chunk.usage.cache_write_tokens;
 			events.push({
 				type: "usage",
 				usage: {
 					inputTokens: chunk.usage.prompt_tokens ?? 0,
 					outputTokens: chunk.usage.completion_tokens ?? 0,
-					...(chunk.usage.cache_read_tokens !== undefined
-						? { cacheReadTokens: chunk.usage.cache_read_tokens }
-						: {}),
-					...(chunk.usage.cache_write_tokens !== undefined
-						? { cacheWriteTokens: chunk.usage.cache_write_tokens }
-						: {}),
+					...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
+					...(cacheWrite !== undefined ? { cacheWriteTokens: cacheWrite } : {}),
 				},
 			});
 		}

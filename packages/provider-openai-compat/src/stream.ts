@@ -351,14 +351,14 @@ async function* readSSEStream(
 							completion_tokens?: number;
 							cache_read_tokens?: number;
 							cache_write_tokens?: number;
+							prompt_tokens_details?: { cached_tokens?: number };
+							completion_tokens_details?: Record<string, unknown>;
 					  }
 					| undefined;
 
 				if (usage) {
-					const cacheRead =
-						usage.cache_read_tokens !== undefined ? usage.cache_read_tokens : undefined;
-					const cacheWrite =
-						usage.cache_write_tokens !== undefined ? usage.cache_write_tokens : undefined;
+					const cacheRead = usage.cache_read_tokens ?? usage.prompt_tokens_details?.cached_tokens;
+					const cacheWrite = usage.cache_write_tokens;
 					const usageObj: {
 						inputTokens: number;
 						outputTokens: number;

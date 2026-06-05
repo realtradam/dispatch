@@ -266,11 +266,18 @@ independent of the SQLite trace-store; the lib is redaction-free (caller self-re
   (`src/__fixtures__/flash-text-turn.json`); reply "Hello there friend"; text-turn replay
   assertions updated to real values (inputTokens 665 / outputTokens 90); secret-free
   re-verified pre-commit. **334 tests**, typecheck + biome 0/0.
-- [ ] **FINDING → decide** (real-data, D5): flash returns cache tokens in DeepSeek's NESTED
-  `prompt_tokens_details.cached_tokens` (665 prompt / 384 cached); the openai-compat SSE
-  parser only maps the FLAT `cache_read/creation` form, so cache tokens never surface — an
-  observability gap for the §3.1 cache-debugging goal. Surfaced to user: fix the parser
-  (provider unit) or defer?
+- [x] **Cache-token mapping fixed** (real-data, D5): parser now maps nested
+  `prompt_tokens_details.cached_tokens` → `Usage.cacheReadTokens` (flat `cache_read_tokens`
+  still wins via `??`; `cacheWriteTokens` flat-only, never fabricated; partial/null details
+  safe; no contract change). +5 parser tests + real-fixture regression (`cacheReadTokens===384`).
+  339 tests. reports/provider-cache-tokens.md.
+- [ ] **DEFERRED — trace body de-dup / storage growth** (user-flagged): the `provider.request`
+  span stores the FULL post-transform request body on EVERY request → ~O(N²) body text for
+  long conversations (history is resent each turn; cache hits are the signature of it).
+  Mitigation already DESIGNED, not built: D5 "Volume control" (persist body only when
+  `prefix.fingerprint` changed) + §6 retention/rotation/compression; thin/fat split already
+  built. `cacheReadTokens` (just added) + the future `prefix.fingerprint` are the cheap dedup
+  signals. Revisit when cache-warming / longer conversations land.
 
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.
