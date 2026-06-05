@@ -15,6 +15,10 @@ import type {
 	FilterHandler,
 	ServiceHandle,
 } from "./hooks.js";
+import type { Logger } from "./logging.js";
+
+export type { Logger } from "./logging.js";
+
 import type { ProviderContract } from "./provider.js";
 import type { ToolContract } from "./tool.js";
 
@@ -132,15 +136,7 @@ export interface ScheduledJob {
 	readonly execute: () => void | Promise<void>;
 }
 
-// --- Logger ---
-
-/** Logger interface available to every extension via the Host API. */
-export interface Logger {
-	readonly debug: (message: string, ...args: unknown[]) => void;
-	readonly info: (message: string, ...args: unknown[]) => void;
-	readonly warn: (message: string, ...args: unknown[]) => void;
-	readonly error: (message: string, ...args: unknown[]) => void;
-}
+// --- Logger is re-exported from logging.ts (structured, correlated) ---
 
 // --- Config ---
 

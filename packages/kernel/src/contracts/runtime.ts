@@ -10,6 +10,7 @@
 import type { ChatMessage } from "./conversation.js";
 import type { ToolDispatchPolicy } from "./dispatch.js";
 import type { AgentEvent } from "./events.js";
+import type { Logger } from "./logging.js";
 import type { ProviderContract, ProviderStreamOptions, Usage } from "./provider.js";
 import type { ToolContract } from "./tool.js";
 
@@ -73,6 +74,13 @@ export interface RunTurnInput {
 
 	/** Cancellation signal for the entire turn. */
 	readonly signal?: AbortSignal;
+
+	/**
+	 * Optional logger for structured span instrumentation. The runtime opens
+	 * turn/step/tool-call spans using this logger. If omitted, no spans are
+	 * emitted (backward-compatible with callers that don't yet pass a logger).
+	 */
+	readonly logger?: Logger;
 }
 
 /**

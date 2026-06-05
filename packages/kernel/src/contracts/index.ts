@@ -45,7 +45,6 @@ export type {
 	EventsEmitter,
 	Extension,
 	HostAPI,
-	Logger,
 	Manifest,
 	ManifestCapabilities,
 	ManifestContributions,
@@ -57,7 +56,6 @@ export type {
 	StorageNamespace,
 	TrustLevel,
 } from "./extension.js";
-
 export type {
 	EventHandler,
 	EventHookDescriptor,
@@ -66,8 +64,24 @@ export type {
 	HookDescriptor,
 	ServiceHandle,
 } from "./hooks.js";
-
 export { defineEventHook, defineFilter, defineService } from "./hooks.js";
+export type {
+	Attributes,
+	ErrorAttributes,
+	Level,
+	LogContext,
+	LogDeps,
+	Logger,
+	LogLineRecord,
+	LogRecord,
+	LogSink,
+	Span,
+	SpanCloseRecord,
+	SpanLink,
+	SpanOpenRecord,
+	SpanStatus,
+} from "./logging.js";
+export { createLogger } from "./logging.js";
 export type {
 	FinishEvent,
 	ProviderContract,

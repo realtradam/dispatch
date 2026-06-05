@@ -6,7 +6,6 @@ import type {
 	EventsEmitter,
 	Extension,
 	HostAPI,
-	Logger,
 	Manifest,
 	ManifestContributions,
 	PermissionDecision,
@@ -17,30 +16,89 @@ import type {
 	StorageNamespace,
 } from "../contracts/extension.js";
 import { defineEventHook, defineService } from "../contracts/hooks.js";
+import type {
+	Attributes,
+	ErrorAttributes,
+	LogDeps,
+	Logger,
+	LogRecord,
+	LogSink,
+} from "../contracts/logging.js";
 import type { ProviderContract } from "../contracts/provider.js";
 import type { ToolContract } from "../contracts/tool.js";
 import { createHost, type HostDeps, KERNEL_API_VERSION } from "./host.js";
 
 interface FakeLogger extends Logger {
-	readonly logs: Array<{ level: string; message: string; args: unknown[] }>;
+	readonly logs: Array<{ level: string; message: string; attrs?: Attributes | ErrorAttributes }>;
 }
 
 function createFakeLogger(): FakeLogger {
-	const logs: Array<{ level: string; message: string; args: unknown[] }> = [];
+	const logs: Array<{ level: string; message: string; attrs?: Attributes | ErrorAttributes }> = [];
 	return {
 		logs,
-		debug: (message: string, ...args: unknown[]) => {
-			logs.push({ level: "debug", message, args });
+		debug: (message: string, attrs?: Attributes) => {
+			if (attrs !== undefined) {
+				logs.push({ level: "debug", message, attrs });
+			} else {
+				logs.push({ level: "debug", message });
+			}
 		},
-		info: (message: string, ...args: unknown[]) => {
-			logs.push({ level: "info", message, args });
+		info: (message: string, attrs?: Attributes) => {
+			if (attrs !== undefined) {
+				logs.push({ level: "info", message, attrs });
+			} else {
+				logs.push({ level: "info", message });
+			}
 		},
-		warn: (message: string, ...args: unknown[]) => {
-			logs.push({ level: "warn", message, args });
+		warn: (message: string, attrs?: Attributes) => {
+			if (attrs !== undefined) {
+				logs.push({ level: "warn", message, attrs });
+			} else {
+				logs.push({ level: "warn", message });
+			}
 		},
-		error: (message: string, ...args: unknown[]) => {
-			logs.push({ level: "error", message, args });
+		error: (message: string, attrs?: ErrorAttributes) => {
+			if (attrs !== undefined) {
+				logs.push({ level: "error", message, attrs });
+			} else {
+				logs.push({ level: "error", message });
+			}
 		},
+		child(
+			_ctx: Partial<import("../contracts/logging.js").LogContext> & { readonly attrs?: Attributes },
+		): Logger {
+			return createFakeLogger();
+		},
+		span(_name: string, _attrs?: Attributes): import("../contracts/logging.js").Span {
+			return {
+				id: "fake-span",
+				log: createFakeLogger(),
+				setAttributes() {},
+				addLink() {},
+				child() {
+					return this;
+				},
+				end() {},
+			};
+		},
+	};
+}
+
+function createFakeLogSink(): LogSink & { readonly records: LogRecord[] } {
+	const records: LogRecord[] = [];
+	return {
+		records,
+		emit: (record: LogRecord) => {
+			records.push(record);
+		},
+	};
+}
+
+function createFakeLogDeps(): LogDeps {
+	let idCounter = 0;
+	return {
+		now: () => 1000 + idCounter * 100,
+		newId: () => `span-${++idCounter}`,
 	};
 }
 
@@ -176,12 +234,16 @@ function createFakeAuth(id: string): AuthContract {
 
 describe("createHost", () => {
 	let logger: FakeLogger;
+	let logSink: ReturnType<typeof createFakeLogSink>;
+	let logDeps: LogDeps;
 	let deps: HostDeps;
 	let scheduler: ReturnType<typeof createFakeScheduler>;
 	let events: ReturnType<typeof createFakeEvents>;
 
 	beforeEach(() => {
 		logger = createFakeLogger();
+		logSink = createFakeLogSink();
+		logDeps = createFakeLogDeps();
 		scheduler = createFakeScheduler();
 		events = createFakeEvents();
 		deps = {
@@ -193,6 +255,8 @@ describe("createHost", () => {
 			scheduler,
 			bus: createBus(logger),
 			events,
+			logSink,
+			logDeps,
 		};
 	});
 
@@ -529,6 +593,7 @@ describe("createHost", () => {
 			expect(order).toEqual(["deactivate-c", "deactivate-a"]);
 			const errors = logger.logs.filter((l) => l.level === "error");
 			expect(errors.some((e) => e.message.includes("deactivate"))).toBe(true);
+			expect(errors.some((e) => (e.attrs as { err?: unknown })?.err instanceof Error)).toBe(true);
 		});
 	});
 
@@ -748,6 +813,148 @@ describe("createHost", () => {
 			expect(() => api.defineAuth(createFakeAuth("late"))).toThrow(
 				"Registration not available after activation",
 			);
+		});
+	});
+
+	describe("auto-scoped logger (D6)", () => {
+		it("each extension's logger stamps its own manifest.id as extensionId", async () => {
+			let extALogger: Logger | undefined;
+			let extBLogger: Logger | undefined;
+
+			const a = createExtension("ext-a", {
+				activate: (host) => {
+					extALogger = host.logger;
+				},
+			});
+			const b = createExtension("ext-b", {
+				activate: (host) => {
+					extBLogger = host.logger;
+				},
+			});
+
+			const host = createHost([a, b], deps);
+			await host.activate();
+
+			extALogger?.info("from-a");
+			extBLogger?.info("from-b");
+
+			const logRecords = logSink.records.filter((r) => r.kind === "log");
+			expect(logRecords).toHaveLength(2);
+			if (logRecords[0]?.kind === "log") {
+				expect(logRecords[0].extensionId).toBe("ext-a");
+				expect(logRecords[0].msg).toBe("from-a");
+			}
+			if (logRecords[1]?.kind === "log") {
+				expect(logRecords[1].extensionId).toBe("ext-b");
+				expect(logRecords[1].msg).toBe("from-b");
+			}
+		});
+
+		it("an extension cannot spoof extensionId — it is auto-stamped", async () => {
+			let extLogger: Logger | undefined;
+
+			const ext = createExtension("real-id", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			// child() cannot override extensionId
+			const child = extLogger?.child({ extensionId: "spoofed" });
+			child?.info("msg");
+
+			const logRecords = logSink.records.filter((r) => r.kind === "log");
+			expect(logRecords).toHaveLength(1);
+			if (logRecords[0]?.kind === "log") {
+				expect(logRecords[0].extensionId).toBe("real-id");
+			}
+		});
+
+		it("host.logger.error uses structured { err } shape", async () => {
+			let extLogger: Logger | undefined;
+
+			const ext = createExtension("ext", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			extLogger?.error("something broke", { err: new Error("boom") });
+
+			const logRecords = logSink.records.filter((r) => r.kind === "log");
+			expect(logRecords).toHaveLength(1);
+			if (logRecords[0]?.kind === "log") {
+				expect(logRecords[0].level).toBe("error");
+				expect(logRecords[0].msg).toBe("something broke");
+				expect(logRecords[0].attributes?.["error.message"]).toBe("boom");
+			}
+		});
+
+		it("a throwing sink does NOT break the caller", async () => {
+			const brokenSink: LogSink = {
+				emit() {
+					throw new Error("sink down");
+				},
+			};
+			const brokenDeps: HostDeps = {
+				...deps,
+				logSink: brokenSink,
+			};
+
+			let extLogger: Logger | undefined;
+			const ext = createExtension("ext", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], brokenDeps);
+			await host.activate();
+
+			// Should not throw
+			expect(() => extLogger?.info("msg")).not.toThrow();
+		});
+
+		it("span() + end() emit incremental span-open and span-close records", async () => {
+			let extLogger: Logger | undefined;
+
+			const ext = createExtension("ext", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const span = extLogger?.span("my-span", { key: "value" });
+			span?.setAttributes({ extra: "attr" });
+			span?.end({ attrs: { result: "ok" } });
+
+			const spanOpens = logSink.records.filter((r) => r.kind === "span-open");
+			const spanCloses = logSink.records.filter((r) => r.kind === "span-close");
+
+			expect(spanOpens).toHaveLength(1);
+			expect(spanCloses).toHaveLength(1);
+
+			if (spanOpens[0]?.kind === "span-open") {
+				expect(spanOpens[0].name).toBe("my-span");
+				expect(spanOpens[0].extensionId).toBe("ext");
+				expect(spanOpens[0].attributes?.key).toBe("value");
+			}
+			if (spanCloses[0]?.kind === "span-close") {
+				expect(spanCloses[0].name).toBe("my-span");
+				expect(spanCloses[0].status).toBe("ok");
+				expect(spanCloses[0].durationMs).toBeGreaterThanOrEqual(0);
+				expect(spanCloses[0].attributes?.extra).toBe("attr");
+				expect(spanCloses[0].attributes?.result).toBe("ok");
+			}
 		});
 	});
 });

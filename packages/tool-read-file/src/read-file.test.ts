@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ToolExecuteContext } from "@dispatch/kernel";
+import { createLogger, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	createReadFileTool,
@@ -16,6 +16,11 @@ function stubCtx(): ToolExecuteContext {
 		toolCallId: "test-call-1",
 		onOutput: () => {},
 		signal: AbortSignal.timeout(5000),
+		log: createLogger(
+			{ extensionId: "test" },
+			{ emit: () => {} },
+			{ now: () => 0, newId: () => "id" },
+		),
 	};
 }
 

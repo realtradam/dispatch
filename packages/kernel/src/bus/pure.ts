@@ -12,11 +12,11 @@ export function dispatchEventSync<T>(
 			const result = handler(payload);
 			if (result instanceof Promise) {
 				result.catch((err: unknown) => {
-					logger.error(`Event hook "${hookId}" handler rejected`, err);
+					logger.error(`Event hook "${hookId}" handler rejected`, { err });
 				});
 			}
 		} catch (err) {
-			logger.error(`Event hook "${hookId}" handler threw`, err);
+			logger.error(`Event hook "${hookId}" handler threw`, { err });
 		}
 	}
 }
@@ -32,7 +32,7 @@ export async function dispatchEventAsync<T>(
 		try {
 			await handler(payload);
 		} catch (err) {
-			logger.error(`Event hook "${hookId}" handler threw`, err);
+			logger.error(`Event hook "${hookId}" handler threw`, { err });
 		}
 	});
 
@@ -76,7 +76,7 @@ export async function applyFilterChain<T>(
 			current = await fn(current);
 		} catch (err) {
 			if (failClosed) throw err;
-			logger.error(`Filter "${hookId}" handler threw (fail-open, passing through)`, err);
+			logger.error(`Filter "${hookId}" handler threw (fail-open, passing through)`, { err });
 		}
 	}
 	return current;

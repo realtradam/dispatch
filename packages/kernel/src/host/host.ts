@@ -5,7 +5,6 @@ import type {
 	EventsEmitter,
 	Extension,
 	HostAPI,
-	Logger,
 	Manifest,
 	PermissionGate,
 	ScheduledJob,
@@ -19,6 +18,8 @@ import type {
 	FilterHandler,
 	ServiceHandle,
 } from "../contracts/hooks.js";
+import type { LogDeps, Logger, LogSink } from "../contracts/logging.js";
+import { createLogger } from "../contracts/logging.js";
 import type { ProviderContract } from "../contracts/provider.js";
 import type { ToolContract } from "../contracts/tool.js";
 import { resolveActivationOrder } from "./dag.js";
@@ -40,6 +41,8 @@ export interface HostDeps {
 	readonly scheduler: { readonly register: (job: ScheduledJob) => void };
 	readonly bus: Bus;
 	readonly events: EventsEmitter;
+	readonly logSink: LogSink;
+	readonly logDeps: LogDeps;
 }
 
 export interface Host {
@@ -96,8 +99,12 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 		}
 	}
 
-	function buildHostAPI(opts?: { readonly registrationClosed?: boolean }): HostAPI {
+	function buildHostAPI(
+		extensionId: string,
+		opts?: { readonly registrationClosed?: boolean },
+	): HostAPI {
 		const closed = opts?.registrationClosed ?? false;
+		const extLogger = createLogger({ extensionId }, deps.logSink, deps.logDeps);
 		return {
 			defineTool(tool: ToolContract) {
 				if (closed) throw new Error("Registration not available after activation");
@@ -130,7 +137,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 			secrets: deps.secrets,
 			permissions: deps.permissions,
 			events: deps.events,
-			logger: deps.logger,
+			logger: extLogger,
 			getProviders() {
 				return providers;
 			},
@@ -156,7 +163,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 		async activate() {
 			for (const ext of compatible) {
 				try {
-					await ext.activate(buildHostAPI());
+					await ext.activate(buildHostAPI(ext.manifest.id));
 					activated.push(ext);
 					deps.logger.info(`Extension "${ext.manifest.id}" activated`);
 				} catch (err) {
@@ -164,7 +171,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 						manifest: ext.manifest,
 						reason: `Activation failed: ${err instanceof Error ? err.message : String(err)}`,
 					});
-					deps.logger.error(`Extension "${ext.manifest.id}" failed to activate`, err);
+					deps.logger.error(`Extension "${ext.manifest.id}" failed to activate`, { err });
 				}
 			}
 		},
@@ -175,7 +182,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 				try {
 					await ext.deactivate();
 				} catch (err) {
-					deps.logger.error(`Extension "${ext.manifest.id}" failed to deactivate`, err);
+					deps.logger.error(`Extension "${ext.manifest.id}" failed to deactivate`, { err });
 				}
 			}
 		},
@@ -207,7 +214,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 			return disabled;
 		},
 		getHostAPI() {
-			return buildHostAPI({ registrationClosed: true });
+			return buildHostAPI("__host__", { registrationClosed: true });
 		},
 	};
 }
