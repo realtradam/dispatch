@@ -1,0 +1,25 @@
+{
+	"request": {
+		"method": "POST",
+		"url": "https://api.example.com/v1/chat/completions",
+		"headers": {
+			"content-type": "application/json",
+			"authorization": "Bearer sk-…redacted…xyz"
+		},
+		"body": "{\"model\":\"deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Tokyo?\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get current weather for a location\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}},\"required\":[\"location\"]}}}],\"stream\":true}"
+	},
+	"response": {
+		"status": 200,
+		"statusText": "OK",
+		"headers": {
+			"content-type": "text/event-stream",
+			"cache-control": "no-cache"
+		},
+		"body": "data: {\"id\":\"chatcmpl-fixture-002\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-002\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_abc123\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-002\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"locat\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-002\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ion\\\":\\\"Tokyo\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-002\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":45,\"completion_tokens\":12,\"cache_read_tokens\":30,\"cache_write_tokens\":5}}\n\ndata: [DONE]\n"
+	},
+	"meta": {
+		"description": "Tool-call fixture: user asks about weather → model calls get_weather tool with split argument chunks.",
+		"captured_by": "provider-openai-compat record mode",
+		"version": 1
+	}
+}

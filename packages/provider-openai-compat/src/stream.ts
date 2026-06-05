@@ -5,6 +5,7 @@ import type {
 	Span,
 	ToolContract,
 } from "@dispatch/kernel";
+import type { FetchLike, HttpExchangeFixture } from "@dispatch/trace-replay";
 import { convertMessages, type OpenAIMessage } from "./convert-messages.js";
 import { convertTools, type OpenAITool } from "./convert-tools.js";
 
@@ -12,6 +13,11 @@ export interface StreamConfig {
 	readonly baseURL: string;
 	readonly apiKey: string;
 	readonly model: string;
+	/**
+	 * Internal injectable fetch — used by replay tests and record mode.
+	 * When absent, falls back to globalThis.fetch (production default).
+	 */
+	readonly fetchFn?: FetchLike;
 }
 
 /**
@@ -91,9 +97,37 @@ export async function* streamChat(
 		}
 	}
 
+	let effectiveFetch: FetchLike = config.fetchFn ?? fetch;
+
+	const recordPath =
+		typeof process !== "undefined" ? process.env.DISPATCH_RECORD_FIXTURE : undefined;
+	if (recordPath && !config.fetchFn) {
+		try {
+			const { recordFetch: rf, saveFixture } = await import("@dispatch/trace-replay");
+			effectiveFetch = rf(effectiveFetch, (fx: HttpExchangeFixture) => {
+				try {
+					const redactedHeaders = { ...fx.request.headers };
+					if (redactedHeaders.authorization) {
+						redactedHeaders.authorization = `Bearer ${maskSecret(redactedHeaders.authorization.replace(/^Bearer\s+/, ""))}`;
+					}
+					const redacted: HttpExchangeFixture = {
+						request: { ...fx.request, headers: redactedHeaders },
+						response: fx.response,
+						...(fx.meta !== undefined ? { meta: fx.meta } : {}),
+					};
+					saveFixture(recordPath, redacted);
+				} catch {
+					// Fail-safe: capture/write must never break the turn.
+				}
+			});
+		} catch {
+			// Fail-safe: dynamic import or wrapping failure must never break the turn.
+		}
+	}
+
 	let response: Response;
 	try {
-		response = await fetch(url, {
+		response = await effectiveFetch(url, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",

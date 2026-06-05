@@ -1,0 +1,25 @@
+{
+	"request": {
+		"method": "POST",
+		"url": "https://api.example.com/v1/chat/completions",
+		"headers": {
+			"content-type": "application/json",
+			"authorization": "Bearer sk-…redacted…xyz"
+		},
+		"body": "{\"model\":\"deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello, how are you?\"}],\"stream\":true}"
+	},
+	"response": {
+		"status": 200,
+		"statusText": "OK",
+		"headers": {
+			"content-type": "text/event-stream",
+			"cache-control": "no-cache"
+		},
+		"body": "data: {\"id\":\"chatcmpl-fixture-001\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-001\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I'm doing\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-001\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" well, thank\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-001\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" you! How can I\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-001\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" help you today?\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-fixture-001\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":16,\"cache_read_tokens\":0,\"cache_write_tokens\":0}}\n\ndata: [DONE]\n"
+	},
+	"meta": {
+		"description": "Simple text-turn fixture: user greeting → short assistant reply with stop finish.",
+		"captured_by": "provider-openai-compat record mode",
+		"version": 1
+	}
+}

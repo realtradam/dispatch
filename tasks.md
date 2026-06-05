@@ -247,12 +247,18 @@ independent of the SQLite trace-store; the lib is redaction-free (caller self-re
   + `save/load` fixture I/O. **Redaction-free** (caller self-redacts — isolation over DRY),
   zero `@dispatch/*` deps, NO `bun:sqlite`. 39 tests (replay 12 / record 8 / fixture 19);
   root tsconfig ref wired → **327 vitest**, typecheck + biome 0/0. reports/trace-replay.md.
-- [ ] **Unit 2 — provider-openai-compat consumer**: env-gated record mode at its fetch
-  edge (self-redacts auth in its OWN code before `saveFixture`); `stream.test.ts` replays
-  a committed real-flash fixture via `replayFetch` → asserts ProviderEvents + that the
-  outgoing request still matches (transform-drift regression). Summon AFTER Unit 1 lands.
-- [~] **Build wiring** (orchestrator): root tsconfig ref for trace-replay ✓ + `bun install` ✓;
-  provider dep on `@dispatch/trace-replay` pending (with Unit 2).
+- [x] **Unit 2 — provider-openai-compat consumer** — DONE + verified (hermetic). Internal
+  `fetchFn?: FetchLike` on `StreamConfig` (injectable fetch — P3, NOT a kernel contract
+  change); env-gated record mode (`DISPATCH_RECORD_FIXTURE`) self-redacts auth via the
+  provider's existing `maskSecret()` (no shared helper); 2 committed SSE fixtures
+  (text-turn + tool-call) + 4 new tests (2 replay w/ chunk-split, 2 redaction). Provider
+  44→48 tests → **331 vitest**, typecheck + biome 0/0. CR: none.
+  prompts/provider-trace-replay.md, reports/provider-trace-replay.md.
+- [x] **Build wiring** (orchestrator): root tsconfig ref ✓; provider dep `@dispatch/trace-replay` ✓; `bun install` ✓.
+- [ ] **Live capture** (orchestrator): boot with `DISPATCH_RECORD_FIXTURE` + real key →
+  capture a real flash exchange → secret-free check → re-summon provider to swap the
+  synthetic text-turn fixture for the real one + update expected text (validates our SSE
+  assumptions against reality — D5).
 
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.

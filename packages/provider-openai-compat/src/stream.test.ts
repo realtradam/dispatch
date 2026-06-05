@@ -1,4 +1,6 @@
 import type { ChatMessage, Logger, ProviderEvent, Span } from "@dispatch/kernel";
+import type { HttpExchangeFixture } from "@dispatch/trace-replay";
+import { loadFixture, recordFetch, replayFetch, serializeFixture } from "@dispatch/trace-replay";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type StreamConfig, streamChat } from "./stream.js";
 
@@ -514,5 +516,216 @@ describe("streamChat — provider.request AFTER capture", () => {
 		assertDefined(span.body);
 		const capturedBody = JSON.parse(span.body);
 		expect(capturedBody.model).toBe("override-model");
+	});
+});
+
+describe("streamChat — hermetic replay (trace-replay)", () => {
+	const testDir = new URL(".", import.meta.url).pathname;
+	const fixturePath = `${testDir}__fixtures__/flash-text-turn.json`;
+	const toolFixturePath = `${testDir}__fixtures__/tool-call-turn.json`;
+
+	it("replays a text-turn fixture and produces correct ProviderEvents", async () => {
+		const fixture = loadFixture(fixturePath);
+		const { fetch: replayFetchFn, getCapturedRequest } = replayFetch(fixture, { chunkBytes: 64 });
+
+		const config: StreamConfig = {
+			baseURL: "https://api.example.com/v1",
+			apiKey: "sk-test-1234567890abcdef",
+			model: "deepseek-v4-flash",
+			fetchFn: replayFetchFn,
+		};
+
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "Hello, how are you?" }] },
+		];
+
+		const events = await collectEvents(streamChat(config, messages, []));
+
+		const textDeltas = events.filter(
+			(e): e is Extract<ProviderEvent, { type: "text-delta" }> => e.type === "text-delta",
+		);
+		const fullText = textDeltas.map((e) => e.delta).join("");
+		expect(fullText).toBe("I'm doing well, thank you! How can I help you today?");
+
+		const finishEvents = events.filter((e) => e.type === "finish");
+		expect(finishEvents).toHaveLength(1);
+		expect(finishEvents[0]).toEqual({ type: "finish", reason: "stop" });
+
+		const usageEvents = events.filter(
+			(e): e is Extract<ProviderEvent, { type: "usage" }> => e.type === "usage",
+		);
+		expect(usageEvents).toHaveLength(1);
+		expect(usageEvents[0]?.usage.inputTokens).toBe(12);
+		expect(usageEvents[0]?.usage.outputTokens).toBe(16);
+
+		const captured = getCapturedRequest();
+		assertDefined(captured);
+		expect(captured.method).toBe("POST");
+		expect(captured.url).toBe("https://api.example.com/v1/chat/completions");
+		expect(captured.headers["Content-Type"]).toBe("application/json");
+		expect(captured.headers.Authorization).toBe("Bearer sk-test-1234567890abcdef");
+
+		assertDefined(captured.body);
+		const capturedBody = JSON.parse(captured.body);
+		expect(capturedBody.model).toBe("deepseek-v4-flash");
+		expect(capturedBody.stream).toBe(true);
+		expect(capturedBody.messages).toEqual([{ role: "user", content: "Hello, how are you?" }]);
+	});
+
+	it("replays a tool-call-turn fixture and produces tool-call + finish events", async () => {
+		const fixture = loadFixture(toolFixturePath);
+		const { fetch: replayFetchFn, getCapturedRequest } = replayFetch(fixture, { chunkBytes: 48 });
+
+		const config: StreamConfig = {
+			baseURL: "https://api.example.com/v1",
+			apiKey: "sk-test-1234567890abcdef",
+			model: "deepseek-v4-flash",
+			fetchFn: replayFetchFn,
+		};
+
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "What is the weather in Tokyo?" }] },
+		];
+
+		const weatherTool = {
+			name: "get_weather",
+			description: "Get current weather for a location",
+			parameters: {
+				type: "object" as const,
+				properties: { location: { type: "string" as const } },
+				required: ["location"],
+			},
+			execute: async () => ({ content: "" }),
+		};
+
+		const events = await collectEvents(streamChat(config, messages, [weatherTool]));
+
+		const toolCalls = events.filter(
+			(e): e is Extract<ProviderEvent, { type: "tool-call" }> => e.type === "tool-call",
+		);
+		expect(toolCalls).toHaveLength(1);
+		expect(toolCalls[0]?.toolCallId).toBe("call_abc123");
+		expect(toolCalls[0]?.toolName).toBe("get_weather");
+		expect(toolCalls[0]?.input).toEqual({ location: "Tokyo" });
+
+		const finishEvents = events.filter((e) => e.type === "finish");
+		expect(finishEvents).toHaveLength(1);
+		expect(finishEvents[0]).toEqual({ type: "finish", reason: "tool_calls" });
+
+		const usageEvents = events.filter(
+			(e): e is Extract<ProviderEvent, { type: "usage" }> => e.type === "usage",
+		);
+		expect(usageEvents).toHaveLength(1);
+		expect(usageEvents[0]?.usage.inputTokens).toBe(45);
+		expect(usageEvents[0]?.usage.outputTokens).toBe(12);
+		expect(usageEvents[0]?.usage.cacheReadTokens).toBe(30);
+		expect(usageEvents[0]?.usage.cacheWriteTokens).toBe(5);
+
+		const captured = getCapturedRequest();
+		assertDefined(captured);
+		expect(captured.method).toBe("POST");
+		assertDefined(captured.body);
+		const capturedBody = JSON.parse(captured.body);
+		expect(capturedBody.tools).toHaveLength(1);
+		expect(capturedBody.tools[0].function.name).toBe("get_weather");
+	});
+});
+
+describe("streamChat — record-mode redaction (trace-replay)", () => {
+	/**
+	 * Graduated secret mask — §6 tiers. Duplicated locally (isolation-over-dry).
+	 * ≥13 → reveal 3 each side · 11–12 → 2 · 8–10 → 1 · ≤7 → full mask.
+	 */
+	function maskSecret(value: string): string {
+		const len = value.length;
+		if (len <= 7) return "…redacted…";
+		let reveal: number;
+		if (len >= 13) {
+			reveal = 3;
+		} else if (len >= 11) {
+			reveal = 2;
+		} else {
+			reveal = 1;
+		}
+		return `${value.slice(0, reveal)}…redacted…${value.slice(-reveal)}`;
+	}
+
+	it("self-redacts auth header in onExchange and produces a secret-free fixture", async () => {
+		const apiKey = "sk-abcdefghijkmnop";
+		const responseBody =
+			'data: {"id":"cmpl-r","choices":[{"delta":{"content":"ok"},"index":0}],"usage":{"prompt_tokens":5,"completion_tokens":1,"cache_read_tokens":0,"cache_write_tokens":0}}\n\ndata: [DONE]\n';
+
+		let capturedFixture: HttpExchangeFixture | undefined;
+		const wrappedFetch = recordFetch(
+			async () =>
+				new Response(responseBody, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				}),
+			(fx) => {
+				const redactedHeaders = { ...fx.request.headers };
+				if (redactedHeaders.authorization) {
+					redactedHeaders.authorization = `Bearer ${maskSecret(redactedHeaders.authorization.replace(/^Bearer\s+/, ""))}`;
+				}
+				capturedFixture = {
+					request: { ...fx.request, headers: redactedHeaders },
+					response: fx.response,
+					...(fx.meta !== undefined ? { meta: fx.meta } : {}),
+				};
+			},
+		);
+
+		await wrappedFetch("https://api.example.com/v1/chat/completions", {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${apiKey}`,
+			},
+			body: '{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}',
+		});
+
+		assertDefined(capturedFixture);
+
+		expect(capturedFixture.request.headers.authorization).toBe("Bearer sk-…redacted…nop");
+		expect(capturedFixture.request.headers.authorization).not.toContain("abcdefghijkm");
+		expect(capturedFixture.request.headers["content-type"]).toBe("application/json");
+
+		expect(capturedFixture.request.body).toContain('"model":"test"');
+		expect(capturedFixture.request.body).toContain('"content":"hi"');
+
+		expect(capturedFixture.response.status).toBe(200);
+		expect(capturedFixture.response.body).toBe(responseBody);
+
+		const serialized = serializeFixture(capturedFixture);
+		expect(serialized).toContain("Bearer sk-…redacted…nop");
+		expect(serialized).not.toContain("abcdefghijkm");
+		expect(serialized).toContain("content");
+		expect(serialized).toContain("hi");
+	});
+
+	it("redacts a short API key (≤7 chars → full mask)", async () => {
+		let capturedFixture: HttpExchangeFixture | undefined;
+		const wrappedFetch = recordFetch(
+			async () => new Response("data: [DONE]\n", { status: 200 }),
+			(fx) => {
+				const redactedHeaders = { ...fx.request.headers };
+				if (redactedHeaders.authorization) {
+					redactedHeaders.authorization = `Bearer ${maskSecret(redactedHeaders.authorization.replace(/^Bearer\s+/, ""))}`;
+				}
+				capturedFixture = {
+					request: { ...fx.request, headers: redactedHeaders },
+					response: fx.response,
+				};
+			},
+		);
+
+		await wrappedFetch("https://api.example.com/v1/chat/completions", {
+			method: "POST",
+			headers: { authorization: "Bearer secret!" },
+			body: null,
+		});
+
+		assertDefined(capturedFixture);
+		expect(capturedFixture.request.headers.authorization).toBe("Bearer …redacted…");
 	});
 });
