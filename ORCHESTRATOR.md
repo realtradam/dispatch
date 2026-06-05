@@ -160,14 +160,14 @@ trust mechanism, and it works precisely because the boundaries are testable. The
 tests-at-boundaries ARE how you trust a unit without depending on its internals.
 
 **Stay out of implementation files (§6 Visibility).** Your trust signals are the
-agent's report, the contract/surface it exposes (contracts, hooks, public types),
-and the build/test/lint output you re-run yourself — NOT its implementation code.
-Do NOT open an extension's implementation files just to "skim" or double-check
-them; that floods your context and is exactly the overwhelm we are avoiding.
-Read ONLY the surfaces (contracts, hooks, manifests, public signatures). The one
-exception: open implementation files when there is an actual implementation
-CONFLICT or trouble — an integration bug, a contract gap, or an agent that is
-stuck — and then only the specific files in question.
+agent's report, the contract/surface it exposes (contracts, manifests, public
+types), and the build/test/lint output you re-run yourself — NOT its implementation
+code. Do NOT open an extension's implementation files — not even to "skim",
+double-check, or diagnose a bug. **There is NO "conflict exception."** When X and Y
+don't work together, or a unit is broken, you diagnose from the `typecheck`/`test`
+output + `lsp references` on the contract + the agent's report, then **summon the
+owning agent** (or a temporary multi-knowledge agent, §5) to read its own code and
+fix it. You diagnose from symptoms; the agent reads the code.
 
 After every agent, independently:
 ```bash
@@ -199,9 +199,11 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
   read/write to the 2–3 relevant files (it MAY see implementation — exception to
   the visibility rule), as their temporary exclusive owner. Dispatch proactively,
   or when a file-owner requests it (§5.5).
-- **CR (change-request) in a report:** an agent could not edit something outside
-  its lane (e.g. a barrel `index.ts`, root `tsconfig.json`). The orchestrator does
-  these small wiring edits directly, then re-verifies.
+- **CR (change-request) in a report:** if it's **build/config** (root
+  `tsconfig.json` ref, a `package.json` dep, `.gitignore`, `bun.lock`) the
+  orchestrator edits it directly, then re-verifies. If it's **implementation** (a
+  barrel `index.ts`, a sibling conforming to a contract change), the orchestrator
+  **summons the owning agent** — it does NOT edit implementation itself.
 - **Live API errors:** an HTTP 429 `GoUsageLimitError` is an UPSTREAM rate limit,
   not a bug. The `opencode-2` key has a monthly cap; `opencode-1` is the backup.
   Swap `DISPATCH_API_KEY` in `.env` (both keys are there).
@@ -219,13 +221,22 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
   another unit's code is a signal that contract is underspecified — fix the
   contract, don't grant code access. (Exception: the temporary multi-knowledge
   integration agent, §5 / ORCHESTRATOR §5, which MAY read implementation.)
-- **The orchestrator obeys the visibility rule too.** You read ONLY surfaces of
-  the extensions implemented (contracts, hooks, manifests, public signatures) —
-  this is sufficient to do your job. Do NOT read implementation files as a
-  routine habit; only open them during an actual implementation conflict or
-  trouble (integration bug, contract gap, a stuck agent), and only the specific
-  files involved. Clean context = level-headed decisions; let the subagents do
-  the grunt work in the implementation.
+- **The orchestrator NEVER reads or edits implementation.** You read ONLY contracts
+  (`packages/kernel/src/contracts/*`) + surfaces (manifests, public signatures) +
+  diagnostics (`typecheck`/`test` output, `lsp references` on contract symbols) +
+  agent reports. Do NOT open implementation `.ts` files (feature logic, tests,
+  composition roots) — not even during a bug. Clean context = level-headed
+  decisions; the subagents do the implementation.
+- **What the orchestrator MAY edit directly:** (a) **contracts**
+  (`packages/kernel/src/contracts/*`); (b) **build wiring + config** (root/package
+  `tsconfig.json`, `package.json` deps, project refs, `.gitignore`, `bun.lock`);
+  (c) **harness/docs** (`ORCHESTRATOR.md`, `AGENTS.md`, `GLOSSARY.md`,
+  `.dispatch/rules/`, `notes/`, `tasks.md`, `prompts/`, `reports/`). Everything else
+  — all executable implementation `.ts`, including tests and composition roots like
+  `host-bin/src/main.ts` — changes ONLY by summoning the owning agent.
+- **Roadblock → surface to the user.** If a needed change doesn't fit the above
+  (ambiguous ownership, a design question, a stuck agent), stop and ask rather than
+  reaching into implementation.
 - **Subagents inherit this restriction.** Every prompt you write must instruct the
   agent to read ONLY the surfaces (contracts/hooks) of OTHER units, with the sole
   exception that it MAY read the implementation files of the task/extension it is
