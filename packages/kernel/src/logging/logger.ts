@@ -82,6 +82,7 @@ function buildSpanOpen(
 	spanId: string,
 	attrs?: Attributes,
 	body?: string,
+	parentSpanId?: string,
 ): SpanOpenRecord {
 	const base = {
 		kind: "span-open" as const,
@@ -91,11 +92,12 @@ function buildSpanOpen(
 		extensionId: state.ctx.extensionId,
 	};
 	const merged = mergeAttributes(state.attrs, attrs);
+	const effectiveParent = parentSpanId ?? state.ctx.parentSpanId;
 	return {
 		...base,
 		...(state.ctx.conversationId !== undefined ? { conversationId: state.ctx.conversationId } : {}),
 		...(state.ctx.turnId !== undefined ? { turnId: state.ctx.turnId } : {}),
-		...(state.ctx.parentSpanId !== undefined ? { parentSpanId: state.ctx.parentSpanId } : {}),
+		...(effectiveParent !== undefined ? { parentSpanId: effectiveParent } : {}),
 		...(merged !== undefined ? { attributes: merged } : {}),
 		...(body !== undefined ? { body } : {}),
 	};
@@ -145,7 +147,7 @@ export function createLogger(
 			...(mergedParent !== undefined ? { parentSpanId: mergedParent } : {}),
 		};
 
-		const openRecord = buildSpanOpen(state, name, spanId, spanAttrs, body);
+		const openRecord = buildSpanOpen(state, name, spanId, spanAttrs, body, mergedParent);
 		const spanAttrsMutable: Record<string, string | number | boolean | null> =
 			spanAttrs !== undefined ? { ...spanAttrs } : {};
 		const links: SpanLink[] = [];

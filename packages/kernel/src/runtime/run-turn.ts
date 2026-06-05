@@ -78,7 +78,7 @@ interface StepContext {
 	readonly conversationId: string;
 	readonly turnId: string;
 	readonly logger: Logger;
-	readonly stepLogger: Logger | undefined;
+	readonly turnSpan: Span | undefined;
 	readonly toolSpans: Map<string, Span>;
 }
 
@@ -96,6 +96,7 @@ function processEvent(
 	toolCalls: ToolCall[],
 	dispatcher: StepDispatcher,
 	ctx: StepContext,
+	stepSpan: Span | undefined,
 ): void {
 	switch (event.type) {
 		case "text-delta":
@@ -129,12 +130,18 @@ function processEvent(
 				),
 			);
 
-			// Open a tool-call span (attrs: name, toolCallId)
+			// Open a tool-call span as a child of the step span (attrs: name, toolCallId)
 			try {
-				const tcSpan = ctx.logger.span("tool-call", {
-					name: event.toolName,
-					toolCallId: event.toolCallId,
-				});
+				const tcSpan =
+					stepSpan !== undefined
+						? stepSpan.child("tool-call", {
+								name: event.toolName,
+								toolCallId: event.toolCallId,
+							})
+						: ctx.logger.span("tool-call", {
+								name: event.toolName,
+								toolCallId: event.toolCallId,
+							});
 				ctx.toolSpans.set(event.toolCallId, tcSpan);
 			} catch {
 				// Swallow — D7: logging never breaks the turn.
@@ -167,11 +174,12 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 	let stepUsage = zeroUsage();
 	let finishReason = "stop";
 
-	// Open a step span; capture the verbatim pre-mutation prompt via a
-	// "prompt" child span whose body holds the serialized messages+tools.
+	// Open a step span as a child of the turn span; capture the verbatim
+	// pre-mutation prompt via a "prompt" child span whose body holds the
+	// serialized messages+tools.
 	let stepSpan: Span | undefined;
 	try {
-		stepSpan = ctx.logger.span("step");
+		stepSpan = ctx.turnSpan !== undefined ? ctx.turnSpan.child("step") : ctx.logger.span("step");
 		const promptBody = JSON.stringify({ messages: ctx.messages, tools: ctx.tools });
 		const promptSpan = stepSpan.child(
 			"prompt",
@@ -198,12 +206,12 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 
 	try {
 		const opts = {
-			...(ctx.stepLogger !== undefined ? { logger: ctx.stepLogger } : {}),
+			...(ctx.turnSpan !== undefined && stepSpan !== undefined ? { logger: stepSpan.log } : {}),
 		};
 		const stream = ctx.provider.stream(ctx.messages, ctx.tools, opts);
 		for await (const event of stream) {
 			if (ctx.signal.aborted) break;
-			processEvent(event, chunks, toolCalls, dispatcher, ctx);
+			processEvent(event, chunks, toolCalls, dispatcher, ctx, stepSpan);
 			if (event.type === "usage") {
 				stepUsage = addUsage(stepUsage, event.usage);
 			}
@@ -354,7 +362,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				conversationId,
 				turnId,
 				logger: turnSpan?.log ?? logger ?? createNoopLogger(),
-				stepLogger: logger,
+				turnSpan,
 				toolSpans,
 			});
 
