@@ -76,6 +76,15 @@ export interface RunTurnInput {
 	readonly signal?: AbortSignal;
 
 	/**
+	 * Working directory for this turn's tool execution. The kernel does NOT
+	 * interpret it — it forwards the value verbatim to each `ToolExecuteContext.cwd`
+	 * so tools resolve/contain paths against it. It never enters the model prompt,
+	 * so it does not affect prompt caching. When omitted, tools fall back to their
+	 * own configured/default workdir.
+	 */
+	readonly cwd?: string;
+
+	/**
 	 * Optional logger for structured span instrumentation. The runtime opens
 	 * turn/step/tool-call spans using this logger. If omitted, no spans are
 	 * emitted (backward-compatible with callers that don't yet pass a logger).

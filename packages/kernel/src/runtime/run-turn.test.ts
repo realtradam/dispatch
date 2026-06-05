@@ -740,6 +740,71 @@ describe("runTurn", () => {
 		}
 	});
 
+	it("forwards cwd from RunTurnInput to ToolExecuteContext", async () => {
+		let capturedCwd: string | undefined = "SENTINEL_NOT_SET";
+
+		const tool = createFakeTool("cwdcheck", async (_input, ctx) => {
+			capturedCwd = ctx.cwd;
+			return { content: "ok" };
+		});
+
+		const provider = createFakeProvider([
+			[
+				{ type: "tool-call", toolCallId: "tc1", toolName: "cwdcheck", input: {} },
+				{ type: "finish", reason: "tool-calls" },
+			],
+			[
+				{ type: "text-delta", delta: "done" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		await runTurn({
+			provider,
+			messages: [userMessage],
+			tools: [tool],
+			dispatch: { maxConcurrent: 1, eager: false },
+			conversationId: "tab-test",
+			turnId: "turn-test",
+			emit: () => {},
+			cwd: "/some/dir",
+		});
+
+		expect(capturedCwd).toBe("/some/dir");
+	});
+
+	it("forwards undefined cwd when RunTurnInput has no cwd", async () => {
+		let capturedCwd: string | undefined = "SENTINEL_NOT_SET";
+
+		const tool = createFakeTool("cwdcheck", async (_input, ctx) => {
+			capturedCwd = ctx.cwd;
+			return { content: "ok" };
+		});
+
+		const provider = createFakeProvider([
+			[
+				{ type: "tool-call", toolCallId: "tc1", toolName: "cwdcheck", input: {} },
+				{ type: "finish", reason: "tool-calls" },
+			],
+			[
+				{ type: "text-delta", delta: "done" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		await runTurn({
+			provider,
+			messages: [userMessage],
+			tools: [tool],
+			dispatch: { maxConcurrent: 1, eager: false },
+			conversationId: "tab-test",
+			turnId: "turn-test",
+			emit: () => {},
+		});
+
+		expect(capturedCwd).toBeUndefined();
+	});
+
 	it("aggregates usage across multiple steps", async () => {
 		const provider = createFakeProvider([
 			[

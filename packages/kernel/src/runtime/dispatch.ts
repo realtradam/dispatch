@@ -17,6 +17,7 @@ export async function executeToolCall(
 	conversationId: string,
 	turnId: string,
 	toolSpan?: Span,
+	cwd?: string,
 ): Promise<ToolResult> {
 	if (tool === undefined) {
 		return { content: `Unknown tool: ${call.name}`, isError: true };
@@ -31,6 +32,7 @@ export async function executeToolCall(
 			emit(toolOutputEvent(conversationId, turnId, call.id, data, stream));
 		},
 		log: toolSpan?.log ?? createNoopLogger(),
+		...(cwd !== undefined ? { cwd } : {}),
 	};
 	try {
 		return await tool.execute(call.input, ctx);
@@ -54,6 +56,7 @@ export function createStepDispatcher(
 	conversationId: string,
 	turnId: string,
 	toolSpans: Map<string, Span>,
+	cwd?: string,
 ): StepDispatcher {
 	let activeCount = 0;
 	let unsafeRunning = false;
@@ -91,6 +94,7 @@ export function createStepDispatcher(
 			conversationId,
 			turnId,
 			tcSpan,
+			cwd,
 		);
 		activeCount--;
 		if (entry.tool?.concurrencySafe === false) unsafeRunning = false;

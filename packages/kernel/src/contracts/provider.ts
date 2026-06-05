@@ -104,6 +104,17 @@ export interface ProviderStreamOptions {
 }
 
 /**
+ * Metadata describing a single model a provider can serve. Returned by
+ * `listModels` so a catalog (e.g. the credential-store) can enumerate the
+ * `<credentialName>/<model>` choices a client may select. Kept minimal — `id`
+ * is the wire model identifier; `displayName` is an optional human label.
+ */
+export interface ModelInfo {
+	readonly id: string;
+	readonly displayName?: string;
+}
+
+/**
  * What a provider extension registers with the kernel. The kernel calls
  * `stream` and consumes the async iterable of events — it never knows which
  * concrete LLM API is behind it.
@@ -122,4 +133,13 @@ export interface ProviderContract {
 		tools: readonly ToolContract[],
 		opts?: ProviderStreamOptions,
 	) => AsyncIterable<ProviderEvent>;
+
+	/**
+	 * Enumerate the models this provider can serve, each in its own way (e.g. an
+	 * OpenAI-compatible provider GETs `/v1/models`). Optional: a provider that
+	 * cannot (or chooses not to) enumerate omits it, and a catalog simply lists
+	 * none for it. A future multi-credential design may pass per-credential
+	 * credentials in; today the provider uses the key it resolved at activate.
+	 */
+	readonly listModels?: () => Promise<readonly ModelInfo[]>;
 }
