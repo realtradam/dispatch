@@ -6,4 +6,5 @@
 export * from "./bus/index.js";
 export * from "./contracts/index.js";
 export * from "./host/index.js";
+export * from "./logging/index.js";
 export * from "./runtime/index.js";

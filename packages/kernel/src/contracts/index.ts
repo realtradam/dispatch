@@ -81,7 +81,6 @@ export type {
 	SpanOpenRecord,
 	SpanStatus,
 } from "./logging.js";
-export { createLogger } from "./logging.js";
 export type {
 	FinishEvent,
 	ProviderContract,
