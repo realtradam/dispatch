@@ -181,12 +181,27 @@ spans (open+close) + the `prompt:before` record carrying the verbatim messages a
 sink → journal file; the collector (process 2) is Phase B. Redaction is
 per-extension self-redaction (no shared helper — isolation over DRY).
 
+### Phase A.2 — AFTER capture ✅ DONE + verified live
+- [x] **Contract** (orchestrator): `ProviderStreamOptions.logger?` threads the step's
+  correlated logger into `stream()` (optional, non-breaking).
+- [x] **Unit K — kernel run-turn**: passes the step span's logger into `provider.stream`.
+- [x] **Unit P — provider-openai-compat**: `provider.request` span capturing the
+  verbatim post-transform request + status/cache-tokens/raw-error; **auth self-redacted
+  in its own code** (graduated tiers, no shared helper); fail-safe; **15 hermetic
+  fetch-mocked tests** (first provider HTTP coverage).
+- typecheck clean, **267 tests** (250→+17), biome fully clean (0 warnings / 0 infos).
+  **Live:** `provider.request` shares the turn's `turnId` with `prompt:before`
+  (before↔after diffable); **auth-key leak count = 0** (self-redaction verified live).
+  Summons: prompts/phase-a2-{kernel-runturn,provider-after-capture}.md (+ 2 test cleanups).
+
 ### Next (observability)
-- **"AFTER" capture** — `provider.request` verbatim post-transform in
-  provider-openai-compat → full round-trip rebuild + before↔after diff (§10).
-- Minor refinement: move the large `prompt:before` payload from `attributes` into the
-  record `body` field (store-fat-serve-thin) — currently a stringified attribute.
-- Phase B: out-of-process collector → SQLite store + query (§11).
+- **Body-channel ABI (design — surface to user):** add a way to set `LogRecord.body`
+  (e.g. `Span.setBody`) so large verbatim payloads (prompt:before + provider request)
+  use `body` not stringified `attributes` (store-fat-serve-thin; before Phase B query).
+- **Phase B:** out-of-process collector → SQLite store + query (§11).
+- **Record/replay test fixtures** (goal): turn captured verbatim provider.request/
+  response traces into hermetic `stream.test.ts` fixtures (mock `fetch`, replay real
+  flash) for regression + deterministic repro. D5; §7. Complements contract-fakes.
 
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.

@@ -7,6 +7,7 @@
  */
 
 import type { ChatMessage } from "./conversation.js";
+import type { Logger } from "./logging.js";
 import type { ToolContract } from "./tool.js";
 
 /**
@@ -92,6 +93,14 @@ export interface ProviderStreamOptions {
 	readonly maxTokens?: number;
 	/** System prompt to prepend. */
 	readonly systemPrompt?: string;
+	/**
+	 * Correlated logger for this turn's step (Phase A logging ABI). When present,
+	 * the provider should open a child `provider.request` span and capture the
+	 * verbatim post-transform request + raw response/error there, self-redacting
+	 * secrets in its own code. Optional so non-instrumented callers/tests still
+	 * compile (the provider falls back to no capture).
+	 */
+	readonly logger?: Logger;
 }
 
 /**

@@ -583,12 +583,32 @@ finish) → Unit 2 → host-bin wiring**. Optional overlap: start Unit 2 once Un
 **Verify:** `typecheck`/`test`/`check` clean; live boot → `host.logger` lines land in
 the journal file.
 
-### Next step (after Phase A) — the "AFTER" capture
-`provider.request` verbatim post-transform (D5) inside `provider-openai-compat`: the
-exact serialized request bytes + raw response/error + cache tokens, auth header
-self-redacted. This **completes full round-trip rebuild** and unlocks the
-**before↔after diff** (kernel "before" vs wire "after" → pinpoints transform bugs).
-Depends only on the Phase A Logger ABI; lives entirely in the provider extension.
+### Phase A.2 — the "AFTER" capture (build plan)
+`provider.request` verbatim post-transform (D5) inside `provider-openai-compat`:
+exact serialized request + response status/cache-tokens/raw-error, auth self-redacted.
+Completes full round-trip rebuild + the **before↔after diff**.
+- **Contract (DONE, orchestrator):** `ProviderStreamOptions.logger?: Logger`
+  (`contracts/provider.ts`) — threads the step's correlated logger into `stream()` so
+  the `provider.request` span is a child of the step span (before↔after share
+  turnId/parentSpanId). Optional = non-breaking.
+- **Unit K — kernel run-turn** (owner: kernel): pass the step span's logger into
+  `provider.stream(msgs, tools, { ...opts, logger })`. One file (`runtime/run-turn.ts`).
+- **Unit P — provider-openai-compat** (owner): at the fetch edge, if `opts.logger`,
+  open a `provider.request` child span; capture the verbatim post-transform request
+  (URL, model, params, serialized body) + `cache_control` presence; on response,
+  status + cache-read/creation tokens (Usage) + (on error) raw error; **self-redact
+  the auth header in its own code** (graduated tiers, §6). First hermetic provider
+  HTTP test (`stream.test.ts`, mock `fetch` + real-capture fixtures).
+- **Order:** contract frozen (done) → Unit K ∥ Unit P (disjoint: kernel vs provider).
+
+**DEFERRED — body-channel ABI (design decision, surface to user):** `LogRecord` has a
+`body` field but the Logger/Span API exposes no way to set it — that's why
+`prompt:before` (and now the request/response) use stringified `attributes`. Storing
+large verbatim payloads in `body` (store-fat-serve-thin; both before & after) needs a
+small ABI addition (e.g. `Span.setBody(body)`), worth doing before Phase B's query
+layer. Until then captures use attributes — functional + reconstructable, just not
+ideal for D9 `GROUP BY`.
+
 *(Full per-extension prompt-segment provenance — D8 — comes later, with the
 context-filter chain.)*
 

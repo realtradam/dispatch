@@ -817,26 +817,26 @@ describe("runTurn", () => {
 		}
 	});
 
-	describe("span instrumentation", () => {
-		function createTestLogger(): {
-			logger: Logger;
-			sink: LogSink & { records: LogRecord[] };
-			deps: LogDeps;
-		} {
-			let idCounter = 0;
-			const deps: LogDeps = {
-				now: () => 1000 + idCounter * 100,
-				newId: () => `span-${++idCounter}`,
-			};
-			const records: LogRecord[] = [];
-			const sink: LogSink & { records: LogRecord[] } = {
-				records,
-				emit: (record) => records.push(record),
-			};
-			const logger = createLogger({ extensionId: "test" }, sink, deps);
-			return { logger, sink, deps };
-		}
+	function createTestLogger(): {
+		logger: Logger;
+		sink: LogSink & { records: LogRecord[] };
+		deps: LogDeps;
+	} {
+		let idCounter = 0;
+		const deps: LogDeps = {
+			now: () => 1000 + idCounter * 100,
+			newId: () => `span-${++idCounter}`,
+		};
+		const records: LogRecord[] = [];
+		const sink: LogSink & { records: LogRecord[] } = {
+			records,
+			emit: (record) => records.push(record),
+		};
+		const logger = createLogger({ extensionId: "test" }, sink, deps);
+		return { logger, sink, deps };
+	}
 
+	describe("span instrumentation", () => {
 		it("emits turn + step span open/close in order", async () => {
 			const provider = createFakeProvider([
 				[
@@ -1038,6 +1038,71 @@ describe("runTurn", () => {
 				expect(stepCloses[0].status).toBe("error");
 				expect(stepCloses[0].attributes?.["error.message"]).toContain("provider exploded");
 			}
+		});
+	});
+
+	describe("provider logger threading", () => {
+		it("passes step span logger to provider.stream opts when logger provided", async () => {
+			let capturedOpts: Record<string, unknown> | undefined;
+
+			const provider: ProviderContract = {
+				id: "fake",
+				stream(_messages, _tools, opts) {
+					capturedOpts = opts !== undefined ? { ...opts } : undefined;
+					return (async function* () {
+						yield { type: "text-delta", delta: "hi" } as ProviderEvent;
+						yield { type: "usage", usage: { inputTokens: 1, outputTokens: 1 } } as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					})();
+				},
+			};
+
+			const { logger } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			expect(capturedOpts).toBeDefined();
+			expect(capturedOpts?.logger).toBeDefined();
+			expect(typeof (capturedOpts?.logger as Record<string, unknown>).info).toBe("function");
+			expect(typeof (capturedOpts?.logger as Record<string, unknown>).span).toBe("function");
+		});
+
+		it("passes undefined for opts.logger when no logger provided", async () => {
+			let capturedOpts: Record<string, unknown> | undefined;
+
+			const provider: ProviderContract = {
+				id: "fake",
+				stream(_messages, _tools, opts) {
+					capturedOpts = opts !== undefined ? { ...opts } : undefined;
+					return (async function* () {
+						yield { type: "text-delta", delta: "hi" } as ProviderEvent;
+						yield { type: "usage", usage: { inputTokens: 1, outputTokens: 1 } } as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					})();
+				},
+			};
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+			});
+
+			expect(capturedOpts).toBeDefined();
+			expect(capturedOpts?.logger).toBeUndefined();
 		});
 	});
 });

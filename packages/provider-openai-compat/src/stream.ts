@@ -2,6 +2,7 @@ import type {
 	ChatMessage,
 	ProviderEvent,
 	ProviderStreamOptions,
+	Span,
 	ToolContract,
 } from "@dispatch/kernel";
 import { convertMessages, type OpenAIMessage } from "./convert-messages.js";
@@ -11,6 +12,24 @@ export interface StreamConfig {
 	readonly baseURL: string;
 	readonly apiKey: string;
 	readonly model: string;
+}
+
+/**
+ * Graduated secret mask — §6 tiers. Reimplemented locally (isolation-over-dry).
+ * ≥13 → reveal 3 each side · 11–12 → 2 · 8–10 → 1 · ≤7 → full mask.
+ */
+function maskSecret(value: string): string {
+	const len = value.length;
+	if (len <= 7) return "…redacted…";
+	let reveal: number;
+	if (len >= 13) {
+		reveal = 3;
+	} else if (len >= 11) {
+		reveal = 2;
+	} else {
+		reveal = 1;
+	}
+	return `${value.slice(0, reveal)}…redacted…${value.slice(-reveal)}`;
 }
 
 export async function* streamChat(
@@ -43,17 +62,56 @@ export async function* streamChat(
 		body.max_tokens = opts.maxTokens;
 	}
 
+	const url = `${config.baseURL}/chat/completions`;
+	const bodyString = JSON.stringify(body);
+
+	let reqSpan: Span | undefined;
+	let totalInputTokens = 0;
+	let totalOutputTokens = 0;
+	let totalCacheReadTokens: number | undefined;
+	let totalCacheWriteTokens: number | undefined;
+
+	if (opts?.logger) {
+		try {
+			const model = opts?.model ?? config.model;
+			reqSpan = opts.logger.span("provider.request", {
+				model,
+				url,
+			});
+			const hasCacheBreakpoint = bodyString.includes("cache_control");
+			reqSpan.setAttributes({
+				"request.method": "POST",
+				"request.body": bodyString,
+				"request.cache_control_present": hasCacheBreakpoint,
+				"request.headers.content_type": "application/json",
+				"request.headers.authorization": `Bearer ${maskSecret(config.apiKey)}`,
+			});
+		} catch {
+			// Fail-safe: capture must never break stream().
+		}
+	}
+
 	let response: Response;
 	try {
-		response = await fetch(`${config.baseURL}/chat/completions`, {
+		response = await fetch(url, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${config.apiKey}`,
 			},
-			body: JSON.stringify(body),
+			body: bodyString,
 		});
 	} catch (err) {
+		if (reqSpan) {
+			try {
+				reqSpan.end({
+					err,
+					attrs: { status: 0 },
+				});
+			} catch {
+				// Fail-safe.
+			}
+		}
 		yield {
 			type: "error",
 			message: err instanceof Error ? err.message : String(err),
@@ -64,6 +122,20 @@ export async function* streamChat(
 
 	if (!response.ok) {
 		const text = await response.text().catch(() => "unknown");
+		if (reqSpan) {
+			try {
+				reqSpan.setAttributes({ status: response.status });
+				reqSpan.end({
+					err: new Error(`HTTP ${response.status}: ${text}`),
+					attrs: {
+						status: response.status,
+						"response.error_body": text,
+					},
+				});
+			} catch {
+				// Fail-safe.
+			}
+		}
 		yield {
 			type: "error",
 			message: `HTTP ${response.status}: ${text}`,
@@ -74,14 +146,70 @@ export async function* streamChat(
 	}
 
 	if (!response.body) {
+		if (reqSpan) {
+			try {
+				reqSpan.end({
+					err: new Error("Response body is null"),
+					attrs: { status: response.status },
+				});
+			} catch {
+				// Fail-safe.
+			}
+		}
 		yield { type: "error", message: "Response body is null" };
 		return;
 	}
 
-	yield* readSSEStream(response.body);
+	try {
+		yield* readSSEStream(response.body, (usage) => {
+			totalInputTokens = usage.inputTokens;
+			totalOutputTokens = usage.outputTokens;
+			totalCacheReadTokens = usage.cacheReadTokens;
+			totalCacheWriteTokens = usage.cacheWriteTokens;
+		});
+	} catch (err) {
+		if (reqSpan) {
+			try {
+				reqSpan.end({
+					err,
+					attrs: { status: response.status },
+				});
+			} catch {
+				// Fail-safe.
+			}
+		}
+		throw err;
+	}
+
+	if (reqSpan) {
+		try {
+			const attrs: Record<string, string | number | boolean | null> = {
+				status: response.status,
+				"usage.inputTokens": totalInputTokens,
+				"usage.outputTokens": totalOutputTokens,
+			};
+			if (totalCacheReadTokens !== undefined) {
+				attrs["usage.cacheReadTokens"] = totalCacheReadTokens;
+			}
+			if (totalCacheWriteTokens !== undefined) {
+				attrs["usage.cacheWriteTokens"] = totalCacheWriteTokens;
+			}
+			reqSpan.end({ attrs });
+		} catch {
+			// Fail-safe.
+		}
+	}
 }
 
-async function* readSSEStream(body: ReadableStream<Uint8Array>): AsyncIterable<ProviderEvent> {
+async function* readSSEStream(
+	body: ReadableStream<Uint8Array>,
+	onUsage?: (usage: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens?: number;
+		cacheWriteTokens?: number;
+	}) => void,
+): AsyncIterable<ProviderEvent> {
 	const reader = body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
@@ -182,15 +310,39 @@ async function* readSSEStream(body: ReadableStream<Uint8Array>): AsyncIterable<P
 					| {
 							prompt_tokens?: number;
 							completion_tokens?: number;
+							cache_read_tokens?: number;
+							cache_write_tokens?: number;
 					  }
 					| undefined;
 
 				if (usage) {
+					const cacheRead =
+						usage.cache_read_tokens !== undefined ? usage.cache_read_tokens : undefined;
+					const cacheWrite =
+						usage.cache_write_tokens !== undefined ? usage.cache_write_tokens : undefined;
+					const usageObj: {
+						inputTokens: number;
+						outputTokens: number;
+						cacheReadTokens?: number;
+						cacheWriteTokens?: number;
+					} = {
+						inputTokens: usage.prompt_tokens ?? 0,
+						outputTokens: usage.completion_tokens ?? 0,
+					};
+					if (cacheRead !== undefined) {
+						usageObj.cacheReadTokens = cacheRead;
+					}
+					if (cacheWrite !== undefined) {
+						usageObj.cacheWriteTokens = cacheWrite;
+					}
+					onUsage?.(usageObj);
 					yield {
 						type: "usage",
 						usage: {
 							inputTokens: usage.prompt_tokens ?? 0,
 							outputTokens: usage.completion_tokens ?? 0,
+							...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
+							...(cacheWrite !== undefined ? { cacheWriteTokens: cacheWrite } : {}),
 						},
 					};
 				}

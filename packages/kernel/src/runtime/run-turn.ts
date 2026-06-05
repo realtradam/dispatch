@@ -78,6 +78,7 @@ interface StepContext {
 	readonly conversationId: string;
 	readonly turnId: string;
 	readonly logger: Logger;
+	readonly stepLogger: Logger | undefined;
 	readonly toolSpans: Map<string, Span>;
 }
 
@@ -197,7 +198,10 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 	);
 
 	try {
-		const stream = ctx.provider.stream(ctx.messages, ctx.tools);
+		const opts = {
+			...(ctx.stepLogger !== undefined ? { logger: ctx.stepLogger } : {}),
+		};
+		const stream = ctx.provider.stream(ctx.messages, ctx.tools, opts);
 		for await (const event of stream) {
 			if (ctx.signal.aborted) break;
 			processEvent(event, chunks, toolCalls, dispatcher, ctx);
@@ -351,6 +355,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				conversationId,
 				turnId,
 				logger: turnSpan?.log ?? logger ?? createNoopLogger(),
+				stepLogger: logger,
 				toolSpans,
 			});
 
