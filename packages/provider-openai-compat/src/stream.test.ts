@@ -557,6 +557,7 @@ describe("streamChat — hermetic replay (trace-replay)", () => {
 		expect(usageEvents).toHaveLength(1);
 		expect(usageEvents[0]?.usage.inputTokens).toBe(665);
 		expect(usageEvents[0]?.usage.outputTokens).toBe(90);
+		expect(usageEvents[0]?.usage.cacheReadTokens).toBe(384);
 
 		const captured = getCapturedRequest();
 		assertDefined(captured);
