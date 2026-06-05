@@ -13,7 +13,8 @@
 		"typecheck": "tsc -b --pretty",
 		"test:bun": "bun test packages/storage-sqlite/src packages/trace-store/src packages/observability-collector/src",
 		"test:all": "bun run test && bun run test:bun",
-		"dev": "bun packages/host-bin/src/main.ts"
+		"dev": "bun packages/host-bin/src/main.ts",
+		"dispatch": "bun packages/cli/src/main.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.15",

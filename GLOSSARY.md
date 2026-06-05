@@ -28,6 +28,10 @@
 | **conversation-store** | The core extension persisting the append-only turn/chunk log. | message store |
 | **provider** | An extension wrapping an LLM backend (`stream(messages, tools)`), provider-agnostic to the kernel. | — |
 | **AgentEvent** | An outward event the runtime emits during a turn (text-delta, tool-call, usage, done, etc.). Carries `conversationId` + `turnId`. | — |
+| **credential** | A named profile binding a name to a provider (and holding its key/baseURL). The unit of model addressing; several may exist, even for the same provider. Defined in config (a TOML, later); the MVP hardcodes one named `opencode`. Owned by the `credential-store` extension. | (not the bare **key**) |
+| **key** | The API key (the secret string) held by a credential. | apiKey / api-key (when meaning the whole credential profile) |
+| **model name** | The selectable identifier in `<credentialName>/<model>` form — what the model catalog lists and what the CLI / `/chat` `model` field take. | model reference, model id |
+| **model catalog** | The list of available model names; served by `GET /models`, aggregated per credential from each provider's `listModels()`. | model list |
 
 ## Known vocabulary drift
 

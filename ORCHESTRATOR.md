@@ -270,9 +270,14 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
   .env       (gitignored — DISPATCH_API_KEY [opencode-2 active], _OPENCODE1 backup)
   packages/
     kernel/            contracts (ABI), bus, runtime (runTurn), host
+    transport-contract/  types-only HTTP API contract (CLI + future web + server share it)
     storage-sqlite/ conversation-store/ auth-apikey/ provider-openai-compat/
+    credential-store/  named credentials + model catalog (resolve / listCatalog)
     session-orchestrator/ transport-http/    (core extensions)
-    host-bin/          composition root (boot + Bun.serve)
+    tool-read-file/    standard tool extension (read_file; cwd-aware)
+    journal-sink/ trace-store/ observability-collector/ trace-replay/  (observability)
+    cli/               bundled one-shot terminal client (HTTP client of transport-contract)
+    host-bin/          composition root (boot + Bun.serve + collector supervisor)
 ```
 
 The genesis commit deleted all prior source; we rebuilt from scratch. The OLD

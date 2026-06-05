@@ -287,7 +287,7 @@ reports/phase-a-{kernel-logging,journal-sink}.md.
 
 ## ROADMAP — what's next (user-decided, §5.2)
 
-### 1. CLI (first, before web frontend)
+### 1. CLI (first, before web frontend)  [x] MVP DONE + verified live
 A **CLI** (NOT a TUI — line-oriented command-line interface; may have basic selectors
 for things like picking a conversation). Terminal client for Dispatch: send a message,
 render the streamed multi-turn response (`conversationId` threads history). Same
@@ -295,6 +295,34 @@ methodology constraint as the backend: pure core (zero I/O) / inject effects / n
 state / typed contracts / one owner per unit / asymmetric testing. A design pass FIRST
 — seed `notes/cli-design.md` (IDEATION with the user, like `notes/observability-design.md`
 and `notes/frontend-design.md`) before any summon.
+
+**Design decisions (user, see `notes/cli-design.md` §3):** HTTP client for BOTH the CLI and
+the future (separate-repo) web frontend; one-shot invocation; named **credentials** addressed
+as **model names** `<credentialName>/<model>`; per-provider `listModels()`; `--cwd` threaded
+to tools (cache-safe); `provider-openai-compat` keeps opencode-go specifics (deferred split
+noted in code). New vocab in GLOSSARY: credential / key / model name / model catalog.
+
+**Built (full fidelity, owner-agent per unit, mimo-v2.5-pro):**
+- **contracts (orchestrator):** `ProviderContract.listModels()`+`ModelInfo`, `RunTurnInput.cwd`,
+  `ToolExecuteContext.cwd` (all additive/optional).
+- **`transport-contract`** (NEW, types-only): `ChatRequest`/`ModelsResponse` + re-export
+  `AgentEvent` — the HTTP API contract every client imports.
+- **`credential-store`** (NEW core ext): named credentials + `resolve(modelName)` +
+  `listCatalog()`; typed `credentialStoreHandle`.
+- **`cli`** (NEW bundled pkg): pure core (arg parse / render / ndjson / message / catalog) +
+  injected shell (fetch NDJSON client, fs, stdout). HTTP client of the wire contract only.
+- **modified:** kernel-runtime (cwd thread), provider-openai-compat (`listModels` + code note),
+  tool-read-file (`ctx.cwd` honored), session-orchestrator (modelName+cwd; `resolveModel` dep
+  wired via the handle), transport-http (`GET /models` + model/cwd on `/chat`), host-bin
+  (registers credential-store w/ the `opencode` credential).
+
+**RESULT:** typecheck clean, **429 vitest + 72 bun = 501 tests**, biome 0/0. **Verified LIVE**
+(opencode-go flash on :24203): `GET /models` → 18 `opencode/*` models; `dispatch models`;
+chat `opencode/deepseek-v4-flash` → "Hello there friend."; `--cwd` → live `read_file` round-trip
+resolving against cwd (VELVET-WALRUS-93); `--file` folded into the message; `--conversation`
+threaded multi-turn (PINEAPPLE recalled). Run: `bun packages/cli/src/main.ts <args>`.
+Phasing: contracts → [kernel-runtime] → [provider ∥ tool ∥ credential-store ∥ cli] →
+session-orchestrator (+extension wiring) → transport-http → host-bin → live integration.
 
 ### 2. Web frontend (after CLI)
 Svelte + DaisyUI (same stack as old Dispatch). **Methodology mirror** — same constraints
