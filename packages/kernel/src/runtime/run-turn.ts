@@ -80,6 +80,7 @@ interface StepContext {
 	readonly logger: Logger;
 	readonly turnSpan: Span | undefined;
 	readonly toolSpans: Map<string, Span>;
+	readonly cwd: string | undefined;
 }
 
 interface StepResult {
@@ -202,6 +203,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		ctx.conversationId,
 		ctx.turnId,
 		ctx.toolSpans,
+		ctx.cwd,
 	);
 
 	try {
@@ -364,6 +366,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				logger: turnSpan?.log ?? logger ?? createNoopLogger(),
 				turnSpan,
 				toolSpans,
+				cwd: input.cwd,
 			});
 
 			totalUsage = addUsage(totalUsage, stepResult.usage);

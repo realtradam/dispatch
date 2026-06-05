@@ -83,6 +83,7 @@ export type {
 } from "./logging.js";
 export type {
 	FinishEvent,
+	ModelInfo,
 	ProviderContract,
 	ProviderErrorEvent,
 	ProviderEvent,

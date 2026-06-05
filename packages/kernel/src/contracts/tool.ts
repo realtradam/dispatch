@@ -62,6 +62,14 @@ export interface ToolExecuteContext {
 	 * turnId, and spanId automatically.
 	 */
 	readonly log: Logger;
+
+	/**
+	 * Working directory for this turn, forwarded verbatim from `RunTurnInput.cwd`.
+	 * Tools that touch the filesystem resolve and contain paths against it.
+	 * Optional: when omitted, a tool falls back to its own configured/default
+	 * workdir. The kernel never interprets it.
+	 */
+	readonly cwd?: string;
 }
 
 /**

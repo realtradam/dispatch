@@ -18,8 +18,22 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/cli": {
+      "name": "@dispatch/cli",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/transport-contract": "workspace:*",
+      },
+    },
     "packages/conversation-store": {
       "name": "@dispatch/conversation-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/credential-store": {
+      "name": "@dispatch/credential-store",
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
@@ -31,6 +45,7 @@
       "dependencies": {
         "@dispatch/auth-apikey": "workspace:*",
         "@dispatch/conversation-store": "workspace:*",
+        "@dispatch/credential-store": "workspace:*",
         "@dispatch/journal-sink": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
@@ -72,6 +87,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/conversation-store": "workspace:*",
+        "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
       },
     },
@@ -100,12 +116,21 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/transport-contract": {
+      "name": "@dispatch/transport-contract",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/transport-http": {
       "name": "@dispatch/transport-http",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
         "hono": "^4.0.0",
       },
     },
@@ -131,7 +156,11 @@
 
     "@dispatch/auth-apikey": ["@dispatch/auth-apikey@workspace:packages/auth-apikey"],
 
+    "@dispatch/cli": ["@dispatch/cli@workspace:packages/cli"],
+
     "@dispatch/conversation-store": ["@dispatch/conversation-store@workspace:packages/conversation-store"],
+
+    "@dispatch/credential-store": ["@dispatch/credential-store@workspace:packages/credential-store"],
 
     "@dispatch/host-bin": ["@dispatch/host-bin@workspace:packages/host-bin"],
 
@@ -152,6 +181,8 @@
     "@dispatch/trace-replay": ["@dispatch/trace-replay@workspace:packages/trace-replay"],
 
     "@dispatch/trace-store": ["@dispatch/trace-store@workspace:packages/trace-store"],
+
+    "@dispatch/transport-contract": ["@dispatch/transport-contract@workspace:packages/transport-contract"],
 
     "@dispatch/transport-http": ["@dispatch/transport-http@workspace:packages/transport-http"],
 

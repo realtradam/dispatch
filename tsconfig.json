@@ -2,6 +2,7 @@
 	"files": [],
 	"references": [
 		{ "path": "./packages/kernel" },
+		{ "path": "./packages/transport-contract" },
 		{ "path": "./packages/storage-sqlite" },
 		{ "path": "./packages/auth-apikey" },
 		{ "path": "./packages/provider-openai-compat" },
