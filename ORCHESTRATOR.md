@@ -129,29 +129,19 @@ log into context as a hard failure.
 
 ## 3. The TASK block (the only thing the orchestrator writes per summon)
 
-The prompt is assembled from standardized briefs + rules (§2). You write **only the TASK**.
-It goes at the very end, after the briefs and rules are cat'd in.
+The prompt is assembled from standardized briefs + rules (§2). You then **append a TASK
+message** telling the agent what to build. Keep it scoped (P6): don't restate what the briefs
+already say; do state the project-specific, non-inferable rules. The agent gets the WHAT — it
+decides the HOW and the files.
 
-```markdown
-## TASK
-You are the owner-agent for `packages/<name>/`.
-
-**Read first:** `packages/kernel/src/contracts/<x>.ts` (the types you build
-against), plus `packages/<sibling>/src/index.ts` if you consume a sibling's
-public surface.
-
-**The job:** <precise description of what to build, naming the contract
-types/handles involved>.
-
-**Tests REQUIRED:** <named cases — fakes only for pure, integration for shell>.
-
-**Verify your package in isolation** (do NOT run the whole-graph build):
-`bunx tsc -b packages/<name>/tsconfig.json`, scoped vitest/biome — all clean.
-```
-
-Keep it scoped (P6): don't restate what the briefs already say; do state the
-project-specific, non-inferable rules. The agent gets the WHAT — it decides the
-HOW and the files.
+**The TASK names:**
+- The package (`packages/<name>/`) and whether it's an extension.
+- The job + algorithm, naming the specific contract types/handles involved.
+- The specific contract file(s) to read (e.g. `packages/kernel/src/contracts/<x>.ts`) plus any
+  sibling public surfaces.
+- The required test cases (named).
+- Verification instructions (always the isolated-scoped commands; the orchestrator runs the
+  full-graph verify itself).
 
 **`.dispatch/rules/` scoping map** — cat in ONLY the rows matching the unit
 (per §0 "scoped rules beat general rules"); do NOT dump every rule on every agent:

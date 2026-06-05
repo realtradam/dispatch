@@ -1,7 +1,7 @@
 # Extension Owner-Agent — Extension Rules (additive)
 
 > The package-agent brief (stated immediately above) applies fully. This file adds only the
-> rules unique to extensions. Your **TASK** follows this section.
+> rules unique to extensions.
 
 ## You're building an extension
 An extension is a package that plugs into the kernel host via a **manifest** + an

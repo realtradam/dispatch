@@ -69,9 +69,3 @@ The orchestrator runs the authoritative full-graph `typecheck`/`test`/`check` it
 3. New test names + the isolated-verify output above.
 4. **Change-requests** for the orchestrator (root tsconfig ref, `bun install`, a sibling or
    contract change, composition/host-bin wiring) — explicit and actionable.
-
----
-
-> Your specific **TASK** (package name, job, contracts to read, test cases) is appended below by
-> the orchestrator. If you are building an **extension**, the extension-only rules
-> (`.dispatch/extension-agent.md`) are appended first.
