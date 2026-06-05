@@ -106,9 +106,14 @@ export async function* streamChat(
 			const { recordFetch: rf, saveFixture } = await import("@dispatch/trace-replay");
 			effectiveFetch = rf(effectiveFetch, (fx: HttpExchangeFixture) => {
 				try {
-					const redactedHeaders = { ...fx.request.headers };
-					if (redactedHeaders.authorization) {
-						redactedHeaders.authorization = `Bearer ${maskSecret(redactedHeaders.authorization.replace(/^Bearer\s+/, ""))}`;
+					const redactedHeaders: Record<string, string> = {};
+					for (const [key, value] of Object.entries(fx.request.headers)) {
+						if (key.toLowerCase() === "authorization") {
+							const token = value.replace(/^Bearer\s+/i, "");
+							redactedHeaders[key] = `Bearer ${maskSecret(token)}`;
+						} else {
+							redactedHeaders[key] = value;
+						}
 					}
 					const redacted: HttpExchangeFixture = {
 						request: { ...fx.request, headers: redactedHeaders },
