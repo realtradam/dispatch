@@ -64,6 +64,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/trace-replay": "workspace:*",
       },
     },
     "packages/session-orchestrator": {
