@@ -10,6 +10,8 @@
 		{ "path": "./packages/transport-http" },
 		{ "path": "./packages/tool-read-file" },
 		{ "path": "./packages/journal-sink" },
+		{ "path": "./packages/trace-store" },
+		{ "path": "./packages/observability-collector" },
 		{ "path": "./packages/host-bin" }
 	]
 }

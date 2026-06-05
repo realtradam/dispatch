@@ -206,11 +206,27 @@ per-extension self-redaction (no shared helper — isolation over DRY).
   present, correlated (shared turnId), `request.body` no longer in attributes, key leak 0.
   Summons: prompts/phase-a3-{kernel-body-channel,provider-body}.md.
 
+### Phase B — collector + trace store ✅ DONE + proven (first slice)
+- [x] **trace-store** (`packages/trace-store/`, `bun:sqlite`): records+bodies schema
+  (thin/fat split), idempotent `insertRecords` (FNV-1a id + `INSERT OR IGNORE`),
+  `getTurn`/`getBody`, pure `renderEasyView` (D8 timeline skeleton), `trace` CLI. 30 tests.
+- [x] **observability-collector** (`packages/observability-collector/`): out-of-process
+  bin — tail journal → `splitLines`/`drainOnce` → `insertRecords`; offset sidecar;
+  at-least-once + idempotent; fail-safe; clean SIGINT/SIGTERM drain. 21 tests.
+- [x] **Build-config wiring** (orchestrator): root tsconfig refs; both excluded from
+  vitest + added to `test:bun` (`bun:sqlite`); `bun install`.
+- typecheck clean, **345 tests** (273 vitest + 72 bun), biome 0/0. **Pipeline proven:**
+  app → journal → collector → SQLite → `trace <turnId>` easy-view.
+  Summons: prompts/phase-b-{trace-store,observability-collector}.md.
+
 ### Next (observability)
-- **Phase B:** out-of-process collector → SQLite store + query (§11).
-- **Record/replay test fixtures** (goal): turn captured verbatim provider.request/
-  response traces into hermetic `stream.test.ts` fixtures (mock `fetch`, replay real
-  flash) for regression + deterministic repro. D5; §7. Complements contract-fakes.
+- **Span nesting fix (kernel run-turn):** spans are currently flat (all `parent=ROOT`);
+  nest `step`←`turn` and `prompt`/`provider.request`←`step` (pass the step span's logger
+  into `provider.stream`) so the trace is a tree. (`renderEasyView` already nests once
+  parents exist.)
+- **host-bin supervision** (deferred): spawn-first / drain-last / restart the collector.
+- **Record/replay test fixtures** (goal): captured verbatim provider.request/response
+  traces → hermetic `stream.test.ts` fixtures (mock `fetch`, replay real flash). D5; §7.
 
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.

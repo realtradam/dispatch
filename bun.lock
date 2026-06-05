@@ -51,6 +51,14 @@
       "name": "@dispatch/kernel",
       "version": "0.0.0",
     },
+    "packages/observability-collector": {
+      "name": "@dispatch/observability-collector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/trace-store": "workspace:*",
+      },
+    },
     "packages/provider-openai-compat": {
       "name": "@dispatch/provider-openai-compat",
       "version": "0.0.0",
@@ -75,6 +83,13 @@
     },
     "packages/tool-read-file": {
       "name": "@dispatch/tool-read-file",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/trace-store": {
+      "name": "@dispatch/trace-store",
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
@@ -119,6 +134,8 @@
 
     "@dispatch/kernel": ["@dispatch/kernel@workspace:packages/kernel"],
 
+    "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
+
     "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
 
     "@dispatch/session-orchestrator": ["@dispatch/session-orchestrator@workspace:packages/session-orchestrator"],
@@ -126,6 +143,8 @@
     "@dispatch/storage-sqlite": ["@dispatch/storage-sqlite@workspace:packages/storage-sqlite"],
 
     "@dispatch/tool-read-file": ["@dispatch/tool-read-file@workspace:packages/tool-read-file"],
+
+    "@dispatch/trace-store": ["@dispatch/trace-store@workspace:packages/trace-store"],
 
     "@dispatch/transport-http": ["@dispatch/transport-http@workspace:packages/transport-http"],
 
