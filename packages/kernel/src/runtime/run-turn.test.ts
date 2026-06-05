@@ -1155,4 +1155,266 @@ describe("runTurn", () => {
 			expect(capturedOpts?.logger).toBeUndefined();
 		});
 	});
+
+	describe("span tree nesting", () => {
+		it("turn span is root (parentSpanId undefined)", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const turnOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "turn");
+			expect(turnOpen).toBeDefined();
+			if (turnOpen?.kind === "span-open") {
+				expect(turnOpen.parentSpanId).toBeUndefined();
+			}
+		});
+
+		it("step span is a child of turn span", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const turnOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "turn");
+			const stepOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "step");
+			expect(turnOpen).toBeDefined();
+			expect(stepOpen).toBeDefined();
+			if (turnOpen?.kind === "span-open" && stepOpen?.kind === "span-open") {
+				expect(stepOpen.parentSpanId).toBe(turnOpen.spanId);
+			}
+		});
+
+		it("prompt span is a child of step span", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const stepOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "step");
+			const promptOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "prompt");
+			expect(stepOpen).toBeDefined();
+			expect(promptOpen).toBeDefined();
+			if (stepOpen?.kind === "span-open" && promptOpen?.kind === "span-open") {
+				expect(promptOpen.parentSpanId).toBe(stepOpen.spanId);
+			}
+		});
+
+		it("provider logger creates spans nested under step", async () => {
+			let capturedLogger: Logger | undefined;
+			let providerReqSpanId: string | undefined;
+
+			const provider: ProviderContract = {
+				id: "fake",
+				stream(_messages, _tools, opts) {
+					capturedLogger = opts?.logger;
+					return (async function* () {
+						// Open provider.request span inside the stream (like a real provider)
+						if (capturedLogger !== undefined) {
+							const span = capturedLogger.span("provider.request");
+							providerReqSpanId = span.id;
+							span.end();
+						}
+						yield { type: "text-delta", delta: "hi" } as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					})();
+				},
+			};
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			expect(capturedLogger).toBeDefined();
+			expect(providerReqSpanId).toBeDefined();
+
+			const stepOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "step");
+			const provReqOpen = sink.records.find(
+				(r) => r.kind === "span-open" && r.name === "provider.request",
+			);
+			expect(stepOpen).toBeDefined();
+			expect(provReqOpen).toBeDefined();
+			if (stepOpen?.kind === "span-open" && provReqOpen?.kind === "span-open") {
+				expect(provReqOpen.parentSpanId).toBe(stepOpen.spanId);
+				expect(provReqOpen.spanId).toBe(providerReqSpanId);
+			}
+		});
+
+		it("tool-call spans are children of step span", async () => {
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const stepOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "step");
+			const tcOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "tool-call");
+			expect(stepOpen).toBeDefined();
+			expect(tcOpen).toBeDefined();
+			if (stepOpen?.kind === "span-open" && tcOpen?.kind === "span-open") {
+				expect(tcOpen.parentSpanId).toBe(stepOpen.spanId);
+			}
+		});
+
+		it("full parent chain: turn → step → {prompt, provider.request, tool-call}", async () => {
+			let capturedLogger: Logger | undefined;
+
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			let streamCallCount = 0;
+			const provider: ProviderContract = {
+				id: "fake",
+				stream(_messages, _tools, opts) {
+					capturedLogger = opts?.logger;
+					streamCallCount++;
+					return (async function* () {
+						// Simulate provider opening a provider.request span
+						// INSIDE the stream on the first call only (like a real provider)
+						if (streamCallCount === 1 && capturedLogger !== undefined) {
+							const span = capturedLogger.span("provider.request");
+							span.end();
+						}
+						if (streamCallCount === 1) {
+							yield {
+								type: "tool-call",
+								toolCallId: "tc1",
+								toolName: "echo",
+								input: {},
+							} as ProviderEvent;
+							yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+						} else {
+							yield { type: "text-delta", delta: "done" } as ProviderEvent;
+							yield { type: "finish", reason: "stop" } as ProviderEvent;
+						}
+					})();
+				},
+			};
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const spanOpens = sink.records.filter((r) => r.kind === "span-open") as Array<
+				Extract<LogRecord, { kind: "span-open" }>
+			>;
+
+			const turnOpen = spanOpens.find((r) => r.name === "turn");
+			const stepOpen = spanOpens.find((r) => r.name === "step");
+			const promptOpen = spanOpens.find((r) => r.name === "prompt");
+			const provReqOpen = spanOpens.find((r) => r.name === "provider.request");
+			const tcOpen = spanOpens.find((r) => r.name === "tool-call");
+
+			expect(turnOpen).toBeDefined();
+			expect(stepOpen).toBeDefined();
+			expect(promptOpen).toBeDefined();
+			expect(provReqOpen).toBeDefined();
+			expect(tcOpen).toBeDefined();
+
+			if (
+				turnOpen?.kind === "span-open" &&
+				stepOpen?.kind === "span-open" &&
+				promptOpen?.kind === "span-open" &&
+				provReqOpen?.kind === "span-open" &&
+				tcOpen?.kind === "span-open"
+			) {
+				// turn = root
+				expect(turnOpen.parentSpanId).toBeUndefined();
+
+				// step = child of turn
+				expect(stepOpen.parentSpanId).toBe(turnOpen.spanId);
+
+				// prompt = child of step
+				expect(promptOpen.parentSpanId).toBe(stepOpen.spanId);
+
+				// provider.request = child of step
+				expect(provReqOpen.parentSpanId).toBe(stepOpen.spanId);
+
+				// tool-call = child of step
+				expect(tcOpen.parentSpanId).toBe(stepOpen.spanId);
+			}
+		});
+	});
 });
