@@ -73,16 +73,33 @@ building.
 
 **Canonical invocation** (inline the prompt — do NOT use `-f`, see gotcha;
 ALWAYS redirect output to a file — do NOT let it stream to your terminal):
+
+The prompt is assembled from **standardized briefs** (`.dispatch/`) + the **TASK block** you
+write. The briefs define who the agent is, guardrails, ownership, visibility, coupling,
+engineering standard, verification, and report format — you never restate those. You only write
+the TASK (the job + contracts + test cases).
+
+**Loading model:**
+- **Package summon:** `package-agent.md` + scoped `rules/*` + TASK
+- **Extension summon:** `package-agent.md` + `extension-agent.md` + scoped `rules/*` + TASK
+
 ```bash
 cd /home/tradam/projects/dispatch/arch-rewrite && \
 opencode run --dir /home/tradam/projects/dispatch/arch-rewrite \
   -m opencode-go/mimo-v2.5-pro \
-  "$(cat prompts/<unit>.md)
+  "$(cat \
+    .dispatch/package-agent.md \
+    .dispatch/extension-agent.md \
+    .dispatch/rules/<scoped-rules...>.md \
+  )
 
----
-Follow the above exactly. You own ONLY <files>. When done, write reports/<unit>.md." \
+## TASK
+<your task block here — see §3 for what goes in it>" \
   > reports/<unit>.run.log 2>&1
 ```
+
+For a **non-extension** package, omit `extension-agent.md`. The agent never reads files —
+everything it needs is inlined above.
 
 **MANDATORY — capture output to a file, never display it.** The agent's streamed
 output is enormous and will overwhelm and CRASH this harness if it lands in your
@@ -110,43 +127,40 @@ log into context as a hard failure.
 
 ---
 
-## 3. Prompt recipe (what every `prompts/<unit>.md` must contain)
+## 3. The TASK block (the only thing the orchestrator writes per summon)
 
-Write self-contained prompts. Structure:
-1. **Role:** "You are the owner-agent for <unit>."
-2. **Read first (ordered):** `AGENTS.md`, the **scoped `.dispatch/rules/`** for this
-   unit's layer (the scoping map is below the recipe), `GLOSSARY.md`, the relevant
-   `notes/restructure-plan.md` §-sections, and **the exact contract files under
-   `packages/kernel/src/contracts/` it builds against**.
-3. **Ownership (strict):** the EXACT files it may create/edit, and an explicit
-   "do not touch anything else; if you need a change elsewhere, write a change-
-   request in your report — do NOT edit it."
-   - **Visibility (state it in EVERY prompt):** "Read ONLY the surfaces
-     (contracts/hooks/manifests/public signatures) of OTHER units; do NOT read
-     their implementation files. You MAY read the implementation files of YOUR
-     assigned unit only." (Mirrors §6 — keeps the agent's context clean too.)
-4. **The job + algorithm:** precise, with the contract types named.
-5. **Engineering constraints:** pure-core/inject-effects (P2), no ambient state
-   (P3), no internal mocks (the test rule), strict-mode TS, typed handles for any
-   cross-extension coupling (no string keys).
-6. **Tests REQUIRED:** name the cases. Pure units → fake inputs, ZERO internal
-   mocks. Shell units → a few integration tests, no sibling mocks.
-7. **Verify before finishing:** `bun run typecheck`, `bun run test`,
-   `bun run check` — all clean.
-8. **Report:** "write `reports/<unit>.md` with: files created, public surface,
-   full command output, decisions, and explicit change-requests for other units."
+The prompt is assembled from standardized briefs + rules (§2). You write **only the TASK**.
+It goes at the very end, after the briefs and rules are cat'd in.
 
-Keep the prompt scoped (P6): don't restate what a frontier model knows; do state
-the project-specific, non-inferable rules.
+```markdown
+## TASK
+You are the owner-agent for `packages/<name>/`.
 
-**`.dispatch/rules/` scoping map** — include ONLY the rows matching the unit (per §0
-"scoped rules beat general rules"); do NOT dump every rule on every agent:
+**Read first:** `packages/kernel/src/contracts/<x>.ts` (the types you build
+against), plus `packages/<sibling>/src/index.ts` if you consume a sibling's
+public surface.
+
+**The job:** <precise description of what to build, naming the contract
+types/handles involved>.
+
+**Tests REQUIRED:** <named cases — fakes only for pure, integration for shell>.
+
+**Verify your package in isolation** (do NOT run the whole-graph build):
+`bunx tsc -b packages/<name>/tsconfig.json`, scoped vitest/biome — all clean.
+```
+
+Keep it scoped (P6): don't restate what the briefs already say; do state the
+project-specific, non-inferable rules. The agent gets the WHAT — it decides the
+HOW and the files.
+
+**`.dispatch/rules/` scoping map** — cat in ONLY the rows matching the unit
+(per §0 "scoped rules beat general rules"); do NOT dump every rule on every agent:
 - **Every agent:** `one-owner.md`, `isolation-over-dry.md`.
 - **Kernel unit:** `kernel-purity.md` + `pure-core.md` + `no-internal-mocks.md`.
 - **Pure-core unit:** `pure-core.md` + `no-internal-mocks.md`.
 - **Any extension coupling via hooks/services:** `typed-handles.md`.
 - **Any extension that emits logs/spans (≈ all of them):** `extension-logging.md`
-  *(pending — authored with the observability substrate, see
+  *(pending — authored with the observability substrate; see
   `notes/observability-design.md` §9; keystone: each extension self-redacts its OWN
   secrets in its OWN code — NO shared redaction helper).*
 
