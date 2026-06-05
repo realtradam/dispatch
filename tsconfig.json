@@ -11,6 +11,7 @@
 		{ "path": "./packages/session-orchestrator" },
 		{ "path": "./packages/transport-http" },
 		{ "path": "./packages/tool-read-file" },
+		{ "path": "./packages/cli" },
 		{ "path": "./packages/journal-sink" },
 		{ "path": "./packages/trace-store" },
 		{ "path": "./packages/observability-collector" },

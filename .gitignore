@@ -9,6 +9,7 @@ build/
 # Agent prompts (orchestrator→subagent) and work reports — local only.
 prompts/
 reports/
+.dispatch/plans/
 
 # OS / editor noise
 .DS_Store
