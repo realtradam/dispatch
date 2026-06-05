@@ -601,13 +601,11 @@ Completes full round-trip rebuild + the **before↔after diff**.
   HTTP test (`stream.test.ts`, mock `fetch` + real-capture fixtures).
 - **Order:** contract frozen (done) → Unit K ∥ Unit P (disjoint: kernel vs provider).
 
-**DEFERRED — body-channel ABI (design decision, surface to user):** `LogRecord` has a
-`body` field but the Logger/Span API exposes no way to set it — that's why
-`prompt:before` (and now the request/response) use stringified `attributes`. Storing
-large verbatim payloads in `body` (store-fat-serve-thin; both before & after) needs a
-small ABI addition (e.g. `Span.setBody(body)`), worth doing before Phase B's query
-layer. Until then captures use attributes — functional + reconstructable, just not
-ideal for D9 `GROUP BY`.
+**body-channel ABI — RESOLVED (Phase A.3):** added optional `body?` to
+`Logger.span` / `Span.child` / `Span.end` → `LogRecord.body`; and moved `createLogger`
+out of `contracts/` so `contracts/logging.ts` is pure types again. The before
+(`prompt` span) and after (`provider.request` span) now carry their verbatim payloads
+in `body`, not stringified attributes — attributes stay thin/queryable (D9).
 
 *(Full per-extension prompt-segment provenance — D8 — comes later, with the
 context-filter chain.)*

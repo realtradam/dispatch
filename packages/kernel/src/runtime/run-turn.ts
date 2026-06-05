@@ -167,22 +167,21 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 	let stepUsage = zeroUsage();
 	let finishReason = "stop";
 
-	// Open a step span with the verbatim pre-mutation prompt in its body (BEFORE capture).
+	// Open a step span; capture the verbatim pre-mutation prompt via a
+	// "prompt" child span whose body holds the serialized messages+tools.
 	let stepSpan: Span | undefined;
 	try {
 		stepSpan = ctx.logger.span("step");
-		// Emit the verbatim pre-mutation prompt as a log record on the step span's logger.
-		// This is the "BEFORE" capture — the messages + tools as handed to provider.stream.
-		stepSpan.log.info("prompt:before", {
-			"prompt.messages": JSON.stringify(ctx.messages),
-			"prompt.tools": JSON.stringify(
-				ctx.tools.map((t) => ({
-					name: t.name,
-					description: t.description,
-					parameters: t.parameters,
-				})),
-			),
-		});
+		const promptBody = JSON.stringify({ messages: ctx.messages, tools: ctx.tools });
+		const promptSpan = stepSpan.child(
+			"prompt",
+			{
+				messageCount: ctx.messages.length,
+				toolCount: ctx.tools.length,
+			},
+			promptBody,
+		);
+		promptSpan.end();
 	} catch {
 		// Swallow — D7.
 	}

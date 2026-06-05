@@ -956,5 +956,118 @@ describe("createHost", () => {
 				expect(spanCloses[0].attributes?.result).toBe("ok");
 			}
 		});
+
+		it("span() with body emits body on span-open record", async () => {
+			let extLogger: Logger | undefined;
+
+			const ext = createExtension("ext", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const span = extLogger?.span("with-body", { key: "value" }, '{"payload":"hello"}');
+			span?.end();
+
+			const spanOpens = logSink.records.filter((r) => r.kind === "span-open");
+			expect(spanOpens).toHaveLength(1);
+			if (spanOpens[0]?.kind === "span-open") {
+				expect(spanOpens[0].body).toBe('{"payload":"hello"}');
+			}
+		});
+
+		it("span() without body omits body field on span-open record", async () => {
+			let extLogger: Logger | undefined;
+
+			const ext = createExtension("ext", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const span = extLogger?.span("no-body");
+			span?.end();
+
+			const spanOpens = logSink.records.filter((r) => r.kind === "span-open");
+			expect(spanOpens).toHaveLength(1);
+			if (spanOpens[0]?.kind === "span-open") {
+				expect(spanOpens[0].body).toBeUndefined();
+			}
+		});
+
+		it("child() with body emits body on child span-open record", async () => {
+			let extLogger: Logger | undefined;
+
+			const ext = createExtension("ext", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const span = extLogger?.span("parent");
+			const child = span?.child("child-name", { k: "v" }, '{"child":"body"}');
+			child?.end();
+			span?.end();
+
+			const spanOpens = logSink.records.filter((r) => r.kind === "span-open");
+			const childOpen = spanOpens.find((r) => r.kind === "span-open" && r.name === "child-name");
+			expect(childOpen).toBeDefined();
+			if (childOpen?.kind === "span-open") {
+				expect(childOpen.body).toBe('{"child":"body"}');
+			}
+		});
+
+		it("end() with body emits body on span-close record", async () => {
+			let extLogger: Logger | undefined;
+
+			const ext = createExtension("ext", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const span = extLogger?.span("close-body");
+			span?.end({ body: '{"result":"data"}' });
+
+			const spanCloses = logSink.records.filter((r) => r.kind === "span-close");
+			expect(spanCloses).toHaveLength(1);
+			if (spanCloses[0]?.kind === "span-close") {
+				expect(spanCloses[0].body).toBe('{"result":"data"}');
+			}
+		});
+
+		it("end() without body omits body field on span-close record", async () => {
+			let extLogger: Logger | undefined;
+
+			const ext = createExtension("ext", {
+				activate: (host) => {
+					extLogger = host.logger;
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const span = extLogger?.span("no-close-body");
+			span?.end();
+
+			const spanCloses = logSink.records.filter((r) => r.kind === "span-close");
+			expect(spanCloses).toHaveLength(1);
+			if (spanCloses[0]?.kind === "span-close") {
+				expect(spanCloses[0].body).toBeUndefined();
+			}
+		});
 	});
 });

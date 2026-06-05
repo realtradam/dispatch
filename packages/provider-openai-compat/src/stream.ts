@@ -74,18 +74,18 @@ export async function* streamChat(
 	if (opts?.logger) {
 		try {
 			const model = opts?.model ?? config.model;
-			reqSpan = opts.logger.span("provider.request", {
-				model,
-				url,
-			});
 			const hasCacheBreakpoint = bodyString.includes("cache_control");
-			reqSpan.setAttributes({
-				"request.method": "POST",
-				"request.body": bodyString,
-				"request.cache_control_present": hasCacheBreakpoint,
-				"request.headers.content_type": "application/json",
-				"request.headers.authorization": `Bearer ${maskSecret(config.apiKey)}`,
-			});
+			reqSpan = opts.logger.span(
+				"provider.request",
+				{
+					model,
+					url,
+					"request.method": "POST",
+					"request.cache_control_present": hasCacheBreakpoint,
+					"request.headers.authorization": `Bearer ${maskSecret(config.apiKey)}`,
+				},
+				bodyString,
+			);
 		} catch {
 			// Fail-safe: capture must never break stream().
 		}

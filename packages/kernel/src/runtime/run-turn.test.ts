@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../contracts/conversation.js";
 import type { AgentEvent } from "../contracts/events.js";
 import type { LogDeps, Logger, LogRecord, LogSink } from "../contracts/logging.js";
-import { createLogger } from "../contracts/logging.js";
 import type { ProviderContract, ProviderEvent } from "../contracts/provider.js";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "../contracts/tool.js";
+import { createLogger } from "../logging/logger.js";
 import { runTurn } from "./run-turn.js";
 
 function delay(ms: number): Promise<void> {
@@ -1038,6 +1038,56 @@ describe("runTurn", () => {
 				expect(stepCloses[0].status).toBe("error");
 				expect(stepCloses[0].attributes?.["error.message"]).toContain("provider exploded");
 			}
+		});
+
+		it("emits a prompt span with verbatim body and small scalar attributes", async () => {
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const promptOpens = sink.records.filter((r) => r.kind === "span-open" && r.name === "prompt");
+			expect(promptOpens).toHaveLength(1);
+
+			const promptOpen = promptOpens[0];
+			if (promptOpen?.kind === "span-open") {
+				expect(promptOpen.body).toBeDefined();
+				const parsed = JSON.parse(promptOpen.body as string);
+				expect(parsed.messages).toEqual([userMessage]);
+				expect(parsed.tools).toHaveLength(1);
+				expect(parsed.tools[0].name).toBe("echo");
+
+				expect(promptOpen.attributes?.messageCount).toBe(1);
+				expect(promptOpen.attributes?.toolCount).toBe(1);
+			}
+
+			const promptCloses = sink.records.filter(
+				(r) => r.kind === "span-close" && r.name === "prompt",
+			);
+			expect(promptCloses).toHaveLength(1);
+
+			const logRecords = sink.records.filter(
+				(r) =>
+					r.kind === "log" && r.kind === "log" && (r as { msg: string }).msg === "prompt:before",
+			);
+			expect(logRecords).toHaveLength(0);
 		});
 	});
 

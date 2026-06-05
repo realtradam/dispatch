@@ -194,10 +194,19 @@ per-extension self-redaction (no shared helper — isolation over DRY).
   (before↔after diffable); **auth-key leak count = 0** (self-redaction verified live).
   Summons: prompts/phase-a2-{kernel-runturn,provider-after-capture}.md (+ 2 test cleanups).
 
+### Phase A.3 — body channel + pure-types contracts ✅ DONE + verified live
+- [x] **contracts/logging.ts → pure types**: `createLogger` moved to `kernel/src/logging/`;
+  `@dispatch/kernel` still exports it. Contracts are types-only again.
+- [x] **Span body channel** (Option A): `span/child/end` accept optional `body?` →
+  `LogRecord.body`. Large verbatim payloads now use `body`, not stringified attributes.
+- [x] **before** (kernel run-turn): a `prompt` span carrying verbatim messages+tools in
+  `body` (small scalars in attrs). **after** (provider): `provider.request` body = the
+  verbatim request (attrs thin, auth redacted).
+- typecheck clean, **273 tests**, biome **0/0**. Live: prompt + provider.request bodies
+  present, correlated (shared turnId), `request.body` no longer in attributes, key leak 0.
+  Summons: prompts/phase-a3-{kernel-body-channel,provider-body}.md.
+
 ### Next (observability)
-- **Body-channel ABI (design — surface to user):** add a way to set `LogRecord.body`
-  (e.g. `Span.setBody`) so large verbatim payloads (prompt:before + provider request)
-  use `body` not stringified `attributes` (store-fat-serve-thin; before Phase B query).
 - **Phase B:** out-of-process collector → SQLite store + query (§11).
 - **Record/replay test fixtures** (goal): turn captured verbatim provider.request/
   response traces into hermetic `stream.test.ts` fixtures (mock `fetch`, replay real

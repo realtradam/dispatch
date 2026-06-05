@@ -19,6 +19,7 @@ function assertDefined<T>(v: T, msg?: string): asserts v is NonNullable<T> {
 interface CapturedSpan {
 	name: string;
 	attrs: Record<string, string | number | boolean | null>;
+	body?: string | undefined;
 	endOutcome?:
 		| { err?: unknown; attrs?: Record<string, string | number | boolean | null> }
 		| undefined;
@@ -27,6 +28,7 @@ interface CapturedSpan {
 function createFakeLogger(): { logger: Logger; spans: CapturedSpan[] } {
 	const spans: CapturedSpan[] = [];
 	let spanAttrBuffer: Record<string, string | number | boolean | null> = {};
+	let spanBodyBuffer: string | undefined;
 
 	const fakeSpan: Span = {
 		id: "fake-span-id",
@@ -42,6 +44,7 @@ function createFakeLogger(): { logger: Logger; spans: CapturedSpan[] } {
 			spans.push({
 				name: "provider.request",
 				attrs: { ...spanAttrBuffer },
+				body: spanBodyBuffer,
 				endOutcome: outcome as CapturedSpan["endOutcome"],
 			});
 		},
@@ -55,8 +58,9 @@ function createFakeLogger(): { logger: Logger; spans: CapturedSpan[] } {
 		child() {
 			return logger;
 		},
-		span(_name, attrs) {
+		span(_name, attrs, body) {
 			spanAttrBuffer = attrs ? { ...attrs } : {};
+			spanBodyBuffer = body;
 			return fakeSpan;
 		},
 	};
@@ -139,8 +143,10 @@ describe("streamChat — provider.request AFTER capture", () => {
 		const span = spans[0];
 		expect(span.name).toBe("provider.request");
 		expect(span.attrs["request.method"]).toBe("POST");
+		expect(span.attrs["request.body"]).toBeUndefined();
 
-		const capturedBody = JSON.parse(span.attrs["request.body"] as string);
+		assertDefined(span.body);
+		const capturedBody = JSON.parse(span.body);
 		expect(capturedBody.model).toBe("test-model");
 		expect(capturedBody.stream).toBe(true);
 		expect(capturedBody.messages).toEqual([{ role: "user", content: "Hello" }]);
@@ -505,7 +511,8 @@ describe("streamChat — provider.request AFTER capture", () => {
 		const span = spans[0];
 		expect(span.attrs.model).toBe("override-model");
 
-		const capturedBody = JSON.parse(span.attrs["request.body"] as string);
+		assertDefined(span.body);
+		const capturedBody = JSON.parse(span.body);
 		expect(capturedBody.model).toBe("override-model");
 	});
 });

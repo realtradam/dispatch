@@ -19,9 +19,9 @@ import type {
 	ServiceHandle,
 } from "../contracts/hooks.js";
 import type { LogDeps, Logger, LogSink } from "../contracts/logging.js";
-import { createLogger } from "../contracts/logging.js";
 import type { ProviderContract } from "../contracts/provider.js";
 import type { ToolContract } from "../contracts/tool.js";
+import { createLogger } from "../logging/logger.js";
 import { resolveActivationOrder } from "./dag.js";
 import { isApiVersionCompatible } from "./version.js";
 
