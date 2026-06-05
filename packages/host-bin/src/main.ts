@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { extension as authApikeyExt } from "@dispatch/auth-apikey";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
+import { createCredentialStoreExtension } from "@dispatch/credential-store";
 import { createJournalSink } from "@dispatch/journal-sink";
 import {
 	type ConfigAccess,
@@ -54,6 +55,10 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	authApikeyExt,
 	providerOpenaiCompatExt,
 	toolReadFileExt,
+	// MVP single hardcoded credential; future work makes it config/TOML-driven.
+	createCredentialStoreExtension({
+		credentials: [{ name: "opencode", providerId: "openai-compat" }],
+	}),
 	sessionOrchestratorExt,
 	transportHttpExt,
 ];

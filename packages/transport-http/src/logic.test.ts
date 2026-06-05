@@ -73,6 +73,63 @@ describe("parseChatBody", () => {
 			expect(result.message).toBe("hello world");
 		}
 	});
+
+	it("extracts model when present", () => {
+		const result = parseChatBody({ message: "hi", model: "opencode/m1" }, fakeId);
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.model).toBe("opencode/m1");
+		}
+	});
+
+	it("extracts cwd when present", () => {
+		const result = parseChatBody({ message: "hi", cwd: "/tmp" }, fakeId);
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.cwd).toBe("/tmp");
+		}
+	});
+
+	it("extracts both model and cwd", () => {
+		const result = parseChatBody({ message: "hi", model: "openai/gpt-4", cwd: "/home" }, fakeId);
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.model).toBe("openai/gpt-4");
+			expect(result.cwd).toBe("/home");
+		}
+	});
+
+	it("omits model when absent", () => {
+		const result = parseChatBody({ message: "hi" }, fakeId);
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.model).toBeUndefined();
+		}
+	});
+
+	it("omits cwd when absent", () => {
+		const result = parseChatBody({ message: "hi" }, fakeId);
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.cwd).toBeUndefined();
+		}
+	});
+
+	it("returns error when model is not a string", () => {
+		const result = parseChatBody({ message: "hi", model: 42 }, fakeId);
+		expect(isParseError(result)).toBe(true);
+		if (isParseError(result)) {
+			expect(result.error).toContain("model");
+		}
+	});
+
+	it("returns error when cwd is not a string", () => {
+		const result = parseChatBody({ message: "hi", cwd: true }, fakeId);
+		expect(isParseError(result)).toBe(true);
+		if (isParseError(result)) {
+			expect(result.error).toContain("cwd");
+		}
+	});
 });
 
 describe("serializeEventLine", () => {

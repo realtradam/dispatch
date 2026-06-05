@@ -1,4 +1,5 @@
 import { conversationStoreHandle } from "@dispatch/conversation-store";
+import { credentialStoreHandle } from "@dispatch/credential-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import {
@@ -14,7 +15,7 @@ export const manifest: Manifest = {
 	version: "0.0.0",
 	apiVersion: "^0.1.0",
 	trust: "bundled",
-	dependsOn: ["conversation-store"],
+	dependsOn: ["conversation-store", "credential-store"],
 	activation: "eager",
 	contributes: {
 		services: ["session-orchestrator/orchestrator"],
@@ -28,6 +29,13 @@ export function activate(host: HostAPI): void {
 		conversationStore,
 		resolveProvider: () => selectFirstProvider(host.getProviders()),
 		resolveTools: () => [...host.getTools().values()],
+		resolveModel: (modelName: string) => {
+			const store = host.getService(credentialStoreHandle);
+			const r = store.resolve(modelName);
+			if (r === undefined) return undefined;
+			const provider = host.getProviders().get(r.providerId);
+			return provider ? { provider, model: r.model } : undefined;
+		},
 		runTurn,
 		logger: host.logger,
 	});

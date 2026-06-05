@@ -1,7 +1,7 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { sessionOrchestratorHandle } from "./seam.js";
+import { credentialStoreHandle, sessionOrchestratorHandle } from "./seam.js";
 
 export const manifest: Manifest = {
 	id: "transport-http",
@@ -9,9 +9,9 @@ export const manifest: Manifest = {
 	version: "0.0.0",
 	apiVersion: "^0.1.0",
 	trust: "bundled",
-	dependsOn: ["session-orchestrator"],
+	dependsOn: ["credential-store", "session-orchestrator"],
 	capabilities: { network: true },
-	contributes: { routes: ["/chat", "/health"] },
+	contributes: { routes: ["/chat", "/health", "/models"] },
 	activation: "eager",
 };
 
@@ -21,7 +21,8 @@ export interface CreateServerOptions {
 
 export function createServer(host: HostAPI, _opts?: CreateServerOptions): Hono {
 	const orchestrator = host.getService(sessionOrchestratorHandle);
-	return createApp({ orchestrator });
+	const credentialStore = host.getService(credentialStoreHandle);
+	return createApp({ orchestrator, credentialStore });
 }
 
 export const extension: Extension = {

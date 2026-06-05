@@ -1,10 +1,12 @@
 import type { AgentEvent } from "@dispatch/kernel";
+import type { ModelsResponse } from "@dispatch/transport-contract";
 import { Hono } from "hono";
 import { isParseError, parseChatBody, serializeEventLine } from "./logic.js";
-import type { SessionOrchestrator } from "./seam.js";
+import type { CredentialStore, SessionOrchestrator } from "./seam.js";
 
 export interface CreateServerOptions {
 	readonly orchestrator: SessionOrchestrator;
+	readonly credentialStore: CredentialStore;
 	readonly generateId?: () => string;
 }
 
@@ -13,6 +15,16 @@ export function createApp(opts: CreateServerOptions): Hono {
 	const generateId = opts.generateId ?? (() => crypto.randomUUID());
 
 	app.get("/health", (c) => c.json({ ok: true }));
+
+	app.get("/models", async (c) => {
+		try {
+			const models = await opts.credentialStore.listCatalog();
+			const body: ModelsResponse = { models };
+			return c.json(body, 200);
+		} catch {
+			return c.json({ error: "Failed to retrieve model catalog" }, 502);
+		}
+	});
 
 	app.post("/chat", async (c) => {
 		let body: unknown;
@@ -27,21 +39,25 @@ export function createApp(opts: CreateServerOptions): Hono {
 			return c.json({ error: result.error }, 400);
 		}
 
-		const { conversationId, message } = result;
+		const { conversationId, message, model, cwd } = result;
 		const events: AgentEvent[] = [];
 		let resolveStream: () => void;
 		const streamReady = new Promise<void>((resolve) => {
 			resolveStream = resolve;
 		});
 
+		const orchestratorInput: Parameters<SessionOrchestrator["handleMessage"]>[0] = {
+			conversationId,
+			text: message,
+			onEvent: (event) => {
+				events.push(event);
+			},
+			...(model !== undefined ? { modelName: model } : {}),
+			...(cwd !== undefined ? { cwd } : {}),
+		};
+
 		const orchestratorPromise = opts.orchestrator
-			.handleMessage({
-				conversationId,
-				text: message,
-				onEvent: (event) => {
-					events.push(event);
-				},
-			})
+			.handleMessage(orchestratorInput)
 			.then(() => {
 				resolveStream();
 			})

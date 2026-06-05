@@ -4,6 +4,7 @@ import type {
 	ChatMessage,
 	Logger,
 	ProviderContract,
+	ProviderStreamOptions,
 	RunTurnInput,
 	RunTurnResult,
 	ToolContract,
@@ -18,6 +19,8 @@ export interface SessionOrchestrator {
 		text: string;
 		onEvent: (event: AgentEvent) => void;
 		signal?: AbortSignal;
+		modelName?: string;
+		cwd?: string;
 	}): Promise<void>;
 }
 
@@ -30,6 +33,9 @@ export interface SessionOrchestratorDeps {
 	readonly resolveProvider: () => ProviderContract;
 	readonly resolveTools: () => readonly ToolContract[];
 	readonly resolveDispatch?: () => ToolDispatchPolicy;
+	readonly resolveModel?: (
+		modelName: string,
+	) => { provider: ProviderContract; model: string } | undefined;
 	readonly runTurn: (input: RunTurnInput) => Promise<RunTurnResult>;
 	/** Base logger (auto-scoped to this extension); childed per turn for span capture. */
 	readonly logger?: Logger;
@@ -37,16 +43,36 @@ export interface SessionOrchestratorDeps {
 
 export function createSessionOrchestrator(deps: SessionOrchestratorDeps): SessionOrchestrator {
 	return {
-		async handleMessage({ conversationId, text, onEvent, signal }) {
+		async handleMessage({ conversationId, text, onEvent, signal, modelName, cwd }) {
 			const history = await deps.conversationStore.load(conversationId);
 			const userMsg = buildUserMessage(text);
-			const provider = deps.resolveProvider();
+			const turnId = generateTurnId();
+
+			let provider: ProviderContract;
+			let modelOverride: string | undefined;
+
+			if (modelName !== undefined && deps.resolveModel !== undefined) {
+				const resolved = deps.resolveModel(modelName);
+				if (resolved === undefined) {
+					onEvent({
+						type: "error",
+						conversationId,
+						turnId,
+						message: `unknown model: ${modelName}`,
+					});
+					return;
+				}
+				provider = resolved.provider;
+				modelOverride = resolved.model;
+			} else {
+				provider = deps.resolveProvider();
+			}
+
 			const tools = deps.resolveTools();
 			const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
-			const turnId = generateTurnId();
 			const turnLogger = deps.logger?.child({ conversationId, turnId });
 
-			const result = await deps.runTurn({
+			const opts: RunTurnInput = {
 				provider,
 				messages: [...history, userMsg],
 				tools,
@@ -54,9 +80,15 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 				emit: onEvent,
 				conversationId,
 				turnId,
+				...(modelOverride !== undefined
+					? { providerOpts: { model: modelOverride } satisfies ProviderStreamOptions }
+					: {}),
 				...(turnLogger !== undefined ? { logger: turnLogger } : {}),
 				...(signal !== undefined ? { signal } : {}),
-			});
+				...(cwd !== undefined ? { cwd } : {}),
+			};
+
+			const result = await deps.runTurn(opts);
 
 			const toPersist: ChatMessage[] = [userMsg, ...result.messages];
 			await deps.conversationStore.append(conversationId, toPersist);

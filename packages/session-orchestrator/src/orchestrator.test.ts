@@ -1,5 +1,12 @@
 import type { ConversationStore } from "@dispatch/conversation-store";
-import type { AgentEvent, ChatMessage, ProviderContract, ProviderEvent } from "@dispatch/kernel";
+import type {
+	AgentEvent,
+	ChatMessage,
+	ProviderContract,
+	ProviderEvent,
+	RunTurnInput,
+	RunTurnResult,
+} from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { createSessionOrchestrator } from "./orchestrator.js";
@@ -196,5 +203,149 @@ describe("handleMessage integration", () => {
 		const stored = store.data.get("conv-dispatch");
 		expect(stored).toBeDefined();
 		expect(stored?.length).toBeGreaterThanOrEqual(1);
+	});
+});
+
+function createCapturingRunTurn(): {
+	result: RunTurnResult;
+	captured: RunTurnInput[];
+	captureRunTurn: (input: RunTurnInput) => Promise<RunTurnResult>;
+} {
+	const result: RunTurnResult = {
+		messages: [{ role: "assistant", chunks: [{ type: "text", text: "ok" }] }],
+		usage: { inputTokens: 1, outputTokens: 1 },
+		finishReason: "stop",
+	};
+	const captured: RunTurnInput[] = [];
+	return {
+		result,
+		captured,
+		captureRunTurn: async (input) => {
+			captured.push(input);
+			return result;
+		},
+	};
+}
+
+describe("handleMessage model resolution", () => {
+	it("modelName resolves → runTurn receives resolved provider, providerOpts.model, and cwd", async () => {
+		const store = createInMemoryStore();
+		const resolvedProvider: ProviderContract = { id: "resolved", stream: async function* () {} };
+		const fallbackProvider: ProviderContract = { id: "fallback", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => fallbackProvider,
+			resolveTools: () => [],
+			resolveModel: (name) => {
+				if (name === "cred/gpt-4") return { provider: resolvedProvider, model: "gpt-4" };
+				return undefined;
+			},
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-model",
+			text: "hi",
+			onEvent: () => {},
+			modelName: "cred/gpt-4",
+			cwd: "/work/dir",
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.provider).toBe(resolvedProvider);
+		expect(captured[0]?.providerOpts).toEqual({ model: "gpt-4" });
+		expect(captured[0]?.cwd).toBe("/work/dir");
+	});
+
+	it("modelName given but resolveModel returns undefined → error event emitted, runTurn NOT called", async () => {
+		const store = createInMemoryStore();
+		const fallbackProvider: ProviderContract = { id: "fallback", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+		const events: AgentEvent[] = [];
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => fallbackProvider,
+			resolveTools: () => [],
+			resolveModel: () => undefined,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-unknown",
+			text: "hi",
+			onEvent: (e) => events.push(e),
+			modelName: "cred/nonexistent",
+		});
+
+		expect(captured).toHaveLength(0);
+		const errorEvents = events.filter((e) => e.type === "error");
+		expect(errorEvents).toHaveLength(1);
+		expect((errorEvents[0] as AgentEvent & { type: "error" }).message).toBe(
+			"unknown model: cred/nonexistent",
+		);
+		expect((errorEvents[0] as AgentEvent & { type: "error" }).conversationId).toBe("conv-unknown");
+		expect((errorEvents[0] as AgentEvent & { type: "error" }).turnId).toMatch(/^turn-/);
+	});
+
+	it("no modelName → falls back to resolveProvider(), no model override", async () => {
+		const store = createInMemoryStore();
+		const fallbackProvider: ProviderContract = { id: "fallback", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => fallbackProvider,
+			resolveTools: () => [],
+			resolveModel: () => ({
+				provider: { id: "should-not-use", stream: async function* () {} },
+				model: "x",
+			}),
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-fallback",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.provider).toBe(fallbackProvider);
+		expect(captured[0]?.providerOpts).toBeUndefined();
+	});
+
+	it("cwd is forwarded to RunTurnInput.cwd and absent when not provided", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-cwd",
+			text: "hi",
+			onEvent: () => {},
+			cwd: "/custom/path",
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("/custom/path");
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-no-cwd",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(2);
+		expect(captured[1]?.cwd).toBeUndefined();
 	});
 });

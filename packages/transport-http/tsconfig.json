@@ -2,5 +2,10 @@
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
 	"include": ["src/**/*.ts"],
-	"references": [{ "path": "../kernel" }, { "path": "../session-orchestrator" }]
+	"references": [
+		{ "path": "../credential-store" },
+		{ "path": "../kernel" },
+		{ "path": "../session-orchestrator" },
+		{ "path": "../transport-contract" }
+	]
 }
