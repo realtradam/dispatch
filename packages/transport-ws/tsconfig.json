@@ -4,7 +4,9 @@
 	"include": ["src/**/*.ts"],
 	"references": [
 		{ "path": "../kernel" },
+		{ "path": "../session-orchestrator" },
 		{ "path": "../surface-registry" },
+		{ "path": "../transport-contract" },
 		{ "path": "../ui-contract" }
 	]
 }

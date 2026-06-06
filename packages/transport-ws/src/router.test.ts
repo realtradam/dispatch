@@ -59,6 +59,8 @@ describe("routeClientMessage", () => {
 				surfaceId: "a",
 			});
 
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
 			expect(result.replies).toHaveLength(1);
 			expect(result.replies[0]).toEqual({
 				type: "surface",
@@ -82,6 +84,8 @@ describe("routeClientMessage", () => {
 				surfaceId: "a",
 			});
 
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
 			expect(result.replies).toHaveLength(1);
 			expect(result.replies[0]?.type).toBe("surface");
 			expect(result.subChange).toBeUndefined();
@@ -96,6 +100,8 @@ describe("routeClientMessage", () => {
 				surfaceId: "nonexistent",
 			});
 
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
 			expect(result.replies).toHaveLength(1);
 			expect(result.replies[0]).toEqual({
 				type: "error",
@@ -116,6 +122,8 @@ describe("routeClientMessage", () => {
 				surfaceId: "a",
 			});
 
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
 			expect(result.replies).toHaveLength(0);
 			expect(result.subChange).toEqual({ op: "remove", surfaceId: "a" });
 		});
@@ -129,6 +137,8 @@ describe("routeClientMessage", () => {
 				surfaceId: "a",
 			});
 
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
 			expect(result.replies).toHaveLength(0);
 			expect(result.subChange).toEqual({ op: "remove", surfaceId: "a" });
 		});
@@ -147,6 +157,8 @@ describe("routeClientMessage", () => {
 				payload: true,
 			});
 
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
 			expect(result.replies).toHaveLength(0);
 			expect(result.invoke).toEqual({
 				surfaceId: "a",
@@ -165,6 +177,8 @@ describe("routeClientMessage", () => {
 				actionId: "toggle",
 			});
 
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
 			expect(result.replies).toHaveLength(1);
 			expect(result.replies[0]).toEqual({
 				type: "error",
@@ -172,6 +186,73 @@ describe("routeClientMessage", () => {
 				message: "Unknown surface: nonexistent",
 			});
 			expect(result.invoke).toBeUndefined();
+		});
+	});
+
+	describe("chat.send", () => {
+		it("classifies a chat.send message", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				message: "hello",
+			});
+
+			expect(result.kind).toBe("chat");
+			if (result.kind !== "chat") throw new Error("expected chat");
+			expect(result.message).toBe("hello");
+			expect(result.conversationId).toBeUndefined();
+			expect(result.model).toBeUndefined();
+			expect(result.cwd).toBeUndefined();
+		});
+
+		it("passes through optional fields", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				conversationId: "conv-123",
+				message: "follow up",
+				model: "gpt-4",
+				cwd: "/tmp",
+			});
+
+			expect(result.kind).toBe("chat");
+			if (result.kind !== "chat") throw new Error("expected chat");
+			expect(result.conversationId).toBe("conv-123");
+			expect(result.message).toBe("follow up");
+			expect(result.model).toBe("gpt-4");
+			expect(result.cwd).toBe("/tmp");
+		});
+
+		it("rejects a malformed chat.send (empty message)", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				message: "",
+			});
+
+			expect(result.kind).toBe("chat-error");
+			if (result.kind !== "chat-error") throw new Error("expected chat-error");
+			expect(result.errorMessage).toContain("non-empty string");
+		});
+
+		it("rejects a malformed chat.send (missing message)", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				message: undefined as unknown as string,
+			});
+
+			expect(result.kind).toBe("chat-error");
+			if (result.kind !== "chat-error") throw new Error("expected chat-error");
+			expect(result.errorMessage).toContain("non-empty string");
 		});
 	});
 });

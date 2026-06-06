@@ -1,18 +1,26 @@
 /**
- * Transport contract — the typed description of Dispatch's HTTP API.
+ * Transport contract — the typed description of Dispatch's client–server API
+ * (HTTP + WebSocket).
  *
  * This package is types-only (zero runtime). It is the single shared surface
  * every client imports to know how to talk to the backend — the CLI, the web
- * frontend (in its own repo), any third-party client — and the transport-http
- * server imports to know what it must accept and emit.
+ * frontend (in its own repo), any third-party client — and the transport-http /
+ * transport-ws servers import to know what they must accept and emit.
  *
  * Each side owns its OWN (de)serialization: there is deliberately no shared
  * parse/serialize helper here (isolation-over-DRY). The contract is the SHAPES,
  * not the codec. The streaming response payload is the kernel's `AgentEvent`
  * union, re-exported here so a client has one import for the whole wire.
+ *
+ * The WebSocket carries BOTH chat ops (defined here) and surface ops (defined in
+ * `@dispatch/ui-contract`) over one connection; the unified `WsClientMessage` /
+ * `WsServerMessage` unions below compose them. Chat ops are new, non-colliding
+ * `type` variants — there is no channel wrapper, so the shipped surface protocol
+ * is unchanged.
  */
 
-import type { StoredChunk } from "@dispatch/wire";
+import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
+import type { AgentEvent, StoredChunk } from "@dispatch/wire";
 
 export type { AgentEvent, StoredChunk } from "@dispatch/wire";
 
@@ -83,3 +91,52 @@ export interface ConversationHistoryResponse {
 	readonly chunks: readonly StoredChunk[];
 	readonly latestSeq: number;
 }
+
+// ─── WebSocket chat ops ───────────────────────────────────────────────────────
+// The persistent WS connection multiplexes chat ops (below) with surface ops
+// (`@dispatch/ui-contract`). The unified unions at the bottom compose both. Chat
+// `type`s are namespaced (`chat.*`) so they never collide with surface ones.
+
+/**
+ * Client → server: start or continue a turn over the WS connection. Carries the
+ * same fields as the HTTP `ChatRequest` (so one shape drives both transports);
+ * omit `conversationId` to start fresh — the resolved id arrives on the streamed
+ * `AgentEvent`s (each carries `conversationId`).
+ */
+export interface ChatSendMessage extends ChatRequest {
+	readonly type: "chat.send";
+}
+
+/**
+ * Server → client: one `AgentEvent` from an in-flight turn (text-delta,
+ * tool-call, usage, done, turn-sealed, …). The client folds these into its
+ * transcript exactly as it folds the HTTP NDJSON stream — same events, different
+ * carrier.
+ */
+export interface ChatDeltaMessage {
+	readonly type: "chat.delta";
+	readonly event: AgentEvent;
+}
+
+/**
+ * Server → client: a chat-scoped TRANSPORT error — e.g. a malformed `chat.send`
+ * or a failure before a turn could start. (Errors DURING a turn arrive as a
+ * `TurnErrorEvent` inside a `chat.delta`.)
+ */
+export interface ChatErrorMessage {
+	readonly type: "chat.error";
+	readonly conversationId?: string;
+	readonly message: string;
+}
+
+/**
+ * Every client → server WS message: surface ops (`@dispatch/ui-contract`) + chat
+ * ops. A server discriminates on `type`.
+ */
+export type WsClientMessage = SurfaceClientMessage | ChatSendMessage;
+
+/**
+ * Every server → client WS message: surface ops (`@dispatch/ui-contract`) + chat
+ * ops. A client discriminates on `type`.
+ */
+export type WsServerMessage = SurfaceServerMessage | ChatDeltaMessage | ChatErrorMessage;
