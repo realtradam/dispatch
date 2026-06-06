@@ -6,6 +6,7 @@ import type {
 	ProviderEvent,
 	RunTurnInput,
 	RunTurnResult,
+	StoredChunk,
 } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
@@ -23,6 +24,20 @@ function createInMemoryStore(): ConversationStore & {
 		},
 		async load(conversationId) {
 			return [...(data.get(conversationId) ?? [])];
+		},
+		async loadSince(conversationId, sinceSeq) {
+			const messages = data.get(conversationId) ?? [];
+			const result: StoredChunk[] = [];
+			let seq = 1;
+			for (const msg of messages) {
+				for (const chunk of msg.chunks) {
+					if (sinceSeq === undefined || seq > sinceSeq) {
+						result.push({ seq, role: msg.role, chunk });
+					}
+					seq++;
+				}
+			}
+			return result;
 		},
 	};
 }

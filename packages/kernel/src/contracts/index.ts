@@ -18,6 +18,7 @@ export type {
 	ErrorChunk,
 	Role,
 	StepId,
+	StoredChunk,
 	SystemChunk,
 	TextChunk,
 	ThinkingChunk,
