@@ -393,8 +393,26 @@ streaming. Spans both repos; the backend prereqs live HERE (FE work runs in `../
     zero internal `@dispatch/*` mocks, both agents in-lane.
   Read-side HTTP endpoint (`GET /conversations/:id?sinceSeq=`) + WS turn-deltas remain their own
   following steps.
-- [ ] **read-side endpoint** `GET /conversations/:id?sinceSeq=` → reconciled `Chunk[]`/
-  `ChatMessage[]` (transport-http + conversation-store).
+- [x] **read-side endpoint** `GET /conversations/:id?sinceSeq=` → RAW seq'd stream. DONE + verified.
+  Design (user-confirmed): returns `ConversationHistoryResponse { chunks: StoredChunk[], latestSeq }`
+  — the RAW, append-order, seq-filtered slice from `conversation-store.loadSince`, **NOT
+  reconciled**. `reconcile` (message-level repair) conflicts with per-chunk `seq` (a synthesized
+  repair chunk has no seq), so reconciliation stays on the TURN path (session-orchestrator before
+  `runTurn`); the read path is a pure sync primitive (FE renders a dangling tool-call as
+  interrupted; FE commits only sealed turns §6.6). `latestSeq` = last returned chunk's seq, else
+  `sinceSeq` (true server high-water mark deferred until a consumer needs it — avoids widening the
+  store contract).
+  - **Contract + wiring (orchestrator):** added `ConversationHistoryResponse` + `StoredChunk`
+    re-export to `@dispatch/transport-contract`; added `@dispatch/conversation-store` dep +
+    project ref to transport-http; `bun install`.
+  - **transport-http (owner, mimo-v2.5-pro):** `GET /conversations/:id?sinceSeq=` route; reaches
+    the log DIRECTLY via `conversationStoreHandle` (`dependsOn:["conversation-store"]`), not through
+    the orchestrator; pure `parseSinceSeq` (absent→0, invalid/negative/float→400) in `logic.ts`;
+    +6 logic + 6 app integration tests (via real Hono `app.fetch`). prompts/read-side-endpoint.md,
+    reports/transport-http.md.
+  - **Verified (orchestrator):** typecheck clean, **481 vitest** (469→+12), biome clean, no internal
+    `@dispatch/*` mocks, in-lane. Live boot-probe deferred to the WS step (this GET route has no
+    effectful-shell surprise surface; host wiring mirrors `/chat`).
 - [ ] **WS turn-deltas** — `transport-ws` multiplexes `sendMessage`/`onDelta(AgentEvent)`
   alongside surface ops (one connection carries both; frontend-design §5).
 Then FE (`../dispatch-web`): `core/transcript` reducer + `conversation-cache` + `chat` feature.

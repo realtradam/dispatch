@@ -1,7 +1,23 @@
-import type { AgentEvent } from "@dispatch/kernel";
+import type { AgentEvent, StoredChunk } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
-import type { CredentialStore, SessionOrchestrator } from "./seam.js";
+import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
+
+function createFakeConversationStore(
+	store: Map<string, StoredChunk[]> = new Map(),
+): ConversationStore {
+	return {
+		async append() {},
+		async load() {
+			return [];
+		},
+		async loadSince(conversationId, sinceSeq) {
+			const chunks = store.get(conversationId) ?? [];
+			const minSeq = sinceSeq ?? 0;
+			return chunks.filter((c) => c.seq > minSeq);
+		},
+	};
+}
 
 function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
 	return {
@@ -62,6 +78,7 @@ function createThrowingCredentialStore(error: Error): CredentialStore {
 describe("GET /health", () => {
 	it("returns ok", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -75,6 +92,7 @@ describe("GET /health", () => {
 describe("GET /models", () => {
 	it("returns model catalog", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore(["opencode/m1", "openai/gpt-4"]),
 		});
@@ -86,6 +104,7 @@ describe("GET /models", () => {
 
 	it("returns empty array when no models", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -97,6 +116,7 @@ describe("GET /models", () => {
 
 	it("returns 502 when listCatalog throws", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createThrowingCredentialStore(new Error("db down")),
 		});
@@ -110,6 +130,7 @@ describe("GET /models", () => {
 describe("POST /chat", () => {
 	it("returns 400 for invalid JSON", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -123,6 +144,7 @@ describe("POST /chat", () => {
 
 	it("returns 400 for missing message", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -138,6 +160,7 @@ describe("POST /chat", () => {
 
 	it("returns 400 for empty message", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -157,6 +180,7 @@ describe("POST /chat", () => {
 			{ type: "done", conversationId: "tab1", turnId: "turn1", reason: "stop" },
 		];
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator(events),
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -185,6 +209,7 @@ describe("POST /chat", () => {
 
 	it("generates conversationId when not provided", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([
 				{ type: "done", conversationId: "tab1", turnId: "turn1", reason: "stop" },
 			]),
@@ -204,6 +229,7 @@ describe("POST /chat", () => {
 
 	it("emits error event when orchestrator throws", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createThrowingOrchestrator(new Error("provider unavailable")),
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -230,6 +256,7 @@ describe("POST /chat", () => {
 
 	it("handles empty event list", async () => {
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -248,6 +275,7 @@ describe("POST /chat", () => {
 	it("forwards modelName and cwd to orchestrator", async () => {
 		const cap = createCapturingOrchestrator();
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: cap,
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -274,6 +302,7 @@ describe("POST /chat", () => {
 	it("omits modelName and cwd when not provided", async () => {
 		const cap = createCapturingOrchestrator();
 		const app = createApp({
+			conversationStore: createFakeConversationStore(),
 			orchestrator: cap,
 			credentialStore: createFakeCredentialStore([]),
 		});
@@ -288,5 +317,101 @@ describe("POST /chat", () => {
 		expect(cap.received).toBeDefined();
 		expect(cap.received?.modelName).toBeUndefined();
 		expect(cap.received?.cwd).toBeUndefined();
+	});
+});
+
+describe("GET /conversations/:id", () => {
+	const sampleChunks: StoredChunk[] = [
+		{ seq: 1, role: "user", chunk: { type: "text", text: "hello" } },
+		{ seq: 2, role: "assistant", chunk: { type: "text", text: "hi there" } },
+		{ seq: 3, role: "user", chunk: { type: "text", text: "how are you?" } },
+		{ seq: 4, role: "assistant", chunk: { type: "text", text: "I'm good!" } },
+	];
+
+	it("returns the full seq-ordered StoredChunk history", async () => {
+		const store = new Map<string, StoredChunk[]>([["conv1", sampleChunks]]);
+		const app = createApp({
+			conversationStore: createFakeConversationStore(store),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/conv1");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks).toHaveLength(4);
+		expect(body.chunks[0]?.seq).toBe(1);
+		expect(body.chunks[3]?.seq).toBe(4);
+		expect(body.latestSeq).toBe(4);
+	});
+
+	it("returns only chunks with seq > N and latestSeq = last seq", async () => {
+		const store = new Map<string, StoredChunk[]>([["conv1", sampleChunks]]);
+		const app = createApp({
+			conversationStore: createFakeConversationStore(store),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/conv1?sinceSeq=2");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks).toHaveLength(2);
+		expect(body.chunks[0]?.seq).toBe(3);
+		expect(body.chunks[1]?.seq).toBe(4);
+		expect(body.latestSeq).toBe(4);
+	});
+
+	it("returns empty chunks and latestSeq === sinceSeq when caught up", async () => {
+		const store = new Map<string, StoredChunk[]>([["conv1", sampleChunks]]);
+		const app = createApp({
+			conversationStore: createFakeConversationStore(store),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/conv1?sinceSeq=4");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks).toHaveLength(0);
+		expect(body.latestSeq).toBe(4);
+	});
+
+	it("returns empty chunks and latestSeq 0 for unknown conversation", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/unknown");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks).toHaveLength(0);
+		expect(body.latestSeq).toBe(0);
+	});
+
+	it("returns 400 for invalid sinceSeq", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/conv1?sinceSeq=abc");
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("sinceSeq");
+	});
+
+	it("returns 400 for negative sinceSeq", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/conv1?sinceSeq=-1");
+		expect(res.status).toBe(400);
 	});
 });

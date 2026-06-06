@@ -1,3 +1,5 @@
+export type { ConversationStore } from "@dispatch/conversation-store";
+export { conversationStoreHandle } from "@dispatch/conversation-store";
 export type { CredentialStore } from "@dispatch/credential-store";
 export { credentialStoreHandle } from "@dispatch/credential-store";
 export type { SessionOrchestrator } from "@dispatch/session-orchestrator";
