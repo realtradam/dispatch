@@ -119,7 +119,14 @@ describe("runTurn", () => {
 		expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 5 });
 
 		const eventTypes = events.map((e) => e.type);
-		expect(eventTypes).toEqual(["text-delta", "text-delta", "reasoning-delta", "usage"]);
+		expect(eventTypes).toEqual([
+			"turn-start",
+			"text-delta",
+			"text-delta",
+			"reasoning-delta",
+			"usage",
+			"done",
+		]);
 	});
 
 	it("turn with one tool call executes tool, feeds result back, then finishes", async () => {
@@ -1479,6 +1486,206 @@ describe("runTurn", () => {
 
 				// tool-call = child of step
 				expect(tcOpen.parentSpanId).toBe(stepOpen.spanId);
+			}
+		});
+	});
+
+	describe("lifecycle events", () => {
+		it("emits turn-start as the first event with conversation + turn ids", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-42",
+				turnId: "turn-99",
+				emit,
+			});
+
+			expect(events[0]?.type).toBe("turn-start");
+			if (events[0]?.type === "turn-start") {
+				expect(events[0].conversationId).toBe("conv-42");
+				expect(events[0].turnId).toBe("turn-99");
+			}
+		});
+
+		it("emits a single done event last, carrying the finishReason", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "Hello" },
+					{ type: "usage", usage: { inputTokens: 5, outputTokens: 3 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const lastEvent = events[events.length - 1];
+			expect(lastEvent?.type).toBe("done");
+			if (lastEvent?.type === "done") {
+				expect(lastEvent.reason).toBe(result.finishReason);
+				expect(lastEvent.conversationId).toBe("conv-1");
+				expect(lastEvent.turnId).toBe("turn-1");
+			}
+
+			const doneEvents = events.filter((e) => e.type === "done");
+			expect(doneEvents).toHaveLength(1);
+		});
+
+		it("emits done after a tool-call turn", async () => {
+			const tool = createFakeTool("echo", async (input) => ({
+				content: `echo: ${JSON.stringify(input)}`,
+			}));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: { x: 1 } },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const lastEvent = events[events.length - 1];
+			expect(lastEvent?.type).toBe("done");
+			if (lastEvent?.type === "done") {
+				expect(lastEvent.reason).toBe(result.finishReason);
+			}
+		});
+
+		it('still emits done with reason "aborted" when the turn is aborted via signal', async () => {
+			const ac = new AbortController();
+			ac.abort();
+
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "should not appear" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: ac.signal,
+			});
+
+			expect(result.finishReason).toBe("aborted");
+
+			const lastEvent = events[events.length - 1];
+			expect(lastEvent?.type).toBe("done");
+			if (lastEvent?.type === "done") {
+				expect(lastEvent.reason).toBe("aborted");
+			}
+		});
+
+		it('still emits done with reason "error" when the provider errors', async () => {
+			const provider: ProviderContract = {
+				id: "fake",
+				stream() {
+					return (async function* () {
+						yield { type: "text-delta", delta: "partial" } as ProviderEvent;
+						throw new Error("provider crashed");
+					})();
+				},
+			};
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			expect(result.finishReason).toBe("error");
+
+			const lastEvent = events[events.length - 1];
+			expect(lastEvent?.type).toBe("done");
+			if (lastEvent?.type === "done") {
+				expect(lastEvent.reason).toBe("error");
+			}
+		});
+
+		it("turn-start precedes every delta and done follows every delta", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "Hello" },
+					{ type: "reasoning-delta", delta: "thinking..." },
+					{ type: "text-delta", delta: " world" },
+					{ type: "usage", usage: { inputTokens: 5, outputTokens: 3 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const turnStartIdx = events.findIndex((e) => e.type === "turn-start");
+			const doneIdx = events.findIndex((e) => e.type === "done");
+
+			expect(turnStartIdx).toBe(0);
+			expect(doneIdx).toBe(events.length - 1);
+
+			for (let i = 0; i < events.length; i++) {
+				const e = events[i];
+				if (e?.type === "text-delta" || e?.type === "reasoning-delta") {
+					expect(i).toBeGreaterThan(turnStartIdx);
+					expect(i).toBeLessThan(doneIdx);
+				}
 			}
 		});
 	});

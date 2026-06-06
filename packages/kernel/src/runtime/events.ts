@@ -48,6 +48,14 @@ export function usageEvent(conversationId: string, turnId: string, usage: Usage)
 	return { type: "usage", conversationId, turnId, usage };
 }
 
+export function turnStartEvent(conversationId: string, turnId: string): AgentEvent {
+	return { type: "turn-start", conversationId, turnId };
+}
+
+export function doneEvent(conversationId: string, turnId: string, reason: string): AgentEvent {
+	return { type: "done", conversationId, turnId, reason };
+}
+
 export function errorEvent(
 	conversationId: string,
 	turnId: string,
