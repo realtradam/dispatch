@@ -1,6 +1,12 @@
 import type { AgentEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
-import { isParseError, parseChatBody, serializeEventLine } from "./logic.js";
+import {
+	isParseError,
+	isSinceSeqError,
+	parseChatBody,
+	parseSinceSeq,
+	serializeEventLine,
+} from "./logic.js";
 
 describe("parseChatBody", () => {
 	const fakeId = () => "test-uuid";
@@ -129,6 +135,40 @@ describe("parseChatBody", () => {
 		if (isParseError(result)) {
 			expect(result.error).toContain("cwd");
 		}
+	});
+});
+
+describe("parseSinceSeq", () => {
+	it("returns 0 when undefined", () => {
+		expect(parseSinceSeq(undefined)).toBe(0);
+	});
+
+	it("returns 0 when empty string", () => {
+		expect(parseSinceSeq("")).toBe(0);
+	});
+
+	it("parses valid non-negative integer", () => {
+		expect(parseSinceSeq("0")).toBe(0);
+		expect(parseSinceSeq("5")).toBe(5);
+		expect(parseSinceSeq("42")).toBe(42);
+	});
+
+	it("returns ParseError for non-integer string", () => {
+		const result = parseSinceSeq("abc");
+		expect(isSinceSeqError(result)).toBe(true);
+		if (isSinceSeqError(result)) {
+			expect(result.error).toContain("sinceSeq");
+		}
+	});
+
+	it("returns ParseError for float", () => {
+		const result = parseSinceSeq("3.14");
+		expect(isSinceSeqError(result)).toBe(true);
+	});
+
+	it("returns ParseError for negative integer", () => {
+		const result = parseSinceSeq("-1");
+		expect(isSinceSeqError(result)).toBe(true);
 	});
 });
 

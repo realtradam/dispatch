@@ -1,10 +1,17 @@
 import type { AgentEvent } from "@dispatch/kernel";
-import type { ModelsResponse } from "@dispatch/transport-contract";
+import type { ConversationHistoryResponse, ModelsResponse } from "@dispatch/transport-contract";
 import { Hono } from "hono";
-import { isParseError, parseChatBody, serializeEventLine } from "./logic.js";
-import type { CredentialStore, SessionOrchestrator } from "./seam.js";
+import {
+	isParseError,
+	isSinceSeqError,
+	parseChatBody,
+	parseSinceSeq,
+	serializeEventLine,
+} from "./logic.js";
+import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
 
 export interface CreateServerOptions {
+	readonly conversationStore: ConversationStore;
 	readonly orchestrator: SessionOrchestrator;
 	readonly credentialStore: CredentialStore;
 	readonly generateId?: () => string;
@@ -15,6 +22,20 @@ export function createApp(opts: CreateServerOptions): Hono {
 	const generateId = opts.generateId ?? (() => crypto.randomUUID());
 
 	app.get("/health", (c) => c.json({ ok: true }));
+
+	app.get("/conversations/:id", async (c) => {
+		const conversationId = c.req.param("id");
+		const sinceSeqResult = parseSinceSeq(c.req.query("sinceSeq"));
+		if (isSinceSeqError(sinceSeqResult)) {
+			return c.json({ error: sinceSeqResult.error }, 400);
+		}
+
+		const chunks = await opts.conversationStore.loadSince(conversationId, sinceSeqResult);
+		const latestSeq =
+			chunks.length > 0 ? (chunks[chunks.length - 1]?.seq ?? sinceSeqResult) : sinceSeqResult;
+		const body: ConversationHistoryResponse = { chunks, latestSeq };
+		return c.json(body, 200);
+	});
 
 	app.get("/models", async (c) => {
 		try {
