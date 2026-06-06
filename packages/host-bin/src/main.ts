@@ -24,7 +24,7 @@ import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/st
 import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
 import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
 import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
-import { createServer, extension as transportHttpExt } from "@dispatch/transport-http";
+import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
@@ -63,7 +63,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 		credentials: [{ name: "opencode", providerId: "openai-compat" }],
 	}),
 	sessionOrchestratorExt,
-	transportHttpExt,
+	createTransportHttpExtension(),
 	// Surface extensions — dependency order: surface-registry first, then consumers.
 	createSurfaceRegistryExtension(),
 	createTransportWsExtension(),
@@ -125,13 +125,6 @@ async function boot(): Promise<void> {
 		}
 	}
 
-	const hostAPI = host.getHostAPI();
-	const app = createServer(hostAPI);
-
-	// Port precedence: BACKEND_PORT (the rewrite's assigned port) → PORT → default.
-	const port = Number(process.env.BACKEND_PORT) || Number(process.env.PORT) || 24203;
-	const server = Bun.serve({ fetch: app.fetch, port });
-
 	const shutdown = async () => {
 		logger.info("Shutting down — draining collector");
 		await supervisor.stop();
@@ -140,8 +133,8 @@ async function boot(): Promise<void> {
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
 
-	logger.info(`Dispatch listening on http://localhost:${server.port}`);
-	console.info(`Dispatch listening on http://localhost:${server.port}`);
+	logger.info("Dispatch booted");
+	console.info("Dispatch booted");
 }
 
 boot().catch((err) => {
