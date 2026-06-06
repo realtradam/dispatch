@@ -2,7 +2,7 @@
 
 A **minimal kernel + extensions** agent runtime. The kernel runs one agent turn and hosts
 extensions; every feature is an extension. Backend + a line-oriented CLI; a web frontend lives
-in a separate repo and talks to the same HTTP API.
+in a separate repo and talks to the same typed contracts over HTTP + a surface WebSocket.
 
 - **Stack:** Bun + TypeScript (strict, project references), Biome, Vitest, SQLite (`bun:sqlite`),
   the Vercel AI SDK for providers.
@@ -53,6 +53,9 @@ bun install
    ```
    Dispatch listening on http://localhost:24203
    ```
+
+   It also serves a **surface WebSocket** on `:24205` (the `transport-ws` extension) — the channel
+   the web frontend uses to discover and render backend-declared *surfaces*.
 
 3. **Smoke-test it:**
 
@@ -127,6 +130,34 @@ bun run dispatch -- opencode/deepseek-v4-flash --conversation <id> --text "and i
 
 ---
 
+## Web frontend (dispatch-web)
+
+The web UI is a **separate repo** at `../dispatch-web` (Svelte 5 + Vite), built to the same
+methodology and consuming the backend's typed contracts. As of slice 1 it renders the backend's
+**surface system** (e.g. the live "Loaded Extensions" surface); chat UI is a later slice.
+
+It needs **this server running** — it connects to the surface WebSocket on `:24205`. To run both:
+
+```sh
+# terminal 1 — backend (this repo)
+bun run dev                       # HTTP :24203 + surface WS :24205
+
+# terminal 2 — frontend (sibling repo)
+cd ../dispatch-web
+bun install                       # links @dispatch/ui-contract via a file: dep to this repo
+bun run dev                       # Vite dev server on http://localhost:24204
+```
+
+Then open **http://localhost:24204**. See `../dispatch-web/README.md` for full setup, including
+visiting over a LAN / Tailscale.
+
+**Or run both at once with live reload:** `bin/up` (also `bun run dev:all`) starts the backend
+(`bun --watch`) and the frontend (Vite HMR) together and **Ctrl-C stops both** — including the
+backend's observability collector. (The backend reloads via a full process restart; the frontend
+hot-reloads in place.)
+
+---
+
 ## Packages
 
 ### Kernel & extensions
@@ -145,6 +176,9 @@ topologically at activation). Every extension also depends implicitly on the ker
 | **session-orchestrator** | core | Drives one turn end-to-end: load history → resolve provider/model/tools → call `runTurn` → persist. | conversation-store, credential-store |
 | **transport-http** | core | Hono HTTP transport exposing `POST /chat` (NDJSON event stream) and `GET /models` (the catalog). | credential-store, session-orchestrator |
 | **tool-read-file** | standard | A `read_file` tool with offset/limit pagination and two-layer workdir containment, honoring the per-turn `cwd`. | — |
+| **surface-registry** | standard | In-process registry where extensions contribute UI **surfaces** (frontend-agnostic data); exposes a typed `surfaceRegistryHandle` service. | — |
+| **transport-ws** | standard | WebSocket transport (`:24205`) serving the surface catalog + per-surface subscribe / update / invoke to clients. | surface-registry |
+| **surface-loaded-extensions** | standard | Contributes the live "Loaded Extensions" surface (a `stat` per activated extension) — the first real surface. | surface-registry |
 
 ### Supporting packages (not extensions)
 
@@ -153,8 +187,9 @@ The **Depends on** column is each package's `@dispatch/*` workspace dependencies
 | Package | Description | Depends on |
 |---|---|---|
 | **transport-contract** | Types-only description of the HTTP API (`ChatRequest`, `ModelsResponse`, `AgentEvent`) shared by the server and every client. | kernel |
+| **ui-contract** | Types-only, **frontend-agnostic** vocabulary for backend-declared **surfaces** (`SurfaceSpec`, field kinds, the surface WS protocol) — shared by the backend and any client (web, CLI). | — |
 | **cli** | The bundled one-shot terminal client documented above. | transport-contract |
-| **host-bin** | The composition root: loads config, activates all extensions through the host, serves HTTP, and supervises the observability collector. | kernel, all 8 extensions, journal-sink |
+| **host-bin** | The composition root: loads config, activates all extensions through the host, serves HTTP, and supervises the observability collector. | kernel, all extensions, journal-sink |
 | **journal-sink** | Bootstrap `LogSink` that appends structured logs/spans to an NDJSON journal (rotation, fail-safe). | kernel |
 | **observability-collector** | Out-of-process binary that tails the journal and inserts records into the trace store (idempotent, at-least-once). | kernel, trace-store |
 | **trace-store** | `bun:sqlite` store for trace records/bodies, plus a `trace` CLI to render a turn's timeline. | kernel |

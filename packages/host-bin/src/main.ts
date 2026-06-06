@@ -21,8 +21,11 @@ import {
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
+import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
+import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
 import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
 import { createServer, extension as transportHttpExt } from "@dispatch/transport-http";
+import { createTransportWsExtension } from "@dispatch/transport-ws";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
@@ -61,6 +64,10 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	}),
 	sessionOrchestratorExt,
 	transportHttpExt,
+	// Surface extensions — dependency order: surface-registry first, then consumers.
+	createSurfaceRegistryExtension(),
+	createTransportWsExtension(),
+	createLoadedExtensionsExtension(),
 ];
 
 async function boot(): Promise<void> {

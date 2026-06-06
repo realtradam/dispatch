@@ -51,8 +51,11 @@
         "@dispatch/provider-openai-compat": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/storage-sqlite": "workspace:*",
+        "@dispatch/surface-loaded-extensions": "workspace:*",
+        "@dispatch/surface-registry": "workspace:*",
         "@dispatch/tool-read-file": "workspace:*",
         "@dispatch/transport-http": "workspace:*",
+        "@dispatch/transport-ws": "workspace:*",
       },
     },
     "packages/journal-sink": {
@@ -65,6 +68,9 @@
     "packages/kernel": {
       "name": "@dispatch/kernel",
       "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/wire": "workspace:*",
+      },
     },
     "packages/observability-collector": {
       "name": "@dispatch/observability-collector",
@@ -98,6 +104,23 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/surface-loaded-extensions": {
+      "name": "@dispatch/surface-loaded-extensions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/surface-registry": "workspace:*",
+        "@dispatch/ui-contract": "workspace:*",
+      },
+    },
+    "packages/surface-registry": {
+      "name": "@dispatch/surface-registry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/ui-contract": "workspace:*",
+      },
+    },
     "packages/tool-read-file": {
       "name": "@dispatch/tool-read-file",
       "version": "0.0.0",
@@ -120,7 +143,7 @@
       "name": "@dispatch/transport-contract",
       "version": "0.0.0",
       "dependencies": {
-        "@dispatch/kernel": "workspace:*",
+        "@dispatch/wire": "workspace:*",
       },
     },
     "packages/transport-http": {
@@ -133,6 +156,23 @@
         "@dispatch/transport-contract": "workspace:*",
         "hono": "^4.0.0",
       },
+    },
+    "packages/transport-ws": {
+      "name": "@dispatch/transport-ws",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/surface-registry": "workspace:*",
+        "@dispatch/ui-contract": "workspace:*",
+      },
+    },
+    "packages/ui-contract": {
+      "name": "@dispatch/ui-contract",
+      "version": "0.0.0",
+    },
+    "packages/wire": {
+      "name": "@dispatch/wire",
+      "version": "0.0.0",
     },
   },
   "packages": {
@@ -176,6 +216,10 @@
 
     "@dispatch/storage-sqlite": ["@dispatch/storage-sqlite@workspace:packages/storage-sqlite"],
 
+    "@dispatch/surface-loaded-extensions": ["@dispatch/surface-loaded-extensions@workspace:packages/surface-loaded-extensions"],
+
+    "@dispatch/surface-registry": ["@dispatch/surface-registry@workspace:packages/surface-registry"],
+
     "@dispatch/tool-read-file": ["@dispatch/tool-read-file@workspace:packages/tool-read-file"],
 
     "@dispatch/trace-replay": ["@dispatch/trace-replay@workspace:packages/trace-replay"],
@@ -185,6 +229,12 @@
     "@dispatch/transport-contract": ["@dispatch/transport-contract@workspace:packages/transport-contract"],
 
     "@dispatch/transport-http": ["@dispatch/transport-http@workspace:packages/transport-http"],
+
+    "@dispatch/transport-ws": ["@dispatch/transport-ws@workspace:packages/transport-ws"],
+
+    "@dispatch/ui-contract": ["@dispatch/ui-contract@workspace:packages/ui-contract"],
+
+    "@dispatch/wire": ["@dispatch/wire@workspace:packages/wire"],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.27.7", "", { "os": "aix", "cpu": "ppc64" }, "sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg=="],
 

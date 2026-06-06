@@ -6,20 +6,12 @@
  * translates its responses into `ProviderEvent`s.
  */
 
+import type { Usage } from "@dispatch/wire";
 import type { ChatMessage } from "./conversation.js";
 import type { Logger } from "./logging.js";
 import type { ToolContract } from "./tool.js";
 
-/**
- * Token usage counters for a single step. All fields are counts of tokens.
- * Cache fields are optional because not all providers expose cache metrics.
- */
-export interface Usage {
-	readonly inputTokens: number;
-	readonly outputTokens: number;
-	readonly cacheReadTokens?: number;
-	readonly cacheWriteTokens?: number;
-}
+export type { Usage } from "@dispatch/wire";
 
 /**
  * Events a provider yields during a single `stream` call. The kernel consumes

@@ -12,7 +12,7 @@
  * union, re-exported here so a client has one import for the whole wire.
  */
 
-export type { AgentEvent } from "@dispatch/kernel";
+export type { AgentEvent } from "@dispatch/wire";
 
 /**
  * Request body for `POST /chat` (sent as JSON).

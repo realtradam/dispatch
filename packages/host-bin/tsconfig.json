@@ -5,11 +5,10 @@
 	"references": [
 		{ "path": "../kernel" },
 		{ "path": "../storage-sqlite" },
-		{ "path": "../conversation-store" },
-		{ "path": "../auth-apikey" },
-		{ "path": "../credential-store" },
-		{ "path": "../provider-openai-compat" },
-		{ "path": "../session-orchestrator" },
-		{ "path": "../transport-http" }
+		{ "path": "../surface-loaded-extensions" },
+		{ "path": "../surface-registry" },
+		{ "path": "../tool-read-file" },
+		{ "path": "../transport-http" },
+		{ "path": "../transport-ws" }
 	]
 }

@@ -1,8 +1,13 @@
 {
 	"files": [],
 	"references": [
+		{ "path": "./packages/wire" },
 		{ "path": "./packages/kernel" },
 		{ "path": "./packages/transport-contract" },
+		{ "path": "./packages/ui-contract" },
+		{ "path": "./packages/surface-registry" },
+		{ "path": "./packages/transport-ws" },
+		{ "path": "./packages/surface-loaded-extensions" },
 		{ "path": "./packages/storage-sqlite" },
 		{ "path": "./packages/auth-apikey" },
 		{ "path": "./packages/provider-openai-compat" },

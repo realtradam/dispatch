@@ -1,0 +1,13 @@
+{
+	"name": "@dispatch/transport-ws",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"dependencies": {
+		"@dispatch/kernel": "workspace:*",
+		"@dispatch/surface-registry": "workspace:*",
+		"@dispatch/ui-contract": "workspace:*"
+	}
+}

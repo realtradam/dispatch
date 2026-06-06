@@ -57,6 +57,7 @@ export interface Host {
 	readonly getScheduledJobs: () => readonly ScheduledJob[];
 	readonly getMigrations: () => readonly string[];
 	readonly getDisabled: () => readonly DisabledExtension[];
+	readonly getExtensions: () => readonly Manifest[];
 	readonly getHostAPI: () => HostAPI;
 }
 
@@ -150,6 +151,9 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 			getAuthProvider(id: string) {
 				return authProviders.get(id);
 			},
+			getExtensions() {
+				return Object.freeze(activated.map((e) => e.manifest));
+			},
 			scheduler: {
 				register(job: ScheduledJob) {
 					scheduledJobs.push(job);
@@ -212,6 +216,9 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 		},
 		getDisabled() {
 			return disabled;
+		},
+		getExtensions() {
+			return Object.freeze(activated.map((e) => e.manifest));
 		},
 		getHostAPI() {
 			return buildHostAPI("__host__", { registrationClosed: true });

@@ -1387,6 +1387,12 @@ and permissions. Two consequences:
     active" sync (§5.1) — start with fresh-summoned agents.
   - TypeScript language server wired into `dispatch.toml` is a **prerequisite**
     for §5.3's `lsp references` workflow (today only Luau is configured).
+  - **Vocabulary unification — `command` → `action` (P8; raised during the frontend design,
+    `notes/frontend-design.md` §9):** the frontend names a backend-invokable action
+    `action` / `action ref`; the backend's existing contribution point is `command`. Review
+    renaming `command` → `action` so both sides share ONE term. Until this review the backend
+    keeps `command` and the frontend uses `action`. Cheap today (the `command` contribution is
+    design-stage, lightly built); if pursued, fan out via `lsp references`.
 - **Decided so far:**
   - ~~Tool-dispatch default policy~~ — **DECIDED** (§3.3): default
     `{ maxConcurrent: 1, eager: true }`.

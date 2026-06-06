@@ -7,7 +7,9 @@
 ## What this project is
 A **minimal kernel + extensions** agent runtime. The kernel runs ONE agent turn
 and hosts extensions. Every feature is an extension. Tiers: **kernel → core →
-standard**. Backend only for now (no frontend).
+standard**. The web frontend is a SEPARATE repo (`../dispatch-web`), built to
+the same methodology and consuming the backend's typed contracts (see
+`notes/frontend-design.md`).
 
 ## Stack
 Bun + TypeScript (strict, project references via `tsc -b`). Biome for
