@@ -92,6 +92,22 @@ export interface ChatMessage {
 	readonly chunks: readonly Chunk[];
 }
 
+/**
+ * A persisted chunk plus its sync metadata. The append-only conversation log
+ * stamps every chunk with a monotonic, gap-free, per-conversation `seq` (the
+ * sync cursor, assigned in append order) and records the `role` of the message
+ * it belongs to. This makes a flat seq-ordered stream both incrementally
+ * syncable ("give me chunks after seq N") and regroupable into messages by the
+ * client. `chunk` is the pure content unit, unchanged — `Chunk` itself never
+ * carries storage metadata (it is also passed to/from the provider, which has
+ * no use for a cursor).
+ */
+export interface StoredChunk {
+	readonly seq: number;
+	readonly role: Role;
+	readonly chunk: Chunk;
+}
+
 // ─── Usage ──────────────────────────────────────────────────────────────────
 
 /**

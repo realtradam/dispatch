@@ -371,7 +371,28 @@ streaming. Spans both repos; the backend prereqs live HERE (FE work runs in `../
   orchestrator build wiring (new pkg scaffold, project refs, deps). typecheck + biome clean;
   **460 vitest + 77 bun** (unchanged — pure type move). Summon: prompts/b2-wire-split.md,
   report: reports/b2-wire-split.md.
-- [ ] **per-chunk `seq`** on `Chunk` (wire) — monotonic cursor for mid-turn incremental sync.
+- [x] **per-chunk `seq`** on the wire — monotonic cursor for incremental sync. DONE + verified.
+  Design (user-confirmed): envelope `StoredChunk { seq, role, chunk }` in `@dispatch/wire`
+  (keeps `Chunk` pure / provider-facing — `Chunk` never carries a cursor); `seq` is monotonic,
+  gap-free, 1-based, per-conversation, **chunk-granular** (rekeyed from the old per-message seq).
+  - **Wire/contract (orchestrator):** added `StoredChunk` to `@dispatch/wire` + threaded through
+    the two kernel re-export shims (`contracts/conversation.ts`, `contracts/index.ts`). Additive
+    (minor, §2.9). GLOSSARY: added `seq`, `StoredChunk`.
+  - **conversation-store (owner, mimo-v2.5-pro):** rekeyed `conv:<id>:msg:<seq>` →
+    `conv:<id>:chunk:<seq>`; `append` explodes messages → role-tagged seq'd chunks (stores
+    internal `msgIdx`/`chunkIdx` for lossless boundary reconstruction — NOT exposed); `load()`
+    signature + behaviour UNCHANGED (round-trips exact `ChatMessage[]`, no same-role merge, still
+    reconciles); NEW `loadSince(conversationId, sinceSeq?) → readonly StoredChunk[]` (raw
+    persisted stream, ascending, `seq > sinceSeq`; reconciliation deferred to the read-side
+    endpoint step). +8 store tests. prompts/seq-conversation-store.md, reports/conversation-store.md.
+  - **Fan-out (session-orchestrator owner):** its in-memory `ConversationStore` test fake grew
+    `loadSince` to satisfy the additive interface (full `tsc -b` caught this; the agent's
+    per-package typecheck did not — re-verify the WHOLE build, §4). Test-fake conformance only;
+    production logic unchanged. prompts/seq-session-orchestrator-fanout.md.
+  - **Verified (orchestrator):** typecheck clean (EXIT 0), **469 vitest** (460→+9), biome clean,
+    zero internal `@dispatch/*` mocks, both agents in-lane.
+  Read-side HTTP endpoint (`GET /conversations/:id?sinceSeq=`) + WS turn-deltas remain their own
+  following steps.
 - [ ] **read-side endpoint** `GET /conversations/:id?sinceSeq=` → reconciled `Chunk[]`/
   `ChatMessage[]` (transport-http + conversation-store).
 - [ ] **WS turn-deltas** — `transport-ws` multiplexes `sendMessage`/`onDelta(AgentEvent)`

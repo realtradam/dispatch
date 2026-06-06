@@ -4,12 +4,12 @@ export function seqKey(conversationId: string): string {
 	return `conv:${conversationId}:seq`;
 }
 
-export function msgKey(conversationId: string, seq: number): string {
-	return `conv:${conversationId}:msg:${String(seq).padStart(SEQ_PAD, "0")}`;
+export function chunkKey(conversationId: string, seq: number): string {
+	return `conv:${conversationId}:chunk:${String(seq).padStart(SEQ_PAD, "0")}`;
 }
 
-export function msgPrefix(conversationId: string): string {
-	return `conv:${conversationId}:msg:`;
+export function chunkPrefix(conversationId: string): string {
+	return `conv:${conversationId}:chunk:`;
 }
 
 export function parseSeq(raw: string | null): number {
@@ -18,7 +18,7 @@ export function parseSeq(raw: string | null): number {
 	return Number.isNaN(n) ? 0 : n;
 }
 
-export function parseMsgSeq(key: string): number {
+export function parseChunkSeq(key: string): number {
 	const parts = key.split(":");
 	const last = parts[parts.length - 1];
 	if (last === undefined) return -1;

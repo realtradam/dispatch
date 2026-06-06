@@ -19,6 +19,8 @@
 | **step** | One LLM round-trip within a turn (may emit multiple tool calls). | iteration |
 | **tool call** | A model's request to run a tool within a step. | function call (when meaning a tool call) |
 | **chunk** | One ordered piece of a message (text, thinking, tool-call/result, etc.), append-only in the log. | block, segment |
+| **seq** | The monotonic, gap-free, per-conversation sequence number stamped on each chunk as it is appended to the log. The sync cursor: a client requests `?sinceSeq=N` to fetch only newer chunks. Storage/sync metadata, never message content. | cursor (when meaning the number), offset, index |
+| **StoredChunk** | The wire envelope `{ seq, role, chunk }`: a persisted chunk plus its sync metadata. Keeps the pure `chunk` free of storage concerns while a flat seq-ordered stream stays both syncable and regroupable into messages. | seq'd chunk |
 | **runTurn** | The kernel's turn loop: takes provider + messages + tools + dispatch policy, streams, dispatches tools, emits events. | run, agentLoop |
 | **hook** | A typed extension point. **event** = fire-and-forget, N listeners, error-isolated. **filter** = ordered value-in→value-out chain, in-band. | callback (when meaning a hook), listener |
 | **service** | A single-responder request/response capability fetched via a typed handle. NOT a hook. | — |
