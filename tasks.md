@@ -506,6 +506,22 @@ correct split (NO contract change — all three wire types already existed):
 
 Then FE (`../dispatch-web`): `core/transcript` reducer + `conversation-cache` + `chat` feature.
 
+#### FE Slice-2 backend handoff — ANSWERED + unblocked
+The dispatch-web orchestrator couriered `backend-handoff.md` (in the FE repo). Reply written to
+`../dispatch-web/backend-handoff-reply.md`. Resolution:
+- **A (dep consumability, BLOCKER):** ready as-is — `wire`/`transport-contract` match the working
+  `ui-contract` shape (`main: dist/index.js`, `types: dist/index.d.ts`); all three `dist/*.d.ts`
+  emitted; `transport-contract` pulls only `ui-contract`+`wire` (no kernel/runtime). Refresh ritual:
+  `bun run typecheck` (dist is gitignored but `file:` reads from disk).
+- **B (versions):** bumped `wire`/`transport-contract`/`ui-contract` `0.0.0`→`0.1.0` (FE-consumable
+  baseline; major = cross-repo fan-out signal, couriered + `.reference.md` regen).
+- **C (invariants C1–C4):** all confirmed (sinceSeq raw/seq-ordered + latestSeq; one WS socket for
+  surface+chat; turn-sealed after persist; deltas carry conversationId/turnId but no seq).
+- **D (deferred):** `GET /conversations` list + `POST /conversations/:id/cancel` intentionally absent.
+- **E (CORS):** wildcard `*` added to transport-http (user's call), verified live (OPTIONS→204 +
+  headers on all routes incl. the NDJSON stream). HTTP=24203, WS=24205; no WS origin allow-list.
+  Commit `812621c`.
+
 ### 3. dedup / storage growth (after frontend)
 The deferred trace-body de-duplication + rotation/compression (D5 volume-control +
 `prefix.fingerprint` + §6 retention strategy) — already designed in
