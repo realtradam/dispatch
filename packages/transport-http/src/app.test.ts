@@ -1,7 +1,49 @@
-import type { AgentEvent, StoredChunk } from "@dispatch/kernel";
+import type { AgentEvent, Logger, StoredChunk } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
+
+interface CapturedLog {
+	readonly level: "debug" | "info" | "warn" | "error";
+	readonly msg: string;
+	readonly attrs?: Record<string, unknown>;
+}
+
+function createFakeLogger(): Logger & { readonly records: readonly CapturedLog[] } {
+	const records: CapturedLog[] = [];
+	return {
+		get records() {
+			return records;
+		},
+		debug(msg, attrs) {
+			records.push({ level: "debug", msg, ...(attrs ? { attrs } : {}) });
+		},
+		info(msg, attrs) {
+			records.push({ level: "info", msg, ...(attrs ? { attrs } : {}) });
+		},
+		warn(msg, attrs) {
+			records.push({ level: "warn", msg, ...(attrs ? { attrs } : {}) });
+		},
+		error(msg, attrs) {
+			records.push({ level: "error", msg, ...(attrs ? { attrs } : {}) });
+		},
+		child() {
+			return createFakeLogger();
+		},
+		span() {
+			return {
+				id: "fake-span",
+				log: createFakeLogger(),
+				setAttributes() {},
+				addLink() {},
+				child() {
+					return this;
+				},
+				end() {},
+			};
+		},
+	};
+}
 
 function createFakeConversationStore(
 	store: Map<string, StoredChunk[]> = new Map(),
@@ -75,12 +117,15 @@ function createThrowingCredentialStore(error: Error): CredentialStore {
 	};
 }
 
+const noopLogger = createFakeLogger();
+
 describe("GET /health", () => {
 	it("returns ok", async () => {
 		const app = createApp({
 			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
 		});
 		const res = await app.request("/health");
 		expect(res.status).toBe(200);
@@ -95,6 +140,7 @@ describe("GET /models", () => {
 			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore(["opencode/m1", "openai/gpt-4"]),
+			logger: noopLogger,
 		});
 		const res = await app.request("/models");
 		expect(res.status).toBe(200);
@@ -107,6 +153,7 @@ describe("GET /models", () => {
 			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
 		});
 		const res = await app.request("/models");
 		expect(res.status).toBe(200);
@@ -119,6 +166,7 @@ describe("GET /models", () => {
 			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createThrowingCredentialStore(new Error("db down")),
+			logger: noopLogger,
 		});
 		const res = await app.request("/models");
 		expect(res.status).toBe(502);
@@ -133,6 +181,7 @@ describe("POST /chat", () => {
 			conversationStore: createFakeConversationStore(),
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
 		});
 		const res = await app.request("/chat", {
 			method: "POST",
@@ -413,5 +462,104 @@ describe("GET /conversations/:id", () => {
 
 		const res = await app.request("/conversations/conv1?sinceSeq=-1");
 		expect(res.status).toBe(400);
+	});
+});
+
+describe("POST /chat logging", () => {
+	it("POST /chat logs an info line when a request is accepted", async () => {
+		const logger = createFakeLogger();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([
+				{ type: "done", conversationId: "conv1", turnId: "turn1", reason: "stop" },
+			]),
+			credentialStore: createFakeCredentialStore([]),
+			logger,
+		});
+
+		await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				message: "hi",
+				conversationId: "conv1",
+				model: "opencode/m1",
+				cwd: "/tmp",
+			}),
+		});
+
+		const infoLogs = logger.records.filter((r) => r.level === "info");
+		expect(infoLogs).toHaveLength(1);
+		expect(infoLogs[0]?.msg).toBe("chat: request accepted");
+		expect(infoLogs[0]?.attrs?.conversationId).toBe("conv1");
+		expect(infoLogs[0]?.attrs?.hasModel).toBe(true);
+		expect(infoLogs[0]?.attrs?.hasCwd).toBe(true);
+	});
+
+	it("POST /chat logs a warn on a malformed body (400)", async () => {
+		const logger = createFakeLogger();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger,
+		});
+
+		await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "not json",
+		});
+
+		const warnLogs = logger.records.filter((r) => r.level === "warn");
+		expect(warnLogs.length).toBeGreaterThanOrEqual(1);
+		expect(warnLogs[0]?.msg).toBe("chat: invalid JSON body");
+	});
+
+	it("POST /chat logs an error when the turn fails", async () => {
+		const logger = createFakeLogger();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createThrowingOrchestrator(new Error("boom")),
+			credentialStore: createFakeCredentialStore([]),
+			logger,
+		});
+
+		await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message: "hi", conversationId: "conv1" }),
+		});
+
+		const errorLogs = logger.records.filter((r) => r.level === "error");
+		expect(errorLogs).toHaveLength(1);
+		expect(errorLogs[0]?.msg).toBe("chat: turn failed");
+		expect(errorLogs[0]?.attrs?.err).toBeInstanceOf(Error);
+	});
+});
+
+describe("GET /conversations/:id logging", () => {
+	it("GET /conversations/:id logs the read (conversationId + sinceSeq + count)", async () => {
+		const logger = createFakeLogger();
+		const sampleChunks: StoredChunk[] = [
+			{ seq: 1, role: "user", chunk: { type: "text", text: "hello" } },
+			{ seq: 2, role: "assistant", chunk: { type: "text", text: "hi there" } },
+		];
+		const store = new Map<string, StoredChunk[]>([["conv1", sampleChunks]]);
+		const app = createApp({
+			conversationStore: createFakeConversationStore(store),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger,
+		});
+
+		await app.request("/conversations/conv1?sinceSeq=0");
+
+		const infoLogs = logger.records.filter((r) => r.level === "info");
+		expect(infoLogs).toHaveLength(1);
+		expect(infoLogs[0]?.msg).toBe("conversations: read");
+		expect(infoLogs[0]?.attrs?.conversationId).toBe("conv1");
+		expect(infoLogs[0]?.attrs?.sinceSeq).toBe(0);
+		expect(infoLogs[0]?.attrs?.count).toBe(2);
 	});
 });

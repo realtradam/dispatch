@@ -126,6 +126,7 @@ export function createTransportWsExtension(): Extension {
 				},
 				websocket: {
 					open(ws) {
+						logger.debug("transport-ws: connection open");
 						send(ws, catalogMessage(registry));
 					},
 
@@ -145,6 +146,16 @@ export function createTransportWsExtension(): Extension {
 
 						switch (result.kind) {
 							case "surface": {
+								// Log surface-op errors (unknown surface or invoke failure).
+								for (const reply of result.replies) {
+									if (reply.type === "error") {
+										logger.warn?.("transport-ws: surface-op error", {
+											...(reply.surfaceId !== undefined ? { surfaceId: reply.surfaceId } : {}),
+											reason: reply.message,
+										});
+									}
+								}
+
 								// Apply sub change.
 								if (result.subChange) {
 									if (result.subChange.op === "add") {
@@ -173,8 +184,13 @@ export function createTransportWsExtension(): Extension {
 											if (r instanceof Promise) {
 												r.catch(() => {});
 											}
-										} catch {
-											// Provider threw on invoke — log but don't kill the connection.
+										} catch (err: unknown) {
+											const reason = err instanceof Error ? err.message : "invoke failed";
+											logger.warn?.("transport-ws: surface-op error", {
+												surfaceId: result.invoke.surfaceId,
+												actionId: result.invoke.actionId,
+												reason,
+											});
 										}
 									}
 								}
@@ -183,6 +199,11 @@ export function createTransportWsExtension(): Extension {
 
 							case "chat": {
 								// Fire-and-forget the turn; errors are caught inside handleChatTurn.
+								const resolvedId = result.conversationId ?? crypto.randomUUID();
+								logger.info?.("transport-ws: chat.send accepted", {
+									conversationId: resolvedId,
+									model: result.model ?? null,
+								});
 								void handleChatTurn(
 									ws,
 									state,
@@ -195,6 +216,12 @@ export function createTransportWsExtension(): Extension {
 							}
 
 							case "chat-error": {
+								logger.warn?.("transport-ws: malformed chat.send", {
+									reason: result.errorMessage,
+									...(result.conversationId !== undefined
+										? { conversationId: result.conversationId }
+										: {}),
+								});
 								send(ws, {
 									type: "chat.error",
 									...(result.conversationId !== undefined
@@ -211,11 +238,15 @@ export function createTransportWsExtension(): Extension {
 						const state = ws.data;
 						if (state) {
 							// Abort any in-flight chat turns.
+							if (!state.abortController.signal.aborted) {
+								logger.debug("transport-ws: in-flight turn aborted (socket closed)");
+							}
 							state.abortController.abort();
 							for (const dispose of state.providerDisposers.values()) {
 								dispose();
 							}
 						}
+						logger.debug("transport-ws: connection close");
 					},
 				},
 			});

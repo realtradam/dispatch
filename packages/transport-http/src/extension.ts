@@ -27,7 +27,7 @@ export function createServer(host: HostAPI, _opts?: CreateServerOptions): Hono {
 	const conversationStore = host.getService(conversationStoreHandle);
 	const orchestrator = host.getService(sessionOrchestratorHandle);
 	const credentialStore = host.getService(credentialStoreHandle);
-	return createApp({ conversationStore, orchestrator, credentialStore });
+	return createApp({ conversationStore, orchestrator, credentialStore, logger: host.logger });
 }
 
 export const extension: Extension = {
