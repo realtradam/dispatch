@@ -263,12 +263,31 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
 
 ```
 /home/tradam/projects/dispatch/arch-rewrite   # THE worktree (branch arch/rewrite)
-  AGENTS.md ORCHESTRATOR.md GLOSSARY.md tasks.md
-  .dispatch/rules/*.md
-  notes/restructure-plan.md   notes/opencode-agents.md
-  prompts/   (gitignored — orchestrator→agent prompts)
+
+  AGENTS.md        the subagent constitution (auto-loaded by opencode; you enforce it)
+  ORCHESTRATOR.md  the orchestrator's operating manual (this file)
+  GLOSSARY.md      canonical vocabulary + aliases-to-avoid (human-gated)
+  tasks.md         live progress checklist / milestone log
+  README.md        deployment, CLI usage, extension/package tables
+
+  .dispatch/
+    package-agent.md       base owner-agent brief (every summon)
+    extension-agent.md     extension-only supplement (appended for extension summons)
+    rules/                 safety reflexes — tiny crystallized scar tissue
+    journal/               runtime observability journal (gitignored)
+    plans/                 agent scratchpads (gitignored)
+
+  notes/
+    restructure-plan.md      the full architecture design + rationale (P1–P8; §-refs)
+    observability-design.md  logging/spans/collector/trace-store design (Phase A–B)
+    cli-design.md            CLI design decisions + unit plan (built; §3 = settled decisions)
+    frontend-design.md       future web frontend design (IDEATION; separate repo)
+    opencode-agents.md       notes on summoning agents via the opencode CLI
+
+  prompts/   (gitignored — orchestrator→agent TASK blocks)
   reports/   (gitignored — agent→orchestrator reports)
-  .env       (gitignored — DISPATCH_API_KEY [opencode-2 active], _OPENCODE1 backup)
+  .env       (gitignored — DISPATCH_API_KEY, DISPATCH_BASE_URL, DISPATCH_MODEL, BACKEND_PORT)
+
   packages/
     kernel/            contracts (ABI), bus, runtime (runTurn), host
     transport-contract/  types-only HTTP API contract (CLI + future web + server share it)
