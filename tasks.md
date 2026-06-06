@@ -299,9 +299,26 @@ But a survey found per-extension/edge coverage thin, and a HARNESS gap as the ro
   repair (the §3.4 / bug-catalog "API rejected corrupted history" class) leaves NO trace. Inject a
   logger + emit a `reconcile.repair` span. Address when conversation-store is next touched (or as
   a dedicated pass).
-- [ ] **#2 INSTRUMENTATION DEBT — transport edges.** transport-http has 0 logger refs (a `/chat`
-  500 / malformed request / the new `GET /conversations` read is invisible); transport-ws logs
-  minimally. Add request/error logging at the edges.
+- [x] **#2 DONE — transport-edge logging.** Both edges now emit structured logs via the injected
+  logger (D7-compliant: NO per-`AgentEvent`/`chat.delta` frame logging). **Verified live** — the
+  journal contains the edge records (`{level:info, msg:"conversations: read", attrs:{conversationId,
+  sinceSeq, count}}`, `{level:warn, msg:"chat: validation failed"}`, etc.).
+  - **transport-ws (owner):** +5 log points (connection open/close debug, chat.send accepted info,
+    surface-op + malformed-chat.send warn, abort-on-close debug); +4 bun tests. Correctly attributed
+    `extensionId: transport-ws` (it runs its own `Bun.serve` in `activate` → extension-scoped logger).
+  - **transport-http (owner):** info on accepted `/chat`, warn on 400, error on turn failure, info
+    on `GET /conversations` read, error on `/models`/store failure; +4 vitest tests. (First summon
+    left the build broken — made `logger` required but missed call sites + biome; re-summoned to
+    finish. Trust = independent re-verify.)
+  - **Verified:** typecheck clean, **498 vitest** (+4) + **84 bun** (+4), biome clean, no internal mocks.
+  - **CAVEAT / follow-up (architectural attribution):** transport-http's edge logs land in the journal
+    but are stamped `extensionId: "__host__"`, NOT `transport-http` — because transport-http has no
+    `Bun.serve`; it exports `createServer(host: HostAPI)` which **host-bin** calls with the
+    `__host__`-scoped `getHostAPI()` (`host.ts:224`). transport-ws is correct because it owns its
+    server. Clean fix = make transport-http own its `Bun.serve` in `activate` (full-fidelity, symmetric
+    with transport-ws) so it logs under its extension scope — a boundary/refactor decision (touches
+    host-bin), surfaced to the user. The logs ARE captured + correlated (conversationId); only the
+    per-extension `extensionId` filter is currently mis-scoped.
 - D8 `prompt.assembly` segments remain deferred-by-design (await the context-filter chain).
 
 ---
