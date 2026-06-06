@@ -156,10 +156,11 @@ Keep it scoped (P6): state only the project-specific, non-inferable task — the
 - **Kernel unit:** `kernel-purity.md` + `pure-core.md` + `no-internal-mocks.md`.
 - **Pure-core unit:** `pure-core.md` + `no-internal-mocks.md`.
 - **Any extension coupling via hooks/services:** `typed-handles.md`.
-- **Any extension that emits logs/spans (≈ all of them):** `extension-logging.md`
-  *(pending — authored with the observability substrate, see
-  `notes/observability-design.md` §9; keystone: each extension self-redacts its OWN
-  secrets in its OWN code — NO shared redaction helper).*
+- **Every extension (≈ all of them — they all log):** `extension-logging.md`. Use the
+  injected `host.logger`/`ctx.log`; keystone: each extension self-redacts its OWN secrets
+  in its OWN code — NO shared redaction helper (design rationale:
+  `notes/observability-design.md` §9). Include this on EVERY extension summon (an
+  extension that never logs is a coverage gap, not an exemption).
 - **Frontend units** are summoned from the SEPARATE `../dispatch-web` repo using ITS
   OWN harness (`package-agent.md` + `frontend-*.md` rules) + ITS OWN scoping map — NOT
   these backend rules. See that repo's `ORCHESTRATOR.md`.
