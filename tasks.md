@@ -283,6 +283,27 @@ independent of the SQLite trace-store; the lib is redaction-free (caller self-re
 Summons: prompts/phase-a-{kernel-logging,journal-sink}.md;
 reports/phase-a-{kernel-logging,journal-sink}.md.
 
+### Logging-coverage audit (post FE-Slice-2 backend work)
+The core turn round-trip is well-instrumented (kernel turn/step/tool-call/prompt spans +
+provider-openai-compat `provider.request` D5 capture + session-orchestrator per-turn childing).
+But a survey found per-extension/edge coverage thin, and a HARNESS gap as the root cause:
+- [x] **#3 ROOT CAUSE FIXED — `.dispatch/rules/extension-logging.md` authored** (was "(pending)"
+  in ORCHESTRATOR §3 for the whole substrate's life, so EVERY extension summon — incl. this
+  session's conversation-store/transport-http/transport-ws/credential-store — was built blind to
+  it). Rule now exists (self-redaction in own code, no shared helper, §6 tiers; use injected
+  `host.logger`/`ctx.log`; flat scalar attrs; no token-delta logging; one-way; edge verbatim
+  capture). ORCHESTRATOR §3 row updated to "Every extension — include on EVERY extension summon."
+  Future extensions now get logging guidance by construction.
+- [ ] **#1 INSTRUMENTATION DEBT — `reconcile.repair` span (conversation-store).** It has ZERO
+  logger refs and `createConversationStore(storage)` receives no logger, so a load-time history
+  repair (the §3.4 / bug-catalog "API rejected corrupted history" class) leaves NO trace. Inject a
+  logger + emit a `reconcile.repair` span. Address when conversation-store is next touched (or as
+  a dedicated pass).
+- [ ] **#2 INSTRUMENTATION DEBT — transport edges.** transport-http has 0 logger refs (a `/chat`
+  500 / malformed request / the new `GET /conversations` read is invisible); transport-ws logs
+  minimally. Add request/error logging at the edges.
+- D8 `prompt.assembly` segments remain deferred-by-design (await the context-filter chain).
+
 ---
 
 ## ROADMAP — what's next (user-decided, §5.2)
