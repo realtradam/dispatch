@@ -71,18 +71,30 @@ TS language server is configured globally).
 `deepseek-v4-flash` is reserved as the *app's own runtime testbench*, not for
 building.
 
-**Canonical invocation** (inline the prompt — do NOT use `-f`, see gotcha;
-ALWAYS redirect output to a file — do NOT let it stream to your terminal):
+**Canonical invocation** — assemble the prompt by CONCATENATING the standardized briefs + the
+scoped rules + the per-summon TASK. The invariant guardrails live ONCE in the briefs, so
+`prompts/<unit>.md` is now JUST the TASK block (§3). Do NOT use `-f` (see gotcha); ALWAYS
+redirect output to a file.
 ```bash
 cd /home/tradam/projects/dispatch/arch-rewrite && \
 opencode run --dir /home/tradam/projects/dispatch/arch-rewrite \
   -m opencode-go/mimo-v2.5-pro \
-  "$(cat prompts/<unit>.md)
+  "$(cat .dispatch/package-agent.md)
+$(cat .dispatch/extension-agent.md)
+$(cat .dispatch/rules/one-owner.md .dispatch/rules/isolation-over-dry.md .dispatch/rules/pure-core.md .dispatch/rules/no-internal-mocks.md .dispatch/rules/typed-handles.md)
 
----
-Follow the above exactly. You own ONLY <files>. When done, write reports/<unit>.md." \
+## TASK
+$(cat prompts/<unit>.md)" \
   > reports/<unit>.run.log 2>&1
 ```
+**Assembly order is fixed: package brief → extension supplement → scoped rules → TASK**
+(the supplement references "the package brief above"; the briefs reference "rules inlined into
+this prompt"). Rules:
+- **Non-extension package?** OMIT the `.dispatch/extension-agent.md` line.
+- Inline ONLY the scoped rules matching the unit's layer (the §3 map) — not every rule on every agent.
+- `AGENTS.md` is auto-loaded by opencode — never `cat` it.
+- The briefs already instruct the agent on ownership, visibility, verify, and the report; the
+  TASK block must NOT repeat any of that.
 
 **MANDATORY — capture output to a file, never display it.** The agent's streamed
 output is enormous and will overwhelm and CRASH this harness if it lands in your
@@ -110,34 +122,23 @@ log into context as a hard failure.
 
 ---
 
-## 3. Prompt recipe (what every `prompts/<unit>.md` must contain)
+## 3. The per-summon `prompts/<unit>.md` is JUST the TASK block
 
-Write self-contained prompts. Structure:
-1. **Role:** "You are the owner-agent for <unit>."
-2. **Read first (ordered):** `AGENTS.md`, the **scoped `.dispatch/rules/`** for this
-   unit's layer (the scoping map is below the recipe), `GLOSSARY.md`, the relevant
-   `notes/restructure-plan.md` §-sections, and **the exact contract files under
-   `packages/kernel/src/contracts/` it builds against**.
-3. **Ownership (strict):** the EXACT files it may create/edit, and an explicit
-   "do not touch anything else; if you need a change elsewhere, write a change-
-   request in your report — do NOT edit it."
-   - **Visibility (state it in EVERY prompt):** "Read ONLY the surfaces
-     (contracts/hooks/manifests/public signatures) of OTHER units; do NOT read
-     their implementation files. You MAY read the implementation files of YOUR
-     assigned unit only." (Mirrors §6 — keeps the agent's context clean too.)
-4. **The job + algorithm:** precise, with the contract types named.
-5. **Engineering constraints:** pure-core/inject-effects (P2), no ambient state
-   (P3), no internal mocks (the test rule), strict-mode TS, typed handles for any
-   cross-extension coupling (no string keys).
-6. **Tests REQUIRED:** name the cases. Pure units → fake inputs, ZERO internal
-   mocks. Shell units → a few integration tests, no sibling mocks.
-7. **Verify before finishing:** `bun run typecheck`, `bun run test`,
-   `bun run check` — all clean.
-8. **Report:** "write `reports/<unit>.md` with: files created, public surface,
-   full command output, decisions, and explicit change-requests for other units."
+The invariant guardrails — single-writer directory ownership, visibility, coupling, the
+engineering standard, isolated verification, and the report format — live ONCE in the
+standardized briefs the summon concatenates (§2):
+- **`.dispatch/package-agent.md`** — the base for EVERY package owner.
+- **`.dispatch/extension-agent.md`** — the extension-only supplement (added for extension summons).
 
-Keep the prompt scoped (P6): don't restate what a frontier model knows; do state
-the project-specific, non-inferable rules.
+So `prompts/<unit>.md` no longer restates any of that. It contains ONLY the **TASK**:
+1. **Your package:** `packages/<name>/` — name the WHAT, not the files (the owner owns the whole
+   directory and decides which files to touch).
+2. **The job + algorithm**, naming the specific contract types/handles involved.
+3. **The specific contract file(s)** to read (e.g. `packages/kernel/src/contracts/<x>.ts`) and
+   any sibling public surfaces it consumes.
+4. **The required test cases** (named).
+
+Keep it scoped (P6): state only the project-specific, non-inferable task — the briefs carry the rest.
 
 **`.dispatch/rules/` scoping map** — include ONLY the rows matching the unit (per §0
 "scoped rules beat general rules"); do NOT dump every rule on every agent:
