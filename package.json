@@ -11,7 +11,7 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"typecheck": "tsc -b --pretty",
-		"test:bun": "bun test packages/storage-sqlite/src packages/trace-store/src packages/observability-collector/src packages/transport-ws/src/server.bun.test.ts",
+		"test:bun": "bun test packages/storage-sqlite/src packages/trace-store/src packages/observability-collector/src packages/transport-ws/src/server.bun.test.ts packages/transport-http/src/server.bun.test.ts",
 		"test:all": "bun run test && bun run test:bun",
 		"dev": "bun packages/host-bin/src/main.ts",
 		"dev:all": "./bin/up",

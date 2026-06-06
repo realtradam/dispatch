@@ -311,14 +311,20 @@ But a survey found per-extension/edge coverage thin, and a HARNESS gap as the ro
     left the build broken — made `logger` required but missed call sites + biome; re-summoned to
     finish. Trust = independent re-verify.)
   - **Verified:** typecheck clean, **498 vitest** (+4) + **84 bun** (+4), biome clean, no internal mocks.
-  - **CAVEAT / follow-up (architectural attribution):** transport-http's edge logs land in the journal
-    but are stamped `extensionId: "__host__"`, NOT `transport-http` — because transport-http has no
-    `Bun.serve`; it exports `createServer(host: HostAPI)` which **host-bin** calls with the
-    `__host__`-scoped `getHostAPI()` (`host.ts:224`). transport-ws is correct because it owns its
-    server. Clean fix = make transport-http own its `Bun.serve` in `activate` (full-fidelity, symmetric
-    with transport-ws) so it logs under its extension scope — a boundary/refactor decision (touches
-    host-bin), surfaced to the user. The logs ARE captured + correlated (conversationId); only the
-    per-extension `extensionId` filter is currently mis-scoped.
+  - **Attribution caveat — FIXED (transport-http now owns its `Bun.serve`).** Was: transport-http
+    edge logs were stamped `__host__` because host-bin ran the HTTP server via
+    `createServer(getHostAPI())`. Fix (coordinated multi-knowledge agent, ORCHESTRATOR §5.5, owning
+    transport-http + host-bin/main.ts): transport-http is now a FULL-FIDELITY extension — its
+    `activate(host)` builds the Hono app with the extension-scoped `host` and runs `Bun.serve`
+    itself (factory `createTransportHttpExtension`, mirroring transport-ws), reading the port from
+    `host.config.get("httpPort") ?? 24203` (host-bin `config.ts` maps `BACKEND_PORT`/`PORT` →
+    `httpPort`). **host-bin now serves NO transport** (both transports self-serve; it just boots
+    extensions + supervises the collector). +5 bun lifecycle tests (wired into `test:bun`).
+    **Verified live:** HTTP still serves on :24203 (200); the journal now shows
+    `extensionId: "transport-http"` for ALL edge logs (`listening`/`chat: request accepted`/
+    `conversations: read`/`chat: validation failed`) — no more `__host__`. typecheck clean, 498
+    vitest + **89 bun** (+5), biome clean. prompts/transport-http-owns-server.md,
+    reports/transport-http-owns-server.md.
 - D8 `prompt.assembly` segments remain deferred-by-design (await the context-filter chain).
 
 ---

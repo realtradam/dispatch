@@ -1,5 +1,4 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
-import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import {
 	conversationStoreHandle,
@@ -19,18 +18,44 @@ export const manifest: Manifest = {
 	activation: "eager",
 };
 
-export interface CreateServerOptions {
-	readonly port?: number;
-}
+export function createTransportHttpExtension(): Extension & {
+	readonly _testServer: ReturnType<typeof Bun.serve> | undefined;
+} {
+	let server: ReturnType<typeof Bun.serve> | undefined;
 
-export function createServer(host: HostAPI, _opts?: CreateServerOptions): Hono {
-	const conversationStore = host.getService(conversationStoreHandle);
-	const orchestrator = host.getService(sessionOrchestratorHandle);
-	const credentialStore = host.getService(credentialStoreHandle);
-	return createApp({ conversationStore, orchestrator, credentialStore, logger: host.logger });
-}
+	return {
+		get _testServer() {
+			return server;
+		},
+		manifest,
+		async activate(host: HostAPI) {
+			const conversationStore = host.getService(conversationStoreHandle);
+			const orchestrator = host.getService(sessionOrchestratorHandle);
+			const credentialStore = host.getService(credentialStoreHandle);
+			const logger = host.logger;
 
-export const extension: Extension = {
-	manifest,
-	activate: (_host: HostAPI) => {},
-};
+			const app = createApp({
+				conversationStore,
+				orchestrator,
+				credentialStore,
+				logger,
+			});
+
+			const port = host.config.get<number>("httpPort") ?? 24203;
+
+			server = Bun.serve({
+				port,
+				fetch: app.fetch,
+			});
+
+			logger.info("transport-http: listening", { port });
+		},
+
+		deactivate() {
+			if (server) {
+				server.stop();
+				server = undefined;
+			}
+		},
+	};
+}

@@ -20,6 +20,14 @@ export function envToConfigMap(
 		map["provider.openai-compat.model"] = model;
 	}
 
+	const httpPort = env.BACKEND_PORT ?? env.PORT;
+	if (httpPort !== undefined) {
+		const n = Number(httpPort);
+		if (Number.isFinite(n) && n > 0) {
+			map.httpPort = n;
+		}
+	}
+
 	return map;
 }
 
