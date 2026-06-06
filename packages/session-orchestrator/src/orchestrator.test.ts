@@ -364,3 +364,120 @@ describe("handleMessage model resolution", () => {
 		expect(captured[1]?.cwd).toBeUndefined();
 	});
 });
+
+describe("turn-sealed event", () => {
+	it("emits turn-sealed after persisting the turn", async () => {
+		const store = createInMemoryStore();
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "ok" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn,
+		});
+
+		const { events, onEvent } = collectEvents();
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-seal",
+			text: "test",
+			onEvent,
+		});
+
+		const sealedEvents = events.filter((e) => e.type === "turn-sealed");
+		expect(sealedEvents).toHaveLength(1);
+		const sealed = sealedEvents[0] as AgentEvent & { type: "turn-sealed" };
+		expect(sealed.conversationId).toBe("conv-seal");
+		expect(sealed.turnId).toMatch(/^turn-/);
+	});
+
+	it("turn-sealed is emitted after the store append", async () => {
+		const store = createInMemoryStore();
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "ok" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const ordering: string[] = [];
+		const wrappedStore: ConversationStore = {
+			async append(conversationId, messages) {
+				await store.append(conversationId, messages);
+				ordering.push("append");
+			},
+			async load(conversationId) {
+				return store.load(conversationId);
+			},
+			async loadSince(conversationId, sinceSeq) {
+				return store.loadSince(conversationId, sinceSeq);
+			},
+		};
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: wrappedStore,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-order",
+			text: "test",
+			onEvent: (event) => {
+				if (event.type === "turn-sealed") {
+					ordering.push("turn-sealed");
+				}
+			},
+		});
+
+		expect(ordering).toEqual(["append", "turn-sealed"]);
+	});
+
+	it("does not emit turn-sealed when append throws", async () => {
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "ok" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const failingStore: ConversationStore = {
+			async append() {
+				throw new Error("storage failure");
+			},
+			async load() {
+				return [];
+			},
+			async loadSince() {
+				return [];
+			},
+		};
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: failingStore,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn,
+		});
+
+		const { events, onEvent } = collectEvents();
+
+		await expect(
+			orchestrator.handleMessage({
+				conversationId: "conv-fail",
+				text: "test",
+				onEvent,
+			}),
+		).rejects.toThrow("storage failure");
+
+		const sealedEvents = events.filter((e) => e.type === "turn-sealed");
+		expect(sealedEvents).toHaveLength(0);
+	});
+});

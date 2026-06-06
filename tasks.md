@@ -439,15 +439,26 @@ streaming. Spans both repos; the backend prereqs live HERE (FE work runs in `../
     criteria, NOT a transport bug (cf. slice-1 "10 vs 11 extensions" artifact). Verified by
     confirming HTTP `/chat` emits the identical event set.
 
-#### Open item discovered live — runtime turn-lifecycle events NOT emitted (BLOCKS FE cache-commit)
-The runtime/orchestrator emits `reasoning-delta`/`text-delta`/`usage` but **NOT `turn-start`,
-`done`, or `turn-sealed`** through `emit`/`onEvent` — on EITHER transport (HTTP `/chat` + WS chat
-both confirmed). The wire DEFINES these (`TurnStartEvent`/`TurnDoneEvent`/`TurnSealedEvent`) but
-`runTurn` doesn't fire them. **`turn-sealed` is the FE's cache-commit signal (frontend-design §6.3
-— "below the last seal is immutable + cacheable"); `done` ends the stream.** Needs a
-kernel-runtime (and/or session-orchestrator) emission fix BEFORE the FE chat slice can commit
-turns to its cache. Diagnose-from-symptoms done; fix = summon the owning unit. NOT a transport-ws
-defect.
+#### Turn-lifecycle event emission — FIXED + verified live
+Was: the runtime emitted `reasoning-delta`/`text-delta`/`usage` but NOT `turn-start`/`done`/
+`turn-sealed` on either transport (the wire defined them; nothing fired them). **`turn-sealed`
+is the FE's cache-commit signal (frontend-design §6.3); `done` ends the stream.** Architecture-
+correct split (NO contract change — all three wire types already existed):
+- **kernel-runtime (owner, mimo-v2.5-pro):** `runTurn` now emits `turn-start` as the FIRST event
+  and `done` (carrying the final `finishReason`) as the LAST kernel event — on every exit path
+  (stop / tool-calls / max-steps / error / aborted). +2 event factories in `runtime/events.ts`;
+  updated the existing event-sequence assertions; +6 lifecycle tests. (NOTE: first summon
+  PLANNED but applied nothing — a planning-not-executing failure caught by `git diff --stat`
+  showing 0 kernel changes + the stale report's bogus CRs; re-summoned with an explicit
+  "EXECUTE, do not plan" directive. Trust = independent re-verification, not the report.)
+- **session-orchestrator (owner, mimo-v2.5-pro):** emits `turn-sealed` via `onEvent` AFTER
+  `conversationStore.append` succeeds (history persisted/final = the seal); not emitted if append
+  throws. +3 tests. (Kernel owns start/done — orchestrator owns the post-persist seal, since the
+  kernel touches no DB.)
+- **Verified (orchestrator):** typecheck clean, **494 vitest** (485→+9), 80 bun, biome clean,
+  no internal mocks, both in-lane. **Live (host-bin, real flash):** HTTP `/chat` AND WS chat now
+  both stream `turn-start … done turn-sealed` — first=`turn-start`, last=`turn-sealed` on both
+  carriers. Summons: prompts/lifecycle-{kernel-runtime,session-orchestrator}.md.
 
 Then FE (`../dispatch-web`): `core/transcript` reducer + `conversation-cache` + `chat` feature.
 

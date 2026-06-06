@@ -92,6 +92,8 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 
 			const toPersist: ChatMessage[] = [userMsg, ...result.messages];
 			await deps.conversationStore.append(conversationId, toPersist);
+
+			onEvent({ type: "turn-sealed", conversationId, turnId });
 		},
 	};
 }

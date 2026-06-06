@@ -5,11 +5,13 @@ import type { EventEmitter, RunTurnInput, RunTurnResult } from "../contracts/run
 import type { ToolCall, ToolContract } from "../contracts/tool.js";
 import { createStepDispatcher, type StepDispatcher } from "./dispatch.js";
 import {
+	doneEvent,
 	errorEvent,
 	reasoningDeltaEvent,
 	textDeltaEvent,
 	toolCallEvent,
 	toolResultEvent,
+	turnStartEvent,
 	usageEvent,
 } from "./events.js";
 
@@ -346,6 +348,8 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 	// Track open tool-call spans across steps so we can close them on abort
 	const toolSpans = new Map<string, Span>();
 
+	input.emit(turnStartEvent(conversationId, turnId));
+
 	try {
 		for (let step = 0; step < MAX_STEPS; step++) {
 			if (signal.aborted) {
@@ -421,6 +425,8 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 			}
 		}
 	}
+
+	input.emit(doneEvent(conversationId, turnId, finishReason));
 
 	return { messages: resultMessages, usage: totalUsage, finishReason };
 }
