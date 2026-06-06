@@ -4,11 +4,7 @@
 	"include": ["src/**/*.ts"],
 	"references": [
 		{ "path": "../kernel" },
-		{ "path": "../storage-sqlite" },
-		{ "path": "../surface-loaded-extensions" },
 		{ "path": "../surface-registry" },
-		{ "path": "../tool-read-file" },
-		{ "path": "../transport-http" },
-		{ "path": "../transport-ws" }
+		{ "path": "../ui-contract" }
 	]
 }

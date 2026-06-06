@@ -333,6 +333,51 @@ reserved in `.env`. When FE build begins: retire the AGENTS.md "Backend only for
 frontend)" line, author new scoped `.dispatch/rules/frontend-*.md`, and update
 ORCHESTRATOR.md §7 (repo geography) + §3 (rule scoping map).
 
+**STATUS — slice 1 STARTED (user front-loaded the architecture: surface system + WS FIRST,
+not chat-first).** Done: `notes/frontend-design.md` LOCKED (no-mandatory-spine model;
+chat is a decomposable feature, NOT a surface); authored `packages/ui-contract` (types-only
+surface ABI — `SurfaceSpec`/field kinds/`region`/`ActionRef`/catalog; verified green);
+scaffolded the SEPARATE repo `../dispatch-web` (Vite + Svelte 5 + vitest + biome;
+svelte-check/biome/`vite build` all green; `@dispatch/ui-contract` linked via `file:` dep);
+authored the FE harness (AGENTS/ORCHESTRATOR/GLOSSARY/.dispatch rules). Retired the AGENTS.md
+"Backend only" line; updated ORCHESTRATOR §7/§3. Vocab locked (surface/view/region/field
+kind/action+action ref/surface catalog); backend `command`→`action` unification logged as a
+future review (restructure-plan §8). NEXT (summons): backend B2 kernel wire-types split, B3
+surface-contribution mechanism, B4 `transport-ws`, B5 loaded-extensions surface; FE F1–F5.
+
+**FE SLICE 1 — DONE + verified live (2026-06-06): the surface system.** Built across both repos
+(orchestrated, mimo-v2.5-pro owner-agents): NEW backend pkgs `ui-contract` (surface ABI + WS
+protocol), `surface-registry` (typed service handle), `transport-ws` (Bun WS server :24205),
+`surface-loaded-extensions` (first surface); kernel `HostAPI.getExtensions`; NEW repo
+`../dispatch-web` (Vite+Svelte5) with `core/protocol` · `features/surface-host` · `adapters/ws` ·
+`app`. **Live WS probe: catalog → subscribe → surface rendered the 10 loaded extensions.** Backend
+460 vitest + 77 bun (typecheck+biome clean); FE 76 vitest + build (svelte-check+biome clean).
+Scar tissue captured: headless cross-repo read hang (in-repo `ui-contract.reference.md` + brief
+guards); live boot-probe tool-timeout (ORCHESTRATOR §8). Deferred: F-app CR-1 (vitest browser
+condition), DaisyUI styling, B2 kernel wire-types split (chat slice). Full plan + status:
+`notes/frontend-design.md` §10.
+
+### FE SLICE 2 — chat slice (browser chat MVP): backend prerequisites — IN PROGRESS
+The product MVP: send a message, render the streamed multi-turn response, with §6 caching/delta
+streaming. Spans both repos; the backend prereqs live HERE (FE work runs in `../dispatch-web`).
+- [x] **B2 — wire-types split** (`@dispatch/wire`, NEW types-only pkg). The pure wire ABI —
+  `AgentEvent` (+11 variants), the conversation model (`Chunk`/`ChatMessage`/`Role`/`TurnId`/
+  `StepId` + 6 chunk variants), and `Usage` — moved out of the kernel into `@dispatch/wire`
+  (zero `@dispatch/*` deps, zero runtime). `@dispatch/kernel` re-exports them via shim files →
+  its public surface is **byte-identical** (zero consumer blast radius). `transport-contract`
+  now re-exports `AgentEvent` from `@dispatch/wire` and **dropped its `@dispatch/kernel`
+  dependency** → the FE can consume the wire contract without pulling the kernel runtime (the
+  whole point of B2). Coordinated multi-file owner-agent (mimo-v2.5-pro, ORCHESTRATOR §5.5) +
+  orchestrator build wiring (new pkg scaffold, project refs, deps). typecheck + biome clean;
+  **460 vitest + 77 bun** (unchanged — pure type move). Summon: prompts/b2-wire-split.md,
+  report: reports/b2-wire-split.md.
+- [ ] **per-chunk `seq`** on `Chunk` (wire) — monotonic cursor for mid-turn incremental sync.
+- [ ] **read-side endpoint** `GET /conversations/:id?sinceSeq=` → reconciled `Chunk[]`/
+  `ChatMessage[]` (transport-http + conversation-store).
+- [ ] **WS turn-deltas** — `transport-ws` multiplexes `sendMessage`/`onDelta(AgentEvent)`
+  alongside surface ops (one connection carries both; frontend-design §5).
+Then FE (`../dispatch-web`): `core/transcript` reducer + `conversation-cache` + `chat` feature.
+
 ### 3. dedup / storage growth (after frontend)
 The deferred trace-body de-duplication + rotation/compression (D5 volume-control +
 `prefix.fingerprint` + §6 retention strategy) — already designed in

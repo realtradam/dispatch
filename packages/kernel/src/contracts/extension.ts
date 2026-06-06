@@ -232,6 +232,9 @@ export interface HostAPI {
 	/** Look up a single auth provider by id. */
 	readonly getAuthProvider: (id: string) => AuthContract | undefined;
 
+	/** Read-only view of all activated extensions' manifests (what is loaded). */
+	readonly getExtensions: () => readonly Manifest[];
+
 	/** Register a scheduled job with the host's scheduler. */
 	readonly scheduler: {
 		readonly register: (job: ScheduledJob) => void;

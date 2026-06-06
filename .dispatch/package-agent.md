@@ -31,6 +31,12 @@ it, test it, and write a report — nothing else. If no single package is named,
   exports (and manifest, if any). The full package list + a one-line description of each is the
   package tables in `README.md`. Don't read unrelated packages' internals.
 
+## Headless read boundary (you run non-interactively)
+You run HEADLESS: a Read of any file OUTSIDE this repo triggers a permission prompt that
+CANNOT be answered → the run HANGS until aborted. Read ONLY within this repo. If you believe
+you need a file outside it, do NOT attempt the read — STOP and write the need in your report,
+then end.
+
 ## Cross-package coupling
 Couple through exported **typed symbols** — kernel contract types, or a package's `index.ts`
 exports. A package that is a **library** is itself a sanctioned shared surface (others import

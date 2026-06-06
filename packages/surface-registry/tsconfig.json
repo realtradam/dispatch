@@ -2,5 +2,5 @@
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
 	"include": ["src/**/*.ts"],
-	"references": [{ "path": "../wire" }]
+	"references": [{ "path": "../kernel" }, { "path": "../ui-contract" }]
 }

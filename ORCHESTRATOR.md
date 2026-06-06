@@ -113,6 +113,16 @@ log into context as a hard failure.
   in `tasks.md`.
 
 **GOTCHAS (learned the hard way):**
+- **Headless cross-`--dir` read = HANG.** An agent's Read of any file OUTSIDE its
+  `--dir` triggers an interactive permission prompt that CANNOT be answered headlessly
+  → the run wedges until aborted. This bites CROSS-REPO: a `file:` dep symlink (e.g.
+  `dispatch-web/node_modules/@dispatch/ui-contract` → the sibling repo) resolves OUTSIDE
+  `--dir`, so an agent reading the dep's source hangs. Fixes: (a) keep everything the
+  agent must READ inside `--dir` — ship an **in-repo reference snapshot** of a cross-repo
+  contract and FORBID reading `node_modules/@dispatch/*`; OR (b) set `--dir` to a parent
+  containing all needed paths — but then the repo's `AGENTS.md` won't auto-load (you lose
+  the constitution). The briefs now tell agents: never read outside your scope — if you
+  think you need to, REPORT it and STOP, never attempt the read.
 - `-f/--file` is an ARRAY flag and greedily eats your trailing message as another
   filename → "File not found". **Inline with `"$(cat prompts/X.md)"` instead.**
 - A quick smoke test works: `opencode run -m opencode-go/mimo-v2.5-pro "Reply with
@@ -150,6 +160,9 @@ Keep it scoped (P6): state only the project-specific, non-inferable task — the
   *(pending — authored with the observability substrate, see
   `notes/observability-design.md` §9; keystone: each extension self-redacts its OWN
   secrets in its OWN code — NO shared redaction helper).*
+- **Frontend units** are summoned from the SEPARATE `../dispatch-web` repo using ITS
+  OWN harness (`package-agent.md` + `frontend-*.md` rules) + ITS OWN scoping map — NOT
+  these backend rules. See that repo's `ORCHESTRATOR.md`.
 
 ---
 
@@ -290,7 +303,10 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
 
   packages/
     kernel/            contracts (ABI), bus, runtime (runTurn), host
+    wire/              types-only wire ABI (AgentEvent + conversation model + Usage); kernel +
+                       transport-contract re-export it so clients consume the wire w/o the kernel runtime
     transport-contract/  types-only HTTP API contract (CLI + future web + server share it)
+    ui-contract/         types-only surface ABI (frontend-agnostic; web + CLI render it)
     storage-sqlite/ conversation-store/ auth-apikey/ provider-openai-compat/
     credential-store/  named credentials + model catalog (resolve / listCatalog)
     session-orchestrator/ transport-http/    (core extensions)
@@ -303,6 +319,13 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
 The genesis commit deleted all prior source; we rebuilt from scratch. The OLD
 project lives at `/home/tradam/projects/dispatch/dispatch-source` (reference only
 — do not edit).
+
+The **web frontend is a SEPARATE repo** at `/home/tradam/projects/dispatch/dispatch-web`
+(own git, own harness — its own `AGENTS.md`/`ORCHESTRATOR.md`/`GLOSSARY.md`/`.dispatch/`).
+It consumes `packages/ui-contract` + the wire types as a pinned `file:` dependency.
+`lsp references` does NOT span the two repos, so cross-repo contract changes are
+**couriered via the user** (see the FE `ORCHESTRATOR.md` §5). Design + plan:
+`notes/frontend-design.md`. Do NOT edit the FE repo from here.
 
 ---
 
@@ -341,6 +364,15 @@ literal pattern `[h]ost-bin` does not match itself. ALWAYS clean up the backgrou
 + its spawned collector after each live run — leaked processes pollute the next run's
 counts (this is precisely what made a correct supervisor look like it spawned 3
 collectors and left 2 behind).
+
+**Live boot-probe in ONE command WILL hit the tool timeout — that is NOT failure (scar tissue).**
+A single bash command that boots the app (even detached via `setsid … & disown`), sleeps, runs a
+probe, then kills it will still run to the tool's timeout: the tool waits on the spawned
+server/collector session. The probe already ran — **read the probe's printed `RESULT: OK/FAIL`
+line as the signal**, ignore the timeout, then run a SEPARATE `pkill` (bracket-trick) + `ps`
+cleanup command (it returns immediately and confirms no leaks). Don't try to make the boot+probe
+command "return cleanly" — it won't. (For a frontend-agnostic surface, the probe is a tiny
+`bun` WebSocket client that asserts `catalog → subscribe → surface`.)
 
 **Next suggested work** (post-MVP, see `tasks.md` "Open items"): wire
 auth→provider properly (auth-apikey is currently vestigial), then add the first

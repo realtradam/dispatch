@@ -726,6 +726,117 @@ describe("createHost", () => {
 		});
 	});
 
+	describe("getExtensions", () => {
+		it("returns empty array when no extensions are activated", async () => {
+			const host = createHost([], deps);
+			await host.activate();
+
+			expect(host.getExtensions()).toEqual([]);
+		});
+
+		it("returns manifests of all activated extensions", async () => {
+			const a = createExtension("ext-a");
+			const b = createExtension("ext-b");
+
+			const host = createHost([a, b], deps);
+			await host.activate();
+
+			const exts = host.getExtensions();
+			expect(exts).toHaveLength(2);
+			expect(exts.map((e) => e.id)).toContain("ext-a");
+			expect(exts.map((e) => e.id)).toContain("ext-b");
+		});
+
+		it("returns manifests in activation order", async () => {
+			const a = createExtension("a");
+			const b = createExtension("b", { dependsOn: ["a"] });
+			const c = createExtension("c", { dependsOn: ["b"] });
+
+			const host = createHost([c, b, a], deps);
+			await host.activate();
+
+			const exts = host.getExtensions();
+			expect(exts.map((e) => e.id)).toEqual(["a", "b", "c"]);
+		});
+
+		it("excludes extensions that failed to activate", async () => {
+			const a = createExtension("good");
+			const b = createExtension("bad", {
+				activate: () => {
+					throw new Error("boom");
+				},
+			});
+
+			const host = createHost([a, b], deps);
+			await host.activate();
+
+			const exts = host.getExtensions();
+			expect(exts).toHaveLength(1);
+			expect(exts[0]?.id).toBe("good");
+		});
+
+		it("excludes extensions disabled by apiVersion incompatibility", async () => {
+			const good = createExtension("good");
+			const bad = createExtension("bad", { apiVersion: "^99.0.0" });
+
+			const host = createHost([good, bad], deps);
+			await host.activate();
+
+			const exts = host.getExtensions();
+			expect(exts).toHaveLength(1);
+			expect(exts[0]?.id).toBe("good");
+		});
+
+		it("returns a frozen array", async () => {
+			const ext = createExtension("ext");
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const exts = host.getExtensions();
+			expect(Object.isFrozen(exts)).toBe(true);
+		});
+
+		it("HostAPI getExtensions reflects activated extensions after full activation", async () => {
+			const a = createExtension("ext-a");
+			const b = createExtension("ext-b", {
+				dependsOn: ["ext-a"],
+				activate: () => {},
+			});
+
+			const host = createHost([a, b], deps);
+			await host.activate();
+
+			// Use getHostAPI() to verify the post-activation view
+			const api = host.getHostAPI();
+			const capturedExtsAfter = api.getExtensions();
+
+			expect(capturedExtsAfter).toHaveLength(2);
+			expect(capturedExtsAfter.map((e) => e.id)).toEqual(["ext-a", "ext-b"]);
+		});
+
+		it("HostAPI getExtensions during activation sees only previously activated", async () => {
+			const seenDuringActivation: string[][] = [];
+
+			const a = createExtension("a", {
+				activate: (host) => {
+					seenDuringActivation.push(host.getExtensions().map((e) => e.id));
+				},
+			});
+			const b = createExtension("b", {
+				activate: (host) => {
+					seenDuringActivation.push(host.getExtensions().map((e) => e.id));
+				},
+			});
+
+			const host = createHost([a, b], deps);
+			await host.activate();
+
+			// When a activates, activated[] is empty (a hasn't been pushed yet)
+			// When b activates, activated[] has [a] (b hasn't been pushed yet)
+			expect(seenDuringActivation).toEqual([[], ["a"]]);
+		});
+	});
+
 	describe("DAG errors", () => {
 		it("throws on missing dependency", () => {
 			const ext = createExtension("a", { dependsOn: ["missing"] });
