@@ -1,6 +1,7 @@
 import type { AgentEvent, Logger } from "@dispatch/kernel";
 import type { ConversationHistoryResponse, ModelsResponse } from "@dispatch/transport-contract";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import {
 	isParseError,
 	isSinceSeqError,
@@ -44,6 +45,15 @@ export function createApp(opts: CreateServerOptions): Hono {
 	const app = new Hono();
 	const log = opts.logger ?? noopLogger;
 	const generateId = opts.generateId ?? (() => crypto.randomUUID());
+
+	app.use(
+		"*",
+		cors({
+			origin: "*",
+			allowMethods: ["GET", "POST", "OPTIONS"],
+			allowHeaders: ["Content-Type"],
+		}),
+	);
 
 	app.get("/health", (c) => c.json({ ok: true }));
 
