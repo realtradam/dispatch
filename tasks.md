@@ -413,8 +413,42 @@ streaming. Spans both repos; the backend prereqs live HERE (FE work runs in `../
   - **Verified (orchestrator):** typecheck clean, **481 vitest** (469→+12), biome clean, no internal
     `@dispatch/*` mocks, in-lane. Live boot-probe deferred to the WS step (this GET route has no
     effectful-shell surprise surface; host wiring mirrors `/chat`).
-- [ ] **WS turn-deltas** — `transport-ws` multiplexes `sendMessage`/`onDelta(AgentEvent)`
-  alongside surface ops (one connection carries both; frontend-design §5).
+- [x] **WS turn-deltas** — `transport-ws` multiplexes chat ops alongside surface ops. DONE + verified live.
+  Design (user-confirmed): chat WS ops live in `@dispatch/transport-contract` (NOT ui-contract —
+  it stays surface-only/zero-`@dispatch`-deps); new non-colliding `type` variants (`chat.send`
+  client; `chat.delta`/`chat.error` server) widen unified `WsClientMessage`/`WsServerMessage`
+  unions — NO channel wrapper, so the shipped slice-1 surface protocol is byte-identical.
+  - **Contract + wiring (orchestrator):** added `ChatSendMessage`/`ChatDeltaMessage`/
+    `ChatErrorMessage` + `WsClientMessage`/`WsServerMessage` to transport-contract (now imports
+    `ui-contract`; doc broadened to "HTTP + WebSocket"); deps/refs for transport-contract→ui-contract
+    and transport-ws→{session-orchestrator,transport-contract}; `bun install`.
+  - **transport-ws (owner, mimo-v2.5-pro):** pure `routeClientMessage` extended to the full union
+    (`kind:"chat"|"chat-error"|"surface"`); shell drives `sessionOrchestratorHandle.handleMessage`,
+    streaming each `AgentEvent` as `{type:"chat.delta",event}` via `onEvent`; per-connection
+    `AbortController` aborted on socket close (no leaked turns); error-isolated (`chat.error`,
+    never crashes the connection). `dependsOn:["session-orchestrator"]`. +4 router + 3 bun:test
+    integration (real `Bun.serve` WS + fake orchestrator). prompts/ws-turn-deltas.md, reports/transport-ws.md.
+  - **Verified (orchestrator):** typecheck clean, **485 vitest** (481→+4) + **80 bun** (77→+3),
+    biome clean, in-lane. **Live (host-bin :24203 HTTP / :24205 WS, real flash):** one WS connection
+    delivered `catalog` (surface op) AND a real chat turn — `chat.delta` streamed
+    reasoning-delta×37 → text-delta×4 → usage, reply "Hello my friend". No leaked procs after
+    bracket-trick cleanup.
+  - **Probe-artifact lesson (scar tissue):** the first probe reported FAIL because it asserted
+    `turn-start`/`done`/`turn-sealed` frames — but the runtime emits NONE of those (see open item).
+    transport-ws faithfully forwarded exactly what `onEvent` delivered; the failure was bad probe
+    criteria, NOT a transport bug (cf. slice-1 "10 vs 11 extensions" artifact). Verified by
+    confirming HTTP `/chat` emits the identical event set.
+
+#### Open item discovered live — runtime turn-lifecycle events NOT emitted (BLOCKS FE cache-commit)
+The runtime/orchestrator emits `reasoning-delta`/`text-delta`/`usage` but **NOT `turn-start`,
+`done`, or `turn-sealed`** through `emit`/`onEvent` — on EITHER transport (HTTP `/chat` + WS chat
+both confirmed). The wire DEFINES these (`TurnStartEvent`/`TurnDoneEvent`/`TurnSealedEvent`) but
+`runTurn` doesn't fire them. **`turn-sealed` is the FE's cache-commit signal (frontend-design §6.3
+— "below the last seal is immutable + cacheable"); `done` ends the stream.** Needs a
+kernel-runtime (and/or session-orchestrator) emission fix BEFORE the FE chat slice can commit
+turns to its cache. Diagnose-from-symptoms done; fix = summon the owning unit. NOT a transport-ws
+defect.
+
 Then FE (`../dispatch-web`): `core/transcript` reducer + `conversation-cache` + `chat` feature.
 
 ### 3. dedup / storage growth (after frontend)

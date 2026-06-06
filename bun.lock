@@ -143,6 +143,7 @@
       "name": "@dispatch/transport-contract",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
       },
     },
@@ -163,7 +164,9 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
         "@dispatch/ui-contract": "workspace:*",
       },
     },

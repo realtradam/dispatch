@@ -4,16 +4,18 @@
  * Zero I/O, zero ambient state. Every function is `input → output`:
  * it decides what to do but does NOT do it. The shell (extension.ts)
  * interprets the result: sends WS messages, mutates connSubs, calls
- * provider.invoke.
+ * provider.invoke, drives the orchestrator.
  */
 
 import type { SurfaceRegistry } from "@dispatch/surface-registry";
-import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
+import type { ChatSendMessage, WsClientMessage } from "@dispatch/transport-contract";
+import type { SurfaceServerMessage } from "@dispatch/ui-contract";
 
 // ── Result types ────────────────────────────────────────────────────────────
 
-/** The effect a single client message should produce. */
-export interface RouteResult {
+/** The effect a surface client message should produce. */
+export interface SurfaceRouteResult {
+	readonly kind: "surface";
 	/** Server messages to send back to this connection. */
 	readonly replies: readonly SurfaceServerMessage[];
 	/** Whether to add or remove the surface id from connSubs. */
@@ -25,6 +27,25 @@ export interface RouteResult {
 		readonly payload?: unknown;
 	};
 }
+
+/** The effect a validated chat.send should produce. */
+export interface ChatRouteResult {
+	readonly kind: "chat";
+	readonly conversationId: string | undefined;
+	readonly message: string;
+	readonly model: string | undefined;
+	readonly cwd: string | undefined;
+}
+
+/** A malformed chat.send that should yield a chat.error reply. */
+export interface ChatRouteError {
+	readonly kind: "chat-error";
+	readonly conversationId: string | undefined;
+	readonly errorMessage: string;
+}
+
+/** The effect any client WS message should produce. */
+export type RouteResult = SurfaceRouteResult | ChatRouteResult | ChatRouteError;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -40,12 +61,12 @@ export function catalogMessage(registry: SurfaceRegistry): SurfaceServerMessage 
  *
  * @param registry  The surface registry (looked up once, injected).
  * @param connSubs  This connection's current subscribed surface ids.
- * @param msg       The parsed client message.
+ * @param msg       The parsed client message (surface or chat).
  */
 export function routeClientMessage(
 	registry: SurfaceRegistry,
 	connSubs: ReadonlySet<string>,
-	msg: SurfaceClientMessage,
+	msg: WsClientMessage,
 ): RouteResult {
 	switch (msg.type) {
 		case "subscribe":
@@ -54,7 +75,28 @@ export function routeClientMessage(
 			return handleUnsubscribe(msg.surfaceId);
 		case "invoke":
 			return handleInvoke(registry, msg.surfaceId, msg.actionId, msg.payload);
+		case "chat.send":
+			return handleChatSend(msg);
 	}
+}
+
+// ── Chat validation ─────────────────────────────────────────────────────────
+
+function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError {
+	if (typeof msg.message !== "string" || msg.message.length === 0) {
+		return {
+			kind: "chat-error",
+			conversationId: msg.conversationId,
+			errorMessage: "chat.send requires a non-empty string `message`",
+		};
+	}
+	return {
+		kind: "chat",
+		conversationId: msg.conversationId,
+		message: msg.message,
+		model: msg.model,
+		cwd: msg.cwd,
+	};
 }
 
 // ── Per-message handlers ────────────────────────────────────────────────────
@@ -63,10 +105,11 @@ function handleSubscribe(
 	registry: SurfaceRegistry,
 	connSubs: ReadonlySet<string>,
 	surfaceId: string,
-): RouteResult {
+): SurfaceRouteResult {
 	const provider = registry.getSurface(surfaceId);
 	if (!provider) {
 		return {
+			kind: "surface",
 			replies: [{ type: "error", surfaceId, message: `Unknown surface: ${surfaceId}` }],
 		};
 	}
@@ -85,13 +128,14 @@ function handleSubscribe(
 
 	// Idempotent: only emit subChange if not already subscribed.
 	if (!connSubs.has(surfaceId)) {
-		return { replies, subChange: { op: "add", surfaceId } };
+		return { kind: "surface", replies, subChange: { op: "add", surfaceId } };
 	}
-	return { replies };
+	return { kind: "surface", replies };
 }
 
-function handleUnsubscribe(surfaceId: string): RouteResult {
+function handleUnsubscribe(surfaceId: string): SurfaceRouteResult {
 	return {
+		kind: "surface",
 		replies: [],
 		subChange: { op: "remove", surfaceId },
 	};
@@ -102,14 +146,16 @@ function handleInvoke(
 	surfaceId: string,
 	actionId: string,
 	payload?: unknown,
-): RouteResult {
+): SurfaceRouteResult {
 	const provider = registry.getSurface(surfaceId);
 	if (!provider) {
 		return {
+			kind: "surface",
 			replies: [{ type: "error", surfaceId, message: `Unknown surface: ${surfaceId}` }],
 		};
 	}
 	return {
+		kind: "surface",
 		replies: [],
 		invoke: { surfaceId, actionId, payload },
 	};

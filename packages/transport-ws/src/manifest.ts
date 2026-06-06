@@ -6,7 +6,7 @@ export const manifest: Manifest = {
 	version: "0.0.0",
 	apiVersion: "^0.1.0",
 	trust: "bundled",
-	dependsOn: ["surface-registry"],
+	dependsOn: ["surface-registry", "session-orchestrator"],
 	capabilities: { network: true },
 	contributes: { routes: ["/ws/surfaces"] },
 	activation: "eager",
