@@ -563,3 +563,53 @@ describe("GET /conversations/:id logging", () => {
 		expect(infoLogs[0]?.attrs?.count).toBe(2);
 	});
 });
+
+describe("CORS", () => {
+	function createTestApp() {
+		return createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([
+				{ type: "done", conversationId: "conv1", turnId: "turn1", reason: "stop" },
+			]),
+			credentialStore: createFakeCredentialStore(["opencode/m1"]),
+		});
+	}
+
+	it("POST /chat response carries Access-Control-Allow-Origin: *", async () => {
+		const app = createTestApp();
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message: "hi", conversationId: "conv1" }),
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+	});
+
+	it("GET /models response carries the CORS headers", async () => {
+		const app = createTestApp();
+		const res = await app.request("/models");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+		expect(res.headers.get("Access-Control-Expose-Headers")).toBeDefined();
+	});
+
+	it("GET /conversations/:id response carries the CORS headers", async () => {
+		const app = createTestApp();
+		const res = await app.request("/conversations/conv1");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+		expect(res.headers.get("Access-Control-Expose-Headers")).toBeDefined();
+	});
+
+	it("OPTIONS preflight for /chat returns 204 with Allow-Methods + Allow-Headers", async () => {
+		const app = createTestApp();
+		const res = await app.request("/chat", { method: "OPTIONS" });
+		expect(res.status).toBe(204);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+		expect(res.headers.get("Access-Control-Allow-Methods")).toContain("GET");
+		expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
+		expect(res.headers.get("Access-Control-Allow-Methods")).toContain("OPTIONS");
+		expect(res.headers.get("Access-Control-Allow-Headers")).toContain("Content-Type");
+	});
+});
