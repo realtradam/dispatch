@@ -86,6 +86,12 @@ interface StepContext {
 	readonly cwd: string | undefined;
 }
 
+interface TimingState {
+	ttftSpan: Span | undefined;
+	decodeSpan: Span | undefined;
+	firstTokenSeen: boolean;
+}
+
 interface StepResult {
 	readonly assistantMessage: ChatMessage | undefined;
 	readonly toolCalls: ToolCall[];
@@ -101,13 +107,42 @@ function processEvent(
 	dispatcher: StepDispatcher,
 	ctx: StepContext,
 	stepSpan: Span | undefined,
+	timing: TimingState,
 ): void {
 	switch (event.type) {
 		case "text-delta":
+			if (!timing.firstTokenSeen) {
+				timing.firstTokenSeen = true;
+				try {
+					timing.ttftSpan?.end({ attrs: { firstToken: true } });
+				} catch {
+					// Swallow — D7.
+				}
+				timing.ttftSpan = undefined;
+				try {
+					timing.decodeSpan = stepSpan?.child("decode");
+				} catch {
+					// Swallow — D7.
+				}
+			}
 			appendTextDelta(chunks, event.delta);
 			ctx.emit(textDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
 			break;
 		case "reasoning-delta":
+			if (!timing.firstTokenSeen) {
+				timing.firstTokenSeen = true;
+				try {
+					timing.ttftSpan?.end({ attrs: { firstToken: true } });
+				} catch {
+					// Swallow — D7.
+				}
+				timing.ttftSpan = undefined;
+				try {
+					timing.decodeSpan = stepSpan?.child("decode");
+				} catch {
+					// Swallow — D7.
+				}
+			}
 			appendThinkingDelta(chunks, event.delta);
 			ctx.emit(reasoningDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
 			break;
@@ -211,6 +246,21 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		ctx.cwd,
 	);
 
+	const timing: TimingState = {
+		ttftSpan: undefined,
+		decodeSpan: undefined,
+		firstTokenSeen: false,
+	};
+
+	// Open TTFT span when spans are enabled
+	try {
+		if (stepSpan !== undefined) {
+			timing.ttftSpan = stepSpan.child("ttft");
+		}
+	} catch {
+		// Swallow — D7.
+	}
+
 	try {
 		const opts = {
 			...(ctx.turnSpan !== undefined && stepSpan !== undefined ? { logger: stepSpan.log } : {}),
@@ -218,7 +268,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		const stream = ctx.provider.stream(ctx.messages, ctx.tools, opts);
 		for await (const event of stream) {
 			if (ctx.signal.aborted) break;
-			processEvent(event, chunks, toolCalls, dispatcher, ctx, stepSpan);
+			processEvent(event, chunks, toolCalls, dispatcher, ctx, stepSpan, timing);
 			if (event.type === "usage") {
 				stepUsage = addUsage(stepUsage, event.usage);
 			}
@@ -238,6 +288,21 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 			// Swallow — D7.
 		}
 		stepSpan = undefined;
+	}
+
+	// Close timing spans: if no first token was seen, end ttft with firstToken: false
+	// If decode span is open, close it
+	try {
+		if (timing.ttftSpan !== undefined) {
+			timing.ttftSpan.end({ attrs: { firstToken: false } });
+			timing.ttftSpan = undefined;
+		}
+		if (timing.decodeSpan !== undefined) {
+			timing.decodeSpan.end();
+			timing.decodeSpan = undefined;
+		}
+	} catch {
+		// Swallow — D7.
 	}
 
 	if (!ctx.dispatch.eager) {
