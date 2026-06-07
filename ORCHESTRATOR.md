@@ -39,8 +39,9 @@ they justify every rule below.
 
 ## 1. The golden workflow (build/modify a feature)
 
-1. **Plan.** Decide the unit(s). Respect the dependency-topological order. One
-   agent owns one unit; it may ONLY edit its assigned files.
+1. **Plan.** Decide the unit(s); split into dependency-topological **waves** of
+   disjoint units, and WIDEN each wave where you can (§2a). One agent owns one unit;
+   it may ONLY edit its assigned files.
 2. **Overlap check FIRST (anti-synonym-drift, §5.6).** Before creating anything
    new, check `GLOSSARY.md` + existing code. If the request *describes* an
    existing concept under a new name, steer to the canonical term (e.g.
@@ -51,8 +52,10 @@ they justify every rule below.
    existing one?" — surface it to the user; never decide granularity silently.
 4. **Write the prompt** to `prompts/<unit>.md` (gitignored). See §3 for the
    prompt recipe.
-5. **Summon the agent** via `opencode run` (see §2). Parallelize disjoint units.
-6. **Verify** the report + independently re-run checks (see §4). Trust nothing
+5. **Summon the wave** via `opencode run` (see §2); disjoint units run in PARALLEL
+   (§2a). RE-READ `.dispatch/rules/` + the §3 scoping map before each wave — assemble
+   from the files, not from memory.
+6. **Verify** the reports + independently re-run checks (see §4). Trust nothing
    until you've re-run `typecheck`/`test`/`check` yourself.
 7. **Resolve** any contract gaps / errors (see §5).
 8. **Commit** the milestone with a clear message + test count. Update `tasks.md`.
@@ -81,7 +84,7 @@ opencode run --dir /home/tradam/projects/dispatch/arch-rewrite \
   -m opencode-go/mimo-v2.5-pro \
   "$(cat .dispatch/package-agent.md)
 $(cat .dispatch/extension-agent.md)
-$(cat .dispatch/rules/one-owner.md .dispatch/rules/isolation-over-dry.md .dispatch/rules/pure-core.md .dispatch/rules/no-internal-mocks.md .dispatch/rules/typed-handles.md)
+$(cat .dispatch/rules/one-owner.md .dispatch/rules/isolation-over-dry.md .dispatch/rules/biome-clean.md .dispatch/rules/pure-core.md .dispatch/rules/no-internal-mocks.md .dispatch/rules/typed-handles.md)
 
 ## TASK
 $(cat prompts/<unit>.md)" \
@@ -132,6 +135,29 @@ log into context as a hard failure.
 
 ---
 
+## 2a. Parallel execution — WAVES
+
+Throughput comes from running disjoint units at once. Organise it as waves:
+- **A wave = units that (a) touch DISJOINT files and (b) have no compile-time dependency
+  on each other** (each imports only already-built packages + existing contracts). Launch a
+  wave by emitting one summon per unit as CONCURRENT tool calls (§2). Later waves depend on
+  earlier ones; the composition root (`packages/host-bin/`) is almost always the LAST wave.
+- **Pre-author the seam to widen the wave.** Because the orchestrator OWNS contracts (§6),
+  author the shared contract / typed handle in `packages/kernel/src/contracts/*` FIRST, then
+  summon the producer AND the consumer in the SAME wave against that fixed type — neither needs
+  the other's implementation. Authoring the contract up front is what turns a sequential
+  producer→consumer chain into one parallel wave (and `lsp references` on the new symbol gives
+  the exact consumer set to summon).
+- **Also widen by removing edges:** prefer a consumer-defined handle the producer implements,
+  or a generic utility over a feature-specific one, so a dependency disappears entirely.
+- **One writer per file, always** — even across waves. If two units would edit the same file,
+  they are NOT separable; merge them into one unit or sequence them.
+- **After a wave:** read every report, run the §4 checks ONCE for the whole wave, commit the
+  milestone (update `tasks.md`), then start the next wave. Don't open a new wave before the
+  prior one is green.
+
+---
+
 ## 3. The per-summon `prompts/<unit>.md` is JUST the TASK block
 
 The invariant guardrails — single-writer directory ownership, visibility, coupling, the
@@ -152,7 +178,7 @@ Keep it scoped (P6): state only the project-specific, non-inferable task — the
 
 **`.dispatch/rules/` scoping map** — include ONLY the rows matching the unit (per §0
 "scoped rules beat general rules"); do NOT dump every rule on every agent:
-- **Every agent:** `one-owner.md`, `isolation-over-dry.md`.
+- **Every agent:** `one-owner.md`, `isolation-over-dry.md`, `biome-clean.md`.
 - **Kernel unit:** `kernel-purity.md` + `pure-core.md` + `no-internal-mocks.md`.
 - **Pure-core unit:** `pure-core.md` + `no-internal-mocks.md`.
 - **Any extension coupling via hooks/services:** `typed-handles.md`.
@@ -164,6 +190,14 @@ Keep it scoped (P6): state only the project-specific, non-inferable task — the
 - **Frontend units** are summoned from the SEPARATE `../dispatch-web` repo using ITS
   OWN harness (`package-agent.md` + `frontend-*.md` rules) + ITS OWN scoping map — NOT
   these backend rules. See that repo's `ORCHESTRATOR.md`.
+
+**Tell each agent it has company (parallel waves).** Add to each wave TASK: sibling units are
+being built in OTHER packages right now; `tsc -b`/vitest/biome are whole-PROJECT, so if a check
+reports errors OUTSIDE your package, that's concurrent WIP — ignore it and ensure YOUR files are
+clean. The orchestrator's post-wave run (§4) is the source of truth.
+
+**Make agents IMPLEMENT, not deliberate.** A summoned owner must edit files + run its checks +
+write its report in the one run. If a summon returns only a plan, re-summon (§5a).
 
 ---
 
@@ -200,6 +234,12 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
 - Confirm the agent touched ONLY its assigned files (one-owner rule).
 - For pure units, confirm tests use NO internal `vi.mock("@dispatch/*")`.
 
+**Concurrency caveat (parallel waves):** `tsc -b`/vitest/biome are whole-project, so an agent's
+OWN mid-wave check can transiently see a sibling's half-written file. Don't act on a report's
+out-of-package errors; YOUR post-wave run is authoritative. Re-run a suite that depends on shared
+external state before trusting it — and ALWAYS sweep leaked server/collector processes between
+live runs (§8 bracket trick), since a leak silently poisons the next run's counts.
+
 ---
 
 ## 5. Resolving errors & contract changes
@@ -222,6 +262,26 @@ git status --short  # confirm the agent stayed in its lane (no out-of-scope edit
 - **Live API errors:** an HTTP 429 `GoUsageLimitError` is an UPSTREAM rate limit,
   not a bug. The `opencode-2` key has a monthly cap; `opencode-1` is the backup.
   Swap `DISPATCH_API_KEY` in `.env` (both keys are there).
+
+---
+
+## 5a. Agent-failure recovery patterns
+
+- **Plan-only / "shall I proceed?" agent.** A summon sometimes returns a PLAN and STOPS without
+  editing (no diff, no `reports/<unit>.md`). Detect via `git status` + the missing report.
+  Re-summon the SAME TASK prefixed: "IMPLEMENT THIS NOW — make all edits, run the checks, write
+  the report; do not stop to plan or ask." Don't hand-fix its work.
+- **A behaviour change reds a SIBLING's tests (test fan-out).** When a unit's new behaviour
+  invalidates another unit's test ASSERTIONS, those tests belong to that OTHER owner — summon it
+  with a focused "fix these N failing tests to match the new behaviour" TASK (state the
+  behaviour). The orchestrator never edits feature tests itself. (Distinct from an INTEGRATION
+  bug where neither side is wrong — that's the temporary multi-knowledge agent in §5.)
+- **Agent strayed out of its lane.** `git status --short` after every wave; if an agent touched a
+  file outside its package, keep it ONLY if it's legitimately the orchestrator's lane
+  (contracts / build / config / harness, §6) and note it — otherwise revert + re-summon with a
+  tighter scope.
+- **Flaky green.** A wave that passes once but leaked a server/collector or relies on shared
+  external state can pass for the wrong reason; sweep (§8) and re-run before committing.
 
 ---
 

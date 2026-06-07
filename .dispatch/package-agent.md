@@ -55,6 +55,9 @@ The authoritative rules (`.dispatch/rules/*`, inlined into this prompt) govern. 
   module wired between features. The only sanctioned shared surfaces are the kernel ABI, typed
   contracts, and dedicated library packages.
 - **Strict TS.** Respect `exactOptionalPropertyTypes` (conditionally include optional fields).
+- **Biome is zero-tolerance** (`.dispatch/rules/biome-clean.md`, inlined). `bunx biome check` must
+  end with ZERO warnings AND ZERO infos — not merely zero errors. Fix the code; never
+  `// biome-ignore` or relax config.
 
 ## Verify before finishing — YOUR PACKAGE IN ISOLATION
 Other agents may be editing sibling packages in parallel, so never run the whole-graph build.
@@ -63,7 +66,7 @@ Run, and paste the output into your report:
 - `bunx vitest run packages/<your-package>/src`         → all pass (count must go up)
   - If your package uses `bun:sqlite`, use `bun test packages/<your-package>/src` instead
     (vitest can't load `bun:sqlite`).
-- `bunx biome check packages/<your-package>`            → clean
+- `bunx biome check packages/<your-package>`            → clean (0 warnings AND 0 infos)
 The orchestrator runs the authoritative full-graph `typecheck` / `test` / `check` itself.
 
 ## Report (REQUIRED) → `reports/<your-package>.md`
