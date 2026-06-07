@@ -1161,6 +1161,151 @@ describe("runTurn", () => {
 			);
 			expect(logRecords).toHaveLength(0);
 		});
+
+		it("emits ttft and decode spans for a generating step", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "Hello" },
+					{ type: "text-delta", delta: " world" },
+					{ type: "usage", usage: { inputTokens: 10, outputTokens: 5 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const ttftOpens = sink.records.filter((r) => r.kind === "span-open" && r.name === "ttft");
+			const ttftCloses = sink.records.filter((r) => r.kind === "span-close" && r.name === "ttft");
+			const decodeOpens = sink.records.filter((r) => r.kind === "span-open" && r.name === "decode");
+			const decodeCloses = sink.records.filter(
+				(r) => r.kind === "span-close" && r.name === "decode",
+			);
+
+			expect(ttftOpens).toHaveLength(1);
+			expect(ttftCloses).toHaveLength(1);
+			expect(decodeOpens).toHaveLength(1);
+			expect(decodeCloses).toHaveLength(1);
+
+			const stepOpen = sink.records.find((r) => r.kind === "span-open" && r.name === "step");
+			expect(stepOpen).toBeDefined();
+
+			if (
+				ttftOpens[0]?.kind === "span-open" &&
+				ttftCloses[0]?.kind === "span-close" &&
+				decodeOpens[0]?.kind === "span-open" &&
+				decodeCloses[0]?.kind === "span-close" &&
+				stepOpen?.kind === "span-open"
+			) {
+				// ttft and decode are children of step
+				expect(ttftOpens[0].parentSpanId).toBe(stepOpen.spanId);
+				expect(decodeOpens[0].parentSpanId).toBe(stepOpen.spanId);
+
+				// ttft closes before decode opens (in order)
+				const ttftCloseIdx = sink.records.indexOf(ttftCloses[0]);
+				const decodeOpenIdx = sink.records.indexOf(decodeOpens[0]);
+				expect(ttftCloseIdx).toBeLessThan(decodeOpenIdx);
+
+				// ttft has firstToken: true
+				expect(ttftCloses[0].attributes?.firstToken).toBe(true);
+
+				// durations from fake clock
+				expect(ttftCloses[0].durationMs).toBeGreaterThanOrEqual(0);
+				expect(decodeCloses[0].durationMs).toBeGreaterThanOrEqual(0);
+			}
+		});
+
+		it("first token counts a reasoning delta", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "reasoning-delta", delta: "thinking..." },
+					{ type: "text-delta", delta: "Hello" },
+					{ type: "usage", usage: { inputTokens: 10, outputTokens: 5 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const ttftCloses = sink.records.filter((r) => r.kind === "span-close" && r.name === "ttft");
+			expect(ttftCloses).toHaveLength(1);
+
+			// The ttft span should close at the reasoning delta, not at the text delta
+			if (ttftCloses[0]?.kind === "span-close") {
+				expect(ttftCloses[0].attributes?.firstToken).toBe(true);
+			}
+		});
+
+		it("a step with no content token does not emit a misleading decode", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			// First step (tool-call-only) should have ttft with firstToken: false and no decode
+			const ttftOpens = sink.records.filter((r) => r.kind === "span-open" && r.name === "ttft");
+			const ttftCloses = sink.records.filter((r) => r.kind === "span-close" && r.name === "ttft");
+			const decodeOpens = sink.records.filter((r) => r.kind === "span-open" && r.name === "decode");
+
+			// There should be 2 ttft opens (one per step) and 2 ttft closes
+			expect(ttftOpens).toHaveLength(2);
+			expect(ttftCloses).toHaveLength(2);
+
+			// First step: tool-call-only, no first token
+			if (ttftCloses[0]?.kind === "span-close") {
+				expect(ttftCloses[0].attributes?.firstToken).toBe(false);
+			}
+
+			// Second step: has text-delta, should have firstToken: true and decode span
+			if (ttftCloses[1]?.kind === "span-close") {
+				expect(ttftCloses[1].attributes?.firstToken).toBe(true);
+			}
+
+			// Only one decode span (for the second step)
+			expect(decodeOpens).toHaveLength(1);
+		});
 	});
 
 	describe("provider logger threading", () => {
