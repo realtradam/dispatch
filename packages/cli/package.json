@@ -6,6 +6,7 @@
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"dependencies": {
-		"@dispatch/transport-contract": "workspace:*"
+		"@dispatch/transport-contract": "workspace:*",
+		"@dispatch/wire": "workspace:*"
 	}
 }

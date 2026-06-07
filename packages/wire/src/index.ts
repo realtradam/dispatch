@@ -14,7 +14,16 @@ export type Role = "system" | "user" | "assistant" | "tool";
 /** Opaque identifier for a turn (one user→assistant cycle). */
 export type TurnId = string & { readonly __brand: "TurnId" };
 
-/** Opaque identifier for a step (one LLM round-trip within a turn). */
+/**
+ * Opaque identifier for a step (one LLM round-trip within a turn). It is the
+ * authoritative grouping key for the tool calls a model batches together in a
+ * single step (parallel/batched calls): every `tool-call`/`tool-result` event
+ * and every persisted tool chunk (`ToolCallChunk`/`ToolResultChunk`) from the
+ * same step carries the SAME `stepId`, so a client groups a batch purely by
+ * equality — identically on the live stream and in replayed history. Per-turn
+ * unique and gap-free in step order; treat it as opaque (do not parse it). The
+ * runtime derives it deterministically from the turn id + 0-based step index.
+ */
 export type StepId = string & { readonly __brand: "StepId" };
 
 /**
@@ -51,6 +60,18 @@ export interface ToolCallChunk {
 	readonly toolCallId: string;
 	readonly toolName: string;
 	readonly input: unknown;
+	/**
+	 * The step that produced this call — generation provenance stamped by the
+	 * runtime when the model emits the call (NOT storage metadata like `seq`,
+	 * which is why it lives on the chunk and travels with it through persistence
+	 * and replay). Tool calls a model batches together in one step share the same
+	 * `stepId`: the grouping key for rendering a parallel batch as one unit, and
+	 * equal to the `stepId` on the matching `tool-call` AgentEvent. Optional:
+	 * absent on chunks reconstructed outside a turn and on rows persisted before
+	 * this field existed, so a consumer must tolerate its absence (render
+	 * ungrouped).
+	 */
+	readonly stepId?: StepId;
 }
 
 /**
@@ -64,6 +85,15 @@ export interface ToolResultChunk {
 	readonly toolName: string;
 	readonly content: string;
 	readonly isError: boolean;
+	/**
+	 * The step that produced the originating call — equal to the `stepId` on the
+	 * matching `tool-call` chunk (same `toolCallId`) and on the `tool-result`
+	 * AgentEvent, so a consumer groups a step's calls with their results.
+	 * Generation provenance, not storage metadata (see `ToolCallChunk.stepId`).
+	 * Optional for the same reasons; `reconcile` copies it from the originating
+	 * call onto a synthesized (interrupted) result.
+	 */
+	readonly stepId?: StepId;
 }
 
 /** An error that occurred during generation or tool dispatch. */
@@ -98,9 +128,11 @@ export interface ChatMessage {
  * sync cursor, assigned in append order) and records the `role` of the message
  * it belongs to. This makes a flat seq-ordered stream both incrementally
  * syncable ("give me chunks after seq N") and regroupable into messages by the
- * client. `chunk` is the pure content unit, unchanged — `Chunk` itself never
- * carries storage metadata (it is also passed to/from the provider, which has
- * no use for a cursor).
+ * client. `chunk` is the content unit — `Chunk` carries no storage/sync cursor
+ * (`seq` lives here on the envelope, not on the chunk, since it is assigned by
+ * the store and the provider has no use for it). A chunk MAY still carry
+ * generation provenance assigned at production time (e.g. a tool chunk's
+ * `stepId`), which is intrinsic to the content and so travels with it.
  */
 export interface StoredChunk {
 	readonly seq: number;
@@ -175,6 +207,14 @@ export interface TurnToolCallEvent {
 	readonly type: "tool-call";
 	readonly conversationId: string;
 	readonly turnId: string;
+	/**
+	 * The step that produced this call. Tool calls a model batches together in
+	 * one step share the same `stepId` — the grouping key for rendering a
+	 * parallel batch as one unit. Matches the `stepId` on the matching
+	 * `tool-result` event and on the persisted tool chunk
+	 * (`StoredChunk.chunk.stepId`).
+	 */
+	readonly stepId: StepId;
 	readonly toolCallId: string;
 	readonly toolName: string;
 	readonly input: unknown;
@@ -185,6 +225,13 @@ export interface TurnToolResultEvent {
 	readonly type: "tool-result";
 	readonly conversationId: string;
 	readonly turnId: string;
+	/**
+	 * The step that produced the originating call. Equal to the `stepId` on the
+	 * matching `tool-call` event (same `toolCallId`) and on the persisted tool
+	 * chunk (`StoredChunk.chunk.stepId`), so a client groups a step's calls with
+	 * their results.
+	 */
+	readonly stepId: StepId;
 	readonly toolCallId: string;
 	readonly toolName: string;
 	readonly content: string;

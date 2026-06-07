@@ -1689,4 +1689,140 @@ describe("runTurn", () => {
 			}
 		});
 	});
+
+	describe("stepId", () => {
+		it("tool-call and tool-result events carry stepId", async () => {
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const toolCallEvt = events.find((e) => e.type === "tool-call");
+			const toolResultEvt = events.find((e) => e.type === "tool-result");
+
+			expect(toolCallEvt).toBeDefined();
+			expect(toolResultEvt).toBeDefined();
+
+			if (toolCallEvt?.type === "tool-call" && toolResultEvt?.type === "tool-result") {
+				expect(toolCallEvt.stepId).toBeDefined();
+				expect(toolResultEvt.stepId).toBeDefined();
+				expect(toolCallEvt.stepId).toBe(toolResultEvt.stepId);
+			}
+		});
+
+		it("tool calls in the SAME step share one stepId; a later step gets a different one", async () => {
+			const toolA = createFakeTool("a", async () => ({ content: "a-result" }));
+			const toolB = createFakeTool("b", async () => ({ content: "b-result" }));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "a", input: {} },
+					{ type: "tool-call", toolCallId: "tc2", toolName: "b", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "tool-call", toolCallId: "tc3", toolName: "a", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [toolA, toolB],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const toolCallEvts = events.filter((e) => e.type === "tool-call");
+			expect(toolCallEvts.length).toBeGreaterThanOrEqual(2);
+
+			const step0Calls = toolCallEvts.filter(
+				(e) => e.type === "tool-call" && (e.toolCallId === "tc1" || e.toolCallId === "tc2"),
+			);
+			const step1Call = toolCallEvts.find((e) => e.type === "tool-call" && e.toolCallId === "tc3");
+
+			expect(step0Calls).toHaveLength(2);
+			if (step0Calls[0]?.type === "tool-call" && step0Calls[1]?.type === "tool-call") {
+				expect(step0Calls[0].stepId).toBe(step0Calls[1].stepId);
+			}
+
+			if (step1Call?.type === "tool-call" && step0Calls[0]?.type === "tool-call") {
+				expect(step1Call.stepId).not.toBe(step0Calls[0].stepId);
+			}
+		});
+
+		it("tool chunks in the result carry stepId", async () => {
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+			});
+
+			const toolCallMsg = result.messages.find(
+				(m) => m.role === "assistant" && m.chunks.some((c) => c.type === "tool-call"),
+			);
+			const toolResultMsg = result.messages.find((m) => m.role === "tool");
+
+			expect(toolCallMsg).toBeDefined();
+			expect(toolResultMsg).toBeDefined();
+
+			const tcChunk = toolCallMsg?.chunks.find((c) => c.type === "tool-call");
+			const trChunk = toolResultMsg?.chunks[0];
+
+			expect(tcChunk?.type).toBe("tool-call");
+			expect(trChunk?.type).toBe("tool-result");
+
+			if (tcChunk?.type === "tool-call" && trChunk?.type === "tool-result") {
+				expect(tcChunk.stepId).toBeDefined();
+				expect(trChunk.stepId).toBeDefined();
+				expect(tcChunk.stepId).toBe(trChunk.stepId);
+			}
+		});
+	});
 });

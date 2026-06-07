@@ -17,6 +17,7 @@
 | **conversationId** | The string identifier for a conversation. Threads multi-turn history; the `/chat` request field that continues an existing conversation. | tabId, sessionId, chatId |
 | **turn** | One user message → assistant response cycle (may span multiple steps). | — |
 | **step** | One LLM round-trip within a turn (may emit multiple tool calls). | iteration |
+| **stepId** | The identifier of a step, stamped on each `tool-call`/`tool-result` event and tool chunk it produces, so a client groups a parallel/batched tool-call set by equality. Branded `StepId`; the runtime derives it deterministically as `<turnId>#<stepIndex>` (0-based). Generation provenance carried ON the tool chunk (unlike `seq`, which is a store-assigned sync cursor on the `StoredChunk` envelope). Treat as opaque. | batchId, step index (as the wire key) |
 | **tool call** | A model's request to run a tool within a step. | function call (when meaning a tool call) |
 | **chunk** | One ordered piece of a message (text, thinking, tool-call/result, etc.), append-only in the log. | block, segment |
 | **seq** | The monotonic, gap-free, per-conversation sequence number stamped on each chunk as it is appended to the log. The sync cursor: a client requests `?sinceSeq=N` to fetch only newer chunks. Storage/sync metadata, never message content. | cursor (when meaning the number), offset, index |

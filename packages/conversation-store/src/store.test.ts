@@ -1,4 +1,4 @@
-import type { ChatMessage, StorageNamespace } from "@dispatch/kernel";
+import type { ChatMessage, StepId, StorageNamespace } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createConversationStore } from "./store.js";
 
@@ -333,5 +333,95 @@ describe("ConversationStore", () => {
 		expect(all).toHaveLength(2);
 		expect(all[0]?.seq).toBe(1);
 		expect(all[1]?.seq).toBe(2);
+	});
+
+	it("append → loadSince preserves a tool chunk's stepId", async () => {
+		const store = createConversationStore(storage);
+		const stepId = "step_abc" as StepId;
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_sid",
+						toolName: "myTool",
+						input: {},
+						stepId,
+					},
+				],
+			},
+			{
+				role: "tool",
+				chunks: [
+					{
+						type: "tool-result",
+						toolCallId: "call_sid",
+						toolName: "myTool",
+						content: "ok",
+						isError: false,
+						stepId,
+					},
+				],
+			},
+		];
+		await store.append("conv1", messages);
+		const chunks = await store.loadSince("conv1");
+		expect(chunks).toHaveLength(2);
+		const callChunk = chunks[0]?.chunk;
+		expect(callChunk?.type).toBe("tool-call");
+		if (callChunk?.type === "tool-call") {
+			expect(callChunk.stepId).toBe(stepId);
+		}
+		const resultChunk = chunks[1]?.chunk;
+		expect(resultChunk?.type).toBe("tool-result");
+		if (resultChunk?.type === "tool-result") {
+			expect(resultChunk.stepId).toBe(stepId);
+		}
+	});
+
+	it("load preserves a tool chunk's stepId", async () => {
+		const store = createConversationStore(storage);
+		const stepId = "step_xyz" as StepId;
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_lid",
+						toolName: "myTool",
+						input: { a: 1 },
+						stepId,
+					},
+				],
+			},
+			{
+				role: "tool",
+				chunks: [
+					{
+						type: "tool-result",
+						toolCallId: "call_lid",
+						toolName: "myTool",
+						content: "done",
+						isError: false,
+						stepId,
+					},
+				],
+			},
+		];
+		await store.append("conv1", messages);
+		const result = await store.load("conv1");
+		expect(result).toHaveLength(2);
+		const callChunk = result[0]?.chunks[0];
+		expect(callChunk?.type).toBe("tool-call");
+		if (callChunk?.type === "tool-call") {
+			expect(callChunk.stepId).toBe(stepId);
+		}
+		const resultChunk = result[1]?.chunks[0];
+		expect(resultChunk?.type).toBe("tool-result");
+		if (resultChunk?.type === "tool-result") {
+			expect(resultChunk.stepId).toBe(stepId);
+		}
 	});
 });
