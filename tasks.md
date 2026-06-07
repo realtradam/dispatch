@@ -522,7 +522,7 @@ The dispatch-web orchestrator couriered `backend-handoff.md` (in the FE repo). R
   headers on all routes incl. the NDJSON stream). HTTP=24203, WS=24205; no WS origin allow-list.
   Commit `812621c`.
 
-### FE ask — step grouping (`stepId`) for batched tool calls  [~] IN PROGRESS
+### FE ask — step grouping (`stepId`) for batched tool calls  [x] DONE + verified live (`904c6d7`)
 FE handoff (`../dispatch-web/backend-handoff.md` §3): render a model's parallel/batched tool
 calls (the set emitted in ONE step) as a single grouped unit, on BOTH the live stream and
 replayed history. Decisions (user, §5.2): **full scope (live + persisted)**; key = the
@@ -542,21 +542,24 @@ on-chunk provenance (distinct concepts — doc'd in wire + GLOSSARY).
   `ToolResultChunk` (optional: old rows / non-turn chunks); `stepId: StepId` (required) on
   `TurnToolCallEvent` + `TurnToolResultEvent`; `StepId` doc clarified (provenance vs cursor).
   Wire compiles in isolation. GLOSSARY `stepId` row added.
-- [ ] **Build wave (3 disjoint owner-agents, parallel — all compile against the authored wire):**
-  - **kernel-runtime:** mint `stepId=`${turnId}#${step}`` in the loop; stamp on tool-call/
-    tool-result CHUNKS; thread to `toolCallEvent`/`toolResultEvent` factories. (kernel rules.)
-  - **conversation-store:** carry `stepId` on `PersistedChunkEntry` (append) + read back in
-    `loadSince`/`load`; `reconcile` copies a dangling call's `stepId` onto the synthesized
-    result. NO SQLite migration (KV JSON blob). +round-trip & reconcile tests.
-  - **cli:** add `stepId` to the `tool-call`/`tool-result` EVENT fixtures in `render.test.ts`
-    (renderer ignores the field — no logic change).
-  - **NOT touched:** session-orchestrator (envelope unchanged → its `StoredChunk` fake compiles;
-    chunk-carried stepId rides through), transport-{http,ws,contract} (pass-through),
-    storage-sqlite (generic KV). Confirm via post-wave full typecheck.
-- [ ] **Post-wave (orchestrator):** full typecheck/test/biome; regen FE `.dispatch/{wire,
-  transport-contract}.reference.md`; bump `wire`+`transport-contract` minor; courier reply into
-  `../dispatch-web/backend-handoff-reply.md`. Live: tool turn → events carry `stepId`, two calls
-  in one step share it, persisted chunks carry it via `GET /conversations/:id`.
+- [x] **Build wave (3 disjoint owner-agents, parallel, mimo-v2.5-pro — all compiled against the wire):**
+  - **kernel-runtime:** mints `stepId=`${turnId}#${step}`` per step (run-turn.ts:365, via
+    `StepContext.stepId`); stamps on tool-call chunk (126) + tool-result chunk (295) + both event
+    factories (events.ts). +3 tests. reports/kernel-runtime.md.
+  - **conversation-store:** confirmed chunk-carried `stepId` round-trips `append`/`load`/`loadSince`
+    for FREE (whole-chunk JSON, no schema change); `reconcile` now copies a dangling call's `stepId`
+    onto the synthesized result (exactOptional-safe). +4 tests. reports/conversation-store.md.
+  - **cli:** added `stepId` to the `tool-call`/`tool-result` EVENT fixtures (render unchanged) +
+    `@dispatch/wire` dep. reports/cli.md.
+  - **NOT touched (confirmed):** session-orchestrator (envelope unchanged), transport-{http,ws,
+    contract} (pass-through), storage-sqlite (generic KV).
+- [x] **Post-wave (orchestrator):** full typecheck EXIT 0, **509 vitest + 89 bun**, biome 0/0, all
+  agents in-lane, zero internal `@dispatch/*` mocks. Bumped `wire`+`transport-contract` `0.1.0→0.2.0`;
+  regen FE `.dispatch/{wire,transport-contract}.reference.md`; courier reply
+  `../dispatch-web/backend-handoff-reply.md`. **Live (host-bin :24233, real flash):** asked it to read
+  2 files → flash **batched both `read_file` calls in ONE step** → 2 tool-call + 2 tool-result events
+  all sharing `stepId` `turn-…#0`; 4 persisted tool chunks all carry it; live↔persisted cross-match ✓.
+  The FE's exact use case (group a parallel batch by `stepId`) proven end-to-end.
 
 ### 3. dedup / storage growth (after frontend)
 The deferred trace-body de-duplication + rotation/compression (D5 volume-control +
