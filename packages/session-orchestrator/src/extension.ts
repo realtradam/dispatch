@@ -38,6 +38,7 @@ export function activate(host: HostAPI): void {
 		},
 		runTurn,
 		logger: host.logger,
+		now: () => Date.now(),
 	});
 
 	host.provideService(sessionOrchestratorHandle, orchestrator);

@@ -580,6 +580,53 @@ measured** (provider-agnostic, self-consistent); **first token = first text OR r
   spans with valid `durationMs` (ttft 1090ms, decode 1673ms) + `firstToken:true`. GLOSSARY: TTFT,
   decode time. NOT on the wire (clients don't receive it) — a future wire+FE step if desired.
 
+### Expose backend metrics to clients (timing/tokens) — IN PROGRESS
+User ask: surface the backend's authoritative metrics (tokens, TTFT/decode, TPS, tool-exec +
+turn durations) to clients (CLI/web FE). Decisions (user, §5.2):
+- **Delivery = inline in the existing chat stream**, as distinct `AgentEvent` types/fields —
+  push-everything, FE routes by `type` and ignores what it doesn't render (NOT a separate live
+  endpoint, NOT a negotiation handshake — events are tiny/low-frequency, not per-token).
+- **Carrier = a new `step-complete` event** (per-step end, ordering-safe timing) + additive fields.
+- **Scope = LIVE now**; persisted-for-replay is a documented fast-follow (below).
+
+#### Pass 1 — LIVE stream metrics  [~] IN PROGRESS
+Metric set (all wire fields additive/optional): per-step tokens (`usage` += `stepId`), per-step
+`ttftMs`/`decodeMs`/`genTotalMs` (new `step-complete` event), tool-exec `durationMs` (`tool-result`),
+turn `durationMs` + aggregate `usage` (`done`). TPS derived FE-side (`outputTokens/decodeMs`);
+context-size proxy = `usage.inputTokens` (already present).
+- [x] **Contracts (orchestrator):** `@dispatch/wire` — new `TurnStepCompleteEvent` (+ union);
+  `stepId?` on `TurnUsageEvent`; `durationMs?` on `TurnToolResultEvent`; `durationMs?`+`usage?` on
+  `TurnDoneEvent`. Kernel re-export shims (events.ts/index.ts) updated. `RunTurnInput.now?: () =>
+  number` (additive optional clock — runtime has no clock today; needed to put real numbers on the
+  wire). **Whole-graph typecheck clean** → new variant breaks NO consumer (no exhaustive switches;
+  cli/transport unaffected). GLOSSARY: TTFT/decode already added.
+- [ ] **Build wave (2 disjoint owner-agents, parallel, mimo-v2.5-pro):**
+  - **kernel-runtime:** when `now` provided, measure + emit timing — `step-complete` per step
+    (ttft/decode/genTotal, reusing the just-built first-token detection), `stepId` on `usage`,
+    `durationMs` on `tool-result`, `durationMs`+`usage` on `done`. Keep the trace spans (may unify
+    span timing with the numeric measurement). Omit timing gracefully when `now` absent. +tests.
+  - **session-orchestrator:** add `now?` to `SessionOrchestratorDeps`, thread into the
+    `RunTurnInput` it builds; provide `() => Date.now()` from the extension's `activate` (shell
+    edge). +test asserting forwarding.
+  - **NOT touched (typecheck-confirmed):** transport-http/ws (verbatim pass-through), cli (optional
+    fields, non-exhaustive switch), host-bin (orchestrator self-injects the clock in activate).
+- [ ] **Post-wave (orchestrator):** full typecheck/test/biome; bump `wire`+`transport-contract`
+  minor (`0.2.0→0.3.0`); regen FE `.dispatch/{wire,transport-contract}.reference.md`; courier reply.
+  Live: confirm `step-complete`/durations/`usage.stepId` on the real stream.
+
+#### Pass 2 — DEFERRED: persisted metrics for REPLAY
+Today usage/timing are NOT persisted (conversation-store stores chunks only), so reopening a past
+conversation (`GET /conversations/:id`) shows messages but no metrics. To show historical
+tokens/timing:
+- Persist a per-turn (and/or per-step) metrics record in `conversation-store` (new storage shape —
+  metrics are not chunks; e.g. a `conv:<id>:turn:<turnId>:metrics` key or a sibling namespace).
+- Expose on the read path: a `metrics` field on `ConversationHistoryResponse`, or a sibling
+  `GET /conversations/:id/metrics` (read endpoint = the right home for historical metrics, vs the
+  live stream). New contract + transport-http route + conversation-store schema + FE.
+- The trace-store already holds rich per-span timing durably; Pass 2 could alternatively expose a
+  read slice of THAT rather than duplicating into conversation-store (decide at Pass-2 design time).
+Sequenced after Pass 1 lands (and can ride alongside the FE-Slice work that consumes Pass 1).
+
 ### 3. dedup / storage growth (after frontend)
 The deferred trace-body de-duplication + rotation/compression (D5 volume-control +
 `prefix.fingerprint` + §6 retention strategy) — already designed in

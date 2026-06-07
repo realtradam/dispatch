@@ -168,6 +168,7 @@ export type AgentEvent =
 	| TurnToolResultEvent
 	| TurnToolOutputEvent
 	| TurnUsageEvent
+	| TurnStepCompleteEvent
 	| TurnErrorEvent
 	| TurnDoneEvent
 	| TurnSealedEvent;
@@ -236,6 +237,12 @@ export interface TurnToolResultEvent {
 	readonly toolName: string;
 	readonly content: string;
 	readonly isError: boolean;
+	/**
+	 * How long the tool took to execute (dispatch → result), in milliseconds —
+	 * the backend's authoritative execution time, distinct from any client-side
+	 * wall-clock. Optional: present only when the runtime was given a clock.
+	 */
+	readonly durationMs?: number;
 }
 
 /** Streaming output from a tool execution (e.g. shell stdout/stderr). */
@@ -253,7 +260,41 @@ export interface TurnUsageEvent {
 	readonly type: "usage";
 	readonly conversationId: string;
 	readonly turnId: string;
+	/**
+	 * The step this usage report belongs to, so a consumer can attribute tokens
+	 * per step (and join with the matching `step-complete` timing by `stepId`).
+	 * Optional: absent when the runtime had no step context, and on usage emitted
+	 * before this field existed.
+	 */
+	readonly stepId?: StepId;
 	readonly usage: Usage;
+}
+
+/**
+ * A step (one LLM round-trip) has completed — the authoritative per-step metrics
+ * packet, emitted once at the step's end (after the generation stream finishes),
+ * so its timing is final (unlike `usage`, which may arrive mid-stream). Carries
+ * the step's generation timing; join to the step's tokens via `stepId` on the
+ * `usage` event. All timing fields are optional: present only when the runtime
+ * was given a clock, and `ttftMs`/`decodeMs` additionally require that a first
+ * content token (text or reasoning) was observed this step.
+ */
+export interface TurnStepCompleteEvent {
+	readonly type: "step-complete";
+	readonly conversationId: string;
+	readonly turnId: string;
+	readonly stepId: StepId;
+	/** Time to first token: stream start → first text/reasoning delta. */
+	readonly ttftMs?: number;
+	/** Decode time: first token → stream end (generation total − TTFT). */
+	readonly decodeMs?: number;
+	/**
+	 * Total generation time for the step: stream start → stream end. Present
+	 * whenever a clock was available, even if no first token was seen (in which
+	 * case `ttftMs`/`decodeMs` are absent). When a first token was seen,
+	 * `genTotalMs === ttftMs + decodeMs`.
+	 */
+	readonly genTotalMs?: number;
 }
 
 /** An error occurred during the turn. */
@@ -271,6 +312,17 @@ export interface TurnDoneEvent {
 	readonly conversationId: string;
 	readonly turnId: string;
 	readonly reason: string;
+	/**
+	 * Total wall-clock duration of the turn (turn start → turn end), in
+	 * milliseconds. Optional: present only when the runtime was given a clock.
+	 */
+	readonly durationMs?: number;
+	/**
+	 * Aggregate token usage across all steps in the turn — a convenience total so
+	 * a consumer need not sum the per-step `usage` events. Optional (absent if the
+	 * provider reported no usage).
+	 */
+	readonly usage?: Usage;
 }
 
 /**

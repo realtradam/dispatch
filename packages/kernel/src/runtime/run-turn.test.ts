@@ -125,6 +125,7 @@ describe("runTurn", () => {
 			"text-delta",
 			"reasoning-delta",
 			"usage",
+			"step-complete",
 			"done",
 		]);
 	});
@@ -1967,6 +1968,335 @@ describe("runTurn", () => {
 				expect(tcChunk.stepId).toBeDefined();
 				expect(trChunk.stepId).toBeDefined();
 				expect(tcChunk.stepId).toBe(trChunk.stepId);
+			}
+		});
+	});
+
+	describe("timing events (now provided)", () => {
+		function createCounterNow(): { now: () => number; tick: (ms: number) => void } {
+			let current = 0;
+			return {
+				now: () => current,
+				tick: (ms: number) => {
+					current += ms;
+				},
+			};
+		}
+
+		it("emits step-complete per step with timing when now provided", async () => {
+			const clock = createCounterNow();
+			clock.tick(100); // turn starts at 100
+
+			const { events, emit } = createCollectingEmit();
+
+			// Advance clock during stream: first token at +50ms, stream ends at +200ms
+			let streamCallCount = 0;
+			const wrappedProvider: ProviderContract = {
+				id: "fake",
+				stream(_messages, _tools) {
+					const idx = streamCallCount++;
+					return (async function* () {
+						if (idx === 0) {
+							clock.tick(50); // stream starts
+							yield { type: "text-delta", delta: "Hello" } as ProviderEvent;
+							// first token seen at 150 (100+50)
+							clock.tick(100);
+							yield { type: "text-delta", delta: " world" } as ProviderEvent;
+							clock.tick(50);
+							yield {
+								type: "usage",
+								usage: { inputTokens: 10, outputTokens: 5 },
+							} as ProviderEvent;
+							yield { type: "finish", reason: "stop" } as ProviderEvent;
+						}
+					})();
+				},
+			};
+
+			await runTurn({
+				provider: wrappedProvider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				now: clock.now,
+			});
+
+			const stepCompleteEvts = events.filter((e) => e.type === "step-complete");
+			expect(stepCompleteEvts).toHaveLength(1);
+
+			const sc = stepCompleteEvts[0];
+			if (sc?.type === "step-complete") {
+				expect(sc.conversationId).toBe("conv-1");
+				expect(sc.turnId).toBe("turn-1");
+				expect(sc.stepId).toBeDefined();
+				expect(sc.genTotalMs).toBe(200); // 50+100+50
+				expect(sc.ttftMs).toBe(50); // stream start → first text-delta
+				expect(sc.decodeMs).toBe(150); // first token → stream end
+				const ttft = sc.ttftMs;
+				const decode = sc.decodeMs;
+				const genTotal = sc.genTotalMs;
+				if (ttft !== undefined && decode !== undefined && genTotal !== undefined) {
+					expect(genTotal).toBe(ttft + decode);
+				}
+			}
+		});
+
+		it("step-complete omits ttft/decode but keeps genTotalMs for a no-content step", async () => {
+			const clock = createCounterNow();
+			clock.tick(100); // turn starts at 100
+
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			let streamCallCount = 0;
+			const wrappedProvider: ProviderContract = {
+				id: "fake",
+				stream(_messages, _tools) {
+					const idx = streamCallCount++;
+					return (async function* () {
+						if (idx === 0) {
+							clock.tick(80); // stream starts at 180
+							yield {
+								type: "tool-call",
+								toolCallId: "tc1",
+								toolName: "echo",
+								input: {},
+							} as ProviderEvent;
+							clock.tick(20);
+							yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+						} else {
+							clock.tick(50);
+							yield { type: "text-delta", delta: "done" } as ProviderEvent;
+							clock.tick(50);
+							yield { type: "finish", reason: "stop" } as ProviderEvent;
+						}
+					})();
+				},
+			};
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider: wrappedProvider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				now: clock.now,
+			});
+
+			const stepCompleteEvts = events.filter((e) => e.type === "step-complete");
+			expect(stepCompleteEvts).toHaveLength(2);
+
+			// First step: tool-call-only, no content token
+			const sc0 = stepCompleteEvts[0];
+			if (sc0?.type === "step-complete") {
+				expect(sc0.stepId).toBeDefined();
+				expect(sc0.genTotalMs).toBe(100); // 80+20
+				expect(sc0.ttftMs).toBeUndefined();
+				expect(sc0.decodeMs).toBeUndefined();
+			}
+
+			// Second step: has text-delta
+			const sc1 = stepCompleteEvts[1];
+			if (sc1?.type === "step-complete") {
+				expect(sc1.stepId).toBeDefined();
+				expect(sc1.genTotalMs).toBe(100); // 50+50
+				expect(sc1.ttftMs).toBe(50);
+				expect(sc1.decodeMs).toBe(50);
+			}
+		});
+
+		it("usage event carries stepId", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "usage", usage: { inputTokens: 5, outputTokens: 3 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const usageEvts = events.filter((e) => e.type === "usage");
+			expect(usageEvts).toHaveLength(1);
+			const ue = usageEvts[0];
+			if (ue?.type === "usage") {
+				expect(ue.stepId).toBeDefined();
+			}
+		});
+
+		it("tool-result carries durationMs (execution time) when now provided", async () => {
+			const clock = createCounterNow();
+			clock.tick(100); // turn starts at 100
+
+			const tool = createFakeTool("slow", async () => {
+				clock.tick(200); // tool takes 200ms to execute
+				return { content: "done" };
+			});
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "slow", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "ok" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				now: clock.now,
+			});
+
+			const toolResultEvts = events.filter((e) => e.type === "tool-result");
+			expect(toolResultEvts).toHaveLength(1);
+			const tr = toolResultEvts[0];
+			if (tr?.type === "tool-result") {
+				expect(tr.durationMs).toBeDefined();
+				expect(tr.durationMs).toBe(200);
+			}
+		});
+
+		it("done carries durationMs and aggregate usage when now provided", async () => {
+			const clock = createCounterNow();
+			clock.tick(100); // turn starts at 100
+
+			const wrappedProvider: ProviderContract = {
+				id: "fake",
+				stream(_messages, _tools) {
+					return (async function* () {
+						clock.tick(80); // stream duration
+						yield { type: "text-delta", delta: "hi" } as ProviderEvent;
+						yield {
+							type: "usage",
+							usage: { inputTokens: 10, outputTokens: 5 },
+						} as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					})();
+				},
+			};
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider: wrappedProvider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				now: clock.now,
+			});
+
+			const doneEvts = events.filter((e) => e.type === "done");
+			expect(doneEvts).toHaveLength(1);
+			const d = doneEvts[0];
+			if (d?.type === "done") {
+				expect(d.durationMs).toBeDefined();
+				expect(d.durationMs).toBeGreaterThan(0);
+				expect(d.usage).toBeDefined();
+				if (d.usage !== undefined) {
+					expect(d.usage.inputTokens).toBe(10);
+					expect(d.usage.outputTokens).toBe(5);
+				}
+			}
+		});
+
+		it("no now → timing fields absent", async () => {
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "usage", usage: { inputTokens: 5, outputTokens: 3 } },
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "usage", usage: { inputTokens: 10, outputTokens: 5 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				// no now
+			});
+
+			// step-complete still emitted (with stepId, no timing)
+			const stepCompleteEvts = events.filter((e) => e.type === "step-complete");
+			expect(stepCompleteEvts).toHaveLength(2);
+			for (const sc of stepCompleteEvts) {
+				if (sc?.type === "step-complete") {
+					expect(sc.stepId).toBeDefined();
+					expect(sc.ttftMs).toBeUndefined();
+					expect(sc.decodeMs).toBeUndefined();
+					expect(sc.genTotalMs).toBeUndefined();
+				}
+			}
+
+			// usage still carries stepId
+			const usageEvts = events.filter((e) => e.type === "usage");
+			for (const ue of usageEvts) {
+				if (ue?.type === "usage") {
+					expect(ue.stepId).toBeDefined();
+				}
+			}
+
+			// no durationMs on tool-result
+			const toolResultEvts = events.filter((e) => e.type === "tool-result");
+			for (const tr of toolResultEvts) {
+				if (tr?.type === "tool-result") {
+					expect(tr.durationMs).toBeUndefined();
+				}
+			}
+
+			// no durationMs on done, but usage is present (independent of now)
+			const doneEvts = events.filter((e) => e.type === "done");
+			expect(doneEvts).toHaveLength(1);
+			const d = doneEvts[0];
+			if (d?.type === "done") {
+				expect(d.durationMs).toBeUndefined();
+				expect(d.usage).toBeDefined();
+				if (d.usage !== undefined) {
+					expect(d.usage.inputTokens).toBe(15);
+					expect(d.usage.outputTokens).toBe(8);
+				}
 			}
 		});
 	});

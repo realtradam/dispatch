@@ -90,6 +90,16 @@ export interface RunTurnInput {
 	 * emitted (backward-compatible with callers that don't yet pass a logger).
 	 */
 	readonly logger?: Logger;
+
+	/**
+	 * Optional monotonic-ish clock (milliseconds) for emitting wall-clock timing
+	 * on outward events: per-step `step-complete` (ttft/decode/genTotal), tool
+	 * execution `durationMs` on `tool-result`, and turn `durationMs` on `done`.
+	 * Injected (not ambient) so the runtime stays pure and deterministic in tests.
+	 * If omitted, the runtime emits no such timing (the optional fields stay
+	 * absent) — backward-compatible with callers that don't provide a clock.
+	 */
+	readonly now?: () => number;
 }
 
 /**

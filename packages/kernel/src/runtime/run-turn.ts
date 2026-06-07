@@ -8,6 +8,7 @@ import {
 	doneEvent,
 	errorEvent,
 	reasoningDeltaEvent,
+	stepCompleteEvent,
 	textDeltaEvent,
 	toolCallEvent,
 	toolResultEvent,
@@ -84,12 +85,15 @@ interface StepContext {
 	readonly turnSpan: Span | undefined;
 	readonly toolSpans: Map<string, Span>;
 	readonly cwd: string | undefined;
+	readonly now: (() => number) | undefined;
 }
 
 interface TimingState {
 	ttftSpan: Span | undefined;
 	decodeSpan: Span | undefined;
 	firstTokenSeen: boolean;
+	streamStartMs: number | undefined;
+	firstTokenMs: number | undefined;
 }
 
 interface StepResult {
@@ -108,11 +112,15 @@ function processEvent(
 	ctx: StepContext,
 	stepSpan: Span | undefined,
 	timing: TimingState,
+	toolDispatchTimes: Map<string, number>,
 ): void {
 	switch (event.type) {
 		case "text-delta":
 			if (!timing.firstTokenSeen) {
 				timing.firstTokenSeen = true;
+				if (ctx.now !== undefined) {
+					timing.firstTokenMs = ctx.now();
+				}
 				try {
 					timing.ttftSpan?.end({ attrs: { firstToken: true } });
 				} catch {
@@ -131,6 +139,9 @@ function processEvent(
 		case "reasoning-delta":
 			if (!timing.firstTokenSeen) {
 				timing.firstTokenSeen = true;
+				if (ctx.now !== undefined) {
+					timing.firstTokenMs = ctx.now();
+				}
 				try {
 					timing.ttftSpan?.end({ attrs: { firstToken: true } });
 				} catch {
@@ -171,6 +182,11 @@ function processEvent(
 				),
 			);
 
+			// Capture dispatch time for tool-call durationMs
+			if (ctx.now !== undefined) {
+				toolDispatchTimes.set(event.toolCallId, ctx.now());
+			}
+
 			// Open a tool-call span as a child of the step span (attrs: name, toolCallId)
 			try {
 				const tcSpan =
@@ -194,7 +210,7 @@ function processEvent(
 			break;
 		}
 		case "usage":
-			ctx.emit(usageEvent(ctx.conversationId, ctx.turnId, event.usage));
+			ctx.emit(usageEvent(ctx.conversationId, ctx.turnId, event.usage, ctx.stepId));
 			break;
 		case "finish":
 			break;
@@ -212,6 +228,7 @@ function processEvent(
 async function executeStep(ctx: StepContext): Promise<StepResult> {
 	const chunks: Chunk[] = [];
 	const toolCalls: ToolCall[] = [];
+	const toolDispatchTimes = new Map<string, number>();
 	let stepUsage = zeroUsage();
 	let finishReason = "stop";
 
@@ -250,6 +267,8 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		ttftSpan: undefined,
 		decodeSpan: undefined,
 		firstTokenSeen: false,
+		streamStartMs: ctx.now !== undefined ? ctx.now() : undefined,
+		firstTokenMs: undefined,
 	};
 
 	// Open TTFT span when spans are enabled
@@ -268,7 +287,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		const stream = ctx.provider.stream(ctx.messages, ctx.tools, opts);
 		for await (const event of stream) {
 			if (ctx.signal.aborted) break;
-			processEvent(event, chunks, toolCalls, dispatcher, ctx, stepSpan, timing);
+			processEvent(event, chunks, toolCalls, dispatcher, ctx, stepSpan, timing, toolDispatchTimes);
 			if (event.type === "usage") {
 				stepUsage = addUsage(stepUsage, event.usage);
 			}
@@ -305,6 +324,22 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		// Swallow — D7.
 	}
 
+	// Emit step-complete event with timing
+	const streamEndMs = ctx.now !== undefined ? ctx.now() : undefined;
+	if (timing.streamStartMs !== undefined && streamEndMs !== undefined) {
+		const genTotalMs = streamEndMs - timing.streamStartMs;
+		const stepTiming: { ttftMs?: number; decodeMs?: number; genTotalMs?: number } = {
+			genTotalMs,
+		};
+		if (timing.firstTokenMs !== undefined) {
+			stepTiming.ttftMs = timing.firstTokenMs - timing.streamStartMs;
+			stepTiming.decodeMs = streamEndMs - timing.firstTokenMs;
+		}
+		ctx.emit(stepCompleteEvent(ctx.conversationId, ctx.turnId, ctx.stepId, stepTiming));
+	} else {
+		ctx.emit(stepCompleteEvent(ctx.conversationId, ctx.turnId, ctx.stepId));
+	}
+
 	if (!ctx.dispatch.eager) {
 		for (const call of toolCalls) {
 			dispatcher.submit(call);
@@ -337,6 +372,9 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		const result = results.get(call.id);
 		if (result !== undefined) {
 			const isError = result.isError ?? false;
+			const dispatchTime = toolDispatchTimes.get(call.id);
+			const toolDurationMs =
+				ctx.now !== undefined && dispatchTime !== undefined ? ctx.now() - dispatchTime : undefined;
 			ctx.emit(
 				toolResultEvent(
 					ctx.conversationId,
@@ -346,6 +384,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 					call.name,
 					result.content,
 					isError,
+					toolDurationMs,
 				),
 			);
 			toolMessages.push({
@@ -400,6 +439,10 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 	const turnId = input.turnId;
 	const signal = input.signal ?? new AbortController().signal;
 	const logger = input.logger;
+	const now = input.now;
+
+	// Record turn start time for durationMs on done
+	const turnStartMs = now !== undefined ? now() : undefined;
 
 	// Open a turn span (attrs: conversationId, turnId, model)
 	let turnSpan: Span | undefined;
@@ -444,6 +487,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				turnSpan,
 				toolSpans,
 				cwd: input.cwd,
+				now,
 			});
 
 			totalUsage = addUsage(totalUsage, stepResult.usage);
@@ -499,7 +543,22 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 		}
 	}
 
-	input.emit(doneEvent(conversationId, turnId, finishReason));
+	const turnDurationMs =
+		turnStartMs !== undefined && now !== undefined ? now() - turnStartMs : undefined;
+	const hasUsage =
+		totalUsage.inputTokens > 0 ||
+		totalUsage.outputTokens > 0 ||
+		totalUsage.cacheReadTokens !== undefined ||
+		totalUsage.cacheWriteTokens !== undefined;
+	input.emit(
+		doneEvent(
+			conversationId,
+			turnId,
+			finishReason,
+			turnDurationMs,
+			hasUsage ? totalUsage : undefined,
+		),
+	);
 
 	return { messages: resultMessages, usage: totalUsage, finishReason };
 }
