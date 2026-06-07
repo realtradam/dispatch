@@ -39,6 +39,8 @@ export interface SessionOrchestratorDeps {
 	readonly runTurn: (input: RunTurnInput) => Promise<RunTurnResult>;
 	/** Base logger (auto-scoped to this extension); childed per turn for span capture. */
 	readonly logger?: Logger;
+	/** Injected monotonic-ish clock (ms) forwarded to RunTurnInput for timing events. */
+	readonly now?: () => number;
 }
 
 export function createSessionOrchestrator(deps: SessionOrchestratorDeps): SessionOrchestrator {
@@ -86,6 +88,7 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 				...(turnLogger !== undefined ? { logger: turnLogger } : {}),
 				...(signal !== undefined ? { signal } : {}),
 				...(cwd !== undefined ? { cwd } : {}),
+				...(deps.now !== undefined ? { now: deps.now } : {}),
 			};
 
 			const result = await deps.runTurn(opts);

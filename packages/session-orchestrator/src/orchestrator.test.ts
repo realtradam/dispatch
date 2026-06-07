@@ -363,6 +363,53 @@ describe("handleMessage model resolution", () => {
 		expect(captured).toHaveLength(2);
 		expect(captured[1]?.cwd).toBeUndefined();
 	});
+
+	it("forwards an injected now into the RunTurnInput passed to runTurn", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+		const fakeNow = () => 42;
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn: captureRunTurn,
+			now: fakeNow,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-now",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.now).toBe(fakeNow);
+		expect(captured[0]?.now?.()).toBe(42);
+	});
+
+	it("omits now from RunTurnInput when deps.now is not provided", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-no-now",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.now).toBeUndefined();
+	});
 });
 
 describe("turn-sealed event", () => {
