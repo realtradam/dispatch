@@ -1,4 +1,4 @@
-import type { ChatMessage, Chunk } from "../contracts/conversation.js";
+import type { ChatMessage, Chunk, StepId } from "../contracts/conversation.js";
 import type { Logger, Span } from "../contracts/logging.js";
 import type { ProviderContract, ProviderEvent, Usage } from "../contracts/provider.js";
 import type { EventEmitter, RunTurnInput, RunTurnResult } from "../contracts/runtime.js";
@@ -79,6 +79,7 @@ interface StepContext {
 	readonly signal: AbortSignal;
 	readonly conversationId: string;
 	readonly turnId: string;
+	readonly stepId: StepId;
 	readonly logger: Logger;
 	readonly turnSpan: Span | undefined;
 	readonly toolSpans: Map<string, Span>;
@@ -122,11 +123,13 @@ function processEvent(
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				input: event.input,
+				stepId: ctx.stepId,
 			});
 			ctx.emit(
 				toolCallEvent(
 					ctx.conversationId,
 					ctx.turnId,
+					ctx.stepId,
 					event.toolCallId,
 					event.toolName,
 					event.input,
@@ -273,6 +276,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 				toolResultEvent(
 					ctx.conversationId,
 					ctx.turnId,
+					ctx.stepId,
 					call.id,
 					call.name,
 					result.content,
@@ -288,6 +292,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 						toolName: call.name,
 						content: result.content,
 						isError,
+						stepId: ctx.stepId,
 					},
 				],
 			});
@@ -357,6 +362,8 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				break;
 			}
 
+			const stepId = `${turnId}#${step}` as StepId;
+
 			const stepResult = await executeStep({
 				provider: input.provider,
 				messages,
@@ -367,6 +374,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				signal,
 				conversationId,
 				turnId,
+				stepId,
 				logger: turnSpan?.log ?? logger ?? createNoopLogger(),
 				turnSpan,
 				toolSpans,

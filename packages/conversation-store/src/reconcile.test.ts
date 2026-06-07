@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@dispatch/kernel";
+import type { ChatMessage, StepId } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { reconcile } from "./reconcile.js";
 
@@ -233,5 +233,56 @@ describe("reconcile", () => {
 		expect(result).toHaveLength(2);
 		expect(result[0]?.chunks).toHaveLength(3);
 		expect(result[1]?.role).toBe("tool");
+	});
+
+	it("copies the originating tool-call's stepId onto a synthesized result", () => {
+		const stepId = "step_orphan" as StepId;
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_sid",
+						toolName: "someTool",
+						input: {},
+						stepId,
+					},
+				],
+			},
+		];
+		const result = reconcile(messages);
+		expect(result).toHaveLength(2);
+		expect(result[1]?.role).toBe("tool");
+		const chunk = result[1]?.chunks[0];
+		if (chunk === undefined) throw new Error("expected chunk");
+		expect(chunk.type).toBe("tool-result");
+		if (chunk.type === "tool-result") {
+			expect(chunk.stepId).toBe(stepId);
+		}
+	});
+
+	it("omits stepId when the dangling call has none", () => {
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_nosid",
+						toolName: "someTool",
+						input: {},
+					},
+				],
+			},
+		];
+		const result = reconcile(messages);
+		expect(result).toHaveLength(2);
+		const chunk = result[1]?.chunks[0];
+		if (chunk === undefined) throw new Error("expected chunk");
+		expect(chunk.type).toBe("tool-result");
+		if (chunk.type === "tool-result") {
+			expect(chunk).not.toHaveProperty("stepId");
+		}
 	});
 });

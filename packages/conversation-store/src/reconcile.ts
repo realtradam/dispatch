@@ -23,13 +23,15 @@ export function reconcile(messages: readonly ChatMessage[]): ChatMessage[] {
 	const result: ChatMessage[] = [...messages];
 
 	for (const call of orphaned) {
-		const synthesized: ToolResultChunk = {
-			type: "tool-result",
+		const base = {
+			type: "tool-result" as const,
 			toolCallId: call.toolCallId,
 			toolName: call.toolName,
 			content: "interrupted: tool execution did not complete",
 			isError: true,
 		};
+		const synthesized: ToolResultChunk =
+			call.stepId !== undefined ? { ...base, stepId: call.stepId } : base;
 		result.push({ role: "tool", chunks: [synthesized] });
 	}
 

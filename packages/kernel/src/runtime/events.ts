@@ -1,3 +1,4 @@
+import type { StepId } from "../contracts/conversation.js";
 import type { AgentEvent } from "../contracts/events.js";
 import type { Usage } from "../contracts/provider.js";
 
@@ -16,22 +17,33 @@ export function reasoningDeltaEvent(
 export function toolCallEvent(
 	conversationId: string,
 	turnId: string,
+	stepId: StepId,
 	toolCallId: string,
 	toolName: string,
 	input: unknown,
 ): AgentEvent {
-	return { type: "tool-call", conversationId, turnId, toolCallId, toolName, input };
+	return { type: "tool-call", conversationId, turnId, stepId, toolCallId, toolName, input };
 }
 
 export function toolResultEvent(
 	conversationId: string,
 	turnId: string,
+	stepId: StepId,
 	toolCallId: string,
 	toolName: string,
 	content: string,
 	isError: boolean,
 ): AgentEvent {
-	return { type: "tool-result", conversationId, turnId, toolCallId, toolName, content, isError };
+	return {
+		type: "tool-result",
+		conversationId,
+		turnId,
+		stepId,
+		toolCallId,
+		toolName,
+		content,
+		isError,
+	};
 }
 
 export function toolOutputEvent(

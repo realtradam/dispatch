@@ -1,4 +1,5 @@
 import type { AgentEvent } from "@dispatch/transport-contract";
+import type { StepId } from "@dispatch/wire";
 import { describe, expect, it } from "vitest";
 import { renderEvent } from "./render.js";
 
@@ -41,6 +42,7 @@ describe("renderEvent", () => {
 			type: "tool-call",
 			conversationId: "c",
 			turnId: "t",
+			stepId: "t1#0" as StepId,
 			toolCallId: "tc1",
 			toolName: "read_file",
 			input: { path: "/foo" },
@@ -67,6 +69,7 @@ describe("renderEvent", () => {
 			type: "tool-result",
 			conversationId: "c",
 			turnId: "t",
+			stepId: "t1#0" as StepId,
 			toolCallId: "tc1",
 			toolName: "read_file",
 			content: "file contents",
@@ -82,6 +85,7 @@ describe("renderEvent", () => {
 			type: "tool-result",
 			conversationId: "c",
 			turnId: "t",
+			stepId: "t1#0" as StepId,
 			toolCallId: "tc1",
 			toolName: "read_file",
 			content: "not found",

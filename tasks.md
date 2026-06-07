@@ -522,6 +522,42 @@ The dispatch-web orchestrator couriered `backend-handoff.md` (in the FE repo). R
   headers on all routes incl. the NDJSON stream). HTTP=24203, WS=24205; no WS origin allow-list.
   Commit `812621c`.
 
+### FE ask — step grouping (`stepId`) for batched tool calls  [~] IN PROGRESS
+FE handoff (`../dispatch-web/backend-handoff.md` §3): render a model's parallel/batched tool
+calls (the set emitted in ONE step) as a single grouped unit, on BOTH the live stream and
+replayed history. Decisions (user, §5.2): **full scope (live + persisted)**; key = the
+already-defined branded **`StepId`** derived `` `${turnId}#${stepIndex}` `` (0-based).
+
+**Design pivot from the investigation (read-only multi-knowledge agent):** step boundaries do
+NOT align with message boundaries in `RunTurnResult.messages` (a 2-step turn returns
+`[assistant(2 calls), tool(r1), tool(r2), assistant(text)]`), and persistence is result-driven
+(`orchestrator.append(result.messages)` once at turn end). So a `StoredChunk`-ENVELOPE `stepId`
+was infeasible without enlarging `RunTurnResult` + `append` + the orchestrator. Chosen shape:
+carry `stepId` **on the tool `Chunk` variants** (`ToolCallChunk`/`ToolResultChunk`) — generation
+provenance, intrinsic to the chunk, so it rides `append`/`load`/`reconcile` for FREE (zero change
+to `RunTurnResult`, `append`, orchestrator). `seq` stays the envelope sync cursor; `stepId` is
+on-chunk provenance (distinct concepts — doc'd in wire + GLOSSARY).
+
+- [x] **Contract (orchestrator):** `@dispatch/wire` — `stepId?: StepId` on `ToolCallChunk` +
+  `ToolResultChunk` (optional: old rows / non-turn chunks); `stepId: StepId` (required) on
+  `TurnToolCallEvent` + `TurnToolResultEvent`; `StepId` doc clarified (provenance vs cursor).
+  Wire compiles in isolation. GLOSSARY `stepId` row added.
+- [ ] **Build wave (3 disjoint owner-agents, parallel — all compile against the authored wire):**
+  - **kernel-runtime:** mint `stepId=`${turnId}#${step}`` in the loop; stamp on tool-call/
+    tool-result CHUNKS; thread to `toolCallEvent`/`toolResultEvent` factories. (kernel rules.)
+  - **conversation-store:** carry `stepId` on `PersistedChunkEntry` (append) + read back in
+    `loadSince`/`load`; `reconcile` copies a dangling call's `stepId` onto the synthesized
+    result. NO SQLite migration (KV JSON blob). +round-trip & reconcile tests.
+  - **cli:** add `stepId` to the `tool-call`/`tool-result` EVENT fixtures in `render.test.ts`
+    (renderer ignores the field — no logic change).
+  - **NOT touched:** session-orchestrator (envelope unchanged → its `StoredChunk` fake compiles;
+    chunk-carried stepId rides through), transport-{http,ws,contract} (pass-through),
+    storage-sqlite (generic KV). Confirm via post-wave full typecheck.
+- [ ] **Post-wave (orchestrator):** full typecheck/test/biome; regen FE `.dispatch/{wire,
+  transport-contract}.reference.md`; bump `wire`+`transport-contract` minor; courier reply into
+  `../dispatch-web/backend-handoff-reply.md`. Live: tool turn → events carry `stepId`, two calls
+  in one step share it, persisted chunks carry it via `GET /conversations/:id`.
+
 ### 3. dedup / storage growth (after frontend)
 The deferred trace-body de-duplication + rotation/compression (D5 volume-control +
 `prefix.fingerprint` + §6 retention strategy) — already designed in
