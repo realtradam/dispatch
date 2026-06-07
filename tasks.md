@@ -561,6 +561,25 @@ on-chunk provenance (distinct concepts — doc'd in wire + GLOSSARY).
   all sharing `stepId` `turn-…#0`; 4 persisted tool chunks all carry it; live↔persisted cross-match ✓.
   The FE's exact use case (group a parallel batch by `stepId`) proven end-to-end.
 
+### Per-step TTFT + decode timing (observability)  [x] DONE + verified live (`3ecc977`)
+User ask (granularity follow-up): isolate time-to-first-token from generation time. Decisions
+(user, §5.2): **observability-only** (trace-store, NO wire/contract change); **kernel/step
+measured** (provider-agnostic, self-consistent); **first token = first text OR reasoning delta**.
+- **kernel-runtime (owner, mimo-v2.5-pro):** in `executeStep`, opens a `ttft` child span of the
+  step at stream start, ends it on the first text/reasoning delta (`firstToken:true`) and opens a
+  `decode` child span (first token → stream end). `decode = generation total − TTFT`; both
+  `durationMs` retrievable from the trace-store. No-content step (tool-call-only / pre-first-token
+  error) ends `ttft` with `firstToken:false` and emits no misleading `decode`. **Span-based — no
+  clock injection, no contract change** (runtime has no direct clock; logger's injected `now`
+  drives span durations → deterministic tests). +3 runtime tests. (Agent left reports/ stale; impl
+  independently verified.) prompts/ttft-kernel-runtime.md.
+- TTFT is inherently per-step (each round-trip re-prefills): step 0's `ttft` = the turn's
+  user-visible first-token latency; Σ`decode` = generation minus all prefill; Σ`ttft` = total prefill.
+- **Verified (orchestrator):** typecheck EXIT 0, **512 vitest** (509→+3), biome 0/0, in-lane, no
+  internal mocks. **Live (host-bin :24234, real flash):** journal carries balanced `ttft`/`decode`
+  spans with valid `durationMs` (ttft 1090ms, decode 1673ms) + `firstToken:true`. GLOSSARY: TTFT,
+  decode time. NOT on the wire (clients don't receive it) — a future wire+FE step if desired.
+
 ### 3. dedup / storage growth (after frontend)
 The deferred trace-body de-duplication + rotation/compression (D5 volume-control +
 `prefix.fingerprint` + §6 retention strategy) — already designed in
