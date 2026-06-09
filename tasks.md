@@ -61,11 +61,12 @@ server/collector procs poison the next run's counts.
   per-step+turn metrics from the event stream and persists after seal;
   transport-http `GET /conversations/:id/metrics` → `ConversationMetricsResponse`.
   `@dispatch/wire` + `@dispatch/transport-contract` → `0.4.0`. Commit `6db12ff`.
-- [ ] **FE courier handoff** for the new types + endpoint (in-repo handoff doc;
-  user couriers to `../dispatch-web`; ORCHESTRATOR §7 — backend does not write
-  the FE repo).
-- [ ] **Live re-probe** of `GET /conversations/:id/metrics` end-to-end (first
-  probe came back empty — re-run with a longer boot wait).
+- [x] **Live-verified end-to-end** (against flash): live `step-complete`/`done`
+  metrics ↔ persisted `GET /conversations/:id/metrics` byte-match (aggregate +
+  per-step `stepId` + ttft/decode/genTotal + durationMs); journal turn/step spans
+  carry dotted `usage.*` incl. `usage.cacheReadTokens` (the #2 fix).
+- [x] **FE courier handoff** written: `frontend-metrics-pass2-handoff.md` (in
+  this repo; user couriers to `../dispatch-web`; ORCHESTRATOR §7).
 
 ## Open items
 - **logging-audit #1:** conversation-store has no injected logger, so a load-time
