@@ -1307,6 +1307,157 @@ describe("runTurn", () => {
 			// Only one decode span (for the second step)
 			expect(decodeOpens).toHaveLength(1);
 		});
+
+		it("turn span close stamps usage.inputTokens / usage.outputTokens (dotted)", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "usage", usage: { inputTokens: 10, outputTokens: 5 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const turnClose = sink.records.find((r) => r.kind === "span-close" && r.name === "turn");
+			expect(turnClose).toBeDefined();
+			if (turnClose?.kind === "span-close") {
+				expect(turnClose.attributes?.["usage.inputTokens"]).toBe(10);
+				expect(turnClose.attributes?.["usage.outputTokens"]).toBe(5);
+				expect(turnClose.attributes?.usage_inputTokens).toBeUndefined();
+				expect(turnClose.attributes?.usage_outputTokens).toBeUndefined();
+			}
+		});
+
+		it("step span close stamps usage.inputTokens / usage.outputTokens (dotted)", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "usage", usage: { inputTokens: 7, outputTokens: 3 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const stepClose = sink.records.find((r) => r.kind === "span-close" && r.name === "step");
+			expect(stepClose).toBeDefined();
+			if (stepClose?.kind === "span-close") {
+				expect(stepClose.attributes?.["usage.inputTokens"]).toBe(7);
+				expect(stepClose.attributes?.["usage.outputTokens"]).toBe(3);
+				expect(stepClose.attributes?.usage_inputTokens).toBeUndefined();
+				expect(stepClose.attributes?.usage_outputTokens).toBeUndefined();
+			}
+		});
+
+		it("turn + step spans stamp usage.cacheReadTokens / usage.cacheWriteTokens when the provider Usage carries them", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{
+						type: "usage",
+						usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 3, cacheWriteTokens: 2 },
+					},
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const turnClose = sink.records.find((r) => r.kind === "span-close" && r.name === "turn");
+			const stepClose = sink.records.find((r) => r.kind === "span-close" && r.name === "step");
+
+			expect(turnClose).toBeDefined();
+			if (turnClose?.kind === "span-close") {
+				expect(turnClose.attributes?.["usage.inputTokens"]).toBe(10);
+				expect(turnClose.attributes?.["usage.outputTokens"]).toBe(5);
+				expect(turnClose.attributes?.["usage.cacheReadTokens"]).toBe(3);
+				expect(turnClose.attributes?.["usage.cacheWriteTokens"]).toBe(2);
+			}
+
+			expect(stepClose).toBeDefined();
+			if (stepClose?.kind === "span-close") {
+				expect(stepClose.attributes?.["usage.inputTokens"]).toBe(10);
+				expect(stepClose.attributes?.["usage.outputTokens"]).toBe(5);
+				expect(stepClose.attributes?.["usage.cacheReadTokens"]).toBe(3);
+				expect(stepClose.attributes?.["usage.cacheWriteTokens"]).toBe(2);
+			}
+		});
+
+		it("turn + step spans OMIT the cache-token attrs when the provider Usage lacks them", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hi" },
+					{ type: "usage", usage: { inputTokens: 10, outputTokens: 5 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { logger, sink } = createTestLogger();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				logger,
+			});
+
+			const turnClose = sink.records.find((r) => r.kind === "span-close" && r.name === "turn");
+			const stepClose = sink.records.find((r) => r.kind === "span-close" && r.name === "step");
+
+			expect(turnClose).toBeDefined();
+			if (turnClose?.kind === "span-close") {
+				expect(turnClose.attributes?.["usage.inputTokens"]).toBe(10);
+				expect(turnClose.attributes?.["usage.outputTokens"]).toBe(5);
+				expect(turnClose.attributes?.["usage.cacheReadTokens"]).toBeUndefined();
+				expect(turnClose.attributes?.["usage.cacheWriteTokens"]).toBeUndefined();
+			}
+
+			expect(stepClose).toBeDefined();
+			if (stepClose?.kind === "span-close") {
+				expect(stepClose.attributes?.["usage.inputTokens"]).toBe(10);
+				expect(stepClose.attributes?.["usage.outputTokens"]).toBe(5);
+				expect(stepClose.attributes?.["usage.cacheReadTokens"]).toBeUndefined();
+				expect(stepClose.attributes?.["usage.cacheWriteTokens"]).toBeUndefined();
+			}
+		});
 	});
 
 	describe("provider logger threading", () => {

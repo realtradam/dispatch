@@ -11,6 +11,7 @@ import type {
 	ToolDispatchPolicy,
 } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
+import { createMetricsAccumulator } from "./metrics.js";
 import { buildUserMessage, defaultDispatchPolicy, generateTurnId } from "./pure.js";
 
 export interface SessionOrchestrator {
@@ -73,13 +74,19 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 			const tools = deps.resolveTools();
 			const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
 			const turnLogger = deps.logger?.child({ conversationId, turnId });
+			const metrics = createMetricsAccumulator();
+
+			const emitAndAccumulate = (event: AgentEvent): void => {
+				metrics.ingest(event);
+				onEvent(event);
+			};
 
 			const opts: RunTurnInput = {
 				provider,
 				messages: [...history, userMsg],
 				tools,
 				dispatch,
-				emit: onEvent,
+				emit: emitAndAccumulate,
 				conversationId,
 				turnId,
 				...(modelOverride !== undefined
@@ -95,6 +102,9 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 
 			const toPersist: ChatMessage[] = [userMsg, ...result.messages];
 			await deps.conversationStore.append(conversationId, toPersist);
+
+			const turnMetrics = metrics.build(turnId);
+			await deps.conversationStore.appendMetrics(conversationId, turnMetrics);
 
 			onEvent({ type: "turn-sealed", conversationId, turnId });
 		},

@@ -20,9 +20,9 @@
  */
 
 import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
-import type { AgentEvent, StoredChunk } from "@dispatch/wire";
+import type { AgentEvent, StoredChunk, TurnMetrics } from "@dispatch/wire";
 
-export type { AgentEvent, StoredChunk } from "@dispatch/wire";
+export type { AgentEvent, StepMetrics, StoredChunk, TurnMetrics } from "@dispatch/wire";
 
 /**
  * Request body for `POST /chat` (sent as JSON).
@@ -90,6 +90,25 @@ export interface ModelsResponse {
 export interface ConversationHistoryResponse {
 	readonly chunks: readonly StoredChunk[];
 	readonly latestSeq: number;
+}
+
+/**
+ * Response body for `GET /conversations/:id/metrics` — the persisted per-turn
+ * (and per-step) token + timing metrics for a conversation, for a client
+ * reopening a past conversation to render historical usage/latency.
+ *
+ * This is a SEPARATE axis from the two other read concerns and is deliberately
+ * its own endpoint: the live `usage`/`step-complete`/`done` events are transient
+ * (not persisted), and `ConversationHistoryResponse` carries seq-cursor chunk
+ * CONTENT. Metrics are keyed per TURN (not per chunk) and so are not seq-filtered
+ * — hence a sibling route rather than a field on the history response.
+ *
+ * `turns` is every SEALED turn's `TurnMetrics` in turn order. A turn appears only
+ * after its metrics were persisted (post-seal); an in-flight or unsealed turn is
+ * absent until then.
+ */
+export interface ConversationMetricsResponse {
+	readonly turns: readonly TurnMetrics[];
 }
 
 // ─── WebSocket chat ops ───────────────────────────────────────────────────────

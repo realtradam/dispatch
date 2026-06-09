@@ -1,6 +1,21 @@
-import type { ChatMessage, Chunk, Role, StorageNamespace, StoredChunk } from "@dispatch/kernel";
+import type {
+	ChatMessage,
+	Chunk,
+	Role,
+	StorageNamespace,
+	StoredChunk,
+	TurnMetrics,
+} from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
-import { chunkKey, chunkPrefix, parseSeq, seqKey } from "./keys.js";
+import {
+	chunkKey,
+	chunkPrefix,
+	metricsKey,
+	metricsPrefix,
+	metricsSeqKey,
+	parseSeq,
+	seqKey,
+} from "./keys.js";
 import { reconcile } from "./reconcile.js";
 
 export interface ConversationStore {
@@ -10,6 +25,8 @@ export interface ConversationStore {
 		conversationId: string,
 		sinceSeq?: number,
 	) => Promise<readonly StoredChunk[]>;
+	readonly appendMetrics: (conversationId: string, metrics: TurnMetrics) => Promise<void>;
+	readonly loadMetrics: (conversationId: string) => Promise<readonly TurnMetrics[]>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -96,6 +113,28 @@ export function createConversationStore(storage: StorageNamespace): Conversation
 				if (value === null) continue;
 				const entry = JSON.parse(value) as PersistedChunkEntry;
 				result.push({ seq, role: entry.role, chunk: entry.chunk });
+			}
+
+			return result;
+		},
+
+		async appendMetrics(conversationId, metrics) {
+			const raw = await storage.get(metricsSeqKey(conversationId));
+			const ordinal = parseSeq(raw) + 1;
+			await storage.set(metricsKey(conversationId, ordinal), JSON.stringify(metrics));
+			await storage.set(metricsSeqKey(conversationId), String(ordinal));
+		},
+
+		async loadMetrics(conversationId) {
+			const prefix = metricsPrefix(conversationId);
+			const keys = await storage.keys(prefix);
+			const sorted = [...keys].sort();
+
+			const result: TurnMetrics[] = [];
+			for (const key of sorted) {
+				const value = await storage.get(key);
+				if (value === null) continue;
+				result.push(JSON.parse(value) as TurnMetrics);
 			}
 
 			return result;

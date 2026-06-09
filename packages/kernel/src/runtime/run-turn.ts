@@ -50,6 +50,20 @@ function addUsage(a: Usage, b: Usage): Usage {
 	return { inputTokens, outputTokens };
 }
 
+function usageAttrs(usage: Usage): Record<string, string | number | boolean | null> {
+	const attrs: Record<string, string | number | boolean | null> = {
+		"usage.inputTokens": usage.inputTokens,
+		"usage.outputTokens": usage.outputTokens,
+	};
+	if (usage.cacheReadTokens !== undefined) {
+		attrs["usage.cacheReadTokens"] = usage.cacheReadTokens;
+	}
+	if (usage.cacheWriteTokens !== undefined) {
+		attrs["usage.cacheWriteTokens"] = usage.cacheWriteTokens;
+	}
+	return attrs;
+}
+
 function appendTextDelta(chunks: Chunk[], delta: string): void {
 	const lastIdx = chunks.length - 1;
 	const last = chunks[lastIdx];
@@ -409,8 +423,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 			stepSpan.end({
 				attrs: {
 					finishReason,
-					usage_inputTokens: stepUsage.inputTokens,
-					usage_outputTokens: stepUsage.outputTokens,
+					...usageAttrs(stepUsage),
 				},
 			});
 		} catch {
@@ -533,8 +546,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				turnSpan.end({
 					attrs: {
 						finishReason,
-						usage_inputTokens: totalUsage.inputTokens,
-						usage_outputTokens: totalUsage.outputTokens,
+						...usageAttrs(totalUsage),
 					},
 				});
 			} catch {

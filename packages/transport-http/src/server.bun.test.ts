@@ -37,6 +37,10 @@ function fakeConversationStore(): ConversationStore {
 		async loadSince() {
 			return [];
 		},
+		async appendMetrics() {},
+		async loadMetrics() {
+			return [];
+		},
 	};
 }
 

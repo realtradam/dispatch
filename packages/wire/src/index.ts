@@ -153,6 +153,47 @@ export interface Usage {
 	readonly cacheWriteTokens?: number;
 }
 
+// ─── Persisted metrics ───────────────────────────────────────────────────────
+
+/**
+ * Durable per-step metrics for a completed step — the persisted, replayable
+ * counterpart of the live `usage` + `step-complete` events. Combines the step's
+ * token usage with its generation timing so a client reopening a past
+ * conversation renders the same per-step token/latency breakdown it would have
+ * seen live. Built from the turn's events, stored by `conversation-store`, and
+ * served by `GET /conversations/:id/metrics`.
+ */
+export interface StepMetrics {
+	readonly stepId: StepId;
+	/** The step's token usage (all four counters; cache fields optional per `Usage`). */
+	readonly usage: Usage;
+	/** Time to first token (stream start → first text/reasoning delta). Optional — see `TurnStepCompleteEvent.ttftMs`. */
+	readonly ttftMs?: number;
+	/** Decode time (first token → stream end). Optional — see `TurnStepCompleteEvent.decodeMs`. */
+	readonly decodeMs?: number;
+	/** Total generation time for the step (stream start → stream end). Optional: present only when a clock was available. */
+	readonly genTotalMs?: number;
+}
+
+/**
+ * Durable per-turn metrics for a completed (sealed) turn — the persisted,
+ * replayable counterpart of the live `done` event's aggregate `usage` +
+ * `durationMs`, plus the per-step breakdown. `usage` is the aggregate across all
+ * steps; `steps` carries each step's `StepMetrics` in step order. Persisted per
+ * turn by `conversation-store` (returned in turn-append order) and served by
+ * `GET /conversations/:id/metrics`. (`turnId` is the plain wire string carried
+ * on every `AgentEvent`, the join key to the live stream.)
+ */
+export interface TurnMetrics {
+	readonly turnId: string;
+	/** Aggregate token usage across all steps in the turn. */
+	readonly usage: Usage;
+	/** Total wall-clock duration of the turn (turn start → turn end). Optional: present only when a clock was available. */
+	readonly durationMs?: number;
+	/** Per-step metrics in step order. */
+	readonly steps: readonly StepMetrics[];
+}
+
 // ─── Outward events ─────────────────────────────────────────────────────────
 
 /**
