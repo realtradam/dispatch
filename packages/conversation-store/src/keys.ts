@@ -25,3 +25,23 @@ export function parseChunkSeq(key: string): number {
 	const n = Number.parseInt(last, 10);
 	return Number.isNaN(n) ? -1 : n;
 }
+
+export function metricsSeqKey(conversationId: string): string {
+	return `conv:${conversationId}:metrics-seq`;
+}
+
+export function metricsKey(conversationId: string, ordinal: number): string {
+	return `conv:${conversationId}:metrics:${String(ordinal).padStart(SEQ_PAD, "0")}`;
+}
+
+export function metricsPrefix(conversationId: string): string {
+	return `conv:${conversationId}:metrics:`;
+}
+
+export function parseMetricsOrdinal(key: string): number {
+	const parts = key.split(":");
+	const last = parts[parts.length - 1];
+	if (last === undefined) return -1;
+	const n = Number.parseInt(last, 10);
+	return Number.isNaN(n) ? -1 : n;
+}

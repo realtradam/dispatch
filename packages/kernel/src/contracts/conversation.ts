@@ -11,6 +11,7 @@ export type {
 	ErrorChunk,
 	Role,
 	StepId,
+	StepMetrics,
 	StoredChunk,
 	SystemChunk,
 	TextChunk,
@@ -18,4 +19,5 @@ export type {
 	ToolCallChunk,
 	ToolResultChunk,
 	TurnId,
+	TurnMetrics,
 } from "@dispatch/wire";

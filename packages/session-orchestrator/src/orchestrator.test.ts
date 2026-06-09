@@ -7,6 +7,8 @@ import type {
 	RunTurnInput,
 	RunTurnResult,
 	StoredChunk,
+	ToolContract,
+	TurnMetrics,
 } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
@@ -14,10 +16,13 @@ import { createSessionOrchestrator } from "./orchestrator.js";
 
 function createInMemoryStore(): ConversationStore & {
 	readonly data: Map<string, ChatMessage[]>;
+	readonly metricsData: Map<string, TurnMetrics[]>;
 } {
 	const data = new Map<string, ChatMessage[]>();
+	const metricsData = new Map<string, TurnMetrics[]>();
 	return {
 		data,
+		metricsData,
 		async append(conversationId, messages) {
 			const existing = data.get(conversationId) ?? [];
 			data.set(conversationId, [...existing, ...messages]);
@@ -38,6 +43,13 @@ function createInMemoryStore(): ConversationStore & {
 				}
 			}
 			return result;
+		},
+		async appendMetrics(conversationId, metrics) {
+			const existing = metricsData.get(conversationId) ?? [];
+			metricsData.set(conversationId, [...existing, metrics]);
+		},
+		async loadMetrics(conversationId) {
+			return [...(metricsData.get(conversationId) ?? [])];
 		},
 	};
 }
@@ -61,6 +73,18 @@ function createFakeProvider(script: ProviderEvent[][]): ProviderContract {
 function collectEvents(): { events: AgentEvent[]; onEvent: (event: AgentEvent) => void } {
 	const events: AgentEvent[] = [];
 	return { events, onEvent: (event) => events.push(event) };
+}
+
+function createFakeTool(
+	name: string,
+	handler: (input: unknown) => Promise<{ content: string }>,
+): ToolContract {
+	return {
+		name,
+		description: `Fake tool: ${name}`,
+		parameters: { type: "object" },
+		execute: async (input) => handler(input),
+	};
 }
 
 describe("handleMessage integration", () => {
@@ -465,6 +489,13 @@ describe("turn-sealed event", () => {
 			async loadSince(conversationId, sinceSeq) {
 				return store.loadSince(conversationId, sinceSeq);
 			},
+			async appendMetrics(conversationId, metrics) {
+				await store.appendMetrics(conversationId, metrics);
+				ordering.push("appendMetrics");
+			},
+			async loadMetrics(conversationId) {
+				return store.loadMetrics(conversationId);
+			},
 		};
 
 		const orchestrator = createSessionOrchestrator({
@@ -484,7 +515,7 @@ describe("turn-sealed event", () => {
 			},
 		});
 
-		expect(ordering).toEqual(["append", "turn-sealed"]);
+		expect(ordering).toEqual(["append", "appendMetrics", "turn-sealed"]);
 	});
 
 	it("does not emit turn-sealed when append throws", async () => {
@@ -503,6 +534,12 @@ describe("turn-sealed event", () => {
 				return [];
 			},
 			async loadSince() {
+				return [];
+			},
+			async appendMetrics() {
+				return undefined;
+			},
+			async loadMetrics() {
 				return [];
 			},
 		};
@@ -528,3 +565,283 @@ describe("turn-sealed event", () => {
 		expect(sealedEvents).toHaveLength(0);
 	});
 });
+
+describe("turn metrics persistence", () => {
+	it("persists a TurnMetrics after a single-step turn seals", async () => {
+		const store = createInMemoryStore();
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "Hello" },
+				{ type: "usage", usage: { inputTokens: 10, outputTokens: 5 } },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn,
+			now: () => 1000,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-metrics-1",
+			text: "test",
+			onEvent: () => {},
+		});
+
+		const metrics = store.metricsData.get("conv-metrics-1");
+		expect(metrics).toBeDefined();
+		expect(metrics).toHaveLength(1);
+		expect(metrics?.[0]?.turnId).toMatch(/^turn-/);
+		expect(metrics?.[0]?.usage.inputTokens).toBe(10);
+		expect(metrics?.[0]?.usage.outputTokens).toBe(5);
+		expect(metrics?.[0]?.steps).toHaveLength(1);
+		expect(metrics?.[0]?.steps[0]?.usage.inputTokens).toBe(10);
+		expect(metrics?.[0]?.steps[0]?.usage.outputTokens).toBe(5);
+	});
+
+	it("TurnMetrics aggregates multi-step usage and carries each step's StepMetrics in order", async () => {
+		const store = createInMemoryStore();
+		const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+		let callIndex = 0;
+		const provider: ProviderContract = {
+			id: "fake",
+			stream() {
+				const idx = callIndex++;
+				return (async function* () {
+					if (idx === 0) {
+						yield {
+							type: "tool-call",
+							toolCallId: "tc1",
+							toolName: "echo",
+							input: {},
+						} as ProviderEvent;
+						yield {
+							type: "usage",
+							usage: { inputTokens: 10, outputTokens: 5 },
+						} as ProviderEvent;
+						yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+					} else {
+						yield { type: "text-delta", delta: "Step2" } as ProviderEvent;
+						yield {
+							type: "usage",
+							usage: { inputTokens: 20, outputTokens: 10 },
+						} as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					}
+				})();
+			},
+		};
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [tool],
+			runTurn,
+			now: () => 1000,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-metrics-multi",
+			text: "test",
+			onEvent: () => {},
+		});
+
+		const metrics = store.metricsData.get("conv-metrics-multi");
+		expect(metrics).toBeDefined();
+		expect(metrics).toHaveLength(1);
+
+		const tm = metrics?.[0];
+		if (tm === undefined) throw new Error("expected metrics");
+
+		expect(tm.steps.length).toBeGreaterThanOrEqual(2);
+
+		expect(tm.steps[0]?.usage.inputTokens).toBe(10);
+		expect(tm.steps[0]?.usage.outputTokens).toBe(5);
+		expect(tm.steps[1]?.usage.inputTokens).toBe(20);
+		expect(tm.steps[1]?.usage.outputTokens).toBe(10);
+
+		expect(tm.usage.inputTokens).toBe(30);
+		expect(tm.usage.outputTokens).toBe(15);
+	});
+
+	it("per-step timing and usage are joined by stepId into one StepMetrics", async () => {
+		const store = createInMemoryStore();
+		const clock = createCounterNow();
+		clock.tick(100);
+
+		let callIndex = 0;
+		const provider: ProviderContract = {
+			id: "fake",
+			stream() {
+				const idx = callIndex++;
+				return (async function* () {
+					if (idx === 0) {
+						clock.tick(50);
+						yield { type: "text-delta", delta: "Hello" } as ProviderEvent;
+						clock.tick(100);
+						yield {
+							type: "usage",
+							usage: { inputTokens: 10, outputTokens: 5 },
+						} as ProviderEvent;
+						clock.tick(50);
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					}
+				})();
+			},
+		};
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn,
+			now: clock.now,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-metrics-join",
+			text: "test",
+			onEvent: () => {},
+		});
+
+		const metrics = store.metricsData.get("conv-metrics-join");
+		expect(metrics).toBeDefined();
+		expect(metrics).toHaveLength(1);
+
+		const tm = metrics?.[0];
+		if (tm === undefined) throw new Error("expected metrics");
+
+		expect(tm.steps).toHaveLength(1);
+		const step = tm.steps[0];
+		if (step === undefined) throw new Error("expected step");
+
+		expect(step.usage.inputTokens).toBe(10);
+		expect(step.usage.outputTokens).toBe(5);
+		expect(step.genTotalMs).toBe(200);
+		expect(step.ttftMs).toBe(50);
+		expect(step.decodeMs).toBe(150);
+	});
+
+	it("turn-level usage comes from the done event aggregate", async () => {
+		const store = createInMemoryStore();
+		const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+		let callIndex = 0;
+		const provider: ProviderContract = {
+			id: "fake",
+			stream() {
+				const idx = callIndex++;
+				return (async function* () {
+					if (idx === 0) {
+						yield {
+							type: "tool-call",
+							toolCallId: "tc1",
+							toolName: "echo",
+							input: {},
+						} as ProviderEvent;
+						yield {
+							type: "usage",
+							usage: { inputTokens: 10, outputTokens: 5 },
+						} as ProviderEvent;
+						yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+					} else {
+						yield { type: "text-delta", delta: "Step2" } as ProviderEvent;
+						yield {
+							type: "usage",
+							usage: { inputTokens: 20, outputTokens: 10 },
+						} as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					}
+				})();
+			},
+		};
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [tool],
+			runTurn,
+			now: () => 1000,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-metrics-done",
+			text: "test",
+			onEvent: () => {},
+		});
+
+		const metrics = store.metricsData.get("conv-metrics-done");
+		expect(metrics).toBeDefined();
+		expect(metrics).toHaveLength(1);
+
+		const tm = metrics?.[0];
+		if (tm === undefined) throw new Error("expected metrics");
+
+		expect(tm.usage.inputTokens).toBe(30);
+		expect(tm.usage.outputTokens).toBe(15);
+	});
+
+	it("does not persist metrics nor emit turn-sealed when chunk append fails", async () => {
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "ok" },
+				{ type: "usage", usage: { inputTokens: 5, outputTokens: 3 } },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		let metricsAppended = false;
+		const failingMetricsStore: ConversationStore = {
+			async append() {
+				throw new Error("storage failure");
+			},
+			async load() {
+				return [];
+			},
+			async loadSince() {
+				return [];
+			},
+			async appendMetrics() {
+				metricsAppended = true;
+			},
+			async loadMetrics() {
+				return [];
+			},
+		};
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: failingMetricsStore,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			runTurn,
+		});
+
+		const { events, onEvent } = collectEvents();
+
+		await expect(
+			orchestrator.handleMessage({
+				conversationId: "conv-fail-metrics",
+				text: "test",
+				onEvent,
+			}),
+		).rejects.toThrow("storage failure");
+
+		const sealedEvents = events.filter((e) => e.type === "turn-sealed");
+		expect(sealedEvents).toHaveLength(0);
+		expect(metricsAppended).toBe(false);
+	});
+});
+
+function createCounterNow(): { now: () => number; tick: (ms: number) => void } {
+	let t = 0;
+	return {
+		now: () => t,
+		tick(ms: number) {
+			t += ms;
+		},
+	};
+}

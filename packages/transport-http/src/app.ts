@@ -1,5 +1,9 @@
 import type { AgentEvent, Logger } from "@dispatch/kernel";
-import type { ConversationHistoryResponse, ModelsResponse } from "@dispatch/transport-contract";
+import type {
+	ConversationHistoryResponse,
+	ConversationMetricsResponse,
+	ModelsResponse,
+} from "@dispatch/transport-contract";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import {
@@ -56,6 +60,23 @@ export function createApp(opts: CreateServerOptions): Hono {
 	);
 
 	app.get("/health", (c) => c.json({ ok: true }));
+
+	app.get("/conversations/:id/metrics", async (c) => {
+		const conversationId = c.req.param("id");
+
+		try {
+			const turns = await opts.conversationStore.loadMetrics(conversationId);
+			log.info("conversations: metrics read", {
+				conversationId,
+				count: turns.length,
+			});
+			const body: ConversationMetricsResponse = { turns };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("conversations: metrics store failure", { err });
+			return c.json({ error: "Failed to load conversation metrics" }, 500);
+		}
+	});
 
 	app.get("/conversations/:id", async (c) => {
 		const conversationId = c.req.param("id");

@@ -18,6 +18,7 @@ export type {
 	ErrorChunk,
 	Role,
 	StepId,
+	StepMetrics,
 	StoredChunk,
 	SystemChunk,
 	TextChunk,
@@ -25,6 +26,7 @@ export type {
 	ToolCallChunk,
 	ToolResultChunk,
 	TurnId,
+	TurnMetrics,
 } from "./conversation.js";
 export type { ToolDispatchPolicy } from "./dispatch.js";
 export type {

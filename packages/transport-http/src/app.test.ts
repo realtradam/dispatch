@@ -1,4 +1,4 @@
-import type { AgentEvent, Logger, StoredChunk } from "@dispatch/kernel";
+import type { AgentEvent, Logger, StepId, StoredChunk, TurnMetrics } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
@@ -47,6 +47,7 @@ function createFakeLogger(): Logger & { readonly records: readonly CapturedLog[]
 
 function createFakeConversationStore(
 	store: Map<string, StoredChunk[]> = new Map(),
+	metricsStore: Map<string, TurnMetrics[]> = new Map(),
 ): ConversationStore {
 	return {
 		async append() {},
@@ -57,6 +58,10 @@ function createFakeConversationStore(
 			const chunks = store.get(conversationId) ?? [];
 			const minSeq = sinceSeq ?? 0;
 			return chunks.filter((c) => c.seq > minSeq);
+		},
+		async appendMetrics() {},
+		async loadMetrics(conversationId) {
+			return metricsStore.get(conversationId) ?? [];
 		},
 	};
 }
@@ -462,6 +467,127 @@ describe("GET /conversations/:id", () => {
 
 		const res = await app.request("/conversations/conv1?sinceSeq=-1");
 		expect(res.status).toBe(400);
+	});
+});
+
+describe("GET /conversations/:id/metrics", () => {
+	const sampleMetrics: TurnMetrics[] = [
+		{
+			turnId: "turn1",
+			usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			durationMs: 1000,
+			steps: [
+				{
+					stepId: "step1" as StepId,
+					usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 },
+					ttftMs: 200,
+					decodeMs: 300,
+					genTotalMs: 500,
+				},
+			],
+		},
+		{
+			turnId: "turn2",
+			usage: { inputTokens: 200, outputTokens: 80, cacheReadTokens: 10, cacheWriteTokens: 5 },
+			durationMs: 1500,
+			steps: [
+				{
+					stepId: "step2" as StepId,
+					usage: { inputTokens: 200, outputTokens: 80, cacheReadTokens: 10, cacheWriteTokens: 5 },
+					ttftMs: 300,
+					decodeMs: 500,
+					genTotalMs: 800,
+				},
+			],
+		},
+	];
+
+	it("returns persisted turn metrics as { turns }", async () => {
+		const metricsStore = new Map<string, TurnMetrics[]>([["conv1", sampleMetrics]]);
+		const app = createApp({
+			conversationStore: createFakeConversationStore(new Map(), metricsStore),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/conv1/metrics");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { turns: readonly TurnMetrics[] };
+		expect(body.turns).toHaveLength(2);
+		expect(body.turns[0]?.turnId).toBe("turn1");
+		expect(body.turns[1]?.turnId).toBe("turn2");
+	});
+
+	it("returns { turns: [] } for an unknown conversation", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/unknown/metrics");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { turns: readonly TurnMetrics[] };
+		expect(body.turns).toHaveLength(0);
+	});
+
+	it("the metrics route does not collide with GET /conversations/:id history route", async () => {
+		const sampleChunks: StoredChunk[] = [
+			{ seq: 1, role: "user", chunk: { type: "text", text: "hello" } },
+		];
+		const store = new Map<string, StoredChunk[]>([["conv1", sampleChunks]]);
+		const metricsStore = new Map<string, TurnMetrics[]>([["conv1", sampleMetrics]]);
+		const app = createApp({
+			conversationStore: createFakeConversationStore(store, metricsStore),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const metricsRes = await app.request("/conversations/conv1/metrics");
+		expect(metricsRes.status).toBe(200);
+		const metricsBody = (await metricsRes.json()) as { turns: readonly TurnMetrics[] };
+		expect(metricsBody.turns).toHaveLength(2);
+
+		const historyRes = await app.request("/conversations/conv1");
+		expect(historyRes.status).toBe(200);
+		const historyBody = (await historyRes.json()) as {
+			chunks: readonly StoredChunk[];
+			latestSeq: number;
+		};
+		expect(historyBody.chunks).toHaveLength(1);
+	});
+
+	it("a store failure on the metrics read returns an error status + logs an error", async () => {
+		const logger = createFakeLogger();
+		const brokenStore: ConversationStore = {
+			async append() {},
+			async load() {
+				return [];
+			},
+			async loadSince() {
+				return [];
+			},
+			async appendMetrics() {},
+			async loadMetrics() {
+				throw new Error("storage exploded");
+			},
+		};
+		const app = createApp({
+			conversationStore: brokenStore,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger,
+		});
+
+		const res = await app.request("/conversations/conv1/metrics");
+		expect(res.status).toBe(500);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("Failed to load conversation metrics");
+
+		const errorLogs = logger.records.filter((r) => r.level === "error");
+		expect(errorLogs).toHaveLength(1);
+		expect(errorLogs[0]?.msg).toBe("conversations: metrics store failure");
+		expect(errorLogs[0]?.attrs?.err).toBeInstanceOf(Error);
 	});
 });
 

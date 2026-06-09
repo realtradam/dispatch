@@ -1,4 +1,4 @@
-import type { ChatMessage, StepId, StorageNamespace } from "@dispatch/kernel";
+import type { ChatMessage, StepId, StorageNamespace, TurnMetrics } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createConversationStore } from "./store.js";
 
@@ -423,5 +423,143 @@ describe("ConversationStore", () => {
 		if (resultChunk?.type === "tool-result") {
 			expect(resultChunk.stepId).toBe(stepId);
 		}
+	});
+});
+
+describe("ConversationStore metrics", () => {
+	let storage: StorageNamespace;
+
+	beforeEach(() => {
+		storage = createMemoryStorage();
+	});
+
+	it("appendMetrics → loadMetrics round-trips a TurnMetrics (usage + durationMs + steps)", async () => {
+		const store = createConversationStore(storage);
+		const stepId = "step_1" as StepId;
+		const metrics: TurnMetrics = {
+			turnId: "turn_abc",
+			usage: { inputTokens: 100, outputTokens: 50 },
+			durationMs: 1234,
+			steps: [
+				{
+					stepId,
+					usage: { inputTokens: 100, outputTokens: 50 },
+					ttftMs: 200,
+					decodeMs: 800,
+					genTotalMs: 1000,
+				},
+			],
+		};
+		await store.appendMetrics("conv1", metrics);
+		const result = await store.loadMetrics("conv1");
+		expect(result).toHaveLength(1);
+		expect(result[0]).toEqual(metrics);
+	});
+
+	it("loadMetrics returns turns in append order", async () => {
+		const store = createConversationStore(storage);
+		const metrics1: TurnMetrics = {
+			turnId: "turn_first",
+			usage: { inputTokens: 10, outputTokens: 5 },
+			steps: [],
+		};
+		const metrics2: TurnMetrics = {
+			turnId: "turn_second",
+			usage: { inputTokens: 20, outputTokens: 10 },
+			steps: [],
+		};
+		const metrics3: TurnMetrics = {
+			turnId: "turn_third",
+			usage: { inputTokens: 30, outputTokens: 15 },
+			steps: [],
+		};
+		await store.appendMetrics("conv1", metrics1);
+		await store.appendMetrics("conv1", metrics2);
+		await store.appendMetrics("conv1", metrics3);
+		const result = await store.loadMetrics("conv1");
+		expect(result).toHaveLength(3);
+		expect(result[0]?.turnId).toBe("turn_first");
+		expect(result[1]?.turnId).toBe("turn_second");
+		expect(result[2]?.turnId).toBe("turn_third");
+	});
+
+	it("loadMetrics returns [] for a conversation with no persisted metrics", async () => {
+		const store = createConversationStore(storage);
+		const result = await store.loadMetrics("nonexistent");
+		expect(result).toEqual([]);
+	});
+
+	it("appendMetrics does not affect chunk load / loadSince", async () => {
+		const store = createConversationStore(storage);
+		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+		await store.append("conv1", [msg]);
+
+		const metrics: TurnMetrics = {
+			turnId: "turn_iso",
+			usage: { inputTokens: 100, outputTokens: 50 },
+			steps: [],
+		};
+		await store.appendMetrics("conv1", metrics);
+
+		const messages = await store.load("conv1");
+		expect(messages).toEqual([msg]);
+
+		const chunks = await store.loadSince("conv1");
+		expect(chunks).toHaveLength(1);
+		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+	});
+
+	it("TurnMetrics with cache tokens + per-step ttft/decode/genTotal round-trips losslessly", async () => {
+		const store = createConversationStore(storage);
+		const stepId1 = "step_a" as StepId;
+		const stepId2 = "step_b" as StepId;
+		const metrics: TurnMetrics = {
+			turnId: "turn_cache",
+			usage: {
+				inputTokens: 500,
+				outputTokens: 200,
+				cacheReadTokens: 300,
+				cacheWriteTokens: 100,
+			},
+			durationMs: 5000,
+			steps: [
+				{
+					stepId: stepId1,
+					usage: {
+						inputTokens: 300,
+						outputTokens: 100,
+						cacheReadTokens: 200,
+						cacheWriteTokens: 50,
+					},
+					ttftMs: 150,
+					decodeMs: 600,
+					genTotalMs: 750,
+				},
+				{
+					stepId: stepId2,
+					usage: {
+						inputTokens: 200,
+						outputTokens: 100,
+						cacheReadTokens: 100,
+						cacheWriteTokens: 50,
+					},
+					ttftMs: 100,
+					decodeMs: 400,
+					genTotalMs: 500,
+				},
+			],
+		};
+		await store.appendMetrics("conv1", metrics);
+		const result = await store.loadMetrics("conv1");
+		expect(result).toHaveLength(1);
+		expect(result[0]).toEqual(metrics);
+		expect(result[0]?.usage.cacheReadTokens).toBe(300);
+		expect(result[0]?.usage.cacheWriteTokens).toBe(100);
+		expect(result[0]?.steps[0]?.ttftMs).toBe(150);
+		expect(result[0]?.steps[0]?.decodeMs).toBe(600);
+		expect(result[0]?.steps[0]?.genTotalMs).toBe(750);
+		expect(result[0]?.steps[1]?.ttftMs).toBe(100);
+		expect(result[0]?.steps[1]?.decodeMs).toBe(400);
+		expect(result[0]?.steps[1]?.genTotalMs).toBe(500);
 	});
 });
