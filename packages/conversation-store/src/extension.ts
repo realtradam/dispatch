@@ -16,7 +16,7 @@ export const extension: Extension = {
 	manifest,
 	activate: (host: HostAPI) => {
 		const storage = host.storage("conversation-store");
-		const store = createConversationStore(storage);
+		const store = createConversationStore(storage, host.logger);
 		host.provideService(conversationStoreHandle, store);
 	},
 };

@@ -1,6 +1,7 @@
 import type {
 	ChatMessage,
 	Chunk,
+	Logger,
 	Role,
 	StorageNamespace,
 	StoredChunk,
@@ -16,7 +17,7 @@ import {
 	parseSeq,
 	seqKey,
 } from "./keys.js";
-import { reconcile } from "./reconcile.js";
+import { reconcileWithReport } from "./reconcile.js";
 
 export interface ConversationStore {
 	readonly append: (conversationId: string, messages: readonly ChatMessage[]) => Promise<void>;
@@ -38,7 +39,10 @@ interface PersistedChunkEntry {
 	readonly chunkIdx: number;
 }
 
-export function createConversationStore(storage: StorageNamespace): ConversationStore {
+export function createConversationStore(
+	storage: StorageNamespace,
+	logger?: Logger,
+): ConversationStore {
 	return {
 		async append(conversationId, messages) {
 			const raw = await storage.get(seqKey(conversationId));
@@ -95,7 +99,18 @@ export function createConversationStore(storage: StorageNamespace): Conversation
 				messages.push({ role: currentRole, chunks: currentChunks });
 			}
 
-			return reconcile(messages);
+			const { messages: repaired, report } = reconcileWithReport(messages);
+
+			if (report.repairedCount > 0 && logger !== undefined) {
+				const child = logger.child({ conversationId });
+				const span = child.span("reconcile.repair", {
+					repairedCount: report.repairedCount,
+					firstRepairedToolCallId: report.repairedToolCallIds[0] ?? null,
+				});
+				span.end();
+			}
+
+			return repaired;
 		},
 
 		async loadSince(conversationId, sinceSeq) {

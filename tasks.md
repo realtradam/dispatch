@@ -69,9 +69,6 @@ server/collector procs poison the next run's counts.
   this repo; user couriers to `../dispatch-web`; ORCHESTRATOR §7).
 
 ## Open items
-- **logging-audit #1:** conversation-store has no injected logger, so a load-time
-  `reconcile` repair leaves no trace. Inject a logger + emit a `reconcile.repair`
-  span when conversation-store is next touched.
 - **dedup / storage growth (deferred):** trace-body de-dup (D5 volume control +
   `prefix.fingerprint`) + rotation/compression/retention
   (`notes/observability-design.md` §6, D9). `cacheReadTokens` is the cheap dedup
