@@ -1,6 +1,79 @@
-import type { ChatMessage, StepId, StorageNamespace, TurnMetrics } from "@dispatch/kernel";
+import type {
+	ChatMessage,
+	Logger,
+	Span,
+	StepId,
+	StorageNamespace,
+	TurnMetrics,
+} from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createConversationStore } from "./store.js";
+
+interface SpanEvent {
+	readonly kind: "span-open" | "span-close";
+	readonly name: string;
+	readonly attrs?: Record<string, string | number | boolean | null> | undefined;
+	readonly conversationId?: string | undefined;
+}
+
+function createCapturingLogger(): { logger: Logger; events: SpanEvent[] } {
+	const events: SpanEvent[] = [];
+
+	function createSpan(name: string, conversationId?: string | undefined): Span {
+		events.push({ kind: "span-open", name, conversationId });
+		const span: Span = {
+			id: `span_${events.length}`,
+			log: createFakeLogger(conversationId),
+			setAttributes: () => {},
+			addLink: () => {},
+			child: (childName, attrs) => {
+				const child = createSpan(childName, conversationId);
+				if (attrs !== undefined) {
+					const prev = events[events.length - 1];
+					if (prev !== undefined) {
+						events[events.length - 1] = {
+							...prev,
+							attrs: attrs as Record<string, string | number | boolean | null>,
+						};
+					}
+				}
+				return child;
+			},
+			end: (outcome) => {
+				const attrs = outcome?.attrs as
+					| Record<string, string | number | boolean | null>
+					| undefined;
+				events.push({ kind: "span-close", name, attrs, conversationId });
+			},
+		};
+		return span;
+	}
+
+	function createFakeLogger(conversationId?: string | undefined): Logger {
+		return {
+			debug: () => {},
+			info: () => {},
+			warn: () => {},
+			error: () => {},
+			child: (ctx) => createFakeLogger(ctx.conversationId ?? conversationId),
+			span: (name, attrs) => {
+				const span = createSpan(name, conversationId);
+				if (attrs !== undefined) {
+					const prev = events[events.length - 1];
+					if (prev !== undefined) {
+						events[events.length - 1] = {
+							...prev,
+							attrs: attrs as Record<string, string | number | boolean | null>,
+						};
+					}
+				}
+				return span;
+			},
+		};
+	}
+
+	return { logger: createFakeLogger(), events };
+}
 
 function createMemoryStorage(): StorageNamespace {
 	const data = new Map<string, string>();
@@ -561,5 +634,119 @@ describe("ConversationStore metrics", () => {
 		expect(result[0]?.steps[1]?.ttftMs).toBe(100);
 		expect(result[0]?.steps[1]?.decodeMs).toBe(400);
 		expect(result[0]?.steps[1]?.genTotalMs).toBe(500);
+	});
+});
+
+describe("ConversationStore reconcile.repair span", () => {
+	let storage: StorageNamespace;
+
+	beforeEach(() => {
+		storage = createMemoryStorage();
+	});
+
+	it("load() emits a reconcile.repair span when a dangling tool-call is repaired", async () => {
+		const { logger, events } = createCapturingLogger();
+		const store = createConversationStore(storage, logger);
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_dangle",
+						toolName: "someTool",
+						input: {},
+					},
+				],
+			},
+		];
+		await store.append("conv_span", messages);
+		await store.load("conv_span");
+
+		const spanOpens = events.filter((e) => e.kind === "span-open" && e.name === "reconcile.repair");
+		const spanCloses = events.filter(
+			(e) => e.kind === "span-close" && e.name === "reconcile.repair",
+		);
+		expect(spanOpens).toHaveLength(1);
+		expect(spanCloses).toHaveLength(1);
+	});
+
+	it("load() emits NO reconcile.repair span when the history is already valid", async () => {
+		const { logger, events } = createCapturingLogger();
+		const store = createConversationStore(storage, logger);
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "hi" }] },
+		];
+		await store.append("conv_valid", messages);
+		await store.load("conv_valid");
+
+		const repairSpans = events.filter((e) => e.name === "reconcile.repair");
+		expect(repairSpans).toHaveLength(0);
+	});
+
+	it("the reconcile.repair span carries conversationId + a repair count attribute", async () => {
+		const { logger, events } = createCapturingLogger();
+		const store = createConversationStore(storage, logger);
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_a",
+						toolName: "toolA",
+						input: {},
+					},
+					{
+						type: "tool-call",
+						toolCallId: "call_b",
+						toolName: "toolB",
+						input: {},
+					},
+				],
+			},
+		];
+		await store.append("conv_multi", messages);
+		await store.load("conv_multi");
+
+		const spanOpen = events.find((e) => e.kind === "span-open" && e.name === "reconcile.repair");
+		expect(spanOpen).toBeDefined();
+		if (spanOpen === undefined) throw new Error("expected spanOpen");
+		expect(spanOpen.conversationId).toBe("conv_multi");
+		expect(spanOpen.attrs).toBeDefined();
+		if (spanOpen.attrs === undefined) throw new Error("expected attrs");
+		expect(spanOpen.attrs.repairedCount).toBe(2);
+		expect(spanOpen.attrs.firstRepairedToolCallId).toBe("call_a");
+	});
+
+	it("createConversationStore works with the logger omitted (optional)", async () => {
+		const store = createConversationStore(storage);
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_nolog",
+						toolName: "someTool",
+						input: {},
+					},
+				],
+			},
+		];
+		await store.append("conv_nolog", messages);
+		const result = await store.load("conv_nolog");
+		expect(result).toHaveLength(3);
+		expect(result[2]?.role).toBe("tool");
+		const chunk = result[2]?.chunks[0];
+		if (chunk === undefined) throw new Error("expected chunk");
+		expect(chunk.type).toBe("tool-result");
+		if (chunk.type === "tool-result") {
+			expect(chunk.toolCallId).toBe("call_nolog");
+			expect(chunk.isError).toBe(true);
+		}
 	});
 });

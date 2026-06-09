@@ -1,6 +1,16 @@
 import type { ChatMessage, ToolCallChunk, ToolResultChunk } from "@dispatch/kernel";
 
-export function reconcile(messages: readonly ChatMessage[]): ChatMessage[] {
+export interface ReconcileReport {
+	readonly repairedCount: number;
+	readonly repairedToolCallIds: readonly string[];
+}
+
+export interface ReconcileResult {
+	readonly messages: ChatMessage[];
+	readonly report: ReconcileReport;
+}
+
+export function reconcileWithReport(messages: readonly ChatMessage[]): ReconcileResult {
 	const resolvedIds = new Set<string>();
 	for (const msg of messages) {
 		for (const chunk of msg.chunks) {
@@ -35,5 +45,15 @@ export function reconcile(messages: readonly ChatMessage[]): ChatMessage[] {
 		result.push({ role: "tool", chunks: [synthesized] });
 	}
 
-	return result;
+	return {
+		messages: result,
+		report: {
+			repairedCount: orphaned.length,
+			repairedToolCallIds: orphaned.map((c) => c.toolCallId),
+		},
+	};
+}
+
+export function reconcile(messages: readonly ChatMessage[]): ChatMessage[] {
+	return reconcileWithReport(messages).messages;
 }
