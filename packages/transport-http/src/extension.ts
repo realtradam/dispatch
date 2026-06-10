@@ -4,6 +4,7 @@ import {
 	conversationStoreHandle,
 	credentialStoreHandle,
 	sessionOrchestratorHandle,
+	throughputStoreHandle,
 } from "./seam.js";
 
 export const manifest: Manifest = {
@@ -12,9 +13,11 @@ export const manifest: Manifest = {
 	version: "0.0.0",
 	apiVersion: "^0.1.0",
 	trust: "bundled",
-	dependsOn: ["conversation-store", "credential-store", "session-orchestrator"],
+	dependsOn: ["conversation-store", "credential-store", "session-orchestrator", "throughput-store"],
 	capabilities: { network: true },
-	contributes: { routes: ["/chat", "/conversations/:id", "/health", "/models"] },
+	contributes: {
+		routes: ["/chat", "/conversations/:id", "/health", "/models", "/metrics/throughput"],
+	},
 	activation: "eager",
 };
 
@@ -32,12 +35,14 @@ export function createTransportHttpExtension(): Extension & {
 			const conversationStore = host.getService(conversationStoreHandle);
 			const orchestrator = host.getService(sessionOrchestratorHandle);
 			const credentialStore = host.getService(credentialStoreHandle);
+			const throughputStore = host.getService(throughputStoreHandle);
 			const logger = host.logger;
 
 			const app = createApp({
 				conversationStore,
 				orchestrator,
 				credentialStore,
+				throughputStore,
 				logger,
 			});
 

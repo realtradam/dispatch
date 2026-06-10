@@ -54,6 +54,7 @@
         "@dispatch/storage-sqlite": "workspace:*",
         "@dispatch/surface-loaded-extensions": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
+        "@dispatch/throughput-store": "workspace:*",
         "@dispatch/tool-read-file": "workspace:*",
         "@dispatch/transport-http": "workspace:*",
         "@dispatch/transport-ws": "workspace:*",
@@ -122,6 +123,13 @@
         "@dispatch/ui-contract": "workspace:*",
       },
     },
+    "packages/throughput-store": {
+      "name": "@dispatch/throughput-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/tool-read-file": {
       "name": "@dispatch/tool-read-file",
       "version": "0.0.0",
@@ -142,7 +150,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.1.0",
+      "version": "0.4.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
@@ -156,6 +164,7 @@
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/throughput-store": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
         "hono": "^4.0.0",
       },
@@ -177,7 +186,7 @@
     },
     "packages/wire": {
       "name": "@dispatch/wire",
-      "version": "0.1.0",
+      "version": "0.4.0",
     },
   },
   "packages": {
@@ -224,6 +233,8 @@
     "@dispatch/surface-loaded-extensions": ["@dispatch/surface-loaded-extensions@workspace:packages/surface-loaded-extensions"],
 
     "@dispatch/surface-registry": ["@dispatch/surface-registry@workspace:packages/surface-registry"],
+
+    "@dispatch/throughput-store": ["@dispatch/throughput-store@workspace:packages/throughput-store"],
 
     "@dispatch/tool-read-file": ["@dispatch/tool-read-file@workspace:packages/tool-read-file"],
 
