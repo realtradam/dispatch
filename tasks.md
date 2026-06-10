@@ -82,9 +82,16 @@ deferred); dedup = **content-addressed bodies** (body-hash, NOT fingerprint-gate
   error.
 - [x] Glossary: added content-addressed body, trace retention, prefix fingerprint,
   warm vs real.
-- Tests: bun 89→106. typecheck/biome clean. (Retention is a background tick — no
-  request-path change, no live boot needed; covered by real-store + injected-clock
-  tests.) Optional follow-up: host-bin env-override for the retention policy.
+- [x] **Migration bug** (found by live boot, fixed): Wave 1 created the
+  `idx_records_bodyHash` index BEFORE running `migrateOldBodies`, so opening a
+  pre-existing OLD-schema `traces.db` crashed the collector
+  (`no such column: bodyHash`, crash-looped). Fix = reorder migration before the
+  index + 3 regression tests that seed a real old-schema DB. bun 106→109.
+- Tests: bun 89→109. typecheck/biome clean. **Live-verified** against a real
+  old-schema `traces.db`: 0 crashes, collector stays up, schema migrates
+  (bodyHash + content-addressed bodies), real-data dedup (318 body refs → 270
+  stored bodies), prune cadence fires cleanly (14× `prune completed`). Optional
+  follow-up: host-bin env-override for the retention policy.
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled

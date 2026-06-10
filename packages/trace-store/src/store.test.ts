@@ -1,3 +1,5 @@
+import { Database } from "bun:sqlite";
+import { unlinkSync } from "node:fs";
 import type { LogRecord } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { computeEvictions, createTraceStore, stableId } from "./store.js";
@@ -214,7 +216,6 @@ describe("createTraceStore", () => {
 		expect(result[0]?.kind).toBe("log");
 		store2.close();
 
-		const { unlinkSync } = require("node:fs");
 		try {
 			unlinkSync(tmpPath);
 		} catch {
@@ -482,5 +483,246 @@ describe("computeEvictions", () => {
 		];
 		const evicted = computeEvictions(bodies, 300);
 		expect(evicted).toEqual(["a", "b"]);
+	});
+});
+
+describe("old-schema migration", () => {
+	function tmpPath(): string {
+		return `/tmp/trace-store-migration-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`;
+	}
+
+	function cleanup(path: string): void {
+		try {
+			unlinkSync(path);
+		} catch {
+			// ignore
+		}
+		try {
+			unlinkSync(`${path}-wal`);
+		} catch {
+			// ignore
+		}
+		try {
+			unlinkSync(`${path}-shm`);
+		} catch {
+			// ignore
+		}
+	}
+
+	it("migrates a pre-existing old-schema DB (records without bodyHash + bodies keyed by recordId) on open without error", () => {
+		const path = tmpPath();
+		try {
+			const oldDb = new Database(path);
+			oldDb.run("PRAGMA journal_mode = WAL");
+			oldDb.run(`
+				CREATE TABLE records (
+					id TEXT PRIMARY KEY,
+					kind TEXT NOT NULL,
+					level TEXT,
+					msg TEXT,
+					name TEXT,
+					spanId TEXT,
+					parentSpanId TEXT,
+					conversationId TEXT,
+					turnId TEXT,
+					extensionId TEXT NOT NULL,
+					timestamp INTEGER NOT NULL,
+					durationMs INTEGER,
+					status TEXT,
+					attributes TEXT,
+					links TEXT
+				)
+			`);
+			oldDb.run(`
+				CREATE TABLE bodies (
+					recordId TEXT PRIMARY KEY REFERENCES records(id),
+					body TEXT NOT NULL
+				)
+			`);
+
+			oldDb.run(
+				`INSERT INTO records (id, kind, level, msg, name, spanId, parentSpanId, conversationId, turnId, extensionId, timestamp, durationMs, status, attributes, links)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					"rec-1",
+					"span-open",
+					null,
+					null,
+					"prompt",
+					"s1",
+					null,
+					"conv-1",
+					"t1",
+					"ext",
+					1000,
+					null,
+					null,
+					null,
+					null,
+				],
+			);
+			oldDb.run(
+				`INSERT INTO records (id, kind, level, msg, name, spanId, parentSpanId, conversationId, turnId, extensionId, timestamp, durationMs, status, attributes, links)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					"rec-2",
+					"span-open",
+					null,
+					null,
+					"prompt",
+					"s2",
+					null,
+					"conv-1",
+					"t1",
+					"ext",
+					2000,
+					null,
+					null,
+					null,
+					null,
+				],
+			);
+
+			const sharedBody = "identical body content for migration test";
+			oldDb.run("INSERT INTO bodies (recordId, body) VALUES (?, ?)", ["rec-1", sharedBody]);
+			oldDb.run("INSERT INTO bodies (recordId, body) VALUES (?, ?)", ["rec-2", sharedBody]);
+
+			oldDb.close();
+
+			const store = createTraceStore({ path });
+
+			const turn = store.getTurn("t1");
+			expect(turn).toHaveLength(2);
+			expect(turn[0]?.kind).toBe("span-open");
+			expect(turn[1]?.kind).toBe("span-open");
+
+			expect(store.getBody("rec-1")).toBe(sharedBody);
+			expect(store.getBody("rec-2")).toBe(sharedBody);
+
+			const db = new Database(path);
+			const bodyRows = db.query("SELECT hash FROM bodies").all() as Array<{ hash: string }>;
+			expect(bodyRows).toHaveLength(1);
+			db.close();
+
+			store.close();
+		} finally {
+			cleanup(path);
+		}
+	});
+
+	it("re-opening an already-migrated DB is a no-op (no error, no double-migrate)", () => {
+		const path = tmpPath();
+		try {
+			const oldDb = new Database(path);
+			oldDb.run("PRAGMA journal_mode = WAL");
+			oldDb.run(`
+				CREATE TABLE records (
+					id TEXT PRIMARY KEY,
+					kind TEXT NOT NULL,
+					level TEXT,
+					msg TEXT,
+					name TEXT,
+					spanId TEXT,
+					parentSpanId TEXT,
+					conversationId TEXT,
+					turnId TEXT,
+					extensionId NOT NULL,
+					timestamp INTEGER NOT NULL,
+					durationMs INTEGER,
+					status TEXT,
+					attributes TEXT,
+					links TEXT
+				)
+			`);
+			oldDb.run(`
+				CREATE TABLE bodies (
+					recordId TEXT PRIMARY KEY REFERENCES records(id),
+					body TEXT NOT NULL
+				)
+			`);
+			oldDb.run(
+				`INSERT INTO records (id, kind, level, msg, name, spanId, parentSpanId, conversationId, turnId, extensionId, timestamp, durationMs, status, attributes, links)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					"rec-1",
+					"span-open",
+					null,
+					null,
+					"prompt",
+					"s1",
+					null,
+					"conv-1",
+					"t1",
+					"ext",
+					1000,
+					null,
+					null,
+					null,
+					null,
+				],
+			);
+			oldDb.run("INSERT INTO bodies (recordId, body) VALUES (?, ?)", ["rec-1", "some body"]);
+			oldDb.close();
+
+			const store1 = createTraceStore({ path });
+			expect(store1.getBody("rec-1")).toBe("some body");
+			store1.close();
+
+			const store2 = createTraceStore({ path });
+			expect(store2.getBody("rec-1")).toBe("some body");
+
+			const turn = store2.getTurn("t1");
+			expect(turn).toHaveLength(1);
+
+			store2.close();
+		} finally {
+			cleanup(path);
+		}
+	});
+
+	it("idx_records_bodyHash exists after migration", () => {
+		const path = tmpPath();
+		try {
+			const oldDb = new Database(path);
+			oldDb.run("PRAGMA journal_mode = WAL");
+			oldDb.run(`
+				CREATE TABLE records (
+					id TEXT PRIMARY KEY,
+					kind TEXT NOT NULL,
+					level TEXT,
+					msg TEXT,
+					name TEXT,
+					spanId TEXT,
+					parentSpanId TEXT,
+					conversationId TEXT,
+					turnId TEXT,
+					extensionId TEXT NOT NULL,
+					timestamp INTEGER NOT NULL,
+					durationMs INTEGER,
+					status TEXT,
+					attributes TEXT,
+					links TEXT
+				)
+			`);
+			oldDb.run(`
+				CREATE TABLE bodies (
+					recordId TEXT PRIMARY KEY REFERENCES records(id),
+					body TEXT NOT NULL
+				)
+			`);
+			oldDb.close();
+
+			const store = createTraceStore({ path });
+			store.close();
+
+			const db = new Database(path);
+			const indexes = db
+				.query("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_records_bodyHash'")
+				.all() as Array<{ name: string }>;
+			expect(indexes).toHaveLength(1);
+			db.close();
+		} finally {
+			cleanup(path);
+		}
 	});
 });

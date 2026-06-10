@@ -82,7 +82,8 @@ function schema(db: Database): void {
 	db.run("CREATE INDEX IF NOT EXISTS idx_records_spanId ON records(spanId)");
 	db.run("CREATE INDEX IF NOT EXISTS idx_records_kind ON records(kind)");
 	db.run("CREATE INDEX IF NOT EXISTS idx_records_timestamp ON records(timestamp)");
-	db.run("CREATE INDEX IF NOT EXISTS idx_records_bodyHash ON records(bodyHash)");
+
+	migrateOldBodies(db);
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS bodies (
@@ -94,7 +95,7 @@ function schema(db: Database): void {
 		)
 	`);
 
-	migrateOldBodies(db);
+	db.run("CREATE INDEX IF NOT EXISTS idx_records_bodyHash ON records(bodyHash)");
 }
 
 function migrateOldBodies(db: Database): void {
