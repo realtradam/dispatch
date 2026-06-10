@@ -3,6 +3,7 @@ import type {
 	ConversationHistoryResponse,
 	ConversationMetricsResponse,
 	ModelsResponse,
+	ThroughputResponse,
 } from "@dispatch/transport-contract";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -13,14 +14,24 @@ import {
 	parseSinceSeq,
 	serializeEventLine,
 } from "./logic.js";
-import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
+import {
+	type ConversationStore,
+	type CredentialStore,
+	type SessionOrchestrator,
+	ThroughputQueryError,
+	type ThroughputStore,
+} from "./seam.js";
 
 export interface CreateServerOptions {
 	readonly conversationStore: ConversationStore;
 	readonly orchestrator: SessionOrchestrator;
 	readonly credentialStore: CredentialStore;
+	/** Optional — defaults to a no-op store (recording disabled, empty reports). */
+	readonly throughputStore?: ThroughputStore;
 	readonly logger?: Logger;
 	readonly generateId?: () => string;
+	/** Injectable clock for sample timestamps (default Date.now). */
+	readonly now?: () => number;
 }
 
 const noopLogger: Logger = {
@@ -45,10 +56,44 @@ const noopLogger: Logger = {
 	},
 };
 
+const noopThroughputStore: ThroughputStore = {
+	record: async () => {},
+	aggregate: async (q) => ({ period: q.period, date: q.date, start: 0, end: 0, models: [] }),
+};
+
 export function createApp(opts: CreateServerOptions): Hono {
 	const app = new Hono();
 	const log = opts.logger ?? noopLogger;
 	const generateId = opts.generateId ?? (() => crypto.randomUUID());
+	const now = opts.now ?? (() => Date.now());
+	const throughputStore = opts.throughputStore ?? noopThroughputStore;
+
+	async function recordThroughput(
+		turnEvents: readonly AgentEvent[],
+		model: string | undefined,
+	): Promise<void> {
+		if (model === undefined) return; // no model selected → nothing to attribute
+		let genMs = 0;
+		let outputTokens = 0;
+		for (const e of turnEvents) {
+			if (e.type === "step-complete" && e.genTotalMs !== undefined) genMs += e.genTotalMs;
+			if (e.type === "done" && e.usage !== undefined) outputTokens = e.usage.outputTokens;
+		}
+		if (genMs <= 0) return; // no generation time → can't compute tok/s
+		try {
+			await throughputStore.record({ model, ts: now(), outputTokens, genMs });
+			log.info("throughput: turn recorded", {
+				model,
+				outputTokens,
+				genMs,
+				tokensPerSecond: Math.round((outputTokens / (genMs / 1000)) * 100) / 100,
+			});
+		} catch (err) {
+			log.warn("throughput: failed to record sample", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
 
 	app.use(
 		"*",
@@ -174,12 +219,40 @@ export function createApp(opts: CreateServerOptions): Hono {
 		await streamReady;
 		await orchestratorPromise.catch(() => {});
 
+		// Record a per-model throughput sample for this turn. Generation time is
+		// the PURE decode time — the sum of per-step genTotalMs (excludes tool
+		// waits) — and tokens are the turn's aggregate output tokens.
+		await recordThroughput(events, model);
+
 		const ndjson = events.map(serializeEventLine).join("");
 
 		return c.text(ndjson, 200, {
 			"Content-Type": "application/x-ndjson",
 			"X-Conversation-Id": conversationId,
 		});
+	});
+
+	app.get("/metrics/throughput", async (c) => {
+		const period = c.req.query("period");
+		const date = c.req.query("date");
+		if (period !== "day" && period !== "week" && period !== "month") {
+			return c.json({ error: "query param 'period' must be one of: day, week, month" }, 400);
+		}
+		if (date === undefined || date === "") {
+			return c.json({ error: "query param 'date' is required" }, 400);
+		}
+		try {
+			// Typed against the wire contract: if the store's report shape ever
+			// drifts from ThroughputResponse, this assignment fails to compile.
+			const body: ThroughputResponse = await throughputStore.aggregate({ period, date });
+			return c.json(body);
+		} catch (err) {
+			if (err instanceof ThroughputQueryError) {
+				return c.json({ error: err.message }, 400);
+			}
+			log.error("throughput: aggregate failed", { err });
+			return c.json({ error: "Failed to aggregate throughput" }, 502);
+		}
 	});
 
 	return app;

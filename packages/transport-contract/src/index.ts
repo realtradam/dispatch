@@ -111,6 +111,49 @@ export interface ConversationMetricsResponse {
 	readonly turns: readonly TurnMetrics[];
 }
 
+/** The aggregation window for `GET /metrics/throughput`. */
+export type ThroughputPeriod = "day" | "week" | "month";
+
+/**
+ * One model's throughput over a period. `tokensPerSecond` is the TOKEN-WEIGHTED
+ * average — `Σ(output tokens) / Σ(generation seconds)` across the period's
+ * turns — so larger turns count proportionally more than smaller ones.
+ * Generation time is the model's pure decode time (it excludes tool-execution
+ * waits).
+ */
+export interface ThroughputModelStat {
+	/** The model name in `<credentialName>/<model>` form (as selected). */
+	readonly model: string;
+	/** Token-weighted average tokens/second over the period. */
+	readonly tokensPerSecond: number;
+	/** Total output tokens generated across the period's turns. */
+	readonly totalOutputTokens: number;
+	/** Total pure generation time across the period's turns, in milliseconds. */
+	readonly totalGenMs: number;
+	/** Number of turns that contributed. */
+	readonly turns: number;
+}
+
+/**
+ * Response body for
+ * `GET /metrics/throughput?period=day|week|month&date=<...>`.
+ *
+ * `date` is `YYYY-MM-DD` for day/week (week = the ISO Mon–Sun week containing
+ * that date) and `YYYY-MM` for month. Boundaries are computed in the server's
+ * local timezone; `start`/`end` are the resolved half-open `[start, end)` range
+ * in epoch-ms. `models` lists every model active in the window, sorted by
+ * `tokensPerSecond` descending.
+ */
+export interface ThroughputResponse {
+	readonly period: ThroughputPeriod;
+	readonly date: string;
+	/** Inclusive start of the window, epoch-ms. */
+	readonly start: number;
+	/** Exclusive end of the window, epoch-ms. */
+	readonly end: number;
+	readonly models: readonly ThroughputModelStat[];
+}
+
 // ─── WebSocket chat ops ───────────────────────────────────────────────────────
 // The persistent WS connection multiplexes chat ops (below) with surface ops
 // (`@dispatch/ui-contract`). The unified unions at the bottom compose both. Chat

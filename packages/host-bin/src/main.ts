@@ -23,6 +23,7 @@ import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestra
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
 import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
 import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
+import { extension as throughputStoreExt } from "@dispatch/throughput-store";
 import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
@@ -62,6 +63,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	authApikeyExt,
 	providerOpenaiCompatExt,
 	toolReadFileExt,
+	throughputStoreExt,
 	sessionOrchestratorExt,
 	createTransportHttpExtension(),
 	// Surface extensions — dependency order: surface-registry first, then consumers.

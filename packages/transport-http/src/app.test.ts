@@ -1,7 +1,32 @@
-import type { AgentEvent, Logger, StepId, StoredChunk, TurnMetrics } from "@dispatch/kernel";
+import type {
+	AgentEvent,
+	Logger,
+	StepId,
+	StorageNamespace,
+	StoredChunk,
+	TurnMetrics,
+} from "@dispatch/kernel";
+import { createThroughputStore, dayKeyOf } from "@dispatch/throughput-store";
+import type { ThroughputResponse } from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
+
+function createMemStorage(): StorageNamespace {
+	const map = new Map<string, string>();
+	return {
+		get: async (k) => map.get(k) ?? null,
+		set: async (k, v) => {
+			map.set(k, v);
+		},
+		delete: async (k) => {
+			map.delete(k);
+		},
+		has: async (k) => map.has(k),
+		keys: async (prefix) =>
+			[...map.keys()].filter((k) => (prefix === undefined ? true : k.startsWith(prefix))),
+	};
+}
 
 interface CapturedLog {
 	readonly level: "debug" | "info" | "warn" | "error";
@@ -737,5 +762,116 @@ describe("CORS", () => {
 		expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
 		expect(res.headers.get("Access-Control-Allow-Methods")).toContain("OPTIONS");
 		expect(res.headers.get("Access-Control-Allow-Headers")).toContain("Content-Type");
+	});
+});
+
+describe("throughput recording + GET /metrics/throughput", () => {
+	const ts = new Date(2026, 5, 10, 12, 0, 0).getTime();
+	const day = dayKeyOf(ts);
+
+	function appWith(
+		throughputStore: ReturnType<typeof createThroughputStore>,
+		events: AgentEvent[],
+	) {
+		return createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator(events),
+			credentialStore: createFakeCredentialStore([]),
+			throughputStore,
+			now: () => ts,
+		});
+	}
+
+	async function postChat(app: ReturnType<typeof createApp>, body: Record<string, unknown>) {
+		return app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	}
+
+	it("records a per-model sample from a turn and aggregates it (token-weighted tok/s)", async () => {
+		const store = createThroughputStore({ storage: createMemStorage() });
+		const events: AgentEvent[] = [
+			{
+				type: "step-complete",
+				conversationId: "c1",
+				turnId: "t1",
+				stepId: "t1#0" as StepId,
+				genTotalMs: 2000,
+			},
+			{
+				type: "done",
+				conversationId: "c1",
+				turnId: "t1",
+				reason: "stop",
+				usage: { inputTokens: 10, outputTokens: 400 },
+			},
+		];
+		const app = appWith(store, events);
+
+		const chat = await postChat(app, {
+			conversationId: "c1",
+			message: "hi",
+			model: "claude/haiku",
+		});
+		expect(chat.status).toBe(200);
+
+		const res = await app.request(`/metrics/throughput?period=day&date=${day}`);
+		expect(res.status).toBe(200);
+		const report = (await res.json()) as ThroughputResponse;
+		expect(report.period).toBe("day");
+		expect(report.models).toHaveLength(1);
+		expect(report.models[0]).toMatchObject({
+			model: "claude/haiku",
+			totalOutputTokens: 400,
+			totalGenMs: 2000,
+			tokensPerSecond: 200, // 400 tokens / 2s
+			turns: 1,
+		});
+	});
+
+	it("does not record a sample when no model is selected", async () => {
+		const store = createThroughputStore({ storage: createMemStorage() });
+		const events: AgentEvent[] = [
+			{
+				type: "step-complete",
+				conversationId: "c1",
+				turnId: "t1",
+				stepId: "t1#0" as StepId,
+				genTotalMs: 2000,
+			},
+			{
+				type: "done",
+				conversationId: "c1",
+				turnId: "t1",
+				reason: "stop",
+				usage: { inputTokens: 1, outputTokens: 5 },
+			},
+		];
+		const app = appWith(store, events);
+
+		await postChat(app, { conversationId: "c1", message: "hi" }); // no model
+		const res = await app.request(`/metrics/throughput?period=day&date=${day}`);
+		const report = (await res.json()) as { models: unknown[] };
+		expect(report.models).toEqual([]);
+	});
+
+	it("returns 400 for an invalid period", async () => {
+		const app = appWith(createThroughputStore({ storage: createMemStorage() }), []);
+		const res = await app.request("/metrics/throughput?period=year&date=2026");
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 400 for a malformed date", async () => {
+		const app = appWith(createThroughputStore({ storage: createMemStorage() }), []);
+		const res = await app.request("/metrics/throughput?period=day&date=nope");
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 400 when date is missing", async () => {
+		const app = appWith(createThroughputStore({ storage: createMemStorage() }), []);
+		const res = await app.request("/metrics/throughput?period=day");
+		expect(res.status).toBe(400);
 	});
 });

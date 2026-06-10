@@ -8,6 +8,7 @@
 		{ "path": "../surface-loaded-extensions" },
 		{ "path": "../surface-registry" },
 		{ "path": "../tool-read-file" },
+		{ "path": "../throughput-store" },
 		{ "path": "../transport-http" },
 		{ "path": "../transport-ws" }
 	]
