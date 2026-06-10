@@ -13,6 +13,7 @@ import type {
 import { defineService } from "@dispatch/kernel";
 import { createMetricsAccumulator } from "./metrics.js";
 import { buildUserMessage, defaultDispatchPolicy, generateTurnId } from "./pure.js";
+import type { ToolAssembly } from "./tools-filter.js";
 
 export interface SessionOrchestrator {
 	handleMessage(input: {
@@ -38,6 +39,8 @@ export interface SessionOrchestratorDeps {
 		modelName: string,
 	) => { provider: ProviderContract; model: string } | undefined;
 	readonly runTurn: (input: RunTurnInput) => Promise<RunTurnResult>;
+	/** Apply the per-turn tools filter chain. Injected for testability. */
+	readonly applyToolsFilter: (assembly: ToolAssembly) => Promise<ToolAssembly>;
 	/** Base logger (auto-scoped to this extension); childed per turn for span capture. */
 	readonly logger?: Logger;
 	/** Injected monotonic-ish clock (ms) forwarded to RunTurnInput for timing events. */
@@ -71,7 +74,12 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 				provider = deps.resolveProvider();
 			}
 
-			const tools = deps.resolveTools();
+			const baseTools = deps.resolveTools();
+			const assembled = await deps.applyToolsFilter({
+				tools: baseTools,
+				conversationId,
+				...(cwd !== undefined ? { cwd } : {}),
+			});
 			const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
 			const turnLogger = deps.logger?.child({ conversationId, turnId });
 			const metrics = createMetricsAccumulator();
@@ -84,7 +92,7 @@ export function createSessionOrchestrator(deps: SessionOrchestratorDeps): Sessio
 			const opts: RunTurnInput = {
 				provider,
 				messages: [...history, userMsg],
-				tools,
+				tools: assembled.tools,
 				dispatch,
 				emit: emitAndAccumulate,
 				conversationId,

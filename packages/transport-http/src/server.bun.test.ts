@@ -89,6 +89,9 @@ function createFakeHostAPI(configOverrides: Record<string, unknown> = {}): HostA
 		addFilter() {
 			return () => {};
 		},
+		async applyFilters(_hook, value) {
+			return value;
+		},
 		provideService() {},
 		getService(handle) {
 			return SERVICES.get(handle.id) as never;

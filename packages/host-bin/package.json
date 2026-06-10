@@ -11,6 +11,7 @@
 		"@dispatch/credential-store": "workspace:*",
 		"@dispatch/provider-openai-compat": "workspace:*",
 		"@dispatch/session-orchestrator": "workspace:*",
+		"@dispatch/skills": "workspace:*",
 		"@dispatch/throughput-store": "workspace:*",
 		"@dispatch/transport-http": "workspace:*",
 		"@dispatch/tool-read-file": "workspace:*",

@@ -11,3 +11,4 @@ export {
 	generateTurnId,
 	selectFirstProvider,
 } from "./pure.js";
+export { type ToolAssembly, toolsFilter } from "./tools-filter.js";

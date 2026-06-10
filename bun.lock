@@ -51,6 +51,7 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/skills": "workspace:*",
         "@dispatch/storage-sqlite": "workspace:*",
         "@dispatch/surface-loaded-extensions": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
@@ -100,6 +101,14 @@
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/skills": {
+      "name": "@dispatch/skills",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
       },
     },
     "packages/storage-sqlite": {
@@ -251,6 +260,8 @@
     "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
 
     "@dispatch/session-orchestrator": ["@dispatch/session-orchestrator@workspace:packages/session-orchestrator"],
+
+    "@dispatch/skills": ["@dispatch/skills@workspace:packages/skills"],
 
     "@dispatch/storage-sqlite": ["@dispatch/storage-sqlite@workspace:packages/storage-sqlite"],
 
