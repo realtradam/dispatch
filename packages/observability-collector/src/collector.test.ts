@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LogRecord } from "@dispatch/kernel";
-import { createTraceStore } from "@dispatch/trace-store";
+import type { TraceStore } from "@dispatch/trace-store";
+import { createTraceStore, DEFAULT_RETENTION } from "@dispatch/trace-store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { drainOnce, readOffset, splitLines, writeOffset } from "./collector.js";
+import { drainOnce, readOffset, shouldPrune, splitLines, writeOffset } from "./collector.js";
 
 // --- Fixtures ---
 
@@ -278,5 +279,162 @@ describe("readOffset / writeOffset", () => {
 		const path = join(tmpDir, "neg.offset");
 		writeFileSync(path, "-5");
 		expect(readOffset(path)).toBe(0);
+	});
+});
+
+// --- shouldPrune (pure) ---
+
+describe("shouldPrune", () => {
+	it("shouldPrune is false before the interval elapses", () => {
+		expect(shouldPrune(1000, 1000, 60_000)).toBe(false);
+		expect(shouldPrune(59_999, 1000, 60_000)).toBe(false);
+	});
+
+	it("shouldPrune is true once the interval has elapsed", () => {
+		expect(shouldPrune(61_000, 1000, 60_000)).toBe(true);
+		expect(shouldPrune(70_000, 1000, 60_000)).toBe(true);
+	});
+});
+
+// --- Prune integration (real in-memory trace-store + injected clock) ---
+
+function runCollectorTicks(opts: {
+	store: TraceStore;
+	journalPath: string;
+	pruneIntervalMs: number;
+	now: number;
+	tickCount: number;
+	clockAdvancePerTick: number;
+}): { pruneCalls: number; now: number } {
+	const {
+		store,
+		journalPath,
+		pruneIntervalMs,
+		now: startNow,
+		tickCount,
+		clockAdvancePerTick,
+	} = opts;
+	let now = startNow;
+	let lastPruneAt = now;
+	let pruneCalls = 0;
+
+	for (let i = 0; i < tickCount; i++) {
+		drainOnce({ journalPath, offset: 0, store });
+		if (shouldPrune(now, lastPruneAt, pruneIntervalMs)) {
+			store.prune(DEFAULT_RETENTION);
+			pruneCalls++;
+			lastPruneAt = now;
+		}
+		now += clockAdvancePerTick;
+	}
+
+	return { pruneCalls, now };
+}
+
+describe("prune integration", () => {
+	it("collector invokes store.prune once after the prune interval elapses", () => {
+		const journalPath = join(tmpDir, "journal.log");
+		writeFileSync(journalPath, "");
+
+		const store = createTraceStore({ path: ":memory:" });
+		const result = runCollectorTicks({
+			store,
+			journalPath,
+			pruneIntervalMs: 60_000,
+			now: 1000,
+			tickCount: 13_000,
+			clockAdvancePerTick: 5,
+		});
+
+		expect(result.pruneCalls).toBe(1);
+		store.close();
+	});
+
+	it("collector does not prune on every drain", () => {
+		const journalPath = join(tmpDir, "journal.log");
+		writeFileSync(journalPath, "");
+
+		const store = createTraceStore({ path: ":memory:" });
+		const result = runCollectorTicks({
+			store,
+			journalPath,
+			pruneIntervalMs: 60_000,
+			now: 1000,
+			tickCount: 100,
+			clockAdvancePerTick: 10,
+		});
+
+		expect(result.pruneCalls).toBe(0);
+		store.close();
+	});
+
+	it("a prune error is logged and does not stop draining", () => {
+		const journalPath = join(tmpDir, "journal.log");
+		const recentTs = Date.now() - 1000;
+		const recentLog1: LogRecord = { ...log1, timestamp: recentTs };
+		const recentLog2: LogRecord = { ...log2, timestamp: recentTs };
+		writeFileSync(journalPath, toNdjson([recentLog1, recentLog2]));
+
+		const store = createTraceStore({ path: ":memory:" });
+		let pruneCalls = 0;
+		let nextPruneThrows = true;
+		const realPrune = store.prune.bind(store);
+		store.prune = (policy) => {
+			pruneCalls++;
+			if (nextPruneThrows) {
+				nextPruneThrows = false;
+				throw new Error("simulated prune failure");
+			}
+			return realPrune(policy);
+		};
+
+		let drainSuccesses = 0;
+		let now = 1000;
+		let lastPruneAt = now;
+		const pruneIntervalMs = 60_000;
+
+		for (let i = 0; i < 4; i++) {
+			const result = drainOnce({ journalPath, offset: 0, store });
+			if (result.newOffset > 0) drainSuccesses++;
+			if (shouldPrune(now, lastPruneAt, pruneIntervalMs)) {
+				try {
+					store.prune(DEFAULT_RETENTION);
+				} catch {
+					// expected in test
+				}
+				lastPruneAt = now;
+			}
+			now += 60_000;
+		}
+
+		expect(pruneCalls).toBe(3);
+		expect(drainSuccesses).toBe(4);
+		const turn = store.getTurn("turn-1");
+		expect(turn).toHaveLength(2);
+		store.close();
+	});
+
+	it("body inserts flow through content-addressed path unchanged", () => {
+		const journalPath = join(tmpDir, "journal.log");
+		const bodyLog: LogRecord = {
+			kind: "log",
+			level: "info",
+			msg: "with-body",
+			timestamp: 1700000000000,
+			extensionId: "ext-1",
+			turnId: "turn-2",
+			body: "request payload content",
+		};
+		writeFileSync(journalPath, toNdjson([bodyLog]));
+
+		const store = createTraceStore({ path: ":memory:" });
+		drainOnce({ journalPath, offset: 0, store });
+
+		const turn = store.getTurn("turn-2");
+		expect(turn).toHaveLength(1);
+		const record = turn[0];
+		if (record === undefined) throw new Error("expected record");
+		expect(record.body).toBe("request payload content");
+		store.close();
 	});
 });

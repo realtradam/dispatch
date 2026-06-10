@@ -3,11 +3,15 @@ import type { TraceStore } from "@dispatch/trace-store";
 
 // --- Pure core (no I/O) ---
 
-/**
- * Split a buffer on newline boundaries. Returns complete lines and the
- * trailing partial (no newline yet) as remainder. A torn last line is
- * NOT parsed until its newline arrives.
- */
+export function shouldPrune(now: number, lastPruneAt: number, intervalMs: number): boolean {
+	return now - lastPruneAt >= intervalMs;
+}
+
+export interface Logger {
+	readonly info: (...args: readonly unknown[]) => void;
+	readonly debug: (...args: readonly unknown[]) => void;
+}
+
 export function splitLines(buffer: string): { lines: string[]; remainder: string } {
 	const lines: string[] = [];
 	let start = 0;
