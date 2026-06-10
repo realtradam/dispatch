@@ -1523,6 +1523,35 @@ describe("runTurn", () => {
 			expect(capturedOpts).toBeDefined();
 			expect(capturedOpts?.logger).toBeUndefined();
 		});
+
+		it("threads providerOpts.model through to provider.stream opts", async () => {
+			let capturedOpts: Record<string, unknown> | undefined;
+
+			const provider: ProviderContract = {
+				id: "fake",
+				stream(_messages, _tools, opts) {
+					capturedOpts = opts !== undefined ? { ...opts } : undefined;
+					return (async function* () {
+						yield { type: "text-delta", delta: "hi" } as ProviderEvent;
+						yield { type: "usage", usage: { inputTokens: 1, outputTokens: 1 } } as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					})();
+				},
+			};
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				providerOpts: { model: "some-model-id" },
+			});
+
+			expect(capturedOpts?.model).toBe("some-model-id");
+		});
 	});
 
 	describe("span tree nesting", () => {

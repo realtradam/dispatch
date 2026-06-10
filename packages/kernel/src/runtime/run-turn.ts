@@ -1,6 +1,11 @@
 import type { ChatMessage, Chunk, StepId } from "../contracts/conversation.js";
 import type { Logger, Span } from "../contracts/logging.js";
-import type { ProviderContract, ProviderEvent, Usage } from "../contracts/provider.js";
+import type {
+	ProviderContract,
+	ProviderEvent,
+	ProviderStreamOptions,
+	Usage,
+} from "../contracts/provider.js";
 import type { EventEmitter, RunTurnInput, RunTurnResult } from "../contracts/runtime.js";
 import type { ToolCall, ToolContract } from "../contracts/tool.js";
 import { createStepDispatcher, type StepDispatcher } from "./dispatch.js";
@@ -100,6 +105,8 @@ interface StepContext {
 	readonly toolSpans: Map<string, Span>;
 	readonly cwd: string | undefined;
 	readonly now: (() => number) | undefined;
+	/** Per-turn provider options (model, systemPrompt, …) threaded to stream(). */
+	readonly providerOpts: ProviderStreamOptions | undefined;
 }
 
 interface TimingState {
@@ -295,7 +302,8 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 	}
 
 	try {
-		const opts = {
+		const opts: ProviderStreamOptions = {
+			...ctx.providerOpts,
 			...(ctx.turnSpan !== undefined && stepSpan !== undefined ? { logger: stepSpan.log } : {}),
 		};
 		const stream = ctx.provider.stream(ctx.messages, ctx.tools, opts);
@@ -501,6 +509,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				toolSpans,
 				cwd: input.cwd,
 				now,
+				providerOpts: input.providerOpts,
 			});
 
 			totalUsage = addUsage(totalUsage, stepResult.usage);
