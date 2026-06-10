@@ -24,7 +24,10 @@ import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/st
 import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
 import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
 import { extension as throughputStoreExt } from "@dispatch/throughput-store";
+import { extension as toolEditFileExt } from "@dispatch/tool-edit-file";
 import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
+import { extension as toolShellExt } from "@dispatch/tool-shell";
+import { extension as toolWriteFileExt } from "@dispatch/tool-write-file";
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
 import type { ChildHandle } from "./collector-supervisor.js";
@@ -62,7 +65,10 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	conversationStoreExt,
 	authApikeyExt,
 	providerOpenaiCompatExt,
+	toolEditFileExt,
 	toolReadFileExt,
+	toolShellExt,
+	toolWriteFileExt,
 	throughputStoreExt,
 	sessionOrchestratorExt,
 	createTransportHttpExtension(),

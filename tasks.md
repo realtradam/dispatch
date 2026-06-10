@@ -5,14 +5,15 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **576 vitest + 89 bun = 665 tests**.
+`tsc -b` EXIT 0 · biome clean · **686 vitest + 89 bun = 775 tests**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
 - **kernel** — contracts (ABI), bus, `runTurn` turn loop, extension host.
 - **core extensions** — storage-sqlite, auth-apikey, provider-openai-compat
   (OpenCode Go), conversation-store, session-orchestrator, transport-http,
-  credential-store; tool extension `read_file`.
+  credential-store; tool extensions `read_file` (files + directory listing), `run_shell`,
+  `edit_file`, `write_file`.
 - **observability** — structured Logger/Span ABI + journal-sink → out-of-process
   collector → trace-store (`bun:sqlite`); host-bin supervises the collector;
   nested turn→step→{prompt, provider.request, ttft, decode} spans; D5 verbatim
@@ -92,6 +93,30 @@ deferred); dedup = **content-addressed bodies** (body-hash, NOT fingerprint-gate
   (bodyHash + content-addressed bodies), real-data dedup (318 body refs → 270
   stored bodies), prune cadence fires cleanly (14× `prune completed`). Optional
   follow-up: host-bin env-override for the retention policy.
+
+## Standard tools — fs + shell (DONE)
+User-gated calls: **one tool per extension** (matches `tool-read-file` precedent); tools are
+**standard** tier (a turn completes with `tools:[]`, §2.6/§2.8). **Zero ABI change** — the
+`ToolContract`/`ToolExecuteContext` already carry `signal`/`onOutput`/`cwd`/`log`.
+- **Wave 1 (parallel, disjoint pkgs, kernel-only dep) — all green:**
+  - [x] `tool-read-file` — EXTENDED `read_file` to list directory contents (sorted, `/`-suffixed
+    subdirs; files unchanged). 41 tests.
+  - [x] `tool-shell` (new) — `run_shell`: foreground, streamed via `ctx.onOutput`, `ctx.signal`
+    cancel, `ctx.cwd`, timeout + output cap, `concurrencySafe:false`; injected `spawn`. 31 tests.
+  - [x] `tool-edit-file` (new) — `edit_file`: `oldString`/`newString`/`replaceAll`; errors on
+    absent/non-unique/identical; workdir-contained; `concurrencySafe:false`. 38 tests.
+  - [x] `tool-write-file` (new) — `write_file`: explicit `overwrite` flag (absent+unset→create;
+    exists+unset→error; exists+true→overwrite; absent+true→error); no parent auto-create. 33 tests.
+- **Wave 2 (done):** orchestrator added 3 root tsconfig refs + `bun install`; host-bin owner
+  registered the 3 new extensions in `CORE_EXTENSIONS` (same pattern as `read_file`).
+- **Live-verified:** clean boot (`Dispatch booted`, collector up, no activation/capability-gate
+  error — the new `shell` capability is accepted); full-graph `tsc -b` EXIT 0, biome clean.
+- **Recovery notes (scar tissue):** `tool-write-file` first returned plan-only (§5a) → re-summoned
+  with "IMPLEMENT NOW". `tool-edit-file` hung vitest at collection — `computeReplacement` infinite-
+  looped on empty `oldString` (`"".indexOf("") === 0`, index never advances) invoked at a test's
+  `describe` scope; fixed with an early empty-string guard + validation. One agent deleted
+  `ORCHESTRATOR.md` out-of-lane → caught by post-wave `git status`, restored from git.
+- Deferred (not selected): `glob`, `grep`/`search_code`, background shells.
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled

@@ -1,10 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLogger, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	createReadFileTool,
+	formatDirectoryEntries,
 	isPathWithinWorkdir,
 	renderLines,
 	sliceLines,
@@ -134,6 +135,33 @@ describe("renderLines", () => {
 	it("renders with custom offset", () => {
 		const result = renderLines(["x", "y"], 10);
 		expect(result).toBe("10: x\n11: y");
+	});
+});
+
+describe("formatDirectoryEntries", () => {
+	it("lists directory entries sorted with trailing slash on subdirectories", () => {
+		const entries = [
+			{ name: "zebra.txt", isDirectory: false },
+			{ name: "alpha", isDirectory: true },
+			{ name: "readme.md", isDirectory: false },
+			{ name: "beta", isDirectory: true },
+		];
+		const result = formatDirectoryEntries(entries, "mydir");
+		expect(result).toBe("alpha/\nbeta/\nreadme.md\nzebra.txt");
+	});
+
+	it("returns empty-directory message for an empty dir", () => {
+		const result = formatDirectoryEntries([], "empty-dir");
+		expect(result).toBe("(empty directory: empty-dir)");
+	});
+
+	it("handles mixed files and directories with same name sorting", () => {
+		const entries = [
+			{ name: "b", isDirectory: false },
+			{ name: "a", isDirectory: true },
+		];
+		const result = formatDirectoryEntries(entries, ".");
+		expect(result).toBe("a/\nb");
 	});
 });
 
@@ -315,5 +343,53 @@ describe("createReadFileTool", () => {
 
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toContain("1: from baked workdir");
+	});
+
+	it("lists directory entries sorted with trailing slash on subdirectories", async () => {
+		await mkdir(join(workdir, "subdir"));
+		await writeFile(join(workdir, "zebra.txt"), "z", "utf8");
+		await writeFile(join(workdir, "alpha.txt"), "a", "utf8");
+
+		const tool = createReadFileTool(workdir);
+		const result = await tool.execute({ path: "." }, stubCtx());
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toBe("alpha.txt\nsubdir/\nzebra.txt");
+	});
+
+	it("returns empty-directory message for an empty dir", async () => {
+		await mkdir(join(workdir, "empty-dir"));
+
+		const tool = createReadFileTool(workdir);
+		const result = await tool.execute({ path: "empty-dir" }, stubCtx());
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toBe("(empty directory: empty-dir)");
+	});
+
+	it("reads a file unchanged (regression: line numbers + offset/limit)", async () => {
+		await writeFile(join(workdir, "regression.txt"), "a\nb\nc\nd\ne\n", "utf8");
+
+		const tool = createReadFileTool(workdir);
+		const result = await tool.execute({ path: "regression.txt", offset: 2, limit: 3 }, stubCtx());
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toBe("2: b\n3: c\n4: d");
+	});
+
+	it("rejects a directory path outside the working directory (containment still enforced)", async () => {
+		const tool = createReadFileTool(workdir);
+		const result = await tool.execute({ path: "../outside-dir" }, stubCtx());
+
+		expect(result.isError).toBe(true);
+		expect(result.content).toContain("outside the working directory");
+	});
+
+	it("returns not-found for a nonexistent path", async () => {
+		const tool = createReadFileTool(workdir);
+		const result = await tool.execute({ path: "nonexistent-path" }, stubCtx());
+
+		expect(result.isError).toBe(true);
+		expect(result.content).toContain("not found");
 	});
 });
