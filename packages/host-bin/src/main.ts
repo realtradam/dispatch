@@ -29,6 +29,7 @@ import { createTransportWsExtension } from "@dispatch/transport-ws";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
+import { loadExternalExtensions } from "./load-external.js";
 
 function createEmptySecrets(): SecretsAccess {
 	return {
@@ -52,16 +53,15 @@ function createNoopEvents(): EventsEmitter {
 	return { emit: () => {} };
 }
 
+// Core extensions EXCEPT the credential-store, which is assembled in boot() so
+// its credential list can include any credentials backed by external providers
+// (e.g. a `claude` credential once the external Anthropic provider is loaded).
 const CORE_EXTENSIONS: readonly Extension[] = [
 	storageSqliteExt,
 	conversationStoreExt,
 	authApikeyExt,
 	providerOpenaiCompatExt,
 	toolReadFileExt,
-	// MVP single hardcoded credential; future work makes it config/TOML-driven.
-	createCredentialStoreExtension({
-		credentials: [{ name: "opencode", providerId: "openai-compat" }],
-	}),
 	sessionOrchestratorExt,
 	createTransportHttpExtension(),
 	// Surface extensions — dependency order: surface-registry first, then consumers.
@@ -69,6 +69,14 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	createTransportWsExtension(),
 	createLoadedExtensionsExtension(),
 ];
+
+/** Parse the comma-separated list of external extension module specifiers. */
+function parseExternalSpecifiers(env: Readonly<Record<string, string | undefined>>): string[] {
+	return (env.DISPATCH_EXTERNAL_EXTENSIONS ?? "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
+}
 
 async function boot(): Promise<void> {
 	const journalPath = process.env.DISPATCH_JOURNAL ?? "./.dispatch/journal/app.ndjson";
@@ -115,7 +123,31 @@ async function boot(): Promise<void> {
 		logDeps,
 	};
 
-	const host = createHost(CORE_EXTENSIONS, deps);
+	// Load external (out-of-repo) extensions declared via DISPATCH_EXTERNAL_EXTENSIONS.
+	const externalSpecifiers = parseExternalSpecifiers(
+		process.env as Readonly<Record<string, string | undefined>>,
+	);
+	const externalExtensions = await loadExternalExtensions(externalSpecifiers, logger);
+
+	// Assemble the credential list. MVP keeps the hardcoded `opencode` credential
+	// and adds a `claude` credential when an external Anthropic provider is loaded.
+	const credentials = [{ name: "opencode", providerId: "openai-compat" }];
+	const hasAnthropic = externalExtensions.some((e) =>
+		e.manifest.contributes?.providers?.includes("anthropic"),
+	);
+	if (hasAnthropic) {
+		const claudeName = process.env.DISPATCH_CLAUDE_CREDENTIAL ?? "claude";
+		credentials.push({ name: claudeName, providerId: "anthropic" });
+		logger.info(`Registered credential "${claudeName}" → anthropic provider`);
+	}
+
+	const extensions: Extension[] = [
+		...CORE_EXTENSIONS,
+		createCredentialStoreExtension({ credentials }),
+		...externalExtensions,
+	];
+
+	const host = createHost(extensions, deps);
 	await host.activate();
 
 	const disabled = host.getDisabled();

@@ -20,6 +20,17 @@ export function envToConfigMap(
 		map["provider.openai-compat.model"] = model;
 	}
 
+	// Optional settings consumed by external extensions (e.g. the Claude provider).
+	const anthropicModel = env.DISPATCH_ANTHROPIC_MODEL;
+	if (anthropicModel !== undefined) {
+		map["provider.anthropic.model"] = anthropicModel;
+	}
+
+	const claudeCredentialKey = env.DISPATCH_CLAUDE_CREDENTIAL_KEY;
+	if (claudeCredentialKey !== undefined) {
+		map["claude.credentialKey"] = claudeCredentialKey;
+	}
+
 	const httpPort = env.BACKEND_PORT ?? env.PORT;
 	if (httpPort !== undefined) {
 		const n = Number(httpPort);
