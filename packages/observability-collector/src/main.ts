@@ -1,5 +1,6 @@
-import { createTraceStore } from "@dispatch/trace-store";
-import { drainOnce, readOffset, writeOffset } from "./collector.js";
+import { createTraceStore, DEFAULT_RETENTION } from "@dispatch/trace-store";
+import type { Logger } from "./collector.js";
+import { drainOnce, readOffset, shouldPrune, writeOffset } from "./collector.js";
 
 // --- Argv parsing ---
 
@@ -7,12 +8,14 @@ interface CliArgs {
 	readonly journal: string;
 	readonly db: string;
 	readonly interval: number;
+	readonly pruneIntervalMs: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
 	let journal = "";
 	let db = "./.dispatch-data/traces.db";
 	let interval = 250;
+	let pruneIntervalMs = 60_000;
 
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -26,18 +29,29 @@ function parseArgs(argv: string[]): CliArgs {
 			const val = Number(argv[i + 1]);
 			if (Number.isFinite(val) && val > 0) interval = val;
 			i++;
+		} else if (arg === "--prune-interval-ms" && i + 1 < argv.length) {
+			const val = Number(argv[i + 1]);
+			if (Number.isFinite(val) && val > 0) pruneIntervalMs = val;
+			i++;
 		}
 	}
 
 	if (!journal) {
 		console.error(
-			"Usage: observability-collector --journal <path> [--db <path>] [--interval <ms>]",
+			"Usage: observability-collector --journal <path> [--db <path>] [--interval <ms>] [--prune-interval-ms <ms>]",
 		);
 		process.exit(1);
 	}
 
-	return { journal, db, interval };
+	return { journal, db, interval, pruneIntervalMs };
 }
+
+// --- Logger ---
+
+const logger: Logger = {
+	info: (...args: readonly unknown[]) => console.log("[observability-collector]", ...args),
+	debug: (...args: readonly unknown[]) => console.debug("[observability-collector]", ...args),
+};
 
 // --- Main loop ---
 
@@ -47,6 +61,7 @@ async function main(): Promise<void> {
 	const store = createTraceStore({ path: args.db });
 
 	let offset = readOffset(sidecarPath);
+	let lastPruneAt = Date.now();
 
 	let shuttingDown = false;
 
@@ -64,6 +79,18 @@ async function main(): Promise<void> {
 			offset = result.newOffset;
 			writeOffset(sidecarPath, offset);
 		}
+
+		const now = Date.now();
+		if (shouldPrune(now, lastPruneAt, args.pruneIntervalMs)) {
+			lastPruneAt = now;
+			try {
+				const summary = store.prune(DEFAULT_RETENTION);
+				logger.debug("prune completed", summary);
+			} catch (err) {
+				logger.info("prune failed (non-fatal)", err);
+			}
+		}
+
 		await sleep(args.interval);
 	}
 

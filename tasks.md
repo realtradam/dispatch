@@ -68,20 +68,23 @@ server/collector procs poison the next run's counts.
 - [x] **FE courier handoff** written: `frontend-metrics-pass2-handoff.md` (in
   this repo; user couriers to `../dispatch-web`; ORCHESTRATOR §7).
 
-## dedup / storage growth (current milestone — building)
-Design DECIDED + recorded: `notes/observability-design.md` §12. User-gated calls:
-extend existing pipeline (no new ext); scope = **de-dup + retention/rotation**
-(D9 roll-ups deferred); dedup = **content-addressed bodies** (body-hash, NOT
-fingerprint-gated). Glossary terms approved (add on land): deduplication /
-content-addressed body, prefix fingerprint, warm vs real, retention / rotation.
-- [x] **Wave 1 — `trace-store`** (done): content-addressed `bodies` table
-  (SHA-256), at-rest gzip (>1 KiB), `prune(policy)` (age + drop-oldest size cap +
-  orphan GC) / `RetentionPolicy` / `PruneSummary` / `DEFAULT_RETENTION` (7d/256MiB);
-  read paths transparent. bun 89→100.
-- [ ] **Wave 2 — `observability-collector`:** call `store.prune()` on a cadence;
-  body inserts flow through the content-addressed path.
-- [ ] On land: add the 4 glossary terms; (optional) host-bin env-override for
-  retention policy.
+## dedup / storage growth (DONE)
+Design `notes/observability-design.md` §12. User-gated calls: extend existing
+pipeline (no new ext); scope = **de-dup + retention/rotation** (D9 roll-ups
+deferred); dedup = **content-addressed bodies** (body-hash, NOT fingerprint-gated).
+- [x] **Wave 1 — `trace-store`**: content-addressed `bodies` table (SHA-256),
+  at-rest gzip (>1 KiB), `prune(policy)` (age + drop-oldest byte-cap + orphan GC) /
+  `RetentionPolicy` / `PruneSummary` / `DEFAULT_RETENTION` (7d/256MiB); reads
+  transparent.
+- [x] **Wave 2 — `observability-collector`**: pure `shouldPrune` cadence helper;
+  `main.ts` calls `store.prune(DEFAULT_RETENTION)` on a coarse cadence
+  (`--prune-interval-ms`, default 60s; host-bin-overridable), log-and-continue on
+  error.
+- [x] Glossary: added content-addressed body, trace retention, prefix fingerprint,
+  warm vs real.
+- Tests: bun 89→106. typecheck/biome clean. (Retention is a background tick — no
+  request-path change, no live boot needed; covered by real-store + injected-clock
+  tests.) Optional follow-up: host-bin env-override for the retention policy.
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled
