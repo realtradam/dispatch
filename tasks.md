@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **546 vitest + 89 bun = 635 tests**.
+`tsc -b` EXIT 0 · biome clean · **576 vitest + 89 bun = 665 tests**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -68,11 +68,29 @@ server/collector procs poison the next run's counts.
 - [x] **FE courier handoff** written: `frontend-metrics-pass2-handoff.md` (in
   this repo; user couriers to `../dispatch-web`; ORCHESTRATOR §7).
 
+## dedup / storage growth (current milestone — building)
+Design DECIDED + recorded: `notes/observability-design.md` §12. User-gated calls:
+extend existing pipeline (no new ext); scope = **de-dup + retention/rotation**
+(D9 roll-ups deferred); dedup = **content-addressed bodies** (body-hash, NOT
+fingerprint-gated). Glossary terms approved (add on land): deduplication /
+content-addressed body, prefix fingerprint, warm vs real, retention / rotation.
+- [x] **Wave 1 — `trace-store`** (done): content-addressed `bodies` table
+  (SHA-256), at-rest gzip (>1 KiB), `prune(policy)` (age + drop-oldest size cap +
+  orphan GC) / `RetentionPolicy` / `PruneSummary` / `DEFAULT_RETENTION` (7d/256MiB);
+  read paths transparent. bun 89→100.
+- [ ] **Wave 2 — `observability-collector`:** call `store.prune()` on a cadence;
+  body inserts flow through the content-addressed path.
+- [ ] On land: add the 4 glossary terms; (optional) host-bin env-override for
+  retention policy.
+
 ## Open items
-- **dedup / storage growth (deferred):** trace-body de-dup (D5 volume control +
-  `prefix.fingerprint`) + rotation/compression/retention
-  (`notes/observability-design.md` §6, D9). `cacheReadTokens` is the cheap dedup
-  signal; thin/fat split already built.
+- **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled
+  from dedup by the content-addressed decision; also gated on cache-warming being
+  built (not yet) so `warm|real` can't be honestly stamped. Later cache-bust-debug
+  milestone (`notes/observability-design.md` §3.1, §12).
+- **D9 analytics roll-ups (deferred):** rollup table shape + `GROUP BY` indexes +
+  retention asymmetry + periodic rollup job (`notes/observability-design.md` §2 D9,
+  §12). The scheduler mechanism (`host.scheduler.register`) already exists.
 - **D8 `prompt.assembly` segments:** deferred-by-design (await the context-filter
   chain).
 
