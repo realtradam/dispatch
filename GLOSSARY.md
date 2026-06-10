@@ -43,6 +43,9 @@
 | **key** | The API key (the secret string) held by a credential. | apiKey / api-key (when meaning the whole credential profile) |
 | **model name** | The selectable identifier in `<credentialName>/<model>` form — what the model catalog lists and what the CLI / `/chat` `model` field take. | model reference, model id |
 | **model catalog** | The list of available model names; served by `GET /models`, aggregated per credential from each provider's `listModels()`. | model list |
+| **skill** | A reusable instruction document (markdown) under a `.skills/` directory, loaded on demand into the conversation by the `load_skill` tool. Discovered from `~/.skills` (home) and `<cwd>/.skills` (project); on a name clash the cwd skill shadows the home one. A skill's name is its filename without `.md`. | prompt snippet, macro |
+| **skill summary** | A skill file's "when to use this skill" line: line 1 of the md, valid only when line 2 is exactly `---`. Advertised (per-turn, cwd-aware) in the `load_skill` tool's description; on load the first two lines are stripped. A file lacking the `---` delimiter shows no summary but stays loadable. | — |
+| **tools filter** | The per-turn `FilterDescriptor` (`toolsFilter`, owned by `session-orchestrator`) through which extensions transform a turn's tool set before it reaches `runTurn`. Applied ONCE per turn so the tool definitions stay byte-stable across steps (prompt-cache safe). The first concrete use of the §3.2 context-assembly filter chain. | — |
 
 ## Known vocabulary drift
 

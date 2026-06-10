@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **686 vitest + 89 bun = 775 tests**.
+`tsc -b` EXIT 0 · biome clean · **734 vitest + 109 bun = 843 tests**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -117,6 +117,28 @@ User-gated calls: **one tool per extension** (matches `tool-read-file` precedent
   `describe` scope; fixed with an early empty-string guard + validation. One agent deleted
   `ORCHESTRATOR.md` out-of-lane → caught by post-wave `git status`, restored from git.
 - Deferred (not selected): `glob`, `grep`/`search_code`, background shells.
+
+## Skill system + load_skill tool (DONE)
+User-gated calls: skills list lives in the **`load_skill` tool definition** (NOT the system prompt),
+refreshed **per new turn** (cache-stable across steps), **live file read** on execute. One `skills`
+standard extension (loader + filter + tool). Skill = md in `.skills/`; discovered from `~/.skills` +
+`<cwd>/.skills` (cwd shadows home); name = filename w/o `.md`. Format: line1 = summary,
+line2 = `---`, body = line3+; on load the first two lines are stripped; malformed (no `---`) =
+no summary but still loadable. Glossary: added `skill`, `skill summary`, `tools filter`.
+- **Mechanism — the per-turn `tools` filter chain** (first concrete use of the §3.2 context-assembly
+  chain; reusable for persona/agents later):
+  - [x] **kernel** — exposed `HostAPI.applyFilters` (delegates to the bus's existing `applyFilters`).
+  - [x] **session-orchestrator** — defines+exports `toolsFilter`/`ToolAssembly`; applies it ONCE per
+    turn (injected `applyToolsFilter` dep) before `runTurn`, threading `cwd`+`conversationId`.
+  - [x] **skills** (new ext, `dependsOn session-orchestrator`) — pure parse/merge/render +
+    `load_skill` tool (live read, strips first two lines, path-contained) + a `toolsFilter` filter
+    that rewrites `load_skill`'s description + `name` enum with the per-cwd catalog. 42 tests.
+  - [x] **host-bin** — registered `skills` in `CORE_EXTENSIONS`.
+  - [x] **Fan-out (§5.3):** `applyFilters` was a required `HostAPI` addition → broke one consumer
+    (transport-http `server.bun.test.ts` inline HostAPI stub) → fixed by its owner.
+- **Live-verified:** clean boot (`skills` activates, filter registered, no crash); full-graph
+  `tsc -b` EXIT 0, biome clean. (End-to-end load_skill via a real LLM turn not yet exercised —
+  unit/integration tests cover the filter rewrite + live read.)
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled

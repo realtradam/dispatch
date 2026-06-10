@@ -20,6 +20,7 @@ import {
 } from "@dispatch/kernel";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
+import { extension as skillsExt } from "@dispatch/skills";
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
 import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
 import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
@@ -71,6 +72,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	toolWriteFileExt,
 	throughputStoreExt,
 	sessionOrchestratorExt,
+	skillsExt,
 	createTransportHttpExtension(),
 	// Surface extensions — dependency order: surface-registry first, then consumers.
 	createSurfaceRegistryExtension(),

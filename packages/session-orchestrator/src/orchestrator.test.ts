@@ -13,6 +13,7 @@ import type {
 import { runTurn } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { createSessionOrchestrator } from "./orchestrator.js";
+import type { ToolAssembly } from "./tools-filter.js";
 
 function createInMemoryStore(): ConversationStore & {
 	readonly data: Map<string, ChatMessage[]>;
@@ -87,6 +88,10 @@ function createFakeTool(
 	};
 }
 
+function identityApplyToolsFilter(assembly: ToolAssembly): Promise<ToolAssembly> {
+	return Promise.resolve(assembly);
+}
+
 describe("handleMessage integration", () => {
 	it("loads history, runs turn, emits events, and persists result", async () => {
 		const store = createInMemoryStore();
@@ -103,6 +108,7 @@ describe("handleMessage integration", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 		});
 
@@ -154,6 +160,7 @@ describe("handleMessage integration", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 		});
 
@@ -200,6 +207,7 @@ describe("handleMessage integration", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 		});
 
@@ -229,6 +237,7 @@ describe("handleMessage integration", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			resolveDispatch: () => ({ maxConcurrent: 4, eager: false }),
 			runTurn,
 		});
@@ -277,6 +286,7 @@ describe("handleMessage model resolution", () => {
 			conversationStore: store,
 			resolveProvider: () => fallbackProvider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			resolveModel: (name) => {
 				if (name === "cred/gpt-4") return { provider: resolvedProvider, model: "gpt-4" };
 				return undefined;
@@ -308,6 +318,7 @@ describe("handleMessage model resolution", () => {
 			conversationStore: store,
 			resolveProvider: () => fallbackProvider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			resolveModel: () => undefined,
 			runTurn: captureRunTurn,
 		});
@@ -338,6 +349,7 @@ describe("handleMessage model resolution", () => {
 			conversationStore: store,
 			resolveProvider: () => fallbackProvider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			resolveModel: () => ({
 				provider: { id: "should-not-use", stream: async function* () {} },
 				model: "x",
@@ -365,6 +377,7 @@ describe("handleMessage model resolution", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn: captureRunTurn,
 		});
 
@@ -398,6 +411,7 @@ describe("handleMessage model resolution", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn: captureRunTurn,
 			now: fakeNow,
 		});
@@ -422,6 +436,7 @@ describe("handleMessage model resolution", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn: captureRunTurn,
 		});
 
@@ -450,6 +465,7 @@ describe("turn-sealed event", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 		});
 
@@ -502,6 +518,7 @@ describe("turn-sealed event", () => {
 			conversationStore: wrappedStore,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 		});
 
@@ -548,6 +565,7 @@ describe("turn-sealed event", () => {
 			conversationStore: failingStore,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 		});
 
@@ -581,6 +599,7 @@ describe("turn metrics persistence", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 			now: () => 1000,
 		});
@@ -640,6 +659,7 @@ describe("turn metrics persistence", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [tool],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 			now: () => 1000,
 		});
@@ -698,6 +718,7 @@ describe("turn metrics persistence", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 			now: clock.now,
 		});
@@ -764,6 +785,7 @@ describe("turn metrics persistence", () => {
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [tool],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 			now: () => 1000,
 		});
@@ -817,6 +839,7 @@ describe("turn metrics persistence", () => {
 			conversationStore: failingMetricsStore,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
 		});
 
@@ -833,6 +856,102 @@ describe("turn metrics persistence", () => {
 		const sealedEvents = events.filter((e) => e.type === "turn-sealed");
 		expect(sealedEvents).toHaveLength(0);
 		expect(metricsAppended).toBe(false);
+	});
+});
+
+describe("tools filter", () => {
+	it("applies the tools filter once and passes the result to runTurn", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const toolA = createFakeTool("tool-a", async () => ({ content: "a" }));
+		const toolB = createFakeTool("tool-b", async () => ({ content: "b" }));
+
+		let filterCallCount = 0;
+		const transformingFilter = (assembly: ToolAssembly): Promise<ToolAssembly> => {
+			filterCallCount++;
+			return Promise.resolve({ ...assembly, tools: [toolB] });
+		};
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [toolA],
+			applyToolsFilter: transformingFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-filter-once",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(filterCallCount).toBe(1);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.tools).toHaveLength(1);
+		expect(captured[0]?.tools[0]?.name).toBe("tool-b");
+	});
+
+	it("tools filter identity is a no-op (same tools reach runTurn)", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const toolA = createFakeTool("tool-a", async () => ({ content: "a" }));
+		const toolB = createFakeTool("tool-b", async () => ({ content: "b" }));
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [toolA, toolB],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-filter-identity",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.tools).toHaveLength(2);
+		expect(captured[0]?.tools[0]?.name).toBe("tool-a");
+		expect(captured[0]?.tools[1]?.name).toBe("tool-b");
+	});
+
+	it("threads cwd and conversationId into the tool assembly", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captureRunTurn } = createCapturingRunTurn();
+
+		let receivedAssembly: ToolAssembly | undefined;
+		const capturingFilter = (assembly: ToolAssembly): Promise<ToolAssembly> => {
+			receivedAssembly = assembly;
+			return Promise.resolve(assembly);
+		};
+
+		const orchestrator = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: capturingFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-filter-threads",
+			text: "hi",
+			onEvent: () => {},
+			cwd: "/test/dir",
+		});
+
+		expect(receivedAssembly).toBeDefined();
+		expect(receivedAssembly?.conversationId).toBe("conv-filter-threads");
+		expect(receivedAssembly?.cwd).toBe("/test/dir");
+		expect(receivedAssembly?.tools).toEqual([]);
 	});
 });
 

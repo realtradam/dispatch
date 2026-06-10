@@ -8,6 +8,7 @@ import {
 	sessionOrchestratorHandle,
 } from "./orchestrator.js";
 import { selectFirstProvider } from "./pure.js";
+import { toolsFilter } from "./tools-filter.js";
 
 export const manifest: Manifest = {
 	id: "session-orchestrator",
@@ -36,6 +37,7 @@ export function activate(host: HostAPI): void {
 			const provider = host.getProviders().get(r.providerId);
 			return provider ? { provider, model: r.model } : undefined;
 		},
+		applyToolsFilter: (assembly) => host.applyFilters(toolsFilter, assembly),
 		runTurn,
 		logger: host.logger,
 		now: () => Date.now(),

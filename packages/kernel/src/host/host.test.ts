@@ -15,7 +15,7 @@ import type {
 	SecretsAccess,
 	StorageNamespace,
 } from "../contracts/extension.js";
-import { defineEventHook, defineService } from "../contracts/hooks.js";
+import { defineEventHook, defineFilter, defineService } from "../contracts/hooks.js";
 import type {
 	Attributes,
 	ErrorAttributes,
@@ -617,6 +617,39 @@ describe("createHost", () => {
 			expect(received).toEqual(["hello"]);
 		});
 
+		it("applyFilters threads a value through registered filters in order", async () => {
+			const hook = defineFilter<string>("test/text-transform");
+
+			const ext = createExtension("filter-ext", {
+				activate: (host) => {
+					host.addFilter(hook, (value) => `${value}-first`);
+					host.addFilter(hook, (value) => `${value}-second`);
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+			const result = await api.applyFilters(hook, "start");
+			expect(result).toBe("start-first-second");
+		});
+
+		it("applyFilters returns the input unchanged when no filters are registered", async () => {
+			const hook = defineFilter<string>("test/unused-filter");
+
+			const ext = createExtension("no-filter-ext", {
+				activate: () => {},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+			const result = await api.applyFilters(hook, "unchanged");
+			expect(result).toBe("unchanged");
+		});
+
 		it("storage delegates to the factory", async () => {
 			let storageResult: StorageNamespace | undefined;
 
@@ -924,6 +957,23 @@ describe("createHost", () => {
 			expect(() => api.defineAuth(createFakeAuth("late"))).toThrow(
 				"Registration not available after activation",
 			);
+		});
+
+		it("applyFilters is available on registration-closed HostAPI", async () => {
+			const hook = defineFilter<string>("test/closed-filter");
+
+			const ext = createExtension("filter-ext", {
+				activate: (host) => {
+					host.addFilter(hook, (value) => `${value}-filtered`);
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+			const result = await api.applyFilters(hook, "input");
+			expect(result).toBe("input-filtered");
 		});
 	});
 

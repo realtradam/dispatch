@@ -196,6 +196,26 @@ export interface HostAPI {
 		fn: FilterHandler<TValue>,
 	) => () => void;
 
+	/**
+	 * Run a filter chain: thread `value` through every filter registered for
+	 * `hook` in priority/registration order and return the final value. The
+	 * single-value-in/value-out counterpart to `addFilter`. Awaited in-band.
+	 *
+	 * Fail-open by default (a thrown filter is logged and the value passes
+	 * through unchanged); pass `{ failClosed: true }` to make a thrown filter
+	 * reject. With no registered filters the input value is returned as-is.
+	 *
+	 * This is what lets a core extension expose a contribution point (e.g. the
+	 * session-orchestrator running a per-turn tool/context-assembly chain) that
+	 * standard extensions plug into via `addFilter` — the kernel owns the
+	 * mechanism, the owner declares the typed `FilterDescriptor`.
+	 */
+	readonly applyFilters: <TValue>(
+		hook: FilterDescriptor<TValue>,
+		value: TValue,
+		opts?: { readonly failClosed?: boolean },
+	) => Promise<TValue>;
+
 	/** Provide an implementation for a typed service handle. */
 	readonly provideService: <T>(handle: ServiceHandle<T>, impl: T) => void;
 

@@ -20,6 +20,7 @@
 		{ "path": "./packages/tool-shell" },
 		{ "path": "./packages/tool-edit-file" },
 		{ "path": "./packages/tool-write-file" },
+		{ "path": "./packages/skills" },
 		{ "path": "./packages/cli" },
 		{ "path": "./packages/journal-sink" },
 		{ "path": "./packages/trace-store" },

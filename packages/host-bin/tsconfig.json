@@ -11,6 +11,7 @@
 		{ "path": "../tool-shell" },
 		{ "path": "../tool-edit-file" },
 		{ "path": "../tool-write-file" },
+		{ "path": "../skills" },
 		{ "path": "../throughput-store" },
 		{ "path": "../transport-http" },
 		{ "path": "../transport-ws" }

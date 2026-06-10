@@ -125,6 +125,13 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 			addFilter<TValue>(hook: FilterDescriptor<TValue>, fn: FilterHandler<TValue>) {
 				return deps.bus.addFilter(hook, fn);
 			},
+			async applyFilters<TValue>(
+				hook: FilterDescriptor<TValue>,
+				value: TValue,
+				opts?: { readonly failClosed?: boolean },
+			): Promise<TValue> {
+				return deps.bus.applyFilters(hook, value, opts);
+			},
 			provideService<T>(handle: ServiceHandle<T>, impl: T) {
 				deps.bus.provideService(handle, impl);
 			},
