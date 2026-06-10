@@ -1,6 +1,6 @@
 import type { LogRecord } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
-import { createTraceStore, stableId } from "./store.js";
+import { computeEvictions, createTraceStore, stableId } from "./store.js";
 
 const logRecord: LogRecord = {
 	kind: "log",
@@ -220,5 +220,267 @@ describe("createTraceStore", () => {
 		} catch {
 			// ignore cleanup error
 		}
+	});
+
+	it("body round-trips through getTurn", () => {
+		const store = freshStore();
+		store.insertRecords([bodyRecord]);
+		const result = store.getTurn("turn-1");
+		expect(result).toHaveLength(1);
+		expect(result[0]?.kind).toBe("span-open");
+		if (result[0]?.kind === "span-open") {
+			expect(result[0].body).toBe("the full prompt text");
+		}
+		store.close();
+	});
+});
+
+describe("content-addressed body storage", () => {
+	function freshStore() {
+		return createTraceStore({ path: ":memory:" });
+	}
+
+	it("content-addresses two identical bodies to a single stored body row", () => {
+		const store = freshStore();
+		const rec1: LogRecord = {
+			kind: "span-open",
+			spanId: "s1",
+			name: "prompt",
+			timestamp: 1000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: "identical body content",
+		};
+		const rec2: LogRecord = {
+			kind: "span-open",
+			spanId: "s2",
+			name: "prompt",
+			timestamp: 2000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: "identical body content",
+		};
+		store.insertRecords([rec1, rec2]);
+
+		const id1 = stableId(rec1);
+		const id2 = stableId(rec2);
+		expect(store.getBody(id1)).toBe("identical body content");
+		expect(store.getBody(id2)).toBe("identical body content");
+		store.close();
+	});
+
+	it("stores distinct bodies separately", () => {
+		const store = freshStore();
+		const rec1: LogRecord = {
+			kind: "span-open",
+			spanId: "s1",
+			name: "prompt",
+			timestamp: 1000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: "body A",
+		};
+		const rec2: LogRecord = {
+			kind: "span-open",
+			spanId: "s2",
+			name: "prompt",
+			timestamp: 2000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: "body B",
+		};
+		store.insertRecords([rec1, rec2]);
+
+		const id1 = stableId(rec1);
+		const id2 = stableId(rec2);
+		expect(store.getBody(id1)).toBe("body A");
+		expect(store.getBody(id2)).toBe("body B");
+		store.close();
+	});
+
+	it("compresses a body above the threshold and round-trips it on read", () => {
+		const store = freshStore();
+		const largeBody = "x".repeat(2048);
+		const rec: LogRecord = {
+			kind: "span-open",
+			spanId: "s1",
+			name: "prompt",
+			timestamp: 1000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: largeBody,
+		};
+		store.insertRecords([rec]);
+		const id = stableId(rec);
+		expect(store.getBody(id)).toBe(largeBody);
+		store.close();
+	});
+});
+
+describe("prune", () => {
+	function freshStore() {
+		return createTraceStore({ path: ":memory:" });
+	}
+
+	it("prune by maxAgeMs deletes records and their bodies older than the cutoff", () => {
+		const store = freshStore();
+		const oldRec: LogRecord = {
+			kind: "span-open",
+			spanId: "s-old",
+			name: "old-prompt",
+			timestamp: 1000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: "old body content",
+		};
+		const newRec: LogRecord = {
+			kind: "span-open",
+			spanId: "s-new",
+			name: "new-prompt",
+			timestamp: Date.now(),
+			extensionId: "ext",
+			turnId: "t2",
+			body: "new body content",
+		};
+		store.insertRecords([oldRec, newRec]);
+
+		const summary = store.prune({ maxAgeMs: 60000 });
+		expect(summary.recordsDeleted).toBe(1);
+
+		const result = store.getTurn("t1");
+		expect(result).toHaveLength(0);
+		expect(store.getBody(stableId(oldRec))).toBeUndefined();
+
+		const newResult = store.getTurn("t2");
+		expect(newResult).toHaveLength(1);
+		expect(store.getBody(stableId(newRec))).toBe("new body content");
+		store.close();
+	});
+
+	it("prune by maxTotalBodyBytes evicts oldest bodies until under the cap", () => {
+		const store = freshStore();
+		const body1 = "a".repeat(300);
+		const body2 = "b".repeat(300);
+		const body3 = "c".repeat(300);
+		const rec1: LogRecord = {
+			kind: "span-open",
+			spanId: "s1",
+			name: "p",
+			timestamp: 1000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: body1,
+		};
+		const rec2: LogRecord = {
+			kind: "span-open",
+			spanId: "s2",
+			name: "p",
+			timestamp: 2000,
+			extensionId: "ext",
+			turnId: "t2",
+			body: body2,
+		};
+		const rec3: LogRecord = {
+			kind: "span-open",
+			spanId: "s3",
+			name: "p",
+			timestamp: 3000,
+			extensionId: "ext",
+			turnId: "t3",
+			body: body3,
+		};
+		store.insertRecords([rec1, rec2, rec3]);
+
+		const summary = store.prune({ maxTotalBodyBytes: 500 });
+		expect(summary.bodiesDeleted).toBeGreaterThanOrEqual(1);
+
+		expect(store.getBody(stableId(rec1))).toBeUndefined();
+
+		const remaining = store.getTurn("t3");
+		if (remaining.length > 0 && remaining[0]?.kind === "span-open") {
+			expect(remaining[0].body).toBe(body3);
+		}
+		store.close();
+	});
+
+	it("prune garbage-collects an orphaned body with no referencing record", () => {
+		const store = freshStore();
+		const rec: LogRecord = {
+			kind: "span-open",
+			spanId: "s1",
+			name: "p",
+			timestamp: 1000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: "orphan body",
+		};
+		store.insertRecords([rec]);
+
+		const summary = store.prune({ maxAgeMs: 60000 });
+		expect(summary.recordsDeleted).toBe(1);
+		expect(summary.bodiesDeleted).toBe(1);
+		store.close();
+	});
+
+	it("prune keeps a still-referenced body when a duplicate referrer remains", () => {
+		const store = freshStore();
+		const sharedBody = "shared body content";
+		const rec1: LogRecord = {
+			kind: "span-open",
+			spanId: "s1",
+			name: "p",
+			timestamp: 1000,
+			extensionId: "ext",
+			turnId: "t1",
+			body: sharedBody,
+		};
+		const rec2: LogRecord = {
+			kind: "span-open",
+			spanId: "s2",
+			name: "p",
+			timestamp: Date.now(),
+			extensionId: "ext",
+			turnId: "t2",
+			body: sharedBody,
+		};
+		store.insertRecords([rec1, rec2]);
+
+		const summary = store.prune({ maxAgeMs: 60000 });
+		expect(summary.recordsDeleted).toBe(1);
+		expect(summary.bodiesDeleted).toBe(0);
+
+		const id2 = stableId(rec2);
+		expect(store.getBody(id2)).toBe(sharedBody);
+		store.close();
+	});
+});
+
+describe("computeEvictions", () => {
+	it("returns empty when under cap", () => {
+		const bodies = [
+			{ hash: "a", storedSize: 100, oldestRecordTimestamp: 1000 },
+			{ hash: "b", storedSize: 200, oldestRecordTimestamp: 2000 },
+		];
+		expect(computeEvictions(bodies, 500)).toEqual([]);
+	});
+
+	it("evicts oldest bodies until under cap", () => {
+		const bodies = [
+			{ hash: "a", storedSize: 300, oldestRecordTimestamp: 1000 },
+			{ hash: "b", storedSize: 300, oldestRecordTimestamp: 2000 },
+			{ hash: "c", storedSize: 300, oldestRecordTimestamp: 3000 },
+		];
+		const evicted = computeEvictions(bodies, 500);
+		expect(evicted).toEqual(["a", "b"]);
+	});
+
+	it("evicts multiple oldest bodies", () => {
+		const bodies = [
+			{ hash: "a", storedSize: 200, oldestRecordTimestamp: 1000 },
+			{ hash: "b", storedSize: 200, oldestRecordTimestamp: 2000 },
+			{ hash: "c", storedSize: 200, oldestRecordTimestamp: 3000 },
+		];
+		const evicted = computeEvictions(bodies, 300);
+		expect(evicted).toEqual(["a", "b"]);
 	});
 });

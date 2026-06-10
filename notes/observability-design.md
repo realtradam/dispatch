@@ -635,3 +635,54 @@ waits. Per tick the collector:
   durable; the collector consumes whenever it's up).
 - **Open (Phase B):** poll vs fs-watch; interval/batch-size; offset storage (store
   metadata vs sidecar); dedup key; + the store schema/indexes (§6).
+
+---
+
+## 12. Phase C — body de-dup + retention (DECIDED; building)
+
+> Resolves the §6 "Retention/rotation sizing" + "dedup key" open threads + the
+> tasks.md "dedup / storage growth" item. **User-gated decisions (this session):**
+> extend the existing pipeline (no new extension); scope = **de-dup + retention/
+> rotation** (D9 analytics roll-ups DEFERRED); dedup = **content-addressed bodies**.
+
+**The problem.** D5 verbatim provider-I/O capture stores large request/response
+bodies; cache-warming resends near-identical bodies every few minutes → the trace
+store grows without bound.
+
+**Decision — content-addressed bodies (supersedes the §3.1/D5 "fingerprint-gated
+persistence" sketch).** Dedup keys on the **body content hash**, NOT on
+`prefix.fingerprint`:
+- The store hashes each verbatim `body`, stores it **once** in a content-addressed
+  bodies table keyed by hash, and references it by hash from the span/record row.
+  Identical bodies (the cache-warming case, and any other repeat) collapse to one
+  stored copy. Robust against ALL duplicate bodies, not just prefix matches; and it
+  is **stateless** (no "prior fingerprint per conversation" bookkeeping).
+- This **decouples `prefix.fingerprint` from storage.** Fingerprint + `warm|real`
+  revert to their original job: queryable **cache-bust debugging** attributes (§3.1).
+  They are NOT needed for dedup/retention and are **deferred** to a later cache-bust-
+  debugging milestone — also because **cache-warming is not built yet**, so a request
+  cannot honestly be flagged `warm` vs `real` today (declare-reality, §extension brief).
+
+**Retention/rotation.** The store exposes `prune(policy)` enforcing a
+`RetentionPolicy` ({ maxAgeMs?, maxTotalBodyBytes? }): delete records/bodies past
+`maxAgeMs`; evict **oldest** bodies (drop-oldest) until under `maxTotalBodyBytes`;
+garbage-collect orphaned bodies (no remaining referencing row). Bodies above a size
+threshold are **compressed** at rest (gzip), transparently decompressed on read.
+Exports a `DEFAULT_RETENTION` constant.
+
+**Who triggers prune.** The **collector** (process 2) calls `store.prune(policy)` on
+a cadence in its existing tick loop — NOT a `scheduledJob` (the scheduler is for
+extensions; trace-store/collector are supporting packages). Retention policy values
+default to `DEFAULT_RETENTION`; host-bin env-override wiring is a deferred follow-up.
+
+**Units / waves.**
+- **Wave 1 — `trace-store`:** content-addressed body storage + compression +
+  `prune`/`RetentionPolicy`/`DEFAULT_RETENTION` on the `TraceStore` surface, read
+  paths transparent. (`bun:sqlite` → `bun test`.)
+- **Wave 2 — `observability-collector`:** call the new `prune` on a cadence;
+  confirm body inserts flow through the content-addressed path. Depends on Wave 1's
+  surface.
+
+**Deferred (still open):** D9 analytics roll-ups (§2 D9 / §6) — rollup table shape,
+`GROUP BY` indexes, retention asymmetry, the periodic rollup job. And the
+`prefix.fingerprint` / `warm|real` cache-bust attributes (above).
