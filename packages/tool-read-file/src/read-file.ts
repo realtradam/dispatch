@@ -1,4 +1,4 @@
-import { readFile, realpath } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
 
@@ -70,6 +70,24 @@ export function renderLines(lines: readonly string[], offset: number): string {
 	return lines.map((line, i) => `${offset + i}: ${line}`).join("\n");
 }
 
+/** A directory entry with its type. */
+export interface DirEntry {
+	readonly name: string;
+	readonly isDirectory: boolean;
+}
+
+/**
+ * Pure: format directory entries into a sorted listing string.
+ * Subdirectories get a trailing `/`. Empty input returns an empty-directory message.
+ */
+export function formatDirectoryEntries(entries: readonly DirEntry[], dirPath: string): string {
+	if (entries.length === 0) {
+		return `(empty directory: ${dirPath})`;
+	}
+	const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+	return sorted.map((e) => (e.isDirectory ? `${e.name}/` : e.name)).join("\n");
+}
+
 /**
  * Factory: create a read_file ToolContract bound to a working directory.
  * The working directory is injected so the tool is testable.
@@ -80,8 +98,10 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 	return {
 		name: "read_file",
 		description:
-			"Read the contents of a file. Returns lines with 1-indexed line numbers. " +
-			"Supports offset/limit for reading specific sections of large files.",
+			"Read the contents of a file or list a directory's contents. " +
+			"For files, returns lines with 1-indexed line numbers. " +
+			"Supports offset/limit for reading specific sections of large files. " +
+			"For directories, returns sorted entries with subdirectories suffixed by /.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -151,7 +171,40 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 				};
 			}
 
-			// Read the file.
+			// Stat to determine if this is a file or directory.
+			let pathStat: import("node:fs").Stats;
+			try {
+				pathStat = await stat(resolvedPath);
+			} catch (err: unknown) {
+				const code = (err as NodeJS.ErrnoException).code;
+				if (code === "ENOENT") {
+					return { content: `Error: File "${relPath}" not found.`, isError: true };
+				}
+				return {
+					content: `Error reading path: ${err instanceof Error ? err.message : String(err)}`,
+					isError: true,
+				};
+			}
+
+			// Directory listing branch.
+			if (pathStat.isDirectory()) {
+				let rawEntries: import("node:fs").Dirent<string>[];
+				try {
+					rawEntries = await readdir(resolvedPath, { encoding: "utf8", withFileTypes: true });
+				} catch (err: unknown) {
+					return {
+						content: `Error reading directory: ${err instanceof Error ? err.message : String(err)}`,
+						isError: true,
+					};
+				}
+				const dirEntries = rawEntries.map((e) => ({
+					name: e.name,
+					isDirectory: e.isDirectory(),
+				}));
+				return { content: formatDirectoryEntries(dirEntries, relPath) };
+			}
+
+			// File branch — read the file.
 			let content: string;
 			try {
 				content = await readFile(resolvedPath, "utf8");

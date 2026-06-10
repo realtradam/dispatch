@@ -55,7 +55,10 @@
         "@dispatch/surface-loaded-extensions": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
         "@dispatch/throughput-store": "workspace:*",
+        "@dispatch/tool-edit-file": "workspace:*",
         "@dispatch/tool-read-file": "workspace:*",
+        "@dispatch/tool-shell": "workspace:*",
+        "@dispatch/tool-write-file": "workspace:*",
         "@dispatch/transport-http": "workspace:*",
         "@dispatch/transport-ws": "workspace:*",
       },
@@ -130,8 +133,29 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/tool-edit-file": {
+      "name": "@dispatch/tool-edit-file",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/tool-read-file": {
       "name": "@dispatch/tool-read-file",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/tool-shell": {
+      "name": "@dispatch/tool-shell",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/tool-write-file": {
+      "name": "@dispatch/tool-write-file",
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
@@ -236,7 +260,13 @@
 
     "@dispatch/throughput-store": ["@dispatch/throughput-store@workspace:packages/throughput-store"],
 
+    "@dispatch/tool-edit-file": ["@dispatch/tool-edit-file@workspace:packages/tool-edit-file"],
+
     "@dispatch/tool-read-file": ["@dispatch/tool-read-file@workspace:packages/tool-read-file"],
+
+    "@dispatch/tool-shell": ["@dispatch/tool-shell@workspace:packages/tool-shell"],
+
+    "@dispatch/tool-write-file": ["@dispatch/tool-write-file@workspace:packages/tool-write-file"],
 
     "@dispatch/trace-replay": ["@dispatch/trace-replay@workspace:packages/trace-replay"],
 
