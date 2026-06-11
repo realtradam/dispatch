@@ -1,8 +1,14 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { cacheWarmHandle, turnSettled, turnStarted } from "@dispatch/session-orchestrator";
-import type { SurfaceProvider } from "@dispatch/surface-registry";
+import type { SurfaceContext, SurfaceProvider } from "@dispatch/surface-registry";
 import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 import type { SurfaceSpec } from "@dispatch/ui-contract";
+import {
+	buildConversationSpec,
+	buildDefaultSpec,
+	parseIntervalPayload,
+	secondsToMs,
+} from "./pure.js";
 import { createCacheWarmer } from "./warmer.js";
 
 export const manifest: Manifest = {
@@ -19,41 +25,13 @@ export const manifest: Manifest = {
 	},
 };
 
-function buildSurfaceSpec(
-	_conversationId: string | undefined,
-	enabled: boolean,
-	lastPct: number | null,
-): SurfaceSpec {
-	const pctDisplay = lastPct === null ? "—" : `${lastPct}%`;
-	return {
-		id: "cache-warming",
-		region: "side",
-		title: "Cache Warming",
-		fields: [
-			{
-				kind: "toggle",
-				label: "Enabled",
-				value: enabled,
-				action: { actionId: "cache-warming/toggle" },
-			},
-			{
-				kind: "stat",
-				label: "Last Cache %",
-				value: pctDisplay,
-			},
-		],
-	};
-}
-
 export function activate(host: HostAPI): void {
 	const warmService = host.getService(cacheWarmHandle);
 	const registry = host.getService(surfaceRegistryHandle);
 	const storage = host.storage("cache-warming");
 
-	let currentConversationId: string | undefined;
+	const subscribers = new Set<() => void>();
 
-	// Timer wrapper: setTimeout/clearTimeout return Timeout in Node types,
-	// but our TimerDeps uses number ids. Map between them.
 	const timeoutMap = new Map<number, ReturnType<typeof setTimeout>>();
 	let nextTimerId = 1;
 
@@ -76,22 +54,53 @@ export function activate(host: HostAPI): void {
 			},
 		},
 		onSurfaceChange: () => {
-			// Surface subscribers will re-fetch on next getSpec()
+			for (const notify of subscribers) {
+				notify();
+			}
 		},
 	});
 
 	host.on(turnStarted, (payload) => {
-		currentConversationId = payload.conversationId;
 		warmer.onTurnStarted(payload.conversationId);
 	});
 
 	host.on(turnSettled, (payload) => {
-		currentConversationId = payload.conversationId;
 		warmer.onTurnSettled(payload.conversationId, {
 			...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
 			...(payload.modelName !== undefined ? { modelName: payload.modelName } : {}),
 		});
 	});
+
+	function getSpec(context?: SurfaceContext): SurfaceSpec {
+		const convId = context?.conversationId;
+		if (convId === undefined) {
+			return buildDefaultSpec();
+		}
+		const state = warmer.getState(convId);
+		return buildConversationSpec(state.enabled, state.intervalMs, state.lastPct);
+	}
+
+	async function invoke(
+		actionId: string,
+		payload?: unknown,
+		context?: SurfaceContext,
+	): Promise<void> {
+		const convId = context?.conversationId;
+		if (convId === undefined) return;
+
+		if (actionId === "cache-warming/toggle") {
+			const current = warmer.getState(convId);
+			await warmer.setEnabled(convId, !current.enabled);
+		}
+
+		if (actionId === "cache-warming/set-interval") {
+			const seconds = parseIntervalPayload(payload);
+			if (seconds === null) return;
+			const ms = secondsToMs(seconds);
+			if (ms === null) return;
+			await warmer.setIntervalMs(convId, ms);
+		}
+	}
 
 	const provider: SurfaceProvider = {
 		catalogEntry: {
@@ -99,23 +108,13 @@ export function activate(host: HostAPI): void {
 			region: "side",
 			title: "Cache Warming",
 		},
-		getSpec() {
-			const convId = currentConversationId;
-			const state =
-				convId !== undefined ? warmer.getState(convId) : { enabled: true, lastPct: null };
-			return buildSurfaceSpec(convId, state.enabled, state.lastPct);
-		},
-		async invoke(actionId, payload) {
-			const pl = payload as Record<string, unknown> | undefined;
-			const convId =
-				(typeof pl?.conversationId === "string" ? pl.conversationId : undefined) ??
-				currentConversationId;
-			if (convId === undefined) return;
-
-			if (actionId === "cache-warming/toggle") {
-				const current = warmer.getState(convId);
-				await warmer.setEnabled(convId, !current.enabled);
-			}
+		getSpec,
+		invoke,
+		subscribe(onChange) {
+			subscribers.add(onChange);
+			return () => {
+				subscribers.delete(onChange);
+			};
 		},
 	};
 

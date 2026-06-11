@@ -9,11 +9,11 @@
 import type { Extension, HostAPI } from "@dispatch/kernel";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
 import { sessionOrchestratorHandle } from "@dispatch/session-orchestrator";
-import type { SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
+import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
 import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 import type { WsClientMessage, WsServerMessage } from "@dispatch/transport-contract";
 import { manifest } from "./manifest.js";
-import { catalogMessage, routeClientMessage } from "./router.js";
+import { catalogMessage, routeClientMessage, subKey } from "./router.js";
 
 /** Active provider subscriptions + chat abort controller for a single WS connection. */
 interface ConnectionState {
@@ -48,33 +48,53 @@ export function createTransportWsExtension(): Extension {
 				ws: Ws,
 				provider: SurfaceProvider,
 				surfaceId: string,
+				conversationId: string | undefined,
 				state: ConnectionState,
 			): void {
-				if (!provider.subscribe || state.providerDisposers.has(surfaceId)) {
+				const key = subKey(surfaceId, conversationId);
+				if (!provider.subscribe || state.providerDisposers.has(key)) {
 					return;
 				}
+				const context: SurfaceContext | undefined =
+					conversationId !== undefined ? { conversationId } : undefined;
 				const dispose = provider.subscribe(() => {
 					try {
-						const spec = provider.getSpec();
+						const spec = provider.getSpec(context);
 						if (spec instanceof Promise) {
 							spec
-								.then((s) => send(ws, { type: "update", update: { surfaceId, spec: s } }))
+								.then((s) =>
+									send(ws, {
+										type: "update",
+										update: {
+											surfaceId,
+											spec: s,
+											...(conversationId !== undefined ? { conversationId } : {}),
+										},
+									}),
+								)
 								.catch(() => {});
 						} else {
-							send(ws, { type: "update", update: { surfaceId, spec } });
+							send(ws, {
+								type: "update",
+								update: {
+									surfaceId,
+									spec,
+									...(conversationId !== undefined ? { conversationId } : {}),
+								},
+							});
 						}
 					} catch {
 						// Provider threw — log but don't kill the connection.
 					}
 				});
-				state.providerDisposers.set(surfaceId, dispose);
+				state.providerDisposers.set(key, dispose);
 			}
 
-			function unsubscribeFromProvider(state: ConnectionState, surfaceId: string): void {
-				const dispose = state.providerDisposers.get(surfaceId);
+			function unsubscribeFromProvider(state: ConnectionState, key: string): void {
+				const dispose = state.providerDisposers.get(key);
 				if (dispose) {
 					dispose();
-					state.providerDisposers.delete(surfaceId);
+					state.providerDisposers.delete(key);
 				}
 			}
 
@@ -158,15 +178,22 @@ export function createTransportWsExtension(): Extension {
 
 								// Apply sub change.
 								if (result.subChange) {
+									const key = subKey(result.subChange.surfaceId, result.subChange.conversationId);
 									if (result.subChange.op === "add") {
-										state.subs.add(result.subChange.surfaceId);
+										state.subs.add(key);
 										const provider = registry.getSurface(result.subChange.surfaceId);
 										if (provider) {
-											subscribeToProvider(ws, provider, result.subChange.surfaceId, state);
+											subscribeToProvider(
+												ws,
+												provider,
+												result.subChange.surfaceId,
+												result.subChange.conversationId,
+												state,
+											);
 										}
 									} else {
-										state.subs.delete(result.subChange.surfaceId);
-										unsubscribeFromProvider(state, result.subChange.surfaceId);
+										state.subs.delete(key);
+										unsubscribeFromProvider(state, key);
 									}
 								}
 
@@ -179,8 +206,16 @@ export function createTransportWsExtension(): Extension {
 								if (result.invoke) {
 									const provider = registry.getSurface(result.invoke.surfaceId);
 									if (provider) {
+										const context: SurfaceContext | undefined =
+											result.invoke.conversationId !== undefined
+												? { conversationId: result.invoke.conversationId }
+												: undefined;
 										try {
-											const r = provider.invoke(result.invoke.actionId, result.invoke.payload);
+											const r = provider.invoke(
+												result.invoke.actionId,
+												result.invoke.payload,
+												context,
+											);
 											if (r instanceof Promise) {
 												r.catch(() => {});
 											}

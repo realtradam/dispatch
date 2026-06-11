@@ -1,6 +1,7 @@
 import type { Logger, Span } from "@dispatch/kernel";
 import type { WarmResult } from "@dispatch/session-orchestrator";
 import { describe, expect, it } from "vitest";
+import { MIN_INTERVAL_MS } from "./pure.js";
 import { createCacheWarmer, type TimerDeps } from "./warmer.js";
 
 function memStorage(): StorageNamespace {
@@ -203,5 +204,116 @@ describe("CacheWarmer", () => {
 		await new Promise((r) => setTimeout(r, 10));
 
 		expect(warmCount).toBe(2);
+	});
+
+	it("setIntervalMs converts seconds→ms, floors at MIN_INTERVAL_MS, and re-arms", async () => {
+		const timers = fakeTimers();
+		const warmCalls: string[] = [];
+		const warmer = createCacheWarmer({
+			warm: async (convId) => {
+				warmCalls.push(convId);
+				return WARM_RESULT;
+			},
+			storage: memStorage(),
+			logger: makeLogger(),
+			timers,
+			onSurfaceChange: () => {},
+		});
+
+		// Enable and settle to arm the timer
+		warmer.onTurnSettled("conv-1", {});
+
+		// Set interval to 30 seconds (30000ms)
+		const settings = await warmer.setIntervalMs("conv-1", 30_000);
+		expect(settings.intervalMs).toBe(30_000);
+
+		const state = warmer.getState("conv-1");
+		expect(state.intervalMs).toBe(30_000);
+
+		// Timer should still be armed — flush fires it
+		timers.flush();
+		await new Promise((r) => setTimeout(r, 10));
+		expect(warmCalls).toContain("conv-1");
+	});
+
+	it("setIntervalMs clamps values below MIN_INTERVAL_MS", async () => {
+		const timers = fakeTimers();
+		const warmer = createCacheWarmer({
+			warm: async () => WARM_RESULT,
+			storage: memStorage(),
+			logger: makeLogger(),
+			timers,
+			onSurfaceChange: () => {},
+		});
+
+		warmer.onTurnSettled("conv-1", {});
+
+		// Set interval to 500ms — should clamp to MIN_INTERVAL_MS (1000)
+		const settings = await warmer.setIntervalMs("conv-1", 500);
+		expect(settings.intervalMs).toBe(1000);
+	});
+
+	it("setIntervalMs ignores NaN / non-positive (clamps to MIN_INTERVAL_MS)", async () => {
+		const timers = fakeTimers();
+		const warmer = createCacheWarmer({
+			warm: async () => WARM_RESULT,
+			storage: memStorage(),
+			logger: makeLogger(),
+			timers,
+			onSurfaceChange: () => {},
+		});
+
+		warmer.onTurnSettled("conv-1", {});
+
+		const settings1 = await warmer.setIntervalMs("conv-1", Number.NaN);
+		expect(settings1.intervalMs).toBe(MIN_INTERVAL_MS);
+
+		const settings2 = await warmer.setIntervalMs("conv-1", -5000);
+		expect(settings2.intervalMs).toBe(MIN_INTERVAL_MS);
+
+		const settings3 = await warmer.setIntervalMs("conv-1", 0);
+		expect(settings3.intervalMs).toBe(MIN_INTERVAL_MS);
+	});
+
+	it("setEnabled flips enabled for a conversation", async () => {
+		const timers = fakeTimers();
+		const warmer = createCacheWarmer({
+			warm: async () => WARM_RESULT,
+			storage: memStorage(),
+			logger: makeLogger(),
+			timers,
+			onSurfaceChange: () => {},
+		});
+
+		// Default is enabled
+		expect(warmer.getState("conv-1").enabled).toBe(true);
+
+		// Toggle off
+		await warmer.setEnabled("conv-1", false);
+		expect(warmer.getState("conv-1").enabled).toBe(false);
+
+		// Toggle on
+		await warmer.setEnabled("conv-1", true);
+		expect(warmer.getState("conv-1").enabled).toBe(true);
+	});
+
+	it("onSurfaceChange is called when settings change", async () => {
+		const timers = fakeTimers();
+		let changeCount = 0;
+		const warmer = createCacheWarmer({
+			warm: async () => WARM_RESULT,
+			storage: memStorage(),
+			logger: makeLogger(),
+			timers,
+			onSurfaceChange: () => {
+				changeCount++;
+			},
+		});
+
+		await warmer.setEnabled("conv-1", false);
+		expect(changeCount).toBe(1);
+
+		await warmer.setIntervalMs("conv-1", 30_000);
+		expect(changeCount).toBe(2);
 	});
 });

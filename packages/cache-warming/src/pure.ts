@@ -3,6 +3,8 @@
  * Every function is input → output; testable without mocks.
  */
 
+import type { NumberField, StatField, SurfaceSpec, ToggleField } from "@dispatch/ui-contract";
+
 // --- Types ---
 
 /** Persisted per-conversation settings (storage-facing). */
@@ -92,4 +94,98 @@ export function serializeSettings(settings: ConversationSettings): string {
 /** The storage key for a conversation's settings. */
 export function settingsKey(conversationId: string): string {
 	return `${SETTINGS_KEY}:${conversationId}`;
+}
+
+// --- Surface spec builders (pure) ---
+
+/** Convert intervalMs to display seconds (rounded). */
+export function msToSeconds(intervalMs: number): number {
+	return Math.round(intervalMs / 1000);
+}
+
+/**
+ * Convert seconds (from the UI) to intervalMs, flooring at MIN_INTERVAL_MS.
+ * Returns null for NaN / non-positive (caller should ignore).
+ */
+export function secondsToMs(seconds: number): number | null {
+	if (!Number.isFinite(seconds) || seconds <= 0) return null;
+	return Math.max(MIN_INTERVAL_MS, Math.round(seconds * 1000));
+}
+
+/**
+ * Build a per-conversation surface spec with toggle + number(interval) + stat fields.
+ * Pure — no I/O.
+ */
+export function buildConversationSpec(
+	enabled: boolean,
+	intervalMs: number,
+	lastPct: number | null,
+): SurfaceSpec {
+	const pctDisplay = lastPct === null ? "—" : `${lastPct}%`;
+	const toggle: ToggleField = {
+		kind: "toggle",
+		label: "Enabled",
+		value: enabled,
+		action: { actionId: "cache-warming/toggle" },
+	};
+	const interval: NumberField = {
+		kind: "number",
+		label: "Refresh Interval",
+		value: msToSeconds(intervalMs),
+		min: 1,
+		step: 1,
+		unit: "s",
+		action: { actionId: "cache-warming/set-interval" },
+	};
+	const stat: StatField = {
+		kind: "stat",
+		label: "Last Cache %",
+		value: pctDisplay,
+	};
+	return {
+		id: "cache-warming",
+		region: "side",
+		title: "Cache Warming",
+		fields: [toggle, interval, stat],
+	};
+}
+
+/**
+ * Build a default surface spec when no conversation is in focus.
+ * Pure — no I/O.
+ */
+export function buildDefaultSpec(): SurfaceSpec {
+	return {
+		id: "cache-warming",
+		region: "side",
+		title: "Cache Warming",
+		fields: [
+			{
+				kind: "stat",
+				label: "Status",
+				value: "No conversation focused",
+			},
+		],
+	};
+}
+
+/**
+ * Parse the payload for a set-interval action.
+ * Accepts a bare number OR { value: number }. Returns the seconds value, or
+ * null if the payload is invalid (NaN / non-positive / wrong shape).
+ */
+export function parseIntervalPayload(payload: unknown): number | null {
+	if (typeof payload === "number" && Number.isFinite(payload) && payload > 0) {
+		return payload;
+	}
+	if (
+		typeof payload === "object" &&
+		payload !== null &&
+		"value" in payload &&
+		typeof (payload as Record<string, unknown>).value === "number"
+	) {
+		const v = (payload as Record<string, unknown>).value as number;
+		if (Number.isFinite(v) && v > 0) return v;
+	}
+	return null;
 }

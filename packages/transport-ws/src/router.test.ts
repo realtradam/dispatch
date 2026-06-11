@@ -1,32 +1,61 @@
-import type { SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
+import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
 import type { SurfaceCatalogEntry, SurfaceSpec } from "@dispatch/ui-contract";
 import { describe, expect, it } from "vitest";
-import { catalogMessage, routeClientMessage } from "./router.js";
+import { catalogMessage, routeClientMessage, subKey } from "./router.js";
 
 // ── Fake in-memory registry (no mocks — just a plain implementation) ────────
 
-function fakeProvider(id: string, title?: string, actions?: readonly string[]): SurfaceProvider {
+interface FakeProviderOpts {
+	readonly id: string;
+	readonly title?: string;
+	readonly actions?: readonly string[];
+	/** Called with the context that getSpec receives — for test assertions. */
+	readonly onGetSpec?: (context: SurfaceContext | undefined) => void;
+	/** Called with the context that invoke receives — for test assertions. */
+	readonly onInvoke?: (
+		actionId: string,
+		payload: unknown,
+		context: SurfaceContext | undefined,
+	) => void;
+}
+
+function fakeProvider(
+	idOrOpts: string | FakeProviderOpts,
+	title?: string,
+	actions?: readonly string[],
+): SurfaceProvider {
+	const opts: FakeProviderOpts =
+		typeof idOrOpts === "string"
+			? {
+					id: idOrOpts,
+					...(title !== undefined ? { title } : {}),
+					...(actions !== undefined ? { actions } : {}),
+				}
+			: idOrOpts;
 	const catalogEntry: SurfaceCatalogEntry = {
-		id,
+		id: opts.id,
 		region: "default",
-		title: title ?? `Surface ${id}`,
+		title: opts.title ?? `Surface ${opts.id}`,
 	};
 	return {
 		catalogEntry,
-		getSpec(): SurfaceSpec {
+		getSpec(context?: SurfaceContext): SurfaceSpec {
+			opts.onGetSpec?.(context);
 			return {
-				id,
+				id: opts.id,
 				region: "default",
 				title: catalogEntry.title,
 				fields:
-					actions?.map((a) => ({
+					opts.actions?.map((a) => ({
 						kind: "button" as const,
 						label: a,
 						action: { actionId: a },
 					})) ?? [],
 			};
 		},
-		invoke(_actionId: string, _payload?: unknown) {},
+		invoke(actionId: string, _payload?: unknown, context?: SurfaceContext) {
+			opts.onInvoke?.(actionId, _payload, context);
+		},
 	};
 }
 
@@ -77,7 +106,7 @@ describe("routeClientMessage", () => {
 		it("is idempotent — subscribing twice does not duplicate the subChange", () => {
 			const provider = fakeProvider("a");
 			const registry = fakeRegistry([provider]);
-			const connSubs = new Set<string>(["a"]); // already subscribed
+			const connSubs = new Set<string>([subKey("a")]); // already subscribed (global)
 
 			const result = routeClientMessage(registry, connSubs, {
 				type: "subscribe",
@@ -110,12 +139,71 @@ describe("routeClientMessage", () => {
 			});
 			expect(result.subChange).toBeUndefined();
 		});
+
+		it("subscribe with conversationId fetches the provider spec for that conversation and tags the reply", () => {
+			let receivedContext: SurfaceContext | undefined;
+			const provider = fakeProvider({
+				id: "cache-warm",
+				title: "Cache Warming",
+				onGetSpec(ctx) {
+					receivedContext = ctx;
+				},
+			});
+			const registry = fakeRegistry([provider]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "subscribe",
+				surfaceId: "cache-warm",
+				conversationId: "conv-42",
+			});
+
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
+			expect(receivedContext).toEqual({ conversationId: "conv-42" });
+			expect(result.replies).toHaveLength(1);
+			const reply = result.replies[0];
+			if (reply?.type !== "surface") throw new Error("expected surface reply");
+			expect(reply.conversationId).toBe("conv-42");
+			expect(reply.spec.id).toBe("cache-warm");
+			expect(result.subChange).toEqual({
+				op: "add",
+				surfaceId: "cache-warm",
+				conversationId: "conv-42",
+			});
+		});
+
+		it("subscribe without conversationId behaves as before (global surface unaffected)", () => {
+			let receivedContext: SurfaceContext | undefined;
+			const provider = fakeProvider({
+				id: "global-surf",
+				title: "Global Surface",
+				onGetSpec(ctx) {
+					receivedContext = ctx;
+				},
+			});
+			const registry = fakeRegistry([provider]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "subscribe",
+				surfaceId: "global-surf",
+			});
+
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
+			expect(receivedContext).toBeUndefined();
+			const reply = result.replies[0];
+			if (reply?.type !== "surface") throw new Error("expected surface reply");
+			expect(reply.conversationId).toBeUndefined();
+			expect(result.subChange).toEqual({ op: "add", surfaceId: "global-surf" });
+		});
 	});
 
 	describe("unsubscribe", () => {
 		it("emits a remove subChange and no replies", () => {
 			const registry = fakeRegistry([]);
-			const connSubs = new Set<string>(["a"]);
+			const connSubs = new Set<string>([subKey("a")]);
 
 			const result = routeClientMessage(registry, connSubs, {
 				type: "unsubscribe",
@@ -186,6 +274,37 @@ describe("routeClientMessage", () => {
 				message: "Unknown surface: nonexistent",
 			});
 			expect(result.invoke).toBeUndefined();
+		});
+
+		it("invoke forwards the conversationId to the provider", () => {
+			let _receivedContext: SurfaceContext | undefined;
+			const provider = fakeProvider({
+				id: "cache-warm",
+				title: "Cache Warming",
+				actions: ["warm"],
+				onInvoke(_actionId, _payload, ctx) {
+					_receivedContext = ctx;
+				},
+			});
+			const registry = fakeRegistry([provider]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "invoke",
+				surfaceId: "cache-warm",
+				actionId: "warm",
+				payload: { force: true },
+				conversationId: "conv-99",
+			});
+
+			expect(result.kind).toBe("surface");
+			if (result.kind !== "surface") throw new Error("expected surface");
+			expect(result.invoke).toEqual({
+				surfaceId: "cache-warm",
+				actionId: "warm",
+				payload: { force: true },
+				conversationId: "conv-99",
+			});
 		});
 	});
 
@@ -280,5 +399,19 @@ describe("catalogMessage", () => {
 		const msg = catalogMessage(registry);
 
 		expect(msg).toEqual({ type: "catalog", catalog: [] });
+	});
+});
+
+describe("subKey", () => {
+	it("builds a global key when conversationId is undefined", () => {
+		expect(subKey("surf-a")).toBe("surf-a::");
+	});
+
+	it("builds a conversation-scoped key when conversationId is provided", () => {
+		expect(subKey("surf-a", "conv-42")).toBe("surf-a::conv-42");
+	});
+
+	it("global and conversation-scoped keys are distinct", () => {
+		expect(subKey("surf-a")).not.toBe(subKey("surf-a", "conv-42"));
 	});
 });

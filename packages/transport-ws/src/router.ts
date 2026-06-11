@@ -7,7 +7,7 @@
  * provider.invoke, drives the orchestrator.
  */
 
-import type { SurfaceRegistry } from "@dispatch/surface-registry";
+import type { SurfaceContext, SurfaceRegistry } from "@dispatch/surface-registry";
 import type { ChatSendMessage, WsClientMessage } from "@dispatch/transport-contract";
 import type { SurfaceServerMessage } from "@dispatch/ui-contract";
 
@@ -19,12 +19,17 @@ export interface SurfaceRouteResult {
 	/** Server messages to send back to this connection. */
 	readonly replies: readonly SurfaceServerMessage[];
 	/** Whether to add or remove the surface id from connSubs. */
-	readonly subChange?: { readonly op: "add" | "remove"; readonly surfaceId: string };
-	/** If set, the shell must call `provider.invoke(actionId, payload)`. */
+	readonly subChange?: {
+		readonly op: "add" | "remove";
+		readonly surfaceId: string;
+		readonly conversationId?: string;
+	};
+	/** If set, the shell must call `provider.invoke(actionId, payload, context)`. */
 	readonly invoke?: {
 		readonly surfaceId: string;
 		readonly actionId: string;
 		readonly payload?: unknown;
+		readonly conversationId?: string;
 	};
 }
 
@@ -49,6 +54,14 @@ export type RouteResult = SurfaceRouteResult | ChatRouteResult | ChatRouteError;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Build a subscription key from a surface id and optional conversation id.
+ * The shell uses this same function so both layers agree on key format.
+ */
+export function subKey(surfaceId: string, conversationId?: string): string {
+	return conversationId !== undefined ? `${surfaceId}::${conversationId}` : `${surfaceId}::`;
+}
+
 /** Build the catalog `SurfaceServerMessage` from the registry. */
 export function catalogMessage(registry: SurfaceRegistry): SurfaceServerMessage {
 	return { type: "catalog", catalog: registry.getCatalog() };
@@ -60,7 +73,7 @@ export function catalogMessage(registry: SurfaceRegistry): SurfaceServerMessage 
  * Route a single client message into a pure effect description.
  *
  * @param registry  The surface registry (looked up once, injected).
- * @param connSubs  This connection's current subscribed surface ids.
+ * @param connSubs  This connection's current subscription keys (via `subKey`).
  * @param msg       The parsed client message (surface or chat).
  */
 export function routeClientMessage(
@@ -70,11 +83,11 @@ export function routeClientMessage(
 ): RouteResult {
 	switch (msg.type) {
 		case "subscribe":
-			return handleSubscribe(registry, connSubs, msg.surfaceId);
+			return handleSubscribe(registry, connSubs, msg.surfaceId, msg.conversationId);
 		case "unsubscribe":
-			return handleUnsubscribe(msg.surfaceId);
+			return handleUnsubscribe(msg.surfaceId, msg.conversationId);
 		case "invoke":
-			return handleInvoke(registry, msg.surfaceId, msg.actionId, msg.payload);
+			return handleInvoke(registry, msg.surfaceId, msg.actionId, msg.payload, msg.conversationId);
 		case "chat.send":
 			return handleChatSend(msg);
 	}
@@ -105,6 +118,7 @@ function handleSubscribe(
 	registry: SurfaceRegistry,
 	connSubs: ReadonlySet<string>,
 	surfaceId: string,
+	conversationId?: string,
 ): SurfaceRouteResult {
 	const provider = registry.getSurface(surfaceId);
 	if (!provider) {
@@ -114,7 +128,9 @@ function handleSubscribe(
 		};
 	}
 
-	const spec = provider.getSpec();
+	const context: SurfaceContext | undefined =
+		conversationId !== undefined ? { conversationId } : undefined;
+	const spec = provider.getSpec(context);
 
 	// getSpec may be sync or async — the pure core treats it as a value the
 	// shell will resolve. We return the spec directly (it's a SurfaceSpec).
@@ -123,21 +139,38 @@ function handleSubscribe(
 	const specValue = spec as import("@dispatch/ui-contract").SurfaceSpec;
 
 	const replies: import("@dispatch/ui-contract").SurfaceServerMessage[] = [
-		{ type: "surface", spec: specValue },
+		{
+			type: "surface",
+			spec: specValue,
+			...(conversationId !== undefined ? { conversationId } : {}),
+		},
 	];
 
 	// Idempotent: only emit subChange if not already subscribed.
-	if (!connSubs.has(surfaceId)) {
-		return { kind: "surface", replies, subChange: { op: "add", surfaceId } };
+	const key = subKey(surfaceId, conversationId);
+	if (!connSubs.has(key)) {
+		return {
+			kind: "surface",
+			replies,
+			subChange: {
+				op: "add",
+				surfaceId,
+				...(conversationId !== undefined ? { conversationId } : {}),
+			},
+		};
 	}
 	return { kind: "surface", replies };
 }
 
-function handleUnsubscribe(surfaceId: string): SurfaceRouteResult {
+function handleUnsubscribe(surfaceId: string, conversationId?: string): SurfaceRouteResult {
 	return {
 		kind: "surface",
 		replies: [],
-		subChange: { op: "remove", surfaceId },
+		subChange: {
+			op: "remove",
+			surfaceId,
+			...(conversationId !== undefined ? { conversationId } : {}),
+		},
 	};
 }
 
@@ -146,6 +179,7 @@ function handleInvoke(
 	surfaceId: string,
 	actionId: string,
 	payload?: unknown,
+	conversationId?: string,
 ): SurfaceRouteResult {
 	const provider = registry.getSurface(surfaceId);
 	if (!provider) {
@@ -157,6 +191,11 @@ function handleInvoke(
 	return {
 		kind: "surface",
 		replies: [],
-		invoke: { surfaceId, actionId, payload },
+		invoke: {
+			surfaceId,
+			actionId,
+			payload,
+			...(conversationId !== undefined ? { conversationId } : {}),
+		},
 	};
 }

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AgentEvent, Attributes, ErrorAttributes, Logger } from "@dispatch/kernel";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
-import type { SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
+import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
 import type { WsServerMessage } from "@dispatch/transport-contract";
 import type { SurfaceCatalogEntry, SurfaceClientMessage, SurfaceSpec } from "@dispatch/ui-contract";
-import { catalogMessage, routeClientMessage } from "./router.js";
+import { catalogMessage, routeClientMessage, subKey } from "./router.js";
 
 // ── Fake Logger (captures records for assertions) ───────────────────────────
 
@@ -58,7 +58,7 @@ function fakeProvider(id: string, title?: string): SurfaceProvider {
 	};
 	return {
 		catalogEntry,
-		getSpec(): SurfaceSpec {
+		getSpec(_context?: SurfaceContext): SurfaceSpec {
 			return {
 				id,
 				region: "default",
@@ -66,7 +66,7 @@ function fakeProvider(id: string, title?: string): SurfaceProvider {
 				fields: [],
 			};
 		},
-		invoke(_actionId: string, _payload?: unknown) {},
+		invoke(_actionId: string, _payload?: unknown, _context?: SurfaceContext) {},
 	};
 }
 
@@ -151,10 +151,11 @@ function startServer(
 						}
 
 						if (result.subChange) {
+							const key = subKey(result.subChange.surfaceId, result.subChange.conversationId);
 							if (result.subChange.op === "add") {
-								state.subs.add(result.subChange.surfaceId);
+								state.subs.add(key);
 							} else {
-								state.subs.delete(result.subChange.surfaceId);
+								state.subs.delete(key);
 							}
 						}
 

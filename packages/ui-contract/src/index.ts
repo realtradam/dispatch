@@ -46,6 +46,7 @@ export type SurfaceField =
 	| ProgressField
 	| SelectorField
 	| StatField
+	| NumberField
 	| ButtonField
 	| CustomField;
 
@@ -78,6 +79,24 @@ export interface StatField {
 	readonly kind: "stat";
 	readonly label: string;
 	readonly value: string;
+}
+
+/**
+ * A settable numeric value plus the action that sets it — the free-value
+ * counterpart to `selector` (which is a fixed enum). Optional `min`/`max`/`step`
+ * are SEMANTIC bounds a client may use to validate/step input; `unit` is a
+ * display hint (e.g. "ms", "min"). The client posts the new number as the action
+ * payload. Unlike `progress`/`stat` (read-only), this field is interactive.
+ */
+export interface NumberField {
+	readonly kind: "number";
+	readonly label: string;
+	readonly value: number;
+	readonly min?: number;
+	readonly max?: number;
+	readonly step?: number;
+	readonly unit?: string;
+	readonly action: ActionRef;
 }
 
 /** A labelled action trigger. */
@@ -129,10 +148,15 @@ export type SurfaceCatalog = readonly SurfaceCatalogEntry[];
  * A live update for a subscribed surface (pushed over the WS channel — §5). v1
  * carries the full new spec (the simplest "patch"); granular field-level patches are
  * deferred until a real surface needs them (P4).
+ *
+ * `conversationId` is present only for a CONVERSATION-SCOPED surface (one whose
+ * spec/values differ per conversation, e.g. cache-warming controls): it tells the
+ * client which conversation this update pertains to. A global surface omits it.
  */
 export interface SurfaceUpdate {
 	readonly surfaceId: string;
 	readonly spec: SurfaceSpec;
+	readonly conversationId?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,24 +169,38 @@ export interface SurfaceUpdate {
 /** A client → server message on the surface channel. */
 export type SurfaceClientMessage = SubscribeMessage | UnsubscribeMessage | InvokeMessage;
 
-/** Begin receiving live updates for a surface (server replies with `surface`, then `update`s). */
+/**
+ * Begin receiving live updates for a surface (server replies with `surface`, then `update`s).
+ *
+ * For a CONVERSATION-SCOPED surface, include the `conversationId` whose state you
+ * want — the server resolves the spec for that conversation and pushes its updates.
+ * Omit it for a global surface (or to view a conversation-scoped surface with no
+ * conversation in focus → the surface decides its default/empty state).
+ */
 export interface SubscribeMessage {
 	readonly type: "subscribe";
 	readonly surfaceId: string;
+	readonly conversationId?: string;
 }
 
-/** Stop receiving updates for a surface. */
+/** Stop receiving updates for a surface (and the same `conversationId`, if scoped). */
 export interface UnsubscribeMessage {
 	readonly type: "unsubscribe";
 	readonly surfaceId: string;
+	readonly conversationId?: string;
 }
 
-/** Invoke a field's action; `payload` is the new value (e.g. a toggle's boolean). */
+/**
+ * Invoke a field's action; `payload` is the new value (e.g. a toggle's boolean, a
+ * `number` field's new number). For a conversation-scoped surface, include the
+ * `conversationId` the action targets.
+ */
 export interface InvokeMessage {
 	readonly type: "invoke";
 	readonly surfaceId: string;
 	readonly actionId: string;
 	readonly payload?: unknown;
+	readonly conversationId?: string;
 }
 
 /** A server → client message on the surface channel. */
@@ -178,10 +216,15 @@ export interface CatalogMessage {
 	readonly catalog: SurfaceCatalog;
 }
 
-/** The full current spec for a surface the client just subscribed to. */
+/**
+ * The full current spec for a surface the client just subscribed to.
+ * `conversationId` echoes the subscribe's conversation for a conversation-scoped
+ * surface (so the client routes it), and is absent for a global surface.
+ */
 export interface SurfaceMessage {
 	readonly type: "surface";
 	readonly spec: SurfaceSpec;
+	readonly conversationId?: string;
 }
 
 /** A live update for a subscribed surface. */
