@@ -1,5 +1,5 @@
 import type { Logger, StorageNamespace } from "@dispatch/kernel";
-import type { WarmService } from "@dispatch/session-orchestrator";
+import type { WarmCompletedPayload, WarmService } from "@dispatch/session-orchestrator";
 import {
 	type ConversationContext,
 	type ConversationSettings,
@@ -7,7 +7,6 @@ import {
 	computeCachePct,
 	computeExpectedCacheRate,
 	DEFAULT_INTERVAL_MS,
-	isTokenCurrent,
 	MIN_INTERVAL_MS,
 	parseSettings,
 	serializeSettings,
@@ -30,6 +29,9 @@ export interface CacheWarmer {
 
 	/** Handle a turnSettled event — mark idle, store context, arm timer if enabled. */
 	readonly onTurnSettled: (conversationId: string, ctx: ConversationContext) => void;
+
+	/** Handle a warmCompleted event — process warm result, update surface, re-arm timer. */
+	readonly onWarmCompleted: (payload: WarmCompletedPayload) => void;
 
 	/** Get the current state for a conversation (for surface rendering). */
 	readonly getState: (conversationId: string) => ConversationState;
@@ -55,6 +57,8 @@ export interface CacheWarmerDeps {
 	readonly storage: StorageNamespace;
 	readonly logger: Logger;
 	readonly timers: TimerDeps;
+	/** Injected clock — returns epoch-ms. */
+	readonly now: () => number;
 	/** Called when surface subscribers should re-fetch the spec. */
 	readonly onSurfaceChange: () => void;
 }
@@ -65,6 +69,8 @@ const DEFAULT_STATE: ConversationState = {
 	active: false,
 	lastPct: null,
 	lastExpectedPct: null,
+	lastWarmAt: null,
+	nextWarmAt: null,
 	token: 0,
 };
 
@@ -96,6 +102,7 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 			deps.timers.clearTimer(existing);
 			timers.delete(conversationId);
 		}
+		mergeState(conversationId, { nextWarmAt: null });
 	}
 
 	function armTimer(conversationId: string): void {
@@ -104,7 +111,9 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 		if (!state.enabled || state.active) return;
 
 		const token = nextToken++;
-		setState(conversationId, { ...state, token });
+		const nowMs = deps.now();
+		const nextWarmAt = nowMs + state.intervalMs;
+		setState(conversationId, { ...state, token, nextWarmAt });
 
 		const timerId = deps.timers.setTimer(() => {
 			timers.delete(conversationId);
@@ -126,39 +135,13 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 		const ctx = getContext(conversationId);
 		deps.logger.debug("cache-warming: firing warm", { conversationId });
 
-		const result = await deps.warm(conversationId, {
+		await deps.warm(conversationId, {
 			...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
 			...(ctx.modelName !== undefined ? { modelName: ctx.modelName } : {}),
 		});
 
-		// Re-check token after async warm — result may be stale
-		const currentState = getState(conversationId);
-		if (!isTokenCurrent(currentState.token, token)) {
-			deps.logger.debug("cache-warming: discarding stale warm result", {
-				conversationId,
-			});
-			return;
-		}
-
-		if ("error" in result) {
-			deps.logger.debug("cache-warming: warm returned error (normal)", {
-				conversationId,
-				error: result.error,
-			});
-		} else {
-			const pct = computeCachePct(result.inputTokens, result.cacheReadTokens);
-			const expectedPct = computeExpectedCacheRate(result.cacheReadTokens, result.cacheWriteTokens);
-			setState(conversationId, { ...currentState, lastPct: pct, lastExpectedPct: expectedPct });
-			deps.onSurfaceChange();
-			deps.logger.debug("cache-warming: warm complete", {
-				conversationId,
-				pct,
-				expectedPct,
-			});
-		}
-
-		// Re-arm for next cycle
-		armTimer(conversationId);
+		// Result processing is handled by the warmCompleted event handler.
+		// Timer re-arm is also handled there on success.
 	}
 
 	async function loadSettings(conversationId: string): Promise<ConversationSettings> {
@@ -197,6 +180,41 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 
 			const state = getState(conversationId);
 			if (state.enabled) {
+				armTimer(conversationId);
+			}
+		},
+
+		onWarmCompleted(payload) {
+			const { conversationId, usage } = payload;
+			const state = getState(conversationId);
+
+			// Drop if the conversation became active while the warm was in flight
+			if (state.active) {
+				deps.logger.debug("cache-warming: dropping warm result (conversation active)", {
+					conversationId,
+				});
+				return;
+			}
+
+			const pct = computeCachePct(usage.inputTokens, usage.cacheReadTokens);
+			const expectedPct = computeExpectedCacheRate(usage.cacheReadTokens, usage.cacheWriteTokens);
+			const nowMs = deps.now();
+			setState(conversationId, {
+				...state,
+				lastPct: pct,
+				lastExpectedPct: expectedPct,
+				lastWarmAt: nowMs,
+			});
+			deps.onSurfaceChange();
+			deps.logger.debug("cache-warming: warm complete", {
+				conversationId,
+				pct,
+				expectedPct,
+			});
+
+			// Re-arm the automatic timer if enabled and not active
+			const updated = getState(conversationId);
+			if (updated.enabled && !updated.active) {
 				armTimer(conversationId);
 			}
 		},

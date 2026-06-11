@@ -3,7 +3,13 @@
  * Every function is input → output; testable without mocks.
  */
 
-import type { NumberField, StatField, SurfaceSpec, ToggleField } from "@dispatch/ui-contract";
+import type {
+	CustomField,
+	NumberField,
+	StatField,
+	SurfaceSpec,
+	ToggleField,
+} from "@dispatch/ui-contract";
 
 // --- Types ---
 
@@ -18,6 +24,8 @@ export interface ConversationState extends ConversationSettings {
 	readonly active: boolean;
 	readonly lastPct: number | null;
 	readonly lastExpectedPct: number | null;
+	readonly lastWarmAt: number | null;
+	readonly nextWarmAt: number | null;
 	readonly token: number;
 }
 
@@ -137,6 +145,8 @@ export function buildConversationSpec(
 	intervalMs: number,
 	lastPct: number | null,
 	lastExpectedPct: number | null,
+	nextWarmAt: number | null,
+	lastWarmAt: number | null,
 ): SurfaceSpec {
 	const pctDisplay = lastPct === null ? "—" : `${lastPct}%`;
 	const retentionDisplay = lastExpectedPct === null ? "—" : `${lastExpectedPct}%`;
@@ -165,11 +175,16 @@ export function buildConversationSpec(
 		label: "Cache retention",
 		value: retentionDisplay,
 	};
+	const timer: CustomField = {
+		kind: "custom",
+		rendererId: "cache-warming-timer",
+		payload: { nextWarmAt, lastWarmAt },
+	};
 	return {
 		id: "cache-warming",
 		region: "side",
 		title: "Cache Warming",
-		fields: [toggle, interval, stat, retentionStat],
+		fields: [toggle, interval, stat, retentionStat, timer],
 	};
 }
 

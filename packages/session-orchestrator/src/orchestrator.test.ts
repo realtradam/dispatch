@@ -17,6 +17,7 @@ import {
 	createSessionOrchestrator,
 	createWarmService,
 	type TurnLifecyclePayload,
+	type WarmCompletedPayload,
 } from "./orchestrator.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
@@ -1060,6 +1061,7 @@ describe("warm service", () => {
 			resolveTools: () => [toolA],
 			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
+			emit: () => {},
 		};
 
 		const { activeConversations } = createSessionOrchestrator(deps);
@@ -1115,6 +1117,7 @@ describe("warm service", () => {
 			resolveTools: () => [],
 			applyToolsFilter: identityApplyToolsFilter,
 			runTurn: blockingRunTurn,
+			emit: () => {},
 		};
 
 		const { orchestrator, activeConversations } = createSessionOrchestrator(deps);
@@ -1158,6 +1161,7 @@ describe("warm service", () => {
 			resolveTools: () => [],
 			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
+			emit: () => {},
 		};
 
 		const { activeConversations } = createSessionOrchestrator(deps);
@@ -1201,6 +1205,7 @@ describe("warm service", () => {
 			resolveTools: () => [],
 			applyToolsFilter: identityApplyToolsFilter,
 			runTurn,
+			emit: () => {},
 		};
 
 		const { activeConversations } = createSessionOrchestrator(deps);
@@ -1214,5 +1219,108 @@ describe("warm service", () => {
 			cacheReadTokens: 400,
 			cacheWriteTokens: 100,
 		});
+	});
+
+	it("warm emits warmCompleted with the usage on success", async () => {
+		const store = createInMemoryStore();
+		const existingMsg: ChatMessage = {
+			role: "user",
+			chunks: [{ type: "text", text: "existing" }],
+		};
+		await store.append("conv-warm-emit", [existingMsg]);
+
+		const provider: ProviderContract = {
+			id: "p",
+			stream: async function* () {
+				yield {
+					type: "usage",
+					usage: { inputTokens: 200, outputTokens: 10, cacheReadTokens: 150, cacheWriteTokens: 50 },
+				} as ProviderEvent;
+				yield { type: "finish", reason: "stop" } as ProviderEvent;
+			},
+		};
+
+		const emitted: Array<{ hook: string; payload: WarmCompletedPayload }> = [];
+		const fakeEmit = <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload): void => {
+			emitted.push({ hook: hook.id, payload: payload as WarmCompletedPayload });
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: fakeEmit,
+		};
+
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		const result = await warmService.warm("conv-warm-emit");
+
+		if (!("inputTokens" in result)) throw new Error("expected success");
+
+		expect(emitted).toHaveLength(1);
+		expect(emitted[0]?.hook).toBe("session-orchestrator/warm-completed");
+		expect(emitted[0]?.payload.conversationId).toBe("conv-warm-emit");
+		expect(emitted[0]?.payload.usage).toEqual(result);
+	});
+
+	it("warm does NOT emit warmCompleted when it refuses (conversation generating / no history)", async () => {
+		const store = createInMemoryStore();
+
+		const provider: ProviderContract = {
+			id: "p",
+			stream: async function* () {
+				yield { type: "text-delta", delta: "slow" } as ProviderEvent;
+				yield { type: "finish", reason: "stop" } as ProviderEvent;
+			},
+		};
+
+		const emitted: Array<{ hook: string }> = [];
+		const fakeEmit = <TPayload>(hook: EventHookDescriptor<TPayload>, _payload: TPayload): void => {
+			emitted.push({ hook: hook.id });
+		};
+
+		const blockingRunTurn = async (_input: RunTurnInput): Promise<RunTurnResult> => {
+			await new Promise<void>((resolve) => setTimeout(resolve, 50));
+			return {
+				messages: [{ role: "assistant", chunks: [{ type: "text", text: "done" }] }],
+				usage: { inputTokens: 1, outputTokens: 1 },
+				finishReason: "stop",
+			};
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: blockingRunTurn,
+			emit: fakeEmit,
+		};
+
+		const { orchestrator, activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		// Refuse because conversation is generating
+		const turnPromise = orchestrator.handleMessage({
+			conversationId: "conv-refuse-gen",
+			text: "test",
+			onEvent: () => {},
+		});
+
+		const genResult = await warmService.warm("conv-refuse-gen");
+		expect(genResult).toEqual({ error: "conversation is generating" });
+
+		await turnPromise;
+
+		// Refuse because no history
+		const noHistResult = await warmService.warm("conv-refuse-empty");
+		expect(noHistResult).toEqual({ error: "no history" });
+
+		const warmEmits = emitted.filter((e) => e.hook === "session-orchestrator/warm-completed");
+		expect(warmEmits).toHaveLength(0);
 	});
 });

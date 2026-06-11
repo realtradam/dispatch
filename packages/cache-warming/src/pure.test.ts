@@ -52,6 +52,8 @@ describe("shouldWarm", () => {
 			active: false,
 			lastPct: null,
 			lastExpectedPct: null,
+			lastWarmAt: null,
+			nextWarmAt: null,
 			token: 5,
 		};
 		expect(shouldWarm(state, 5)).toBe(true);
@@ -64,6 +66,8 @@ describe("shouldWarm", () => {
 			active: false,
 			lastPct: null,
 			lastExpectedPct: null,
+			lastWarmAt: null,
+			nextWarmAt: null,
 			token: 5,
 		};
 		expect(shouldWarm(state, 5)).toBe(false);
@@ -76,6 +80,8 @@ describe("shouldWarm", () => {
 			active: true,
 			lastPct: null,
 			lastExpectedPct: null,
+			lastWarmAt: null,
+			nextWarmAt: null,
 			token: 5,
 		};
 		expect(shouldWarm(state, 5)).toBe(false);
@@ -88,6 +94,8 @@ describe("shouldWarm", () => {
 			active: false,
 			lastPct: null,
 			lastExpectedPct: null,
+			lastWarmAt: null,
+			nextWarmAt: null,
 			token: 5,
 		};
 		expect(shouldWarm(state, 6)).toBe(false);
@@ -181,12 +189,12 @@ describe("parseIntervalPayload", () => {
 });
 
 describe("buildConversationSpec", () => {
-	it("builds a per-conversation spec with toggle + number(interval) + last-% + retention fields", () => {
-		const spec = buildConversationSpec(true, 240_000, 80, 95);
+	it("builds a per-conversation spec with toggle + number(interval) + last-% + retention + timer fields", () => {
+		const spec = buildConversationSpec(true, 240_000, 80, 95, 1000, 500);
 		expect(spec.id).toBe("cache-warming");
 		expect(spec.region).toBe("side");
 		expect(spec.title).toBe("Cache Warming");
-		expect(spec.fields).toHaveLength(4);
+		expect(spec.fields).toHaveLength(5);
 
 		const toggle = spec.fields[0];
 		expect(toggle).toEqual({
@@ -220,10 +228,17 @@ describe("buildConversationSpec", () => {
 			label: "Cache retention",
 			value: "95%",
 		});
+
+		const timer = spec.fields[4];
+		expect(timer).toEqual({
+			kind: "custom",
+			rendererId: "cache-warming-timer",
+			payload: { nextWarmAt: 1000, lastWarmAt: 500 },
+		});
 	});
 
 	it("shows — when lastPct and lastExpectedPct are null", () => {
-		const spec = buildConversationSpec(true, 240_000, null, null);
+		const spec = buildConversationSpec(true, 240_000, null, null, null, null);
 		const stat = spec.fields[2];
 		expect(stat).toEqual({
 			kind: "stat",
@@ -236,10 +251,16 @@ describe("buildConversationSpec", () => {
 			label: "Cache retention",
 			value: "—",
 		});
+		const timer = spec.fields[4];
+		expect(timer).toEqual({
+			kind: "custom",
+			rendererId: "cache-warming-timer",
+			payload: { nextWarmAt: null, lastWarmAt: null },
+		});
 	});
 
 	it("reflects disabled state", () => {
-		const spec = buildConversationSpec(false, 120_000, 50, 75);
+		const spec = buildConversationSpec(false, 120_000, 50, 75, null, null);
 		const toggle = spec.fields[0];
 		expect(toggle).toEqual({
 			kind: "toggle",
