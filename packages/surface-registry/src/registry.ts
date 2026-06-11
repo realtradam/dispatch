@@ -1,6 +1,15 @@
 import type { SurfaceCatalog, SurfaceCatalogEntry, SurfaceSpec } from "@dispatch/ui-contract";
 
 /**
+ * Optional context threaded by the transport when calling a surface provider.
+ * Providers may use this to scope per-conversation state; omitting it yields
+ * the default/global behaviour.
+ */
+export interface SurfaceContext {
+	readonly conversationId?: string;
+}
+
+/**
  * What a surface-contributing extension registers with the surface registry.
  * Each provider owns one surface identified by its catalog entry id.
  */
@@ -9,10 +18,10 @@ export interface SurfaceProvider {
 	readonly catalogEntry: SurfaceCatalogEntry;
 
 	/** Build the current surface spec (may be async for dynamic surfaces). */
-	getSpec(): SurfaceSpec | Promise<SurfaceSpec>;
+	getSpec(context?: SurfaceContext): SurfaceSpec | Promise<SurfaceSpec>;
 
 	/** Run a backend action by id with an optional payload. */
-	invoke(actionId: string, payload?: unknown): void | Promise<void>;
+	invoke(actionId: string, payload?: unknown, context?: SurfaceContext): void | Promise<void>;
 
 	/**
 	 * Optional: subscribe to spec changes. Returns an unsubscribe disposer.

@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **760 vitest + 109 bun = 869 tests**.
+`tsc -b` EXIT 0 · biome clean · **784 vitest + 109 bun = 893 tests**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -162,12 +162,14 @@ arm-on-settle/cancel-on-start; `pct = round(clamp(cacheRead/input,0,1)*100)`).
 - **LIVE-VERIFIED against Claude haiku:** automatic timer warm → journal `warm complete pct:100`;
   manual `POST /chat/warm` → `cacheReadTokens:6799, cachePct:100` (100% hit), HTTP 200. The external
   `../claude` provider-anthropic is loaded via `bin/up` (`DISPATCH_EXTERNAL_EXTENSIONS`).
-- **OPEN — surface-system limits (CR from cache-warming):** the surface system has (a) NO
-  per-conversation context (surface reflects most-recently-active conversation; invoke carries
-  conversationId), and (b) NO numeric-input field kind, so the **interval ("set time to refresh")
-  control is not yet a view input** — only the on/off toggle + last-cache-% stat render. Honoring
-  per-conversation controls + free-value interval needs a `NumberField` in `ui-contract` +
-  per-conversation surface scoping (+ FE courier). Decision pending.
+- **Surface framework extended (DONE):** added `NumberField` to `ui-contract` + per-conversation
+  surface scoping (optional `conversationId` on subscribe/unsubscribe/invoke + surface/update; new
+  `SurfaceContext` on `SurfaceProvider.getSpec/invoke`; transport-ws keys subscriptions by
+  `(surfaceId, conversationId)` and tags updates). cache-warming now serves a PER-CONVERSATION
+  surface: `Toggle`(enabled) · `Number`(interval, seconds, `cache-warming/set-interval`) ·
+  `Stat`(last cache %). All backward-compatible (global surfaces like `surface-loaded-extensions`
+  unchanged). **FE courier:** `frontend-cache-warming-handoff.md` (this repo) — the web must render
+  the `number` field kind + send/handle `conversationId` on the surface WS protocol.
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled

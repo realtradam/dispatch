@@ -6,4 +6,4 @@ export type {
 	RouteResult,
 	SurfaceRouteResult,
 } from "./router.js";
-export { catalogMessage, routeClientMessage } from "./router.js";
+export { catalogMessage, routeClientMessage, subKey } from "./router.js";
