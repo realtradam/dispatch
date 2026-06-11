@@ -247,9 +247,12 @@ persisted `TurnMetrics`.
     the final per-step metrics (same definition; equals the live value). +5 tests.
 - [x] Verified: `tsc -b` EXIT 0, biome clean, 881 vitest pass; both owners stayed in-lane.
   `conversation-store` (JSON passthrough) + `transport-http` (forwards/serves) unchanged.
+- [x] **LIVE-VERIFIED against flash** (`deepseek-v4-flash`): turn 1 → live `done.contextSize`
+  1255 == persisted `turns[-1].contextSize` 1255 == final-step `1206 in + 49 out` (NOT the
+  aggregate); turn 2 (same conversation) → 1286 (grew cumulatively), live == persisted. Both
+  carriers agree; "current" = latest turn's value.
 - [x] **FE courier handoff:** `frontend-context-size-handoff.md` (user couriers to
-  `../dispatch-web`). Not yet exercised end-to-end against a live LLM (unit tests cover both
-  producers); optional live-verify deferred.
+  `../dispatch-web`).
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled
