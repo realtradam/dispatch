@@ -8,6 +8,7 @@
 		"@dispatch/storage-sqlite": "workspace:*",
 		"@dispatch/conversation-store": "workspace:*",
 		"@dispatch/auth-apikey": "workspace:*",
+		"@dispatch/cache-warming": "workspace:*",
 		"@dispatch/credential-store": "workspace:*",
 		"@dispatch/provider-openai-compat": "workspace:*",
 		"@dispatch/session-orchestrator": "workspace:*",

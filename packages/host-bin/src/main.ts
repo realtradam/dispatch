@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { extension as authApikeyExt } from "@dispatch/auth-apikey";
+import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
 import { createCredentialStoreExtension } from "@dispatch/credential-store";
 import { createJournalSink } from "@dispatch/journal-sink";
@@ -73,6 +74,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	throughputStoreExt,
 	sessionOrchestratorExt,
 	skillsExt,
+	cacheWarmingExt,
 	createTransportHttpExtension(),
 	// Surface extensions — dependency order: surface-registry first, then consumers.
 	createSurfaceRegistryExtension(),

@@ -190,6 +190,18 @@ export interface HostAPI {
 		handler: EventHandler<TPayload>,
 	) => () => void;
 
+	/**
+	 * Emit an event hook: fire-and-forget dispatch to every `on` subscriber,
+	 * error-isolated per handler (a thrown handler is caught + logged, never
+	 * breaks the caller). The counterpart of `on`.
+	 *
+	 * This lets a core extension that OWNS a lifecycle publish typed events that
+	 * standard extensions react to — e.g. the session-orchestrator emitting
+	 * per-turn start/settle events a cache-warming extension subscribes to. The
+	 * kernel owns the mechanism; the owner declares the typed `EventHookDescriptor`.
+	 */
+	readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
+
 	/** Add a filter to a filter hook chain. Filters are awaited in-band. */
 	readonly addFilter: <TValue>(
 		hook: FilterDescriptor<TValue>,

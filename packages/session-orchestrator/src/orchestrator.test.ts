@@ -2,6 +2,7 @@ import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
 	AgentEvent,
 	ChatMessage,
+	EventHookDescriptor,
 	ProviderContract,
 	ProviderEvent,
 	RunTurnInput,
@@ -12,7 +13,11 @@ import type {
 } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
-import { createSessionOrchestrator } from "./orchestrator.js";
+import {
+	createSessionOrchestrator,
+	createWarmService,
+	type TurnLifecyclePayload,
+} from "./orchestrator.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
 function createInMemoryStore(): ConversationStore & {
@@ -104,7 +109,7 @@ describe("handleMessage integration", () => {
 			],
 		]);
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -156,7 +161,7 @@ describe("handleMessage integration", () => {
 			},
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -203,7 +208,7 @@ describe("handleMessage integration", () => {
 			],
 		]);
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -233,7 +238,7 @@ describe("handleMessage integration", () => {
 			],
 		]);
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -282,7 +287,7 @@ describe("handleMessage model resolution", () => {
 		const fallbackProvider: ProviderContract = { id: "fallback", stream: async function* () {} };
 		const { captured, captureRunTurn } = createCapturingRunTurn();
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => fallbackProvider,
 			resolveTools: () => [],
@@ -314,7 +319,7 @@ describe("handleMessage model resolution", () => {
 		const { captured, captureRunTurn } = createCapturingRunTurn();
 		const events: AgentEvent[] = [];
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => fallbackProvider,
 			resolveTools: () => [],
@@ -345,7 +350,7 @@ describe("handleMessage model resolution", () => {
 		const fallbackProvider: ProviderContract = { id: "fallback", stream: async function* () {} };
 		const { captured, captureRunTurn } = createCapturingRunTurn();
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => fallbackProvider,
 			resolveTools: () => [],
@@ -373,7 +378,7 @@ describe("handleMessage model resolution", () => {
 		const provider: ProviderContract = { id: "p", stream: async function* () {} };
 		const { captured, captureRunTurn } = createCapturingRunTurn();
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -407,7 +412,7 @@ describe("handleMessage model resolution", () => {
 		const { captured, captureRunTurn } = createCapturingRunTurn();
 		const fakeNow = () => 42;
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -432,7 +437,7 @@ describe("handleMessage model resolution", () => {
 		const provider: ProviderContract = { id: "p", stream: async function* () {} };
 		const { captured, captureRunTurn } = createCapturingRunTurn();
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -461,7 +466,7 @@ describe("turn-sealed event", () => {
 			],
 		]);
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -514,7 +519,7 @@ describe("turn-sealed event", () => {
 			},
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: wrappedStore,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -561,7 +566,7 @@ describe("turn-sealed event", () => {
 			},
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: failingStore,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -595,7 +600,7 @@ describe("turn metrics persistence", () => {
 			],
 		]);
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -655,7 +660,7 @@ describe("turn metrics persistence", () => {
 			},
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [tool],
@@ -714,7 +719,7 @@ describe("turn metrics persistence", () => {
 			},
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -781,7 +786,7 @@ describe("turn metrics persistence", () => {
 			},
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [tool],
@@ -835,7 +840,7 @@ describe("turn metrics persistence", () => {
 			},
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: failingMetricsStore,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -874,7 +879,7 @@ describe("tools filter", () => {
 			return Promise.resolve({ ...assembly, tools: [toolB] });
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [toolA],
@@ -902,7 +907,7 @@ describe("tools filter", () => {
 		const toolA = createFakeTool("tool-a", async () => ({ content: "a" }));
 		const toolB = createFakeTool("tool-b", async () => ({ content: "b" }));
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [toolA, toolB],
@@ -933,7 +938,7 @@ describe("tools filter", () => {
 			return Promise.resolve(assembly);
 		};
 
-		const orchestrator = createSessionOrchestrator({
+		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
 			resolveTools: () => [],
@@ -964,3 +969,250 @@ function createCounterNow(): { now: () => number; tick: (ms: number) => void } {
 		},
 	};
 }
+
+describe("lifecycle event hooks", () => {
+	it("emits turnStarted before and turnSettled after a turn", async () => {
+		const store = createInMemoryStore();
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "ok" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const emitted: Array<{ hook: string; payload: TurnLifecyclePayload; order: number }> = [];
+		let order = 0;
+
+		const fakeEmit = <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload): void => {
+			emitted.push({ hook: hook.id, payload: payload as TurnLifecyclePayload, order: order++ });
+		};
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: fakeEmit,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-lifecycle",
+			text: "test",
+			onEvent: () => {},
+			cwd: "/work",
+			modelName: "mymodel",
+		});
+
+		expect(emitted).toHaveLength(2);
+		expect(emitted[0]?.hook).toBe("session-orchestrator/turn-started");
+		expect(emitted[0]?.payload.conversationId).toBe("conv-lifecycle");
+		expect(emitted[0]?.payload.cwd).toBe("/work");
+		expect(emitted[0]?.payload.modelName).toBe("mymodel");
+		expect(emitted[0]?.order).toBe(0);
+
+		expect(emitted[1]?.hook).toBe("session-orchestrator/turn-settled");
+		expect(emitted[1]?.payload.conversationId).toBe("conv-lifecycle");
+		expect(emitted[1]?.payload.cwd).toBe("/work");
+		expect(emitted[1]?.payload.modelName).toBe("mymodel");
+		expect(emitted[1]?.order).toBe(1);
+	});
+});
+
+describe("warm service", () => {
+	it("warm reuses the assembled tools + full history and appends the probe turn", async () => {
+		const store = createInMemoryStore();
+		const existingMsg: ChatMessage = {
+			role: "user",
+			chunks: [{ type: "text", text: "existing" }],
+		};
+		const assistantMsg: ChatMessage = {
+			role: "assistant",
+			chunks: [{ type: "text", text: "reply" }],
+		};
+		await store.append("conv-warm-reuse", [existingMsg, assistantMsg]);
+
+		let capturedMessages: readonly ChatMessage[] | undefined;
+		let capturedTools: readonly ToolContract[] | undefined;
+		let _capturedOpts: unknown;
+
+		const toolA = createFakeTool("tool-a", async () => ({ content: "a" }));
+
+		const provider: ProviderContract = {
+			id: "warm-provider",
+			stream(messages, tools, opts) {
+				capturedMessages = messages;
+				capturedTools = tools;
+				_capturedOpts = opts;
+				return (async function* () {
+					yield {
+						type: "usage",
+						usage: { inputTokens: 100, outputTokens: 5, cacheReadTokens: 80, cacheWriteTokens: 20 },
+					} as ProviderEvent;
+					yield { type: "finish", reason: "stop" } as ProviderEvent;
+				})();
+			},
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [toolA],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+		};
+
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		const result = await warmService.warm("conv-warm-reuse", { cwd: "/test" });
+
+		expect(capturedMessages).toBeDefined();
+		expect(capturedMessages).toHaveLength(3);
+		expect(capturedMessages?.[0]?.chunks[0]).toEqual({ type: "text", text: "existing" });
+		expect(capturedMessages?.[1]?.chunks[0]).toEqual({ type: "text", text: "reply" });
+		expect(capturedMessages?.[2]?.role).toBe("user");
+		expect((capturedMessages?.[2]?.chunks[0] as { type: "text"; text: string }).text).toBe(
+			"reply with just a .",
+		);
+
+		expect(capturedTools).toHaveLength(1);
+		expect(capturedTools?.[0]?.name).toBe("tool-a");
+
+		if ("inputTokens" in result) {
+			expect(result.inputTokens).toBe(100);
+			expect(result.cacheReadTokens).toBe(80);
+		}
+	});
+
+	it("warm refuses while the conversation is generating", async () => {
+		const store = createInMemoryStore();
+		let resolveRunTurn: (() => void) | undefined;
+		const runTurnBlocker = new Promise<void>((resolve) => {
+			resolveRunTurn = resolve;
+		});
+
+		const provider: ProviderContract = {
+			id: "p",
+			stream: async function* () {
+				yield { type: "text-delta", delta: "slow" } as ProviderEvent;
+				yield { type: "finish", reason: "stop" } as ProviderEvent;
+			},
+		};
+
+		const blockingRunTurn = async (_input: RunTurnInput): Promise<RunTurnResult> => {
+			await runTurnBlocker;
+			return {
+				messages: [{ role: "assistant", chunks: [{ type: "text", text: "done" }] }],
+				usage: { inputTokens: 1, outputTokens: 1 },
+				finishReason: "stop",
+			};
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: blockingRunTurn,
+		};
+
+		const { orchestrator, activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		const turnPromise = orchestrator.handleMessage({
+			conversationId: "conv-blocking",
+			text: "test",
+			onEvent: () => {},
+		});
+
+		const warmResult = await warmService.warm("conv-blocking");
+		expect(warmResult).toEqual({ error: "conversation is generating" });
+
+		resolveRunTurn?.();
+		await turnPromise;
+	});
+
+	it("warm never persists (no append) and emits no AgentEvents", async () => {
+		const store = createInMemoryStore();
+		const existingMsg: ChatMessage = {
+			role: "user",
+			chunks: [{ type: "text", text: "existing" }],
+		};
+		await store.append("conv-no-persist", [existingMsg]);
+
+		const provider: ProviderContract = {
+			id: "p",
+			stream: async function* () {
+				yield {
+					type: "usage",
+					usage: { inputTokens: 10, outputTokens: 2 },
+				} as ProviderEvent;
+				yield { type: "finish", reason: "stop" } as ProviderEvent;
+			},
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+		};
+
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		const sizeBefore = store.data.get("conv-no-persist")?.length;
+
+		await warmService.warm("conv-no-persist");
+
+		const sizeAfter = store.data.get("conv-no-persist")?.length;
+		expect(sizeAfter).toBe(sizeBefore);
+	});
+
+	it("warm returns provider usage (input + cacheReadTokens)", async () => {
+		const store = createInMemoryStore();
+		const existingMsg: ChatMessage = {
+			role: "user",
+			chunks: [{ type: "text", text: "existing" }],
+		};
+		await store.append("conv-usage", [existingMsg]);
+
+		const provider: ProviderContract = {
+			id: "p",
+			stream: async function* () {
+				yield {
+					type: "usage",
+					usage: {
+						inputTokens: 500,
+						outputTokens: 3,
+						cacheReadTokens: 400,
+						cacheWriteTokens: 100,
+					},
+				} as ProviderEvent;
+				yield { type: "finish", reason: "stop" } as ProviderEvent;
+			},
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+		};
+
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		const result = await warmService.warm("conv-usage");
+
+		expect(result).toEqual({
+			inputTokens: 500,
+			outputTokens: 3,
+			cacheReadTokens: 400,
+			cacheWriteTokens: 100,
+		});
+	});
+});

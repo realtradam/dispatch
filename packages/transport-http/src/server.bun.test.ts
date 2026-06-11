@@ -86,6 +86,7 @@ function createFakeHostAPI(configOverrides: Record<string, unknown> = {}): HostA
 		on() {
 			return () => {};
 		},
+		emit() {},
 		addFilter() {
 			return () => {};
 		},

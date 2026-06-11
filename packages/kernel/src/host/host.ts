@@ -122,6 +122,9 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
 			on<TPayload>(hook: EventHookDescriptor<TPayload>, handler: EventHandler<TPayload>) {
 				return deps.bus.on(hook, handler);
 			},
+			emit<TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) {
+				deps.bus.emit(hook, payload);
+			},
 			addFilter<TValue>(hook: FilterDescriptor<TValue>, fn: FilterHandler<TValue>) {
 				return deps.bus.addFilter(hook, fn);
 			},
