@@ -834,6 +834,66 @@ describe("turn metrics persistence", () => {
 		expect(tm.usage.outputTokens).toBe(15);
 	});
 
+	it("persists contextSize as the last step's inputTokens + outputTokens", async () => {
+		const store = createInMemoryStore();
+		const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+		let callIndex = 0;
+		const provider: ProviderContract = {
+			id: "fake",
+			stream() {
+				const idx = callIndex++;
+				return (async function* () {
+					if (idx === 0) {
+						yield {
+							type: "tool-call",
+							toolCallId: "tc1",
+							toolName: "echo",
+							input: {},
+						} as ProviderEvent;
+						yield {
+							type: "usage",
+							usage: { inputTokens: 10, outputTokens: 5 },
+						} as ProviderEvent;
+						yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+					} else {
+						yield { type: "text-delta", delta: "Step2" } as ProviderEvent;
+						yield {
+							type: "usage",
+							usage: { inputTokens: 20, outputTokens: 10 },
+						} as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					}
+				})();
+			},
+		};
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [tool],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			now: () => 1000,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-context-size",
+			text: "test",
+			onEvent: () => {},
+		});
+
+		const metrics = store.metricsData.get("conv-context-size");
+		expect(metrics).toBeDefined();
+		expect(metrics).toHaveLength(1);
+
+		const tm = metrics?.[0];
+		if (tm === undefined) throw new Error("expected metrics");
+
+		expect(tm.steps.length).toBeGreaterThanOrEqual(2);
+		expect(tm.contextSize).toBe(30);
+	});
+
 	it("does not persist metrics nor emit turn-sealed when chunk append fails", async () => {
 		const provider = createFakeProvider([
 			[

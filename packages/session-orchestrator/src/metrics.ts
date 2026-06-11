@@ -100,6 +100,20 @@ export function createMetricsAccumulator(): MetricsAccumulator {
 		if (doneDurationMs !== undefined) {
 			(tm as { durationMs?: number }).durationMs = doneDurationMs;
 		}
+
+		// contextSize = final step's inputTokens + outputTokens (true context occupancy).
+		// Omit when no steps or the last step had no usable per-step usage event.
+		if (stepMetrics.length > 0) {
+			const lastStep = stepMetrics[stepMetrics.length - 1];
+			if (lastStep !== undefined) {
+				const lastAcc = steps.get(lastStep.stepId);
+				if (lastAcc?.usage !== undefined) {
+					(tm as { contextSize?: number }).contextSize =
+						lastStep.usage.inputTokens + lastStep.usage.outputTokens;
+				}
+			}
+		}
+
 		return tm;
 	}
 

@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **865 vitest + 135 bun = 1000 tests**.
+`tsc -b` EXIT 0 · biome clean · **881 vitest + 135 bun = 1016 tests**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -230,6 +230,26 @@ workspace root, working directory.
   test + ~40 biome `!`/dot-key findings) → at the user's request the orchestrator
   finished it directly; also fixed a real design bug the agent missed: the manager
   read config statically instead of per-cwd (would have broken Roblox).
+
+## Context size — current context-window usage (DONE)
+User-gated decisions: term = **context size** (current usage; reserve "context window" for the
+model's max LIMIT, a later feature); definition = the turn's **FINAL step `inputTokens +
+outputTokens`** (NOT the aggregate `usage`, which sums per-step prompts and overcounts a
+multi-step turn); delivery = a backend-computed field on BOTH the live `done` event and the
+persisted `TurnMetrics`.
+- [x] **Contract (orchestrator):** optional `contextSize?: number` added to `TurnDoneEvent` +
+  `TurnMetrics` in `@dispatch/wire` (`0.4.0→0.5.0`); `@dispatch/transport-contract`
+  `0.5.0→0.6.0` (re-exports both — no other change). Glossary: added **context size**.
+- [x] **Wave (parallel, disjoint pkgs):**
+  - [x] **kernel** — `run-turn.ts` tracks the last step's `Usage`; `doneEvent()` stamps
+    `done.contextSize = lastStep.input + lastStep.output` (omitted when no usage). +3 tests.
+  - [x] **session-orchestrator** — `metrics.ts build()` stamps `TurnMetrics.contextSize` from
+    the final per-step metrics (same definition; equals the live value). +5 tests.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, 881 vitest pass; both owners stayed in-lane.
+  `conversation-store` (JSON passthrough) + `transport-http` (forwards/serves) unchanged.
+- [x] **FE courier handoff:** `frontend-context-size-handoff.md` (user couriers to
+  `../dispatch-web`). Not yet exercised end-to-end against a live LLM (unit tests cover both
+  producers); optional live-verify deferred.
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled

@@ -2480,4 +2480,101 @@ describe("runTurn", () => {
 			}
 		});
 	});
+
+	describe("contextSize", () => {
+		it("single-step turn: contextSize equals step inputTokens + outputTokens", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "Hello" },
+					{ type: "usage", usage: { inputTokens: 100, outputTokens: 50 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const doneEvt = events.find((e) => e.type === "done");
+			expect(doneEvt).toBeDefined();
+			if (doneEvt?.type === "done") {
+				expect(doneEvt.contextSize).toBe(150);
+			}
+		});
+
+		it("multi-step turn: contextSize equals ONLY the last step's inputTokens + outputTokens", async () => {
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "usage", usage: { inputTokens: 100, outputTokens: 20 } },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "usage", usage: { inputTokens: 300, outputTokens: 80 } },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const doneEvt = events.find((e) => e.type === "done");
+			expect(doneEvt).toBeDefined();
+			if (doneEvt?.type === "done") {
+				expect(doneEvt.contextSize).toBe(380);
+				expect(doneEvt.usage).toBeDefined();
+				if (doneEvt.usage !== undefined) {
+					expect(doneEvt.contextSize).not.toBe(doneEvt.usage.inputTokens);
+				}
+			}
+		});
+
+		it("no usage reported: contextSize is undefined", async () => {
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "Hello" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+			});
+
+			const doneEvt = events.find((e) => e.type === "done");
+			expect(doneEvt).toBeDefined();
+			if (doneEvt?.type === "done") {
+				expect(doneEvt.contextSize).toBeUndefined();
+				expect(doneEvt.usage).toBeUndefined();
+			}
+		});
+	});
 });
