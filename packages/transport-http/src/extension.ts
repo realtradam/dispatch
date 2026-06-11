@@ -4,6 +4,7 @@ import {
 	cacheWarmHandle,
 	conversationStoreHandle,
 	credentialStoreHandle,
+	lspServiceHandle,
 	sessionOrchestratorHandle,
 	throughputStoreHandle,
 } from "./seam.js";
@@ -14,13 +15,21 @@ export const manifest: Manifest = {
 	version: "0.0.0",
 	apiVersion: "^0.1.0",
 	trust: "bundled",
-	dependsOn: ["conversation-store", "credential-store", "session-orchestrator", "throughput-store"],
+	dependsOn: [
+		"conversation-store",
+		"credential-store",
+		"lsp",
+		"session-orchestrator",
+		"throughput-store",
+	],
 	capabilities: { network: true },
 	contributes: {
 		routes: [
 			"/chat",
 			"/chat/warm",
 			"/conversations/:id",
+			"/conversations/:id/cwd",
+			"/conversations/:id/lsp",
 			"/health",
 			"/models",
 			"/metrics/throughput",
@@ -45,6 +54,7 @@ export function createTransportHttpExtension(): Extension & {
 			const credentialStore = host.getService(credentialStoreHandle);
 			const throughputStore = host.getService(throughputStoreHandle);
 			const warmService = host.getService(cacheWarmHandle);
+			const lspService = host.getService(lspServiceHandle);
 			const logger = host.logger;
 
 			const app = createApp({
@@ -53,6 +63,7 @@ export function createTransportHttpExtension(): Extension & {
 				credentialStore,
 				throughputStore,
 				warmService,
+				lspService,
 				logger,
 			});
 

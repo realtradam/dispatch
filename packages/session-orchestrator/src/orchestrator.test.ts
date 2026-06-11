@@ -3,8 +3,10 @@ import type {
 	AgentEvent,
 	ChatMessage,
 	EventHookDescriptor,
+	Logger,
 	ProviderContract,
 	ProviderEvent,
+	ProviderStreamOptions,
 	RunTurnInput,
 	RunTurnResult,
 	StoredChunk,
@@ -24,12 +26,15 @@ import type { ToolAssembly } from "./tools-filter.js";
 function createInMemoryStore(): ConversationStore & {
 	readonly data: Map<string, ChatMessage[]>;
 	readonly metricsData: Map<string, TurnMetrics[]>;
+	readonly cwdData: Map<string, string>;
 } {
 	const data = new Map<string, ChatMessage[]>();
 	const metricsData = new Map<string, TurnMetrics[]>();
+	const cwdData = new Map<string, string>();
 	return {
 		data,
 		metricsData,
+		cwdData,
 		async append(conversationId, messages) {
 			const existing = data.get(conversationId) ?? [];
 			data.set(conversationId, [...existing, ...messages]);
@@ -57,6 +62,12 @@ function createInMemoryStore(): ConversationStore & {
 		},
 		async loadMetrics(conversationId) {
 			return [...(metricsData.get(conversationId) ?? [])];
+		},
+		async getCwd(conversationId) {
+			return cwdData.get(conversationId) ?? null;
+		},
+		async setCwd(conversationId, cwd) {
+			cwdData.set(conversationId, cwd);
 		},
 	};
 }
@@ -518,6 +529,12 @@ describe("turn-sealed event", () => {
 			async loadMetrics(conversationId) {
 				return store.loadMetrics(conversationId);
 			},
+			async getCwd(conversationId) {
+				return store.getCwd(conversationId);
+			},
+			async setCwd(conversationId, cwd) {
+				await store.setCwd(conversationId, cwd);
+			},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -565,6 +582,10 @@ describe("turn-sealed event", () => {
 			async loadMetrics() {
 				return [];
 			},
+			async getCwd() {
+				return null;
+			},
+			async setCwd() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -839,6 +860,10 @@ describe("turn metrics persistence", () => {
 			async loadMetrics() {
 				return [];
 			},
+			async getCwd() {
+				return null;
+			},
+			async setCwd() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -1087,6 +1112,105 @@ describe("warm service", () => {
 		}
 	});
 
+	it("warm forwards a `warm`-flagged logger so the send is captured as a span", async () => {
+		const store = createInMemoryStore();
+		await store.append("conv-warm-log", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+
+		let capturedOpts: ProviderStreamOptions | undefined;
+		const provider: ProviderContract = {
+			id: "p",
+			stream(_messages, _tools, opts) {
+				capturedOpts = opts;
+				return (async function* () {
+					yield {
+						type: "usage",
+						usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+					} as ProviderEvent;
+				})();
+			},
+		};
+
+		// Minimal Logger stub recording the child() correlation it was asked for.
+		let childArg: (Partial<{ conversationId: string }> & { attrs?: unknown }) | undefined;
+		const warmChild = { __warmChild: true } as unknown as Logger;
+		const logger = {
+			debug() {},
+			info() {},
+			warn() {},
+			error() {},
+			span() {
+				throw new Error("warm should not open spans directly");
+			},
+			child(ctx: { conversationId?: string; attrs?: unknown }) {
+				childArg = ctx;
+				return warmChild;
+			},
+		} as unknown as Logger;
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: () => {},
+			logger,
+		};
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		await warmService.warm("conv-warm-log");
+
+		// The warm send must carry the logger so the provider opens a provider.request span.
+		expect(capturedOpts?.logger).toBe(warmChild);
+		// …and it must be flagged warm + correlated to the conversation, so it can be
+		// diffed against the real turn's request (the 0%-cache debugging workflow).
+		expect(childArg).toMatchObject({
+			conversationId: "conv-warm-log",
+			attrs: { warm: true },
+		});
+	});
+
+	it("warm falls back to the conversation's stored cwd for tool assembly", async () => {
+		// A cwd-sensitive tools filter (e.g. skill discovery) must see the SAME cwd
+		// the real turn used, or the tools block diverges and the prompt cache misses.
+		// A manual reheat sends no cwd, so the warm must fall back to the stored cwd.
+		const store = createInMemoryStore();
+		await store.append("conv-warm-cwd", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+		await store.setCwd("conv-warm-cwd", "/home/tradam/projects/roblox");
+
+		let assemblyCwd: string | undefined = "UNSET";
+		const provider: ProviderContract = {
+			id: "p",
+			stream() {
+				return (async function* () {
+					yield {
+						type: "usage",
+						usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+					} as ProviderEvent;
+				})();
+			},
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: (assembly: ToolAssembly) => {
+				assemblyCwd = assembly.cwd;
+				return Promise.resolve(assembly);
+			},
+			runTurn,
+			emit: () => {},
+		};
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		// No cwd in opts (the reheat case) → must use the stored cwd.
+		await warmService.warm("conv-warm-cwd");
+		expect(assemblyCwd).toBe("/home/tradam/projects/roblox");
+	});
+
 	it("warm refuses while the conversation is generating", async () => {
 		const store = createInMemoryStore();
 		let resolveRunTurn: (() => void) | undefined;
@@ -1322,5 +1446,125 @@ describe("warm service", () => {
 
 		const warmEmits = emitted.filter((e) => e.hook === "session-orchestrator/warm-completed");
 		expect(warmEmits).toHaveLength(0);
+	});
+});
+
+describe("cwd persistence", () => {
+	it("uses the persisted cwd when the request omits cwd", async () => {
+		const store = createInMemoryStore();
+		await store.setCwd("conv-persisted", "/persisted/dir");
+
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-persisted",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("/persisted/dir");
+	});
+
+	it("persists the cwd when the request provides one (and a later cwd-less turn reuses it)", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-persist-new",
+			text: "first",
+			onEvent: () => {},
+			cwd: "/new/dir",
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("/new/dir");
+		expect(store.cwdData.get("conv-persist-new")).toBe("/new/dir");
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-persist-new",
+			text: "second",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(2);
+		expect(captured[1]?.cwd).toBe("/new/dir");
+	});
+
+	it("an explicit request cwd overrides the persisted cwd (and updates it)", async () => {
+		const store = createInMemoryStore();
+		await store.setCwd("conv-override", "/old/dir");
+
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-override",
+			text: "override",
+			onEvent: () => {},
+			cwd: "/new/dir",
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("/new/dir");
+		expect(store.cwdData.get("conv-override")).toBe("/new/dir");
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-override",
+			text: "reused",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(2);
+		expect(captured[1]?.cwd).toBe("/new/dir");
+	});
+
+	it("no cwd is threaded when neither request nor store has one", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-no-cwd-either",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBeUndefined();
 	});
 });

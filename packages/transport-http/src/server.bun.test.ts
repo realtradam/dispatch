@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { ConfigAccess, HostAPI, Logger } from "@dispatch/kernel";
 import { createApp } from "./app.js";
 import { createTransportHttpExtension } from "./index.js";
-import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
+import type {
+	ConversationStore,
+	CredentialStore,
+	LspService,
+	SessionOrchestrator,
+} from "./seam.js";
 
 function fakeLogger(): Logger {
 	return {
@@ -41,6 +46,10 @@ function fakeConversationStore(): ConversationStore {
 		async loadMetrics() {
 			return [];
 		},
+		async getCwd() {
+			return null;
+		},
+		async setCwd() {},
 	};
 }
 
@@ -61,6 +70,14 @@ function fakeCredentialStore(): CredentialStore {
 	};
 }
 
+function fakeLspService(): LspService {
+	return {
+		async status() {
+			return [];
+		},
+	};
+}
+
 function fakeConfig(overrides: Record<string, unknown> = {}): ConfigAccess {
 	return {
 		get<T>(key: string): T | undefined {
@@ -76,6 +93,7 @@ const SERVICES = new Map<string, unknown>([
 	["conversation-store/store", fakeConversationStore()],
 	["session-orchestrator/orchestrator", fakeOrchestrator()],
 	["credential-store/registry", fakeCredentialStore()],
+	["lsp", fakeLspService()],
 ]);
 
 function createFakeHostAPI(configOverrides: Record<string, unknown> = {}): HostAPI {

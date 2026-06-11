@@ -45,3 +45,7 @@ export function parseMetricsOrdinal(key: string): number {
 	const n = Number.parseInt(last, 10);
 	return Number.isNaN(n) ? -1 : n;
 }
+
+export function cwdKey(conversationId: string): string {
+	return `conv:${conversationId}:cwd`;
+}

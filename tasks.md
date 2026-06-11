@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **800 vitest + 109 bun = 909 tests**.
+`tsc -b` EXIT 0 · biome clean · **865 vitest + 135 bun = 1000 tests**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -33,6 +33,13 @@ curl -s -X POST localhost:4567/chat -H 'content-type: application/json' \
 ```
 Process cleanup uses the `[x]` bracket trick (ORCHESTRATOR §8) — leaked
 server/collector procs poison the next run's counts.
+
+**Two stacks:** `bin/up` = dev (live-reload backend, ports 24203/24205/24204).
+`../bin/up2` = a **stable, no-watch** second stack on **25203/25205/25204** with
+ISOLATED data (`./.dispatch-data/up2/`, `./.dispatch/journal/up2/`) — runs ALONGSIDE
+`bin/up`, edit backend code freely without restarting it; Ctrl-C stops only itself.
+Enabled by a new env knob **`SURFACE_WS_PORT`** → `surfaceWsPort` config
+(`host-bin/config.ts`; default 24205 when unset, so dev is unchanged).
 
 ## Foundation (done — summarized; details in git)
 - **MVP + multi-turn:** curl → transport-http → session-orchestrator →
@@ -190,6 +197,39 @@ the standard cache-warming ext). Added `nextWarmAt`/`lastWarmAt` state + a `cust
 (`createWarmService` missed the `emit` dep → `deps.emit?.` silently no-oped; made it required).
 Live-verified vs claude haiku (manual warm logs `warm complete` ~2s after the turn, not the 4-min
 timer). FE handoff updated. (FE CR-1 table + CR-2 catalog `scope` flag still open, not requested.)
+
+## LSP integration + per-conversation CWD (DONE)
+Design: `notes/lsp-design.md`. FE courier: `frontend-lsp-cwd-handoff.md`. Decisions
+(locked): **single `lsp` extension**; **hand-rolled pure JSON-RPC codec** (zero dep,
+injected-stream tested); **diagnostics-on-write deferred** (on-demand `lsp` tool
+only); **cwd persisted in `conversation-store`**; config = **built-in TypeScript +
+`<cwd>/.dispatch/lsp.json` + `<cwd>/opencode.json` `lsp` fallback** (Roblox works
+with its existing config). Glossary: added LSP, language server, diagnostics,
+workspace root, working directory.
+- **The bug we fixed** (opencode root cause, confirmed): opencode's
+  `client/registerCapability` ignores all but `textDocument/diagnostic`, so
+  `workspace/didChangeWatchedFiles` registrations are dropped + no real fs watcher
+  → stale `sourcemap.json` → "Unknown require" mid-session. Fix = honor the
+  registration + real fs watcher + forward `didChangeWatchedFiles` + auto-spawn
+  `rojo sourcemap --watch` sidecar when `luau-lsp.sourcemap.autogenerate`. Covered
+  by a regression test in `packages/lsp/src/client.test.ts`.
+- **`lsp` extension** (new, bundled core): hand-rolled LSP client (framing + rpc +
+  watched-files + diagnostics + config + root + tool + manager), zero external deps.
+  Lazy-spawn one server per `(serverID, root)`; config resolved **per cwd**;
+  `lspServiceHandle.status(cwd)` lazy-connects + reports state; `deactivate` kills
+  all child procs (host-bin shutdown now calls `host.deactivate()`).
+- **CWD:** `conversation-store.getCwd/setCwd`; `session-orchestrator` defaults a
+  turn's cwd from the store; endpoints `GET`/`PUT /conversations/:id/cwd` +
+  `GET /conversations/:id/lsp` in transport-http; wire types in
+  `@dispatch/transport-contract` (→ `0.5.0`).
+- **LIVE-VERIFIED:** this repo (`typescript`) → `connected`; `/home/tradam/projects/
+  roblox` (`luau-lsp`) → `connected` (via the project's own `opencode.json` + rojo
+  sidecar); cwd PUT/GET round-trip 200. Op note: LSP binaries must be on the server
+  process PATH (`~/.local/bin` daemon-PATH caveat for `typescript-language-server`).
+- **Recovery (scar tissue):** the `lsp` agent stalled on the final stretch (1 hung
+  test + ~40 biome `!`/dot-key findings) → at the user's request the orchestrator
+  finished it directly; also fixed a real design bug the agent missed: the manager
+  read config statically instead of per-cwd (would have broken Roblox).
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled

@@ -39,6 +39,14 @@ export function envToConfigMap(
 		}
 	}
 
+	const surfaceWsPort = env.SURFACE_WS_PORT;
+	if (surfaceWsPort !== undefined) {
+		const n = Number(surfaceWsPort);
+		if (Number.isFinite(n) && n > 0) {
+			map.surfaceWsPort = n;
+		}
+	}
+
 	return map;
 }
 

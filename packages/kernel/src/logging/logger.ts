@@ -194,6 +194,15 @@ export function createLogger(
 				}
 
 				const hasAttrs = Object.keys(spanAttrsMutable).length > 0;
+				// Merge child-bound default attrs (state.attrs) the SAME way span-open
+				// does (buildSpanOpen). Without this, an attribute bound via
+				// `logger.child({ attrs })` appears on the span-open record but NOT the
+				// span-close record — so a query like `warm = true` can't find the
+				// closed span (with its usage/status). Open and close must agree.
+				const mergedCloseAttrs = mergeAttributes(
+					state.attrs,
+					hasAttrs ? spanAttrsMutable : undefined,
+				);
 				const hasLinks = links.length > 0;
 				const base = {
 					kind: "span-close" as const,
@@ -209,7 +218,7 @@ export function createLogger(
 					...(ctx.conversationId !== undefined ? { conversationId: ctx.conversationId } : {}),
 					...(ctx.turnId !== undefined ? { turnId: ctx.turnId } : {}),
 					...(mergedParent !== undefined ? { parentSpanId: mergedParent } : {}),
-					...(hasAttrs ? { attributes: { ...spanAttrsMutable } } : {}),
+					...(mergedCloseAttrs !== undefined ? { attributes: mergedCloseAttrs } : {}),
 					...(hasLinks ? { links: [...links] } : {}),
 					...(outcome?.body !== undefined ? { body: outcome.body } : {}),
 				};

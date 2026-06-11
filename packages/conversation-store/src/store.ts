@@ -11,6 +11,7 @@ import { defineService } from "@dispatch/kernel";
 import {
 	chunkKey,
 	chunkPrefix,
+	cwdKey,
 	metricsKey,
 	metricsPrefix,
 	metricsSeqKey,
@@ -28,6 +29,10 @@ export interface ConversationStore {
 	) => Promise<readonly StoredChunk[]>;
 	readonly appendMetrics: (conversationId: string, metrics: TurnMetrics) => Promise<void>;
 	readonly loadMetrics: (conversationId: string) => Promise<readonly TurnMetrics[]>;
+	/** The persisted working directory for a conversation, or null if never set. */
+	readonly getCwd: (conversationId: string) => Promise<string | null>;
+	/** Persist (upsert) the working directory for a conversation. */
+	readonly setCwd: (conversationId: string, cwd: string) => Promise<void>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -153,6 +158,17 @@ export function createConversationStore(
 			}
 
 			return result;
+		},
+
+		async getCwd(conversationId) {
+			return await storage.get(cwdKey(conversationId));
+		},
+
+		async setCwd(conversationId, cwd) {
+			await storage.set(cwdKey(conversationId), cwd);
+			if (logger !== undefined) {
+				logger.debug("cwd set", { conversationId });
+			}
 		},
 	};
 }

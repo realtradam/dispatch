@@ -117,15 +117,25 @@ export function createSessionOrchestrator(
 
 	const orchestrator: SessionOrchestrator = {
 		async handleMessage({ conversationId, text, onEvent, signal, modelName, cwd }) {
+			activeConversations.add(conversationId);
+
+			const effectiveCwd =
+				cwd !== undefined
+					? cwd
+					: ((await deps.conversationStore.getCwd(conversationId)) ?? undefined);
+
 			const payload: TurnLifecyclePayload = {
 				conversationId,
-				...(cwd !== undefined ? { cwd } : {}),
+				...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
 				...(modelName !== undefined ? { modelName } : {}),
 			};
 			deps.emit?.(turnStarted, payload);
-			activeConversations.add(conversationId);
 
 			try {
+				if (cwd !== undefined) {
+					await deps.conversationStore.setCwd(conversationId, cwd);
+				}
+
 				const history = await deps.conversationStore.load(conversationId);
 				const userMsg = buildUserMessage(text);
 				const turnId = generateTurnId();
@@ -154,7 +164,7 @@ export function createSessionOrchestrator(
 				const assembled = await deps.applyToolsFilter({
 					tools: baseTools,
 					conversationId,
-					...(cwd !== undefined ? { cwd } : {}),
+					...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
 				});
 				const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
 				const turnLogger = deps.logger?.child({ conversationId, turnId });
@@ -178,7 +188,7 @@ export function createSessionOrchestrator(
 						: {}),
 					...(turnLogger !== undefined ? { logger: turnLogger } : {}),
 					...(signal !== undefined ? { signal } : {}),
-					...(cwd !== undefined ? { cwd } : {}),
+					...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
 					...(deps.now !== undefined ? { now: deps.now } : {}),
 				};
 
@@ -231,7 +241,14 @@ export function createWarmService(
 			}
 
 			const baseTools = deps.resolveTools();
-			const cwd = opts?.cwd;
+			// Resolve cwd the SAME way handleMessage does (caller value → stored cwd).
+			// The tools filter is cwd-sensitive (e.g. skill discovery rewrites the
+			// `load_skill` description per-cwd). If the warm assembles tools under a
+			// different cwd than the real turn, the tools block — the FIRST bytes of
+			// the prompt-cache prefix — diverges and the cache misses entirely (0%).
+			// A manual reheat sends no cwd, so without this fallback it would warm the
+			// wrong prefix. See notes/observability-design.md §3.1.
+			const cwd = opts?.cwd ?? (await deps.conversationStore.getCwd(conversationId)) ?? undefined;
 			const assembled = await deps.applyToolsFilter({
 				tools: baseTools,
 				conversationId,
@@ -244,8 +261,18 @@ export function createWarmService(
 			};
 			const messages = [...history, probeMsg];
 
-			const providerOpts: ProviderStreamOptions | undefined =
-				modelOverride !== undefined ? { model: modelOverride, maxTokens: 1 } : { maxTokens: 1 };
+			// Capture the warm send as a `provider.request` span, flagged `warm: true`
+			// so it can be diffed against the corresponding real turn's request (the
+			// prompt-cache 0%-hit debugging workflow — see notes/observability-design.md
+			// §3.1). Without this the warm body is invisible and the cache bust is
+			// undebuggable. The child-bound `warm` attribute flows into the span the
+			// provider opens (kernel logger merges child attrs into span attributes).
+			const warmLogger = deps.logger?.child({ conversationId, attrs: { warm: true } });
+			const providerOpts: ProviderStreamOptions = {
+				maxTokens: 1,
+				...(modelOverride !== undefined ? { model: modelOverride } : {}),
+				...(warmLogger !== undefined ? { logger: warmLogger } : {}),
+			};
 
 			let inputTokens = 0;
 			let outputTokens = 0;

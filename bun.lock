@@ -60,6 +60,7 @@
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/journal-sink": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/lsp": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/skills": "workspace:*",
@@ -87,6 +88,13 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/wire": "workspace:*",
+      },
+    },
+    "packages/lsp": {
+      "name": "@dispatch/lsp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
       },
     },
     "packages/observability-collector": {
@@ -194,7 +202,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
@@ -207,6 +215,7 @@
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/lsp": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/throughput-store": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
@@ -267,6 +276,8 @@
     "@dispatch/journal-sink": ["@dispatch/journal-sink@workspace:packages/journal-sink"],
 
     "@dispatch/kernel": ["@dispatch/kernel@workspace:packages/kernel"],
+
+    "@dispatch/lsp": ["@dispatch/lsp@workspace:packages/lsp"],
 
     "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
 
