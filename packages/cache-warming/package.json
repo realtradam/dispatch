@@ -1,0 +1,14 @@
+{
+	"name": "@dispatch/cache-warming",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"dependencies": {
+		"@dispatch/kernel": "workspace:*",
+		"@dispatch/session-orchestrator": "workspace:*",
+		"@dispatch/surface-registry": "workspace:*",
+		"@dispatch/ui-contract": "workspace:*"
+	}
+}

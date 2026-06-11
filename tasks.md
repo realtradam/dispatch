@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **734 vitest + 109 bun = 843 tests**.
+`tsc -b` EXIT 0 · biome clean · **760 vitest + 109 bun = 869 tests**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -139,6 +139,31 @@ no summary but still loadable. Glossary: added `skill`, `skill summary`, `tools 
 - **Live-verified:** clean boot (`skills` activates, filter registered, no crash); full-graph
   `tsc -b` EXIT 0, biome clean. (End-to-end load_skill via a real LLM turn not yet exercised —
   unit/integration tests cover the filter rewrite + live read.)
+
+## Cache warming (core DONE; control surface PARTIAL)
+User-gated calls: target the external **Claude** provider (`../claude` provider-anthropic, loaded via
+`DISPATCH_EXTERNAL_EXTENSIONS`); warm-assembly lives in **session-orchestrator** (`warm()` reuses the
+real turn's assembly → byte-identical prefix, provider-agnostic); **surface system** for controls;
+**per-conversation** controls; interval default 4 min, free value. Old-code invariants honored
+(primary-model/full-prefix via reuse; refuse mid-turn; never persist/emit; in-flight invalidation;
+arm-on-settle/cancel-on-start; `pct = round(clamp(cacheRead/input,0,1)*100)`).
+- **Mechanism (2nd use of bus hooks; first event-hook emit):**
+  - [x] **kernel** — exposed `HostAPI.emit` (delegates to bus.emit), counterpart of `on`.
+  - [x] **session-orchestrator** — `turnStarted`/`turnSettled` event hooks (carry conversationId/cwd/
+    modelName) emitted per turn; `warm()` service (`cacheWarmHandle`) reusing assembly, refusing
+    mid-turn, never persisting/emitting; returns Usage.
+  - [x] **cache-warming** (new ext) — per-conversation timers (arm/cancel/in-flight token),
+    calls `warm()`, computes `lastPct`, persists `{enabled,intervalMs}` (default on/240s) in
+    host.storage; registers a controls Surface. 19 tests.
+  - [x] **host-bin** — registered cache-warming; **transport-http** HostAPI stub fixed for `emit`.
+- **Live-verified:** full-graph `tsc -b` EXIT 0, biome clean (boot smoke + live Claude warm pending
+  a restart with the cache-warming ext loaded).
+- **OPEN — surface-system limits (CR from cache-warming):** the surface system has (a) NO
+  per-conversation context (surface reflects most-recently-active conversation; invoke carries
+  conversationId), and (b) NO numeric-input field kind, so the **interval ("set time to refresh")
+  control is not yet a view input** — only the on/off toggle + last-cache-% stat render. Honoring
+  per-conversation controls + free-value interval needs a `NumberField` in `ui-contract` +
+  per-conversation surface scoping (+ FE courier). Decision pending.
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled

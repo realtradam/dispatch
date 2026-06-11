@@ -617,6 +617,49 @@ describe("createHost", () => {
 			expect(received).toEqual(["hello"]);
 		});
 
+		it("emit dispatches to handlers registered via on", async () => {
+			const hook = defineEventHook<string>("test/emit-dispatch");
+			const received: string[] = [];
+
+			const ext = createExtension("emit-ext", {
+				activate: (host) => {
+					host.on(hook, (payload) => {
+						received.push(payload);
+					});
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+			api.emit(hook, "world");
+			expect(received).toEqual(["world"]);
+		});
+
+		it("emit isolates a throwing handler (does not propagate)", async () => {
+			const hook = defineEventHook<string>("test/emit-isolation");
+			const received: string[] = [];
+
+			const ext = createExtension("emit-isolation-ext", {
+				activate: (host) => {
+					host.on(hook, () => {
+						throw new Error("handler boom");
+					});
+					host.on(hook, (payload) => {
+						received.push(payload);
+					});
+				},
+			});
+
+			const host = createHost([ext], deps);
+			await host.activate();
+
+			const api = host.getHostAPI();
+			expect(() => api.emit(hook, "safe")).not.toThrow();
+			expect(received).toEqual(["safe"]);
+		});
+
 		it("applyFilters threads a value through registered filters in order", async () => {
 			const hook = defineFilter<string>("test/text-transform");
 
