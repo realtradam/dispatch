@@ -255,6 +255,12 @@ persisted `TurnMetrics`.
   `../dispatch-web`).
 
 ## Open items
+- **Context window LIMIT (next, sibling of context size):** expose the selected model's max
+  context-window token limit so the FE can render `contextSize / limit` (e.g. `1286 / 200000`).
+  Source = the provider/model catalog (`ModelInfo`); likely a field on the models response
+  and/or stamped alongside `contextSize`. "context size" = current usage (DONE); "context
+  window" = this limit (GLOSSARY). FE handoff `frontend-context-size-handoff.md` already flags
+  the denominator as not-yet-available.
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled
   from dedup by the content-addressed decision; also gated on cache-warming being
   built (not yet) so `warm|real` can't be honestly stamped. Later cache-bust-debug
