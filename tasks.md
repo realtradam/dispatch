@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **784 vitest + 109 bun = 893 tests**.
+`tsc -b` EXIT 0 · biome clean · **800 vitest + 109 bun = 909 tests**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -178,6 +178,18 @@ arm-on-settle/cancel-on-start; `pct = round(clamp(cacheRead/input,0,1)*100)`).
   `Stat`(last cache %). All backward-compatible (global surfaces like `surface-loaded-extensions`
   unchanged). **FE courier:** `frontend-cache-warming-handoff.md` (this repo) — the web must render
   the `number` field kind + send/handle `conversationId` on the surface WS protocol.
+
+## Cache warming — FE CR-3 (DONE)
+FE asked (dispatch-web `backend-handoff-cache-warming-timer.md`): expose next/last-warm timestamps +
+make a manual warm reset the timer/refresh the surface. Done via an **inversion** (commit `bfbad3a`):
+session-orchestrator `warm()` (the single chokepoint for manual `/chat/warm` AND the auto timer) emits
+a `warmCompleted` bus event; cache-warming subscribes and does all post-warm handling — so manual
+warms re-arm the timer + push a surface update with **no transport-http change** (core can't depend on
+the standard cache-warming ext). Added `nextWarmAt`/`lastWarmAt` state + a `custom`
+`rendererId:"cache-warming-timer"` surface field (no ui-contract bump). Caught + fixed a wiring bug
+(`createWarmService` missed the `emit` dep → `deps.emit?.` silently no-oped; made it required).
+Live-verified vs claude haiku (manual warm logs `warm complete` ~2s after the turn, not the 4-min
+timer). FE handoff updated. (FE CR-1 table + CR-2 catalog `scope` flag still open, not requested.)
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled
