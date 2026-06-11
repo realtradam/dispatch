@@ -15,6 +15,7 @@
 		{ "path": "../skills" },
 		{ "path": "../throughput-store" },
 		{ "path": "../transport-http" },
-		{ "path": "../transport-ws" }
+		{ "path": "../transport-ws" },
+		{ "path": "../lsp" }
 	]
 }

@@ -9,6 +9,7 @@
 		"@dispatch/conversation-store": "workspace:*",
 		"@dispatch/credential-store": "workspace:*",
 		"@dispatch/kernel": "workspace:*",
+		"@dispatch/lsp": "workspace:*",
 		"@dispatch/session-orchestrator": "workspace:*",
 		"@dispatch/throughput-store": "workspace:*",
 		"@dispatch/transport-contract": "workspace:*",

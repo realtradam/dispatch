@@ -750,3 +750,49 @@ describe("ConversationStore reconcile.repair span", () => {
 		}
 	});
 });
+
+describe("ConversationStore cwd", () => {
+	let storage: StorageNamespace;
+
+	beforeEach(() => {
+		storage = createMemoryStorage();
+	});
+
+	it("setCwd then getCwd returns the value", async () => {
+		const store = createConversationStore(storage);
+		await store.setCwd("conv1", "/home/user/project");
+		const result = await store.getCwd("conv1");
+		expect(result).toBe("/home/user/project");
+	});
+
+	it("getCwd returns null when never set", async () => {
+		const store = createConversationStore(storage);
+		const result = await store.getCwd("conv_unknown");
+		expect(result).toBeNull();
+	});
+
+	it("setCwd is an upsert (second set overwrites)", async () => {
+		const store = createConversationStore(storage);
+		await store.setCwd("conv1", "/first/path");
+		await store.setCwd("conv1", "/second/path");
+		const result = await store.getCwd("conv1");
+		expect(result).toBe("/second/path");
+	});
+
+	it("cwd persists across a fresh store instance on the same db file", async () => {
+		const store1 = createConversationStore(storage);
+		await store1.setCwd("conv1", "/persisted/path");
+
+		const store2 = createConversationStore(storage);
+		const result = await store2.getCwd("conv1");
+		expect(result).toBe("/persisted/path");
+	});
+
+	it("cwd of one conversation does not leak into another", async () => {
+		const store = createConversationStore(storage);
+		await store.setCwd("convA", "/path/a");
+		await store.setCwd("convB", "/path/b");
+		expect(await store.getCwd("convA")).toBe("/path/a");
+		expect(await store.getCwd("convB")).toBe("/path/b");
+	});
+});

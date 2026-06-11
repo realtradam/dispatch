@@ -20,6 +20,7 @@
 		"@dispatch/tool-edit-file": "workspace:*",
 		"@dispatch/tool-write-file": "workspace:*",
 		"@dispatch/journal-sink": "workspace:*",
+		"@dispatch/lsp": "workspace:*",
 		"@dispatch/surface-loaded-extensions": "workspace:*",
 		"@dispatch/surface-registry": "workspace:*",
 		"@dispatch/transport-ws": "workspace:*"

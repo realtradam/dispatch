@@ -19,6 +19,7 @@ import {
 	type SecretsAccess,
 	type StorageNamespace,
 } from "@dispatch/kernel";
+import { extension as lspExt } from "@dispatch/lsp";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
 import { extension as skillsExt } from "@dispatch/skills";
@@ -75,6 +76,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	sessionOrchestratorExt,
 	skillsExt,
 	cacheWarmingExt,
+	lspExt,
 	createTransportHttpExtension(),
 	// Surface extensions — dependency order: surface-registry first, then consumers.
 	createSurfaceRegistryExtension(),
@@ -169,8 +171,13 @@ async function boot(): Promise<void> {
 		}
 	}
 
+	let shuttingDown = false;
 	const shutdown = async () => {
-		logger.info("Shutting down — draining collector");
+		if (shuttingDown) return;
+		shuttingDown = true;
+		logger.info("Shutting down — deactivating extensions");
+		await host.deactivate();
+		logger.info("Draining collector");
 		await supervisor.stop();
 		process.exit(0);
 	};

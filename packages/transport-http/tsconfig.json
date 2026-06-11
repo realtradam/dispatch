@@ -6,6 +6,7 @@
 		{ "path": "../conversation-store" },
 		{ "path": "../credential-store" },
 		{ "path": "../kernel" },
+		{ "path": "../lsp" },
 		{ "path": "../session-orchestrator" },
 		{ "path": "../throughput-store" },
 		{ "path": "../transport-contract" }

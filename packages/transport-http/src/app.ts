@@ -2,6 +2,9 @@ import type { AgentEvent, Logger } from "@dispatch/kernel";
 import type {
 	ConversationHistoryResponse,
 	ConversationMetricsResponse,
+	CwdResponse,
+	LspServerInfo,
+	LspStatusResponse,
 	ModelsResponse,
 	ThroughputResponse,
 	WarmResponse,
@@ -21,6 +24,8 @@ import {
 import {
 	type ConversationStore,
 	type CredentialStore,
+	type LspServerStatus,
+	type LspService,
 	type SessionOrchestrator,
 	ThroughputQueryError,
 	type ThroughputStore,
@@ -32,6 +37,7 @@ export interface CreateServerOptions {
 	readonly orchestrator: SessionOrchestrator;
 	readonly credentialStore: CredentialStore;
 	readonly warmService?: WarmService;
+	readonly lspService?: LspService;
 	/** Optional — defaults to a no-op store (recording disabled, empty reports). */
 	readonly throughputStore?: ThroughputStore;
 	readonly logger?: Logger;
@@ -105,7 +111,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 		"*",
 		cors({
 			origin: "*",
-			allowMethods: ["GET", "POST", "OPTIONS"],
+			allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
 			allowHeaders: ["Content-Type"],
 		}),
 	);
@@ -310,6 +316,88 @@ export function createApp(opts: CreateServerOptions): Hono {
 			}
 			log.error("throughput: aggregate failed", { err });
 			return c.json({ error: "Failed to aggregate throughput" }, 502);
+		}
+	});
+
+	app.get("/conversations/:id/cwd", async (c) => {
+		const conversationId = c.req.param("id");
+		try {
+			const cwd = await opts.conversationStore.getCwd(conversationId);
+			log.info("conversations: cwd read", { conversationId, hasCwd: cwd !== null });
+			const body: CwdResponse = { conversationId, cwd };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("conversations: cwd read failure", { err });
+			return c.json({ error: "Failed to read conversation cwd" }, 500);
+		}
+	});
+
+	app.put("/conversations/:id/cwd", async (c) => {
+		const conversationId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("conversations/cwd: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		if (body === null || typeof body !== "object") {
+			return c.json({ error: "Request body must be a JSON object" }, 400);
+		}
+		const obj = body as Record<string, unknown>;
+		if (typeof obj.cwd !== "string" || obj.cwd.length === 0) {
+			return c.json({ error: "Field 'cwd' is required and must be a non-empty string" }, 400);
+		}
+
+		try {
+			await opts.conversationStore.setCwd(conversationId, obj.cwd);
+			log.info("conversations: cwd set", { conversationId });
+			const response: CwdResponse = { conversationId, cwd: obj.cwd };
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("conversations: cwd set failure", { err });
+			return c.json({ error: "Failed to set conversation cwd" }, 500);
+		}
+	});
+
+	app.get("/conversations/:id/lsp", async (c) => {
+		const conversationId = c.req.param("id");
+		try {
+			const cwd = await opts.conversationStore.getCwd(conversationId);
+			if (cwd === null) {
+				log.info("conversations: lsp status read (no cwd)", { conversationId });
+				const body: LspStatusResponse = { conversationId, cwd: null, servers: [] };
+				return c.json(body, 200);
+			}
+
+			if (opts.lspService === undefined) {
+				log.warn("conversations: lsp service not available", { conversationId });
+				return c.json({ error: "LSP service not available" }, 503);
+			}
+
+			const statuses = await opts.lspService.status(cwd);
+			const servers: LspServerInfo[] = statuses.map((s: LspServerStatus) => {
+				const info: LspServerInfo = {
+					id: s.id,
+					name: s.name,
+					root: s.root,
+					extensions: s.extensions,
+					state: s.state,
+					...(s.error !== undefined ? { error: s.error } : {}),
+				};
+				return info;
+			});
+			log.info("conversations: lsp status read", {
+				conversationId,
+				cwd,
+				serverCount: servers.length,
+			});
+			const body: LspStatusResponse = { conversationId, cwd, servers };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("conversations: lsp status failure", { err });
+			return c.json({ error: "Failed to read LSP status" }, 500);
 		}
 	});
 

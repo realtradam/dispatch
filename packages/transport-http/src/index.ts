@@ -19,6 +19,7 @@ export {
 export type {
 	ConversationStore,
 	CredentialStore,
+	LspService,
 	SessionOrchestrator,
 	WarmService,
 } from "./seam.js";
@@ -26,5 +27,6 @@ export {
 	cacheWarmHandle,
 	conversationStoreHandle,
 	credentialStoreHandle,
+	lspServiceHandle,
 	sessionOrchestratorHandle,
 } from "./seam.js";

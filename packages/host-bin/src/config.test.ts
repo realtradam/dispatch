@@ -51,6 +51,26 @@ describe("envToConfigMap", () => {
 		expect(result["provider.openai-compat.baseURL"]).toBeUndefined();
 		expect(result["provider.openai-compat.model"]).toBeUndefined();
 	});
+
+	it("maps SURFACE_WS_PORT to surfaceWsPort", () => {
+		const result = envToConfigMap({ SURFACE_WS_PORT: "24206" });
+		expect(result.surfaceWsPort).toBe(24206);
+	});
+
+	it("ignores a non-numeric SURFACE_WS_PORT", () => {
+		const result = envToConfigMap({ SURFACE_WS_PORT: "abc" });
+		expect(result.surfaceWsPort).toBeUndefined();
+	});
+
+	it("ignores a non-positive SURFACE_WS_PORT", () => {
+		const result = envToConfigMap({ SURFACE_WS_PORT: "0" });
+		expect(result.surfaceWsPort).toBeUndefined();
+	});
+
+	it("omits surfaceWsPort when SURFACE_WS_PORT is unset", () => {
+		const result = envToConfigMap({});
+		expect(result.surfaceWsPort).toBeUndefined();
+	});
 });
 
 describe("configMapToAccess", () => {

@@ -13,6 +13,7 @@ import { createApp } from "./app.js";
 import type {
 	ConversationStore,
 	CredentialStore,
+	LspService,
 	SessionOrchestrator,
 	WarmService,
 } from "./seam.js";
@@ -78,6 +79,7 @@ function createFakeLogger(): Logger & { readonly records: readonly CapturedLog[]
 function createFakeConversationStore(
 	store: Map<string, StoredChunk[]> = new Map(),
 	metricsStore: Map<string, TurnMetrics[]> = new Map(),
+	cwdStore: Map<string, string> = new Map(),
 ): ConversationStore {
 	return {
 		async append() {},
@@ -92,6 +94,12 @@ function createFakeConversationStore(
 		async appendMetrics() {},
 		async loadMetrics(conversationId) {
 			return metricsStore.get(conversationId) ?? [];
+		},
+		async getCwd(conversationId) {
+			return cwdStore.get(conversationId) ?? null;
+		},
+		async setCwd(conversationId, cwd) {
+			cwdStore.set(conversationId, cwd);
 		},
 	};
 }
@@ -165,6 +173,23 @@ function createFakeWarmService(
 	return {
 		async warm() {
 			return result;
+		},
+	};
+}
+
+function createFakeLspService(
+	statuses: readonly {
+		readonly id: string;
+		readonly name: string;
+		readonly root: string;
+		readonly extensions: readonly string[];
+		readonly state: "connected" | "starting" | "error" | "not-started";
+		readonly error?: string;
+	}[] = [],
+): LspService {
+	return {
+		async status() {
+			return statuses;
 		},
 	};
 }
@@ -752,6 +777,10 @@ describe("GET /conversations/:id/metrics", () => {
 			async loadMetrics() {
 				throw new Error("storage exploded");
 			},
+			async getCwd() {
+				return null;
+			},
+			async setCwd() {},
 		};
 		const app = createApp({
 			conversationStore: brokenStore,
@@ -1029,5 +1058,156 @@ describe("throughput recording + GET /metrics/throughput", () => {
 		const app = appWith(createThroughputStore({ storage: createMemStorage() }), []);
 		const res = await app.request("/metrics/throughput?period=day");
 		expect(res.status).toBe(400);
+	});
+});
+
+describe("GET /conversations/:id/cwd", () => {
+	it("returns null when unset", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/cwd");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; cwd: string | null };
+		expect(body.conversationId).toBe("conv1");
+		expect(body.cwd).toBeNull();
+	});
+});
+
+describe("PUT then GET /conversations/:id/cwd", () => {
+	it("round-trips the value", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const putRes = await app.request("/conversations/conv1/cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ cwd: "/home/user/project" }),
+		});
+		expect(putRes.status).toBe(200);
+		const putBody = (await putRes.json()) as { conversationId: string; cwd: string };
+		expect(putBody.conversationId).toBe("conv1");
+		expect(putBody.cwd).toBe("/home/user/project");
+
+		const getRes = await app.request("/conversations/conv1/cwd");
+		expect(getRes.status).toBe(200);
+		const getBody = (await getRes.json()) as { conversationId: string; cwd: string | null };
+		expect(getBody.cwd).toBe("/home/user/project");
+	});
+});
+
+describe("PUT /conversations/:id/cwd", () => {
+	it("with missing cwd returns 400", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("cwd");
+	});
+
+	it("with empty cwd returns 400", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ cwd: "" }),
+		});
+		expect(res.status).toBe(400);
+	});
+});
+
+describe("GET /conversations/:id/lsp", () => {
+	it("returns empty servers when cwd is unset", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			lspService: createFakeLspService(),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/lsp");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly unknown[];
+		};
+		expect(body.conversationId).toBe("conv1");
+		expect(body.cwd).toBeNull();
+		expect(body.servers).toEqual([]);
+	});
+
+	it("maps the lsp service statuses to LspServerInfo[] when cwd is set", async () => {
+		const cwdStore = new Map<string, string>([["conv1", "/home/user/project"]]);
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		const lspStatuses = [
+			{
+				id: "typescript",
+				name: "TypeScript",
+				root: "/home/user/project",
+				extensions: [".ts", ".tsx"],
+				state: "connected" as const,
+			},
+			{
+				id: "lua-lsp",
+				name: "Lua LSP",
+				root: "/home/user/project",
+				extensions: [".luau"],
+				state: "error" as const,
+				error: "spawn failed",
+			},
+		];
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			lspService: createFakeLspService(lspStatuses),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/lsp");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly {
+				readonly id: string;
+				readonly name: string;
+				readonly root: string;
+				readonly extensions: readonly string[];
+				readonly state: string;
+				readonly error?: string;
+			}[];
+		};
+		expect(body.conversationId).toBe("conv1");
+		expect(body.cwd).toBe("/home/user/project");
+		expect(body.servers).toHaveLength(2);
+		expect(body.servers[0]?.id).toBe("typescript");
+		expect(body.servers[0]?.state).toBe("connected");
+		expect(body.servers[0]?.error).toBeUndefined();
+		expect(body.servers[1]?.id).toBe("lua-lsp");
+		expect(body.servers[1]?.state).toBe("error");
+		expect(body.servers[1]?.error).toBe("spawn failed");
 	});
 });

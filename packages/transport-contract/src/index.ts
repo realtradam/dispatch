@@ -154,6 +154,49 @@ export interface ThroughputResponse {
 	readonly models: readonly ThroughputModelStat[];
 }
 
+// ─── Per-conversation working directory (cwd) ─────────────────────────────────
+
+/** Response of `GET /conversations/:id/cwd`. `cwd` is null when never set. */
+export interface CwdResponse {
+	readonly conversationId: string;
+	readonly cwd: string | null;
+}
+
+/** Body of `PUT /conversations/:id/cwd`. */
+export interface SetCwdRequest {
+	readonly cwd: string;
+}
+
+// ─── Per-conversation LSP status ──────────────────────────────────────────────
+
+/** The connection state of a single language server for a workspace. */
+export type LspServerState = "connected" | "starting" | "error" | "not-started";
+
+/** One language server's status as reported to the frontend. */
+export interface LspServerInfo {
+	/** Stable server id, e.g. "typescript", "luau-lsp". */
+	readonly id: string;
+	/** Human-readable display name. */
+	readonly name: string;
+	/** The resolved workspace root the server is (or would be) rooted at (absolute). */
+	readonly root: string;
+	/** File extensions this server handles, e.g. [".ts", ".tsx"] or [".luau"]. */
+	readonly extensions: readonly string[];
+	/** Current connection state. */
+	readonly state: LspServerState;
+	/** Present only when `state === "error"`: a short human-readable reason. */
+	readonly error?: string;
+}
+
+/** Response of `GET /conversations/:id/lsp`. */
+export interface LspStatusResponse {
+	readonly conversationId: string;
+	/** The conversation's persisted cwd, or null if unset (then `servers` is empty). */
+	readonly cwd: string | null;
+	/** The language servers configured for `cwd` and their live state. */
+	readonly servers: readonly LspServerInfo[];
+}
+
 /**
  * Request body for `POST /chat/warm` — manually trigger a prompt-cache WARMING
  * request for a conversation (e.g. a frontend "warm now" button, or fast tests
