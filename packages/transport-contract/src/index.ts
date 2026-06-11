@@ -154,6 +154,50 @@ export interface ThroughputResponse {
 	readonly models: readonly ThroughputModelStat[];
 }
 
+/**
+ * Request body for `POST /chat/warm` — manually trigger a prompt-cache WARMING
+ * request for a conversation (e.g. a frontend "warm now" button, or fast tests
+ * that don't want to wait for the automatic warming timer).
+ *
+ * The warm replays the conversation's existing prefix to the provider to refresh
+ * its prompt cache; it is NEVER persisted and NEVER streamed (no `AgentEvent`s).
+ * Pass the same `model`/`cwd` the conversation chats with so the warm request's
+ * prefix is byte-identical to a real turn (which is what makes the cache hit).
+ */
+export interface WarmRequest {
+	/** The conversation whose prompt cache to warm. */
+	readonly conversationId: string;
+
+	/**
+	 * The model name in `<credentialName>/<model>` form the conversation uses, so
+	 * the warm resolves the same provider + prefix. Omit to use the server default.
+	 */
+	readonly model?: string;
+
+	/** Working directory matching the conversation's turns (for cwd-aware tool assembly). */
+	readonly cwd?: string;
+}
+
+/**
+ * Response body for `POST /chat/warm` (HTTP 200). The warm request's usage —
+ * never folded into the conversation's real usage. A client surfaces `cachePct`
+ * as the "last warming" cache-hit indicator.
+ *
+ * When warming cannot run because the conversation is currently generating, the
+ * server responds `409` with `{ error }` instead of this body.
+ */
+export interface WarmResponse {
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cacheReadTokens: number;
+	readonly cacheWriteTokens: number;
+	/**
+	 * Cache-hit percent: `round(clamp(cacheReadTokens / inputTokens, 0, 1) * 100)`
+	 * (0 when `inputTokens <= 0`).
+	 */
+	readonly cachePct: number;
+}
+
 // ─── WebSocket chat ops ───────────────────────────────────────────────────────
 // The persistent WS connection multiplexes chat ops (below) with surface ops
 // (`@dispatch/ui-contract`). The unified unions at the bottom compose both. Chat

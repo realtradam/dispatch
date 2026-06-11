@@ -10,7 +10,12 @@ import { createThroughputStore, dayKeyOf } from "@dispatch/throughput-store";
 import type { ThroughputResponse } from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
-import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
+import type {
+	ConversationStore,
+	CredentialStore,
+	SessionOrchestrator,
+	WarmService,
+} from "./seam.js";
 
 function createMemStorage(): StorageNamespace {
 	const map = new Map<string, string>();
@@ -143,6 +148,23 @@ function createThrowingCredentialStore(error: Error): CredentialStore {
 		},
 		async listCatalog() {
 			throw error;
+		},
+	};
+}
+
+function createFakeWarmService(
+	result:
+		| {
+				inputTokens: number;
+				outputTokens: number;
+				cacheReadTokens: number;
+				cacheWriteTokens: number;
+		  }
+		| { error: string },
+): WarmService {
+	return {
+		async warm() {
+			return result;
 		},
 	};
 }
@@ -396,6 +418,88 @@ describe("POST /chat", () => {
 		expect(cap.received).toBeDefined();
 		expect(cap.received?.modelName).toBeUndefined();
 		expect(cap.received?.cwd).toBeUndefined();
+	});
+});
+
+describe("POST /chat/warm", () => {
+	it("POST /chat/warm returns 200 with cachePct from the warm usage", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			warmService: createFakeWarmService({
+				inputTokens: 1000,
+				outputTokens: 200,
+				cacheReadTokens: 800,
+				cacheWriteTokens: 100,
+			}),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/chat/warm", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ conversationId: "conv1" }),
+		});
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			inputTokens: number;
+			outputTokens: number;
+			cacheReadTokens: number;
+			cacheWriteTokens: number;
+			cachePct: number;
+		};
+		expect(body.inputTokens).toBe(1000);
+		expect(body.outputTokens).toBe(200);
+		expect(body.cacheReadTokens).toBe(800);
+		expect(body.cacheWriteTokens).toBe(100);
+		expect(body.cachePct).toBe(80);
+	});
+
+	it("POST /chat/warm returns 409 when the warm service reports the conversation is generating", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			warmService: createFakeWarmService({ error: "conversation is generating" }),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/chat/warm", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ conversationId: "conv1" }),
+		});
+
+		expect(res.status).toBe(409);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("conversation is generating");
+	});
+
+	it("POST /chat/warm returns 400 when conversationId is missing", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			warmService: createFakeWarmService({
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+			}),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/chat/warm", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("conversationId");
 	});
 });
 

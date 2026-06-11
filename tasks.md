@@ -156,8 +156,12 @@ arm-on-settle/cancel-on-start; `pct = round(clamp(cacheRead/input,0,1)*100)`).
     calls `warm()`, computes `lastPct`, persists `{enabled,intervalMs}` (default on/240s) in
     host.storage; registers a controls Surface. 19 tests.
   - [x] **host-bin** — registered cache-warming; **transport-http** HostAPI stub fixed for `emit`.
-- **Live-verified:** full-graph `tsc -b` EXIT 0, biome clean (boot smoke + live Claude warm pending
-  a restart with the cache-warming ext loaded).
+- **Manual trigger endpoint:** `POST /chat/warm {conversationId, model?, cwd?}` → `WarmResponse`
+  `{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens,cachePct}` (409 if generating). Powers a
+  FE "warm now" button + fast tests. Types in `@dispatch/transport-contract`; route in transport-http.
+- **LIVE-VERIFIED against Claude haiku:** automatic timer warm → journal `warm complete pct:100`;
+  manual `POST /chat/warm` → `cacheReadTokens:6799, cachePct:100` (100% hit), HTTP 200. The external
+  `../claude` provider-anthropic is loaded via `bin/up` (`DISPATCH_EXTERNAL_EXTENSIONS`).
 - **OPEN — surface-system limits (CR from cache-warming):** the surface system has (a) NO
   per-conversation context (surface reflects most-recently-active conversation; invoke carries
   conversationId), and (b) NO numeric-input field kind, so the **interval ("set time to refresh")
