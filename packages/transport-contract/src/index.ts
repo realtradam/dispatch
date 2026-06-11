@@ -192,10 +192,21 @@ export interface WarmResponse {
 	readonly cacheReadTokens: number;
 	readonly cacheWriteTokens: number;
 	/**
-	 * Cache-hit percent: `round(clamp(cacheReadTokens / inputTokens, 0, 1) * 100)`
-	 * (0 when `inputTokens <= 0`).
+	 * **Cache rate** — what fraction of THIS request's prompt was served from cache:
+	 * `round(cacheReadTokens / inputTokens * 100)` (0 when `inputTokens <= 0`).
+	 * (`inputTokens` is the TOTAL prompt incl. cached, so this is in [0,100].)
 	 */
 	readonly cachePct: number;
+	/**
+	 * **Expected cache (retention)** — of the cacheable prefix this warm touched, how
+	 * much was still warm and read back vs. had to be (re)written:
+	 * `round(cacheReadTokens / (cacheReadTokens + cacheWriteTokens) * 100)` (0 when the
+	 * sum is 0). For a healthy warm this is ~**100%** (the whole prefix was still
+	 * cached); it drops toward 0 as the cache expires/busts and the warm has to rewrite
+	 * it. This is the warming HEALTH signal — distinct from `cachePct` (which a warm's
+	 * tiny fresh probe makes ~equal, but which on a real turn reflects new content).
+	 */
+	readonly expectedCacheRate: number;
 }
 
 // ─── WebSocket chat ops ───────────────────────────────────────────────────────

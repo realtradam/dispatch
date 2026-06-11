@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import {
 	computeCachePct,
+	computeExpectedCacheRate,
 	isParseError,
 	isSinceSeqError,
 	parseChatBody,
@@ -284,6 +285,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 			cacheReadTokens: result.cacheReadTokens,
 			cacheWriteTokens: result.cacheWriteTokens,
 			cachePct: computeCachePct(result.inputTokens, result.cacheReadTokens),
+			expectedCacheRate: computeExpectedCacheRate(result.cacheReadTokens, result.cacheWriteTokens),
 		};
 		return c.json(response, 200);
 	});

@@ -5,6 +5,7 @@ import {
 	type ConversationSettings,
 	type ConversationState,
 	computeCachePct,
+	computeExpectedCacheRate,
 	DEFAULT_INTERVAL_MS,
 	isTokenCurrent,
 	MIN_INTERVAL_MS,
@@ -63,6 +64,7 @@ const DEFAULT_STATE: ConversationState = {
 	intervalMs: DEFAULT_INTERVAL_MS,
 	active: false,
 	lastPct: null,
+	lastExpectedPct: null,
 	token: 0,
 };
 
@@ -145,11 +147,13 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 			});
 		} else {
 			const pct = computeCachePct(result.inputTokens, result.cacheReadTokens);
-			setState(conversationId, { ...currentState, lastPct: pct });
+			const expectedPct = computeExpectedCacheRate(result.cacheReadTokens, result.cacheWriteTokens);
+			setState(conversationId, { ...currentState, lastPct: pct, lastExpectedPct: expectedPct });
 			deps.onSurfaceChange();
 			deps.logger.debug("cache-warming: warm complete", {
 				conversationId,
 				pct,
+				expectedPct,
 			});
 		}
 

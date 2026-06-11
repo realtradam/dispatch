@@ -162,6 +162,14 @@ arm-on-settle/cancel-on-start; `pct = round(clamp(cacheRead/input,0,1)*100)`).
 - **LIVE-VERIFIED against Claude haiku:** automatic timer warm → journal `warm complete pct:100`;
   manual `POST /chat/warm` → `cacheReadTokens:6799, cachePct:100` (100% hit), HTTP 200. The external
   `../claude` provider-anthropic is loaded via `bin/up` (`DISPATCH_EXTERNAL_EXTENSIONS`).
+- **Cache-metric fix + retention metric:** `provider-anthropic` (in `../claude`, commit `0e9d118`)
+  now reports `Usage.inputTokens` as the TOTAL prompt (was the uncached remainder → the cache rate
+  inflated/clamped to 100% on Claude). So `cacheRead/inputTokens` is now the true rate (live: a turn
+  adding new content reads 61%, not 100%). Added **`expectedCacheRate`** = `cacheRead/(cacheRead+
+  cacheWrite)` (retention/health, ~100% when warm, 0% when the cache expired) to `WarmResponse` +
+  `POST /chat/warm` + the cache-warming surface (a "cache retention" stat). Live-verified: warm
+  within TTL → 100%; warm after >5 min idle → 0% (cache expired). FE handoff updated with both
+  metrics + the cross-turn real-turn `expectedCache = cacheRead_N/(cacheRead_{N-1}+cacheWrite_{N-1})`.
 - **Surface framework extended (DONE):** added `NumberField` to `ui-contract` + per-conversation
   surface scoping (optional `conversationId` on subscribe/unsubscribe/invoke + surface/update; new
   `SurfaceContext` on `SurfaceProvider.getSpec/invoke`; transport-ws keys subscriptions by

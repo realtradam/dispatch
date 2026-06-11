@@ -17,6 +17,7 @@ export interface ConversationSettings {
 export interface ConversationState extends ConversationSettings {
 	readonly active: boolean;
 	readonly lastPct: number | null;
+	readonly lastExpectedPct: number | null;
 	readonly token: number;
 }
 
@@ -40,6 +41,21 @@ export function computeCachePct(inputTokens: number, cacheReadTokens: number): n
 	const ratio = cacheReadTokens / inputTokens;
 	const clamped = Math.max(0, Math.min(1, ratio));
 	return Math.round(clamped * 100);
+}
+
+/**
+ * Compute expected cache retention rate from token counts.
+ * Of the cacheable prefix the warm touched, how much was still warm (read back)
+ * vs. had to be (re)written.
+ * Returns an integer in [0, 100]. cacheRead + cacheWrite ≤ 0 → 0.
+ */
+export function computeExpectedCacheRate(
+	cacheReadTokens: number,
+	cacheWriteTokens: number,
+): number {
+	const total = cacheReadTokens + cacheWriteTokens;
+	if (total <= 0) return 0;
+	return Math.round((cacheReadTokens / total) * 100);
 }
 
 /**
@@ -120,8 +136,10 @@ export function buildConversationSpec(
 	enabled: boolean,
 	intervalMs: number,
 	lastPct: number | null,
+	lastExpectedPct: number | null,
 ): SurfaceSpec {
 	const pctDisplay = lastPct === null ? "—" : `${lastPct}%`;
+	const retentionDisplay = lastExpectedPct === null ? "—" : `${lastExpectedPct}%`;
 	const toggle: ToggleField = {
 		kind: "toggle",
 		label: "Enabled",
@@ -142,11 +160,16 @@ export function buildConversationSpec(
 		label: "Last Cache %",
 		value: pctDisplay,
 	};
+	const retentionStat: StatField = {
+		kind: "stat",
+		label: "Cache retention",
+		value: retentionDisplay,
+	};
 	return {
 		id: "cache-warming",
 		region: "side",
 		title: "Cache Warming",
-		fields: [toggle, interval, stat],
+		fields: [toggle, interval, stat, retentionStat],
 	};
 }
 

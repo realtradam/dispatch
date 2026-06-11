@@ -182,6 +182,30 @@ describe("CacheWarmer", () => {
 		expect(state.lastPct).toBe(80);
 	});
 
+	it("a completed warm stores both lastPct (rate) and lastExpectedPct (retention)", async () => {
+		const timers = fakeTimers();
+		const warmer = createCacheWarmer({
+			warm: async () => ({
+				inputTokens: 1000,
+				outputTokens: 10,
+				cacheReadTokens: 700,
+				cacheWriteTokens: 300,
+			}),
+			storage: memStorage(),
+			logger: makeLogger(),
+			timers,
+			onSurfaceChange: () => {},
+		});
+
+		warmer.onTurnSettled("conv-1", {});
+		timers.flush();
+
+		await new Promise((r) => setTimeout(r, 10));
+		const state = warmer.getState("conv-1");
+		expect(state.lastPct).toBe(70);
+		expect(state.lastExpectedPct).toBe(70);
+	});
+
 	it("re-arms timer after warm completes", async () => {
 		const timers = fakeTimers();
 		let warmCount = 0;
@@ -315,5 +339,28 @@ describe("CacheWarmer", () => {
 
 		await warmer.setIntervalMs("conv-1", 30_000);
 		expect(changeCount).toBe(2);
+	});
+
+	it("the per-conversation spec includes a cache-retention stat", async () => {
+		const timers = fakeTimers();
+		const warmer = createCacheWarmer({
+			warm: async () => ({
+				inputTokens: 1000,
+				outputTokens: 10,
+				cacheReadTokens: 900,
+				cacheWriteTokens: 100,
+			}),
+			storage: memStorage(),
+			logger: makeLogger(),
+			timers,
+			onSurfaceChange: () => {},
+		});
+
+		warmer.onTurnSettled("conv-1", {});
+		timers.flush();
+		await new Promise((r) => setTimeout(r, 10));
+
+		const state = warmer.getState("conv-1");
+		expect(state.lastExpectedPct).toBe(90);
 	});
 });

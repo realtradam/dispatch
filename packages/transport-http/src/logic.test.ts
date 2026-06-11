@@ -1,6 +1,7 @@
 import type { AgentEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
+	computeExpectedCacheRate,
 	isParseError,
 	isSinceSeqError,
 	parseChatBody,
@@ -195,5 +196,28 @@ describe("serializeEventLine", () => {
 		const parsed = JSON.parse(line.trim());
 		expect(parsed.type).toBe("done");
 		expect(parsed.reason).toBe("stop");
+	});
+});
+
+describe("computeExpectedCacheRate", () => {
+	it("returns round(cacheRead/(cacheRead+cacheWrite)*100)", () => {
+		expect(computeExpectedCacheRate(800, 200)).toBe(80);
+	});
+
+	it("returns 0 when cacheRead+cacheWrite is 0", () => {
+		expect(computeExpectedCacheRate(0, 0)).toBe(0);
+	});
+
+	it("returns 100 when all tokens are cacheRead", () => {
+		expect(computeExpectedCacheRate(500, 0)).toBe(100);
+	});
+
+	it("returns 0 when all tokens are cacheWrite", () => {
+		expect(computeExpectedCacheRate(0, 500)).toBe(0);
+	});
+
+	it("rounds to nearest integer", () => {
+		expect(computeExpectedCacheRate(1, 2)).toBe(33);
+		expect(computeExpectedCacheRate(2, 1)).toBe(67);
 	});
 });
