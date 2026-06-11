@@ -1,6 +1,7 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { createApp } from "./app.js";
 import {
+	cacheWarmHandle,
 	conversationStoreHandle,
 	credentialStoreHandle,
 	sessionOrchestratorHandle,
@@ -16,7 +17,14 @@ export const manifest: Manifest = {
 	dependsOn: ["conversation-store", "credential-store", "session-orchestrator", "throughput-store"],
 	capabilities: { network: true },
 	contributes: {
-		routes: ["/chat", "/conversations/:id", "/health", "/models", "/metrics/throughput"],
+		routes: [
+			"/chat",
+			"/chat/warm",
+			"/conversations/:id",
+			"/health",
+			"/models",
+			"/metrics/throughput",
+		],
 	},
 	activation: "eager",
 };
@@ -36,6 +44,7 @@ export function createTransportHttpExtension(): Extension & {
 			const orchestrator = host.getService(sessionOrchestratorHandle);
 			const credentialStore = host.getService(credentialStoreHandle);
 			const throughputStore = host.getService(throughputStoreHandle);
+			const warmService = host.getService(cacheWarmHandle);
 			const logger = host.logger;
 
 			const app = createApp({
@@ -43,6 +52,7 @@ export function createTransportHttpExtension(): Extension & {
 				orchestrator,
 				credentialStore,
 				throughputStore,
+				warmService,
 				logger,
 			});
 

@@ -4,14 +4,17 @@ import type {
 	ConversationMetricsResponse,
 	ModelsResponse,
 	ThroughputResponse,
+	WarmResponse,
 } from "@dispatch/transport-contract";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import {
+	computeCachePct,
 	isParseError,
 	isSinceSeqError,
 	parseChatBody,
 	parseSinceSeq,
+	parseWarmBody,
 	serializeEventLine,
 } from "./logic.js";
 import {
@@ -20,12 +23,14 @@ import {
 	type SessionOrchestrator,
 	ThroughputQueryError,
 	type ThroughputStore,
+	type WarmService,
 } from "./seam.js";
 
 export interface CreateServerOptions {
 	readonly conversationStore: ConversationStore;
 	readonly orchestrator: SessionOrchestrator;
 	readonly credentialStore: CredentialStore;
+	readonly warmService?: WarmService;
 	/** Optional — defaults to a no-op store (recording disabled, empty reports). */
 	readonly throughputStore?: ThroughputStore;
 	readonly logger?: Logger;
@@ -230,6 +235,57 @@ export function createApp(opts: CreateServerOptions): Hono {
 			"Content-Type": "application/x-ndjson",
 			"X-Conversation-Id": conversationId,
 		});
+	});
+
+	app.post("/chat/warm", async (c) => {
+		if (opts.warmService === undefined) {
+			return c.json({ error: "Warm service not available" }, 503);
+		}
+
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("chat/warm: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		const parsed = parseWarmBody(body);
+		if ("error" in parsed) {
+			log.warn("chat/warm: validation failed", { reason: parsed.error });
+			return c.json({ error: parsed.error }, 400);
+		}
+
+		const { conversationId, model, cwd } = parsed;
+		log.info("chat/warm: request accepted", {
+			conversationId,
+			hasModel: model !== undefined,
+			hasCwd: cwd !== undefined,
+		});
+
+		const warmOpts: { readonly cwd?: string; readonly modelName?: string } | undefined =
+			model !== undefined || cwd !== undefined
+				? {
+						...(cwd !== undefined ? { cwd } : {}),
+						...(model !== undefined ? { modelName: model } : {}),
+					}
+				: undefined;
+
+		const result = await opts.warmService.warm(conversationId, warmOpts);
+
+		if ("error" in result) {
+			log.warn("chat/warm: service returned error", { conversationId, error: result.error });
+			return c.json({ error: result.error }, 409);
+		}
+
+		const response: WarmResponse = {
+			inputTokens: result.inputTokens,
+			outputTokens: result.outputTokens,
+			cacheReadTokens: result.cacheReadTokens,
+			cacheWriteTokens: result.cacheWriteTokens,
+			cachePct: computeCachePct(result.inputTokens, result.cacheReadTokens),
+		};
+		return c.json(response, 200);
 	});
 
 	app.get("/metrics/throughput", async (c) => {

@@ -71,3 +71,45 @@ export function parseSinceSeq(raw: string | undefined): SinceSeqResult {
 export function isSinceSeqError(result: SinceSeqResult): result is ParseError {
 	return typeof result === "object";
 }
+
+export interface WarmBodyParsed {
+	readonly conversationId: string;
+	readonly model?: string;
+	readonly cwd?: string;
+}
+
+export function parseWarmBody(body: unknown): WarmBodyParsed | ParseError {
+	if (body === null || typeof body !== "object") {
+		return { error: "Request body must be a JSON object" };
+	}
+
+	const obj = body as Record<string, unknown>;
+
+	const conversationId = obj.conversationId;
+	if (typeof conversationId !== "string" || conversationId.length === 0) {
+		return { error: "Field 'conversationId' is required and must be a non-empty string" };
+	}
+
+	const result: Record<string, unknown> = { conversationId };
+
+	if (obj.model !== undefined) {
+		if (typeof obj.model !== "string") {
+			return { error: "Field 'model' must be a string" };
+		}
+		result.model = obj.model;
+	}
+
+	if (obj.cwd !== undefined) {
+		if (typeof obj.cwd !== "string") {
+			return { error: "Field 'cwd' must be a string" };
+		}
+		result.cwd = obj.cwd;
+	}
+
+	return result as unknown as WarmBodyParsed;
+}
+
+export function computeCachePct(inputTokens: number, cacheReadTokens: number): number {
+	if (inputTokens <= 0) return 0;
+	return Math.round(Math.max(0, Math.min(1, cacheReadTokens / inputTokens)) * 100);
+}
