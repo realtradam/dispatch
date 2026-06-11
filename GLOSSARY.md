@@ -51,6 +51,7 @@
 | **diagnostics** | The errors/warnings/hints a `language server` reports for a file — received both push (`textDocument/publishDiagnostics`) and pull (`textDocument/diagnostic`), then merged + deduped. | lints (when meaning LSP diagnostics) |
 | **workspace root** | The directory a `language server` is rooted at (its `rootUri` and spawn cwd): the nearest root-marker ancestor of a file, bounded above by the conversation's `working directory`. | project root (when meaning the per-server root) |
 | **working directory** | The per-conversation filesystem directory that tools and `language server`s operate within (`ToolExecuteContext.cwd`). Persisted per conversation by `conversation-store`; gettable/settable via the cwd endpoint; defaults a turn's cwd when `/chat` omits it. | cwd (spell out on first use), workdir (when meaning the conversation's directory) |
+| **context size** | The number of tokens a conversation currently occupies: the most recent turn's FINAL step `inputTokens + outputTokens` (NOT the aggregate per-turn `usage`, which sums per-step prompts and overcounts a multi-step turn). Stamped on `TurnDoneEvent.contextSize` (live) + `TurnMetrics.contextSize` (persisted); a client reads the LATEST turn's value as current usage. Distinct from the model's **context window** (its max token limit — a later feature). | context window (when meaning current usage), context length, tokens used, context usage |
 
 ## Known vocabulary drift
 

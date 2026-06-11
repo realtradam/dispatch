@@ -192,6 +192,16 @@ export interface TurnMetrics {
 	readonly durationMs?: number;
 	/** Per-step metrics in step order. */
 	readonly steps: readonly StepMetrics[];
+	/**
+	 * **Context size** — tokens the conversation occupies as of this turn: the
+	 * turn's FINAL step `inputTokens + outputTokens` (the last entry of `steps`),
+	 * NOT the aggregate `usage` (which sums per-step prompts and overcounts a
+	 * multi-step turn). The persisted, replayable counterpart of
+	 * `TurnDoneEvent.contextSize` and equal to it for the same turn. A client
+	 * reopening a past conversation reads the LAST turn's `contextSize` as the
+	 * current context usage. Optional: absent when no per-step usage was available.
+	 */
+	readonly contextSize?: number;
 }
 
 // ─── Outward events ─────────────────────────────────────────────────────────
@@ -364,6 +374,21 @@ export interface TurnDoneEvent {
 	 * provider reported no usage).
 	 */
 	readonly usage?: Usage;
+	/**
+	 * **Context size** — the number of tokens the conversation now occupies: this
+	 * (the most recent) turn's FINAL step `inputTokens + outputTokens` (the full
+	 * prompt sent into the last LLM round-trip plus that round-trip's output). This
+	 * is the "tokens in context" figure a client renders as the chat's current
+	 * context usage, and a client treats the LATEST turn's value as the live total.
+	 *
+	 * Deliberately NOT the aggregate `usage` above: `usage` SUMS each step's
+	 * `inputTokens`, which overcounts a multi-step / tool-calling turn because every
+	 * step re-prefills the growing prompt — the final step's input already includes
+	 * all prior context, so its input+output is the true occupancy. Optional: absent
+	 * when no per-step usage was observed this turn (mirrors `usage`). A later field
+	 * will carry the model's max context-window LIMIT; this is only the current size.
+	 */
+	readonly contextSize?: number;
 }
 
 /**

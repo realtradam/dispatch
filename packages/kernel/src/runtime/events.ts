@@ -127,15 +127,28 @@ export function doneEvent(
 	reason: string,
 	durationMs?: number,
 	usage?: Usage,
+	contextSize?: number,
 ): AgentEvent {
+	if (durationMs !== undefined && usage !== undefined && contextSize !== undefined) {
+		return { type: "done", conversationId, turnId, reason, durationMs, usage, contextSize };
+	}
 	if (durationMs !== undefined && usage !== undefined) {
 		return { type: "done", conversationId, turnId, reason, durationMs, usage };
+	}
+	if (durationMs !== undefined && contextSize !== undefined) {
+		return { type: "done", conversationId, turnId, reason, durationMs, contextSize };
+	}
+	if (usage !== undefined && contextSize !== undefined) {
+		return { type: "done", conversationId, turnId, reason, usage, contextSize };
 	}
 	if (durationMs !== undefined) {
 		return { type: "done", conversationId, turnId, reason, durationMs };
 	}
 	if (usage !== undefined) {
 		return { type: "done", conversationId, turnId, reason, usage };
+	}
+	if (contextSize !== undefined) {
+		return { type: "done", conversationId, turnId, reason, contextSize };
 	}
 	return { type: "done", conversationId, turnId, reason };
 }

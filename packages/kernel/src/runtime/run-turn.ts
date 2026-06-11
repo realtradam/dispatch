@@ -449,6 +449,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 	const messages: ChatMessage[] = [...input.messages];
 	const resultMessages: ChatMessage[] = [];
 	let totalUsage = zeroUsage();
+	let lastStepUsage: Usage | undefined;
 	let finishReason = "stop";
 
 	const toolMap = new Map<string, ToolContract>();
@@ -513,6 +514,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 			});
 
 			totalUsage = addUsage(totalUsage, stepResult.usage);
+			lastStepUsage = stepResult.usage;
 
 			if (stepResult.assistantMessage !== undefined) {
 				messages.push(stepResult.assistantMessage);
@@ -571,6 +573,10 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 		totalUsage.outputTokens > 0 ||
 		totalUsage.cacheReadTokens !== undefined ||
 		totalUsage.cacheWriteTokens !== undefined;
+	const contextSize =
+		hasUsage && lastStepUsage !== undefined
+			? lastStepUsage.inputTokens + lastStepUsage.outputTokens
+			: undefined;
 	input.emit(
 		doneEvent(
 			conversationId,
@@ -578,6 +584,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 			finishReason,
 			turnDurationMs,
 			hasUsage ? totalUsage : undefined,
+			contextSize,
 		),
 	);
 

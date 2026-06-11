@@ -261,4 +261,109 @@ describe("createMetricsAccumulator", () => {
 		expect(tm.usage.inputTokens).toBe(0);
 		expect(tm.usage.outputTokens).toBe(0);
 	});
+
+	it("contextSize equals inputTokens + outputTokens for a single-step turn", () => {
+		const acc = createMetricsAccumulator();
+
+		acc.ingest({
+			type: "usage",
+			conversationId: "c1",
+			turnId: "t1",
+			stepId: stepId("t1#0"),
+			usage: { inputTokens: 10, outputTokens: 5 },
+		});
+		acc.ingest({
+			type: "step-complete",
+			conversationId: "c1",
+			turnId: "t1",
+			stepId: stepId("t1#0"),
+		});
+		acc.ingest({
+			type: "done",
+			conversationId: "c1",
+			turnId: "t1",
+			reason: "stop",
+			usage: { inputTokens: 10, outputTokens: 5 },
+		});
+
+		const tm = acc.build("t1");
+		expect(tm.contextSize).toBe(15);
+	});
+
+	it("contextSize equals ONLY the last step's inputTokens + outputTokens for a multi-step turn", () => {
+		const acc = createMetricsAccumulator();
+
+		acc.ingest({
+			type: "usage",
+			conversationId: "c1",
+			turnId: "t1",
+			stepId: stepId("t1#0"),
+			usage: { inputTokens: 10, outputTokens: 5 },
+		});
+		acc.ingest({
+			type: "step-complete",
+			conversationId: "c1",
+			turnId: "t1",
+			stepId: stepId("t1#0"),
+		});
+		acc.ingest({
+			type: "usage",
+			conversationId: "c1",
+			turnId: "t1",
+			stepId: stepId("t1#1"),
+			usage: { inputTokens: 20, outputTokens: 10 },
+		});
+		acc.ingest({
+			type: "step-complete",
+			conversationId: "c1",
+			turnId: "t1",
+			stepId: stepId("t1#1"),
+		});
+		acc.ingest({
+			type: "done",
+			conversationId: "c1",
+			turnId: "t1",
+			reason: "stop",
+			usage: { inputTokens: 100, outputTokens: 50 },
+		});
+
+		const tm = acc.build("t1");
+		expect(tm.contextSize).toBe(30);
+		expect(tm.contextSize).not.toBe(tm.usage.inputTokens);
+	});
+
+	it("contextSize is undefined when the turn has no steps", () => {
+		const acc = createMetricsAccumulator();
+
+		acc.ingest({
+			type: "done",
+			conversationId: "c1",
+			turnId: "t1",
+			reason: "stop",
+		});
+
+		const tm = acc.build("t1");
+		expect(tm.contextSize).toBeUndefined();
+	});
+
+	it("contextSize is undefined when the last step has no usable per-step usage", () => {
+		const acc = createMetricsAccumulator();
+
+		acc.ingest({
+			type: "step-complete",
+			conversationId: "c1",
+			turnId: "t1",
+			stepId: stepId("t1#0"),
+			genTotalMs: 200,
+		});
+		acc.ingest({
+			type: "done",
+			conversationId: "c1",
+			turnId: "t1",
+			reason: "stop",
+		});
+
+		const tm = acc.build("t1");
+		expect(tm.contextSize).toBeUndefined();
+	});
 });
