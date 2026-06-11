@@ -69,7 +69,8 @@ scoped** (state differs per conversation, e.g. cache-warming). To support the la
   |---|---|---|---|
   | `toggle` | enabled on/off | warming on for this conversation | `cache-warming/toggle` |
   | `number` | refresh interval | **seconds** (`unit:"s"`, `min:1`, `step:1`, no `max` = free value) | `cache-warming/set-interval` |
-  | `stat`   | last cache % | most recent warm's hit % (`"—"` when none yet) | — (read-only) |
+  | `stat`   | last cache rate | most recent warm's `cachePct` (`"—"` when none yet) | — (read-only) |
+  | `stat`   | cache retention | most recent warm's `expectedCacheRate` — the **health** signal (~100% = cache stayed warm; 0% = it expired) | — (read-only) |
 - **Invoke payloads:**
   - `cache-warming/toggle` → **flips** the current enabled state. Send `{ type: "invoke", surfaceId:
     "cache-warming", actionId: "cache-warming/toggle", conversationId }` (payload is ignored — it
@@ -86,17 +87,21 @@ For an on-demand warm (e.g. a button) without waiting for the automatic timer:
 ```
 POST /chat/warm
   body  WarmRequest  { conversationId: string; model?: string; cwd?: string }
-  200   WarmResponse { inputTokens; outputTokens; cacheReadTokens; cacheWriteTokens; cachePct }
+  200   WarmResponse { inputTokens; outputTokens; cacheReadTokens; cacheWriteTokens;
+                       cachePct; expectedCacheRate }
   409   { error }    // the conversation is currently generating — try again when idle
   400   { error }    // missing/invalid conversationId
 ```
 - Pass the **same `model`** (`<credentialName>/<model>`) the conversation chats with, so the warm
   request's prefix matches the real turn (that's what makes the cache hit). `cwd` only matters if the
   conversation uses cwd-scoped tools.
-- `cachePct` = `round(clamp(cacheReadTokens / inputTokens, 0, 1) * 100)` — show it as the "last
-  warming" hit indicator. The warm is **never** persisted or streamed and is **never** folded into
-  the conversation's real usage/cache-rate (keep it visually distinct from the real cache rate in
-  §`frontend-cache-rate-handoff.md`).
+- `cachePct` = `round(cacheReadTokens / inputTokens * 100)` — the cache RATE of the warm request.
+- `expectedCacheRate` = `round(cacheReadTokens / (cacheReadTokens + cacheWriteTokens) * 100)` — the
+  **retention / health** signal: ~**100%** when the cache was still warm (read back, ~nothing
+  rewritten), **0%** when it had expired (rewrote everything). This is the one to headline for a
+  "is warming working?" indicator.
+- The warm is **never** persisted or streamed and is **never** folded into the conversation's real
+  usage/cache-rate (keep it visually distinct from the real cache rate in §F / `frontend-cache-rate-handoff.md`).
 - Types live in `@dispatch/transport-contract` (`WarmRequest`, `WarmResponse`).
 
 ## E. Behavior model (for the UX)
@@ -108,8 +113,46 @@ POST /chat/warm
 - Verified live against Claude (`claude/claude-haiku-4-5-...`): an idle conversation's warm reports
   ~100% cache read once its prefix exceeds the provider's min-cacheable size.
 
+## F. Cache-rate metric — a correctness fix + the "expected cache" metric (READ THIS)
+A backend bug made the cache-hit % read **100% on Claude whenever anything was cached** (it inflated).
+Root cause: Anthropic's `input_tokens` is the *uncached remainder*, with cache read/creation reported
+separately — but the wire `Usage.inputTokens` convention (which the flash/OpenAI-compat provider
+already follows) is the **TOTAL prompt incl. cached**. Fixed in `../claude/provider-anthropic`
+(`inputTokens = input + cacheRead + cacheWrite`). **No FE change needed** — your existing
+`cacheRead/inputTokens` math (see `frontend-cache-rate-handoff.md`) now yields the *true* rate on
+Claude. (Note: that older handoff's caveat "cacheWriteTokens is usually absent" is **not** true for
+Claude — it reports both.)
+
+Two distinct cache numbers — show them as different things:
+- **Cache rate** = `cacheReadTokens / inputTokens` — *what fraction of THIS turn's prompt came from
+  cache*. It legitimately **drops when a turn adds a lot of new content** (e.g. a turn that pastes a
+  big file reads back the old prefix but also writes the new file → rate < 100%). This is the
+  per-turn efficiency number, available on every `usage`/`done` event and in persisted metrics.
+- **Expected cache (retention)** = *of the cache that existed going into this turn, how much did we
+  read back* — ideally **~100% every turn after the first** (you re-read the entire prefix you
+  cached). It is a **cross-turn** derivation:
+  ```
+  expectedCacheRate(turn N) = cacheRead_N / (cacheRead_{N-1} + cacheWrite_{N-1})   // clamp [0,1]
+  ```
+  (denominator = the prior turn's cached prefix = what it read + what it wrote). **<100% means the
+  cache busted/expired** between turns. The FE derives this from two consecutive turns' usage (which
+  you already have, live + persisted). For the WARM endpoint/surface this same idea is the single-shot
+  `expectedCacheRate` (§C/§D) the backend already computes.
+
+**Worked example (live, Claude haiku), one chat, two real turns:**
+| turn | inputTokens (total) | cacheRead | cacheWrite | cache rate `cr/input` | expected cache (cross-turn) |
+|---|---|---|---|---|---|
+| 1 (fresh) | 5149 | 0 | 5146 | 0% | — |
+| 2 (new msg) | 8462 | 5146 | 3313 | **61%** | `5146/(0+5146)` = **100%** |
+
+So on turn 2 the prompt was 61% cache (the rest was the new message), yet you successfully read back
+**100%** of what turn 1 cached — two true, complementary signals. (Pre-fix, the rate wrongly showed
+100% because the denominator excluded the 5146 cached tokens.)
+
 ## Versions / type references
 - `@dispatch/ui-contract`: `NumberField` (new `SurfaceField` variant); `conversationId?` on
   `SubscribeMessage`/`UnsubscribeMessage`/`InvokeMessage`/`SurfaceMessage`/`SurfaceUpdate`.
-- `@dispatch/transport-contract`: `WarmRequest`, `WarmResponse`.
-- Cache-% math + the real (non-warming) cache rate: see `frontend-cache-rate-handoff.md` (unchanged).
+- `@dispatch/transport-contract`: `WarmRequest`, `WarmResponse` (now incl. `expectedCacheRate`).
+- Cache-% fix: `../claude/provider-anthropic` now reports `inputTokens` as the total prompt — the
+  real (non-warming) cache rate in `frontend-cache-rate-handoff.md` becomes accurate on Claude with
+  no FE change; ignore that doc's "cacheWriteTokens usually absent" caveat for Claude.

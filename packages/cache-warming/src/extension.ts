@@ -77,7 +77,12 @@ export function activate(host: HostAPI): void {
 			return buildDefaultSpec();
 		}
 		const state = warmer.getState(convId);
-		return buildConversationSpec(state.enabled, state.intervalMs, state.lastPct);
+		return buildConversationSpec(
+			state.enabled,
+			state.intervalMs,
+			state.lastPct,
+			state.lastExpectedPct,
+		);
 	}
 
 	async function invoke(

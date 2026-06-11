@@ -449,12 +449,64 @@ describe("POST /chat/warm", () => {
 			cacheReadTokens: number;
 			cacheWriteTokens: number;
 			cachePct: number;
+			expectedCacheRate: number;
 		};
 		expect(body.inputTokens).toBe(1000);
 		expect(body.outputTokens).toBe(200);
 		expect(body.cacheReadTokens).toBe(800);
 		expect(body.cacheWriteTokens).toBe(100);
 		expect(body.cachePct).toBe(80);
+		expect(body.expectedCacheRate).toBe(89);
+	});
+
+	it("POST /chat/warm returns expectedCacheRate = round(cacheRead/(cacheRead+cacheWrite)*100)", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			warmService: createFakeWarmService({
+				inputTokens: 500,
+				outputTokens: 100,
+				cacheReadTokens: 400,
+				cacheWriteTokens: 100,
+			}),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/chat/warm", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ conversationId: "conv1" }),
+		});
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { expectedCacheRate: number };
+		expect(body.expectedCacheRate).toBe(80);
+	});
+
+	it("POST /chat/warm returns expectedCacheRate = 0 when cacheRead+cacheWrite is 0", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			warmService: createFakeWarmService({
+				inputTokens: 100,
+				outputTokens: 50,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+			}),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/chat/warm", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ conversationId: "conv1" }),
+		});
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { expectedCacheRate: number };
+		expect(body.expectedCacheRate).toBe(0);
 	});
 
 	it("POST /chat/warm returns 409 when the warm service reports the conversation is generating", async () => {

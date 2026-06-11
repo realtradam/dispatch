@@ -5,6 +5,7 @@ export {
 	type ConversationSettings,
 	type ConversationState,
 	computeCachePct,
+	computeExpectedCacheRate,
 	DEFAULT_INTERVAL_MS,
 	isTokenCurrent,
 	MIN_INTERVAL_MS,

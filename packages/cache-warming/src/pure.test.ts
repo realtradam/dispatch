@@ -4,6 +4,7 @@ import {
 	buildConversationSpec,
 	buildDefaultSpec,
 	computeCachePct,
+	computeExpectedCacheRate,
 	isTokenCurrent,
 	MIN_INTERVAL_MS,
 	msToSeconds,
@@ -29,6 +30,20 @@ describe("computeCachePct", () => {
 	});
 });
 
+describe("computeExpectedCacheRate", () => {
+	it("cacheRead/(cacheRead+cacheWrite) rounded", () => {
+		expect(computeExpectedCacheRate(800, 200)).toBe(80);
+		expect(computeExpectedCacheRate(500, 500)).toBe(50);
+		expect(computeExpectedCacheRate(1000, 0)).toBe(100);
+		expect(computeExpectedCacheRate(0, 1000)).toBe(0);
+		expect(computeExpectedCacheRate(333, 667)).toBe(33);
+	});
+
+	it("0 when cacheRead+cacheWrite is 0", () => {
+		expect(computeExpectedCacheRate(0, 0)).toBe(0);
+	});
+});
+
 describe("shouldWarm", () => {
 	it("returns true when enabled, idle, and token matches", () => {
 		const state: ConversationState = {
@@ -36,6 +51,7 @@ describe("shouldWarm", () => {
 			intervalMs: 240_000,
 			active: false,
 			lastPct: null,
+			lastExpectedPct: null,
 			token: 5,
 		};
 		expect(shouldWarm(state, 5)).toBe(true);
@@ -47,6 +63,7 @@ describe("shouldWarm", () => {
 			intervalMs: 240_000,
 			active: false,
 			lastPct: null,
+			lastExpectedPct: null,
 			token: 5,
 		};
 		expect(shouldWarm(state, 5)).toBe(false);
@@ -58,6 +75,7 @@ describe("shouldWarm", () => {
 			intervalMs: 240_000,
 			active: true,
 			lastPct: null,
+			lastExpectedPct: null,
 			token: 5,
 		};
 		expect(shouldWarm(state, 5)).toBe(false);
@@ -69,6 +87,7 @@ describe("shouldWarm", () => {
 			intervalMs: 240_000,
 			active: false,
 			lastPct: null,
+			lastExpectedPct: null,
 			token: 5,
 		};
 		expect(shouldWarm(state, 6)).toBe(false);
@@ -162,12 +181,12 @@ describe("parseIntervalPayload", () => {
 });
 
 describe("buildConversationSpec", () => {
-	it("builds a per-conversation spec with toggle + number(interval) + last-% fields", () => {
-		const spec = buildConversationSpec(true, 240_000, 80);
+	it("builds a per-conversation spec with toggle + number(interval) + last-% + retention fields", () => {
+		const spec = buildConversationSpec(true, 240_000, 80, 95);
 		expect(spec.id).toBe("cache-warming");
 		expect(spec.region).toBe("side");
 		expect(spec.title).toBe("Cache Warming");
-		expect(spec.fields).toHaveLength(3);
+		expect(spec.fields).toHaveLength(4);
 
 		const toggle = spec.fields[0];
 		expect(toggle).toEqual({
@@ -194,20 +213,33 @@ describe("buildConversationSpec", () => {
 			label: "Last Cache %",
 			value: "80%",
 		});
+
+		const retention = spec.fields[3];
+		expect(retention).toEqual({
+			kind: "stat",
+			label: "Cache retention",
+			value: "95%",
+		});
 	});
 
-	it("shows — when lastPct is null", () => {
-		const spec = buildConversationSpec(true, 240_000, null);
+	it("shows — when lastPct and lastExpectedPct are null", () => {
+		const spec = buildConversationSpec(true, 240_000, null, null);
 		const stat = spec.fields[2];
 		expect(stat).toEqual({
 			kind: "stat",
 			label: "Last Cache %",
 			value: "—",
 		});
+		const retention = spec.fields[3];
+		expect(retention).toEqual({
+			kind: "stat",
+			label: "Cache retention",
+			value: "—",
+		});
 	});
 
 	it("reflects disabled state", () => {
-		const spec = buildConversationSpec(false, 120_000, 50);
+		const spec = buildConversationSpec(false, 120_000, 50, 75);
 		const toggle = spec.fields[0];
 		expect(toggle).toEqual({
 			kind: "toggle",

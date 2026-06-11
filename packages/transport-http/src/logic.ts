@@ -113,3 +113,12 @@ export function computeCachePct(inputTokens: number, cacheReadTokens: number): n
 	if (inputTokens <= 0) return 0;
 	return Math.round(Math.max(0, Math.min(1, cacheReadTokens / inputTokens)) * 100);
 }
+
+export function computeExpectedCacheRate(
+	cacheReadTokens: number,
+	cacheWriteTokens: number,
+): number {
+	const denom = cacheReadTokens + cacheWriteTokens;
+	if (denom <= 0) return 0;
+	return Math.round((cacheReadTokens / denom) * 100);
+}
