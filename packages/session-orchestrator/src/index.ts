@@ -10,8 +10,11 @@ export {
 	type TurnLifecyclePayload,
 	turnSettled,
 	turnStarted,
+	type WarmCompletedPayload,
 	type WarmResult,
 	type WarmService,
+	type WarmServiceDeps,
+	warmCompleted,
 } from "./orchestrator.js";
 export {
 	buildUserMessage,

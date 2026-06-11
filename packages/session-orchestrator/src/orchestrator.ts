@@ -35,6 +35,16 @@ export const turnStarted: EventHookDescriptor<TurnLifecyclePayload> =
 export const turnSettled: EventHookDescriptor<TurnLifecyclePayload> =
 	defineEventHook<TurnLifecyclePayload>("session-orchestrator/turn-settled");
 
+/** Payload for the warmCompleted bus event. */
+export interface WarmCompletedPayload {
+	readonly conversationId: string;
+	readonly usage: WarmResult;
+}
+
+/** Fired when a warm probe succeeds (both automatic and manual paths). */
+export const warmCompleted: EventHookDescriptor<WarmCompletedPayload> =
+	defineEventHook<WarmCompletedPayload>("session-orchestrator/warm-completed");
+
 // --- Warm service ---
 
 export interface WarmResult {
@@ -88,6 +98,11 @@ export interface SessionOrchestratorDeps {
 	/** Emit a lifecycle event hook to subscribers. Injected from host. */
 	readonly emit?: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
 }
+
+/** Deps for the warm service — emit is REQUIRED so warmCompleted is never silently dropped. */
+export type WarmServiceDeps = SessionOrchestratorDeps & {
+	readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
+};
 
 export interface SessionOrchestratorBundle {
 	readonly orchestrator: SessionOrchestrator;
@@ -187,7 +202,7 @@ export function createSessionOrchestrator(
 }
 
 export function createWarmService(
-	deps: SessionOrchestratorDeps,
+	deps: WarmServiceDeps,
 	activeConversations: ReadonlySet<string>,
 ): WarmService {
 	return {
@@ -247,7 +262,9 @@ export function createWarmService(
 				}
 			}
 
-			return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+			const result: WarmResult = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+			deps.emit(warmCompleted, { conversationId, usage: result });
+			return result;
 		},
 	};
 }

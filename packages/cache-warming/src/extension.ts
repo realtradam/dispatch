@@ -1,5 +1,10 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
-import { cacheWarmHandle, turnSettled, turnStarted } from "@dispatch/session-orchestrator";
+import {
+	cacheWarmHandle,
+	turnSettled,
+	turnStarted,
+	warmCompleted,
+} from "@dispatch/session-orchestrator";
 import type { SurfaceContext, SurfaceProvider } from "@dispatch/surface-registry";
 import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 import type { SurfaceSpec } from "@dispatch/ui-contract";
@@ -53,6 +58,7 @@ export function activate(host: HostAPI): void {
 				}
 			},
 		},
+		now: () => Date.now(),
 		onSurfaceChange: () => {
 			for (const notify of subscribers) {
 				notify();
@@ -71,6 +77,10 @@ export function activate(host: HostAPI): void {
 		});
 	});
 
+	host.on(warmCompleted, (payload) => {
+		warmer.onWarmCompleted(payload);
+	});
+
 	function getSpec(context?: SurfaceContext): SurfaceSpec {
 		const convId = context?.conversationId;
 		if (convId === undefined) {
@@ -82,6 +92,8 @@ export function activate(host: HostAPI): void {
 			state.intervalMs,
 			state.lastPct,
 			state.lastExpectedPct,
+			state.nextWarmAt,
+			state.lastWarmAt,
 		);
 	}
 

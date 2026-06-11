@@ -21,7 +21,11 @@ export const manifest: Manifest = {
 	activation: "eager",
 	contributes: {
 		services: ["session-orchestrator/orchestrator", "session-orchestrator/warm"],
-		hooks: ["session-orchestrator/turn-started", "session-orchestrator/turn-settled"],
+		hooks: [
+			"session-orchestrator/turn-started",
+			"session-orchestrator/turn-settled",
+			"session-orchestrator/warm-completed",
+		],
 	},
 };
 
@@ -64,6 +68,7 @@ export function activate(host: HostAPI): void {
 			runTurn,
 			logger: host.logger,
 			now: () => Date.now(),
+			emit: (hook, payload) => host.emit(hook, payload),
 		},
 		activeConversations,
 	);
