@@ -106,6 +106,15 @@ function createFakeConversationStore(
 
 function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
 	return {
+		startTurn() {
+			return { started: true, turnId: "fake-turn" };
+		},
+		subscribe() {
+			return () => {};
+		},
+		isActive() {
+			return false;
+		},
 		async handleMessage(input) {
 			for (const event of events) {
 				input.onEvent(event);
@@ -124,6 +133,15 @@ function createCapturingOrchestrator(): SessionOrchestrator & {
 		get received() {
 			return state.received;
 		},
+		startTurn() {
+			return { started: true, turnId: "fake-turn" };
+		},
+		subscribe() {
+			return () => {};
+		},
+		isActive() {
+			return false;
+		},
 		async handleMessage(input) {
 			state.received = input;
 		},
@@ -132,6 +150,15 @@ function createCapturingOrchestrator(): SessionOrchestrator & {
 
 function createThrowingOrchestrator(error: Error): SessionOrchestrator {
 	return {
+		startTurn() {
+			return { started: true, turnId: "fake-turn" };
+		},
+		subscribe() {
+			return () => {};
+		},
+		isActive() {
+			return false;
+		},
 		async handleMessage() {
 			throw error;
 		},

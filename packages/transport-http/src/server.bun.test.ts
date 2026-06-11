@@ -55,6 +55,15 @@ function fakeConversationStore(): ConversationStore {
 
 function fakeOrchestrator(): SessionOrchestrator {
 	return {
+		startTurn() {
+			return { started: true, turnId: "fake-turn" };
+		},
+		subscribe() {
+			return () => {};
+		},
+		isActive() {
+			return false;
+		},
 		async handleMessage() {},
 	};
 }

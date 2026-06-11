@@ -18,6 +18,26 @@ import { createMetricsAccumulator } from "./metrics.js";
 import { buildUserMessage, defaultDispatchPolicy, generateTurnId } from "./pure.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
+// --- Broadcast hub types ---
+
+export interface StartTurnInput {
+	readonly conversationId: string;
+	readonly text: string;
+	readonly modelName?: string;
+	readonly cwd?: string;
+}
+
+export type StartTurnResult =
+	| { readonly started: true; readonly turnId: string }
+	| { readonly started: false; readonly reason: "already-active" };
+
+export type TurnEventListener = (event: AgentEvent) => void;
+
+interface ActiveTurn {
+	buffer: AgentEvent[];
+	turnId: string;
+}
+
 // --- Lifecycle event hooks ---
 
 /** Context carried on turn-lifecycle events, enough to replicate the turn's request prefix. */
@@ -66,11 +86,13 @@ export const cacheWarmHandle: ServiceHandle<WarmService> = defineService<WarmSer
 );
 
 export interface SessionOrchestrator {
+	startTurn(input: StartTurnInput): StartTurnResult;
+	subscribe(conversationId: string, listener: TurnEventListener): () => void;
+	isActive(conversationId: string): boolean;
 	handleMessage(input: {
 		conversationId: string;
 		text: string;
 		onEvent: (event: AgentEvent) => void;
-		signal?: AbortSignal;
 		modelName?: string;
 		cwd?: string;
 	}): Promise<void>;
@@ -114,31 +136,57 @@ export function createSessionOrchestrator(
 	deps: SessionOrchestratorDeps,
 ): SessionOrchestratorBundle {
 	const activeConversations = new Set<string>();
+	const subscribers = new Map<string, Set<TurnEventListener>>();
+	const activeTurns = new Map<string, ActiveTurn>();
 
-	const orchestrator: SessionOrchestrator = {
-		async handleMessage({ conversationId, text, onEvent, signal, modelName, cwd }) {
-			activeConversations.add(conversationId);
+	function emitToHub(conversationId: string, event: AgentEvent): void {
+		const turn = activeTurns.get(conversationId);
+		if (turn !== undefined) {
+			turn.buffer.push(event);
+		}
+		const listeners = subscribers.get(conversationId);
+		if (listeners !== undefined) {
+			for (const listener of listeners) {
+				listener(event);
+			}
+		}
+	}
 
-			const effectiveCwd =
-				cwd !== undefined
-					? cwd
-					: ((await deps.conversationStore.getCwd(conversationId)) ?? undefined);
+	function runTurnDetached(
+		conversationId: string,
+		text: string,
+		modelName: string | undefined,
+		cwd: string | undefined,
+	): void {
+		const turnId = generateTurnId();
+		activeTurns.set(conversationId, { buffer: [], turnId });
+		activeConversations.add(conversationId);
 
-			const payload: TurnLifecyclePayload = {
-				conversationId,
-				...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-				...(modelName !== undefined ? { modelName } : {}),
-			};
+		const effectiveCwdPromise =
+			cwd !== undefined
+				? Promise.resolve(cwd)
+				: deps.conversationStore.getCwd(conversationId).then((c) => c ?? undefined);
+
+		const payloadPromise = effectiveCwdPromise.then((effectiveCwd) => ({
+			conversationId,
+			...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+			...(modelName !== undefined ? { modelName } : {}),
+		}));
+
+		payloadPromise.then((payload) => {
 			deps.emit?.(turnStarted, payload);
+		});
 
+		void (async () => {
 			try {
+				const effectiveCwd = await effectiveCwdPromise;
+
 				if (cwd !== undefined) {
 					await deps.conversationStore.setCwd(conversationId, cwd);
 				}
 
 				const history = await deps.conversationStore.load(conversationId);
 				const userMsg = buildUserMessage(text);
-				const turnId = generateTurnId();
 
 				let provider: ProviderContract;
 				let modelOverride: string | undefined;
@@ -146,7 +194,7 @@ export function createSessionOrchestrator(
 				if (modelName !== undefined && deps.resolveModel !== undefined) {
 					const resolved = deps.resolveModel(modelName);
 					if (resolved === undefined) {
-						onEvent({
+						emitToHub(conversationId, {
 							type: "error",
 							conversationId,
 							turnId,
@@ -172,7 +220,7 @@ export function createSessionOrchestrator(
 
 				const emitAndAccumulate = (event: AgentEvent): void => {
 					metrics.ingest(event);
-					onEvent(event);
+					emitToHub(conversationId, event);
 				};
 
 				const opts: RunTurnInput = {
@@ -187,7 +235,6 @@ export function createSessionOrchestrator(
 						? { providerOpts: { model: modelOverride } satisfies ProviderStreamOptions }
 						: {}),
 					...(turnLogger !== undefined ? { logger: turnLogger } : {}),
-					...(signal !== undefined ? { signal } : {}),
 					...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
 					...(deps.now !== undefined ? { now: deps.now } : {}),
 				};
@@ -200,11 +247,95 @@ export function createSessionOrchestrator(
 				const turnMetrics = metrics.build(turnId);
 				await deps.conversationStore.appendMetrics(conversationId, turnMetrics);
 
-				onEvent({ type: "turn-sealed", conversationId, turnId });
+				emitToHub(conversationId, { type: "turn-sealed", conversationId, turnId });
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				emitToHub(conversationId, {
+					type: "error",
+					conversationId,
+					turnId,
+					message,
+				});
 			} finally {
+				activeTurns.delete(conversationId);
 				activeConversations.delete(conversationId);
-				deps.emit?.(turnSettled, payload);
+				void payloadPromise.then((payload) => {
+					deps.emit?.(turnSettled, payload);
+				});
 			}
+		})();
+	}
+
+	const orchestrator: SessionOrchestrator = {
+		startTurn({ conversationId, text, modelName, cwd }) {
+			if (activeTurns.has(conversationId)) {
+				return { started: false, reason: "already-active" };
+			}
+			runTurnDetached(conversationId, text, modelName, cwd);
+			const turn = activeTurns.get(conversationId);
+			const turnId = turn !== undefined ? turn.turnId : "";
+			return { started: true, turnId };
+		},
+
+		subscribe(conversationId, listener) {
+			let listeners = subscribers.get(conversationId);
+			if (listeners === undefined) {
+				listeners = new Set();
+				subscribers.set(conversationId, listeners);
+			}
+			const turn = activeTurns.get(conversationId);
+			if (turn !== undefined) {
+				const snapshot = [...turn.buffer];
+				listeners.add(listener);
+				for (const event of snapshot) {
+					listener(event);
+				}
+			} else {
+				listeners.add(listener);
+			}
+			return () => {
+				const set = subscribers.get(conversationId);
+				if (set !== undefined) {
+					set.delete(listener);
+					if (set.size === 0) {
+						subscribers.delete(conversationId);
+					}
+				}
+			};
+		},
+
+		isActive(conversationId) {
+			return activeTurns.has(conversationId);
+		},
+
+		async handleMessage({ conversationId, text, onEvent, modelName, cwd }) {
+			const turnInput: StartTurnInput = {
+				conversationId,
+				text,
+				...(modelName !== undefined ? { modelName } : {}),
+				...(cwd !== undefined ? { cwd } : {}),
+			};
+			const result = orchestrator.startTurn(turnInput);
+			if (!result.started) {
+				const errorTurnId = generateTurnId();
+				onEvent({
+					type: "error",
+					conversationId,
+					turnId: errorTurnId,
+					message: "turn already active for this conversation",
+				});
+				return;
+			}
+
+			await new Promise<void>((resolve) => {
+				const unsubscribe = orchestrator.subscribe(conversationId, (event) => {
+					onEvent(event);
+					if (event.type === "turn-sealed" || event.type === "error") {
+						unsubscribe();
+						resolve();
+					}
+				});
+			});
 		},
 	};
 

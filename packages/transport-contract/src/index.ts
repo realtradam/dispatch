@@ -290,10 +290,46 @@ export interface ChatErrorMessage {
 }
 
 /**
+ * Client → server: start WATCHING a conversation's live turn events WITHOUT
+ * sending a message. This is what makes a turn viewable independently of who
+ * started it — a second device (multi-client handoff) or a client that reloaded
+ * mid-turn subscribes to receive the in-flight turn.
+ *
+ * On subscribe the server replays the CURRENT in-flight turn's events so far as
+ * `chat.delta` messages (so a late-joiner sees the whole running turn from its
+ * `turn-start`), then streams subsequent live events. If no turn is in-flight,
+ * nothing is replayed (the client relies on `GET /conversations/:id` history).
+ * A client infers "generating" from a replayed `turn-start` with no matching
+ * `done`/`turn-sealed` yet. Idempotent per `(connection, conversationId)`.
+ *
+ * NOTE: `chat.send` auto-subscribes the sending connection, so a client only needs
+ * `chat.subscribe` for conversations it is viewing but did not send to.
+ */
+export interface ChatSubscribeMessage {
+	readonly type: "chat.subscribe";
+	readonly conversationId: string;
+}
+
+/**
+ * Client → server: stop watching a conversation's turn events on this connection.
+ * Does NOT stop or affect the turn itself (the turn runs to completion regardless
+ * of subscribers). The server also drops all of a connection's subscriptions when
+ * the socket closes — again WITHOUT aborting any in-flight turn.
+ */
+export interface ChatUnsubscribeMessage {
+	readonly type: "chat.unsubscribe";
+	readonly conversationId: string;
+}
+
+/**
  * Every client → server WS message: surface ops (`@dispatch/ui-contract`) + chat
  * ops. A server discriminates on `type`.
  */
-export type WsClientMessage = SurfaceClientMessage | ChatSendMessage;
+export type WsClientMessage =
+	| SurfaceClientMessage
+	| ChatSendMessage
+	| ChatSubscribeMessage
+	| ChatUnsubscribeMessage;
 
 /**
  * Every server → client WS message: surface ops (`@dispatch/ui-contract`) + chat

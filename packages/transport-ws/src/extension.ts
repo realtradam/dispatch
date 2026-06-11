@@ -15,12 +15,12 @@ import type { WsClientMessage, WsServerMessage } from "@dispatch/transport-contr
 import { manifest } from "./manifest.js";
 import { catalogMessage, routeClientMessage, subKey } from "./router.js";
 
-/** Active provider subscriptions + chat abort controller for a single WS connection. */
+/** Active provider subscriptions + chat subscription disposers for a single WS connection. */
 interface ConnectionState {
 	readonly subs: Set<string>;
 	readonly providerDisposers: Map<string, () => void>;
-	/** AbortController cancelled when the socket closes — aborts in-flight turns. */
-	readonly abortController: AbortController;
+	/** Per-conversation chat subscription disposers (orchestrator.subscribe). */
+	readonly chatSubscriptions: Map<string, () => void>;
 }
 
 type Ws = Bun.ServerWebSocket<ConnectionState>;
@@ -42,6 +42,21 @@ export function createTransportWsExtension(): Extension {
 				} catch {
 					// Connection may have been dropped; swallow.
 				}
+			}
+
+			/**
+			 * Ensure this connection is subscribed to a conversation's chat events.
+			 * Idempotent — no-op if already subscribed. The orchestrator replays
+			 * buffered events to new subscribers (late-join), then streams live.
+			 */
+			function ensureChatSubscribed(ws: Ws, state: ConnectionState, conversationId: string): void {
+				if (state.chatSubscriptions.has(conversationId)) {
+					return;
+				}
+				const unsubscribe = orchestrator.subscribe(conversationId, (event) => {
+					send(ws, { type: "chat.delta", event });
+				});
+				state.chatSubscriptions.set(conversationId, unsubscribe);
 			}
 
 			function subscribeToProvider(
@@ -98,48 +113,13 @@ export function createTransportWsExtension(): Extension {
 				}
 			}
 
-			/**
-			 * Drive one chat turn through the orchestrator. Error-isolated:
-			 * a throw/reject sends a chat.error to the socket and never kills
-			 * the connection or affects surface ops / other connections.
-			 */
-			async function handleChatTurn(
-				ws: Ws,
-				state: ConnectionState,
-				conversationId: string | undefined,
-				text: string,
-				model: string | undefined,
-				cwd: string | undefined,
-			): Promise<void> {
-				const resolvedId = conversationId ?? crypto.randomUUID();
-				try {
-					await orchestrator.handleMessage({
-						conversationId: resolvedId,
-						text,
-						...(model !== undefined ? { modelName: model } : {}),
-						...(cwd !== undefined ? { cwd } : {}),
-						signal: state.abortController.signal,
-						onEvent(event) {
-							send(ws, { type: "chat.delta", event });
-						},
-					});
-				} catch (err: unknown) {
-					const message = err instanceof Error ? err.message : "unknown orchestrator error";
-					send(ws, { type: "chat.error", conversationId: resolvedId, message });
-					logger.warn?.("transport-ws: chat turn failed", {
-						conversationId: resolvedId,
-						error: message,
-					});
-				}
-			}
-
 			server = Bun.serve<ConnectionState>({
 				port,
 				fetch(req, srv) {
 					const initial: ConnectionState = {
 						subs: new Set(),
 						providerDisposers: new Map(),
-						abortController: new AbortController(),
+						chatSubscriptions: new Map(),
 					};
 					if (srv.upgrade(req, { data: initial })) return;
 					return new Response("expected websocket", { status: 426 });
@@ -233,20 +213,42 @@ export function createTransportWsExtension(): Extension {
 							}
 
 							case "chat": {
-								// Fire-and-forget the turn; errors are caught inside handleChatTurn.
 								const resolvedId = result.conversationId ?? crypto.randomUUID();
-								logger.info?.("transport-ws: chat.send accepted", {
+								// Auto-subscribe the sender so it sees the turn's events.
+								ensureChatSubscribed(ws, state, resolvedId);
+								// Start the turn detached from this connection.
+								const startResult = orchestrator.startTurn({
 									conversationId: resolvedId,
-									model: result.model ?? null,
+									text: result.message,
+									...(result.model !== undefined ? { modelName: result.model } : {}),
+									...(result.cwd !== undefined ? { cwd: result.cwd } : {}),
 								});
-								void handleChatTurn(
-									ws,
-									state,
-									result.conversationId,
-									result.message,
-									result.model,
-									result.cwd,
-								);
+								if (!startResult.started) {
+									send(ws, {
+										type: "chat.error",
+										conversationId: resolvedId,
+										message: "a turn is already generating for this conversation",
+									});
+								} else {
+									logger.info?.("transport-ws: chat.send accepted", {
+										conversationId: resolvedId,
+										model: result.model ?? null,
+									});
+								}
+								break;
+							}
+
+							case "chat-subscribe": {
+								ensureChatSubscribed(ws, state, result.conversationId);
+								break;
+							}
+
+							case "chat-unsubscribe": {
+								const dispose = state.chatSubscriptions.get(result.conversationId);
+								if (dispose) {
+									dispose();
+									state.chatSubscriptions.delete(result.conversationId);
+								}
 								break;
 							}
 
@@ -272,11 +274,12 @@ export function createTransportWsExtension(): Extension {
 					close(ws) {
 						const state = ws.data;
 						if (state) {
-							// Abort any in-flight chat turns.
-							if (!state.abortController.signal.aborted) {
-								logger.debug("transport-ws: in-flight turn aborted (socket closed)");
+							// Dispose all chat subscriptions (does NOT abort turns).
+							for (const dispose of state.chatSubscriptions.values()) {
+								dispose();
 							}
-							state.abortController.abort();
+							state.chatSubscriptions.clear();
+							// Dispose surface provider subscriptions.
 							for (const dispose of state.providerDisposers.values()) {
 								dispose();
 							}

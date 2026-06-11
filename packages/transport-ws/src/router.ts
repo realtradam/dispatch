@@ -8,7 +8,12 @@
  */
 
 import type { SurfaceContext, SurfaceRegistry } from "@dispatch/surface-registry";
-import type { ChatSendMessage, WsClientMessage } from "@dispatch/transport-contract";
+import type {
+	ChatSendMessage,
+	ChatSubscribeMessage,
+	ChatUnsubscribeMessage,
+	WsClientMessage,
+} from "@dispatch/transport-contract";
 import type { SurfaceServerMessage } from "@dispatch/ui-contract";
 
 // ── Result types ────────────────────────────────────────────────────────────
@@ -49,8 +54,25 @@ export interface ChatRouteError {
 	readonly errorMessage: string;
 }
 
+/** The effect a chat.subscribe should produce. */
+export interface ChatSubscribeRouteResult {
+	readonly kind: "chat-subscribe";
+	readonly conversationId: string;
+}
+
+/** The effect a chat.unsubscribe should produce. */
+export interface ChatUnsubscribeRouteResult {
+	readonly kind: "chat-unsubscribe";
+	readonly conversationId: string;
+}
+
 /** The effect any client WS message should produce. */
-export type RouteResult = SurfaceRouteResult | ChatRouteResult | ChatRouteError;
+export type RouteResult =
+	| SurfaceRouteResult
+	| ChatRouteResult
+	| ChatRouteError
+	| ChatSubscribeRouteResult
+	| ChatUnsubscribeRouteResult;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -90,6 +112,10 @@ export function routeClientMessage(
 			return handleInvoke(registry, msg.surfaceId, msg.actionId, msg.payload, msg.conversationId);
 		case "chat.send":
 			return handleChatSend(msg);
+		case "chat.subscribe":
+			return handleChatSubscribe(msg);
+		case "chat.unsubscribe":
+			return handleChatUnsubscribe(msg);
 	}
 }
 
@@ -110,6 +136,14 @@ function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError 
 		model: msg.model,
 		cwd: msg.cwd,
 	};
+}
+
+function handleChatSubscribe(msg: ChatSubscribeMessage): ChatSubscribeRouteResult {
+	return { kind: "chat-subscribe", conversationId: msg.conversationId };
+}
+
+function handleChatUnsubscribe(msg: ChatUnsubscribeMessage): ChatUnsubscribeRouteResult {
+	return { kind: "chat-unsubscribe", conversationId: msg.conversationId };
 }
 
 // ── Per-message handlers ────────────────────────────────────────────────────

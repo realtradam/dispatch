@@ -374,6 +374,34 @@ describe("routeClientMessage", () => {
 			expect(result.errorMessage).toContain("non-empty string");
 		});
 	});
+
+	describe("chat.subscribe", () => {
+		it("routes chat.subscribe → { kind: 'chat-subscribe', conversationId }", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.subscribe",
+				conversationId: "conv-abc",
+			});
+
+			expect(result).toEqual({ kind: "chat-subscribe", conversationId: "conv-abc" });
+		});
+	});
+
+	describe("chat.unsubscribe", () => {
+		it("routes chat.unsubscribe → { kind: 'chat-unsubscribe', conversationId }", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.unsubscribe",
+				conversationId: "conv-abc",
+			});
+
+			expect(result).toEqual({ kind: "chat-unsubscribe", conversationId: "conv-abc" });
+		});
+	});
 });
 
 describe("catalogMessage", () => {
