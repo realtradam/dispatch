@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **881 vitest + 135 bun = 1016 tests**.
+`tsc -b` EXIT 0 · biome clean · **891 vitest + transport bun green**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -253,6 +253,35 @@ persisted `TurnMetrics`.
   carriers agree; "current" = latest turn's value.
 - [x] **FE courier handoff:** `frontend-context-size-handoff.md` (user couriers to
   `../dispatch-web`).
+
+## Turn continuity — detached turns + multi-client live view (DONE)
+Design: `notes/turn-continuity-design.md`. FE courier: `frontend-turn-continuity-handoff.md`.
+Problem (code-traced): a turn's lifetime was bound to the WS connection — `transport-ws` aborted
+the in-flight turn on socket close, so a backgrounded/reloaded mobile browser killed generation.
+Principle enforced: **the FE is only a control interface; the AI runs independent of it**, and
+**multiple clients may watch the same conversation** (multi-device handoff).
+- **Decisions (locked):** broadcast hub lives in the CORE (`session-orchestrator`), not a
+  transport; additive `SessionOrchestrator` handle (keep `handleMessage`); persist-at-seal kept,
+  per-step R1 deferred; late-join served by an in-memory in-flight buffer; subscribers persist
+  per-conversation independent of turns; no concurrent-send arbitration; no explicit stop op.
+- **Contract (orchestrator):** `@dispatch/transport-contract` `0.6.0→0.7.0` — additive WS ops
+  `chat.subscribe`/`chat.unsubscribe` on `WsClientMessage` (events still arrive as `chat.delta`).
+- **Wave 1 — `session-orchestrator`:** detached per-conversation turn ownership + broadcast;
+  `startTurn`/`subscribe`/`isActive` added to the handle; `handleMessage` → convenience wrapper
+  (dropped `signal`). **Two-map model** (`subscribers` persistent + `activeTurns` buffer) — the
+  fix for the live-found bug where pre-turn subscribers were dropped. 63 tests.
+- **Wave 2 (parallel) — `transport-ws`** (fan-out: per-connection chat-subscription map;
+  `chat.send` auto-subscribes sender + `startTurn`; new ops in pure `router.ts`; `close` drops
+  subs but NEVER aborts a turn; removed the turn `AbortController`) + **`transport-http`** (only
+  test fakes updated for the 3 new methods; runtime unchanged). host-bin untouched.
+- **LIVE-VERIFIED against flash** (2-client WS test, `/tmp/ws_multi.ts`): (S1) two clients both
+  stream a turn; closing the SENDER mid-turn → the other keeps receiving through `done` and the
+  turn persists (1197 chars) — AI kept going independent of the interface; (S2) a client joining
+  mid-turn gets `turn-start` replayed + the rest live. `RESULT OVERALL: OK`.
+- **Recovery (scar tissue):** first Wave-1 impl stored listeners INSIDE the per-turn hub and
+  `startTurn` made a fresh empty-listener hub → every pre-turn subscriber dropped; live test got
+  zero deltas though the turn ran+persisted. Caught by live-verify (unit test had subscribed
+  AFTER start, masking it). Fixed via the persistent-subscribers / per-turn-buffer split.
 
 ## Open items
 - **Context window LIMIT (next, sibling of context size):** expose the selected model's max

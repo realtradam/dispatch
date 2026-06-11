@@ -3,6 +3,8 @@ export { manifest } from "./manifest.js";
 export type {
 	ChatRouteError,
 	ChatRouteResult,
+	ChatSubscribeRouteResult,
+	ChatUnsubscribeRouteResult,
 	RouteResult,
 	SurfaceRouteResult,
 } from "./router.js";
