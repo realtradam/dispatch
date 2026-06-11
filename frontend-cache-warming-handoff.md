@@ -63,3 +63,29 @@ track cross-turn state there:
   already shows it — just relabel/position as desired.
 
 Types: `@dispatch/transport-contract` `WarmResponse` now carries `expectedCacheRate` (additive).
+
+## CR-3 — DONE (next-warm timestamps + manual-warm resets the timer)
+Both asks from `backend-handoff-cache-warming-timer.md` are implemented (commit `bfbad3a`). No
+contract bump (uses the `custom` escape hatch, as you suggested).
+
+**Ask 1 — authoritative timestamps on the `cache-warming` surface.** The conversation-scoped spec now
+includes a `custom` field:
+```ts
+{ kind: "custom", rendererId: "cache-warming-timer",
+  payload: { nextWarmAt: number | null, lastWarmAt: number | null } }   // epoch-ms
+```
+- `nextWarmAt` = epoch-ms the next AUTOMATIC warm will fire, or `null` when not scheduled (disabled,
+  or a turn is generating so the timer is cancelled). Drive your countdown off this directly.
+- `lastWarmAt` = epoch-ms of the most recent completed warm, or `null` if none. Use its changes for
+  the history. (The hit-% for that warm is the `last cache rate` / `cache retention` stats in the
+  same spec.)
+- Pushed via the normal surface `update` on every change (warm complete, toggle, interval, turn
+  start/settle). You can drop the FE-side best-effort countdown anchor.
+
+**Ask 2 — a manual `POST /chat/warm` now resets the cycle + refreshes the surface.** Implemented via
+an inversion (no new endpoint, no change to the `/chat/warm` request/response): the backend's warm
+service emits an internal event that the cache-warming extension consumes, so a manual warm now
+re-arms the automatic timer (new `nextWarmAt`), updates `lastPct`/`lastWarmAt`, and **pushes a surface
+`update`**. So after a "Warm now" click you'll get an authoritative surface `update` — you can drop the
+workaround of reading the % from the HTTP response (though the HTTP `WarmResponse` is still returned and
+fine to use for immediate feedback). Live-verified against Claude haiku.
