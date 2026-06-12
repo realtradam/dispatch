@@ -7,13 +7,16 @@ export type {
 	ParseResult,
 	SinceSeqResult,
 	WarmBodyParsed,
+	WindowParamResult,
 } from "./logic.js";
 export {
 	computeCachePct,
 	isParseError,
 	isSinceSeqError,
+	isWindowParamError,
 	parseChatBody,
 	parseSinceSeq,
+	parseWindowParam,
 	serializeEventLine,
 } from "./logic.js";
 export type {

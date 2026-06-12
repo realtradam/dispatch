@@ -17,9 +17,11 @@ import {
 	computeExpectedCacheRate,
 	isParseError,
 	isSinceSeqError,
+	isWindowParamError,
 	parseChatBody,
 	parseSinceSeq,
 	parseWarmBody,
+	parseWindowParam,
 	serializeEventLine,
 } from "./logic.js";
 import {
@@ -147,8 +149,43 @@ export function createApp(opts: CreateServerOptions): Hono {
 			return c.json({ error: sinceSeqResult.error }, 400);
 		}
 
+		// `limit` / `beforeSeq` are optional positive-integer history-window
+		// params. The store is deliberately forgiving (a 0/negative bound is
+		// treated as ABSENT), so we MUST reject malformed values here and never
+		// forward an invalid window.
+		const beforeSeqResult = parseWindowParam(c.req.query("beforeSeq"), "beforeSeq");
+		if (isWindowParamError(beforeSeqResult)) {
+			log.warn("conversations: invalid beforeSeq", {
+				conversationId,
+				error: beforeSeqResult.error,
+			});
+			return c.json({ error: beforeSeqResult.error }, 400);
+		}
+		const limitResult = parseWindowParam(c.req.query("limit"), "limit");
+		if (isWindowParamError(limitResult)) {
+			log.warn("conversations: invalid limit", {
+				conversationId,
+				error: limitResult.error,
+			});
+			return c.json({ error: limitResult.error }, 400);
+		}
+
+		// Include only the fields actually provided (exactOptionalPropertyTypes),
+		// and omit the window argument entirely when neither was given — keeping
+		// the pre-windowing call shape byte-identical for existing callers.
+		const window: { readonly beforeSeq?: number; readonly limit?: number } | undefined =
+			beforeSeqResult !== undefined || limitResult !== undefined
+				? {
+						...(beforeSeqResult !== undefined ? { beforeSeq: beforeSeqResult } : {}),
+						...(limitResult !== undefined ? { limit: limitResult } : {}),
+					}
+				: undefined;
+
 		try {
-			const chunks = await opts.conversationStore.loadSince(conversationId, sinceSeqResult);
+			const chunks =
+				window !== undefined
+					? await opts.conversationStore.loadSince(conversationId, sinceSeqResult, window)
+					: await opts.conversationStore.loadSince(conversationId, sinceSeqResult);
 			const latestSeq =
 				chunks.length > 0 ? (chunks[chunks.length - 1]?.seq ?? sinceSeqResult) : sinceSeqResult;
 			log.info("conversations: read", {

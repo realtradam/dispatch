@@ -4,8 +4,10 @@ import {
 	computeExpectedCacheRate,
 	isParseError,
 	isSinceSeqError,
+	isWindowParamError,
 	parseChatBody,
 	parseSinceSeq,
+	parseWindowParam,
 	serializeEventLine,
 } from "./logic.js";
 
@@ -170,6 +172,58 @@ describe("parseSinceSeq", () => {
 	it("returns ParseError for negative integer", () => {
 		const result = parseSinceSeq("-1");
 		expect(isSinceSeqError(result)).toBe(true);
+	});
+});
+
+describe("parseWindowParam", () => {
+	it("returns undefined (absent) when undefined", () => {
+		expect(parseWindowParam(undefined, "limit")).toBeUndefined();
+	});
+
+	it("returns undefined (absent) when empty string", () => {
+		expect(parseWindowParam("", "limit")).toBeUndefined();
+	});
+
+	it("parses a valid positive integer", () => {
+		expect(parseWindowParam("1", "limit")).toBe(1);
+		expect(parseWindowParam("42", "beforeSeq")).toBe(42);
+	});
+
+	it("returns ParseError for zero (store would treat it as absent)", () => {
+		const result = parseWindowParam("0", "limit");
+		expect(isWindowParamError(result)).toBe(true);
+		if (isWindowParamError(result)) {
+			expect(result.error).toContain("limit");
+			expect(result.error).toContain("positive integer");
+		}
+	});
+
+	it("returns ParseError for a negative integer", () => {
+		expect(isWindowParamError(parseWindowParam("-1", "limit"))).toBe(true);
+	});
+
+	it("returns ParseError for a non-integer", () => {
+		expect(isWindowParamError(parseWindowParam("1.5", "beforeSeq"))).toBe(true);
+	});
+
+	it("returns ParseError for a non-numeric string", () => {
+		const result = parseWindowParam("abc", "beforeSeq");
+		expect(isWindowParamError(result)).toBe(true);
+		if (isWindowParamError(result)) {
+			expect(result.error).toContain("beforeSeq");
+		}
+	});
+
+	it("names the param in the error message", () => {
+		const limit = parseWindowParam("0", "limit");
+		const before = parseWindowParam("0", "beforeSeq");
+		if (isWindowParamError(limit)) expect(limit.error).toContain("limit");
+		if (isWindowParamError(before)) expect(before.error).toContain("beforeSeq");
+	});
+
+	it("isWindowParamError is false for absent and for a valid number", () => {
+		expect(isWindowParamError(undefined)).toBe(false);
+		expect(isWindowParamError(5)).toBe(false);
 	});
 });
 
