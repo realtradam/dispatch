@@ -353,6 +353,24 @@ derives `hasOlder` from `chunks[0].seq > 1`.
   DB) — recipe fixed in §8 + above. (3) Violated the bracket trick once (`pkill -f 'cr5-data'`
   self-matched → killed parent shell, timeout-with-no-output); the existing §8 rule stands.
 
+## Reasoning effort (current milestone)
+User-gated calls: canonical term **reasoning effort** (GLOSSARY); ladder `low|medium|high|xhigh|max`
+(Anthropic-driven, includes xhigh/max); scope = **(c)** persisted per-conversation + per-turn
+`ChatRequest.reasoningEffort` override; resolution default **`high`**; provider picks sensible
+budget_tokens; `../claude` orchestrated DIRECTLY (mode A); CLI `--effort` now.
+- [x] **Wave 0 (orchestrator, contracts):** `ReasoningEffort` in `@dispatch/wire` (`0.6.1→0.7.0`);
+  `ProviderStreamOptions.reasoningEffort` (kernel contract; runtime untouched — providerOpts is
+  forwarded verbatim); `ChatRequest.reasoningEffort` + `ReasoningEffortResponse`/
+  `SetReasoningEffortRequest` GET/PUT types (`@dispatch/transport-contract` `0.10.0→0.11.0`);
+  glossary entry. typecheck + biome clean.
+- [ ] **Wave 1 (parallel):** `conversation-store` get/set persisted effort (mirror cwd);
+  `provider-anthropic` (../claude) level→thinking.budget_tokens mapping; `cli` `--effort` flag.
+- [ ] **Wave 2:** `session-orchestrator` — resolution chain (turn override → stored → `high`),
+  thread into providerOpts via `StartTurnInput.reasoningEffort`.
+- [ ] **Wave 3:** `transport-http` (validate `reasoningEffort`, thread to startTurn, GET/PUT
+  `/conversations/:id/reasoning-effort`) + `transport-ws` (thread on `chat.send`).
+- [ ] Live-verify vs claude; FE courier handoff.
+
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max
   context-window token limit so the FE can render `contextSize / limit` (e.g. `1286 / 200000`).

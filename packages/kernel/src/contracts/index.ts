@@ -95,6 +95,7 @@ export type {
 	ProviderStreamOptions,
 	ProviderToolCallEvent,
 	ReasoningDeltaEvent,
+	ReasoningEffort,
 	TextDeltaEvent,
 	Usage,
 	UsageEvent,
