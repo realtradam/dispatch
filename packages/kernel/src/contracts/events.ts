@@ -10,6 +10,7 @@ export type {
 	StatusEvent,
 	TurnDoneEvent,
 	TurnErrorEvent,
+	TurnInputEvent,
 	TurnReasoningDeltaEvent,
 	TurnSealedEvent,
 	TurnStartEvent,
