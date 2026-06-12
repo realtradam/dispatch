@@ -363,13 +363,25 @@ budget_tokens; `../claude` orchestrated DIRECTLY (mode A); CLI `--effort` now.
   forwarded verbatim); `ChatRequest.reasoningEffort` + `ReasoningEffortResponse`/
   `SetReasoningEffortRequest` GET/PUT types (`@dispatch/transport-contract` `0.10.0→0.11.0`);
   glossary entry. typecheck + biome clean.
-- [ ] **Wave 1 (parallel):** `conversation-store` get/set persisted effort (mirror cwd);
-  `provider-anthropic` (../claude) level→thinking.budget_tokens mapping; `cli` `--effort` flag.
-- [ ] **Wave 2:** `session-orchestrator` — resolution chain (turn override → stored → `high`),
-  thread into providerOpts via `StartTurnInput.reasoningEffort`.
-- [ ] **Wave 3:** `transport-http` (validate `reasoningEffort`, thread to startTurn, GET/PUT
-  `/conversations/:id/reasoning-effort`) + `transport-ws` (thread on `chat.send`).
-- [ ] Live-verify vs claude; FE courier handoff.
+- [x] **Wave 1 (parallel ×3, disjoint):** `conversation-store` get/setReasoningEffort (own key
+  space, mirrors cwd; +12 tests); `provider-anthropic` (../claude commit `c0835a4`, mode A summon
+  with `--dir ../claude`, contract excerpt INLINED per the cross-`--dir` hang rule) —
+  `REASONING_EFFORT_BUDGETS` 4096/10240/16384/32768/65536, raises max_tokens above budget, strips
+  temperature when thinking on, absent → byte-stable body (+12 tests); `cli` `--effort` flag,
+  parse-validated, body key omitted when unset (+8 tests).
+- [x] **Wave 2:** `session-orchestrator` — exported pure `resolveReasoningEffort` (override →
+  stored → `"high"`), additive `StartTurnInput.reasoningEffort`, providerOpts always stamped,
+  **warm() parity** (same resolved effort as a real turn — prompt-cache safe), own fakes fixed
+  (+9 tests).
+- [x] **Wave 3 (parallel ×2):** `transport-http` — `/chat` validation (400 names valid levels,
+  orchestrator never sees bad input), threads to startTurn, GET/PUT
+  `/conversations/:id/reasoning-effort` mirroring cwd endpoints, own fakes fixed; `transport-ws` —
+  `chat.send` threading + validation (+3 tests).
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **993 vitest + 189 bun** green; all agents in-lane.
+  Commits: arch-rewrite `35197ed` (contracts) + `020e051` (impl); ../claude `c0835a4`.
+- [ ] Live-verify vs claude (thinking deltas streamed at xhigh; persisted PUT honored next turn).
+- [ ] FE courier handoff (`frontend-reasoning-effort-handoff.md`): ChatRequest field + GET/PUT
+  endpoints + ladder.
 
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max
