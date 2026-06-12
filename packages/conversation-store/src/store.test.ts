@@ -499,6 +499,94 @@ describe("ConversationStore", () => {
 	});
 });
 
+describe("ConversationStore loadSince windowing", () => {
+	let storage: StorageNamespace;
+
+	beforeEach(() => {
+		storage = createMemoryStorage();
+	});
+
+	// Append `count` single-chunk user messages so seq runs 1..count, gap-free.
+	async function seed(store: ReturnType<typeof createConversationStore>, count: number) {
+		const messages: ChatMessage[] = [];
+		for (let i = 1; i <= count; i++) {
+			messages.push({ role: "user", chunks: [{ type: "text", text: `m${i}` }] });
+		}
+		await store.append("conv1", messages);
+	}
+
+	it("limit returns the newest N of the selection, ascending by seq", async () => {
+		const store = createConversationStore(storage);
+		await seed(store, 5);
+		const chunks = await store.loadSince("conv1", 0, { limit: 2 });
+		expect(chunks.map((c) => c.seq)).toEqual([4, 5]);
+	});
+
+	it("limit >= selection size returns the whole selection (exact, not truncated)", async () => {
+		const store = createConversationStore(storage);
+		await seed(store, 3);
+		const exactlyAll = await store.loadSince("conv1", 0, { limit: 3 });
+		expect(exactlyAll.map((c) => c.seq)).toEqual([1, 2, 3]);
+		const overAll = await store.loadSince("conv1", 0, { limit: 99 });
+		expect(overAll.map((c) => c.seq)).toEqual([1, 2, 3]);
+	});
+
+	it("beforeSeq bounds the selection exclusively (seq < beforeSeq)", async () => {
+		const store = createConversationStore(storage);
+		await seed(store, 5);
+		const chunks = await store.loadSince("conv1", 0, { beforeSeq: 3 });
+		expect(chunks.map((c) => c.seq)).toEqual([1, 2]);
+	});
+
+	it("sinceSeq + beforeSeq combine to sinceSeq < seq < beforeSeq", async () => {
+		const store = createConversationStore(storage);
+		await seed(store, 6);
+		const chunks = await store.loadSince("conv1", 2, { beforeSeq: 5 });
+		expect(chunks.map((c) => c.seq)).toEqual([3, 4]);
+	});
+
+	it("beforeSeq + limit: newest N below the bound, ascending (page older history in)", async () => {
+		const store = createConversationStore(storage);
+		await seed(store, 8);
+		const chunks = await store.loadSince("conv1", 0, { beforeSeq: 6, limit: 2 });
+		expect(chunks.map((c) => c.seq)).toEqual([4, 5]);
+	});
+
+	it("empty selection returns [] (beforeSeq=1, and sinceSeq past the tail)", async () => {
+		const store = createConversationStore(storage);
+		await seed(store, 4);
+		expect(await store.loadSince("conv1", 0, { beforeSeq: 1 })).toEqual([]);
+		expect(await store.loadSince("conv1", 4, { limit: 3 })).toEqual([]);
+	});
+
+	it("non-positive / non-integer limit and beforeSeq are treated as absent", async () => {
+		const store = createConversationStore(storage);
+		await seed(store, 4);
+		const all = [1, 2, 3, 4];
+		expect((await store.loadSince("conv1", 0, { limit: 0 })).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", 0, { limit: -2 })).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", 0, { limit: 1.5 })).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", 0, { beforeSeq: 0 })).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", 0, { beforeSeq: -3 })).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", 0, { beforeSeq: 2.7 })).map((c) => c.seq)).toEqual(all);
+	});
+
+	it("window omitted is identical to today's behavior (regression guard)", async () => {
+		const store = createConversationStore(storage);
+		await seed(store, 5);
+		const base = await store.loadSince("conv1", 1);
+		const withEmptyWindow = await store.loadSince("conv1", 1, {});
+		// A caller whose window fields happen to be undefined (e.g. unset query
+		// params) — modelled as an optional-field record, not explicit `undefined`
+		// literals (which exactOptionalPropertyTypes rejects on the contract).
+		const undefinedFieldsWindow: { beforeSeq?: number; limit?: number } = {};
+		const withUndefinedFields = await store.loadSince("conv1", 1, undefinedFieldsWindow);
+		expect(base.map((c) => c.seq)).toEqual([2, 3, 4, 5]);
+		expect(withEmptyWindow).toEqual(base);
+		expect(withUndefinedFields).toEqual(base);
+	});
+});
+
 describe("ConversationStore metrics", () => {
 	let storage: StorageNamespace;
 

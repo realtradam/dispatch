@@ -124,11 +124,17 @@ export interface ChatMessage {
 
 /**
  * A persisted chunk plus its sync metadata. The append-only conversation log
- * stamps every chunk with a monotonic, gap-free, per-conversation `seq` (the
- * sync cursor, assigned in append order) and records the `role` of the message
- * it belongs to. This makes a flat seq-ordered stream both incrementally
- * syncable ("give me chunks after seq N") and regroupable into messages by the
- * client. `chunk` is the content unit — `Chunk` carries no storage/sync cursor
+ * stamps every chunk with a **1-based**, monotonic, gap-free, per-conversation
+ * `seq` (the sync cursor, assigned in append order) and records the `role` of
+ * the message it belongs to. This makes a flat seq-ordered stream both
+ * incrementally syncable ("give me chunks after seq N") and regroupable into
+ * messages by the client.
+ *
+ * The 1-based start is a CONTRACTUAL GUARANTEE (not an implementation detail):
+ * a conversation's first chunk is always `seq === 1` and numbering never skips,
+ * so a client holding only a windowed suffix of the log can derive "older
+ * chunks exist server-side" purely from `oldestLoaded.seq > 1` — no separate
+ * has-older flag is needed (or provided). `chunk` is the content unit — `Chunk` carries no storage/sync cursor
  * (`seq` lives here on the envelope, not on the chunk, since it is assigned by
  * the store and the provider has no use for it). A chunk MAY still carry
  * generation provenance assigned at production time (e.g. a tool chunk's

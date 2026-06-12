@@ -23,9 +23,33 @@ import { reconcileWithReport } from "./reconcile.js";
 export interface ConversationStore {
 	readonly append: (conversationId: string, messages: readonly ChatMessage[]) => Promise<void>;
 	readonly load: (conversationId: string) => Promise<ChatMessage[]>;
+	/**
+	 * Read the conversation's persisted chunks as a SELECTION + optional WINDOW,
+	 * ascending by seq. The raw append-order log; NOT reconciled (a dangling
+	 * tool-call is returned as-is — repair is a turn-path concern).
+	 *
+	 * - **Selection** — `sinceSeq` is an exclusive lower bound (`seq > sinceSeq`;
+	 *   omitted/`0`/non-positive/non-integer = from the start). When
+	 *   `window.beforeSeq` is given it is an exclusive upper bound
+	 *   (`seq < beforeSeq`). Together: `sinceSeq < seq < beforeSeq`.
+	 * - **Window** — `window.limit` returns only the NEWEST `limit` chunks of the
+	 *   selection; the result STAYS ASCENDING by seq. A selection with ≤ `limit`
+	 *   chunks is returned whole (exact, not truncated).
+	 * - **Omitted = unchanged** — `window` absent (or both its fields undefined)
+	 *   is byte-identical to the pre-windowing behavior, so existing callers that
+	 *   pass no third argument are unaffected.
+	 * - **Garbage-in is forgiving** — a non-positive or non-integer `limit` (or
+	 *   `beforeSeq`) is treated as ABSENT (full selection); this method never
+	 *   throws on bad window input. The transport validates and 400s upstream.
+	 *
+	 * Seq numbering is 1-based and gap-free, so a client derives "older chunks
+	 * exist" purely from the oldest returned `seq > 1`; there is deliberately no
+	 * `earliestSeq`/high-water-mark API.
+	 */
 	readonly loadSince: (
 		conversationId: string,
 		sinceSeq?: number,
+		window?: { readonly beforeSeq?: number; readonly limit?: number },
 	) => Promise<readonly StoredChunk[]>;
 	readonly appendMetrics: (conversationId: string, metrics: TurnMetrics) => Promise<void>;
 	readonly loadMetrics: (conversationId: string) => Promise<readonly TurnMetrics[]>;
@@ -36,6 +60,16 @@ export interface ConversationStore {
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
+
+/**
+ * Coerce a window bound to a positive integer, or `undefined` (= absent) for any
+ * non-positive / non-integer / undefined input. Keeps `loadSince` total.
+ */
+function positiveInt(value: number | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isInteger(value) || value <= 0) return undefined;
+	return value;
+}
 
 interface PersistedChunkEntry {
 	readonly chunk: Chunk;
@@ -118,21 +152,30 @@ export function createConversationStore(
 			return repaired;
 		},
 
-		async loadSince(conversationId, sinceSeq) {
+		async loadSince(conversationId, sinceSeq, window) {
 			const prefix = chunkPrefix(conversationId);
 			const keys = await storage.keys(prefix);
 			const sorted = [...keys].sort();
 
 			const result: StoredChunk[] = [];
 			const minSeq = sinceSeq ?? 0;
+			// Forgiving: a non-positive / non-integer bound is treated as ABSENT.
+			const beforeSeq = positiveInt(window?.beforeSeq);
+			const limit = positiveInt(window?.limit);
 
 			for (const key of sorted) {
 				const seq = parseSeq(key.split(":").pop() ?? null);
 				if (seq <= minSeq) continue;
+				if (beforeSeq !== undefined && seq >= beforeSeq) continue;
 				const value = await storage.get(key);
 				if (value === null) continue;
 				const entry = JSON.parse(value) as PersistedChunkEntry;
 				result.push({ seq, role: entry.role, chunk: entry.chunk });
+			}
+
+			// Window: keep only the NEWEST `limit` chunks, still ascending by seq.
+			if (limit !== undefined && result.length > limit) {
+				return result.slice(result.length - limit);
 			}
 
 			return result;

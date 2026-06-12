@@ -86,10 +86,19 @@ function createFakeConversationStore(
 		async load() {
 			return [];
 		},
-		async loadSince(conversationId, sinceSeq) {
+		async loadSince(conversationId, sinceSeq, window) {
 			const chunks = store.get(conversationId) ?? [];
 			const minSeq = sinceSeq ?? 0;
-			return chunks.filter((c) => c.seq > minSeq);
+			const beforeSeq = window?.beforeSeq;
+			const limit = window?.limit;
+			const selected = chunks.filter(
+				(c) => c.seq > minSeq && (beforeSeq === undefined || c.seq < beforeSeq),
+			);
+			// Window: keep only the NEWEST `limit`, still ascending by seq.
+			if (limit !== undefined && selected.length > limit) {
+				return selected.slice(selected.length - limit);
+			}
+			return selected;
 		},
 		async appendMetrics() {},
 		async loadMetrics(conversationId) {
@@ -709,6 +718,162 @@ describe("GET /conversations/:id", () => {
 
 		const res = await app.request("/conversations/conv1?sinceSeq=-1");
 		expect(res.status).toBe(400);
+	});
+
+	const sixChunks: StoredChunk[] = [
+		{ seq: 1, role: "user", chunk: { type: "text", text: "one" } },
+		{ seq: 2, role: "assistant", chunk: { type: "text", text: "two" } },
+		{ seq: 3, role: "user", chunk: { type: "text", text: "three" } },
+		{ seq: 4, role: "assistant", chunk: { type: "text", text: "four" } },
+		{ seq: 5, role: "user", chunk: { type: "text", text: "five" } },
+		{ seq: 6, role: "assistant", chunk: { type: "text", text: "six" } },
+	];
+
+	function appWithChunks(chunks: StoredChunk[]) {
+		const store = new Map<string, StoredChunk[]>([["conv1", chunks]]);
+		return createApp({
+			conversationStore: createFakeConversationStore(store),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+	}
+
+	it("?limit=N returns only the newest N chunks, ascending, latestSeq = last seq", async () => {
+		const app = appWithChunks(sixChunks);
+		const res = await app.request("/conversations/conv1?limit=2");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks.map((c) => c.seq)).toEqual([5, 6]);
+		expect(body.latestSeq).toBe(6);
+	});
+
+	it("?limit=N with N >= conversation size returns the full log", async () => {
+		const app = appWithChunks(sixChunks);
+		const res = await app.request("/conversations/conv1?limit=10");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks.map((c) => c.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+		expect(body.latestSeq).toBe(6);
+	});
+
+	it("?beforeSeq=S returns only chunks with seq < S", async () => {
+		const app = appWithChunks(sixChunks);
+		const res = await app.request("/conversations/conv1?beforeSeq=3");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks.map((c) => c.seq)).toEqual([1, 2]);
+		expect(body.latestSeq).toBe(2);
+	});
+
+	it("?beforeSeq=S&limit=N returns the newest N below S, ascending", async () => {
+		const app = appWithChunks(sixChunks);
+		const res = await app.request("/conversations/conv1?beforeSeq=5&limit=2");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		// selection = seq 1..4; newest 2 = [3, 4]
+		expect(body.chunks.map((c) => c.seq)).toEqual([3, 4]);
+		expect(body.latestSeq).toBe(4);
+	});
+
+	it("?sinceSeq=A&beforeSeq=B returns A < seq < B", async () => {
+		const app = appWithChunks(sixChunks);
+		const res = await app.request("/conversations/conv1?sinceSeq=2&beforeSeq=5");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks.map((c) => c.seq)).toEqual([3, 4]);
+		expect(body.latestSeq).toBe(4);
+	});
+
+	describe("window param validation → 400 and store not called with an invalid window", () => {
+		function appCapturingWindow() {
+			const calls: {
+				readonly sinceSeq: number | undefined;
+				readonly window: { readonly beforeSeq?: number; readonly limit?: number } | undefined;
+			}[] = [];
+			const store: ConversationStore = {
+				async append() {},
+				async load() {
+					return [];
+				},
+				async loadSince(_conversationId, sinceSeq, window) {
+					calls.push({ sinceSeq, window });
+					return [];
+				},
+				async appendMetrics() {},
+				async loadMetrics() {
+					return [];
+				},
+				async getCwd() {
+					return null;
+				},
+				async setCwd() {},
+			};
+			const app = createApp({
+				conversationStore: store,
+				orchestrator: createFakeOrchestrator([]),
+				credentialStore: createFakeCredentialStore([]),
+			});
+			return { app, calls };
+		}
+
+		const cases: readonly { readonly name: string; readonly query: string }[] = [
+			{ name: "limit=0", query: "limit=0" },
+			{ name: "limit=-1", query: "limit=-1" },
+			{ name: "limit=abc", query: "limit=abc" },
+			{ name: "beforeSeq=0", query: "beforeSeq=0" },
+			{ name: "beforeSeq=1.5", query: "beforeSeq=1.5" },
+		];
+
+		for (const { name, query } of cases) {
+			it(`${name} → 400 { error } and loadSince is never called`, async () => {
+				const { app, calls } = appCapturingWindow();
+				const res = await app.request(`/conversations/conv1?${query}`);
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error: string };
+				expect(typeof body.error).toBe("string");
+				expect(body.error.length).toBeGreaterThan(0);
+				expect(calls).toHaveLength(0);
+			});
+		}
+	});
+
+	it("no params → byte-identical to the no-window read (regression guard)", async () => {
+		// Rest-param spy: record how many args the route actually passes, so we
+		// can prove the third (window) arg is OMITTED entirely — not merely
+		// forwarded as undefined — preserving the existing two-arg call shape.
+		const argCounts: number[] = [];
+		const store: ConversationStore = {
+			async append() {},
+			async load() {
+				return [];
+			},
+			loadSince(...args: Parameters<ConversationStore["loadSince"]>) {
+				argCounts.push(args.length);
+				const sinceSeq = args[1] ?? 0;
+				return Promise.resolve(sampleChunks.filter((c) => c.seq > sinceSeq));
+			},
+			async appendMetrics() {},
+			async loadMetrics() {
+				return [];
+			},
+			async getCwd() {
+				return null;
+			},
+			async setCwd() {},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/conversations/conv1");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+		expect(body.chunks.map((c) => c.seq)).toEqual([1, 2, 3, 4]);
+		expect(body.latestSeq).toBe(4);
+		// Called once, with exactly two arguments (no window arg).
+		expect(argCounts).toEqual([2]);
 	});
 });
 

@@ -72,6 +72,33 @@ export function isSinceSeqError(result: SinceSeqResult): result is ParseError {
 	return typeof result === "object";
 }
 
+/**
+ * Result of parsing an OPTIONAL positive-integer history-window query param
+ * (`limit` / `beforeSeq`): `undefined` = the param was absent (omit it from the
+ * store window), a `number` = a valid positive integer, or a {@link ParseError}
+ * for a malformed / zero / negative value (the route 400s on it).
+ */
+export type WindowParamResult = number | undefined | ParseError;
+
+/**
+ * Parse an optional `limit` / `beforeSeq` query param. Unlike `sinceSeq` these
+ * must be STRICTLY POSITIVE integers when present (zero is rejected, since the
+ * store treats a zero bound as absent and would silently return the full log).
+ * Absent (`undefined` / empty) is the valid "no window" case → `undefined`.
+ */
+export function parseWindowParam(raw: string | undefined, name: string): WindowParamResult {
+	if (raw === undefined || raw === "") return undefined;
+	const n = Number(raw);
+	if (!Number.isInteger(n) || n <= 0) {
+		return { error: `${name} must be a positive integer` };
+	}
+	return n;
+}
+
+export function isWindowParamError(result: WindowParamResult): result is ParseError {
+	return typeof result === "object" && result !== null;
+}
+
 export interface WarmBodyParsed {
 	readonly conversationId: string;
 	readonly model?: string;
