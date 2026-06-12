@@ -52,10 +52,9 @@ they justify every rule below.
    existing one?" — surface it to the user; never decide granularity silently.
 4. **Write the prompt** to `prompts/<unit>.md` (gitignored). See §3 for the
    prompt recipe.
-5. **Summon the wave** via the Task tool (`subagent_type: "Opus 4.8"`, see §2); disjoint units
-   run in PARALLEL (§2a). RE-READ the §3 scoping map before each wave so you point each agent at
-   the right rule files. You MAY read the rules/briefs themselves (they are tiny) — what you must
-   NEVER do is INLINE their contents into a Task prompt (§2 TOKEN RULE).
+5. **Summon the wave** via `opencode run` (see §2); disjoint units run in PARALLEL
+   (§2a). RE-READ `.dispatch/rules/` + the §3 scoping map before each wave — assemble
+   from the files, not from memory.
 6. **Verify** the reports + independently re-run checks (see §4). Trust nothing
    until you've re-run `typecheck`/`test`/`check` yourself.
 7. **Resolve** any contract gaps / errors (see §5).
@@ -63,77 +62,76 @@ they justify every rule below.
 
 ---
 
-## 2. Summoning agents via the Task tool (Opus 4.8)
+## 2. Summoning agents via `opencode run` (the harness)
 
-The **Task tool** is the summon mechanism; **`subagent_type: "Opus 4.8"`** is the BUILDING
-agent (Claude Opus 4.8 — capable coder). `deepseek-v4-flash` remains the *app's own runtime
-testbench*, never a builder. (The legacy `opencode run` CLI path is retired;
-`notes/opencode-agents.md` is historical.)
+OpenCode CLI is the summon mechanism (see `notes/opencode-agents.md`).
 
-**Same session, full tools.** A Task subagent runs in THIS session's working directory (the repo
-root, `/home/tradam/projects/dispatch/arch-rewrite`) with the normal coding toolset
-(Read/Edit/Write/Bash/`lsp`) and the same permissions — so its `lsp`/typecheck work and there is
-NO headless cross-dir permission hang. The visibility/ownership rules (§6) are NOT enforced by a
-sandbox here — they hold only because the prompt states them (the briefs do).
+**Working dir:** always the repo root,
+`/home/tradam/projects/dispatch/arch-rewrite` (so the agents' `lsp` tool works —
+TS language server is configured globally).
 
-**THE TOKEN RULE — never INLINE the briefs/rules/TASK into the prompt.** This is the whole point
-of the file-based harness: pasting `.dispatch/*` or `prompts/<unit>.md` contents into the Task
-`prompt` burns YOUR context and duplicates what the agent can read itself — exactly what we avoid.
-(Reading the small rule/brief files for your OWN understanding is allowed — the rule is about
-prompt assembly, not about you being ignorant of the rules.) Instead the Task `prompt`
-is a SHORT pointer that tells the subagent to READ those files ITSELF. The guardrail bytes then
-land in the SUBAGENT's context, never the orchestrator's — the same property the old
-`"$(cat …)"` shell-concat gave us (the concat just moves from the shell to the agent's own Read).
+**Model:** use `opencode-go/mimo-v2.5-pro` for BUILDING agents (capable coder).
+`deepseek-v4-flash` is reserved as the *app's own runtime testbench*, not for
+building.
 
-**Canonical summon** — ONE Task call per unit:
-- `description`: `"build <unit>"`
-- `subagent_type`: `"Opus 4.8"`
-- `prompt`: the SHORT pointer below — fill in `<unit>` + its scoped-rule files (§3 map). Do NOT
-  inline any file contents.
+**Canonical invocation** — assemble the prompt by CONCATENATING the standardized briefs + the
+scoped rules + the per-summon TASK. The invariant guardrails live ONCE in the briefs, so
+`prompts/<unit>.md` is now JUST the TASK block (§3). Do NOT use `-f` (see gotcha); ALWAYS
+redirect output to a file.
+```bash
+cd /home/tradam/projects/dispatch/arch-rewrite && \
+opencode run --dir /home/tradam/projects/dispatch/arch-rewrite \
+  -m opencode-go/mimo-v2.5-pro \
+  "$(cat .dispatch/package-agent.md)
+$(cat .dispatch/extension-agent.md)
+$(cat .dispatch/rules/one-owner.md .dispatch/rules/isolation-over-dry.md .dispatch/rules/biome-clean.md .dispatch/rules/pure-core.md .dispatch/rules/no-internal-mocks.md .dispatch/rules/typed-handles.md)
 
+## TASK
+$(cat prompts/<unit>.md)" \
+  > reports/<unit>.run.log 2>&1
 ```
-You are the single owner-agent for packages/<unit>/. Read these files IN FULL with your own tools
-and follow them exactly, in this order (do NOT skip — they are your constitution, brief, rules,
-and task; do NOT paste them back to me):
-  1. AGENTS.md                                   (project constitution; may already be in context)
-  2. .dispatch/package-agent.md                  (base owner brief)
-  3. .dispatch/extension-agent.md                (ONLY if your unit is an extension — else skip)
-  4. .dispatch/rules/one-owner.md .dispatch/rules/isolation-over-dry.md .dispatch/rules/biome-clean.md
-     (+ the unit's other scoped rules per the §3 map — list them here)
-  5. prompts/<unit>.md                           (YOUR task)
-Then IMPLEMENT it now: edit ONLY files under packages/<unit>/, run tsc -b / vitest / biome for
-your package, and write your report to reports/<unit>.md.
-Reply with ONLY a one-line status + the path reports/<unit>.md — no diffs, no logs.
-```
+**Assembly order is fixed: package brief → extension supplement → scoped rules → TASK**
+(the supplement references "the package brief above"; the briefs reference "rules inlined into
+this prompt"). Rules:
+- **Non-extension package?** OMIT the `.dispatch/extension-agent.md` line.
+- Inline ONLY the scoped rules matching the unit's layer (the §3 map) — not every rule on every agent.
+- `AGENTS.md` is auto-loaded by opencode — never `cat` it.
+- The briefs already instruct the agent on ownership, visibility, verify, and the report; the
+  TASK block must NOT repeat any of that.
 
-The read list IS the old fixed assembly order (constitution → package brief → extension supplement
-→ scoped rules → TASK); the ONLY change is the AGENT reads it instead of the shell concatenating
-it. Name in line 4 ONLY the scoped-rule files matching the unit's layer (§3 map) — don't dump
-every rule. `prompts/<unit>.md` stays JUST the TASK block (§3).
+**MANDATORY — capture output to a file, never display it.** The agent's streamed
+output is enormous and will overwhelm and CRASH this harness if it lands in your
+terminal. ALWAYS redirect the summon's stdout+stderr to a log file (e.g.
+`> reports/<unit>.run.log 2>&1`) and do NOT echo/`cat` that log back wholesale.
+You don't need the raw stream: read the agent's `reports/<unit>.md` report (and,
+if you must, `grep`/`tail` the log for a specific error). Treat dumping a full run
+log into context as a hard failure.
 
-**Output discipline.** The Task tool returns ONE short final message (not the agent's stream), so
-the firehose can't flood you. Keep it that way: the agent replies tiny and writes the real report
-to `reports/<unit>.md`, which you then `Read` from disk. NEVER ask an agent to paste diffs/logs
-back; never `Read` a giant log into context — `Grep` it for a specific error if needed.
+**Run discipline (from the tool harness):**
+- **Do NOT background it. Use a large timeout** (e.g. 1800000 ms = 30 min) — these
+  are long tasks. Backgrounding loses the stream.
+- One non-backgrounded `run_shell` per summon. For PARALLEL agents on disjoint
+  files, launch multiple summons (the harness allows concurrent tool calls) — but
+  ONLY when their file sets do not overlap (single-writer rule). Log parallel runs
+  in `tasks.md`.
 
-**Parallel waves.** Launch a wave by emitting MULTIPLE Task calls IN ONE message (concurrent) —
-one per unit — but ONLY when their file sets are disjoint (single-writer, §6/§2a). Sequence
-dependent waves across separate messages (later waves compile against earlier ones). Log parallel
-runs in `tasks.md`. No timeout/backgrounding knobs to manage — the Task tool handles long runs and
-notifies on completion.
-
-**GOTCHAS:**
-- **Don't burn your own tokens.** Re-read THE TOKEN RULE above: point the agent at the files;
-  never inline them. The biggest failure mode here is the orchestrator pasting briefs/rules/
-  prompts into a fat Task prompt — that defeats the harness. (Reading them yourself is fine.)
-- **No sandbox = state the rules.** Because the subagent shares your tools/cwd, nothing stops it
-  editing out of its lane except the prompt. Always include the ownership/visibility briefs (they
-  tell the agent: never edit outside `packages/<unit>/`; read only OTHER units' contracts; if you
-  think you must read another unit's impl, REPORT and STOP).
-- **Make agents IMPLEMENT, not deliberate** (§3): the pointer says "IMPLEMENT it now … write the
-  report". A plan-only return → re-summon (§5a).
-- **Smoke check:** `Task(subagent_type:"Opus 4.8", prompt:"Reply with exactly SMOKE_OK")` should
-  return `SMOKE_OK`.
+**GOTCHAS (learned the hard way):**
+- **Headless cross-`--dir` read = HANG.** An agent's Read of any file OUTSIDE its
+  `--dir` triggers an interactive permission prompt that CANNOT be answered headlessly
+  → the run wedges until aborted. This bites CROSS-REPO: a `file:` dep symlink (e.g.
+  `dispatch-web/node_modules/@dispatch/ui-contract` → the sibling repo) resolves OUTSIDE
+  `--dir`, so an agent reading the dep's source hangs. Fixes: (a) keep everything the
+  agent must READ inside `--dir` — ship an **in-repo reference snapshot** of a cross-repo
+  contract and FORBID reading `node_modules/@dispatch/*`; OR (b) set `--dir` to a parent
+  containing all needed paths — but then the repo's `AGENTS.md` won't auto-load (you lose
+  the constitution). The briefs now tell agents: never read outside your scope — if you
+  think you need to, REPORT it and STOP, never attempt the read.
+- `-f/--file` is an ARRAY flag and greedily eats your trailing message as another
+  filename → "File not found". **Inline with `"$(cat prompts/X.md)"` instead.**
+- A quick smoke test works: `opencode run -m opencode-go/mimo-v2.5-pro "Reply with
+  exactly SMOKE_OK"` should print `SMOKE_OK`.
+- `opencode models` lists models; `opencode agent list` lists agent profiles;
+  `opencode run --help` for flags.
 
 ---
 
@@ -164,7 +162,7 @@ Throughput comes from running disjoint units at once. Organise it as waves:
 
 The invariant guardrails — single-writer directory ownership, visibility, coupling, the
 engineering standard, isolated verification, and the report format — live ONCE in the
-standardized briefs the summon points the agent at (§2; the agent reads them itself):
+standardized briefs the summon concatenates (§2):
 - **`.dispatch/package-agent.md`** — the base for EVERY package owner.
 - **`.dispatch/extension-agent.md`** — the extension-only supplement (added for extension summons).
 
@@ -358,7 +356,7 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
     observability-design.md  logging/spans/collector/trace-store design (Phase A–B)
     cli-design.md            CLI design decisions + unit plan (built; §3 = settled decisions)
     frontend-design.md       future web frontend design (IDEATION; separate repo)
-    opencode-agents.md       LEGACY — notes on the retired `opencode run` CLI summon path (§2 now uses the Task tool / Opus 4.8)
+    opencode-agents.md       notes on summoning agents via the opencode CLI
 
   prompts/   (gitignored — orchestrator→agent TASK blocks)
   reports/   (gitignored — agent→orchestrator reports)
@@ -392,28 +390,19 @@ It consumes `packages/ui-contract` + the wire types as a pinned `file:` dependen
 
 ---
 
-## 8. How to run (live validation)
+## 8. Current status & how to run
 
-> This file is instructions and rules ONLY — it carries NO project state. Current
-> status, test counts, and next work live EXCLUSIVELY in `tasks.md`. Never record
-> status here; it drifts.
+See `tasks.md` for the live checklist. As of MVP completion:
+- Kernel + 6 core extensions + host-bin DONE. 178 tests pass; typecheck + biome
+  clean.
+- **MVP verified live:** multi-turn curl against OpenCode Go flash works
+  (`conversationId` threads history).
 
-**Prefer the already-running dev stack.** If `bin/up` (`:24203`) or `../bin/up2` (`:25203`)
-is up, probe THAT for read-only checks (GETs, validation 400s) instead of booting your own
-instance — or ask the user. Boot a private instance only when the probe must WRITE.
-
-**Boot + smoke test (private instance):** `.env` is auto-loaded by Bun and already carries
-`DISPATCH_API_KEY` — do NOT re-export it (an empty/botched export OVERRIDES `.env` and the
-provider silently fails to register: "No providers registered"). `.env` also pins
-`BACKEND_PORT`, which beats `PORT` — so set `BACKEND_PORT` explicitly, and ISOLATE the data
-paths or you'll share SQLite files + spawn a duplicate collector against the dev stack:
+**Boot + smoke test:**
 ```bash
 cd /home/tradam/projects/dispatch/arch-rewrite
-BACKEND_PORT=4567 SURFACE_WS_PORT=4569 \
-  DISPATCH_DB=/tmp/opencode/probe/dispatch.db \
-  DISPATCH_TRACE_DB=/tmp/opencode/probe/traces.db \
-  DISPATCH_JOURNAL=/tmp/opencode/probe/app.ndjson \
-  bun packages/host-bin/src/main.ts   # boots server (mkdir -p /tmp/opencode/probe first)
+KEY1=$(grep DISPATCH_API_KEY_OPENCODE1 .env | cut -d= -f2)
+PORT=4567 DISPATCH_API_KEY="$KEY1" bun packages/host-bin/src/main.ts   # boots server
 # in another shell:
 curl -s -X POST localhost:4567/chat -H 'content-type: application/json' \
   -d '{"conversationId":"c1","message":"Say hello in 3 words."}'
@@ -445,3 +434,8 @@ line as the signal**, ignore the timeout, then run a SEPARATE `pkill` (bracket-t
 cleanup command (it returns immediately and confirms no leaks). Don't try to make the boot+probe
 command "return cleanly" — it won't. (For a frontend-agnostic surface, the probe is a tiny
 `bun` WebSocket client that asserts `catalog → subscribe → surface`.)
+
+**Next suggested work** (post-MVP, see `tasks.md` "Open items"): wire
+auth→provider properly (auth-apikey is currently vestigial), then add the first
+TOOL extension to exercise the dispatch loop (turns currently run with `tools:
+[]`).

@@ -1,12 +1,12 @@
-<!-- ORCHESTRATOR-ONLY meta: this supplement is concatenated AFTER package-agent.md (and the
-     inlined rules), BEFORE the TASK block, only for EXTENSION summons. It is never used alone. -->
+<!-- ORCHESTRATOR-ONLY meta: the summon tells an EXTENSION agent to read this supplement right
+     after package-agent.md and before the scoped rules + the TASK. It is never used alone. -->
 
 # Extension Owner-Agent — Supplement
 
-The package owner-agent brief above in this prompt governs you in full: an extension **is** a
-package, so its single-writer directory ownership, visibility, verification, and report rules
-all apply. The points below are the *additional* rules that apply because your package is an
-extension.
+The package owner-agent brief (`.dispatch/package-agent.md`, which you read first) governs you in
+full: an extension **is** a package, so its single-writer directory ownership, visibility,
+verification, and report rules all apply. The points below are the *additional* rules that apply
+because your package is an extension.
 
 ## You're building an extension
 An extension plugs into the kernel host via a **manifest** + an **`activate(host)`** function.

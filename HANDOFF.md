@@ -93,9 +93,12 @@ update. Do this as ONE coordinated change; expect ~4–5 files. Update GLOSSARY
 ---
 
 ## Standing reminders (from ORCHESTRATOR.md — don't relearn the hard way)
-- Summon with `opencode run -m opencode-go/qwen3.7-max`, **inline the prompt via
-  `"$(cat prompts/X.md)"`** (the `-f` flag is greedy and breaks). Don't background;
-  large timeout.
+- Summon via the **Task tool** (`subagent_type: "Opus 4.8"`, ORCHESTRATOR §2). The Task
+  `prompt` is a SHORT pointer that tells the agent to READ the briefs + scoped rules +
+  `prompts/<unit>.md` ITSELF — **never `Read`/`cat` those files into your own context to
+  inline them** (that burns your tokens; the whole point of the file harness is to keep the
+  guardrails in the *subagent's* context, not yours). Parallel wave = multiple Task calls in
+  ONE message (disjoint file sets only).
 - **`deepseek-v4-flash` is the app's runtime testbench, NOT for building agents.**
 - Parallelize ONLY disjoint file sets (single-writer). Log parallel runs in tasks.md.
 - Verify independently (typecheck/test/check) + confirm single-lane edits. Trust
