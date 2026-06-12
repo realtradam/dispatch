@@ -1646,7 +1646,8 @@ describe("detached turn hub", () => {
 
 		expect(events.length).toBeGreaterThan(0);
 		const types = events.map((e) => e.type);
-		expect(types[0]).toBe("turn-start");
+		expect(types[0]).toBe("user-message");
+		expect(types[1]).toBe("turn-start");
 		expect(types).toContain("text-delta");
 		expect(types[types.length - 1]).toBe("turn-sealed");
 
@@ -1690,7 +1691,8 @@ describe("detached turn hub", () => {
 		expect(eventsA).toEqual(eventsB);
 
 		const types = eventsA.map((e) => e.type);
-		expect(types[0]).toBe("turn-start");
+		expect(types[0]).toBe("user-message");
+		expect(types[1]).toBe("turn-start");
 		expect(types[types.length - 1]).toBe("turn-sealed");
 	});
 
@@ -1946,7 +1948,8 @@ describe("detached turn hub", () => {
 		});
 
 		const types = events.map((e) => e.type);
-		expect(types[0]).toBe("turn-start");
+		expect(types[0]).toBe("user-message");
+		expect(types[1]).toBe("turn-start");
 		expect(types).toContain("text-delta");
 		expect(types[types.length - 1]).toBe("turn-sealed");
 
@@ -2014,5 +2017,148 @@ describe("detached turn hub", () => {
 		await firstPromise;
 
 		expect(firstEvents.some((e) => e.type === "turn-sealed")).toBe(true);
+	});
+});
+
+describe("user-message event", () => {
+	function waitForEvent(
+		orchestrator: ReturnType<typeof createSessionOrchestrator>["orchestrator"],
+		conversationId: string,
+		eventType: string,
+	): Promise<AgentEvent> {
+		return new Promise((resolve) => {
+			const unsub = orchestrator.subscribe(conversationId, (event) => {
+				if (event.type === eventType) {
+					unsub();
+					resolve(event);
+				}
+			});
+		});
+	}
+
+	it("emits user-message first — pre-subscriber receives user-message before turn-start", async () => {
+		const store = createInMemoryStore();
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "Hello" },
+				{ type: "usage", usage: { inputTokens: 5, outputTokens: 3 } },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+		});
+
+		const events: AgentEvent[] = [];
+		const unsub = orchestrator.subscribe("conv-um-first", (e) => events.push(e));
+
+		orchestrator.startTurn({ conversationId: "conv-um-first", text: "What is 2+2?" });
+
+		const sealed = waitForEvent(orchestrator, "conv-um-first", "turn-sealed");
+		await sealed;
+		unsub();
+
+		expect(events.length).toBeGreaterThan(1);
+		expect(events[0]?.type).toBe("user-message");
+		const um = events[0] as AgentEvent & { type: "user-message" };
+		expect(um.text).toBe("What is 2+2?");
+		expect(um.conversationId).toBe("conv-um-first");
+		expect(um.turnId).toMatch(/^turn-/);
+		expect(events[1]?.type).toBe("turn-start");
+	});
+
+	it("late-join replays user-message — buffer starts with user-message", async () => {
+		const store = createInMemoryStore();
+		let emitBarrierResolve: (() => void) | undefined;
+		const emitBarrier = new Promise<void>((resolve) => {
+			emitBarrierResolve = resolve;
+		});
+
+		let callIndex = 0;
+		const provider: ProviderContract = {
+			id: "fake",
+			stream() {
+				const idx = callIndex++;
+				return (async function* () {
+					if (idx === 0) {
+						yield { type: "text-delta", delta: "Hello" } as ProviderEvent;
+						await emitBarrier;
+						yield { type: "usage", usage: { inputTokens: 5, outputTokens: 3 } } as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					}
+				})();
+			},
+		};
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+		});
+
+		orchestrator.startTurn({ conversationId: "conv-um-late", text: "late prompt" });
+
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+		const lateEvents: AgentEvent[] = [];
+		const unsubLate = orchestrator.subscribe("conv-um-late", (e) => lateEvents.push(e));
+
+		expect(lateEvents.length).toBeGreaterThanOrEqual(1);
+		expect(lateEvents[0]?.type).toBe("user-message");
+		const um = lateEvents[0] as AgentEvent & { type: "user-message" };
+		expect(um.text).toBe("late prompt");
+		expect(um.turnId).toMatch(/^turn-/);
+
+		emitBarrierResolve?.();
+		const sealed = waitForEvent(orchestrator, "conv-um-late", "turn-sealed");
+		await sealed;
+		unsubLate();
+	});
+
+	it("metrics unaffected — user-message does not alter TurnMetrics", async () => {
+		const store = createInMemoryStore();
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "ok" },
+				{ type: "usage", usage: { inputTokens: 10, outputTokens: 5 } },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			now: () => 1000,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-um-metrics",
+			text: "test",
+			onEvent: () => {},
+		});
+
+		const metrics = store.metricsData.get("conv-um-metrics");
+		expect(metrics).toBeDefined();
+		expect(metrics).toHaveLength(1);
+
+		const tm = metrics?.[0];
+		if (tm === undefined) throw new Error("expected metrics");
+
+		expect(tm.turnId).toMatch(/^turn-/);
+		expect(tm.usage.inputTokens).toBe(10);
+		expect(tm.usage.outputTokens).toBe(5);
+		expect(tm.steps).toHaveLength(1);
+		expect(tm.steps[0]?.usage.inputTokens).toBe(10);
+		expect(tm.steps[0]?.usage.outputTokens).toBe(5);
 	});
 });

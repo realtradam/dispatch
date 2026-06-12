@@ -162,6 +162,8 @@ export function createSessionOrchestrator(
 		activeTurns.set(conversationId, { buffer: [], turnId });
 		activeConversations.add(conversationId);
 
+		emitToHub(conversationId, { type: "user-message", conversationId, turnId, text });
+
 		const effectiveCwdPromise =
 			cwd !== undefined
 				? Promise.resolve(cwd)

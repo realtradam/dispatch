@@ -213,6 +213,7 @@ export interface TurnMetrics {
 export type AgentEvent =
 	| StatusEvent
 	| TurnStartEvent
+	| TurnInputEvent
 	| TurnTextDeltaEvent
 	| TurnReasoningDeltaEvent
 	| TurnToolCallEvent
@@ -236,6 +237,25 @@ export interface TurnStartEvent {
 	readonly type: "turn-start";
 	readonly conversationId: string;
 	readonly turnId: string;
+}
+
+/**
+ * The user prompt that opened this turn, surfaced INTO the turn's outward event
+ * stream. The user message is persisted only when the turn seals (atomically with
+ * the assistant reply), so without this event a client that is merely WATCHING a
+ * conversation (subscribed but not the sender) has no source for the prompt text
+ * mid-turn — it would see the streaming reply with no preceding user bubble until
+ * seal. Emitted once, as the FIRST event of the turn (before `turn-start`), so it
+ * is buffered and replayed to every subscriber — live and late-join — exactly like
+ * the rest of the turn. The sender already echoes its own prompt optimistically, so
+ * a consumer should de-dup against that (e.g. by text); a pure watcher renders it
+ * directly. Carries the raw prompt `text` (the same text passed to the provider).
+ */
+export interface TurnInputEvent {
+	readonly type: "user-message";
+	readonly conversationId: string;
+	readonly turnId: string;
+	readonly text: string;
 }
 
 /** Incremental text content from the model during a turn. */

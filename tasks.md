@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **891 vitest + transport bun green**.
+`tsc -b` EXIT 0 · biome clean · **894 vitest + transport bun green**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -282,6 +282,23 @@ Principle enforced: **the FE is only a control interface; the AI runs independen
   `startTurn` made a fresh empty-listener hub → every pre-turn subscriber dropped; live test got
   zero deltas though the turn ran+persisted. Caught by live-verify (unit test had subscribed
   AFTER start, masking it). Fixed via the persistent-subscribers / per-turn-buffer split.
+
+## Turn continuity — CR-3: user prompt on the event stream (DONE)
+FE bug (multi-client): a pure watcher (subscribed, not the sender) couldn't see the USER prompt until
+seal — the user message was passed to the provider + persisted only at seal, never on the turn's
+outward stream/buffer. FE courier: `frontend-cr3-user-message-handoff.md`.
+- **Contract:** `@dispatch/wire` `0.5.0→0.6.0` — additive `TurnInputEvent`
+  `{ type:"user-message"; conversationId; turnId; text }` on the `AgentEvent` union (kernel barrels
+  re-export it). `@dispatch/transport-contract` `0.7.0→0.8.0` (re-export only). Widening broke NO
+  exhaustive switch (typecheck clean) — zero consumer fan-out.
+- **session-orchestrator:** `emitToHub({type:"user-message",…})` as the FIRST event of `runTurnDetached`
+  (before `runTurn`) → buffered + broadcast to all subscribers (live + late-join); HTTP path covered via
+  `handleMessage`'s buffer replay. Persistence + metrics unchanged. +3 tests; 3 Wave-1 tests updated
+  (user-message now precedes turn-start).
+- **LIVE-VERIFIED vs flash:** a watcher that never sent receives `user-message` (correct text) as its
+  FIRST `chat.delta`, before `turn-sealed`, then the streaming reply. `RESULT: OK`.
+- **Process note:** implemented directly by the orchestrator (user directive: "do implementations
+  yourself going forward") rather than via a summoned owner-agent.
 
 ## Open items
 - **Context window LIMIT (next, sibling of context size):** expose the selected model's max
