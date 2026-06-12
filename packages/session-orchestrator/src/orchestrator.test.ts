@@ -7,6 +7,7 @@ import type {
 	ProviderContract,
 	ProviderEvent,
 	ProviderStreamOptions,
+	ReasoningEffort,
 	RunTurnInput,
 	RunTurnResult,
 	StoredChunk,
@@ -27,14 +28,17 @@ function createInMemoryStore(): ConversationStore & {
 	readonly data: Map<string, ChatMessage[]>;
 	readonly metricsData: Map<string, TurnMetrics[]>;
 	readonly cwdData: Map<string, string>;
+	readonly effortData: Map<string, ReasoningEffort>;
 } {
 	const data = new Map<string, ChatMessage[]>();
 	const metricsData = new Map<string, TurnMetrics[]>();
 	const cwdData = new Map<string, string>();
+	const effortData = new Map<string, ReasoningEffort>();
 	return {
 		data,
 		metricsData,
 		cwdData,
+		effortData,
 		async append(conversationId, messages) {
 			const existing = data.get(conversationId) ?? [];
 			data.set(conversationId, [...existing, ...messages]);
@@ -68,6 +72,12 @@ function createInMemoryStore(): ConversationStore & {
 		},
 		async setCwd(conversationId, cwd) {
 			cwdData.set(conversationId, cwd);
+		},
+		async getReasoningEffort(conversationId) {
+			return effortData.get(conversationId) ?? null;
+		},
+		async setReasoningEffort(conversationId, effort) {
+			effortData.set(conversationId, effort);
 		},
 	};
 }
@@ -288,7 +298,7 @@ describe("handleMessage model resolution", () => {
 
 		expect(captured).toHaveLength(1);
 		expect(captured[0]?.provider).toBe(resolvedProvider);
-		expect(captured[0]?.providerOpts).toEqual({ model: "gpt-4" });
+		expect(captured[0]?.providerOpts).toEqual({ reasoningEffort: "high", model: "gpt-4" });
 		expect(captured[0]?.cwd).toBe("/work/dir");
 	});
 
@@ -349,7 +359,7 @@ describe("handleMessage model resolution", () => {
 
 		expect(captured).toHaveLength(1);
 		expect(captured[0]?.provider).toBe(fallbackProvider);
-		expect(captured[0]?.providerOpts).toBeUndefined();
+		expect(captured[0]?.providerOpts).toEqual({ reasoningEffort: "high" });
 	});
 
 	it("cwd is forwarded to RunTurnInput.cwd and absent when not provided", async () => {
@@ -502,6 +512,12 @@ describe("turn-sealed event", () => {
 			async setCwd(conversationId, cwd) {
 				await store.setCwd(conversationId, cwd);
 			},
+			async getReasoningEffort(conversationId) {
+				return store.getReasoningEffort(conversationId);
+			},
+			async setReasoningEffort(conversationId, effort) {
+				await store.setReasoningEffort(conversationId, effort);
+			},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -553,6 +569,10 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async setCwd() {},
+			async getReasoningEffort() {
+				return null;
+			},
+			async setReasoningEffort() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -893,6 +913,10 @@ describe("turn metrics persistence", () => {
 				return null;
 			},
 			async setCwd() {},
+			async getReasoningEffort() {
+				return null;
+			},
+			async setReasoningEffort() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -2254,5 +2278,130 @@ describe("closeConversation (CR-4c)", () => {
 
 		// Closing again is still safe.
 		expect(orchestrator.closeConversation("conv-never-seen").abortedTurn).toBe(false);
+	});
+});
+
+describe("reasoning effort resolution", () => {
+	it("override wins over stored → provider receives the override level", async () => {
+		const store = createInMemoryStore();
+		await store.setReasoningEffort("conv-effort-override", "low");
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-effort-override",
+			text: "hi",
+			onEvent: () => {},
+			reasoningEffort: "max",
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.providerOpts?.reasoningEffort).toBe("max");
+	});
+
+	it("no override, store has a value → provider receives the stored value", async () => {
+		const store = createInMemoryStore();
+		await store.setReasoningEffort("conv-effort-stored", "xhigh");
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-effort-stored",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.providerOpts?.reasoningEffort).toBe("xhigh");
+	});
+
+	it("no override, store empty → provider receives 'high' (default)", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-effort-default",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.providerOpts?.reasoningEffort).toBe("high");
+	});
+
+	it("warm receives the same resolved effort as a real turn for the same conversation", async () => {
+		const store = createInMemoryStore();
+		await store.append("conv-warm-effort", [
+			{ role: "user", chunks: [{ type: "text", text: "hi" }] },
+		]);
+		await store.setReasoningEffort("conv-warm-effort", "medium");
+
+		let warmOpts: ProviderStreamOptions | undefined;
+
+		const provider: ProviderContract = {
+			id: "p",
+			stream(_messages, _tools, opts) {
+				warmOpts = opts;
+				return (async function* () {
+					yield {
+						type: "usage",
+						usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+					} as ProviderEvent;
+					yield { type: "finish", reason: "stop" } as ProviderEvent;
+				})();
+			},
+		};
+
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+			emit: () => {},
+		};
+
+		const { orchestrator, activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		await warmService.warm("conv-warm-effort");
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-warm-effort",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(warmOpts?.reasoningEffort).toBe("medium");
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.providerOpts?.reasoningEffort).toBe("medium");
+		expect(warmOpts?.reasoningEffort).toBe(captured[0]?.providerOpts?.reasoningEffort);
 	});
 });

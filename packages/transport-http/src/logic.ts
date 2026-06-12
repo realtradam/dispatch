@@ -1,10 +1,23 @@
-import type { AgentEvent } from "@dispatch/kernel";
+import type { AgentEvent, ReasoningEffort } from "@dispatch/kernel";
+
+const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
+
+export function isValidReasoningEffort(value: unknown): value is ReasoningEffort {
+	return typeof value === "string" && VALID_REASONING_EFFORTS.includes(value as ReasoningEffort);
+}
 
 export interface ChatCommand {
 	readonly conversationId: string;
 	readonly message: string;
 	readonly model?: string;
 	readonly cwd?: string;
+	readonly reasoningEffort?: ReasoningEffort;
 }
 
 export interface ParseError {
@@ -46,6 +59,15 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
 			return { error: "Field 'cwd' must be a string" };
 		}
 		(result as { cwd?: string }).cwd = obj.cwd;
+	}
+
+	if (obj.reasoningEffort !== undefined) {
+		if (!isValidReasoningEffort(obj.reasoningEffort)) {
+			return {
+				error: `Field 'reasoningEffort' must be one of: ${VALID_REASONING_EFFORTS.join(", ")}`,
+			};
+		}
+		(result as { reasoningEffort?: ReasoningEffort }).reasoningEffort = obj.reasoningEffort;
 	}
 
 	return result;
@@ -148,4 +170,23 @@ export function computeExpectedCacheRate(
 	const denom = cacheReadTokens + cacheWriteTokens;
 	if (denom <= 0) return 0;
 	return Math.round((cacheReadTokens / denom) * 100);
+}
+
+export function parseReasoningEffortBody(body: unknown): ReasoningEffort | ParseError {
+	if (body === null || typeof body !== "object") {
+		return { error: "Request body must be a JSON object" };
+	}
+	const obj = body as Record<string, unknown>;
+	if (!isValidReasoningEffort(obj.reasoningEffort)) {
+		return {
+			error: `Field 'reasoningEffort' is required and must be one of: ${VALID_REASONING_EFFORTS.join(", ")}`,
+		};
+	}
+	return obj.reasoningEffort;
+}
+
+export function isReasoningEffortParseError(
+	result: ReasoningEffort | ParseError,
+): result is ParseError {
+	return typeof result === "object" && result !== null && "error" in result;
 }

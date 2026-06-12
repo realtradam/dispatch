@@ -7,6 +7,7 @@ import type {
 	ProviderContract,
 	ProviderEvent,
 	ProviderStreamOptions,
+	ReasoningEffort,
 	RunTurnInput,
 	RunTurnResult,
 	ToolContract,
@@ -15,7 +16,12 @@ import type {
 } from "@dispatch/kernel";
 import { defineEventHook, defineService, type ServiceHandle } from "@dispatch/kernel";
 import { createMetricsAccumulator } from "./metrics.js";
-import { buildUserMessage, defaultDispatchPolicy, generateTurnId } from "./pure.js";
+import {
+	buildUserMessage,
+	defaultDispatchPolicy,
+	generateTurnId,
+	resolveReasoningEffort,
+} from "./pure.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
 // --- Broadcast hub types ---
@@ -25,6 +31,7 @@ export interface StartTurnInput {
 	readonly text: string;
 	readonly modelName?: string;
 	readonly cwd?: string;
+	readonly reasoningEffort?: ReasoningEffort;
 }
 
 export type StartTurnResult =
@@ -119,6 +126,7 @@ export interface SessionOrchestrator {
 		onEvent: (event: AgentEvent) => void;
 		modelName?: string;
 		cwd?: string;
+		reasoningEffort?: ReasoningEffort;
 	}): Promise<void>;
 }
 
@@ -181,6 +189,7 @@ export function createSessionOrchestrator(
 		text: string,
 		modelName: string | undefined,
 		cwd: string | undefined,
+		reasoningEffortOverride: ReasoningEffort | undefined,
 	): void {
 		const turnId = generateTurnId();
 		const controller = new AbortController();
@@ -194,11 +203,15 @@ export function createSessionOrchestrator(
 				? Promise.resolve(cwd)
 				: deps.conversationStore.getCwd(conversationId).then((c) => c ?? undefined);
 
-		const payloadPromise = effectiveCwdPromise.then((effectiveCwd) => ({
-			conversationId,
-			...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-			...(modelName !== undefined ? { modelName } : {}),
-		}));
+		const storedEffortPromise = deps.conversationStore.getReasoningEffort(conversationId);
+
+		const payloadPromise = Promise.all([effectiveCwdPromise, storedEffortPromise]).then(
+			([effectiveCwd]) => ({
+				conversationId,
+				...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+				...(modelName !== undefined ? { modelName } : {}),
+			}),
+		);
 
 		payloadPromise.then((payload) => {
 			deps.emit?.(turnStarted, payload);
@@ -206,11 +219,16 @@ export function createSessionOrchestrator(
 
 		void (async () => {
 			try {
-				const effectiveCwd = await effectiveCwdPromise;
+				const [effectiveCwd, storedEffort] = await Promise.all([
+					effectiveCwdPromise,
+					storedEffortPromise,
+				]);
 
 				if (cwd !== undefined) {
 					await deps.conversationStore.setCwd(conversationId, cwd);
 				}
+
+				const resolvedEffort = resolveReasoningEffort(reasoningEffortOverride, storedEffort);
 
 				const history = await deps.conversationStore.load(conversationId);
 				const userMsg = buildUserMessage(text);
@@ -250,6 +268,11 @@ export function createSessionOrchestrator(
 					emitToHub(conversationId, event);
 				};
 
+				const providerOpts: ProviderStreamOptions = {
+					reasoningEffort: resolvedEffort,
+					...(modelOverride !== undefined ? { model: modelOverride } : {}),
+				};
+
 				const opts: RunTurnInput = {
 					provider,
 					messages: [...history, userMsg],
@@ -259,9 +282,7 @@ export function createSessionOrchestrator(
 					conversationId,
 					turnId,
 					signal: controller.signal,
-					...(modelOverride !== undefined
-						? { providerOpts: { model: modelOverride } satisfies ProviderStreamOptions }
-						: {}),
+					providerOpts,
 					...(turnLogger !== undefined ? { logger: turnLogger } : {}),
 					...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
 					...(deps.now !== undefined ? { now: deps.now } : {}),
@@ -295,11 +316,11 @@ export function createSessionOrchestrator(
 	}
 
 	const orchestrator: SessionOrchestrator = {
-		startTurn({ conversationId, text, modelName, cwd }) {
+		startTurn({ conversationId, text, modelName, cwd, reasoningEffort }) {
 			if (activeTurns.has(conversationId)) {
 				return { started: false, reason: "already-active" };
 			}
-			runTurnDetached(conversationId, text, modelName, cwd);
+			runTurnDetached(conversationId, text, modelName, cwd, reasoningEffort);
 			const turn = activeTurns.get(conversationId);
 			const turnId = turn !== undefined ? turn.turnId : "";
 			return { started: true, turnId };
@@ -346,12 +367,13 @@ export function createSessionOrchestrator(
 			return { abortedTurn };
 		},
 
-		async handleMessage({ conversationId, text, onEvent, modelName, cwd }) {
+		async handleMessage({ conversationId, text, onEvent, modelName, cwd, reasoningEffort }) {
 			const turnInput: StartTurnInput = {
 				conversationId,
 				text,
 				...(modelName !== undefined ? { modelName } : {}),
 				...(cwd !== undefined ? { cwd } : {}),
+				...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
 			};
 			const result = orchestrator.startTurn(turnInput);
 			if (!result.started) {
@@ -424,6 +446,11 @@ export function createWarmService(
 				...(cwd !== undefined ? { cwd } : {}),
 			});
 
+			// Resolve reasoning effort the SAME way the real turn does (stored → "high";
+			// no per-turn override on warm). A mismatch here silently busts the prompt cache.
+			const storedEffort = await deps.conversationStore.getReasoningEffort(conversationId);
+			const resolvedEffort = resolveReasoningEffort(undefined, storedEffort);
+
 			const probeMsg: ChatMessage = {
 				role: "user",
 				chunks: [{ type: "text", text: "reply with just a ." }],
@@ -439,6 +466,7 @@ export function createWarmService(
 			const warmLogger = deps.logger?.child({ conversationId, attrs: { warm: true } });
 			const providerOpts: ProviderStreamOptions = {
 				maxTokens: 1,
+				reasoningEffort: resolvedEffort,
 				...(modelOverride !== undefined ? { model: modelOverride } : {}),
 				...(warmLogger !== undefined ? { logger: warmLogger } : {}),
 			};

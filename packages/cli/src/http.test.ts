@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@dispatch/transport-contract";
+import type { AgentEvent, ChatRequest } from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
 import { fetchModels, streamChat } from "./http.js";
 
@@ -134,6 +134,78 @@ describe("streamChat", () => {
 				},
 			),
 		).rejects.toThrow("no body");
+	});
+
+	it("includes reasoningEffort in request body when set", async () => {
+		let capturedBody: string | undefined;
+		const doneEvent: AgentEvent = {
+			type: "done",
+			conversationId: "c",
+			turnId: "t",
+			reason: "completed",
+		};
+		const fakeFetch = async (
+			_url: string | URL | Request,
+			init?: RequestInit,
+		): Promise<Response> => {
+			capturedBody = init?.body as string;
+			const encoder = new TextEncoder();
+			const stream = new ReadableStream<Uint8Array>({
+				pull(controller) {
+					controller.enqueue(encoder.encode(`${JSON.stringify(doneEvent)}\n`));
+					controller.close();
+				},
+			});
+			return new Response(stream, { status: 200 });
+		};
+
+		await streamChat(
+			{ fetchImpl: fakeFetch as unknown as typeof fetch },
+			{
+				server: "http://localhost:24203",
+				request: { message: "hi", reasoningEffort: "xhigh" },
+			},
+		);
+
+		expect(capturedBody).toBeDefined();
+		const parsed = JSON.parse(capturedBody as string) as ChatRequest;
+		expect(parsed.reasoningEffort).toBe("xhigh");
+	});
+
+	it("omits reasoningEffort from request body when not set", async () => {
+		let capturedBody: string | undefined;
+		const doneEvent: AgentEvent = {
+			type: "done",
+			conversationId: "c",
+			turnId: "t",
+			reason: "completed",
+		};
+		const fakeFetch = async (
+			_url: string | URL | Request,
+			init?: RequestInit,
+		): Promise<Response> => {
+			capturedBody = init?.body as string;
+			const encoder = new TextEncoder();
+			const stream = new ReadableStream<Uint8Array>({
+				pull(controller) {
+					controller.enqueue(encoder.encode(`${JSON.stringify(doneEvent)}\n`));
+					controller.close();
+				},
+			});
+			return new Response(stream, { status: 200 });
+		};
+
+		await streamChat(
+			{ fetchImpl: fakeFetch as unknown as typeof fetch },
+			{
+				server: "http://localhost:24203",
+				request: { message: "hi" },
+			},
+		);
+
+		expect(capturedBody).toBeDefined();
+		const parsed = JSON.parse(capturedBody as string) as ChatRequest;
+		expect(parsed).not.toHaveProperty("reasoningEffort");
 	});
 });
 

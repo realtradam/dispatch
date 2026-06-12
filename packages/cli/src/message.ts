@@ -5,7 +5,7 @@
  * and builds a ChatRequest from a parsed command.
  */
 
-import type { ChatRequest } from "@dispatch/transport-contract";
+import type { ChatRequest, ReasoningEffort } from "@dispatch/transport-contract";
 
 interface ComposeInput {
 	readonly text?: string;
@@ -37,6 +37,7 @@ interface ChatCmd {
 	readonly file?: string | undefined;
 	readonly cwd?: string | undefined;
 	readonly conversationId?: string | undefined;
+	readonly reasoningEffort?: ReasoningEffort | undefined;
 	readonly showReasoning: boolean;
 }
 
@@ -51,5 +52,6 @@ export function buildChatRequest(cmd: ChatCmd, ctx: BuildCtx): ChatRequest {
 		model: cmd.modelName,
 		...(cmd.conversationId !== undefined && { conversationId: cmd.conversationId }),
 		...(cmd.cwd !== undefined ? { cwd: cmd.cwd } : { cwd: ctx.cwd }),
+		...(cmd.reasoningEffort !== undefined && { reasoningEffort: cmd.reasoningEffort }),
 	};
 }

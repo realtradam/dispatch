@@ -50,6 +50,10 @@ function fakeConversationStore(): ConversationStore {
 			return null;
 		},
 		async setCwd() {},
+		async getReasoningEffort() {
+			return null;
+		},
+		async setReasoningEffort() {},
 	};
 }
 

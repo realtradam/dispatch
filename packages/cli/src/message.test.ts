@@ -78,4 +78,20 @@ describe("buildChatRequest", () => {
 		);
 		expect(req.cwd).toBe("/explicit");
 	});
+
+	it("includes reasoningEffort when provided", () => {
+		const req = buildChatRequest(
+			{ modelName: "m", text: "x", reasoningEffort: "xhigh", showReasoning: false },
+			{ cwd: "/work", message: "x" },
+		);
+		expect(req.reasoningEffort).toBe("xhigh");
+	});
+
+	it("omits reasoningEffort when not provided", () => {
+		const req = buildChatRequest(
+			{ modelName: "m", text: "x", showReasoning: false },
+			{ cwd: "/work", message: "x" },
+		);
+		expect(req).not.toHaveProperty("reasoningEffort");
+	});
 });

@@ -7,6 +7,7 @@ import type {
 	LspServerInfo,
 	LspStatusResponse,
 	ModelsResponse,
+	ReasoningEffortResponse,
 	ThroughputResponse,
 	WarmResponse,
 } from "@dispatch/transport-contract";
@@ -16,9 +17,11 @@ import {
 	computeCachePct,
 	computeExpectedCacheRate,
 	isParseError,
+	isReasoningEffortParseError,
 	isSinceSeqError,
 	isWindowParamError,
 	parseChatBody,
+	parseReasoningEffortBody,
 	parseSinceSeq,
 	parseWarmBody,
 	parseWindowParam,
@@ -227,11 +230,12 @@ export function createApp(opts: CreateServerOptions): Hono {
 			return c.json({ error: result.error }, 400);
 		}
 
-		const { conversationId, message, model, cwd } = result;
+		const { conversationId, message, model, cwd, reasoningEffort } = result;
 		log.info("chat: request accepted", {
 			conversationId,
 			hasModel: model !== undefined,
 			hasCwd: cwd !== undefined,
+			hasReasoningEffort: reasoningEffort !== undefined,
 		});
 
 		const events: AgentEvent[] = [];
@@ -248,6 +252,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 			},
 			...(model !== undefined ? { modelName: model } : {}),
 			...(cwd !== undefined ? { cwd } : {}),
+			...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
 		};
 
 		const orchestratorPromise = opts.orchestrator
@@ -404,6 +409,49 @@ export function createApp(opts: CreateServerOptions): Hono {
 		} catch (err) {
 			log.error("conversations: cwd set failure", { err });
 			return c.json({ error: "Failed to set conversation cwd" }, 500);
+		}
+	});
+
+	app.get("/conversations/:id/reasoning-effort", async (c) => {
+		const conversationId = c.req.param("id");
+		try {
+			const reasoningEffort = await opts.conversationStore.getReasoningEffort(conversationId);
+			log.info("conversations: reasoning-effort read", {
+				conversationId,
+				hasEffort: reasoningEffort !== null,
+			});
+			const body: ReasoningEffortResponse = { conversationId, reasoningEffort };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("conversations: reasoning-effort read failure", { err });
+			return c.json({ error: "Failed to read conversation reasoning effort" }, 500);
+		}
+	});
+
+	app.put("/conversations/:id/reasoning-effort", async (c) => {
+		const conversationId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("conversations/reasoning-effort: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		const parsed = parseReasoningEffortBody(body);
+		if (isReasoningEffortParseError(parsed)) {
+			log.warn("conversations/reasoning-effort: validation failed", { reason: parsed.error });
+			return c.json({ error: parsed.error }, 400);
+		}
+
+		try {
+			await opts.conversationStore.setReasoningEffort(conversationId, parsed);
+			log.info("conversations: reasoning-effort set", { conversationId });
+			const response: ReasoningEffortResponse = { conversationId, reasoningEffort: parsed };
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("conversations: reasoning-effort set failure", { err });
+			return c.json({ error: "Failed to set conversation reasoning effort" }, 500);
 		}
 	});
 

@@ -49,6 +49,7 @@ describe("parseArgs", () => {
 				file: undefined,
 				cwd: undefined,
 				conversationId: undefined,
+				reasoningEffort: undefined,
 				showReasoning: false,
 			});
 		});
@@ -63,6 +64,7 @@ describe("parseArgs", () => {
 				file: "foo.txt",
 				cwd: undefined,
 				conversationId: undefined,
+				reasoningEffort: undefined,
 				showReasoning: false,
 			});
 		});
@@ -96,8 +98,49 @@ describe("parseArgs", () => {
 				file: undefined,
 				cwd: "/tmp",
 				conversationId: "abc",
+				reasoningEffort: undefined,
 				showReasoning: true,
 			});
+		});
+
+		it("parses --effort high", () => {
+			const result = parseArgs(["m", "--text", "x", "--effort", "high"], { defaultServer });
+			expect(result).toEqual({
+				kind: "chat",
+				server: "http://localhost:24203",
+				modelName: "m",
+				text: "x",
+				file: undefined,
+				cwd: undefined,
+				conversationId: undefined,
+				reasoningEffort: "high",
+				showReasoning: false,
+			});
+		});
+
+		it.each(["low", "medium", "high", "xhigh", "max"] as const)("accepts --effort %s", (level) => {
+			const result = parseArgs(["m", "--text", "x", "--effort", level], { defaultServer });
+			expect(result.kind).toBe("chat");
+			if (result.kind === "chat") expect(result.reasoningEffort).toBe(level);
+		});
+
+		it("errors when --effort has no value", () => {
+			const result = parseArgs(["m", "--text", "x", "--effort"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("--effort requires a value");
+		});
+
+		it("errors on invalid effort level", () => {
+			const result = parseArgs(["m", "--text", "x", "--effort", "banana"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") {
+				expect(result.message).toContain("banana");
+				expect(result.message).toContain("low");
+				expect(result.message).toContain("medium");
+				expect(result.message).toContain("high");
+				expect(result.message).toContain("xhigh");
+				expect(result.message).toContain("max");
+			}
 		});
 
 		it("errors when text and file are both missing", () => {

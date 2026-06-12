@@ -49,3 +49,7 @@ export function parseMetricsOrdinal(key: string): number {
 export function cwdKey(conversationId: string): string {
 	return `conv:${conversationId}:cwd`;
 }
+
+export function reasoningEffortKey(conversationId: string): string {
+	return `conv:${conversationId}:reasoning-effort`;
+}

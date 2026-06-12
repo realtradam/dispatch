@@ -1,7 +1,24 @@
-import type { ChatMessage, ProviderContract, ToolDispatchPolicy } from "@dispatch/kernel";
+import type {
+	ChatMessage,
+	ProviderContract,
+	ReasoningEffort,
+	ToolDispatchPolicy,
+} from "@dispatch/kernel";
 
 export function buildUserMessage(text: string): ChatMessage {
 	return { role: "user", chunks: [{ type: "text", text }] };
+}
+
+/**
+ * Resolve the reasoning-effort level for a turn:
+ *   per-turn override → persisted per-conversation value → default `"high"`.
+ * Pure — no I/O, no ambient state.
+ */
+export function resolveReasoningEffort(
+	override: ReasoningEffort | undefined,
+	stored: ReasoningEffort | null,
+): ReasoningEffort {
+	return override ?? stored ?? "high";
 }
 
 export function selectFirstProvider(

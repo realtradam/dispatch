@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
 	computeExpectedCacheRate,
 	isParseError,
+	isReasoningEffortParseError,
 	isSinceSeqError,
+	isValidReasoningEffort,
 	isWindowParamError,
 	parseChatBody,
+	parseReasoningEffortBody,
 	parseSinceSeq,
 	parseWindowParam,
 	serializeEventLine,
@@ -137,6 +140,45 @@ describe("parseChatBody", () => {
 		expect(isParseError(result)).toBe(true);
 		if (isParseError(result)) {
 			expect(result.error).toContain("cwd");
+		}
+	});
+
+	it("extracts reasoningEffort when present and valid", () => {
+		const result = parseChatBody({ message: "hi", reasoningEffort: "low" }, fakeId);
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.reasoningEffort).toBe("low");
+		}
+	});
+
+	it("accepts all valid reasoningEffort levels", () => {
+		for (const level of ["low", "medium", "high", "xhigh", "max"]) {
+			const result = parseChatBody({ message: "hi", reasoningEffort: level }, fakeId);
+			expect(isParseError(result)).toBe(false);
+			if (!isParseError(result)) {
+				expect(result.reasoningEffort).toBe(level);
+			}
+		}
+	});
+
+	it("returns error for invalid reasoningEffort", () => {
+		const result = parseChatBody({ message: "hi", reasoningEffort: "banana" }, fakeId);
+		expect(isParseError(result)).toBe(true);
+		if (isParseError(result)) {
+			expect(result.error).toContain("reasoningEffort");
+		}
+	});
+
+	it("returns error for non-string reasoningEffort", () => {
+		const result = parseChatBody({ message: "hi", reasoningEffort: 42 }, fakeId);
+		expect(isParseError(result)).toBe(true);
+	});
+
+	it("omits reasoningEffort when absent", () => {
+		const result = parseChatBody({ message: "hi" }, fakeId);
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.reasoningEffort).toBeUndefined();
 		}
 	});
 });
@@ -273,5 +315,56 @@ describe("computeExpectedCacheRate", () => {
 	it("rounds to nearest integer", () => {
 		expect(computeExpectedCacheRate(1, 2)).toBe(33);
 		expect(computeExpectedCacheRate(2, 1)).toBe(67);
+	});
+});
+
+describe("isValidReasoningEffort", () => {
+	it("returns true for all valid levels", () => {
+		expect(isValidReasoningEffort("low")).toBe(true);
+		expect(isValidReasoningEffort("medium")).toBe(true);
+		expect(isValidReasoningEffort("high")).toBe(true);
+		expect(isValidReasoningEffort("xhigh")).toBe(true);
+		expect(isValidReasoningEffort("max")).toBe(true);
+	});
+
+	it("returns false for invalid strings", () => {
+		expect(isValidReasoningEffort("banana")).toBe(false);
+		expect(isValidReasoningEffort("")).toBe(false);
+		expect(isValidReasoningEffort("LOW")).toBe(false);
+	});
+
+	it("returns false for non-strings", () => {
+		expect(isValidReasoningEffort(42)).toBe(false);
+		expect(isValidReasoningEffort(null)).toBe(false);
+		expect(isValidReasoningEffort(undefined)).toBe(false);
+		expect(isValidReasoningEffort(true)).toBe(false);
+	});
+});
+
+describe("parseReasoningEffortBody", () => {
+	it("returns the level for a valid body", () => {
+		expect(parseReasoningEffortBody({ reasoningEffort: "low" })).toBe("low");
+		expect(parseReasoningEffortBody({ reasoningEffort: "max" })).toBe("max");
+	});
+
+	it("returns ParseError for missing reasoningEffort", () => {
+		const result = parseReasoningEffortBody({});
+		expect(isReasoningEffortParseError(result)).toBe(true);
+		if (isReasoningEffortParseError(result)) {
+			expect(result.error).toContain("reasoningEffort");
+		}
+	});
+
+	it("returns ParseError for invalid level", () => {
+		const result = parseReasoningEffortBody({ reasoningEffort: "banana" });
+		expect(isReasoningEffortParseError(result)).toBe(true);
+		if (isReasoningEffortParseError(result)) {
+			expect(result.error).toContain("reasoningEffort");
+		}
+	});
+
+	it("returns ParseError for non-object body", () => {
+		expect(isReasoningEffortParseError(parseReasoningEffortBody(null))).toBe(true);
+		expect(isReasoningEffortParseError(parseReasoningEffortBody("string"))).toBe(true);
 	});
 });

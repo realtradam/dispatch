@@ -373,6 +373,54 @@ describe("routeClientMessage", () => {
 			if (result.kind !== "chat-error") throw new Error("expected chat-error");
 			expect(result.errorMessage).toContain("non-empty string");
 		});
+
+		it("threads each valid reasoningEffort level through to the result", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+			const levels = ["low", "medium", "high", "xhigh", "max"] as const;
+
+			for (const level of levels) {
+				const result = routeClientMessage(registry, connSubs, {
+					type: "chat.send",
+					message: "hello",
+					reasoningEffort: level,
+				});
+
+				expect(result.kind).toBe("chat");
+				if (result.kind !== "chat") throw new Error("expected chat");
+				expect(result.reasoningEffort).toBe(level);
+			}
+		});
+
+		it("omits reasoningEffort from result when not provided by client", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				message: "hello",
+			});
+
+			expect(result.kind).toBe("chat");
+			if (result.kind !== "chat") throw new Error("expected chat");
+			expect(result).not.toHaveProperty("reasoningEffort");
+		});
+
+		it("rejects an invalid reasoningEffort value with a chat-error", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				message: "hello",
+				reasoningEffort: "turbo" as unknown as "low",
+			});
+
+			expect(result.kind).toBe("chat-error");
+			if (result.kind !== "chat-error") throw new Error("expected chat-error");
+			expect(result.errorMessage).toContain("invalid reasoningEffort");
+			expect(result.errorMessage).toContain("turbo");
+		});
 	});
 
 	describe("chat.subscribe", () => {
