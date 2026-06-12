@@ -12,6 +12,7 @@ import type {
 	ChatSendMessage,
 	ChatSubscribeMessage,
 	ChatUnsubscribeMessage,
+	ReasoningEffort,
 	WsClientMessage,
 } from "@dispatch/transport-contract";
 import type { SurfaceServerMessage } from "@dispatch/ui-contract";
@@ -45,6 +46,7 @@ export interface ChatRouteResult {
 	readonly message: string;
 	readonly model: string | undefined;
 	readonly cwd: string | undefined;
+	readonly reasoningEffort?: ReasoningEffort;
 }
 
 /** A malformed chat.send that should yield a chat.error reply. */
@@ -121,6 +123,14 @@ export function routeClientMessage(
 
 // ── Chat validation ─────────────────────────────────────────────────────────
 
+const VALID_REASONING_EFFORT: ReadonlySet<string> = new Set<ReasoningEffort>([
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+]);
+
 function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError {
 	if (typeof msg.message !== "string" || msg.message.length === 0) {
 		return {
@@ -129,12 +139,20 @@ function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError 
 			errorMessage: "chat.send requires a non-empty string `message`",
 		};
 	}
+	if (msg.reasoningEffort !== undefined && !VALID_REASONING_EFFORT.has(msg.reasoningEffort)) {
+		return {
+			kind: "chat-error",
+			conversationId: msg.conversationId,
+			errorMessage: `chat.send: invalid reasoningEffort "${msg.reasoningEffort}" — must be one of: low, medium, high, xhigh, max`,
+		};
+	}
 	return {
 		kind: "chat",
 		conversationId: msg.conversationId,
 		message: msg.message,
 		model: msg.model,
 		cwd: msg.cwd,
+		...(msg.reasoningEffort !== undefined ? { reasoningEffort: msg.reasoningEffort } : {}),
 	};
 }
 

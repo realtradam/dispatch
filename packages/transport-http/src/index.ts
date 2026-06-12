@@ -12,9 +12,12 @@ export type {
 export {
 	computeCachePct,
 	isParseError,
+	isReasoningEffortParseError,
 	isSinceSeqError,
+	isValidReasoningEffort,
 	isWindowParamError,
 	parseChatBody,
+	parseReasoningEffortBody,
 	parseSinceSeq,
 	parseWindowParam,
 	serializeEventLine,

@@ -2,6 +2,7 @@ import type {
 	ChatMessage,
 	Chunk,
 	Logger,
+	ReasoningEffort,
 	Role,
 	StorageNamespace,
 	StoredChunk,
@@ -16,6 +17,7 @@ import {
 	metricsPrefix,
 	metricsSeqKey,
 	parseSeq,
+	reasoningEffortKey,
 	seqKey,
 } from "./keys.js";
 import { reconcileWithReport } from "./reconcile.js";
@@ -57,6 +59,10 @@ export interface ConversationStore {
 	readonly getCwd: (conversationId: string) => Promise<string | null>;
 	/** Persist (upsert) the working directory for a conversation. */
 	readonly setCwd: (conversationId: string, cwd: string) => Promise<void>;
+	/** The persisted reasoning-effort level for a conversation, or null if never set. */
+	readonly getReasoningEffort: (conversationId: string) => Promise<ReasoningEffort | null>;
+	/** Persist (upsert) the reasoning-effort level for a conversation. */
+	readonly setReasoningEffort: (conversationId: string, effort: ReasoningEffort) => Promise<void>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -211,6 +217,17 @@ export function createConversationStore(
 			await storage.set(cwdKey(conversationId), cwd);
 			if (logger !== undefined) {
 				logger.debug("cwd set", { conversationId });
+			}
+		},
+
+		async getReasoningEffort(conversationId) {
+			return (await storage.get(reasoningEffortKey(conversationId))) as ReasoningEffort | null;
+		},
+
+		async setReasoningEffort(conversationId, effort) {
+			await storage.set(reasoningEffortKey(conversationId), effort);
+			if (logger !== undefined) {
+				logger.debug("reasoning-effort set", { conversationId });
 			}
 		},
 	};

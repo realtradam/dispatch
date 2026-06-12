@@ -222,6 +222,9 @@ export function createTransportWsExtension(): Extension {
 									text: result.message,
 									...(result.model !== undefined ? { modelName: result.model } : {}),
 									...(result.cwd !== undefined ? { cwd: result.cwd } : {}),
+									...(result.reasoningEffort !== undefined
+										? { reasoningEffort: result.reasoningEffort }
+										: {}),
 								});
 								if (!startResult.started) {
 									send(ws, {

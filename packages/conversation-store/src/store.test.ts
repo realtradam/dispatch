@@ -884,3 +884,78 @@ describe("ConversationStore cwd", () => {
 		expect(await store.getCwd("convB")).toBe("/path/b");
 	});
 });
+
+describe("ConversationStore reasoning effort", () => {
+	let storage: StorageNamespace;
+
+	beforeEach(() => {
+		storage = createMemoryStorage();
+	});
+
+	it("setReasoningEffort then getReasoningEffort returns the level", async () => {
+		const store = createConversationStore(storage);
+		await store.setReasoningEffort("conv1", "high");
+		const result = await store.getReasoningEffort("conv1");
+		expect(result).toBe("high");
+	});
+
+	it("getReasoningEffort returns null when never set", async () => {
+		const store = createConversationStore(storage);
+		const result = await store.getReasoningEffort("conv_unknown");
+		expect(result).toBeNull();
+	});
+
+	it("reasoning effort of one conversation does not leak into another", async () => {
+		const store = createConversationStore(storage);
+		await store.setReasoningEffort("convA", "low");
+		await store.setReasoningEffort("convB", "max");
+		expect(await store.getReasoningEffort("convA")).toBe("low");
+		expect(await store.getReasoningEffort("convB")).toBe("max");
+	});
+
+	it("setReasoningEffort is an upsert (second set overwrites)", async () => {
+		const store = createConversationStore(storage);
+		await store.setReasoningEffort("conv1", "medium");
+		await store.setReasoningEffort("conv1", "xhigh");
+		const result = await store.getReasoningEffort("conv1");
+		expect(result).toBe("xhigh");
+	});
+
+	it("reasoning effort persists across a fresh store instance on the same storage", async () => {
+		const store1 = createConversationStore(storage);
+		await store1.setReasoningEffort("conv1", "max");
+
+		const store2 = createConversationStore(storage);
+		const result = await store2.getReasoningEffort("conv1");
+		expect(result).toBe("max");
+	});
+
+	it("reasoning-effort keys do not collide with chunk/cwd/metrics key spaces", async () => {
+		const store = createConversationStore(storage);
+		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+		await store.append("conv1", [msg]);
+		await store.setCwd("conv1", "/some/path");
+		await store.setReasoningEffort("conv1", "low");
+
+		const metrics: TurnMetrics = {
+			turnId: "turn_iso",
+			usage: { inputTokens: 100, outputTokens: 50 },
+			steps: [],
+		};
+		await store.appendMetrics("conv1", metrics);
+
+		const messages = await store.load("conv1");
+		expect(messages).toEqual([msg]);
+
+		const chunks = await store.loadSince("conv1");
+		expect(chunks).toHaveLength(1);
+		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+
+		expect(await store.getCwd("conv1")).toBe("/some/path");
+		expect(await store.getReasoningEffort("conv1")).toBe("low");
+
+		const metricsResult = await store.loadMetrics("conv1");
+		expect(metricsResult).toHaveLength(1);
+		expect(metricsResult[0]).toEqual(metrics);
+	});
+});

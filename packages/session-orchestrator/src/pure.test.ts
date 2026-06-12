@@ -4,6 +4,7 @@ import {
 	buildUserMessage,
 	defaultDispatchPolicy,
 	generateTurnId,
+	resolveReasoningEffort,
 	selectFirstProvider,
 } from "./pure.js";
 
@@ -65,5 +66,37 @@ describe("generateTurnId", () => {
 	it("returns unique ids", () => {
 		const ids = new Set(Array.from({ length: 100 }, () => generateTurnId()));
 		expect(ids.size).toBe(100);
+	});
+});
+
+describe("resolveReasoningEffort", () => {
+	it("override wins over stored", () => {
+		expect(resolveReasoningEffort("low", "high")).toBe("low");
+		expect(resolveReasoningEffort("max", "medium")).toBe("max");
+	});
+
+	it("stored wins over default", () => {
+		expect(resolveReasoningEffort(undefined, "medium")).toBe("medium");
+		expect(resolveReasoningEffort(undefined, "xhigh")).toBe("xhigh");
+	});
+
+	it("default is 'high' when both are absent", () => {
+		expect(resolveReasoningEffort(undefined, null)).toBe("high");
+	});
+
+	it("all 5 levels pass through as override", () => {
+		expect(resolveReasoningEffort("low", null)).toBe("low");
+		expect(resolveReasoningEffort("medium", null)).toBe("medium");
+		expect(resolveReasoningEffort("high", null)).toBe("high");
+		expect(resolveReasoningEffort("xhigh", null)).toBe("xhigh");
+		expect(resolveReasoningEffort("max", null)).toBe("max");
+	});
+
+	it("all 5 levels pass through as stored", () => {
+		expect(resolveReasoningEffort(undefined, "low")).toBe("low");
+		expect(resolveReasoningEffort(undefined, "medium")).toBe("medium");
+		expect(resolveReasoningEffort(undefined, "high")).toBe("high");
+		expect(resolveReasoningEffort(undefined, "xhigh")).toBe("xhigh");
+		expect(resolveReasoningEffort(undefined, "max")).toBe("max");
 	});
 });

@@ -14,8 +14,10 @@ import { renderEvent } from "./render.js";
 
 const USAGE = `Usage:
   dispatch models [--server <url>]
-  dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--server <url>] [--show-reasoning]
-  dispatch --help`;
+  dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--server <url>] [--show-reasoning]
+  dispatch --help
+
+Effort levels: low, medium, high (default), xhigh, max`;
 
 async function main(): Promise<void> {
 	const defaultServer = `http://localhost:${process.env.BACKEND_PORT ?? "24203"}`;

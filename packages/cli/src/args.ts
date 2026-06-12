@@ -5,6 +5,14 @@
  * Validates required flags and reports unknown flags as errors.
  */
 
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+const VALID_EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
+export function isValidEffort(value: string): value is ReasoningEffort {
+	return (VALID_EFFORTS as readonly string[]).includes(value);
+}
+
 export type ParsedCommand =
 	| { readonly kind: "models"; readonly server: string }
 	| {
@@ -15,6 +23,7 @@ export type ParsedCommand =
 			readonly file?: string | undefined;
 			readonly cwd?: string | undefined;
 			readonly conversationId?: string | undefined;
+			readonly reasoningEffort?: ReasoningEffort | undefined;
 			readonly showReasoning: boolean;
 	  }
 	| { readonly kind: "help" }
@@ -53,6 +62,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 	let file: string | undefined;
 	let cwd: string | undefined;
 	let conversationId: string | undefined;
+	let reasoningEffort: ReasoningEffort | undefined;
 	let showReasoning = false;
 	let server = opts.defaultServer;
 
@@ -83,6 +93,22 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			case "--show-reasoning":
 				showReasoning = true;
 				break;
+			case "--effort":
+				if (i + 1 >= argv.length)
+					return {
+						kind: "error",
+						message: `--effort requires a value (one of: ${VALID_EFFORTS.join(", ")})`,
+					};
+				{
+					const val = argv[++i] as string;
+					if (!isValidEffort(val))
+						return {
+							kind: "error",
+							message: `Invalid effort level "${val}". Must be one of: ${VALID_EFFORTS.join(", ")}`,
+						};
+					reasoningEffort = val;
+				}
+				break;
 			default:
 				return { kind: "error", message: `Unknown flag: ${arg}` };
 		}
@@ -103,6 +129,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 		file,
 		cwd,
 		conversationId,
+		reasoningEffort,
 		showReasoning,
 	};
 }

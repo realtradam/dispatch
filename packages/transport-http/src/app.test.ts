@@ -1,6 +1,7 @@
 import type {
 	AgentEvent,
 	Logger,
+	ReasoningEffort,
 	StepId,
 	StorageNamespace,
 	StoredChunk,
@@ -80,6 +81,7 @@ function createFakeConversationStore(
 	store: Map<string, StoredChunk[]> = new Map(),
 	metricsStore: Map<string, TurnMetrics[]> = new Map(),
 	cwdStore: Map<string, string> = new Map(),
+	reasoningEffortStore: Map<string, ReasoningEffort> = new Map(),
 ): ConversationStore {
 	return {
 		async append() {},
@@ -109,6 +111,12 @@ function createFakeConversationStore(
 		},
 		async setCwd(conversationId, cwd) {
 			cwdStore.set(conversationId, cwd);
+		},
+		async getReasoningEffort(conversationId) {
+			return reasoningEffortStore.get(conversationId) ?? null;
+		},
+		async setReasoningEffort(conversationId, effort) {
+			reasoningEffortStore.set(conversationId, effort);
 		},
 	};
 }
@@ -807,6 +815,10 @@ describe("GET /conversations/:id", () => {
 					return null;
 				},
 				async setCwd() {},
+				async getReasoningEffort() {
+					return null;
+				},
+				async setReasoningEffort() {},
 			};
 			const app = createApp({
 				conversationStore: store,
@@ -860,6 +872,10 @@ describe("GET /conversations/:id", () => {
 				return null;
 			},
 			async setCwd() {},
+			async getReasoningEffort() {
+				return null;
+			},
+			async setReasoningEffort() {},
 		};
 		const app = createApp({
 			conversationStore: store,
@@ -982,6 +998,10 @@ describe("GET /conversations/:id/metrics", () => {
 				return null;
 			},
 			async setCwd() {},
+			async getReasoningEffort() {
+				return null;
+			},
+			async setReasoningEffort() {},
 		};
 		const app = createApp({
 			conversationStore: brokenStore,
@@ -1447,5 +1467,251 @@ describe("GET /conversations/:id/lsp", () => {
 		expect(body.servers[1]?.id).toBe("lua-lsp");
 		expect(body.servers[1]?.state).toBe("error");
 		expect(body.servers[1]?.error).toBe("spawn failed");
+	});
+});
+
+describe("POST /chat reasoningEffort", () => {
+	const allLevels: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
+	for (const level of allLevels) {
+		it(`forwards reasoningEffort="${level}" to orchestrator`, async () => {
+			const cap = createCapturingOrchestrator();
+			const app = createApp({
+				conversationStore: createFakeConversationStore(),
+				orchestrator: cap,
+				credentialStore: createFakeCredentialStore([]),
+			});
+
+			const res = await app.request("/chat", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					message: "hi",
+					conversationId: "conv1",
+					reasoningEffort: level,
+				}),
+			});
+
+			expect(res.status).toBe(200);
+			expect(cap.received).toBeDefined();
+			expect(cap.received?.reasoningEffort).toBe(level);
+		});
+	}
+
+	it("omits reasoningEffort from orchestrator input when not provided", async () => {
+		const cap = createCapturingOrchestrator();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: cap,
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message: "hi", conversationId: "conv1" }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(cap.received).toBeDefined();
+		expect(cap.received?.reasoningEffort).toBeUndefined();
+	});
+
+	it("returns 400 for invalid reasoningEffort and does not call orchestrator", async () => {
+		let handleMessageCalled = false;
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			async handleMessage(input) {
+				handleMessageCalled = true;
+				return createFakeOrchestrator([]).handleMessage(input);
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				message: "hi",
+				conversationId: "conv1",
+				reasoningEffort: "banana",
+			}),
+		});
+
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("reasoningEffort");
+		expect(handleMessageCalled).toBe(false);
+	});
+
+	it("returns 400 for non-string reasoningEffort", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+		});
+
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				message: "hi",
+				conversationId: "conv1",
+				reasoningEffort: 42,
+			}),
+		});
+
+		expect(res.status).toBe(400);
+	});
+});
+
+describe("GET /conversations/:id/reasoning-effort", () => {
+	it("returns null when never set", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/reasoning-effort");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; reasoningEffort: string | null };
+		expect(body.conversationId).toBe("conv1");
+		expect(body.reasoningEffort).toBeNull();
+	});
+
+	it("returns the level after PUT", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		await app.request("/conversations/conv1/reasoning-effort", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ reasoningEffort: "xhigh" }),
+		});
+
+		const res = await app.request("/conversations/conv1/reasoning-effort");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; reasoningEffort: string | null };
+		expect(body.reasoningEffort).toBe("xhigh");
+	});
+
+	it("returns null for an unknown conversation", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/unknown/reasoning-effort");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; reasoningEffort: string | null };
+		expect(body.conversationId).toBe("unknown");
+		expect(body.reasoningEffort).toBeNull();
+	});
+});
+
+describe("PUT /conversations/:id/reasoning-effort", () => {
+	it("persists a valid level and returns it", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/reasoning-effort", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ reasoningEffort: "low" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; reasoningEffort: string };
+		expect(body.conversationId).toBe("conv1");
+		expect(body.reasoningEffort).toBe("low");
+	});
+
+	it("returns 400 for an invalid level", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/reasoning-effort", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ reasoningEffort: "banana" }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("reasoningEffort");
+	});
+
+	it("returns 400 when reasoningEffort is missing from body", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/reasoning-effort", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 400 for invalid JSON body", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/reasoning-effort", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: "not json",
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("does not call store on validation failure", async () => {
+		let storeCalled = false;
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async setReasoningEffort() {
+				storeCalled = true;
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/reasoning-effort", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ reasoningEffort: "invalid" }),
+		});
+		expect(res.status).toBe(400);
+		expect(storeCalled).toBe(false);
 	});
 });
