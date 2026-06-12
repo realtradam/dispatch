@@ -86,16 +86,19 @@ const SETTINGS_KEY = "settings";
 /**
  * Parse settings from a raw storage string.
  * Returns defaults if null or malformed.
+ *
+ * Warming defaults to OFF (CR-4a): a new conversation never schedules warms
+ * until the user explicitly opts in via the toggle.
  */
 export function parseSettings(raw: string | null): ConversationSettings {
-	if (raw === null) return { enabled: true, intervalMs: DEFAULT_INTERVAL_MS };
+	if (raw === null) return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) {
-			return { enabled: true, intervalMs: DEFAULT_INTERVAL_MS };
+			return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
 		}
 		const obj = parsed as Record<string, unknown>;
-		const enabled = typeof obj.enabled === "boolean" ? obj.enabled : true;
+		const enabled = typeof obj.enabled === "boolean" ? obj.enabled : false;
 		const rawInterval = obj.intervalMs;
 		let intervalMs = DEFAULT_INTERVAL_MS;
 		if (typeof rawInterval === "number" && Number.isFinite(rawInterval)) {
@@ -104,7 +107,7 @@ export function parseSettings(raw: string | null): ConversationSettings {
 		}
 		return { enabled, intervalMs };
 	} catch {
-		return { enabled: true, intervalMs: DEFAULT_INTERVAL_MS };
+		return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
 	}
 }
 

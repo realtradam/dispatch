@@ -120,14 +120,14 @@ describe("parseSettings/serializeSettings round-trip", () => {
 		expect(parsed).toEqual(original);
 	});
 
-	it("returns defaults for null input", () => {
+	it("returns defaults for null input (warming OFF by default — CR-4a)", () => {
 		const parsed = parseSettings(null);
-		expect(parsed).toEqual({ enabled: true, intervalMs: 240_000 });
+		expect(parsed).toEqual({ enabled: false, intervalMs: 240_000 });
 	});
 
-	it("returns defaults for malformed JSON", () => {
+	it("returns defaults for malformed JSON (warming OFF by default — CR-4a)", () => {
 		const parsed = parseSettings("not-json{{{");
-		expect(parsed).toEqual({ enabled: true, intervalMs: 240_000 });
+		expect(parsed).toEqual({ enabled: false, intervalMs: 240_000 });
 	});
 
 	it("clamps non-positive interval to MIN_INTERVAL_MS", () => {

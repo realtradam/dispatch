@@ -28,6 +28,7 @@ export const manifest: Manifest = {
 			"/chat",
 			"/chat/warm",
 			"/conversations/:id",
+			"/conversations/:id/close",
 			"/conversations/:id/cwd",
 			"/conversations/:id/lsp",
 			"/health",

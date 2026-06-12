@@ -27,6 +27,7 @@ export function createLoadedExtensionsExtension(): Extension {
 					id: "loaded-extensions",
 					region: "side",
 					title: "Loaded Extensions",
+					scope: "global",
 				},
 				getSpec() {
 					return buildLoadedExtensionsSpec(host.getExtensions());

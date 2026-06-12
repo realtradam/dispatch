@@ -115,6 +115,9 @@ function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
 		isActive() {
 			return false;
 		},
+		closeConversation() {
+			return { abortedTurn: false };
+		},
 		async handleMessage(input) {
 			for (const event of events) {
 				input.onEvent(event);
@@ -142,6 +145,9 @@ function createCapturingOrchestrator(): SessionOrchestrator & {
 		isActive() {
 			return false;
 		},
+		closeConversation() {
+			return { abortedTurn: false };
+		},
 		async handleMessage(input) {
 			state.received = input;
 		},
@@ -158,6 +164,9 @@ function createThrowingOrchestrator(error: Error): SessionOrchestrator {
 		},
 		isActive() {
 			return false;
+		},
+		closeConversation() {
+			return { abortedTurn: false };
 		},
 		async handleMessage() {
 			throw error;
@@ -1085,6 +1094,43 @@ describe("throughput recording + GET /metrics/throughput", () => {
 		const app = appWith(createThroughputStore({ storage: createMemStorage() }), []);
 		const res = await app.request("/metrics/throughput?period=day");
 		expect(res.status).toBe(400);
+	});
+});
+
+describe("POST /conversations/:id/close", () => {
+	it("closes via the orchestrator and returns CloseConversationResponse", async () => {
+		const closeCalls: string[] = [];
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			closeConversation(conversationId) {
+				closeCalls.push(conversationId);
+				return { abortedTurn: true };
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv-9/close", { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ conversationId: "conv-9", abortedTurn: true });
+		expect(closeCalls).toEqual(["conv-9"]);
+	});
+
+	it("reports abortedTurn false for an idle conversation", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv-idle/close", { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ conversationId: "conv-idle", abortedTurn: false });
 	});
 });
 

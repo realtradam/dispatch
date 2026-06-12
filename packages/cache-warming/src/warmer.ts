@@ -30,8 +30,16 @@ export interface CacheWarmer {
 	/** Handle a turnSettled event — mark idle, store context, arm timer if enabled. */
 	readonly onTurnSettled: (conversationId: string, ctx: ConversationContext) => void;
 
-	/** Handle a warmCompleted event — process warm result, update surface, re-arm timer. */
+	/** Handle a warmCompleted event — process warm result, re-arm timer, update surface. */
 	readonly onWarmCompleted: (payload: WarmCompletedPayload) => void;
+
+	/**
+	 * Handle an explicit "conversation closed" (tab close ≠ disconnect): stop the
+	 * schedule and persist warming OFF for the conversation. The enabled flip is
+	 * applied to in-memory state synchronously (so a turnSettled racing this close
+	 * can never re-arm); only the settings persist is awaited.
+	 */
+	readonly onConversationClosed: (conversationId: string) => Promise<void>;
 
 	/** Get the current state for a conversation (for surface rendering). */
 	readonly getState: (conversationId: string) => ConversationState;
@@ -63,8 +71,10 @@ export interface CacheWarmerDeps {
 	readonly onSurfaceChange: () => void;
 }
 
+// Warming is OPT-IN per conversation (CR-4a): default OFF, no warm scheduled
+// until the user enables it.
 const DEFAULT_STATE: ConversationState = {
-	enabled: true,
+	enabled: false,
 	intervalMs: DEFAULT_INTERVAL_MS,
 	active: false,
 	lastPct: null,
@@ -171,6 +181,9 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 			deps.logger.debug("cache-warming: turn started", { conversationId });
 			mergeState(conversationId, { active: true });
 			cancelTimer(conversationId);
+			// Push the cleared schedule (nextWarmAt: null) so subscribers see
+			// "no warm scheduled" while the turn is generating.
+			deps.onSurfaceChange();
 		},
 
 		onTurnSettled(conversationId, ctx) {
@@ -182,6 +195,9 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 			if (state.enabled) {
 				armTimer(conversationId);
 			}
+			// Push the post-seal reschedule so subscribers get the NEW (future)
+			// nextWarmAt instead of a stale pre-turn one (CR-4b).
+			deps.onSurfaceChange();
 		},
 
 		onWarmCompleted(payload) {
@@ -204,29 +220,51 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 				lastPct: pct,
 				lastExpectedPct: expectedPct,
 				lastWarmAt: nowMs,
+				// The just-fired schedule is consumed; cleared here so a non-re-armed
+				// path never reports a stale (past) nextWarmAt.
+				nextWarmAt: null,
 			});
+
+			// Re-arm the automatic timer if enabled and not active — BEFORE the
+			// surface notify, so the pushed update carries the NEW future nextWarmAt
+			// instead of the fire time of the warm that just completed (CR-4b).
+			const updated = getState(conversationId);
+			if (updated.enabled && !updated.active) {
+				armTimer(conversationId);
+			}
+
 			deps.onSurfaceChange();
 			deps.logger.debug("cache-warming: warm complete", {
 				conversationId,
 				pct,
 				expectedPct,
 			});
-
-			// Re-arm the automatic timer if enabled and not active
-			const updated = getState(conversationId);
-			if (updated.enabled && !updated.active) {
-				armTimer(conversationId);
-			}
 		},
 
 		getState,
 		getContext,
 
+		async onConversationClosed(conversationId) {
+			deps.logger.debug("cache-warming: conversation closed", { conversationId });
+			// Synchronous part FIRST: stop the schedule + flip enabled in memory so
+			// any racing turnSettled sees enabled=false and never re-arms.
+			cancelTimer(conversationId);
+			const updated = mergeState(conversationId, { enabled: false });
+			deps.onSurfaceChange();
+			// Persist OFF so a reopened conversation stays opt-in.
+			await persistSettings(conversationId, {
+				enabled: false,
+				intervalMs: updated.intervalMs,
+			});
+		},
+
 		async setEnabled(conversationId, enabled) {
 			const settings = await loadSettings(conversationId);
 			const updated = { ...settings, enabled };
 			await persistSettings(conversationId, updated);
-			mergeState(conversationId, { enabled });
+			// Merge the FULL settings (not just `enabled`) so re-enabling restores
+			// the persisted interval into runtime state.
+			mergeState(conversationId, updated);
 
 			if (enabled) {
 				const state = getState(conversationId);

@@ -2162,3 +2162,97 @@ describe("user-message event", () => {
 		expect(tm.steps[0]?.usage.outputTokens).toBe(5);
 	});
 });
+
+describe("closeConversation (CR-4c)", () => {
+	it("aborts an in-flight turn: done.reason 'aborted', partial messages persisted, turn seals", async () => {
+		const store = createInMemoryStore();
+		let releaseStream: (() => void) | undefined;
+		const barrier = new Promise<void>((resolve) => {
+			releaseStream = resolve;
+		});
+		const provider: ProviderContract = {
+			id: "fake",
+			stream() {
+				return (async function* () {
+					yield { type: "text-delta", delta: "Hello" } as ProviderEvent;
+					await barrier;
+					yield { type: "text-delta", delta: " world" } as ProviderEvent;
+					yield { type: "finish", reason: "stop" } as ProviderEvent;
+				})();
+			},
+		};
+
+		const emittedHooks: string[] = [];
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: (hook) => {
+				emittedHooks.push(hook.id);
+			},
+		});
+
+		const events: AgentEvent[] = [];
+		let resolveSealed: (() => void) | undefined;
+		const sealed = new Promise<void>((resolve) => {
+			resolveSealed = resolve;
+		});
+		let resolveFirstDelta: (() => void) | undefined;
+		const firstDelta = new Promise<void>((resolve) => {
+			resolveFirstDelta = resolve;
+		});
+		orchestrator.subscribe("conv-close", (e) => {
+			events.push(e);
+			if (e.type === "text-delta") resolveFirstDelta?.();
+			if (e.type === "turn-sealed") resolveSealed?.();
+		});
+
+		orchestrator.startTurn({ conversationId: "conv-close", text: "Hi" });
+		await firstDelta;
+
+		const result = orchestrator.closeConversation("conv-close");
+		expect(result.abortedTurn).toBe(true);
+		expect(emittedHooks).toContain("session-orchestrator/conversation-closed");
+
+		releaseStream?.();
+		await sealed;
+
+		const done = events.find((e): e is Extract<AgentEvent, { type: "done" }> => e.type === "done");
+		expect(done?.reason).toBe("aborted");
+		expect(orchestrator.isActive("conv-close")).toBe(false);
+
+		// Durability: the partial turn persisted normally (user msg + partial reply).
+		const persisted = store.data.get("conv-close") ?? [];
+		expect(persisted.length).toBeGreaterThanOrEqual(1);
+		expect(persisted[0]?.role).toBe("user");
+	});
+
+	it("is idempotent on an idle/unknown conversation: abortedTurn false, hook still emitted", () => {
+		const store = createInMemoryStore();
+		const emitted: Array<{ hook: string; payload: unknown }> = [];
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => createFakeProvider([]),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: (hook, payload) => {
+				emitted.push({ hook: hook.id, payload });
+			},
+		});
+
+		const result = orchestrator.closeConversation("conv-never-seen");
+		expect(result.abortedTurn).toBe(false);
+		expect(emitted).toEqual([
+			{
+				hook: "session-orchestrator/conversation-closed",
+				payload: { conversationId: "conv-never-seen" },
+			},
+		]);
+
+		// Closing again is still safe.
+		expect(orchestrator.closeConversation("conv-never-seen").abortedTurn).toBe(false);
+	});
+});

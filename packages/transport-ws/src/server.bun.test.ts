@@ -147,6 +147,9 @@ function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
 		isActive(conversationId) {
 			return listeners.has(conversationId);
 		},
+		closeConversation() {
+			return { abortedTurn: false };
+		},
 		async handleMessage(_input) {
 			// Not used by the new transport-ws, but kept for interface compat.
 		},
@@ -186,6 +189,9 @@ function fakeOrchestratorWithBroadcast(): SessionOrchestrator & {
 		},
 		isActive(conversationId) {
 			return listeners.has(conversationId);
+		},
+		closeConversation() {
+			return { abortedTurn: false };
 		},
 		async handleMessage(_input) {},
 	};
