@@ -380,8 +380,9 @@ budget_tokens; `../claude` orchestrated DIRECTLY (mode A); CLI `--effort` now.
 - [x] Verified: `tsc -b` EXIT 0, biome clean, **993 vitest + 189 bun** green; all agents in-lane.
   Commits: arch-rewrite `35197ed` (contracts) + `020e051` (impl); ../claude `c0835a4`.
 - [ ] Live-verify vs claude (thinking deltas streamed at xhigh; persisted PUT honored next turn).
-- [ ] FE courier handoff (`frontend-reasoning-effort-handoff.md`): ChatRequest field + GET/PUT
-  endpoints + ladder.
+- [x] FE courier handoff written: `frontend-reasoning-effort-handoff.md` (user couriers to
+  `../dispatch-web`): ChatRequest/chat.send field + GET/PUT endpoints + ladder + default-`high`
+  semantics + cache note.
 
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max
