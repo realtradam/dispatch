@@ -1,5 +1,6 @@
 import type { AgentEvent, Logger } from "@dispatch/kernel";
 import type {
+	CloseConversationResponse,
 	ConversationHistoryResponse,
 	ConversationMetricsResponse,
 	CwdResponse,
@@ -317,6 +318,14 @@ export function createApp(opts: CreateServerOptions): Hono {
 			log.error("throughput: aggregate failed", { err });
 			return c.json({ error: "Failed to aggregate throughput" }, 502);
 		}
+	});
+
+	app.post("/conversations/:id/close", (c) => {
+		const conversationId = c.req.param("id");
+		const { abortedTurn } = opts.orchestrator.closeConversation(conversationId);
+		log.info("conversations: closed", { conversationId, abortedTurn });
+		const body: CloseConversationResponse = { conversationId, abortedTurn };
+		return c.json(body, 200);
 	});
 
 	app.get("/conversations/:id/cwd", async (c) => {

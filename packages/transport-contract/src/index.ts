@@ -167,6 +167,28 @@ export interface SetCwdRequest {
 	readonly cwd: string;
 }
 
+// ─── Conversation close (explicit tab close) ──────────────────────────────────
+
+/**
+ * Response of `POST /conversations/:id/close` (no request body).
+ *
+ * The EXPLICIT "the user closed this conversation's tab" affordance — distinct
+ * from a socket disconnect or `chat.unsubscribe`, which deliberately never touch
+ * the turn or the warming schedule. Closing:
+ *  1. aborts any in-flight turn (the kernel stops at the next event boundary,
+ *     partial messages are persisted, and the turn SEALS normally with
+ *     `finishReason: "aborted"` — watchers see `done` + `turn-sealed`), and
+ *  2. stops + disables cache-warming for the conversation (persisted OFF, so a
+ *     reopened conversation stays opt-in).
+ * Idempotent: closing an idle or unknown conversation succeeds with
+ * `abortedTurn: false`.
+ */
+export interface CloseConversationResponse {
+	readonly conversationId: string;
+	/** True when an in-flight turn existed and was aborted by this close. */
+	readonly abortedTurn: boolean;
+}
+
 // ─── Per-conversation LSP status ──────────────────────────────────────────────
 
 /** The connection state of a single language server for a workspace. */

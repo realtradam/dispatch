@@ -36,6 +36,8 @@ export type TurnEventListener = (event: AgentEvent) => void;
 interface ActiveTurn {
 	buffer: AgentEvent[];
 	turnId: string;
+	/** Aborts this turn's kernel runTurn (closeConversation). */
+	controller: AbortController;
 }
 
 // --- Lifecycle event hooks ---
@@ -54,6 +56,19 @@ export const turnStarted: EventHookDescriptor<TurnLifecyclePayload> =
 /** Fired when a turn SETTLES (sealed) for a conversation (consumers arm warming timers). */
 export const turnSettled: EventHookDescriptor<TurnLifecyclePayload> =
 	defineEventHook<TurnLifecyclePayload>("session-orchestrator/turn-settled");
+
+/** Payload for the conversationClosed bus event. */
+export interface ConversationClosedPayload {
+	readonly conversationId: string;
+}
+
+/**
+ * Fired when a client EXPLICITLY closes a conversation (tab close — NOT a mere
+ * disconnect). Consumers stop per-conversation background work (e.g. cache-warming
+ * disables its schedule). Emitted by `SessionOrchestrator.closeConversation`.
+ */
+export const conversationClosed: EventHookDescriptor<ConversationClosedPayload> =
+	defineEventHook<ConversationClosedPayload>("session-orchestrator/conversation-closed");
 
 /** Payload for the warmCompleted bus event. */
 export interface WarmCompletedPayload {
@@ -89,6 +104,15 @@ export interface SessionOrchestrator {
 	startTurn(input: StartTurnInput): StartTurnResult;
 	subscribe(conversationId: string, listener: TurnEventListener): () => void;
 	isActive(conversationId: string): boolean;
+	/**
+	 * Explicitly close a conversation (the user closed its tab — distinct from a
+	 * socket disconnect, which never touches the turn): aborts any in-flight turn
+	 * (the kernel finishes with `finishReason: "aborted"`, partial messages are
+	 * persisted and the turn seals normally) and emits the `conversationClosed`
+	 * hook so per-conversation background work (cache-warming) stops.
+	 * Idempotent — closing an idle/unknown conversation just emits the hook.
+	 */
+	closeConversation(conversationId: string): { readonly abortedTurn: boolean };
 	handleMessage(input: {
 		conversationId: string;
 		text: string;
@@ -159,7 +183,8 @@ export function createSessionOrchestrator(
 		cwd: string | undefined,
 	): void {
 		const turnId = generateTurnId();
-		activeTurns.set(conversationId, { buffer: [], turnId });
+		const controller = new AbortController();
+		activeTurns.set(conversationId, { buffer: [], turnId, controller });
 		activeConversations.add(conversationId);
 
 		emitToHub(conversationId, { type: "user-message", conversationId, turnId, text });
@@ -233,6 +258,7 @@ export function createSessionOrchestrator(
 					emit: emitAndAccumulate,
 					conversationId,
 					turnId,
+					signal: controller.signal,
 					...(modelOverride !== undefined
 						? { providerOpts: { model: modelOverride } satisfies ProviderStreamOptions }
 						: {}),
@@ -308,6 +334,16 @@ export function createSessionOrchestrator(
 
 		isActive(conversationId) {
 			return activeTurns.has(conversationId);
+		},
+
+		closeConversation(conversationId) {
+			const turn = activeTurns.get(conversationId);
+			const abortedTurn = turn !== undefined;
+			if (turn !== undefined) {
+				turn.controller.abort();
+			}
+			deps.emit?.(conversationClosed, { conversationId });
+			return { abortedTurn };
 		},
 
 		async handleMessage({ conversationId, text, onEvent, modelName, cwd }) {

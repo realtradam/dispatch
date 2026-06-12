@@ -1,6 +1,7 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import {
 	cacheWarmHandle,
+	conversationClosed,
 	turnSettled,
 	turnStarted,
 	warmCompleted,
@@ -81,6 +82,12 @@ export function activate(host: HostAPI): void {
 		warmer.onWarmCompleted(payload);
 	});
 
+	host.on(conversationClosed, (payload) => {
+		// Sync part (cancel + disable) runs before the first await inside;
+		// only the settings persist is deferred.
+		void warmer.onConversationClosed(payload.conversationId);
+	});
+
 	function getSpec(context?: SurfaceContext): SurfaceSpec {
 		const convId = context?.conversationId;
 		if (convId === undefined) {
@@ -124,6 +131,7 @@ export function activate(host: HostAPI): void {
 			id: "cache-warming",
 			region: "side",
 			title: "Cache Warming",
+			scope: "conversation",
 		},
 		getSpec,
 		invoke,

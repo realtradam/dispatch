@@ -297,8 +297,31 @@ outward stream/buffer. FE courier: `frontend-cr3-user-message-handoff.md`.
   (user-message now precedes turn-start).
 - **LIVE-VERIFIED vs flash:** a watcher that never sent receives `user-message` (correct text) as its
   FIRST `chat.delta`, before `turn-sealed`, then the streaming reply. `RESULT: OK`.
-- **Process note:** implemented directly by the orchestrator (user directive: "do implementations
-  yourself going forward") rather than via a summoned owner-agent.
+- **Process note:** implemented directly by the orchestrator as a one-off (user-approved at the
+  time). SUPERSEDED — the user has since confirmed the ORCHESTRATOR.md model governs: the
+  orchestrator summons owner-agents and does not write feature code itself.
+
+## Cache warming — FE CR-4 lifecycle + CR-1 extensions table + CR-2 catalog scope (DONE)
+FE courier in: `../dispatch-web/backend-handoff-cache-warming.md` (+ CR-1/CR-2 from their living
+`backend-handoff.md`). Courier out: `frontend-cache-warming-lifecycle-handoff.md`. Full report:
+`reports/cr4-cache-warming-lifecycle.md`.
+- **CR-4a:** warming defaults OFF (opt-in per conversation) — `parseSettings` + `DEFAULT_STATE`;
+  re-enabling now restores the persisted interval. Known gap (pre-existing, fail-safe): no boot
+  hydration of persisted opt-in across server restarts.
+- **CR-4b:** post-warm surface updates now carry the FUTURE `nextWarmAt` (re-arm BEFORE notify);
+  `turnSettled`/`turnStarted` also push (fresh schedule after seal / `null` while generating).
+- **CR-4c:** new `POST /conversations/:id/close` (tab close ≠ disconnect): aborts the in-flight
+  turn via a per-turn `AbortController` → kernel `runTurn` `signal` (partial persist + normal seal,
+  `done.reason:"aborted"`), and emits new typed hook `conversationClosed` → cache-warming disables
+  sync + persists OFF. Disconnect/`chat.unsubscribe` semantics unchanged.
+- **CR-4d:** no change — initial `surface` echo already at HEAD (FE probed a stale up2 boot).
+- **CR-1:** loaded-extensions emits count stat + ONE `custom`/`rendererId:"table"` field
+  (`TablePayload` exported); columns Name|Version|Trust|Activation, all trust tiers.
+- **CR-2:** `SurfaceCatalogEntry.scope?: "global"|"conversation"` (`ui-contract` `0.1.0→0.2.0`);
+  set on both surfaces. `transport-contract` `0.8.0→0.9.0` (additive `CloseConversationResponse`).
+- 907 tests pass (+13 new); typecheck + biome clean. **LIVE-VERIFIED vs `bin/up`:** default-off,
+  2 automatic warms @5s each pushing future `nextWarmAt`, mid-turn close → `abortedTurn:true` +
+  `done.reason:"aborted"` + warming disabled, catalog scopes + table field present, echo present.
 
 ## Open items
 - **Context window LIMIT (next, sibling of context size):** expose the selected model's max

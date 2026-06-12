@@ -139,6 +139,14 @@ export interface SurfaceCatalogEntry {
 	readonly id: string;
 	readonly region: Region;
 	readonly title: string;
+	/**
+	 * Whether the surface's spec/values differ per conversation ("conversation")
+	 * or are app-wide ("global"). A client may skip re-subscribing GLOBAL surfaces
+	 * on a conversation switch (they ignore `conversationId`). Optional + additive:
+	 * when absent, a client should assume conversation-scoped (the conservative
+	 * "always send the focused conversationId" policy still works for both).
+	 */
+	readonly scope?: "global" | "conversation";
 }
 
 /** The surface catalog: the list of available surfaces a client can choose to show. */

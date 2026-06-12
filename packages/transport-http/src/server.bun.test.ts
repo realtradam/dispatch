@@ -64,6 +64,9 @@ function fakeOrchestrator(): SessionOrchestrator {
 		isActive() {
 			return false;
 		},
+		closeConversation() {
+			return { abortedTurn: false };
+		},
 		async handleMessage() {},
 	};
 }
