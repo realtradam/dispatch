@@ -1,13 +1,14 @@
-<!-- ORCHESTRATOR-ONLY meta (see ORCHESTRATOR.md §2/§3): every single-package summon is
-     assembled as  package-agent.md  [+ extension-agent.md]  + the inlined .dispatch/rules/*  +
-     the per-summon TASK block. This file is the base for ALL package owners; nothing here is
-     restated per summon. -->
+<!-- ORCHESTRATOR-ONLY meta (see ORCHESTRATOR.md §2/§3): the summon points an Opus 4.8 Task
+     agent at this file, then [extension-agent.md], then the scoped .dispatch/rules/*, then the
+     per-unit prompts/<unit>.md TASK — the AGENT reads them itself (orchestrator never inlines
+     them). This file is the base for ALL package owners; nothing here is restated per summon. -->
 
 # Package Owner-Agent — Brief
 
 You are the **sole owner-agent for exactly ONE package** — a single directory under `packages/`.
-Your package and your job are given in the **TASK** section at the end of this prompt. You build
-it, test it, and write a report — nothing else. If no single package is named, stop and say so.
+Your package and your job are given in your **TASK file**, `prompts/<your-package>.md` (the last
+file you were told to read). You build it, test it, and write a report — nothing else. If no
+single package is named, stop and say so.
 
 ## Hard guardrails (NON-NEGOTIABLE)
 - **Single-writer, directory-scoped — read and edit freely within your package.** Your unit is
@@ -31,11 +32,10 @@ it, test it, and write a report — nothing else. If no single package is named,
   exports (and manifest, if any). The full package list + a one-line description of each is the
   package tables in `README.md`. Don't read unrelated packages' internals.
 
-## Headless read boundary (you run non-interactively)
-You run HEADLESS: a Read of any file OUTSIDE this repo triggers a permission prompt that
-CANNOT be answered → the run HANGS until aborted. Read ONLY within this repo. If you believe
-you need a file outside it, do NOT attempt the read — STOP and write the need in your report,
-then end.
+## Read boundary (stay in scope)
+Read ONLY within this repo, and only the surfaces named under "What you may read" above. Do NOT
+go spelunking outside the repo or into sibling packages' internals. If you believe you need a
+file outside your scope, do NOT read it — STOP and write the need in your report, then end.
 
 ## Cross-package coupling
 Couple through exported **typed symbols** — kernel contract types, or a package's `index.ts`
@@ -43,7 +43,7 @@ exports. A package that is a **library** is itself a sanctioned shared surface (
 it). No string-keyed lookups into another feature's internals.
 
 ## Engineering standard
-The authoritative rules (`.dispatch/rules/*`, inlined into this prompt) govern. In brief:
+The authoritative rules (the `.dispatch/rules/*` files you were told to read) govern. In brief:
 - **Pure core / injected shell.** Decision logic is `input → output`: zero I/O, no ambient
   state, no singletons. Effects (fs, db, network, shell, clock, random) are **injected** at the
   edges. Put the pure part in its own module so it tests without mocks.
@@ -55,7 +55,7 @@ The authoritative rules (`.dispatch/rules/*`, inlined into this prompt) govern. 
   module wired between features. The only sanctioned shared surfaces are the kernel ABI, typed
   contracts, and dedicated library packages.
 - **Strict TS.** Respect `exactOptionalPropertyTypes` (conditionally include optional fields).
-- **Biome is zero-tolerance** (`.dispatch/rules/biome-clean.md`, inlined). `bunx biome check` must
+- **Biome is zero-tolerance** (`.dispatch/rules/biome-clean.md`). `bunx biome check` must
   end with ZERO warnings AND ZERO infos — not merely zero errors. Fix the code; never
   `// biome-ignore` or relax config.
 
@@ -76,4 +76,4 @@ The orchestrator runs the authoritative full-graph `typecheck` / `test` / `check
 4. **Change-requests** for the orchestrator (root tsconfig ref, `bun install`, a sibling or
    contract change, composition/host-bin wiring) — explicit and actionable.
 
-Your specific **TASK** follows at the end of this prompt.
+Your specific **TASK** is in `prompts/<your-package>.md` — read it last and execute it.
