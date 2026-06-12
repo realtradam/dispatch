@@ -6,12 +6,12 @@
  * translates its responses into `ProviderEvent`s.
  */
 
-import type { Usage } from "@dispatch/wire";
+import type { ReasoningEffort, Usage } from "@dispatch/wire";
 import type { ChatMessage } from "./conversation.js";
 import type { Logger } from "./logging.js";
 import type { ToolContract } from "./tool.js";
 
-export type { Usage } from "@dispatch/wire";
+export type { ReasoningEffort, Usage } from "@dispatch/wire";
 
 /**
  * Events a provider yields during a single `stream` call. The kernel consumes
@@ -85,6 +85,14 @@ export interface ProviderStreamOptions {
 	readonly maxTokens?: number;
 	/** System prompt to prepend. */
 	readonly systemPrompt?: string;
+	/**
+	 * Reasoning-effort level for this request (already RESOLVED by the caller —
+	 * the session-orchestrator applies the request → conversation → `"high"`
+	 * default chain, so a provider receiving `undefined` may treat it as "no
+	 * preference"). The provider maps the level to its native thinking knob in
+	 * its own code; providers without such a knob ignore it.
+	 */
+	readonly reasoningEffort?: ReasoningEffort;
 	/**
 	 * Correlated logger for this turn's step (Phase A logging ABI). When present,
 	 * the provider should open a child `provider.request` span and capture the

@@ -146,6 +146,20 @@ export interface StoredChunk {
 	readonly chunk: Chunk;
 }
 
+// ─── Reasoning effort ───────────────────────────────────────────────────────
+
+/**
+ * The per-request thinking-depth knob: how much extended thinking / reasoning
+ * the model should spend before answering. Provider-agnostic ladder; each
+ * provider maps a level to its native knob in its own code (e.g. an Anthropic
+ * provider maps it to a `thinking.budget_tokens` value) and MAY ignore levels
+ * (or the field entirely) that its backend cannot express.
+ *
+ * Resolution (owned by the session-orchestrator): per-turn request value →
+ * persisted per-conversation value → default `"high"`.
+ */
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
 // ─── Usage ──────────────────────────────────────────────────────────────────
 
 /**

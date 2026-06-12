@@ -20,9 +20,15 @@
  */
 
 import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
-import type { AgentEvent, StoredChunk, TurnMetrics } from "@dispatch/wire";
+import type { AgentEvent, ReasoningEffort, StoredChunk, TurnMetrics } from "@dispatch/wire";
 
-export type { AgentEvent, StepMetrics, StoredChunk, TurnMetrics } from "@dispatch/wire";
+export type {
+	AgentEvent,
+	ReasoningEffort,
+	StepMetrics,
+	StoredChunk,
+	TurnMetrics,
+} from "@dispatch/wire";
 
 /**
  * Request body for `POST /chat` (sent as JSON).
@@ -54,6 +60,14 @@ export interface ChatRequest {
 	 * prompt (so it does not affect prompt caching).
 	 */
 	readonly cwd?: string;
+
+	/**
+	 * Reasoning-effort override for THIS turn only (does not persist). When
+	 * omitted, the server resolves the conversation's persisted value, falling
+	 * back to `"high"`. Must be one of the `ReasoningEffort` levels; an
+	 * unrecognized value → HTTP 400 `{ error }`.
+	 */
+	readonly reasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -189,6 +203,28 @@ export interface CwdResponse {
 /** Body of `PUT /conversations/:id/cwd`. */
 export interface SetCwdRequest {
 	readonly cwd: string;
+}
+
+// ─── Per-conversation reasoning effort ────────────────────────────────────────
+
+/**
+ * Response of `GET /conversations/:id/reasoning-effort`. `reasoningEffort` is
+ * null when never set (the server then resolves turns at the default,
+ * `"high"`).
+ */
+export interface ReasoningEffortResponse {
+	readonly conversationId: string;
+	readonly reasoningEffort: ReasoningEffort | null;
+}
+
+/**
+ * Body of `PUT /conversations/:id/reasoning-effort` — persists the
+ * conversation's sticky reasoning-effort level (used for every later turn that
+ * does not carry a per-turn `ChatRequest.reasoningEffort` override). An
+ * unrecognized level → HTTP 400 `{ error }`.
+ */
+export interface SetReasoningEffortRequest {
+	readonly reasoningEffort: ReasoningEffort;
 }
 
 // ─── Conversation close (explicit tab close) ──────────────────────────────────
