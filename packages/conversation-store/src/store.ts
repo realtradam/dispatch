@@ -77,6 +77,21 @@ function positiveInt(value: number | undefined): number | undefined {
 	return value;
 }
 
+/**
+ * Coerce `sinceSeq` to a non-negative integer lower bound, honoring the
+ * contract's stated forgivingness for DIRECT callers: omitted / `0` /
+ * non-positive / non-integer (incl. `NaN`/`Infinity`) all → `0` (= "from the
+ * start"). A valid non-negative integer is returned as-is. The transport layer
+ * 400s these upstream, but `loadSince` stays total on its own. Keeps `loadSince`
+ * byte-identical to the prior `?? 0` behavior for the only values any caller
+ * ever passed (omitted / `0` / non-negative integers).
+ */
+function sinceSeqBase(value: number | undefined): number {
+	if (value === undefined) return 0;
+	if (!Number.isInteger(value) || value < 0) return 0;
+	return value;
+}
+
 interface PersistedChunkEntry {
 	readonly chunk: Chunk;
 	readonly role: Role;
@@ -164,7 +179,7 @@ export function createConversationStore(
 			const sorted = [...keys].sort();
 
 			const result: StoredChunk[] = [];
-			const minSeq = sinceSeq ?? 0;
+			const minSeq = sinceSeqBase(sinceSeq);
 			// Forgiving: a non-positive / non-integer bound is treated as ABSENT.
 			const beforeSeq = positiveInt(window?.beforeSeq);
 			const limit = positiveInt(window?.limit);
