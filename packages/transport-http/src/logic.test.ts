@@ -8,6 +8,7 @@ import {
 	isValidReasoningEffort,
 	isWindowParamError,
 	parseChatBody,
+	parseQueueBody,
 	parseReasoningEffortBody,
 	parseSinceSeq,
 	parseWindowParam,
@@ -366,5 +367,62 @@ describe("parseReasoningEffortBody", () => {
 	it("returns ParseError for non-object body", () => {
 		expect(isReasoningEffortParseError(parseReasoningEffortBody(null))).toBe(true);
 		expect(isReasoningEffortParseError(parseReasoningEffortBody("string"))).toBe(true);
+	});
+});
+
+describe("parseQueueBody", () => {
+	it("returns error for null body", () => {
+		const result = parseQueueBody(null);
+		expect(isParseError(result)).toBe(true);
+		if (isParseError(result)) {
+			expect(result.error).toContain("JSON object");
+		}
+	});
+
+	it("returns error for non-object body", () => {
+		const result = parseQueueBody("hello");
+		expect(isParseError(result)).toBe(true);
+	});
+
+	it("returns error when text is missing", () => {
+		const result = parseQueueBody({});
+		expect(isParseError(result)).toBe(true);
+		if (isParseError(result)) {
+			expect(result.error).toContain("text");
+		}
+	});
+
+	it("returns error when text is empty string", () => {
+		const result = parseQueueBody({ text: "" });
+		expect(isParseError(result)).toBe(true);
+	});
+
+	it("returns error when text is whitespace only", () => {
+		const result = parseQueueBody({ text: "   " });
+		expect(isParseError(result)).toBe(true);
+	});
+
+	it("returns error when text is not a string", () => {
+		const result = parseQueueBody({ text: 42 });
+		expect(isParseError(result)).toBe(true);
+		if (isParseError(result)) {
+			expect(result.error).toContain("text");
+		}
+	});
+
+	it("returns the trimmed text for a valid body", () => {
+		const result = parseQueueBody({ text: "hello" });
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.text).toBe("hello");
+		}
+	});
+
+	it("trims text whitespace", () => {
+		const result = parseQueueBody({ text: "  hello world  " });
+		expect(isParseError(result)).toBe(false);
+		if (!isParseError(result)) {
+			expect(result.text).toBe("hello world");
+		}
 	});
 });

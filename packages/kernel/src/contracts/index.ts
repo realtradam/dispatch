@@ -38,6 +38,7 @@ export type {
 	TurnReasoningDeltaEvent,
 	TurnSealedEvent,
 	TurnStartEvent,
+	TurnSteeringEvent,
 	TurnStepCompleteEvent,
 	TurnTextDeltaEvent,
 	TurnToolCallEvent,

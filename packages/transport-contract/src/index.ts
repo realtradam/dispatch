@@ -20,10 +20,17 @@
  */
 
 import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
-import type { AgentEvent, ReasoningEffort, StoredChunk, TurnMetrics } from "@dispatch/wire";
+import type {
+	AgentEvent,
+	QueuedMessage,
+	ReasoningEffort,
+	StoredChunk,
+	TurnMetrics,
+} from "@dispatch/wire";
 
 export type {
 	AgentEvent,
+	QueuedMessage,
 	ReasoningEffort,
 	StepMetrics,
 	StoredChunk,
@@ -249,6 +256,41 @@ export interface CloseConversationResponse {
 	readonly abortedTurn: boolean;
 }
 
+// ─── Message queue (steering) ─────────────────────────────────────────────────
+
+/**
+ * Request body for `POST /conversations/:id/queue` — enqueue a user message
+ * onto a conversation's message queue for mid-turn steering delivery.
+ *
+ * When a turn is ACTIVE for the conversation, the message is appended to the
+ * queue (the message-queue extension's per-conversation SURFACE updates) and
+ * delivered at the next tool-result boundary as a steering message the model
+ * sees alongside the tool results (a `steering` `AgentEvent` is emitted). When
+ * NO turn is active, enqueuing instead STARTS a new turn with the message as its
+ * opening prompt (equivalent to `POST /chat`) — so a fire-and-forget enqueue
+ * works regardless of generation state. The resolved queue + whether a turn was
+ * started are returned in `QueueResponse`.
+ *
+ * `text` must be non-empty (after trim) → HTTP 400 `{ error }` otherwise.
+ */
+export interface QueueRequest {
+	readonly text: string;
+}
+
+/**
+ * Response body for `POST /conversations/:id/queue` — the conversation's queue
+ * snapshot AFTER the enqueue, so a client renders the queue from this alone.
+ * `conversationId` echoes the path. `startedTurn` is true when no turn was
+ * active and the enqueue started a new turn (the message is now the turn's
+ * opening prompt, not a queued steering message); the turn's events stream on
+ * the chat channel as usual.
+ */
+export interface QueueResponse {
+	readonly conversationId: string;
+	readonly startedTurn: boolean;
+	readonly queue: readonly QueuedMessage[];
+}
+
 // ─── Per-conversation LSP status ──────────────────────────────────────────────
 
 /** The connection state of a single language server for a workspace. */
@@ -404,6 +446,23 @@ export interface ChatUnsubscribeMessage {
 }
 
 /**
+ * Client → server: enqueue a message onto a conversation's message queue while
+ * a turn is generating (steering). The WebSocket counterpart of the HTTP
+ * `POST /conversations/:id/queue` (`QueueRequest`). Fire-and-forget: success is
+ * confirmed by the message-queue SURFACE updating (the FE renders the queue
+ * from the surface, not from a reply here); a failure (malformed/empty text,
+ * unknown conversation) arrives as a `chat.error`. When no turn is active, the
+ * enqueue starts a new turn (the turn's events stream as `chat.delta`s), so a
+ * client reuses this op for both "queue while generating" and "send" (the
+ * latter being equivalent to `chat.send`).
+ */
+export interface ChatQueueMessage {
+	readonly type: "chat.queue";
+	readonly conversationId: string;
+	readonly text: string;
+}
+
+/**
  * Every client → server WS message: surface ops (`@dispatch/ui-contract`) + chat
  * ops. A server discriminates on `type`.
  */
@@ -411,7 +470,8 @@ export type WsClientMessage =
 	| SurfaceClientMessage
 	| ChatSendMessage
 	| ChatSubscribeMessage
-	| ChatUnsubscribeMessage;
+	| ChatUnsubscribeMessage
+	| ChatQueueMessage;
 
 /**
  * Every server → client WS message: surface ops (`@dispatch/ui-contract`) + chat

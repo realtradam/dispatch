@@ -224,6 +224,37 @@ export interface TurnMetrics {
 	readonly contextSize?: number;
 }
 
+// ─── Message queue + steering ───────────────────────────────────────────────
+
+/**
+ * A user message held in a conversation's message queue, awaiting mid-turn
+ * steering delivery. The message-queue extension owns the queue and exposes it
+ * as a per-conversation `custom` surface field; this type is the shared shape
+ * the surface payload, the enqueue response, and the extension's service all
+ * use (so a separate frontend repo can depend on the wire alone to render it).
+ */
+export interface QueuedMessage {
+	/** Stable id (client-visible) for UI keying + dedup. */
+	readonly id: string;
+	/** The message text the client enqueued. */
+	readonly text: string;
+	/** When the message was enqueued (epoch-ms). */
+	readonly queuedAt: number;
+}
+
+/**
+ * The payload of the message-queue extension's per-conversation `custom`
+ * surface field (`rendererId: "message-queue"`): the current queue snapshot a
+ * frontend renders. Carried on the SURFACE channel (NOT the chat stream) — the
+ * queue is control/state, distinct from turn content. An empty `messages`
+ * array means the queue is empty (no pending steering). The frontend moves a
+ * message from this queue surface into the transcript when it is drained (the
+ * surface clears) and/or when the matching `TurnSteeringEvent` arrives.
+ */
+export interface QueuePayload {
+	readonly messages: readonly QueuedMessage[];
+}
+
 // ─── Outward events ─────────────────────────────────────────────────────────
 
 /**
@@ -243,7 +274,8 @@ export type AgentEvent =
 	| TurnStepCompleteEvent
 	| TurnErrorEvent
 	| TurnDoneEvent
-	| TurnSealedEvent;
+	| TurnSealedEvent
+	| TurnSteeringEvent;
 
 /** Status change for a conversation (e.g. idle → running). */
 export interface StatusEvent {
@@ -439,4 +471,28 @@ export interface TurnSealedEvent {
 	readonly type: "turn-sealed";
 	readonly conversationId: string;
 	readonly turnId: string;
+}
+
+/**
+ * A steering message was injected into an in-flight turn at the tool-result
+ * boundary (the model sees it alongside the tool results and may adjust
+ * course). Drawn from the conversation's message queue (which the drain
+ * clears); the cleared queue arrives as a message-queue SURFACE update, while
+ * THIS event carries the injected `text` so a frontend can place a user bubble
+ * in the transcript live — and so a late-joining watcher sees it before seal
+ * (mirroring `TurnInputEvent` for the opening prompt; emitted into the
+ * in-flight buffer by the session-orchestrator).
+ *
+ * Emitted by the session-orchestrator (in its `drainSteering` wrapper) only
+ * when the kernel drained a non-empty queue at a tool-result boundary. If the
+ * turn instead ENDS with a non-empty queue (no tool call fired), the queue is
+ * carried into a NEW turn whose opening `user-message` event covers the
+ * transcript — so no `steering` event is emitted in that case. One `steering`
+ * event per drain; the combined text of all drained messages.
+ */
+export interface TurnSteeringEvent {
+	readonly type: "steering";
+	readonly conversationId: string;
+	readonly turnId: string;
+	readonly text: string;
 }

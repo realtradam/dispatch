@@ -22,6 +22,7 @@
 		{ "path": "./packages/tool-write-file" },
 		{ "path": "./packages/skills" },
 		{ "path": "./packages/cache-warming" },
+		{ "path": "./packages/message-queue" },
 		{ "path": "./packages/lsp" },
 		{ "path": "./packages/cli" },
 		{ "path": "./packages/journal-sink" },

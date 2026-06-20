@@ -4,8 +4,8 @@
 	"include": ["src/**/*.ts"],
 	"references": [
 		{ "path": "../kernel" },
-		{ "path": "../conversation-store" },
-		{ "path": "../credential-store" },
-		{ "path": "../message-queue" }
+		{ "path": "../surface-registry" },
+		{ "path": "../ui-contract" },
+		{ "path": "../wire" }
 	]
 }

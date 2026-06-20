@@ -8,6 +8,7 @@
 	"dependencies": {
 		"@dispatch/kernel": "workspace:*",
 		"@dispatch/conversation-store": "workspace:*",
-		"@dispatch/credential-store": "workspace:*"
+		"@dispatch/credential-store": "workspace:*",
+		"@dispatch/message-queue": "workspace:*"
 	}
 }

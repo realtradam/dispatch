@@ -1,7 +1,8 @@
 import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
+import type { WsClientMessage } from "@dispatch/transport-contract";
 import type { SurfaceCatalogEntry, SurfaceSpec } from "@dispatch/ui-contract";
 import { describe, expect, it } from "vitest";
-import { catalogMessage, routeClientMessage, subKey } from "./router.js";
+import { catalogMessage, type RouteResult, routeClientMessage, subKey } from "./router.js";
 
 // ── Fake in-memory registry (no mocks — just a plain implementation) ────────
 
@@ -448,6 +449,114 @@ describe("routeClientMessage", () => {
 			});
 
 			expect(result).toEqual({ kind: "chat-unsubscribe", conversationId: "conv-abc" });
+		});
+	});
+
+	describe("chat.queue", () => {
+		it("routes a valid chat.queue → { kind: 'chat-queue', conversationId, text } (what the shell passes to orchestrator.enqueue)", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.queue",
+				conversationId: "conv-1",
+				text: "steer here",
+			});
+
+			expect(result).toEqual({
+				kind: "chat-queue",
+				conversationId: "conv-1",
+				text: "steer here",
+			});
+		});
+
+		it("rejects empty/whitespace text → chat-error (no enqueue signal)", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			for (const text of ["", "   ", "\t\n"]) {
+				const result = routeClientMessage(registry, connSubs, {
+					type: "chat.queue",
+					conversationId: "conv-1",
+					text,
+				});
+
+				expect(result.kind).toBe("chat-error");
+				if (result.kind !== "chat-error") throw new Error("expected chat-error");
+				expect(result.conversationId).toBe("conv-1");
+				expect(result.errorMessage).toContain("non-empty string");
+				expect(result.errorMessage).toContain("text");
+			}
+		});
+
+		it("rejects missing text → chat-error (no enqueue signal)", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.queue",
+				conversationId: "conv-1",
+				text: undefined as unknown as string,
+			});
+
+			expect(result.kind).toBe("chat-error");
+			if (result.kind !== "chat-error") throw new Error("expected chat-error");
+			expect(result.errorMessage).toContain("non-empty string");
+		});
+
+		it("does not trim the stored text — passes the original through to the shell", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			// Non-empty after trim (so valid), but the value carries surrounding
+			// whitespace: the router passes it through unchanged (validation uses
+			// trim; the orchestrator receives the original text).
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.queue",
+				conversationId: "conv-1",
+				text: "  steer  ",
+			});
+
+			expect(result.kind).toBe("chat-queue");
+			if (result.kind !== "chat-queue") throw new Error("expected chat-queue");
+			expect(result.text).toBe("  steer  ");
+		});
+	});
+
+	describe("exhaustive switch (regression guard for Wave-0 fan-out)", () => {
+		// Every WsClientMessage variant must route to a defined result with a
+		// known kind — no fall-through / undefined return. If the union is
+		// widened again, `tsc` catches the missing case (the switch is
+		// exhaustive); this test guards the runtime side of that contract.
+		it("routes every WsClientMessage variant to a defined RouteResult", () => {
+			const provider = fakeProvider("a", "Surface A", ["toggle"]);
+			const registry = fakeRegistry([provider]);
+			const connSubs = new Set<string>();
+
+			const samples: WsClientMessage[] = [
+				{ type: "subscribe", surfaceId: "a" },
+				{ type: "unsubscribe", surfaceId: "a" },
+				{ type: "invoke", surfaceId: "a", actionId: "toggle", payload: true },
+				{ type: "chat.send", message: "hi" },
+				{ type: "chat.subscribe", conversationId: "c1" },
+				{ type: "chat.unsubscribe", conversationId: "c1" },
+				{ type: "chat.queue", conversationId: "c1", text: "steer" },
+			];
+
+			const validKinds = new Set<RouteResult["kind"]>([
+				"surface",
+				"chat",
+				"chat-error",
+				"chat-subscribe",
+				"chat-unsubscribe",
+				"chat-queue",
+			]);
+
+			for (const msg of samples) {
+				const result = routeClientMessage(registry, connSubs, msg);
+				expect(result).toBeDefined();
+				expect(validKinds.has(result.kind)).toBe(true);
+			}
 		});
 	});
 });

@@ -34,6 +34,9 @@
 | **hook** | A typed extension point. **event** = fire-and-forget, N listeners, error-isolated. **filter** = ordered value-in→value-out chain, in-band. | callback (when meaning a hook), listener |
 | **service** | A single-responder request/response capability fetched via a typed handle. NOT a hook. | — |
 | **dispatch policy** | `{ maxConcurrent, eager }` controlling how the turn loop runs a step's tool calls. | — |
+| **message queue** | The per-conversation buffer of user messages a client (FE or CLI) enqueues while a turn is GENERATING, awaiting mid-turn steering delivery. Owned by the `message-queue` extension; exposed to the frontend as a per-conversation `custom` surface (`rendererId: "message-queue"`, `QueuePayload`). Enqueuing when no turn is active starts a new turn instead. | steering queue, pending queue |
+| **steering** | A user message injected into an in-flight turn at the tool-result boundary (drawn from the message queue), so the model sees it alongside the tool results and can adjust course mid-turn. Emitted on the chat stream as a `steering` `AgentEvent`. If the turn ENDS with a non-empty queue (no tool call fired), the queue is instead carried into a NEW turn as its opening prompt. | interjection, mid-turn input |
+| **queued message** | An item in the message queue: `{ id, text, queuedAt }`. The unit the frontend renders in the queue surface. | pending message |
 | **reconcile** | The pure function run on load that repairs a partial/interrupted turn into a valid history. | recover, repair |
 | **session-orchestrator** | The core extension that drives a turn: load history → resolve provider/tools → call `runTurn` → persist. | — |
 | **conversation-store** | The core extension persisting the append-only turn/chunk log. | message store |
