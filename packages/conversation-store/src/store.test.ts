@@ -301,6 +301,29 @@ describe("ConversationStore", () => {
 		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "c" });
 	});
 
+	it("loadSince treats a non-positive / non-integer sinceSeq as 0 (from the start), honoring the contract", async () => {
+		const store = createConversationStore(storage);
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "a" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "b" }] },
+			{ role: "user", chunks: [{ type: "text", text: "c" }] },
+		];
+		await store.append("conv1", messages);
+		const all = [1, 2, 3];
+		// Non-positive integers → from the start (already worked; now codified).
+		expect((await store.loadSince("conv1", 0)).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", -2)).map((c) => c.seq)).toEqual(all);
+		// Non-integer values → from the start (the contract lie this fixes:
+		// a positive non-integer like 2.5 used to filter like sinceSeq=2).
+		expect((await store.loadSince("conv1", 2.5)).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", 2.7)).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", -2.5)).map((c) => c.seq)).toEqual(all);
+		expect((await store.loadSince("conv1", Number.POSITIVE_INFINITY)).map((c) => c.seq)).toEqual(
+			all,
+		);
+		expect((await store.loadSince("conv1", Number.NaN)).map((c) => c.seq)).toEqual(all);
+	});
+
 	it("load() round-trips the exact ChatMessage[] that was appended", async () => {
 		const store = createConversationStore(storage);
 		const messages: ChatMessage[] = [
