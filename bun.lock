@@ -97,6 +97,16 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/message-queue": {
+      "name": "@dispatch/message-queue",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/surface-registry": "workspace:*",
+        "@dispatch/ui-contract": "workspace:*",
+        "@dispatch/wire": "workspace:*",
+      },
+    },
     "packages/observability-collector": {
       "name": "@dispatch/observability-collector",
       "version": "0.0.0",
@@ -120,6 +130,7 @@
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/message-queue": "workspace:*",
       },
     },
     "packages/skills": {
@@ -182,6 +193,13 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/tool-web-search": {
+      "name": "@dispatch/tool-web-search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/tool-write-file": {
       "name": "@dispatch/tool-write-file",
       "version": "0.0.0",
@@ -202,7 +220,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.5.0",
+      "version": "0.12.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
@@ -235,11 +253,11 @@
     },
     "packages/ui-contract": {
       "name": "@dispatch/ui-contract",
-      "version": "0.1.0",
+      "version": "0.2.0",
     },
     "packages/wire": {
       "name": "@dispatch/wire",
-      "version": "0.4.0",
+      "version": "0.8.0",
     },
   },
   "packages": {
@@ -279,6 +297,8 @@
 
     "@dispatch/lsp": ["@dispatch/lsp@workspace:packages/lsp"],
 
+    "@dispatch/message-queue": ["@dispatch/message-queue@workspace:packages/message-queue"],
+
     "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
 
     "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
@@ -300,6 +320,8 @@
     "@dispatch/tool-read-file": ["@dispatch/tool-read-file@workspace:packages/tool-read-file"],
 
     "@dispatch/tool-shell": ["@dispatch/tool-shell@workspace:packages/tool-shell"],
+
+    "@dispatch/tool-web-search": ["@dispatch/tool-web-search@workspace:packages/tool-web-search"],
 
     "@dispatch/tool-write-file": ["@dispatch/tool-write-file@workspace:packages/tool-write-file"],
 

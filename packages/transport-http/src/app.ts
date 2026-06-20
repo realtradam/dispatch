@@ -7,6 +7,7 @@ import type {
 	LspServerInfo,
 	LspStatusResponse,
 	ModelsResponse,
+	QueueResponse,
 	ReasoningEffortResponse,
 	ThroughputResponse,
 	WarmResponse,
@@ -21,6 +22,7 @@ import {
 	isSinceSeqError,
 	isWindowParamError,
 	parseChatBody,
+	parseQueueBody,
 	parseReasoningEffortBody,
 	parseSinceSeq,
 	parseWarmBody,
@@ -368,6 +370,40 @@ export function createApp(opts: CreateServerOptions): Hono {
 		log.info("conversations: closed", { conversationId, abortedTurn });
 		const body: CloseConversationResponse = { conversationId, abortedTurn };
 		return c.json(body, 200);
+	});
+
+	app.post("/conversations/:id/queue", async (c) => {
+		const conversationId = c.req.param("id");
+
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("conversations/queue: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		const parsed = parseQueueBody(body);
+		if (isParseError(parsed)) {
+			log.warn("conversations/queue: validation failed", { reason: parsed.error });
+			return c.json({ error: parsed.error }, 400);
+		}
+
+		// `enqueue` is synchronous and owns the idle→startTurn vs active→queue
+		// decision (no separate `isActive` race) — it does not throw for an
+		// unknown/idle conversation, which instead starts a turn. Mirrors the
+		// direct sync call used by `POST /conversations/:id/close`.
+		const { startedTurn, queue } = opts.orchestrator.enqueue({
+			conversationId,
+			text: parsed.text,
+		});
+		log.info("conversations: enqueued", {
+			conversationId,
+			startedTurn,
+			queueLength: queue.length,
+		});
+		const response: QueueResponse = { conversationId, startedTurn, queue };
+		return c.json(response, 200);
 	});
 
 	app.get("/conversations/:id/cwd", async (c) => {

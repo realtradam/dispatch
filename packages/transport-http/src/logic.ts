@@ -73,8 +73,8 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
 	return result;
 }
 
-export function isParseError(result: ParseResult): result is ParseError {
-	return "error" in result;
+export function isParseError<T>(result: T | ParseError): result is ParseError {
+	return typeof result === "object" && result !== null && "error" in result;
 }
 
 export function serializeEventLine(event: AgentEvent): string {
@@ -170,6 +170,37 @@ export function computeExpectedCacheRate(
 	const denom = cacheReadTokens + cacheWriteTokens;
 	if (denom <= 0) return 0;
 	return Math.round((cacheReadTokens / denom) * 100);
+}
+
+/**
+ * Parsed body for `POST /conversations/:id/queue` (`QueueRequest`). Only the
+ * `text` field — `conversationId` comes from the path param, not the body, so it
+ * is deliberately NOT part of this parse result.
+ */
+export interface QueueBodyParsed {
+	readonly text: string;
+}
+
+/**
+ * Parse + validate a `POST /conversations/:id/queue` body (`QueueRequest`).
+ * `text` must be a non-empty string after trim — invalid/missing →
+ * {@link ParseError}. The TRIMMED text is returned (forwarded to
+ * `orchestrator.enqueue`), mirroring how `parseChatBody` forwards a trimmed
+ * `message`.
+ */
+export function parseQueueBody(body: unknown): QueueBodyParsed | ParseError {
+	if (body === null || typeof body !== "object") {
+		return { error: "Request body must be a JSON object" };
+	}
+
+	const obj = body as Record<string, unknown>;
+
+	const text = obj.text;
+	if (typeof text !== "string" || text.trim().length === 0) {
+		return { error: "Field 'text' is required and must be a non-empty string" };
+	}
+
+	return { text: text.trim() };
 }
 
 export function parseReasoningEffortBody(body: unknown): ReasoningEffort | ParseError {

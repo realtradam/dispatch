@@ -1,6 +1,7 @@
 export { createTransportWsExtension } from "./extension.js";
 export { manifest } from "./manifest.js";
 export type {
+	ChatQueueRouteResult,
 	ChatRouteError,
 	ChatRouteResult,
 	ChatSubscribeRouteResult,

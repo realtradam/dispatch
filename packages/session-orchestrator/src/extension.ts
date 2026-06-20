@@ -2,6 +2,7 @@ import { conversationStoreHandle } from "@dispatch/conversation-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
+import { messageQueueHandle } from "@dispatch/message-queue";
 import {
 	cacheWarmHandle,
 	createSessionOrchestrator,
@@ -49,6 +50,15 @@ export function activate(host: HostAPI): void {
 		logger: host.logger,
 		now: () => Date.now(),
 		emit: (hook, payload) => host.emit(hook, payload),
+		resolveQueue: () => {
+			// Lazily resolve the message-queue service. Returns undefined when the
+			// extension isn't loaded (feature degrades off) — checked via the
+			// activated-manifests list so `host.getService` is only called when the
+			// service is registered. Lazy so activation order with message-queue
+			// doesn't matter; called per-turn / per-enqueue, not at activate time.
+			const loaded = host.getExtensions().some((m) => m.id === "message-queue");
+			return loaded ? host.getService(messageQueueHandle) : undefined;
+		},
 	});
 
 	host.provideService(sessionOrchestratorHandle, orchestrator);

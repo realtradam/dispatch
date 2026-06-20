@@ -8,7 +8,11 @@ import type {
 	TurnMetrics,
 } from "@dispatch/kernel";
 import { createThroughputStore, dayKeyOf } from "@dispatch/throughput-store";
-import type { ThroughputResponse } from "@dispatch/transport-contract";
+import type {
+	QueuedMessage,
+	QueueResponse,
+	ThroughputResponse,
+} from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import type {
@@ -132,6 +136,9 @@ function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
 		isActive() {
 			return false;
 		},
+		enqueue() {
+			return { startedTurn: false, queue: [] };
+		},
 		closeConversation() {
 			return { abortedTurn: false };
 		},
@@ -162,6 +169,9 @@ function createCapturingOrchestrator(): SessionOrchestrator & {
 		isActive() {
 			return false;
 		},
+		enqueue() {
+			return { startedTurn: false, queue: [] };
+		},
 		closeConversation() {
 			return { abortedTurn: false };
 		},
@@ -181,6 +191,9 @@ function createThrowingOrchestrator(error: Error): SessionOrchestrator {
 		},
 		isActive() {
 			return false;
+		},
+		enqueue() {
+			return { startedTurn: false, queue: [] };
 		},
 		closeConversation() {
 			return { abortedTurn: false };
@@ -1316,6 +1329,269 @@ describe("POST /conversations/:id/close", () => {
 		const res = await app.request("/conversations/conv-idle/close", { method: "POST" });
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ conversationId: "conv-idle", abortedTurn: false });
+	});
+});
+
+describe("POST /conversations/:id/queue", () => {
+	it("with valid text → 200 + QueueResponse (startedTurn + queue)", async () => {
+		const queue: readonly QueuedMessage[] = [
+			{ id: "q1", text: "queued-msg", queuedAt: 1700000000000 },
+		];
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			enqueue() {
+				return { startedTurn: false, queue };
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "hello" }),
+		});
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as QueueResponse;
+		expect(body.conversationId).toBe("conv1");
+		expect(body.startedTurn).toBe(false);
+		expect(body.queue).toEqual(queue);
+	});
+
+	it("with empty/whitespace text → 400 { error } and enqueue is never called", async () => {
+		let enqueueCalled = false;
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			enqueue() {
+				enqueueCalled = true;
+				return { startedTurn: false, queue: [] };
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "   " }),
+		});
+
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("text");
+		expect(enqueueCalled).toBe(false);
+	});
+
+	it("with missing text field → 400 { error } and enqueue is never called", async () => {
+		let enqueueCalled = false;
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			enqueue() {
+				enqueueCalled = true;
+				return { startedTurn: false, queue: [] };
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("text");
+		expect(enqueueCalled).toBe(false);
+	});
+
+	it("enqueue returns startedTurn:true (was idle) → response echoes it", async () => {
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			enqueue() {
+				return { startedTurn: true, queue: [] };
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv-idle/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "go" }),
+		});
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as QueueResponse;
+		expect(body.conversationId).toBe("conv-idle");
+		expect(body.startedTurn).toBe(true);
+		expect(body.queue).toEqual([]);
+	});
+
+	it("enqueue returns startedTurn:false (was active) → response carries the queue snapshot", async () => {
+		const queue: readonly QueuedMessage[] = [
+			{ id: "q1", text: "second", queuedAt: 1700000000000 },
+			{ id: "q2", text: "third", queuedAt: 1700000001000 },
+		];
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			enqueue() {
+				return { startedTurn: false, queue };
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv-active/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "steer" }),
+		});
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as QueueResponse;
+		expect(body.conversationId).toBe("conv-active");
+		expect(body.startedTurn).toBe(false);
+		expect(body.queue).toEqual(queue);
+	});
+
+	it("forwards the path conversationId and trimmed text to enqueue", async () => {
+		const calls: { conversationId: string; text: string }[] = [];
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			enqueue(input) {
+				calls.push(input);
+				return { startedTurn: false, queue: [] };
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv-1/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "  hello world  " }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.conversationId).toBe("conv-1");
+		expect(calls[0]?.text).toBe("hello world");
+	});
+
+	it("returns 400 for invalid JSON body", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "not json",
+		});
+
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("JSON");
+	});
+
+	it("returns 400 for a non-string text", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: 42 }),
+		});
+
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("text");
+	});
+
+	it("logs an info line on success and never logs the enqueued text", async () => {
+		const logger = createFakeLogger();
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			enqueue() {
+				return { startedTurn: true, queue: [] };
+			},
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger,
+		});
+
+		await app.request("/conversations/conv1/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "secret-ish user message" }),
+		});
+
+		const infoLogs = logger.records.filter((r) => r.level === "info");
+		expect(infoLogs).toHaveLength(1);
+		expect(infoLogs[0]?.msg).toBe("conversations: enqueued");
+		expect(infoLogs[0]?.attrs?.conversationId).toBe("conv1");
+		expect(infoLogs[0]?.attrs?.startedTurn).toBe(true);
+		expect(infoLogs[0]?.attrs?.queueLength).toBe(0);
+		// Restraint: the user's message text is never logged (mirrors POST /chat).
+		expect(JSON.stringify(logger.records)).not.toContain("secret-ish user message");
+	});
+
+	it("logs a warn on a malformed body (400)", async () => {
+		const logger = createFakeLogger();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger,
+		});
+
+		await app.request("/conversations/conv1/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "" }),
+		});
+
+		const warnLogs = logger.records.filter((r) => r.level === "warn");
+		expect(warnLogs.length).toBeGreaterThanOrEqual(1);
+		expect(warnLogs[0]?.msg).toBe("conversations/queue: validation failed");
 	});
 });
 

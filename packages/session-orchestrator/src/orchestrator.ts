@@ -15,6 +15,7 @@ import type {
 	UsageEvent,
 } from "@dispatch/kernel";
 import { defineEventHook, defineService, type ServiceHandle } from "@dispatch/kernel";
+import type { MessageQueueService, QueuedMessage } from "@dispatch/message-queue";
 import { createMetricsAccumulator } from "./metrics.js";
 import {
 	buildUserMessage,
@@ -37,6 +38,25 @@ export interface StartTurnInput {
 export type StartTurnResult =
 	| { readonly started: true; readonly turnId: string }
 	| { readonly started: false; readonly reason: "already-active" };
+
+/** Input to `SessionOrchestrator.enqueue` — the single entry transports call. */
+export interface EnqueueInput {
+	readonly conversationId: string;
+	readonly text: string;
+}
+
+/**
+ * Result of `SessionOrchestrator.enqueue`. When `startedTurn` is true the
+ * conversation was idle and a turn was started (the message is the opening
+ * prompt — nothing queued). When false the conversation was active: the message
+ * was enqueued onto the steering queue and `queue` is the post-enqueue snapshot
+ * (empty when the message-queue extension isn't loaded — degraded: the message
+ * is dropped, see `enqueue` docs).
+ */
+export interface EnqueueResult {
+	readonly startedTurn: boolean;
+	readonly queue: readonly QueuedMessage[];
+}
 
 export type TurnEventListener = (event: AgentEvent) => void;
 
@@ -109,6 +129,16 @@ export const cacheWarmHandle: ServiceHandle<WarmService> = defineService<WarmSer
 
 export interface SessionOrchestrator {
 	startTurn(input: StartTurnInput): StartTurnResult;
+	/**
+	 * The single entry transports call to deliver a user message. Owns the
+	 * idle→startTurn vs active→queue decision (no separate `isActive` race —
+	 * `startTurn`'s single-flight guard is authoritative). When the conversation
+	 * is idle, starts a turn (the message is the opening prompt). When active,
+	 * enqueues onto the steering queue (if the message-queue extension is
+	 * loaded); with no queue extension loaded the message is dropped and the
+	 * returned snapshot is empty (degraded — feature off).
+	 */
+	enqueue(input: EnqueueInput): EnqueueResult;
 	subscribe(conversationId: string, listener: TurnEventListener): () => void;
 	isActive(conversationId: string): boolean;
 	/**
@@ -143,6 +173,16 @@ export interface SessionOrchestratorDeps {
 		modelName: string,
 	) => { provider: ProviderContract; model: string } | undefined;
 	readonly runTurn: (input: RunTurnInput) => Promise<RunTurnResult>;
+	/**
+	 * Lazily resolves the message-queue service (the steering queue), or
+	 * `undefined` when the message-queue extension isn't loaded (the feature
+	 * degrades off: no `drainSteering`, no post-seal carry, `enqueue` drops
+	 * messages when active). host-bin wires this via `host.getService`; the
+	 * orchestrator calls it per-turn / per-enqueue so activation order with the
+	 * message-queue extension doesn't matter. Injected (not ambient) so a turn
+	 * stays reproducible from its inputs and tests use a fake queue.
+	 */
+	readonly resolveQueue?: () => MessageQueueService | undefined;
 	/** Apply the per-turn tools filter chain. Injected for testability. */
 	readonly applyToolsFilter: (assembly: ToolAssembly) => Promise<ToolAssembly>;
 	/** Base logger (auto-scoped to this extension); childed per turn for span capture. */
@@ -184,6 +224,25 @@ export function createSessionOrchestrator(
 		}
 	}
 
+	/**
+	 * Post-seal carry: if a steering queue is available and non-empty, drain it,
+	 * combine, and start a NEW detached turn whose opening `user-message` carries
+	 * the combined text (no `steering` event — that's only for mid-turn drain).
+	 * Returns true iff a new turn was started. Called from `runTurnDetached`'s
+	 * finally AFTER `activeTurns.delete` (so the new turn's single-flight guard
+	 * passes) and BEFORE `activeConversations.delete` (skipped when carried, since
+	 * the new turn re-adds it). May chain — the new turn's own finally re-checks.
+	 */
+	function tryCarryQueue(conversationId: string): boolean {
+		const queue = deps.resolveQueue?.();
+		if (queue === undefined) return false;
+		if (queue.getQueue(conversationId).length === 0) return false;
+		const drained = queue.drain(conversationId);
+		const combined = drained.map((q) => q.text).join("\n\n");
+		const result = orchestrator.startTurn({ conversationId, text: combined });
+		return result.started;
+	}
+
 	function runTurnDetached(
 		conversationId: string,
 		text: string,
@@ -218,6 +277,7 @@ export function createSessionOrchestrator(
 		});
 
 		void (async () => {
+			let sealed = false;
 			try {
 				const [effectiveCwd, storedEffort] = await Promise.all([
 					effectiveCwdPromise,
@@ -273,6 +333,30 @@ export function createSessionOrchestrator(
 					...(modelOverride !== undefined ? { model: modelOverride } : {}),
 				};
 
+				// Resolve the steering queue once for this turn. When present, wire
+				// `drainSteering`: the kernel calls it at the tool-result boundary and
+				// appends whatever it returns as user-role messages alongside the tool
+				// results (mid-turn steering). The wrapper emits a `steering` AgentEvent
+				// into the hub (buffered for late-join like `user-message`) so a
+				// frontend can place a user bubble in the transcript live; the kernel
+				// only appends the returned messages — it does NOT emit the event.
+				const queue = deps.resolveQueue?.();
+				const drainSteering =
+					queue === undefined
+						? undefined
+						: (): readonly ChatMessage[] => {
+								const queued = queue.drain(conversationId);
+								if (queued.length === 0) return [];
+								const steerText = queued.map((q) => q.text).join("\n\n");
+								emitToHub(conversationId, {
+									type: "steering",
+									conversationId,
+									turnId,
+									text: steerText,
+								});
+								return [{ role: "user", chunks: [{ type: "text", text: steerText }] }];
+							};
+
 				const opts: RunTurnInput = {
 					provider,
 					messages: [...history, userMsg],
@@ -286,6 +370,7 @@ export function createSessionOrchestrator(
 					...(turnLogger !== undefined ? { logger: turnLogger } : {}),
 					...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
 					...(deps.now !== undefined ? { now: deps.now } : {}),
+					...(drainSteering !== undefined ? { drainSteering } : {}),
 				};
 
 				const result = await deps.runTurn(opts);
@@ -297,6 +382,7 @@ export function createSessionOrchestrator(
 				await deps.conversationStore.appendMetrics(conversationId, turnMetrics);
 
 				emitToHub(conversationId, { type: "turn-sealed", conversationId, turnId });
+				sealed = true;
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				emitToHub(conversationId, {
@@ -307,7 +393,16 @@ export function createSessionOrchestrator(
 				});
 			} finally {
 				activeTurns.delete(conversationId);
-				activeConversations.delete(conversationId);
+				// Post-seal carry: if the turn sealed with a non-empty steering queue
+				// (no tool call fired → drainSteering never drained it), start a NEW
+				// detached turn whose opening user-message carries the combined text.
+				// The new turn re-adds to activeTurns + activeConversations, so skip
+				// the activeConversations.delete when carried. May chain (user keeps
+				// steering) — each carried turn's own finally re-checks the queue.
+				const carried = sealed && tryCarryQueue(conversationId);
+				if (!carried) {
+					activeConversations.delete(conversationId);
+				}
 				void payloadPromise.then((payload) => {
 					deps.emit?.(turnSettled, payload);
 				});
@@ -324,6 +419,19 @@ export function createSessionOrchestrator(
 			const turn = activeTurns.get(conversationId);
 			const turnId = turn !== undefined ? turn.turnId : "";
 			return { started: true, turnId };
+		},
+
+		enqueue({ conversationId, text }) {
+			const result = orchestrator.startTurn({ conversationId, text });
+			if (result.started) {
+				return { startedTurn: true, queue: [] };
+			}
+			// Already active → enqueue onto the steering queue. When the
+			// message-queue extension isn't loaded this degrades: the message is
+			// dropped and the snapshot is empty (feature off).
+			const queue = deps.resolveQueue?.();
+			const snapshot = queue !== undefined ? queue.enqueue(conversationId, text) : [];
+			return { startedTurn: false, queue: snapshot };
 		},
 
 		subscribe(conversationId, listener) {

@@ -5,7 +5,7 @@ import type { LogDeps, Logger, LogRecord, LogSink } from "../contracts/logging.j
 import type { ProviderContract, ProviderEvent } from "../contracts/provider.js";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "../contracts/tool.js";
 import { createLogger } from "../logging/logger.js";
-import { runTurn } from "./run-turn.js";
+import { MAX_STEPS, runTurn } from "./run-turn.js";
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => {
@@ -27,6 +27,28 @@ function createFakeProvider(script: ProviderEvent[][]): ProviderContract {
 			})();
 		},
 	};
+}
+
+function createCapturingProvider(script: ProviderEvent[][]): {
+	provider: ProviderContract;
+	capturedMessages: ChatMessage[][];
+} {
+	const capturedMessages: ChatMessage[][] = [];
+	let callIndex = 0;
+	const provider: ProviderContract = {
+		id: "fake",
+		stream(messages, _tools) {
+			capturedMessages.push([...messages]);
+			const events = script[callIndex] ?? [];
+			callIndex++;
+			return (async function* () {
+				for (const event of events) {
+					yield event;
+				}
+			})();
+		},
+	};
+	return { provider, capturedMessages };
 }
 
 function createFakeTool(
@@ -2575,6 +2597,228 @@ describe("runTurn", () => {
 				expect(doneEvt.contextSize).toBeUndefined();
 				expect(doneEvt.usage).toBeUndefined();
 			}
+		});
+	});
+
+	describe("drainSteering", () => {
+		it("drainSteering called once at the tool-result boundary; returned messages appended to the next step's provider input (after tool results)", async () => {
+			let drainCallCount = 0;
+			const steeringMessage: ChatMessage = {
+				role: "user",
+				chunks: [{ type: "text", text: "steer!" }],
+			};
+
+			const { provider, capturedMessages } = createCapturingProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				drainSteering: () => {
+					drainCallCount++;
+					return [steeringMessage];
+				},
+			});
+
+			expect(drainCallCount).toBe(1);
+			// The provider was called twice (tool-call step, then text step).
+			expect(capturedMessages).toHaveLength(2);
+			const secondStepMessages = capturedMessages[1] ?? [];
+			// user, assistant(tool-call), tool-result, steering(user) — in order,
+			// steering appended AFTER the tool results, before the next call.
+			expect(secondStepMessages).toHaveLength(4);
+			expect(secondStepMessages[0]?.role).toBe("user");
+			expect(secondStepMessages[1]?.role).toBe("assistant");
+			expect(secondStepMessages[2]?.role).toBe("tool");
+			expect(secondStepMessages[3]).toEqual(steeringMessage);
+			expect(secondStepMessages[3]?.role).toBe("user");
+			// Steering is fed to the next provider call, NOT surfaced in the
+			// turn result — the caller owns the steering messages' lifecycle.
+			expect(result.messages).toHaveLength(3);
+		});
+
+		it("drainSteering omitted → no injection; turn byte-identical to before", async () => {
+			const { provider, capturedMessages } = createCapturingProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				// drainSteering omitted — must be a strict no-op.
+			});
+
+			expect(capturedMessages).toHaveLength(2);
+			const secondStepMessages = capturedMessages[1] ?? [];
+			// user, assistant(tool-call), tool-result — NO steering injected.
+			expect(secondStepMessages).toHaveLength(3);
+			expect(secondStepMessages[0]?.role).toBe("user");
+			expect(secondStepMessages[1]?.role).toBe("assistant");
+			expect(secondStepMessages[2]?.role).toBe("tool");
+			expect(result.messages).toHaveLength(3);
+		});
+
+		it("drainSteering returns [] → no injection", async () => {
+			let drainCallCount = 0;
+			const { provider, capturedMessages } = createCapturingProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				drainSteering: () => {
+					drainCallCount++;
+					return [];
+				},
+			});
+
+			// Called at the boundary, but returned nothing → no injection.
+			expect(drainCallCount).toBe(1);
+			expect(capturedMessages).toHaveLength(2);
+			const secondStepMessages = capturedMessages[1] ?? [];
+			expect(secondStepMessages).toHaveLength(3);
+			expect(secondStepMessages[2]?.role).toBe("tool");
+		});
+
+		it("drainSteering NOT called when a step has no tool calls (text-only turn)", async () => {
+			let drainCallCount = 0;
+			const provider = createFakeProvider([
+				[
+					{ type: "text-delta", delta: "hello" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				drainSteering: () => {
+					drainCallCount++;
+					return [];
+				},
+			});
+
+			expect(drainCallCount).toBe(0);
+		});
+
+		it("multiple tool-call steps → drainSteering called once per tool-call step", async () => {
+			let drainCallCount = 0;
+			const provider = createFakeProvider([
+				[
+					{ type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "tool-call", toolCallId: "tc2", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				],
+				[
+					{ type: "text-delta", delta: "done" },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				drainSteering: () => {
+					drainCallCount++;
+					return [];
+				},
+			});
+
+			// Steps 0 and 1 each produced tool calls → drained once each.
+			// Step 2 (text-only) → no boundary → no drain. Total = 2.
+			expect(drainCallCount).toBe(2);
+		});
+
+		it("drainSteering NOT called when max-steps ends the turn after a tool-call step (no next step → no drain)", async () => {
+			let drainCallCount = 0;
+			// Every step produces a tool call → the turn runs to MAX_STEPS.
+			const script: ProviderEvent[][] = Array.from({ length: MAX_STEPS }, () => [
+				{ type: "tool-call", toolCallId: "tc", toolName: "echo", input: {} },
+				{ type: "finish", reason: "tool-calls" },
+			]);
+			const provider = createFakeProvider(script);
+
+			const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [tool],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit: () => {},
+				drainSteering: () => {
+					drainCallCount++;
+					return [];
+				},
+			});
+
+			expect(result.finishReason).toBe("max-steps");
+			// MAX_STEPS tool-call steps (indices 0..MAX_STEPS-1). Drained on every
+			// step that is followed by a next step (0..MAX_STEPS-2 = MAX_STEPS-1
+			// calls); the final step is the max-steps boundary → no next step →
+			// no drain (queue left intact for the caller).
+			expect(drainCallCount).toBe(MAX_STEPS - 1);
 		});
 	});
 });

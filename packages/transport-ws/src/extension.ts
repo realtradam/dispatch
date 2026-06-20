@@ -255,6 +255,28 @@ export function createTransportWsExtension(): Extension {
 								break;
 							}
 
+							case "chat-queue": {
+								// Fire-and-forget: success is confirmed by the message-queue
+								// SURFACE updating (startedTurn:false) or by streaming
+								// chat.deltas (startedTurn:true), NOT by a reply here. On
+								// startedTurn:true the sender is auto-subscribed so the new
+								// turn's events stream to it (same as chat.send); on
+								// startedTurn:false (queued for steering) we emit NOTHING
+								// back and do not auto-subscribe.
+								const enqueueResult = orchestrator.enqueue({
+									conversationId: result.conversationId,
+									text: result.text,
+								});
+								if (enqueueResult.startedTurn) {
+									ensureChatSubscribed(ws, state, result.conversationId);
+								}
+								logger.info?.("transport-ws: chat.queue accepted", {
+									conversationId: result.conversationId,
+									startedTurn: enqueueResult.startedTurn,
+								});
+								break;
+							}
+
 							case "chat-error": {
 								logger.warn?.("transport-ws: malformed chat.send", {
 									reason: result.errorMessage,

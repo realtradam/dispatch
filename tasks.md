@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **894 vitest + transport bun green**.
+`tsc -b` EXIT 0 · biome clean · **1043 vitest + transport bun green**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -384,6 +384,46 @@ budget_tokens; `../claude` orchestrated DIRECTLY (mode A); CLI `--effort` now.
   `../dispatch-web`): ChatRequest/chat.send field + GET/PUT endpoints + ladder + default-`high`
   semantics + cache note.
 
+## Message queue + steering injection (DONE)
+Design: this file's roadmap item 3 (now implemented). User-gated calls: a **separate
+`message-queue` standard extension** (dependsOn `surface-registry`) owns the queue STATE +
+a per-conversation `custom` surface; the **session-orchestrator** owns delivery (drain →
+inject → carry) + emits the `steering` event (it owns the chat hub — no `chatEmit` service
+needed); the **kernel** gets a generic `drainSteering` callback. Glossary: added
+**message queue**, **steering**, **queued message**. Enqueue when idle **starts a turn**
+(user choice; `chat.queue` degrades to `chat.send`). Steering text rendered live via a new
+additive `steering` `AgentEvent`; queue state via the surface (NOT the chat stream).
+- **Wave 0 (orchestrator, contracts):** `RunTurnInput.drainSteering?: () => readonly
+  ChatMessage[]` (kernel contract — generic, kernel stays pure); `QueuedMessage` +
+  `QueuePayload` + `TurnSteeringEvent` (type `"steering"`, additive to `AgentEvent`) in
+  `@dispatch/wire` (`0.7.0→0.8.0`); `POST /conversations/:id/queue` + WS `chat.queue` op +
+  `QueueRequest`/`QueueResponse` in `@dispatch/transport-contract` (`0.11.0→0.12.0`). typecheck
+  clean except the expected transport-ws exhaustive-switch fan-out (fixed in Wave 3).
+- **Wave 1 (parallel ×2, disjoint):** `kernel` runtime — calls `drainSteering` at the
+  tool-result boundary only when continuing to a next step (gated; no drain on max-steps),
+  +6 pure tests (65 total); `message-queue` (NEW ext) — pure queue core (enqueue/getQueue/
+  drain/combine) + `MessageQueueService`/`messageQueueHandle` + per-conversation `custom`
+  surface (`rendererId:"message-queue"`, `QueuePayload`), 12 tests. (The message-queue agent
+  DIED mid-task after writing all src+tests but before verifying/reporting; orchestrator
+  recovered by running `bun install` + root tsconfig ref + verifying directly — tsc/vitest/
+  biome clean, 12 tests pass; no hand-fixing of impl.)
+- **Wave 2:** `session-orchestrator` — added `enqueue` facade (idle→`startTurn`,
+  active→queue.enqueue) + `resolveQueue?` dep (self-wired lazily in `activate` via
+  `host.getService(messageQueueHandle)` — host-bin does NOT wire it) + `drainSteering` wrapper
+  (drain → emit `steering` → return one combined user `ChatMessage`) + post-seal carry
+  (non-empty queue → new turn), +8 tests (85 total). `message-queue` is an OPTIONAL dep
+  (feature degrades off if absent).
+- **Wave 3 (parallel ×3):** `host-bin` — registered `message-queue` in `CORE_EXTENSIONS`
+  (+dep+ref), 28 tests; `transport-http` — `POST /conversations/:id/queue` route + validation,
+  145 tests; `transport-ws` — `chat.queue` op + fixed the Wave-0 exhaustive-switch fan-out,
+  29 vitest + 20 bun.
+- Verified: `tsc -b` EXIT 0, biome clean (280 files), **1043 vitest + 199 transport bun** pass;
+  all agents in-lane. **Boot smoke:** private instance boots clean with `message-queue`
+  registered (no activation crash).
+- [x] FE courier handoff written: `frontend-message-queue-handoff.md` (user couriers to
+  `../dispatch-web`): surface (`rendererId:"message-queue"`), `chat.queue` WS op, `steering`
+  event, HTTP `POST /queue`, auto-start-when-idle, carry semantics, version bumps.
+
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max
   context-window token limit so the FE can render `contextSize / limit` (e.g. `1286 / 200000`).
@@ -420,19 +460,12 @@ budget_tokens; `../claude` orchestrated DIRECTLY (mode A); CLI `--effort` now.
      whole conversation).
    - **send, no `--queue` flag (default):** BLOCKING — sends, waits for the
      turn to settle, returns the AI's last message (same shape as the read).
-   - **send with `--queue`:** enqueues the message into the conversation's
-     message queue (roadmap item 3) and exits immediately.
-3. **Message queue + steering injection (backend core; prerequisite for the
-   `--queue` flag in item 2):** a per-conversation queue a client (FE or CLI)
-   can push a message onto while a turn is GENERATING. Delivery semantics:
-   - On the turn's next TOOL CALL, queued messages are injected as "steering"
-     messages returned alongside the tool result (the model sees them
-     mid-turn and can adjust course).
-   - If the turn ends before any tool call fires, the queued messages are
-     COMBINED and sent as a fresh user message starting a NEW turn.
-   - FE queueing UX (queue while generating) couriered to `../dispatch-web`.
-   Touches the kernel turn loop (injection at the tool-result boundary) — a
-   contract-first design pass needed before summoning.
+    - **send with `--queue`:** enqueues the message into the conversation's
+      message queue (DONE — see "Message queue + steering injection" above; the
+      `POST /conversations/:id/queue` endpoint + `chat.queue` WS op ship it) and
+      exits immediately.
+ 3. **Message queue + steering injection — DONE** (see the milestone section above;
+    prerequisite for item 2's `--queue` flag met).
 4. **CLI flag to open/activate an FE tab:** optional CLI flag (new or existing
    conversation) that makes an already-open frontend open the conversation as a
    tab and mark it active. Does NOT exist today — no backend→FE "open/focus
@@ -442,7 +475,18 @@ budget_tokens; `../claude` orchestrated DIRECTLY (mode A); CLI `--effort` now.
 5. **`todo` tool** — a per-conversation task-list tool the model maintains
    (like opencode's todowrite/todoread), as a standard tool extension; likely a
    surface so the FE can render the live list.
-6. **`web_search` tool** — a web search tool (like old dispatch's;
-   reference-only source at `../dispatch-source`), as a standard tool extension.
+ 6. **`web_search` tool** — a web search tool (like old dispatch's;
+    reference-only source at `../dispatch-source`), as a standard tool extension.
+ 7. **Message queue — close-with-queued-messages (deferred product decision):**
+    if a client closes a conversation (`POST /conversations/:id/close`) while the
+    queue is non-empty, the carry currently still fires (starts a new turn on the
+    closed conversation). Decide: does closing discard pending steering, or honor
+    it? If "discard," gate the carry on `finishReason !== "aborted"` in
+    session-orchestrator (one-line). No FE action either way.
+ 8. **Live-verify the steering flow (once the frontend is complete):** run a live
+    `chat.queue` → tool-call → `steering` event flow against a real tool-calling
+    model, end-to-end. The logic is unit/integration tested + boot-smoke-clean;
+    this is the live end-to-end smoke. Blocked on the frontend wiring the queue
+    surface + `chat.queue` op (or run it backend-only with a probe client).
 
-(Done and dropped from the list: CLI; dedup / storage growth.)
+(Done and dropped from the list: CLI; dedup / storage growth; message queue + steering injection.)

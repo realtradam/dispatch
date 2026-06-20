@@ -5,6 +5,7 @@
 	"references": [
 		{ "path": "../cache-warming" },
 		{ "path": "../kernel" },
+		{ "path": "../message-queue" },
 		{ "path": "../storage-sqlite" },
 		{ "path": "../surface-loaded-extensions" },
 		{ "path": "../surface-registry" },

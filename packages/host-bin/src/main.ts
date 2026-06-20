@@ -20,6 +20,7 @@ import {
 	type StorageNamespace,
 } from "@dispatch/kernel";
 import { extension as lspExt } from "@dispatch/lsp";
+import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
 import { extension as skillsExt } from "@dispatch/skills";
@@ -73,6 +74,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	toolShellExt,
 	toolWriteFileExt,
 	throughputStoreExt,
+	messageQueueExt,
 	sessionOrchestratorExt,
 	skillsExt,
 	cacheWarmingExt,

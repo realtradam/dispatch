@@ -96,22 +96,31 @@ interface FakeOrchestratorOpts {
 	readonly startTurn?: SessionOrchestrator["startTurn"];
 	/** If true, startTurn always returns already-active. */
 	readonly alreadyActive?: boolean;
+	/** Custom enqueue impl. */
+	readonly enqueue?: SessionOrchestrator["enqueue"];
+	/** If true, enqueue reports the conversation was active (startedTurn:false). */
+	readonly queueActive?: boolean;
 }
 
 function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
 	readonly listeners: Map<string, Set<TurnEventListener>>;
 	readonly startCalls: readonly { conversationId: string; text: string }[];
+	readonly enqueueCalls: readonly { conversationId: string; text: string }[];
 	readonly aborted: boolean;
 } {
 	const listeners = opts?.listeners ?? new Map<string, Set<TurnEventListener>>();
 	const bufferedEvents = opts?.bufferedEvents ?? new Map<string, readonly AgentEvent[]>();
 	const startCalls: { conversationId: string; text: string }[] = [];
+	const enqueueCalls: { conversationId: string; text: string }[] = [];
 	const aborted = false;
 
 	return {
 		listeners,
 		get startCalls() {
 			return startCalls;
+		},
+		get enqueueCalls() {
+			return enqueueCalls;
 		},
 		get aborted() {
 			return aborted;
@@ -125,6 +134,16 @@ function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
 				return { started: false, reason: "already-active" };
 			}
 			return { started: true, turnId: "fake-turn-id" };
+		},
+		enqueue(input) {
+			enqueueCalls.push({ conversationId: input.conversationId, text: input.text });
+			if (opts?.enqueue) {
+				return opts.enqueue(input);
+			}
+			if (opts?.queueActive) {
+				return { startedTurn: false, queue: [] };
+			}
+			return { startedTurn: true, queue: [] };
 		},
 		subscribe(conversationId, listener) {
 			let set = listeners.get(conversationId);
@@ -159,12 +178,15 @@ function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
 /** Create a fake orchestrator that broadcasts events when `broadcast` is called. */
 function fakeOrchestratorWithBroadcast(): SessionOrchestrator & {
 	readonly listeners: Map<string, Set<TurnEventListener>>;
+	readonly enqueueCalls: readonly { conversationId: string; text: string }[];
 	broadcast(conversationId: string, event: AgentEvent): void;
 } {
 	const listeners = new Map<string, Set<TurnEventListener>>();
+	const enqueueCalls: { conversationId: string; text: string }[] = [];
 
 	return {
 		listeners,
+		enqueueCalls,
 		broadcast(conversationId, event) {
 			const set = listeners.get(conversationId);
 			if (set) {
@@ -175,6 +197,10 @@ function fakeOrchestratorWithBroadcast(): SessionOrchestrator & {
 		},
 		startTurn(_input) {
 			return { started: true, turnId: "fake-turn-id" };
+		},
+		enqueue(input) {
+			enqueueCalls.push({ conversationId: input.conversationId, text: input.text });
+			return { startedTurn: true, queue: [] };
 		},
 		subscribe(conversationId, listener) {
 			let set = listeners.get(conversationId);
@@ -320,6 +346,29 @@ function startServer(
 							dispose();
 							state.chatSubscriptions.delete(result.conversationId);
 						}
+						break;
+					}
+
+					case "chat-queue": {
+						// Mirror extension.ts: fire-and-forget. On startedTurn:true
+						// auto-subscribe the sender (deltas stream); on false emit
+						// nothing back.
+						const enqueueResult = orchestrator.enqueue({
+							conversationId: result.conversationId,
+							text: result.text,
+						});
+						if (enqueueResult.startedTurn) {
+							if (!state.chatSubscriptions.has(result.conversationId)) {
+								const unsubscribe = orchestrator.subscribe(result.conversationId, (event) => {
+									ws.send(JSON.stringify({ type: "chat.delta", event }));
+								});
+								state.chatSubscriptions.set(result.conversationId, unsubscribe);
+							}
+						}
+						log.info?.("transport-ws: chat.queue accepted", {
+							conversationId: result.conversationId,
+							startedTurn: enqueueResult.startedTurn,
+						});
 						break;
 					}
 
@@ -644,6 +693,136 @@ describe("chat ops (new orchestrator API)", () => {
 		if (msg.type === "chat.delta") {
 			expect(msg.event).toEqual(event);
 		}
+
+		ws.close();
+	});
+});
+
+describe("chat.queue (steering enqueue)", () => {
+	let server: ReturnType<typeof Bun.serve>;
+	let port: number;
+
+	afterEach(() => {
+		server.stop();
+	});
+
+	test("chat.queue with valid text → orchestrator.enqueue called with {conversationId, text}, no reply sent", async () => {
+		const orch = fakeOrchestrator(); // idle → startedTurn:true
+		const registry = fakeRegistry([]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		ws.send(JSON.stringify({ type: "chat.queue", conversationId: "c1", text: "steer please" }));
+		// Allow the message handler to run.
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(orch.enqueueCalls).toEqual([{ conversationId: "c1", text: "steer please" }]);
+		// chat.send-path equivalence: enqueue NOT called via startTurn.
+		expect(orch.startCalls).toHaveLength(0);
+		// Fire-and-forget: no chat.error, no ack — only the catalog was sent.
+		// (startedTurn:true path auto-subscribes but emits nothing itself.)
+
+		ws.close();
+	});
+
+	test("chat.queue on startedTurn:true auto-subscribes the sender (deltas stream as chat.delta)", async () => {
+		const orch = fakeOrchestratorWithBroadcast(); // enqueue → startedTurn:true
+		const registry = fakeRegistry([]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		ws.send(JSON.stringify({ type: "chat.queue", conversationId: "c1", text: "go" }));
+		await new Promise((r) => setTimeout(r, 50));
+
+		// The sender was auto-subscribed — a broadcast reaches it as a chat.delta.
+		const event = {
+			type: "text-delta",
+			conversationId: "c1",
+			turnId: "t1",
+			delta: "Hi",
+		} as AgentEvent;
+		orch.broadcast("c1", event);
+
+		const msg = await waitForMessage(ws);
+		expect(msg.type).toBe("chat.delta");
+		if (msg.type === "chat.delta") {
+			expect(msg.event).toEqual(event);
+		}
+
+		ws.close();
+	});
+
+	test("chat.queue on startedTurn:false (queued for steering) emits NOTHING back", async () => {
+		const orch = fakeOrchestrator({ queueActive: true }); // enqueue → startedTurn:false
+		const registry = fakeRegistry([]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		ws.send(JSON.stringify({ type: "chat.queue", conversationId: "c1", text: "steer" }));
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(orch.enqueueCalls).toEqual([{ conversationId: "c1", text: "steer" }]);
+		// No further message should arrive within a quiet window: success is
+		// confirmed by the message-queue SURFACE, not a reply here. We assert
+		// by NOT receiving anything (a silent socket).
+		await expect(
+			Promise.race([
+				waitForMessage(ws).then((m) => new Error(`unexpected reply: ${JSON.stringify(m)}`)),
+				new Promise((resolve) => setTimeout(() => resolve("silent"), 150)),
+			]),
+		).resolves.toBe("silent");
+
+		ws.close();
+	});
+
+	test("chat.queue with empty text → chat.error to client, no enqueue", async () => {
+		const orch = fakeOrchestrator();
+		const registry = fakeRegistry([]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		ws.send(JSON.stringify({ type: "chat.queue", conversationId: "c1", text: "   " }));
+		const errMsg = await waitForMessage(ws);
+
+		expect(errMsg.type).toBe("chat.error");
+		if (errMsg.type === "chat.error") {
+			expect(errMsg.conversationId).toBe("c1");
+			expect(errMsg.message).toContain("non-empty string");
+		}
+		expect(orch.enqueueCalls).toHaveLength(0);
+
+		ws.close();
+	});
+
+	test("chat.queue with missing text → chat.error to client, no enqueue", async () => {
+		const orch = fakeOrchestrator();
+		const registry = fakeRegistry([]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		ws.send(JSON.stringify({ type: "chat.queue", conversationId: "c1" }));
+		const errMsg = await waitForMessage(ws);
+
+		expect(errMsg.type).toBe("chat.error");
+		if (errMsg.type === "chat.error") {
+			expect(errMsg.message).toContain("non-empty string");
+		}
+		expect(orch.enqueueCalls).toHaveLength(0);
 
 		ws.close();
 	});

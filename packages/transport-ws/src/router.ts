@@ -9,6 +9,7 @@
 
 import type { SurfaceContext, SurfaceRegistry } from "@dispatch/surface-registry";
 import type {
+	ChatQueueMessage,
 	ChatSendMessage,
 	ChatSubscribeMessage,
 	ChatUnsubscribeMessage,
@@ -68,13 +69,27 @@ export interface ChatUnsubscribeRouteResult {
 	readonly conversationId: string;
 }
 
+/**
+ * The effect a validated chat.queue should produce. The shell calls
+ * `orchestrator.enqueue({ conversationId, text })` and emits NOTHING back on
+ * either path (fire-and-forget): success is confirmed by the message-queue
+ * SURFACE updating (startedTurn:false) or by streaming chat.deltas
+ * (startedTurn:true — the shell auto-subscribes the sender, same as chat.send).
+ */
+export interface ChatQueueRouteResult {
+	readonly kind: "chat-queue";
+	readonly conversationId: string;
+	readonly text: string;
+}
+
 /** The effect any client WS message should produce. */
 export type RouteResult =
 	| SurfaceRouteResult
 	| ChatRouteResult
 	| ChatRouteError
 	| ChatSubscribeRouteResult
-	| ChatUnsubscribeRouteResult;
+	| ChatUnsubscribeRouteResult
+	| ChatQueueRouteResult;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -118,6 +133,8 @@ export function routeClientMessage(
 			return handleChatSubscribe(msg);
 		case "chat.unsubscribe":
 			return handleChatUnsubscribe(msg);
+		case "chat.queue":
+			return handleChatQueue(msg);
 	}
 }
 
@@ -162,6 +179,27 @@ function handleChatSubscribe(msg: ChatSubscribeMessage): ChatSubscribeRouteResul
 
 function handleChatUnsubscribe(msg: ChatUnsubscribeMessage): ChatUnsubscribeRouteResult {
 	return { kind: "chat-unsubscribe", conversationId: msg.conversationId };
+}
+
+/**
+ * Validate a chat.queue: `text` must be a non-empty string AFTER TRIM (matches
+ * the HTTP `QueueRequest` rule). Invalid → `chat-error` (the shell replies with
+ * `chat.error`, same style as a malformed `chat.send`; the orchestrator is never
+ * called). Valid → `chat-queue` (the shell calls `orchestrator.enqueue`).
+ */
+function handleChatQueue(msg: ChatQueueMessage): ChatQueueRouteResult | ChatRouteError {
+	if (typeof msg.text !== "string" || msg.text.trim().length === 0) {
+		return {
+			kind: "chat-error",
+			conversationId: msg.conversationId,
+			errorMessage: "chat.queue requires a non-empty string `text`",
+		};
+	}
+	return {
+		kind: "chat-queue",
+		conversationId: msg.conversationId,
+		text: msg.text,
+	};
 }
 
 // ── Per-message handlers ────────────────────────────────────────────────────

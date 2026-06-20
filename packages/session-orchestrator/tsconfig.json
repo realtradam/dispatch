@@ -5,6 +5,7 @@
 	"references": [
 		{ "path": "../kernel" },
 		{ "path": "../conversation-store" },
-		{ "path": "../credential-store" }
+		{ "path": "../credential-store" },
+		{ "path": "../message-queue" }
 	]
 }

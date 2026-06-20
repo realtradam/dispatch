@@ -100,6 +100,23 @@ export interface RunTurnInput {
 	 * absent) — backward-compatible with callers that don't provide a clock.
 	 */
 	readonly now?: () => number;
+
+	/**
+	 * Optional. Called by the runtime at the tool-result boundary — after a
+	 * step whose tool calls have all executed, before the next step begins —
+	 * to drain messages to inject alongside the tool results. Whatever it
+	 * returns is appended as user-role messages to the next step's input, so
+	 * a caller can inject mid-turn guidance the model sees with the tool
+	 * results. When omitted or returning an empty array, no injection happens
+	 * (the runtime is unchanged).
+	 *
+	 * Injected (not ambient) so the kernel stays pure: it owns no queue and
+	 * names no feature — it just calls the callback and appends what it gets.
+	 * Only invoked when a step PRODUCED tool calls (the tool-result boundary);
+	 * a step that ends without tool calls does not drain (the caller decides
+	 * what to do with any pending messages after the turn ends).
+	 */
+	readonly drainSteering?: () => readonly ChatMessage[];
 }
 
 /**

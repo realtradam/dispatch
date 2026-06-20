@@ -68,6 +68,9 @@ function fakeOrchestrator(): SessionOrchestrator {
 		isActive() {
 			return false;
 		},
+		enqueue() {
+			return { startedTurn: false, queue: [] };
+		},
 		closeConversation() {
 			return { abortedTurn: false };
 		},

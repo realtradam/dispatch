@@ -5,6 +5,8 @@ export {
 	conversationClosed,
 	createSessionOrchestrator,
 	createWarmService,
+	type EnqueueInput,
+	type EnqueueResult,
 	type SessionOrchestrator,
 	type SessionOrchestratorBundle,
 	type SessionOrchestratorDeps,

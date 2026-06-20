@@ -538,6 +538,19 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 
 			if (step === MAX_STEPS - 1) {
 				finishReason = "max-steps";
+				// No next step → no tool-result boundary. Leave any pending
+				// steering messages for the caller (it owns the queue).
+			} else {
+				// Tool-result boundary: this step produced tool calls and we are
+				// about to call provider.stream again. Drain steering messages
+				// and append them after the tool results, before the next call.
+				// The kernel owns no queue and names no feature — it just calls
+				// the callback and appends. Emits nothing (caller emits the
+				// `steering` AgentEvent in its own wrapper).
+				const steering = input.drainSteering?.() ?? [];
+				for (const msg of steering) {
+					messages.push(msg);
+				}
 			}
 		}
 	} finally {
