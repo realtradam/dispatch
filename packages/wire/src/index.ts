@@ -535,12 +535,12 @@ export interface ConversationMeta {
  * Result of a compaction operation. `summary` is the text the model produced;
  * `messagesKept` is how many recent messages were retained after the summary;
  * `messagesSummarized` is how many old messages were replaced by the summary.
- * `archiveId` is the ID of the new conversation that holds the full
+ * `newConversationId` is the ID of the new conversation that holds the full
  * pre-compaction history (non-destructive — the original history is preserved).
  */
 export interface CompactionResult {
 	readonly summary: string;
-	readonly archiveId: string;
+	readonly newConversationId: string;
 	readonly messagesSummarized: number;
 	readonly messagesKept: number;
 }

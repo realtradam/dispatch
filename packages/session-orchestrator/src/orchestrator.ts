@@ -132,7 +132,7 @@ export const conversationStatusChanged: EventHookDescriptor<ConversationStatusCh
 /** Payload for the conversationCompacted bus event. */
 export interface ConversationCompactedPayload {
 	readonly conversationId: string;
-	readonly archiveId: string;
+	readonly newConversationId: string;
 	readonly messagesSummarized: number;
 	readonly messagesKept: number;
 }
@@ -802,8 +802,11 @@ export function createCompactionService(
 				return { error: "model produced empty summary" };
 			}
 
-			// Non-destructive: fork the full pre-compaction history to an
-			// archive conversation before replacing it.
+			// Non-destructive: fork the full pre-compaction history to a new
+			// archive conversation. The original conversation keeps its ID
+			// (so messaging between agents still works) and gets the compacted
+			// content. The archive inherits the original's compactedFrom,
+			// creating a chain: A → Y → X → ...
 			const archiveId = crypto.randomUUID();
 			await deps.conversationStore.forkHistory(conversationId, archiveId);
 
@@ -823,14 +826,14 @@ export function createCompactionService(
 
 			const result: CompactionResult = {
 				summary,
-				archiveId,
+				newConversationId: archiveId,
 				messagesSummarized: toSummarize.length,
 				messagesKept: toKeep.length,
 			};
 
 			deps.emit(conversationCompacted, {
 				conversationId,
-				archiveId,
+				newConversationId: archiveId,
 				messagesSummarized: toSummarize.length,
 				messagesKept: toKeep.length,
 			});

@@ -4,12 +4,41 @@ Courier this to `../dispatch-web`. All changes are ADDITIVE.
 
 ## What shipped (backend)
 
-Conversation compaction: summarize old history and replace it with a summary +
-retain the most recent N messages. Two modes:
+Conversation compaction: summarize old history into a summary + recent N,
+preserving the full pre-compaction history in a separate archive conversation.
+Creates a linked chain of archives you can walk backward.
+
+Two modes:
 - **Manual**: `POST /conversations/:id/compact` — triggers immediately.
 - **Automatic**: after each turn settles, the backend checks if the last turn's
-  input tokens exceeded the per-conversation `compactThreshold`. If so,
-  compaction runs automatically (fire-and-forget, non-blocking).
+  input tokens exceeded the per-conversation `compactThreshold` (default 350000).
+  If so, compaction runs automatically (fire-and-forget, non-blocking).
+
+## How compaction works — non-destructive, chained
+
+The compacted conversation **keeps its original ID** (so messaging between
+agents still works). The old full history is **forked** to a new archive
+conversation (new UUID). The archive inherits the source's `compactedFrom`,
+creating a chain:
+
+```
+Compaction 1:  A (ID "abc") — full history forked to X (new ID).
+               A's history replaced with [summary + recent N].
+               A.compactedFrom = X
+
+Compaction 2:  A (ID "abc") — current history forked to Y (new ID).
+               A's history replaced with [new summary + recent N].
+               A.compactedFrom = Y
+               Y.compactedFrom = X (inherited from A's pre-compaction state)
+
+Chain: A → Y → X  (walk compactedFrom backward)
+```
+
+Each archive is an **immutable snapshot** — a complete copy of the conversation
+at the time of that compaction. History is never destroyed.
+
+The FE **does not switch tabs** — the conversation ID doesn't change. Just
+reload the history.
 
 ## Bump pinned deps
 - `@dispatch/wire` → `0.11.0`
@@ -32,7 +61,7 @@ export interface ConversationMeta {
 // @dispatch/wire
 export interface CompactionResult {
   readonly summary: string;
-  readonly archiveId: string;  // ID of the archive conversation with full pre-compaction history
+  readonly newConversationId: string;  // ID of the archive (old full history)
   readonly messagesSummarized: number;
   readonly messagesKept: number;
 }
@@ -40,8 +69,8 @@ export interface CompactionResult {
 // @dispatch/transport-contract — WS message (server → client)
 export interface ConversationCompactedMessage {
   readonly type: "conversation.compacted";
-  readonly conversationId: string;
-  readonly archiveId: string;  // ID of the archive conversation
+  readonly conversationId: string;       // the conversation (ID unchanged)
+  readonly newConversationId: string;    // the archive ID (old full history)
   readonly messagesSummarized: number;
   readonly messagesKept: number;
 }
@@ -49,15 +78,15 @@ export interface ConversationCompactedMessage {
 
 // @dispatch/transport-contract — HTTP response types
 export interface CompactResponse {
-  readonly conversationId: string;
-  readonly archiveId: string;  // ID of the archive conversation
+  readonly conversationId: string;       // the conversation (ID unchanged)
+  readonly newConversationId: string;    // the archive ID (old full history)
   readonly messagesSummarized: number;
   readonly messagesKept: number;
 }
 
 export interface CompactThresholdResponse {
   readonly conversationId: string;
-  readonly threshold: number;  // 0 = manual only
+  readonly threshold: number;  // 0 = manual only; null = default 350000
 }
 
 export interface SetCompactThresholdRequest {
@@ -72,11 +101,13 @@ Triggers compaction on demand. Optional JSON body:
 { "keepLastN": 10, "modelName": "umans/umans-glm-5.2" }
 ```
 - `keepLastN` (default 10): how many recent messages to retain.
-- `modelName`: override the model used for summarization (defaults to the
-  conversation's provider).
+- `modelName`: override the model used for summarization.
 
-200 response: `CompactResponse`
-409 response: `{ error: string }` — conversation is generating, too short, etc.
+200 response: `CompactResponse` — includes `newConversationId` (the archive ID).
+The conversation ID in the response is the same as the request — the ID doesn't
+change. The FE should reload the conversation history.
+
+409: `{ error: string }` — conversation is generating, too short, threshold not exceeded, etc.
 503: compaction service not available.
 
 ## `GET /conversations/:id/compact-threshold` — read threshold
@@ -95,63 +126,42 @@ Body: `SetCompactThresholdRequest { threshold: number }`
 - Any positive number sets the trigger threshold.
 - To "reset to default", set it to 350000.
 
-200: `CompactThresholdResponse`
-
 ## `conversation.compacted` WS message
 
 Broadcast to all connected WS clients when compaction completes. The FE should
-reload the conversation history via `GET /conversations/:id` to reflect the
-compacted state (the old messages are replaced by a system summary + recent N).
+**reload the conversation history** via `GET /conversations/:id` (the
+conversation ID hasn't changed — just reload the same ID). The first message
+will now be a system summary.
 
-## How compaction works (backend) — non-destructive
-
-1. Load full conversation history.
-2. Split: old messages (to summarize) + recent N (to keep, default 10).
-3. **Fork** the full pre-compaction history to a new archive conversation
-   (new UUID). The archive gets `status: "closed"`, title `"Archive: <original>"`,
-   and `compactedFrom: <originalId>`.
-4. Call the model with a summarization system prompt + old messages.
-5. **Replace** the original conversation's history with:
-   `[system: "Summary of previous conversation: ..."] + recent N messages`.
-6. Set `compactedFrom: <archiveId>` on the original conversation's metadata.
-7. Emit `conversationCompacted` hook → WS broadcast (includes `archiveId`).
-
-**The original history is never destroyed.** The archive conversation is a
-complete copy of the pre-compaction state, accessible via `GET /conversations/:id`
-using the archive ID. The FE can link to it from the compacted conversation.
-
-`ConversationMeta` now has an optional `compactedFrom?: string` field. On a
-compacted conversation, it points to the archive ID. On the archive, it points
-to the original conversation ID. The FE can use this to show a "View full
-history" link.
+No tab switching needed — the ID is the same.
 
 ## What the FE needs to do
 
 1. **Compact button** in the conversation toolbar → `POST /conversations/:id/compact`.
-   Show a loading indicator while waiting for the response.
+   Show a loading indicator while waiting. On success, reload the conversation
+   history (same ID — just re-fetch).
 
 2. **Settings UI** for compact threshold: `PUT /conversations/:id/compact-threshold`
    with `{ threshold: number }`. A number input (0 = manual only, default 350000).
    Read the current value via `GET /conversations/:id/compact-threshold`.
 
 3. **Handle `conversation.compacted` WS messages**: reload the conversation
-   history via `GET /conversations/:id`. The first message will now be a system
-   summary instead of the original conversation.
+   history via `GET /conversations/:id` (same ID, no tab switch).
 
-4. **"View full history" link**: when `ConversationMeta.compactedFrom` is present,
-   show a link/badge that opens the archive conversation (the `compactedFrom`
-   value is the archive conversation ID). Load it via `GET /conversations/:id`
-   with that ID. The archive has `status: "closed"` and title `"Archive: <original>"`.
+4. **"View predecessor" link**: when `ConversationMeta.compactedFrom` is present,
+   show a link that opens the archive conversation in a read-only view (or a new
+   tab). Load it via `GET /conversations/:compactedFrom`. The archive has
+   `status: "closed"` and title `"Archive: <original>"`. Each archive may also
+   have its own `compactedFrom` — walk the chain backward to see every snapshot.
 
-5. **Archives in conversation list**: archives appear in `GET /conversations?status=closed`.
-   They have `compactedFrom` pointing to the original conversation. The FE can
-   show them in a history/archive view, distinct from active/idle tabs.
+5. **Archives in conversation list**: archives appear in
+   `GET /conversations?status=closed`. They have `compactedFrom` chaining to
+   the previous archive (if any). The FE can show them in a history view.
 
-6. **Visual indicator**: show a badge or divider indicating the conversation
-   has been compacted (e.g. "N messages summarized" from the WS payload or the
-   HTTP response).
+6. **Visual indicator**: show a badge on conversations that have a
+   `compactedFrom` (they've been compacted). E.g. "Compacted" badge or chain icon.
 
 ## CLI
 
 `dispatch compact <conversationId>` — triggers manual compaction. Resolves
-short IDs like other commands.
+short IDs like other commands. The response includes the archive ID.

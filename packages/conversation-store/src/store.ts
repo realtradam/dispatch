@@ -113,7 +113,7 @@ export interface ConversationStore {
 	 * Set the `compactedFrom` field on a conversation's metadata, pointing to
 	 * the archive conversation that holds the pre-compaction history.
 	 */
-	readonly setCompactedFrom: (conversationId: string, archiveId: string) => Promise<void>;
+	readonly setCompactedFrom: (conversationId: string, newConversationId: string) => Promise<void>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -592,7 +592,9 @@ export function createConversationStore(
 			}
 			await storage.set(seqKey(targetId), String(Math.max(seq - 1, 0)));
 
-			// Copy metadata with archive title + closed status + compactedFrom.
+			// Copy metadata with archive title + closed status.
+			// Inherit compactedFrom from the source so archives chain:
+			// A → Y → X (each archive points to the previous one).
 			const metaRaw = await storage.get(metaKey(sourceId));
 			if (metaRaw !== null) {
 				const existing = parseMetaRow(metaRaw);
@@ -602,7 +604,9 @@ export function createConversationStore(
 						lastActivityAt: existing.lastActivityAt,
 						title: `Archive: ${existing.title}`,
 						status: "closed",
-						compactedFrom: sourceId,
+						...(existing.compactedFrom !== undefined
+							? { compactedFrom: existing.compactedFrom }
+							: {}),
 					};
 					await storage.set(metaKey(targetId), JSON.stringify(row));
 				}
@@ -630,7 +634,7 @@ export function createConversationStore(
 			}
 		},
 
-		async setCompactedFrom(conversationId, archiveId) {
+		async setCompactedFrom(conversationId, newConversationId) {
 			const raw = await storage.get(metaKey(conversationId));
 			const existing = raw !== null ? parseMetaRow(raw) : null;
 			const ts = now();
@@ -642,7 +646,7 @@ export function createConversationStore(
 			};
 			await storage.set(
 				metaKey(conversationId),
-				JSON.stringify({ ...row, compactedFrom: archiveId }),
+				JSON.stringify({ ...row, compactedFrom: newConversationId }),
 			);
 		},
 	};

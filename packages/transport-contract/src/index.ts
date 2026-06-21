@@ -521,7 +521,7 @@ export interface ConversationStatusChangedMessage {
 export interface ConversationCompactedMessage {
 	readonly type: "conversation.compacted";
 	readonly conversationId: string;
-	readonly archiveId: string;
+	readonly newConversationId: string;
 	readonly messagesSummarized: number;
 	readonly messagesKept: number;
 }
@@ -577,7 +577,7 @@ export interface TitleResponse {
  */
 export interface CompactResponse {
 	readonly conversationId: string;
-	readonly archiveId: string;
+	readonly newConversationId: string;
 	readonly messagesSummarized: number;
 	readonly messagesKept: number;
 }
