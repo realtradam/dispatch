@@ -32,6 +32,7 @@ import { extension as throughputStoreExt } from "@dispatch/throughput-store";
 import { extension as toolEditFileExt } from "@dispatch/tool-edit-file";
 import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
 import { extension as toolShellExt } from "@dispatch/tool-shell";
+import { extension as toolWebSearchExt } from "@dispatch/tool-web-search";
 import { extension as toolWriteFileExt } from "@dispatch/tool-write-file";
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
@@ -75,6 +76,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	toolReadFileExt,
 	toolShellExt,
 	toolWriteFileExt,
+	toolWebSearchExt,
 	throughputStoreExt,
 	messageQueueExt,
 	sessionOrchestratorExt,
