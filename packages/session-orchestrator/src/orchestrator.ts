@@ -218,6 +218,14 @@ export interface SessionOrchestrator {
 	 * Idempotent — closing an idle/unknown conversation just emits the hook.
 	 */
 	closeConversation(conversationId: string): { readonly abortedTurn: boolean };
+	/**
+	 * Stop an in-flight generation WITHOUT closing the conversation. Aborts
+	 * the turn's AbortController — the kernel finishes with
+	 * `finishReason: "aborted"`, partial messages are persisted, and the turn
+	 * seals normally (status transitions active → idle via the normal settle
+	 * path). Idempotent — stopping an idle/unknown conversation is a no-op.
+	 */
+	stopTurn(conversationId: string): { readonly abortedTurn: boolean };
 	handleMessage(input: {
 		conversationId: string;
 		text: string;
@@ -564,6 +572,15 @@ export function createSessionOrchestrator(
 			deps.emit?.(conversationClosed, { conversationId });
 			deps.emit?.(conversationStatusChanged, { conversationId, status: "closed" });
 			void deps.conversationStore.setConversationStatus(conversationId, "closed");
+			return { abortedTurn };
+		},
+
+		stopTurn(conversationId) {
+			const turn = activeTurns.get(conversationId);
+			const abortedTurn = turn !== undefined;
+			if (turn !== undefined) {
+				turn.controller.abort();
+			}
 			return { abortedTurn };
 		},
 

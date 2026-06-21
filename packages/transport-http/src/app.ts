@@ -396,6 +396,13 @@ export function createApp(opts: CreateServerOptions): Hono {
 		return c.json(body, 200);
 	});
 
+	app.post("/conversations/:id/stop", (c) => {
+		const conversationId = c.req.param("id");
+		const { abortedTurn } = opts.orchestrator.stopTurn(conversationId);
+		log.info("conversations: stop", { conversationId, abortedTurn });
+		return c.json({ conversationId, abortedTurn }, 200);
+	});
+
 	app.post("/conversations/:id/queue", async (c) => {
 		const conversationId = c.req.param("id");
 
