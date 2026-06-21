@@ -1,15 +1,19 @@
-import type { AgentEvent, Logger } from "@dispatch/kernel";
+import type { AgentEvent, HostAPI, Logger } from "@dispatch/kernel";
 import type {
 	CloseConversationResponse,
 	ConversationHistoryResponse,
+	ConversationListResponse,
 	ConversationMetricsResponse,
 	CwdResponse,
+	LastMessageResponse,
 	LspServerInfo,
 	LspStatusResponse,
 	ModelsResponse,
+	OpenConversationResponse,
 	QueueResponse,
 	ReasoningEffortResponse,
 	ThroughputResponse,
+	TitleResponse,
 	WarmResponse,
 } from "@dispatch/transport-contract";
 import { Hono } from "hono";
@@ -17,6 +21,7 @@ import { cors } from "hono/cors";
 import {
 	computeCachePct,
 	computeExpectedCacheRate,
+	extractLastAssistantText,
 	isParseError,
 	isReasoningEffortParseError,
 	isSinceSeqError,
@@ -32,6 +37,7 @@ import {
 import {
 	type ConversationStore,
 	type CredentialStore,
+	conversationOpened,
 	type LspServerStatus,
 	type LspService,
 	type SessionOrchestrator,
@@ -52,6 +58,12 @@ export interface CreateServerOptions {
 	readonly generateId?: () => string;
 	/** Injectable clock for sample timestamps (default Date.now). */
 	readonly now?: () => number;
+	/**
+	 * Fire-and-forget event-bus emit (bound `host.emit`). Required by
+	 * `POST /conversations/:id/open` to signal the frontend. When absent,
+	 * that endpoint responds `500 { error: "not available" }`.
+	 */
+	readonly emit?: HostAPI["emit"];
 }
 
 const noopLogger: Logger = {
@@ -528,6 +540,132 @@ export function createApp(opts: CreateServerOptions): Hono {
 		} catch (err) {
 			log.error("conversations: lsp status failure", { err });
 			return c.json({ error: "Failed to read LSP status" }, 500);
+		}
+	});
+
+	app.get("/conversations", async (c) => {
+		try {
+			const all = await opts.conversationStore.listConversations();
+			// Optional `?q=` filters by id prefix (short-id resolution). A
+			// missing/empty/whitespace-only `q` is ignored → return all.
+			const rawQ = c.req.query("q");
+			const q = rawQ?.trim() ?? "";
+			const conversations = q.length > 0 ? all.filter((m) => m.id.startsWith(q)) : all;
+			log.info("conversations: list", {
+				count: conversations.length,
+				...(q.length > 0 ? { q } : {}),
+			});
+			const body: ConversationListResponse = { conversations };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("conversations: list failure", { err });
+			return c.json({ error: "Failed to list conversations" }, 500);
+		}
+	});
+
+	app.get("/conversations/:id/last", async (c) => {
+		const conversationId = c.req.param("id");
+
+		// Subscribe BEFORE checking isActive — closes the race where a seal
+		// fires between the check and the subscribe (we'd miss it). If idle,
+		// unsubscribe immediately; if active, wait for a `turn-sealed` event
+		// (or a 60s timeout, then proceed regardless of what's available).
+		let turnId: string | undefined;
+		let unsubscribe: (() => void) | undefined;
+		try {
+			await new Promise<void>((resolve) => {
+				let settled = false;
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const finish = (): void => {
+					if (settled) return;
+					settled = true;
+					if (timer !== undefined) clearTimeout(timer);
+					resolve();
+				};
+				unsubscribe = opts.orchestrator.subscribe(conversationId, (event) => {
+					if (event.type === "turn-sealed") {
+						turnId = event.turnId;
+						finish();
+					}
+				});
+				if (!opts.orchestrator.isActive(conversationId)) {
+					finish();
+					return;
+				}
+				// A seal may have fired synchronously during subscribe (the
+				// real orchestrator never does this, but a fake might) — don't
+				// arm a 60s timer for an already-settled promise.
+				if (settled) return;
+				timer = setTimeout(finish, 60_000);
+			});
+		} finally {
+			unsubscribe?.();
+		}
+
+		let content = "";
+		try {
+			const messages = await opts.conversationStore.load(conversationId);
+			content = extractLastAssistantText(messages);
+		} catch (err) {
+			log.error("conversations: last message load failure", { err });
+			return c.json({ error: "Failed to load conversation" }, 500);
+		}
+
+		log.info("conversations: last read", {
+			conversationId,
+			hasContent: content.length > 0,
+		});
+		const body: LastMessageResponse = {
+			conversationId,
+			content,
+			...(turnId !== undefined ? { turnId } : {}),
+		};
+		return c.json(body, 200);
+	});
+
+	app.post("/conversations/:id/open", (c) => {
+		const conversationId = c.req.param("id");
+		if (opts.emit === undefined) {
+			log.warn("conversations: open requested but emit is not available", {
+				conversationId,
+			});
+			return c.json({ error: "not available" }, 500);
+		}
+		opts.emit(conversationOpened, { conversationId });
+		log.info("conversations: opened", { conversationId });
+		const body: OpenConversationResponse = { conversationId };
+		return c.json(body, 200);
+	});
+
+	app.put("/conversations/:id/title", async (c) => {
+		const conversationId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("conversations/title: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		if (body === null || typeof body !== "object") {
+			return c.json({ error: "Request body must be a JSON object" }, 400);
+		}
+		const obj = body as Record<string, unknown>;
+		if (typeof obj.title !== "string" || obj.title.trim().length === 0) {
+			return c.json({ error: "Field 'title' is required and must be a non-empty string" }, 400);
+		}
+		// Trim before persisting (mirrors how `parseQueueBody` / `parseChatBody`
+		// forward trimmed text), so a title never carries surrounding whitespace.
+		const title = obj.title.trim();
+
+		try {
+			await opts.conversationStore.setConversationTitle(conversationId, title);
+			log.info("conversations: title set", { conversationId });
+			const response: TitleResponse = { conversationId, title };
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("conversations: title set failure", { err });
+			return c.json({ error: "Failed to set conversation title" }, 500);
 		}
 	});
 

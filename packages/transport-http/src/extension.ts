@@ -72,6 +72,7 @@ export function createTransportHttpExtension(): Extension & {
 				warmService,
 				lspService,
 				logger,
+				emit: host.emit.bind(host),
 			});
 
 			const port = host.config.get<number>("httpPort") ?? 24203;

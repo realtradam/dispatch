@@ -97,6 +97,20 @@ export interface ConversationClosedPayload {
 export const conversationClosed: EventHookDescriptor<ConversationClosedPayload> =
 	defineEventHook<ConversationClosedPayload>("session-orchestrator/conversation-closed");
 
+/** Payload for the conversationOpened bus event. */
+export interface ConversationOpenedPayload {
+	readonly conversationId: string;
+}
+
+/**
+ * Fired when a client requests to "open" a conversation (e.g. the CLI `--open`
+ * flag). Transport-ws subscribes and broadcasts a `conversation.open` WS
+ * message to all connected frontend clients. The frontend decides whether to
+ * open/focus a tab — the backend just signals.
+ */
+export const conversationOpened: EventHookDescriptor<ConversationOpenedPayload> =
+	defineEventHook<ConversationOpenedPayload>("session-orchestrator/conversation-opened");
+
 /** Payload for the warmCompleted bus event. */
 export interface WarmCompletedPayload {
 	readonly conversationId: string;

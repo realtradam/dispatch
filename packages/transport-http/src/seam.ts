@@ -5,6 +5,10 @@ export { credentialStoreHandle } from "@dispatch/credential-store";
 export type { LspServerStatus, LspService } from "@dispatch/lsp";
 export { lspServiceHandle } from "@dispatch/lsp";
 export type { SessionOrchestrator, WarmService } from "@dispatch/session-orchestrator";
-export { cacheWarmHandle, sessionOrchestratorHandle } from "@dispatch/session-orchestrator";
+export {
+	cacheWarmHandle,
+	conversationOpened,
+	sessionOrchestratorHandle,
+} from "@dispatch/session-orchestrator";
 export type { ThroughputStore } from "@dispatch/throughput-store";
 export { ThroughputQueryError, throughputStoreHandle } from "@dispatch/throughput-store";
