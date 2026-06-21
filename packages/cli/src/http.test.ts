@@ -1,6 +1,18 @@
-import type { AgentEvent, ChatRequest } from "@dispatch/transport-contract";
+import type {
+	AgentEvent,
+	ChatRequest,
+	ConversationListResponse,
+} from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
-import { fetchModels, streamChat } from "./http.js";
+import {
+	enqueueMessage,
+	fetchConversations,
+	fetchLastMessage,
+	fetchModels,
+	openConversation,
+	resolveConversationId,
+	streamChat,
+} from "./http.js";
 
 function ndjsonLines(...events: AgentEvent[]): string {
 	return `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
@@ -232,5 +244,219 @@ describe("fetchModels", () => {
 		await expect(
 			fetchModels({ fetchImpl: fakeFetch }, { server: "http://localhost:24203" }),
 		).rejects.toThrow("GET /models failed with status 500");
+	});
+});
+
+describe("fetchConversations", () => {
+	it("requests GET /conversations with no query when query omitted", async () => {
+		let calledUrl: string | undefined;
+		const list: ConversationListResponse = {
+			conversations: [{ id: "abcdef1234567890", title: "first", createdAt: 1, lastActivityAt: 2 }],
+		};
+		const fakeFetch = (async (url: string | URL | Request): Promise<Response> => {
+			calledUrl = String(url);
+			return new Response(JSON.stringify(list), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const result = await fetchConversations(
+			{ fetchImpl: fakeFetch },
+			{ server: "http://localhost:24203" },
+		);
+		expect(calledUrl).toBe("http://localhost:24203/conversations");
+		expect(result).toEqual(list);
+	});
+
+	it("appends ?q=<encoded> when a query is given", async () => {
+		let calledUrl: string | undefined;
+		const fakeFetch = (async (url: string | URL | Request): Promise<Response> => {
+			calledUrl = String(url);
+			return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		await fetchConversations(
+			{ fetchImpl: fakeFetch },
+			{ server: "http://localhost:24203", query: "abc def" },
+		);
+		expect(calledUrl).toBe("http://localhost:24203/conversations?q=abc%20def");
+	});
+
+	it("throws on non-OK status", async () => {
+		const fakeFetch = (async (): Promise<Response> =>
+			new Response("boom", { status: 500 })) as unknown as typeof fetch;
+		await expect(
+			fetchConversations({ fetchImpl: fakeFetch }, { server: "http://localhost:24203" }),
+		).rejects.toThrow("GET /conversations failed with status 500");
+	});
+});
+
+describe("fetchLastMessage", () => {
+	it("requests GET /conversations/:id/last and returns the body", async () => {
+		let calledUrl: string | undefined;
+		const fakeFetch = (async (url: string | URL | Request): Promise<Response> => {
+			calledUrl = String(url);
+			return new Response(
+				JSON.stringify({ conversationId: "c1", content: "hello back", turnId: "t1" }),
+				{ status: 200 },
+			);
+		}) as unknown as typeof fetch;
+
+		const result = await fetchLastMessage(
+			{ fetchImpl: fakeFetch },
+			{ server: "http://localhost:24203", conversationId: "c1" },
+		);
+		expect(calledUrl).toBe("http://localhost:24203/conversations/c1/last");
+		expect(result).toEqual({ conversationId: "c1", content: "hello back", turnId: "t1" });
+	});
+
+	it("throws on non-OK status", async () => {
+		const fakeFetch = (async (): Promise<Response> =>
+			new Response("nope", { status: 404 })) as unknown as typeof fetch;
+		await expect(
+			fetchLastMessage(
+				{ fetchImpl: fakeFetch },
+				{ server: "http://localhost:24203", conversationId: "c1" },
+			),
+		).rejects.toThrow("GET /conversations/:id/last failed with status 404");
+	});
+});
+
+describe("enqueueMessage", () => {
+	it("POSTs to /conversations/:id/queue with { text } and returns the body", async () => {
+		let calledUrl: string | undefined;
+		let calledInit: RequestInit | undefined;
+		const fakeFetch = (async (
+			url: string | URL | Request,
+			init?: RequestInit,
+		): Promise<Response> => {
+			calledUrl = String(url);
+			calledInit = init;
+			return new Response(JSON.stringify({ conversationId: "c1", startedTurn: false, queue: [] }), {
+				status: 200,
+			});
+		}) as unknown as typeof fetch;
+
+		const result = await enqueueMessage(
+			{ fetchImpl: fakeFetch },
+			{ server: "http://localhost:24203", conversationId: "c1", text: "hi" },
+		);
+		expect(calledUrl).toBe("http://localhost:24203/conversations/c1/queue");
+		expect(calledInit?.method).toBe("POST");
+		expect(JSON.parse(calledInit?.body as string)).toEqual({ text: "hi" });
+		expect(result).toEqual({ conversationId: "c1", startedTurn: false, queue: [] });
+	});
+
+	it("throws on non-OK status", async () => {
+		const fakeFetch = (async (): Promise<Response> =>
+			new Response("bad", { status: 400 })) as unknown as typeof fetch;
+		await expect(
+			enqueueMessage(
+				{ fetchImpl: fakeFetch },
+				{ server: "http://localhost:24203", conversationId: "c1", text: "hi" },
+			),
+		).rejects.toThrow("POST /conversations/:id/queue failed with status 400");
+	});
+});
+
+describe("openConversation", () => {
+	it("POSTs to /conversations/:id/open and returns the body", async () => {
+		let calledUrl: string | undefined;
+		let calledInit: RequestInit | undefined;
+		const fakeFetch = (async (
+			url: string | URL | Request,
+			init?: RequestInit,
+		): Promise<Response> => {
+			calledUrl = String(url);
+			calledInit = init;
+			return new Response(JSON.stringify({ conversationId: "c1" }), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const result = await openConversation(
+			{ fetchImpl: fakeFetch },
+			{ server: "http://localhost:24203", conversationId: "c1" },
+		);
+		expect(calledUrl).toBe("http://localhost:24203/conversations/c1/open");
+		expect(calledInit?.method).toBe("POST");
+		expect(result).toEqual({ conversationId: "c1" });
+	});
+
+	it("throws on non-OK status", async () => {
+		const fakeFetch = (async (): Promise<Response> =>
+			new Response("bad", { status: 500 })) as unknown as typeof fetch;
+		await expect(
+			openConversation(
+				{ fetchImpl: fakeFetch },
+				{ server: "http://localhost:24203", conversationId: "c1" },
+			),
+		).rejects.toThrow("POST /conversations/:id/open failed with status 500");
+	});
+});
+
+describe("resolveConversationId", () => {
+	function listFetch(list: ConversationListResponse): typeof fetch {
+		return (async (): Promise<Response> =>
+			new Response(JSON.stringify(list), { status: 200 })) as unknown as typeof fetch;
+	}
+
+	it("returns the full id on a single match", async () => {
+		const fetchImpl = listFetch({
+			conversations: [
+				{ id: "abcdef1234567890abcdef1234567890", title: "only", createdAt: 1, lastActivityAt: 2 },
+			],
+		});
+		const result = await resolveConversationId(
+			{ fetchImpl },
+			{ server: "http://localhost:24203", shortId: "abcdef" },
+		);
+		expect(result).toBe("abcdef1234567890abcdef1234567890");
+	});
+
+	it("returns an error object on no match", async () => {
+		const fetchImpl = listFetch({ conversations: [] });
+		const result = await resolveConversationId(
+			{ fetchImpl },
+			{ server: "http://localhost:24203", shortId: "abcdef" },
+		);
+		expect(typeof result).toBe("object");
+		if (typeof result !== "string") {
+			expect(result.error).toContain("No conversation matching");
+			expect(result.error).toContain("abcdef");
+		}
+	});
+
+	it("returns an error object listing matches on multiple matches", async () => {
+		const fetchImpl = listFetch({
+			conversations: [
+				{ id: "abcdef1234567890aaaaaaaaaaaaaaaa", title: "first", createdAt: 1, lastActivityAt: 2 },
+				{
+					id: "abcdef1234567890bbbbbbbbbbbbbbbb",
+					title: "second",
+					createdAt: 1,
+					lastActivityAt: 3,
+				},
+			],
+		});
+		const result = await resolveConversationId(
+			{ fetchImpl },
+			{ server: "http://localhost:24203", shortId: "abcdef" },
+		);
+		expect(typeof result).toBe("object");
+		if (typeof result !== "string") {
+			expect(result.error).toContain("Multiple conversations matching");
+			expect(result.error).toContain("abcdef12");
+			expect(result.error).toContain("first");
+			expect(result.error).toContain("second");
+		}
+	});
+
+	it("passes through a full UUID (32+ chars) without calling fetch", async () => {
+		const fetchImpl = (async (): Promise<Response> => {
+			throw new Error("fetch must not be called for a full UUID");
+		}) as unknown as typeof fetch;
+		const fullId = "abcdef1234567890abcdef1234567890";
+		const result = await resolveConversationId(
+			{ fetchImpl },
+			{ server: "http://localhost:24203", shortId: fullId },
+		);
+		expect(result).toBe(fullId);
 	});
 });

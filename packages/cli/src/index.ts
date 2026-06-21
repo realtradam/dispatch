@@ -6,7 +6,21 @@
 
 export { type ParsedCommand, parseArgs } from "./args.js";
 export { formatCatalog } from "./catalog.js";
-export { fetchModels, streamChat } from "./http.js";
+export {
+	type ConversationIdResolution,
+	enqueueMessage,
+	fetchConversations,
+	fetchLastMessage,
+	fetchModels,
+	openConversation,
+	resolveConversationId,
+	streamChat,
+} from "./http.js";
 export { buildChatRequest, composeMessage } from "./message.js";
 export { type SplitResult, splitNdjsonLines } from "./ndjson.js";
-export { renderEvent } from "./render.js";
+export {
+	extractLastText,
+	formatConversationList,
+	formatRelativeTime,
+	renderEvent,
+} from "./render.js";

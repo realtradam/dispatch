@@ -180,4 +180,145 @@ describe("parseArgs", () => {
 			expect(result.kind).toBe("error");
 		});
 	});
+
+	describe("list", () => {
+		it("parses 'list' with no query", () => {
+			expect(parseArgs(["list"], { defaultServer })).toEqual({
+				kind: "list",
+				server: "http://localhost:24203",
+			});
+		});
+
+		it("parses 'list' with a query prefix", () => {
+			expect(parseArgs(["list", "abc12345"], { defaultServer })).toEqual({
+				kind: "list",
+				server: "http://localhost:24203",
+				query: "abc12345",
+			});
+		});
+
+		it("parses 'list' with --server after the prefix", () => {
+			expect(parseArgs(["list", "abc", "--server", "http://s"], { defaultServer })).toEqual({
+				kind: "list",
+				server: "http://s",
+				query: "abc",
+			});
+		});
+
+		it("errors on a second positional argument", () => {
+			const result = parseArgs(["list", "abc", "def"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("Unexpected argument");
+		});
+
+		it("errors on an unknown flag", () => {
+			const result = parseArgs(["list", "--bogus"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("Unknown flag");
+		});
+	});
+
+	describe("read", () => {
+		it("parses 'read' with a conversation id", () => {
+			expect(parseArgs(["read", "deadbeef"], { defaultServer })).toEqual({
+				kind: "read",
+				server: "http://localhost:24203",
+				conversationId: "deadbeef",
+			});
+		});
+
+		it("parses 'read' with --server", () => {
+			expect(parseArgs(["read", "deadbeef", "--server", "http://s"], { defaultServer })).toEqual({
+				kind: "read",
+				server: "http://s",
+				conversationId: "deadbeef",
+			});
+		});
+
+		it("errors when no conversation id is given", () => {
+			const result = parseArgs(["read"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("conversation id");
+		});
+
+		it("errors on a second positional argument", () => {
+			const result = parseArgs(["read", "a", "b"], { defaultServer });
+			expect(result.kind).toBe("error");
+		});
+	});
+
+	describe("send", () => {
+		it("parses 'send' with --text", () => {
+			expect(parseArgs(["send", "deadbeef", "--text", "hi"], { defaultServer })).toEqual({
+				kind: "send",
+				server: "http://localhost:24203",
+				conversationId: "deadbeef",
+				text: "hi",
+				queue: false,
+				open: false,
+			});
+		});
+
+		it("parses 'send' with --queue", () => {
+			const result = parseArgs(["send", "deadbeef", "--text", "hi", "--queue"], {
+				defaultServer,
+			});
+			expect(result).toEqual({
+				kind: "send",
+				server: "http://localhost:24203",
+				conversationId: "deadbeef",
+				text: "hi",
+				queue: true,
+				open: false,
+			});
+		});
+
+		it("parses 'send' with --open", () => {
+			const result = parseArgs(["send", "deadbeef", "--text", "hi", "--open"], {
+				defaultServer,
+			});
+			expect(result).toEqual({
+				kind: "send",
+				server: "http://localhost:24203",
+				conversationId: "deadbeef",
+				text: "hi",
+				queue: false,
+				open: true,
+			});
+		});
+
+		it("parses 'send' with --cwd and --effort", () => {
+			const result = parseArgs(
+				["send", "deadbeef", "--text", "hi", "--cwd", "/tmp", "--effort", "xhigh"],
+				{ defaultServer },
+			);
+			expect(result).toEqual({
+				kind: "send",
+				server: "http://localhost:24203",
+				conversationId: "deadbeef",
+				text: "hi",
+				queue: false,
+				open: false,
+				cwd: "/tmp",
+				reasoningEffort: "xhigh",
+			});
+		});
+
+		it("requires --text", () => {
+			const result = parseArgs(["send", "deadbeef"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("--text");
+		});
+
+		it("requires a conversation id", () => {
+			const result = parseArgs(["send", "--text", "hi"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("conversation id");
+		});
+
+		it("errors when --text has no value", () => {
+			const result = parseArgs(["send", "deadbeef", "--text"], { defaultServer });
+			expect(result.kind).toBe("error");
+		});
+	});
 });
