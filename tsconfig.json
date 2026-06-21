@@ -16,6 +16,7 @@
 		{ "path": "./packages/credential-store" },
 		{ "path": "./packages/conversation-store" },
 		{ "path": "./packages/throughput-store" },
+		{ "path": "./packages/todo" },
 		{ "path": "./packages/session-orchestrator" },
 		{ "path": "./packages/transport-http" },
 		{ "path": "./packages/tool-read-file" },

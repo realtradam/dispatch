@@ -29,6 +29,7 @@ import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/st
 import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
 import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
 import { extension as throughputStoreExt } from "@dispatch/throughput-store";
+import { extension as todoExt } from "@dispatch/todo";
 import { extension as toolEditFileExt } from "@dispatch/tool-edit-file";
 import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
 import { extension as toolShellExt } from "@dispatch/tool-shell";
@@ -78,6 +79,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	toolWriteFileExt,
 	toolWebSearchExt,
 	throughputStoreExt,
+	todoExt,
 	messageQueueExt,
 	sessionOrchestratorExt,
 	skillsExt,
