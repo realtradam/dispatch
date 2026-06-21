@@ -24,6 +24,7 @@ const USAGE = `Usage:
   dispatch models [--server <url>]
   dispatch list [<prefix>] [--server <url>]
   dispatch read <conversationId> [--server <url>]
+  dispatch open <conversationId> [--server <url>]
   dispatch send <conversationId> --text "..." [--queue] [--open] [--cwd <dir>] [--effort <level>] [--server <url>]
   dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--server <url>] [--show-reasoning] [--open]
   dispatch --help
@@ -71,6 +72,22 @@ async function main(): Promise<void> {
 				{ server: parsed.server, conversationId: resolved },
 			);
 			if (last.content.length > 0) process.stdout.write(`${last.content}\n`);
+			break;
+		}
+		case "open": {
+			const resolved = await resolveConversationId(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, shortId: parsed.conversationId },
+			);
+			if (typeof resolved !== "string") {
+				process.stderr.write(`${resolved.error}\n`);
+				process.exit(1);
+			}
+			await openConversation(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, conversationId: resolved },
+			);
+			process.stdout.write(`Signaled frontend to open ${resolved}\n`);
 			break;
 		}
 		case "send": {

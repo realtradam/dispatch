@@ -325,4 +325,35 @@ describe("parseArgs", () => {
 			expect(result.kind).toBe("error");
 		});
 	});
+
+	describe("open", () => {
+		it("parses 'open' with conversation id", () => {
+			expect(parseArgs(["open", "deadbeef"], { defaultServer })).toEqual({
+				kind: "open",
+				server: "http://localhost:24203",
+				conversationId: "deadbeef",
+			});
+		});
+
+		it("parses 'open' with --server", () => {
+			expect(
+				parseArgs(["open", "deadbeef", "--server", "http://example.com"], { defaultServer }),
+			).toEqual({
+				kind: "open",
+				server: "http://example.com",
+				conversationId: "deadbeef",
+			});
+		});
+
+		it("requires a conversation id", () => {
+			const result = parseArgs(["open"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("conversation id");
+		});
+
+		it("rejects unknown flags", () => {
+			const result = parseArgs(["open", "deadbeef", "--bogus"], { defaultServer });
+			expect(result.kind).toBe("error");
+		});
+	});
 });
