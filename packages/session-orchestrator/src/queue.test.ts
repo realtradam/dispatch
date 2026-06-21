@@ -75,6 +75,13 @@ function createInMemoryStore(): ConversationStore & {
 		async setReasoningEffort(conversationId, effort) {
 			effortData.set(conversationId, effort);
 		},
+		async listConversations() {
+			return [];
+		},
+		async getConversationMeta() {
+			return null;
+		},
+		async setConversationTitle() {},
 	};
 }
 

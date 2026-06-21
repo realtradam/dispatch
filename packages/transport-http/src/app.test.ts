@@ -122,6 +122,13 @@ function createFakeConversationStore(
 		async setReasoningEffort(conversationId, effort) {
 			reasoningEffortStore.set(conversationId, effort);
 		},
+		async listConversations() {
+			return [];
+		},
+		async getConversationMeta() {
+			return null;
+		},
+		async setConversationTitle() {},
 	};
 }
 
@@ -832,6 +839,13 @@ describe("GET /conversations/:id", () => {
 					return null;
 				},
 				async setReasoningEffort() {},
+				async listConversations() {
+					return [];
+				},
+				async getConversationMeta() {
+					return null;
+				},
+				async setConversationTitle() {},
 			};
 			const app = createApp({
 				conversationStore: store,
@@ -889,6 +903,13 @@ describe("GET /conversations/:id", () => {
 				return null;
 			},
 			async setReasoningEffort() {},
+			async listConversations() {
+				return [];
+			},
+			async getConversationMeta() {
+				return null;
+			},
+			async setConversationTitle() {},
 		};
 		const app = createApp({
 			conversationStore: store,
@@ -1015,6 +1036,13 @@ describe("GET /conversations/:id/metrics", () => {
 				return null;
 			},
 			async setReasoningEffort() {},
+			async listConversations() {
+				return [];
+			},
+			async getConversationMeta() {
+				return null;
+			},
+			async setConversationTitle() {},
 		};
 		const app = createApp({
 			conversationStore: brokenStore,
@@ -1974,6 +2002,13 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 			async setReasoningEffort() {
 				storeCalled = true;
 			},
+			async listConversations() {
+				return [];
+			},
+			async getConversationMeta() {
+				return null;
+			},
+			async setConversationTitle() {},
 		};
 		const app = createApp({
 			conversationStore: store,

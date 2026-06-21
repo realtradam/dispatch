@@ -54,6 +54,13 @@ function fakeConversationStore(): ConversationStore {
 			return null;
 		},
 		async setReasoningEffort() {},
+		async listConversations() {
+			return [];
+		},
+		async getConversationMeta() {
+			return null;
+		},
+		async setConversationTitle() {},
 	};
 }
 

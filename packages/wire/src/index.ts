@@ -496,3 +496,18 @@ export interface TurnSteeringEvent {
 	readonly turnId: string;
 	readonly text: string;
 }
+
+// ─── Conversation metadata ───────────────────────────────────────────────────
+
+/**
+ * Metadata for a conversation, returned by `GET /conversations` (the list
+ * endpoint). The title defaults to the first user message (truncated) and can
+ * be set via `PUT /conversations/:id/title`. `createdAt` is set on first write;
+ * `lastActivityAt` is updated on every append.
+ */
+export interface ConversationMeta {
+	readonly id: string;
+	readonly createdAt: number;
+	readonly lastActivityAt: number;
+	readonly title: string;
+}
