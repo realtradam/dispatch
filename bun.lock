@@ -73,6 +73,7 @@
         "@dispatch/tool-edit-file": "workspace:*",
         "@dispatch/tool-read-file": "workspace:*",
         "@dispatch/tool-shell": "workspace:*",
+        "@dispatch/tool-web-search": "workspace:*",
         "@dispatch/tool-write-file": "workspace:*",
         "@dispatch/transport-http": "workspace:*",
         "@dispatch/transport-ws": "workspace:*",

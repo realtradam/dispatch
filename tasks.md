@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1059 vitest + 199 transport bun green**.
+`tsc -b` EXIT 0 · biome clean · **1097 vitest + 199 transport bun green**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -454,7 +454,19 @@ path**: first extract a generic `@dispatch/openai-stream` library from
   **Boot smoke:** without `UMANS_API_KEY` → `"provider-umans: no UMANS_API_KEY. Provider
   not registered."` (graceful skip); with `UMANS_API_KEY=sk-test` → `"provider-umans:
   registered (model=umans-coder)"`.
-- [ ] Live-verify against the real Umans API (not yet exercised end-to-end).
+- [x] **LIVE-VERIFIED against the real Umans API:** the dev stack (umans-glm-5.2) called
+  `web_search` (Firecrawl) in a real turn — first live Umans API call, clean response.
+
+## web_search tool — Firecrawl (DONE)
+Standard tool extension `tool-web-search` backed by a self-hosted Firecrawl instance
+(`http://100.102.55.49:31329/v1`, Tailscale, no API key). One tool `web_search` with 4
+modes: search, scrape, crawl (polls status URL), map — mirroring the proven opencode tool.
+Pure core: `validateArgs` (discriminated union by mode) + `format*` functions + `truncateOutput`.
+Injected edge: `FirecrawlClient` (injectable `fetchFn` + `sleep` + `now`), `AbortSignal.any`
+for per-request timeout + caller cancellation. `concurrencySafe: true`, `capabilities: { network: true }`.
+38 tests. Report: `reports/tool-web-search.md`.
+- **LIVE-VERIFIED:** the dev stack (umans-glm-5.2) called `web_search` → Firecrawl returned
+  real results (Paris, France) — first live Umans API call too.
 
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max
@@ -507,8 +519,7 @@ path**: first extract a generic `@dispatch/openai-stream` library from
 5. **`todo` tool** — a per-conversation task-list tool the model maintains
    (like opencode's todowrite/todoread), as a standard tool extension; likely a
    surface so the FE can render the live list.
- 6. **`web_search` tool** — a web search tool (like old dispatch's;
-    reference-only source at `../dispatch-source`), as a standard tool extension.
+ 6. ~~**`web_search` tool**~~ — **DONE** (see milestone section above).
  7. **Message queue — close-with-queued-messages (deferred product decision):**
     if a client closes a conversation (`POST /conversations/:id/close`) while the
     queue is non-empty, the carry currently still fires (starts a new turn on the
