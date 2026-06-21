@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1152 vitest + 199 transport bun green**.
+`tsc -b` EXIT 0 · biome clean · **1240 vitest + 199 transport bun green**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -498,6 +498,38 @@ retry convention; failed → error). Pure core: `validateUrl` + `format*` functi
 for cancellation). `concurrencySafe: true`, `capabilities: { network: true }`. 30 tests.
 Report: `reports/tool-youtube-transcript.md`.
 
+## CLI — cross-client messaging + open tab (DONE)
+Roadmap items 2 + 4. The CLI can now list conversations, read the last AI message
+(blocking), send messages (blocking or `--queue`), and signal the frontend to open a
+conversation tab. Short-ID prefix resolution (4+ chars → full ID via `GET /conversations?q=`).
+- **Wave 0 (orchestrator, contracts):** `ConversationMeta` in `@dispatch/wire`
+  (`0.8.0→0.9.0`); `ConversationListResponse`, `LastMessageResponse`,
+  `OpenConversationResponse`, `SetTitleRequest`, `TitleResponse`, WS
+  `conversation.open` in `@dispatch/transport-contract` (`0.12.0→0.13.0`);
+  `listConversations()`/`getConversationMeta()`/`setConversationTitle()` on
+  `ConversationStore`; new routes declared in transport-http manifest;
+  `conversationOpened` hook in session-orchestrator.
+- **Wave 1 (conversation-store):** metadata tracking (createdAt on first write,
+  lastActivityAt on every append, title from first user message truncated 80 chars);
+  `conv-index` key tracks all conversation IDs; `extractTitle` pure helper. 21 new
+  tests (81 total).
+- **Wave 2 (parallel, transport-http + transport-ws):** `GET /conversations` (list
+  with `?q=` prefix filter), `GET /conversations/:id/last` (blocks until turn settles
+  via subscribe-then-checkIsActive, returns last assistant text via pure
+  `extractLastAssistantText`), `POST /conversations/:id/open` (emits
+  `conversationOpened` hook), `PUT /conversations/:id/title`; `emit` threaded from
+  `host.emit` → `createApp`. transport-ws subscribes to `conversationOpened` +
+  broadcasts `ConversationOpenMessage` to all connected WS clients. 21+2 new tests.
+- **Wave 3 (CLI):** `dispatch list` (table: short ID + title + activity),
+  `dispatch read <id>` (blocking, prints last AI message), `dispatch send <id> --text`
+  (blocking by default; `--queue` for non-blocking enqueue; `--open` signals FE).
+  Short-ID resolution (4+ chars → prefix search; 32+ chars = full UUID). 48 new
+  tests (108 total).
+- Verified: full-graph `tsc -b` EXIT 0, biome clean (327 files), **1240 vitest** pass.
+  **Boot smoke + endpoint smoke:** `GET /conversations` → `[]`, `GET /conversations/:id/last`
+  → `{content:""}`, `POST /conversations/:id/open` → `{conversationId}`.
+- [ ] Live-verify end-to-end (CLI → real conversation → FE tab open).
+
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max
   context-window token limit so the FE can render `contextSize / limit` (e.g. `1286 / 200000`).
@@ -525,32 +557,13 @@ Report: `reports/tool-youtube-transcript.md`.
    DaisyUI, same methodology). Slice 2 = browser chat MVP consuming the
    wire/transport-contract + metrics. Cross-repo contract changes are couriered
    via the user (ORCHESTRATOR §7); `lsp references` does not span repos.
-2. **CLI → open-tab handoff (cross-client messaging):** an AI given a short
-   conversation identifier (4+ chars) in chat can use the CLI to send a message
-   INTO that conversation, and an FE tab watching it sees the message + reply
-   live. To the receiving AI the message appears as a REGULAR user message
-   (no special framing). The broadcast plumbing already exists and is
-   live-verified (detached turns + `chat.subscribe` + CR-3 `user-message`
-   event); the gaps are (a) a conversation LIST/discovery endpoint (none
-   exists), (b) short-id / prefix resolution of `conversationId` in the CLI,
-   (c) end-to-end verification of the handoff workflow. CLI semantics:
-   - **read last message** (new): BLOCKING — waits until the in-flight turn
-     settles, then returns ONLY the AI's last message of that turn (not the
-     whole conversation).
-   - **send, no `--queue` flag (default):** BLOCKING — sends, waits for the
-     turn to settle, returns the AI's last message (same shape as the read).
-    - **send with `--queue`:** enqueues the message into the conversation's
-      message queue (DONE — see "Message queue + steering injection" above; the
-      `POST /conversations/:id/queue` endpoint + `chat.queue` WS op ship it) and
-      exits immediately.
- 3. **Message queue + steering injection — DONE** (see the milestone section above;
-    prerequisite for item 2's `--queue` flag met).
-4. **CLI flag to open/activate an FE tab:** optional CLI flag (new or existing
-   conversation) that makes an already-open frontend open the conversation as a
-   tab and mark it active. Does NOT exist today — no backend→FE "open/focus
-   conversation" push (only the inverse, `POST /conversations/:id/close`).
-   Needs a new broadcast WS op + endpoint/flag here, and FE handling couriered
-   to `../dispatch-web`.
+  2. ~~**CLI → open-tab handoff (cross-client messaging)**~~ — **DONE** (see CLI
+     milestone section above; list, read, send, --queue, --open, short-ID resolution).
+  3. **Message queue + steering injection — DONE** (see the milestone section above;
+     prerequisite for item 2's `--queue` flag met).
+  4. ~~**CLI flag to open/activate an FE tab**~~ — **DONE** (the `--open` flag on
+     `dispatch send` calls `POST /conversations/:id/open` → backend broadcasts
+     `conversation.open` WS message to all connected FE clients).
  5. ~~**`todo` tool**~~ — **DONE** (see milestone section above).
  6. ~~**`web_search` tool**~~ — **DONE** (see milestone section above).
  7. **Message queue — close-with-queued-messages (deferred product decision):**
