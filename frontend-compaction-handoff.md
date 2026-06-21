@@ -68,12 +68,18 @@ Triggers compaction on demand. Optional JSON body:
 ## `GET /conversations/:id/compact-threshold` — read threshold
 
 200: `CompactThresholdResponse { conversationId, threshold }`
-`threshold: 0` means auto-compact is disabled (manual only).
+- `threshold: 0` — auto-compact explicitly disabled (manual only).
+- `threshold: null` (not stored) — **default: 350000** (350k tokens). The FE
+  should display 350000 as the default value in the settings UI.
+- Any positive number — auto-compact triggers when the last turn's input tokens
+  exceed this value.
 
 ## `PUT /conversations/:id/compact-threshold` — set threshold
 
 Body: `SetCompactThresholdRequest { threshold: number }`
-`threshold: 0` disables auto-compact. Any positive number enables it.
+- `0` explicitly disables auto-compact.
+- Any positive number sets the trigger threshold.
+- To "reset to default", set it to 350000.
 
 200: `CompactThresholdResponse`
 
