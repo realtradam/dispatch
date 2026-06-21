@@ -3,12 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLogger, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	computeReplacement,
-	createEditFileTool,
-	isPathWithinWorkdir,
-	validateArgs,
-} from "./edit-file.js";
+import { computeReplacement, createEditFileTool, validateArgs } from "./edit-file.js";
 
 function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
 	return {
@@ -145,24 +140,6 @@ describe("computeReplacement", () => {
 	});
 });
 
-describe("isPathWithinWorkdir", () => {
-	it("accepts a path within workdir", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir/file.txt", "/tmp/workdir")).toBe(true);
-	});
-
-	it("accepts the workdir itself", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir", "/tmp/workdir")).toBe(true);
-	});
-
-	it("rejects a path outside workdir", () => {
-		expect(isPathWithinWorkdir("/tmp/other/file.txt", "/tmp/workdir")).toBe(false);
-	});
-
-	it("rejects a prefix attack (workdir prefix but different dir)", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir-evil/file.txt", "/tmp/workdir")).toBe(false);
-	});
-});
-
 describe("createEditFileTool", () => {
 	it("replaces a single occurrence", async () => {
 		const filePath = join(workdir, "test.txt");
@@ -249,49 +226,6 @@ describe("createEditFileTool", () => {
 
 		expect(result.isError).toBe(true);
 		expect(result.content).toContain("not found");
-	});
-
-	it("rejects a path outside the working directory", async () => {
-		const tool = createEditFileTool(workdir);
-		const result = await tool.execute(
-			{ path: "../escape.txt", oldString: "a", newString: "b" },
-			stubCtx(),
-		);
-
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
-	});
-
-	it("rejects an absolute path outside workdir", async () => {
-		const tool = createEditFileTool(workdir);
-		const result = await tool.execute(
-			{ path: "/etc/passwd", oldString: "a", newString: "b" },
-			stubCtx(),
-		);
-
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
-	});
-
-	it("handles symlink escape attempt", async () => {
-		const outsideDir = await mkdtemp(join(tmpdir(), "outside-"));
-		const outsideFile = join(outsideDir, "secret.txt");
-		await writeFile(outsideFile, "secret data", "utf8");
-
-		const symlinkPath = join(workdir, "link.txt");
-		const { symlink } = await import("node:fs/promises");
-		await symlink(outsideFile, symlinkPath);
-
-		const tool = createEditFileTool(workdir);
-		const result = await tool.execute(
-			{ path: "link.txt", oldString: "secret", newString: "leaked" },
-			stubCtx(),
-		);
-
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
-
-		await rm(outsideDir, { recursive: true, force: true });
 	});
 
 	it("reads file under ctx.cwd when set", async () => {

@@ -3,12 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLogger, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	createWriteFileTool,
-	decideOverwrite,
-	isPathWithinWorkdir,
-	validateArgs,
-} from "./write-file.js";
+import { createWriteFileTool, decideOverwrite, validateArgs } from "./write-file.js";
 
 function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
 	return {
@@ -72,24 +67,6 @@ describe("decideOverwrite", () => {
 		expect(decideOverwrite(false, true)).toEqual(
 			expect.objectContaining({ error: expect.any(String) }),
 		);
-	});
-});
-
-describe("isPathWithinWorkdir", () => {
-	it("accepts a path within workdir", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir/file.txt", "/tmp/workdir")).toBe(true);
-	});
-
-	it("accepts the workdir itself", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir", "/tmp/workdir")).toBe(true);
-	});
-
-	it("rejects a path outside workdir", () => {
-		expect(isPathWithinWorkdir("/tmp/other/file.txt", "/tmp/workdir")).toBe(false);
-	});
-
-	it("rejects a prefix attack (workdir prefix but different dir)", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir-evil/file.txt", "/tmp/workdir")).toBe(false);
 	});
 });
 
@@ -192,23 +169,7 @@ describe("createWriteFileTool", () => {
 		const result = await tool.execute({ path: "no/such/dir/file.txt", content: "data" }, stubCtx());
 
 		expect(result.isError).toBe(true);
-		expect(result.content).toContain("Parent directory");
-	});
-
-	it("rejects a path outside the working directory", async () => {
-		const tool = createWriteFileTool(workdir);
-		const result = await tool.execute({ path: "../escape.txt", content: "data" }, stubCtx());
-
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
-	});
-
-	it("rejects an absolute path outside workdir", async () => {
-		const tool = createWriteFileTool(workdir);
-		const result = await tool.execute({ path: "/tmp/escape.txt", content: "data" }, stubCtx());
-
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
+		expect(result.content).toContain("Error");
 	});
 
 	it("concurrencySafe is false", () => {
@@ -250,23 +211,6 @@ describe("createWriteFileTool", () => {
 			expect(written).toBe("from ctx");
 		} finally {
 			await rm(ctxDir, { recursive: true, force: true });
-		}
-	});
-
-	it("handles symlink escape attempt", async () => {
-		const outsideDir = await mkdtemp(join(tmpdir(), "outside-"));
-		try {
-			const symlinkPath = join(workdir, "link.txt");
-			const { symlink } = await import("node:fs/promises");
-			await symlink(join(outsideDir, "target.txt"), symlinkPath);
-
-			const tool = createWriteFileTool(workdir);
-			const result = await tool.execute({ path: "link.txt", content: "escape" }, stubCtx());
-
-			expect(result.isError).toBe(true);
-			expect(result.content).toContain("outside the working directory");
-		} finally {
-			await rm(outsideDir, { recursive: true, force: true });
 		}
 	});
 

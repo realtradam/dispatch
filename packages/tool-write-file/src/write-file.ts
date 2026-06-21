@@ -1,5 +1,5 @@
-import { access, lstat, readlink, realpath, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
+import { access, stat, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
 
 interface ValidatedArgs {
@@ -18,12 +18,6 @@ export function decideOverwrite(fileExists: boolean, overwrite: boolean): Overwr
 	}
 	if (fileExists && overwrite) return "overwrite";
 	return { error: "Error: overwrite: true but the file does not exist." };
-}
-
-/** Pure: check that a resolved absolute path is within the workdir (prefix check). */
-export function isPathWithinWorkdir(resolvedPath: string, workdir: string): boolean {
-	const normalizedWorkdir = workdir.endsWith(sep) ? workdir : workdir + sep;
-	return resolvedPath === workdir || resolvedPath.startsWith(normalizedWorkdir);
 }
 
 /** Pure: validate and coerce args from the model. */
@@ -102,64 +96,6 @@ export function createWriteFileTool(workingDirectory: string): ToolContract {
 
 			const effectiveBase = ctx.cwd ? resolve(ctx.cwd) : workdir;
 			const resolvedPath = resolve(effectiveBase, relPath);
-
-			if (!isPathWithinWorkdir(resolvedPath, effectiveBase)) {
-				return {
-					content: `Error: Path "${relPath}" is outside the working directory.`,
-					isError: true,
-				};
-			}
-
-			// Symlink hardening: realpath the parent directory and the base, then re-check.
-			let realParent: string;
-			let realBase: string;
-			try {
-				const parentDir = dirname(resolvedPath);
-				[realParent, realBase] = await Promise.all([realpath(parentDir), realpath(effectiveBase)]);
-			} catch (err: unknown) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code === "ENOENT") {
-					return {
-						content: `Error: Parent directory for "${relPath}" does not exist.`,
-						isError: true,
-					};
-				}
-				return {
-					content: `Error resolving path: ${err instanceof Error ? err.message : String(err)}`,
-					isError: true,
-				};
-			}
-
-			const realResolvedPath = realParent + sep + resolvedPath.split(sep).at(-1);
-			if (!isPathWithinWorkdir(realResolvedPath, realBase)) {
-				return {
-					content: `Error: Path "${relPath}" is outside the working directory.`,
-					isError: true,
-				};
-			}
-
-			// If the resolved path itself is a symlink, verify the target is contained.
-			try {
-				const linkStat = await lstat(resolvedPath);
-				if (linkStat.isSymbolicLink()) {
-					const linkTarget = await readlink(resolvedPath);
-					const resolvedTarget = resolve(dirname(resolvedPath), linkTarget);
-					if (!isPathWithinWorkdir(resolvedTarget, realBase)) {
-						return {
-							content: `Error: Path "${relPath}" is outside the working directory.`,
-							isError: true,
-						};
-					}
-				}
-			} catch (err: unknown) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					return {
-						content: `Error checking path: ${err instanceof Error ? err.message : String(err)}`,
-						isError: true,
-					};
-				}
-			}
 
 			// Check existence.
 			let fileExists = false;
