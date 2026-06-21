@@ -69,6 +69,7 @@ export async function* streamChat(
 		model: opts?.model ?? config.model,
 		messages: finalMessages,
 		stream: true,
+		stream_options: { include_usage: true },
 	};
 
 	if (openaiTools.length > 0) {
