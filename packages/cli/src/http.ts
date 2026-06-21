@@ -96,16 +96,18 @@ export async function fetchModels(deps: FetchDeps, opts: FetchModelsOpts): Promi
 interface FetchConversationsOpts {
 	readonly server: string;
 	readonly query?: string;
+	readonly status?: string;
 }
 
 export async function fetchConversations(
 	deps: FetchDeps,
 	opts: FetchConversationsOpts,
 ): Promise<ConversationListResponse> {
-	const url =
-		opts.query !== undefined
-			? `${opts.server}/conversations?q=${encodeURIComponent(opts.query)}`
-			: `${opts.server}/conversations`;
+	const params = new URLSearchParams();
+	if (opts.query !== undefined) params.set("q", opts.query);
+	if (opts.status !== undefined) params.set("status", opts.status);
+	const qs = params.toString();
+	const url = qs.length > 0 ? `${opts.server}/conversations?${qs}` : `${opts.server}/conversations`;
 	const res = await deps.fetchImpl(url);
 
 	if (!res.ok) {

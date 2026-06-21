@@ -8,7 +8,11 @@
 
 import type { Extension, HostAPI } from "@dispatch/kernel";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
-import { conversationOpened, sessionOrchestratorHandle } from "@dispatch/session-orchestrator";
+import {
+	conversationOpened,
+	conversationStatusChanged,
+	sessionOrchestratorHandle,
+} from "@dispatch/session-orchestrator";
 import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
 import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 import type { WsClientMessage, WsServerMessage } from "@dispatch/transport-contract";
@@ -132,6 +136,14 @@ export function createTransportWsExtension(): Extension {
 			disposers.push(
 				host.on(conversationOpened, ({ conversationId }) => {
 					broadcast({ type: "conversation.open", conversationId });
+				}),
+			);
+
+			// Broadcast `conversation.statusChanged` to all connected clients so
+			// tabs sync across devices in real time.
+			disposers.push(
+				host.on(conversationStatusChanged, ({ conversationId, status }) => {
+					broadcast({ type: "conversation.statusChanged", conversationId, status });
 				}),
 			);
 

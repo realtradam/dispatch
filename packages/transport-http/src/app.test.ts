@@ -134,6 +134,10 @@ function createFakeConversationStore(
 			return null;
 		},
 		async setConversationTitle() {},
+		async getConversationStatus() {
+			return null;
+		},
+		async setConversationStatus() {},
 	};
 }
 
@@ -851,6 +855,10 @@ describe("GET /conversations/:id", () => {
 					return null;
 				},
 				async setConversationTitle() {},
+				async getConversationStatus() {
+					return null;
+				},
+				async setConversationStatus() {},
 			};
 			const app = createApp({
 				conversationStore: store,
@@ -915,6 +923,10 @@ describe("GET /conversations/:id", () => {
 				return null;
 			},
 			async setConversationTitle() {},
+			async getConversationStatus() {
+				return null;
+			},
+			async setConversationStatus() {},
 		};
 		const app = createApp({
 			conversationStore: store,
@@ -1048,6 +1060,10 @@ describe("GET /conversations/:id/metrics", () => {
 				return null;
 			},
 			async setConversationTitle() {},
+			async getConversationStatus() {
+				return null;
+			},
+			async setConversationStatus() {},
 		};
 		const app = createApp({
 			conversationStore: brokenStore,
@@ -2014,6 +2030,10 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 				return null;
 			},
 			async setConversationTitle() {},
+			async getConversationStatus() {
+				return null;
+			},
+			async setConversationStatus() {},
 		};
 		const app = createApp({
 			conversationStore: store,
@@ -2034,9 +2054,9 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 
 describe("GET /conversations", () => {
 	const sampleConvos: ConversationMeta[] = [
-		{ id: "conv-1", createdAt: 1000, lastActivityAt: 2000, title: "First" },
-		{ id: "conv-2", createdAt: 1500, lastActivityAt: 2500, title: "Second" },
-		{ id: "other-1", createdAt: 3000, lastActivityAt: 4000, title: "Other" },
+		{ id: "conv-1", createdAt: 1000, lastActivityAt: 2000, title: "First", status: "idle" },
+		{ id: "conv-2", createdAt: 1500, lastActivityAt: 2500, title: "Second", status: "idle" },
+		{ id: "other-1", createdAt: 3000, lastActivityAt: 4000, title: "Other", status: "idle" },
 	];
 
 	function appWithList(list: ConversationMeta[]) {

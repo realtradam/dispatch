@@ -1,4 +1,9 @@
-import type { AgentEvent, ChatMessage, ReasoningEffort } from "@dispatch/kernel";
+import type {
+	AgentEvent,
+	ChatMessage,
+	ConversationStatus,
+	ReasoningEffort,
+} from "@dispatch/kernel";
 
 const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
 	"low",
@@ -7,6 +12,30 @@ const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
 	"xhigh",
 	"max",
 ];
+
+const VALID_STATUSES: readonly ConversationStatus[] = ["active", "idle", "closed"];
+
+/**
+ * Pure: parse a `?status=` query value into a list of valid ConversationStatus
+ * values. Returns `undefined` when the input is missing/empty (no filter).
+ * Invalid values are silently dropped; if ALL values are invalid, returns
+ * `undefined` (no filter — shows all).
+ */
+export function parseStatusFilter(
+	raw: string | undefined,
+): readonly ConversationStatus[] | undefined {
+	if (raw === undefined) return undefined;
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) return undefined;
+	const parts = trimmed
+		.split(",")
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
+	const valid = parts.filter((p): p is ConversationStatus =>
+		VALID_STATUSES.includes(p as ConversationStatus),
+	);
+	return valid.length > 0 ? valid : undefined;
+}
 
 export function isValidReasoningEffort(value: unknown): value is ReasoningEffort {
 	return typeof value === "string" && VALID_REASONING_EFFORTS.includes(value as ReasoningEffort);

@@ -2,6 +2,7 @@ import type {
 	ChatMessage,
 	Chunk,
 	ConversationMeta,
+	ConversationStatus,
 	Logger,
 	ReasoningEffort,
 	Role,
@@ -71,11 +72,20 @@ export interface ConversationStore {
 	 * recent first). Metadata (createdAt, lastActivityAt, title) is tracked
 	 * automatically on append; title defaults to the first user message.
 	 */
-	readonly listConversations: () => Promise<readonly ConversationMeta[]>;
+	readonly listConversations: (filter?: {
+		readonly status?: readonly ConversationStatus[];
+	}) => Promise<readonly ConversationMeta[]>;
 	/** Single conversation metadata, or null if unknown. */
 	readonly getConversationMeta: (conversationId: string) => Promise<ConversationMeta | null>;
 	/** Set/update the human-readable title for a conversation. */
 	readonly setConversationTitle: (conversationId: string, title: string) => Promise<void>;
+	/** Get the lifecycle status of a conversation, or null if unknown. */
+	readonly getConversationStatus: (conversationId: string) => Promise<ConversationStatus | null>;
+	/** Set the lifecycle status of a conversation. Creates a minimal metadata row if missing. */
+	readonly setConversationStatus: (
+		conversationId: string,
+		status: ConversationStatus,
+	) => Promise<void>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -120,6 +130,7 @@ interface ConversationMetaRow {
 	readonly createdAt: number;
 	readonly lastActivityAt: number;
 	readonly title: string;
+	readonly status: ConversationStatus;
 }
 
 /** Maximum title length (in characters) before truncation with an ellipsis. */
@@ -166,7 +177,10 @@ function parseMetaRow(raw: string): ConversationMetaRow | null {
 	) {
 		return null;
 	}
-	return parsed as ConversationMetaRow;
+	const row = parsed as ConversationMetaRow;
+	const status: ConversationStatus =
+		row.status === "active" || row.status === "closed" ? row.status : "idle";
+	return { createdAt: row.createdAt, lastActivityAt: row.lastActivityAt, title: row.title, status };
 }
 
 function toMeta(id: string, row: ConversationMetaRow): ConversationMeta {
@@ -175,6 +189,7 @@ function toMeta(id: string, row: ConversationMetaRow): ConversationMeta {
 		createdAt: row.createdAt,
 		lastActivityAt: row.lastActivityAt,
 		title: row.title,
+		status: row.status,
 	};
 }
 
@@ -241,6 +256,7 @@ export function createConversationStore(
 					createdAt: ts,
 					lastActivityAt: ts,
 					title: extractTitle(messages),
+					status: "idle",
 				};
 				await storage.set(metaKey(conversationId), JSON.stringify(row));
 				await ensureInIndex(conversationId);
@@ -252,6 +268,7 @@ export function createConversationStore(
 						createdAt: ts,
 						lastActivityAt: ts,
 						title: extractTitle(messages),
+						status: "idle",
 					};
 					await storage.set(metaKey(conversationId), JSON.stringify(row));
 					await ensureInIndex(conversationId);
@@ -264,6 +281,7 @@ export function createConversationStore(
 						createdAt: existing.createdAt,
 						lastActivityAt: ts,
 						title,
+						status: existing.status,
 					};
 					await storage.set(metaKey(conversationId), JSON.stringify(row));
 				}
@@ -387,7 +405,7 @@ export function createConversationStore(
 				logger.debug("reasoning-effort set", { conversationId });
 			}
 		},
-		async listConversations() {
+		async listConversations(filter) {
 			const raw = await storage.get(CONVERSATION_INDEX_KEY);
 			if (raw === null) return [];
 			let parsed: unknown;
@@ -407,12 +425,14 @@ export function createConversationStore(
 				ids.push(v);
 			}
 
+			const statusFilter = filter?.status;
 			const metas: ConversationMeta[] = [];
 			for (const id of ids) {
 				const metaRaw = await storage.get(metaKey(id));
 				if (metaRaw === null) continue;
 				const row = parseMetaRow(metaRaw);
 				if (row === null) continue;
+				if (statusFilter !== undefined && !statusFilter.includes(row.status)) continue;
 				metas.push(toMeta(id, row));
 			}
 			// Sort by lastActivityAt descending (most recent first). Stable sort
@@ -437,6 +457,7 @@ export function createConversationStore(
 					createdAt: ts,
 					lastActivityAt: ts,
 					title,
+					status: "idle",
 				};
 				await storage.set(metaKey(conversationId), JSON.stringify(row));
 				await ensureInIndex(conversationId);
@@ -449,16 +470,62 @@ export function createConversationStore(
 					createdAt: ts,
 					lastActivityAt: ts,
 					title,
+					status: "idle",
 				};
 				await storage.set(metaKey(conversationId), JSON.stringify(row));
 				await ensureInIndex(conversationId);
 				return;
 			}
-			// Preserve createdAt + lastActivityAt; update only the title.
+			// Preserve createdAt + lastActivityAt + status; update only the title.
 			const row: ConversationMetaRow = {
 				createdAt: existing.createdAt,
 				lastActivityAt: existing.lastActivityAt,
 				title,
+				status: existing.status,
+			};
+			await storage.set(metaKey(conversationId), JSON.stringify(row));
+		},
+
+		async getConversationStatus(conversationId) {
+			const raw = await storage.get(metaKey(conversationId));
+			if (raw === null) return null;
+			const row = parseMetaRow(raw);
+			if (row === null) return null;
+			return row.status;
+		},
+
+		async setConversationStatus(conversationId, status) {
+			const ts = now();
+			const raw = await storage.get(metaKey(conversationId));
+			if (raw === null) {
+				// Status set before any message was appended — create a minimal row.
+				const row: ConversationMetaRow = {
+					createdAt: ts,
+					lastActivityAt: ts,
+					title: "Untitled",
+					status,
+				};
+				await storage.set(metaKey(conversationId), JSON.stringify(row));
+				await ensureInIndex(conversationId);
+				return;
+			}
+			const existing = parseMetaRow(raw);
+			if (existing === null) {
+				const row: ConversationMetaRow = {
+					createdAt: ts,
+					lastActivityAt: ts,
+					title: "Untitled",
+					status,
+				};
+				await storage.set(metaKey(conversationId), JSON.stringify(row));
+				await ensureInIndex(conversationId);
+				return;
+			}
+			const row: ConversationMetaRow = {
+				createdAt: existing.createdAt,
+				lastActivityAt: existing.lastActivityAt,
+				title: existing.title,
+				status,
 			};
 			await storage.set(metaKey(conversationId), JSON.stringify(row));
 		},

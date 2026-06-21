@@ -23,6 +23,7 @@ import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-co
 import type {
 	AgentEvent,
 	ConversationMeta,
+	ConversationStatus,
 	QueuedMessage,
 	ReasoningEffort,
 	StoredChunk,
@@ -32,6 +33,7 @@ import type {
 export type {
 	AgentEvent,
 	ConversationMeta,
+	ConversationStatus,
 	QueuedMessage,
 	ReasoningEffort,
 	StepMetrics,
@@ -483,7 +485,8 @@ export type WsServerMessage =
 	| SurfaceServerMessage
 	| ChatDeltaMessage
 	| ChatErrorMessage
-	| ConversationOpenMessage;
+	| ConversationOpenMessage
+	| ConversationStatusChangedMessage;
 
 // ─── Conversation list + metadata ────────────────────────────────────────────
 
@@ -495,6 +498,17 @@ export type WsServerMessage =
 export interface ConversationOpenMessage {
 	readonly type: "conversation.open";
 	readonly conversationId: string;
+}
+
+/**
+ * Broadcast to all connected WS clients when a conversation's lifecycle status
+ * changes (active/idle/closed). The frontend uses this to sync tab state across
+ * devices in real time.
+ */
+export interface ConversationStatusChangedMessage {
+	readonly type: "conversation.statusChanged";
+	readonly conversationId: string;
+	readonly status: ConversationStatus;
 }
 
 /**

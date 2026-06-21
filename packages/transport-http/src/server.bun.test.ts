@@ -61,6 +61,10 @@ function fakeConversationStore(): ConversationStore {
 			return null;
 		},
 		async setConversationTitle() {},
+		async getConversationStatus() {
+			return null;
+		},
+		async setConversationStatus() {},
 	};
 }
 

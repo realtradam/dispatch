@@ -86,6 +86,10 @@ function createInMemoryStore(): ConversationStore & {
 			return null;
 		},
 		async setConversationTitle() {},
+		async getConversationStatus() {
+			return null;
+		},
+		async setConversationStatus() {},
 	};
 }
 
@@ -532,6 +536,10 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async setConversationTitle() {},
+			async getConversationStatus() {
+				return null;
+			},
+			async setConversationStatus() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -594,6 +602,10 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async setConversationTitle() {},
+			async getConversationStatus() {
+				return null;
+			},
+			async setConversationStatus() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -945,6 +957,10 @@ describe("turn metrics persistence", () => {
 				return null;
 			},
 			async setConversationTitle() {},
+			async getConversationStatus() {
+				return null;
+			},
+			async setConversationStatus() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -1112,18 +1128,23 @@ describe("lifecycle event hooks", () => {
 			modelName: "mymodel",
 		});
 
-		expect(emitted).toHaveLength(2);
+		expect(emitted).toHaveLength(4);
 		expect(emitted[0]?.hook).toBe("session-orchestrator/turn-started");
 		expect(emitted[0]?.payload.conversationId).toBe("conv-lifecycle");
 		expect(emitted[0]?.payload.cwd).toBe("/work");
 		expect(emitted[0]?.payload.modelName).toBe("mymodel");
 		expect(emitted[0]?.order).toBe(0);
 
-		expect(emitted[1]?.hook).toBe("session-orchestrator/turn-settled");
-		expect(emitted[1]?.payload.conversationId).toBe("conv-lifecycle");
-		expect(emitted[1]?.payload.cwd).toBe("/work");
-		expect(emitted[1]?.payload.modelName).toBe("mymodel");
-		expect(emitted[1]?.order).toBe(1);
+		expect(emitted[1]?.hook).toBe("session-orchestrator/conversation-status-changed");
+		expect((emitted[1]?.payload as unknown as { status: string }).status).toBe("active");
+
+		expect(emitted[2]?.hook).toBe("session-orchestrator/turn-settled");
+		expect(emitted[2]?.payload.conversationId).toBe("conv-lifecycle");
+		expect(emitted[2]?.payload.cwd).toBe("/work");
+		expect(emitted[2]?.payload.modelName).toBe("mymodel");
+
+		expect(emitted[3]?.hook).toBe("session-orchestrator/conversation-status-changed");
+		expect((emitted[3]?.payload as unknown as { status: string }).status).toBe("idle");
 	});
 });
 
@@ -2301,6 +2322,10 @@ describe("closeConversation (CR-4c)", () => {
 			{
 				hook: "session-orchestrator/conversation-closed",
 				payload: { conversationId: "conv-never-seen" },
+			},
+			{
+				hook: "session-orchestrator/conversation-status-changed",
+				payload: { conversationId: "conv-never-seen", status: "closed" },
 			},
 		]);
 

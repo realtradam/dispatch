@@ -27,6 +27,7 @@ export const manifest: Manifest = {
 			"session-orchestrator/turn-settled",
 			"session-orchestrator/warm-completed",
 			"session-orchestrator/conversation-closed",
+			"session-orchestrator/conversation-status-changed",
 		],
 	},
 };

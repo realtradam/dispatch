@@ -30,6 +30,7 @@ import {
 	parseQueueBody,
 	parseReasoningEffortBody,
 	parseSinceSeq,
+	parseStatusFilter,
 	parseWarmBody,
 	parseWindowParam,
 	serializeEventLine,
@@ -551,7 +552,13 @@ export function createApp(opts: CreateServerOptions): Hono {
 
 	app.get("/conversations", async (c) => {
 		try {
-			const all = await opts.conversationStore.listConversations();
+			// Optional `?status=` comma-separated filter (e.g. "active,idle").
+			// Default: all statuses. Invalid values are silently ignored.
+			const rawStatus = c.req.query("status");
+			const statusFilter = parseStatusFilter(rawStatus);
+			const all = await opts.conversationStore.listConversations(
+				statusFilter !== undefined ? { status: statusFilter } : undefined,
+			);
 			// Optional `?q=` filters by id prefix (short-id resolution). A
 			// missing/empty/whitespace-only `q` is ignored → return all.
 			const rawQ = c.req.query("q");
@@ -560,6 +567,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 			log.info("conversations: list", {
 				count: conversations.length,
 				...(q.length > 0 ? { q } : {}),
+				...(statusFilter !== undefined ? { status: statusFilter.join(",") } : {}),
 			});
 			const body: ConversationListResponse = { conversations };
 			return c.json(body, 200);

@@ -27,7 +27,13 @@ export type ParsedCommand =
 			readonly showReasoning: boolean;
 			readonly open: boolean;
 	  }
-	| { readonly kind: "list"; readonly server: string; readonly query?: string }
+	| {
+			readonly kind: "list";
+			readonly server: string;
+			readonly query?: string;
+			readonly status?: string;
+			readonly all: boolean;
+	  }
 	| { readonly kind: "open"; readonly server: string; readonly conversationId: string }
 	| { readonly kind: "read"; readonly server: string; readonly conversationId: string }
 	| {
@@ -73,11 +79,18 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 	if (first === "list") {
 		let server = opts.defaultServer;
 		let query: string | undefined;
+		let status: string | undefined;
+		let all = false;
 		for (let i = 1; i < argv.length; i++) {
 			const arg = argv[i] as string;
 			if (arg === "--server") {
 				if (i + 1 >= argv.length) return { kind: "error", message: "--server requires a value" };
 				server = argv[++i] as string;
+			} else if (arg === "--status") {
+				if (i + 1 >= argv.length) return { kind: "error", message: "--status requires a value" };
+				status = argv[++i];
+			} else if (arg === "--all") {
+				all = true;
 			} else if (arg.startsWith("--")) {
 				return { kind: "error", message: `Unknown flag: ${arg}` };
 			} else if (query !== undefined) {
@@ -86,7 +99,13 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 				query = arg;
 			}
 		}
-		return { kind: "list", server, ...(query !== undefined && { query }) };
+		return {
+			kind: "list",
+			server,
+			...(query !== undefined && { query }),
+			...(status !== undefined && { status }),
+			all,
+		};
 	}
 
 	if (first === "read") {
