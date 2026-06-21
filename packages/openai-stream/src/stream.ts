@@ -91,8 +91,8 @@ export async function* streamChat(
 	const bodyString = JSON.stringify(body);
 
 	let reqSpan: Span | undefined;
-	let totalInputTokens = 0;
-	let totalOutputTokens = 0;
+	let totalInputTokens: number | undefined;
+	let totalOutputTokens: number | undefined;
 	let totalCacheReadTokens: number | undefined;
 	let totalCacheWriteTokens: number | undefined;
 
@@ -243,9 +243,13 @@ export async function* streamChat(
 		try {
 			const attrs: Record<string, string | number | boolean | null> = {
 				status: response.status,
-				"usage.inputTokens": totalInputTokens,
-				"usage.outputTokens": totalOutputTokens,
 			};
+			if (totalInputTokens !== undefined) {
+				attrs["usage.inputTokens"] = totalInputTokens;
+			}
+			if (totalOutputTokens !== undefined) {
+				attrs["usage.outputTokens"] = totalOutputTokens;
+			}
 			if (totalCacheReadTokens !== undefined) {
 				attrs["usage.cacheReadTokens"] = totalCacheReadTokens;
 			}
