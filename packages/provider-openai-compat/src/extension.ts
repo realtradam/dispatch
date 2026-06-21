@@ -1,5 +1,5 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
-import { createOpenAICompatProvider } from "./provider.js";
+import { createOpenAICompatProvider } from "@dispatch/openai-stream";
 
 export const manifest: Manifest = {
 	id: "provider-openai-compat",
@@ -39,7 +39,11 @@ export async function activate(host: HostAPI): Promise<void> {
 
 	const model = host.config.get<string>("provider.openai-compat.model") ?? "deepseek-v4-flash";
 
-	const provider = createOpenAICompatProvider({ credentials: creds, model });
+	const provider = createOpenAICompatProvider({
+		credentials: creds,
+		model,
+		id: "openai-compat",
+	});
 	host.defineProvider(provider);
 	host.logger.info(`provider-openai-compat: registered (model=${model})`);
 }

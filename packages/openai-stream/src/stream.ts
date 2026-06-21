@@ -18,6 +18,19 @@ export interface StreamConfig {
 	 * When absent, falls back to globalThis.fetch (production default).
 	 */
 	readonly fetchFn?: FetchLike;
+	/**
+	 * Optional hook a provider extension uses to add provider-specific body
+	 * fields (e.g. `reasoning_effort`) before the request is sent. Receives the
+	 * body built so far + the ProviderStreamOptions; returns ADDITIONAL fields
+	 * to merge into the body (or a full body). Generic — the library names no
+	 * feature. Applied AFTER building `body` and BEFORE `JSON.stringify`, so
+	 * the verbatim post-transform bytes are what hit the wire (and what the
+	 * provider.request span captures). Default (absent): no extra fields.
+	 */
+	readonly transformBody?: (
+		body: Record<string, unknown>,
+		opts: ProviderStreamOptions,
+	) => Record<string, unknown>;
 }
 
 /**
@@ -66,6 +79,11 @@ export async function* streamChat(
 	}
 	if (opts?.maxTokens !== undefined) {
 		body.max_tokens = opts.maxTokens;
+	}
+
+	if (config.transformBody) {
+		const extra = config.transformBody(body, opts ?? {});
+		Object.assign(body, extra);
 	}
 
 	const url = `${config.baseURL}/chat/completions`;

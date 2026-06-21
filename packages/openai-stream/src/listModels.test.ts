@@ -13,6 +13,7 @@ function makeProvider(fetchFn: FetchLike, apiKey = "sk-test-1234567890abcdef"): 
 	return createOpenAICompatProvider({
 		credentials: creds,
 		model: "test-model",
+		id: "openai-compat",
 		fetchFn,
 	});
 }

@@ -11,6 +11,8 @@
 		{ "path": "./packages/storage-sqlite" },
 		{ "path": "./packages/auth-apikey" },
 		{ "path": "./packages/provider-openai-compat" },
+		{ "path": "./packages/openai-stream" },
+		{ "path": "./packages/provider-umans" },
 		{ "path": "./packages/credential-store" },
 		{ "path": "./packages/conversation-store" },
 		{ "path": "./packages/throughput-store" },

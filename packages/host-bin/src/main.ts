@@ -22,6 +22,7 @@ import {
 import { extension as lspExt } from "@dispatch/lsp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
+import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
 import { extension as skillsExt } from "@dispatch/skills";
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
@@ -69,6 +70,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	conversationStoreExt,
 	authApikeyExt,
 	providerOpenaiCompatExt,
+	providerUmansExt,
 	toolEditFileExt,
 	toolReadFileExt,
 	toolShellExt,
@@ -148,6 +150,14 @@ async function boot(): Promise<void> {
 	// Assemble the credential list. MVP keeps the hardcoded `opencode` credential
 	// and adds a `claude` credential when an external Anthropic provider is loaded.
 	const credentials = [{ name: "opencode", providerId: "openai-compat" }];
+
+	// The umans credential is always listed (it's the model-catalog index); the
+	// provider itself only registers when UMANS_API_KEY is set, so listCatalog
+	// gracefully skips it when the provider is absent.
+	if (process.env.UMANS_API_KEY) {
+		credentials.push({ name: "umans", providerId: "umans" });
+		logger.info(`Registered credential "umans" → umans provider`);
+	}
 	const hasAnthropic = externalExtensions.some((e) =>
 		e.manifest.contributes?.providers?.includes("anthropic"),
 	);

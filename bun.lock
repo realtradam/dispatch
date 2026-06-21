@@ -61,7 +61,9 @@
         "@dispatch/journal-sink": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/lsp": "workspace:*",
+        "@dispatch/message-queue": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
+        "@dispatch/provider-umans": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/skills": "workspace:*",
         "@dispatch/storage-sqlite": "workspace:*",
@@ -115,12 +117,30 @@
         "@dispatch/trace-store": "workspace:*",
       },
     },
+    "packages/openai-stream": {
+      "name": "@dispatch/openai-stream",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/trace-replay": "workspace:*",
+        "@dispatch/wire": "workspace:*",
+      },
+    },
     "packages/provider-openai-compat": {
       "name": "@dispatch/provider-openai-compat",
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/openai-stream": "workspace:*",
         "@dispatch/trace-replay": "workspace:*",
+      },
+    },
+    "packages/provider-umans": {
+      "name": "@dispatch/provider-umans",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/openai-stream": "workspace:*",
       },
     },
     "packages/session-orchestrator": {
@@ -301,7 +321,11 @@
 
     "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
 
+    "@dispatch/openai-stream": ["@dispatch/openai-stream@workspace:packages/openai-stream"],
+
     "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
+
+    "@dispatch/provider-umans": ["@dispatch/provider-umans@workspace:packages/provider-umans"],
 
     "@dispatch/session-orchestrator": ["@dispatch/session-orchestrator@workspace:packages/session-orchestrator"],
 
