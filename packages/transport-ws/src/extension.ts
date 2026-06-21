@@ -8,7 +8,7 @@
 
 import type { Extension, HostAPI } from "@dispatch/kernel";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
-import { sessionOrchestratorHandle } from "@dispatch/session-orchestrator";
+import { conversationOpened, sessionOrchestratorHandle } from "@dispatch/session-orchestrator";
 import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
 import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 import type { WsClientMessage, WsServerMessage } from "@dispatch/transport-contract";
@@ -27,6 +27,10 @@ type Ws = Bun.ServerWebSocket<ConnectionState>;
 
 export function createTransportWsExtension(): Extension {
 	let server: ReturnType<typeof Bun.serve<ConnectionState>> | undefined;
+	/** Every currently-connected WS client — used for global fan-out broadcasts. */
+	const connections = new Set<Ws>();
+	/** Disposers for host hook subscriptions (drained on deactivate). */
+	const disposers: Array<() => void> = [];
 
 	return {
 		manifest,
@@ -41,6 +45,13 @@ export function createTransportWsExtension(): Extension {
 					ws.send(JSON.stringify(msg));
 				} catch {
 					// Connection may have been dropped; swallow.
+				}
+			}
+
+			/** Broadcast a message to EVERY connected WS client (global fan-out). */
+			function broadcast(msg: WsServerMessage): void {
+				for (const ws of connections) {
+					send(ws, msg);
 				}
 			}
 
@@ -113,6 +124,17 @@ export function createTransportWsExtension(): Extension {
 				}
 			}
 
+			// Broadcast a `conversation.open` WS message to ALL connected clients
+			// whenever the orchestrator signals a conversation was opened (e.g. the
+			// CLI `--open` flag). The frontend decides whether to open/focus a tab —
+			// the backend just signals. This is a GLOBAL fan-out (like the catalog),
+			// NOT a per-conversation chat broadcast.
+			disposers.push(
+				host.on(conversationOpened, ({ conversationId }) => {
+					broadcast({ type: "conversation.open", conversationId });
+				}),
+			);
+
 			server = Bun.serve<ConnectionState>({
 				port,
 				fetch(req, srv) {
@@ -126,6 +148,7 @@ export function createTransportWsExtension(): Extension {
 				},
 				websocket: {
 					open(ws) {
+						connections.add(ws);
 						logger.debug("transport-ws: connection open");
 						send(ws, catalogMessage(registry));
 					},
@@ -297,6 +320,7 @@ export function createTransportWsExtension(): Extension {
 					},
 
 					close(ws) {
+						connections.delete(ws);
 						const state = ws.data;
 						if (state) {
 							// Dispose all chat subscriptions (does NOT abort turns).
@@ -318,6 +342,11 @@ export function createTransportWsExtension(): Extension {
 		},
 
 		deactivate() {
+			for (const dispose of disposers) {
+				dispose();
+			}
+			disposers.length = 0;
+			connections.clear();
 			if (server) {
 				server.stop();
 				server = undefined;

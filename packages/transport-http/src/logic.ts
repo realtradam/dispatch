@@ -1,4 +1,4 @@
-import type { AgentEvent, ReasoningEffort } from "@dispatch/kernel";
+import type { AgentEvent, ChatMessage, ReasoningEffort } from "@dispatch/kernel";
 
 const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
 	"low",
@@ -220,4 +220,34 @@ export function isReasoningEffortParseError(
 	result: ReasoningEffort | ParseError,
 ): result is ParseError {
 	return typeof result === "object" && result !== null && "error" in result;
+}
+
+/**
+ * Extract the text of the last assistant message's last `text` chunk — the
+ * "show me the last reply" affordance for `GET /conversations/:id/last`.
+ *
+ * Scan from the END for the last message with `role: "assistant"`, then within
+ * THAT message for the last `type: "text"` chunk. Returns its `text`. Returns
+ * `""` when there is no assistant message, or when the last assistant message
+ * has no text chunk (e.g. only tool-call chunks).
+ *
+ * Pure (input → output); zero I/O, so it tests directly without mocks.
+ */
+export function extractLastAssistantText(messages: readonly ChatMessage[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg === undefined || msg.role !== "assistant") continue;
+		// Found the last assistant message — scan its chunks from the end for
+		// the last `text` chunk. Stop here (do not keep scanning earlier
+		// assistant messages): the contract is "the last assistant message's
+		// last text chunk", not "the most recent text chunk anywhere".
+		for (let j = msg.chunks.length - 1; j >= 0; j--) {
+			const chunk = msg.chunks[j];
+			if (chunk !== undefined && chunk.type === "text") {
+				return chunk.text;
+			}
+		}
+		return "";
+	}
+	return "";
 }

@@ -12,6 +12,7 @@ export type {
 } from "./logic.js";
 export {
 	computeCachePct,
+	extractLastAssistantText,
 	isParseError,
 	isReasoningEffortParseError,
 	isSinceSeqError,

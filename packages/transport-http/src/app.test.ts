@@ -1,5 +1,8 @@
 import type {
 	AgentEvent,
+	ChatMessage,
+	ConversationMeta,
+	HostAPI,
 	Logger,
 	ReasoningEffort,
 	StepId,
@@ -15,6 +18,7 @@ import type {
 } from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
+import { extractLastAssistantText } from "./logic.js";
 import type {
 	ConversationStore,
 	CredentialStore,
@@ -22,6 +26,7 @@ import type {
 	SessionOrchestrator,
 	WarmService,
 } from "./seam.js";
+import { conversationOpened } from "./seam.js";
 
 function createMemStorage(): StorageNamespace {
 	const map = new Map<string, string>();
@@ -2024,5 +2029,375 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 		});
 		expect(res.status).toBe(400);
 		expect(storeCalled).toBe(false);
+	});
+});
+
+describe("GET /conversations", () => {
+	const sampleConvos: ConversationMeta[] = [
+		{ id: "conv-1", createdAt: 1000, lastActivityAt: 2000, title: "First" },
+		{ id: "conv-2", createdAt: 1500, lastActivityAt: 2500, title: "Second" },
+		{ id: "other-1", createdAt: 3000, lastActivityAt: 4000, title: "Other" },
+	];
+
+	function appWithList(list: ConversationMeta[]) {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async listConversations() {
+				return list;
+			},
+		};
+		return createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+	}
+
+	it("returns 200 with list", async () => {
+		const app = appWithList(sampleConvos);
+		const res = await app.request("/conversations");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversations: ConversationMeta[] };
+		expect(body.conversations).toHaveLength(3);
+		expect(body.conversations.map((c) => c.id)).toEqual(["conv-1", "conv-2", "other-1"]);
+	});
+
+	it("?q= filters by id prefix", async () => {
+		const app = appWithList(sampleConvos);
+		const res = await app.request("/conversations?q=conv-");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversations: ConversationMeta[] };
+		expect(body.conversations).toHaveLength(2);
+		expect(body.conversations.map((c) => c.id)).toEqual(["conv-1", "conv-2"]);
+	});
+
+	it("?q= returns all when q is empty", async () => {
+		const app = appWithList(sampleConvos);
+		const res = await app.request("/conversations?q=");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversations: ConversationMeta[] };
+		expect(body.conversations).toHaveLength(3);
+	});
+
+	it("?q= with whitespace-only returns all (trimmed to empty)", async () => {
+		const app = appWithList(sampleConvos);
+		const res = await app.request("/conversations?q=%20%20%20");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversations: ConversationMeta[] };
+		expect(body.conversations).toHaveLength(3);
+	});
+
+	it("returns 500 when listConversations throws", async () => {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async listConversations() {
+				throw new Error("db down");
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations");
+		expect(res.status).toBe(500);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("Failed to list conversations");
+	});
+});
+
+describe("GET /conversations/:id/last", () => {
+	function appWithMessages(messagesByConv: Map<string, ChatMessage[]>) {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async load(conversationId) {
+				return messagesByConv.get(conversationId) ?? [];
+			},
+		};
+		return createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+	}
+
+	it("returns last assistant text", async () => {
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "hi there" }] },
+			{ role: "user", chunks: [{ type: "text", text: "more" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "final reply" }] },
+		];
+		const app = appWithMessages(new Map([["conv1", messages]]));
+		const res = await app.request("/conversations/conv1/last");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; content: string; turnId?: string };
+		expect(body.conversationId).toBe("conv1");
+		expect(body.content).toBe("final reply");
+		expect(body.turnId).toBeUndefined();
+	});
+
+	it("returns empty content for unknown conversation", async () => {
+		const app = appWithMessages(new Map());
+		const res = await app.request("/conversations/unknown/last");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; content: string; turnId?: string };
+		expect(body.conversationId).toBe("unknown");
+		expect(body.content).toBe("");
+		expect(body.turnId).toBeUndefined();
+	});
+
+	it("blocks until turn settles", async () => {
+		const turnId = "sealed-turn";
+		const orchestrator: SessionOrchestrator = {
+			...createFakeOrchestrator([]),
+			subscribe(conversationId, listener) {
+				const event = { type: "turn-sealed" as const, conversationId, turnId };
+				setTimeout(() => listener(event), 0);
+				return () => {};
+			},
+			isActive() {
+				return true;
+			},
+		};
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "after seal" }] },
+		];
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async load() {
+				return messages;
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator,
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/last");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; content: string; turnId?: string };
+		expect(body.conversationId).toBe("conv1");
+		expect(body.content).toBe("after seal");
+		expect(body.turnId).toBe(turnId);
+	});
+});
+
+describe("POST /conversations/:id/open", () => {
+	it("returns 200", async () => {
+		const emit: HostAPI["emit"] = () => {};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			emit,
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/open", { method: "POST" });
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string };
+		expect(body.conversationId).toBe("conv1");
+	});
+
+	it("calls emit with conversationOpened", async () => {
+		const emitCalls: Array<{ readonly hook: unknown; readonly payload: unknown }> = [];
+		const emit: HostAPI["emit"] = (hook, payload) => {
+			emitCalls.push({ hook, payload });
+		};
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			emit,
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/open", { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(emitCalls).toHaveLength(1);
+		expect(emitCalls[0]?.hook).toBe(conversationOpened);
+		expect(emitCalls[0]?.payload).toEqual({ conversationId: "conv1" });
+	});
+
+	it("returns 500 when emit is absent", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/open", { method: "POST" });
+		expect(res.status).toBe(500);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("not available");
+	});
+});
+
+describe("PUT /conversations/:id/title", () => {
+	it("returns 200 with title", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/title", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: "My Conversation" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; title: string };
+		expect(body.conversationId).toBe("conv1");
+		expect(body.title).toBe("My Conversation");
+	});
+
+	it("rejects empty title with 400", async () => {
+		let setTitleCalled = false;
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async setConversationTitle() {
+				setTitleCalled = true;
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/title", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: "   " }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("title");
+		expect(setTitleCalled).toBe(false);
+	});
+
+	it("returns 400 when title is missing", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/title", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("title");
+	});
+
+	it("forwards the trimmed title to setConversationTitle", async () => {
+		const calls: { conversationId: string; title: string }[] = [];
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async setConversationTitle(conversationId, title) {
+				calls.push({ conversationId, title });
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/title", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: "  trimmed title  " }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; title: string };
+		expect(body.title).toBe("trimmed title");
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.conversationId).toBe("conv1");
+		expect(calls[0]?.title).toBe("trimmed title");
+	});
+
+	it("returns 400 for invalid JSON body", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/title", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: "not json",
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("JSON");
+	});
+});
+
+describe("extractLastAssistantText", () => {
+	it("returns last assistant text chunk", () => {
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "hi there" }] },
+			{ role: "user", chunks: [{ type: "text", text: "how are you?" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "I'm good!" }] },
+		];
+		expect(extractLastAssistantText(messages)).toBe("I'm good!");
+	});
+
+	it("returns empty string when no assistant message", () => {
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
+			{ role: "system", chunks: [{ type: "text", text: "system prompt" }] },
+		];
+		expect(extractLastAssistantText(messages)).toBe("");
+	});
+
+	it("returns the LAST text chunk when an assistant message has multiple", () => {
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
+			{
+				role: "assistant",
+				chunks: [
+					{ type: "text", text: "first" },
+					{ type: "thinking", text: "internal reasoning" },
+					{ type: "text", text: "second" },
+				],
+			},
+		];
+		expect(extractLastAssistantText(messages)).toBe("second");
+	});
+
+	it("returns empty string when the last assistant message has no text chunk", () => {
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "tc1",
+						toolName: "read_file",
+						input: { path: "/tmp" },
+					},
+				],
+			},
+		];
+		expect(extractLastAssistantText(messages)).toBe("");
+	});
+
+	it("returns empty string for an empty message list", () => {
+		expect(extractLastAssistantText([])).toBe("");
 	});
 });

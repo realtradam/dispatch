@@ -240,7 +240,20 @@ function startServer(
 	logger?: Logger,
 ) {
 	const log = logger ?? fakeLogger();
-	return Bun.serve<ConnectionState>({
+	const connections = new Set<Bun.ServerWebSocket<ConnectionState>>();
+
+	/** Broadcast a message to every connected client (mirrors extension.ts). */
+	function broadcast(msg: WsServerMessage): void {
+		for (const ws of connections) {
+			try {
+				ws.send(JSON.stringify(msg));
+			} catch {
+				// Connection may have been dropped; swallow.
+			}
+		}
+	}
+
+	const server = Bun.serve<ConnectionState>({
 		port,
 		fetch(req, srv) {
 			const initial: ConnectionState = {
@@ -253,6 +266,7 @@ function startServer(
 		},
 		websocket: {
 			open(ws) {
+				connections.add(ws);
 				log.debug("transport-ws: connection open");
 				ws.send(JSON.stringify(catalogMessage(registry)));
 			},
@@ -392,6 +406,7 @@ function startServer(
 			},
 
 			close(ws) {
+				connections.delete(ws);
 				const state = ws.data;
 				if (state) {
 					for (const dispose of state.chatSubscriptions.values()) {
@@ -404,6 +419,17 @@ function startServer(
 				}
 				log.debug("transport-ws: connection close");
 			},
+		},
+	});
+
+	/**
+	 * Simulate the `conversationOpened` hook firing — mirrors the
+	 * `host.on(conversationOpened, ...)` subscription in extension.ts, which
+	 * broadcasts a `conversation.open` WS message to every connected client.
+	 */
+	return Object.assign(server, {
+		triggerConversationOpen(conversationId: string): void {
+			broadcast({ type: "conversation.open", conversationId });
 		},
 	});
 }
@@ -936,5 +962,56 @@ describe("logging", () => {
 			(e) => e.msg.includes("aborted") || e.msg.includes("abort"),
 		);
 		expect(abortLogs).toHaveLength(0);
+	});
+});
+
+describe("conversation.open broadcast (conversationOpened hook)", () => {
+	let server: ReturnType<typeof startServer>;
+	let port: number;
+
+	afterEach(() => {
+		server.stop();
+	});
+
+	test("conversation.open broadcast on conversationOpened hook", async () => {
+		const orch = fakeOrchestrator();
+		const registry = fakeRegistry([fakeProvider("demo", "Demo Surface")]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		// Simulate the conversationOpened hook firing (extension.ts's
+		// `host.on(conversationOpened, ...)` handler runs and broadcasts).
+		server.triggerConversationOpen("conv-42");
+
+		const msg = await waitForMessage(ws);
+		expect(msg).toEqual({ type: "conversation.open", conversationId: "conv-42" });
+
+		ws.close();
+	});
+
+	test("conversation.open sent to all connected clients", async () => {
+		const orch = fakeOrchestrator();
+		const registry = fakeRegistry([fakeProvider("demo", "Demo Surface")]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws1 = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws1); // drain catalog
+		const ws2 = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws2); // drain catalog
+
+		// Global fan-out: BOTH connected clients receive the broadcast,
+		// regardless of any per-conversation subscription state.
+		server.triggerConversationOpen("shared-conv");
+
+		const [msg1, msg2] = await Promise.all([waitForMessage(ws1), waitForMessage(ws2)]);
+		expect(msg1).toEqual({ type: "conversation.open", conversationId: "shared-conv" });
+		expect(msg2).toEqual({ type: "conversation.open", conversationId: "shared-conv" });
+
+		ws1.close();
+		ws2.close();
 	});
 });
