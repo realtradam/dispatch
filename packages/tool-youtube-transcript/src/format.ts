@@ -78,9 +78,8 @@ export function formatCompleted(url: string, data: CompletedResponse): string {
 }
 
 /**
- * Format a queued/processing response: status, queue position, the estimated
- * available-at time (ISO, derived from the injected `now`), and the
- * `.youtube_subtitles_pending` append instruction the model must follow.
+ * Format a queued/processing response: status, queue position, and the
+ * estimated available-at time (ISO, derived from the injected `now`).
  */
 export function formatQueued(url: string, data: QueuedResponse, now: () => number): string {
 	const availableAt = new Date(now() + data.estimated_seconds * 1000);
@@ -88,8 +87,7 @@ export function formatQueued(url: string, data: QueuedResponse, now: () => numbe
 	return (
 		`Transcript not yet available (status: ${data.status}, queue position: ${data.position}).\n` +
 		`Estimated available at: ${timeStr} (in ~${Math.ceil(data.estimated_seconds)}s).\n` +
-		`You must append this video URL to .youtube_subtitles_pending in the current ` +
-		`working directory: ${url}`
+		`URL: ${url}`
 	);
 }
 

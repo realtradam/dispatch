@@ -29,12 +29,9 @@ const DESCRIPTION =
 	"Fetch the transcript/subtitles for a YouTube video from the local transcriber " +
 	"service. If the transcript has not been downloaded before, the video will be " +
 	"queued for processing and the tool will return the estimated time when the " +
-	"transcript will be available. When the status is 'queued' or 'processing', " +
-	"you MUST append the video URL on a new line to the file .youtube_subtitles_pending " +
-	"in the current working directory (create it if it does not exist). Once " +
-	"available, the tool returns the full transcript text and timestamped " +
-	"segments. Accepted URL formats: youtube.com/watch?v=, youtu.be/, " +
-	"youtube.com/embed/, youtube.com/shorts/";
+	"transcript will be available. Once available, the tool returns the full " +
+	"transcript text and timestamped segments. Accepted URL formats: " +
+	"youtube.com/watch?v=, youtu.be/, youtube.com/embed/, youtube.com/shorts/";
 
 /**
  * Create the `youtube_transcript` tool. `concurrencySafe: true` — transcript
