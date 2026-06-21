@@ -116,4 +116,11 @@ describe("truncateOutput", () => {
 		expect(truncateOutput("short", 100)).toBe("short");
 		expect(truncateOutput("exact", 5)).toBe("exact");
 	});
+
+	it("includes save path in notice when provided", () => {
+		const output = "a".repeat(100);
+		const result = truncateOutput(output, 50, "/tmp/dispatch/vid123.txt");
+		expect(result).toContain("/tmp/dispatch/vid123.txt");
+		expect(result).toContain("use read_file to access it");
+	});
 });

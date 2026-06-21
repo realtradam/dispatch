@@ -97,14 +97,18 @@ export function formatFailed(data: FailedResponse): string {
 }
 
 /**
- * Truncate output to `cap` characters with a trailing notice, identical in
- * spirit to tool-web-search. Duplication across features is the intended trade
- * (isolation over DRY).
+ * Truncate output to `cap` characters with a trailing notice. When `savePath`
+ * is provided, the notice tells the model where the full output was saved.
+ * Duplication across features is the intended trade (isolation over DRY).
  */
-export function truncateOutput(output: string, cap: number): string {
+export function truncateOutput(output: string, cap: number, savePath?: string): string {
 	if (output.length <= cap) {
 		return output;
 	}
 	const truncated = output.slice(0, cap);
-	return `${truncated}\n\n[Output truncated: exceeded ${cap} characters]`;
+	const notice =
+		savePath !== undefined
+			? `\n\n[Output truncated: exceeded ${cap} characters. Full transcript saved to ${savePath} — use read_file to access it.]`
+			: `\n\n[Output truncated: exceeded ${cap} characters]`;
+	return `${truncated}${notice}`;
 }

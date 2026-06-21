@@ -110,4 +110,30 @@ describe("youtube_transcript", () => {
 		expect(spanOpen).toBeDefined();
 		expect(spanOpen?.conversationId).toBe("conv-xyz");
 	});
+
+	it("writes full transcript to /tmp/dispatch/{video_id}.txt when truncated", async () => {
+		const longText = "x".repeat(60_000);
+		const client = makeStubClient(async () => ({
+			status: "completed",
+			video_id: "vid5",
+			full_text: longText,
+			segments: [],
+		}));
+		let writtenPath = "";
+		let writtenContent = "";
+		const tool = createYoutubeTranscriptTool({
+			client,
+			outputCap: 1000,
+			writeFile: (path, content) => {
+				writtenPath = path;
+				writtenContent = content;
+			},
+		});
+		const result = await tool.execute({ url: "https://youtu.be/vid5" }, stubCtx());
+		expect(writtenPath).toBe("/tmp/dispatch/vid5.txt");
+		expect(writtenContent).toContain("x".repeat(60_000));
+		expect(result.content).toContain("/tmp/dispatch/vid5.txt");
+		expect(result.content).toContain("use read_file to access it");
+		expect(result.content.length).toBeLessThan(writtenContent.length);
+	});
 });
