@@ -64,6 +64,12 @@ export interface CreateServerOptions {
 	 * that endpoint responds `500 { error: "not available" }`.
 	 */
 	readonly emit?: HostAPI["emit"];
+	/**
+	 * Directory containing built frontend static files. When set, unmatched GET
+	 * requests fall through to static file serving (SPA fallback to index.html).
+	 * When absent, no static serving (API-only — backward compatible).
+	 */
+	readonly webDir?: string;
 }
 
 const noopLogger: Logger = {
@@ -668,6 +674,27 @@ export function createApp(opts: CreateServerOptions): Hono {
 			return c.json({ error: "Failed to set conversation title" }, 500);
 		}
 	});
+
+	// ─── Static frontend serving (catch-all, API routes take precedence) ──────
+	if (opts.webDir !== undefined) {
+		const webDir = opts.webDir;
+		app.get("*", async (c) => {
+			const urlPath = new URL(c.req.url).pathname;
+			const filePath = `${webDir}${urlPath}`;
+			const file = Bun.file(filePath);
+			if (await file.exists()) {
+				return new Response(file);
+			}
+			// SPA fallback: serve index.html for client-side routing
+			const indexFile = Bun.file(`${webDir}/index.html`);
+			if (await indexFile.exists()) {
+				return new Response(indexFile, {
+					headers: { "Content-Type": "text/html; charset=utf-8" },
+				});
+			}
+			return c.json({ error: "Not found" }, 404);
+		});
+	}
 
 	return app;
 }

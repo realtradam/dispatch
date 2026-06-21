@@ -1,0 +1,17 @@
+[Unit]
+Description=Dispatch AI Agent Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/dispatch-server
+EnvironmentFile=/etc/dispatch/env
+WorkingDirectory=/var/lib/dispatch
+Restart=on-failure
+RestartSec=5
+# Journal the output
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

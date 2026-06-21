@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# bin/install — build + install Dispatch as a systemd service on Arch Linux.
+#
+# Usage:
+#   sudo bin/install              # build + install + enable + start
+#   sudo bin/install --no-build   # install only (skip the build step)
+#   sudo bin/install --uninstall  # stop + disable + remove files
+#
+# What it installs:
+#   /usr/bin/dispatch-server      — backend binary
+#   /usr/bin/dispatch             — CLI binary
+#   /usr/share/dispatch/web/      — frontend static files
+#   /etc/dispatch/env             — server config (EnvironmentFile)
+#   /etc/systemd/system/dispatch.service — systemd unit
+#   /var/lib/dispatch/            — data directory (SQLite DBs)
+#   /var/log/dispatch/            — journal + trace logs
+#
+# After install:  systemctl status dispatch
+# Logs:           journalctl -u dispatch -f
+# Config:         edit /etc/dispatch/env then `systemctl restart dispatch`
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+	echo "install: must run as root (use sudo)" >&2
+	exit 1
+fi
+
+ACTION="install"
+NO_BUILD=0
+for arg in "$@"; do
+	case "$arg" in
+		--no-build) NO_BUILD=1 ;;
+		--uninstall) ACTION="uninstall" ;;
+		*) echo "install: unknown flag: $arg" >&2; exit 1 ;;
+	esac
+done
+
+# ─── Uninstall ───────────────────────────────────────────────────────────────
+if [[ "$ACTION" == "uninstall" ]]; then
+	echo "[uninstall] stopping service…"
+	systemctl stop dispatch 2>/dev/null || true
+	systemctl disable dispatch 2>/dev/null || true
+	rm -f /etc/systemd/system/dispatch.service
+	systemctl daemon-reload
+	echo "[uninstall] removing files…"
+	rm -f /usr/bin/dispatch-server /usr/bin/dispatch
+	rm -rf /usr/share/dispatch/web
+	# Keep config + data (user might want them)
+	echo "[uninstall] done."
+	echo "  Kept: /etc/dispatch/env, /var/lib/dispatch/, /var/log/dispatch/"
+	echo "  Remove manually if desired: rm -rf /etc/dispatch /var/lib/dispatch /var/log/dispatch"
+	exit 0
+fi
+
+# ─── Build ───────────────────────────────────────────────────────────────────
+if [[ "$NO_BUILD" -eq 0 ]]; then
+	echo "[install] building…"
+	"$ROOT/bin/build"
+fi
+
+# Verify outputs exist
+if [[ ! -f "$ROOT/dist/dispatch-server" ]]; then
+	echo "install: dist/dispatch-server not found — run bin/build first" >&2
+	exit 1
+fi
+
+# ─── Install binaries ────────────────────────────────────────────────────────
+echo "[install] binaries → /usr/bin/"
+install -Dm755 "$ROOT/dist/dispatch-server" /usr/bin/dispatch-server
+install -Dm755 "$ROOT/dist/dispatch" /usr/bin/dispatch
+
+# ─── Install frontend ────────────────────────────────────────────────────────
+if [[ -d "$ROOT/dist/web" ]]; then
+	echo "[install] frontend → /usr/share/dispatch/web/"
+	mkdir -p /usr/share/dispatch/web
+	cp -r "$ROOT/dist/web/"* /usr/share/dispatch/web/
+fi
+
+# ─── Install systemd service ─────────────────────────────────────────────────
+echo "[install] systemd service → /etc/systemd/system/"
+install -Dm644 "$ROOT/systemd/dispatch.service" /etc/systemd/system/dispatch.service
+
+# ─── Config (don't overwrite if it exists) ───────────────────────────────────
+if [[ ! -f /etc/dispatch/env ]]; then
+	echo "[install] config → /etc/dispatch/env (edit with your API key)"
+	install -Dm600 "$ROOT/systemd/dispatch.env" /etc/dispatch/env
+	echo "  ⚠️  Edit /etc/dispatch/env and set DISPATCH_API_KEY before starting!"
+else
+	echo "[install] config /etc/dispatch/env already exists — keeping"
+fi
+
+# ─── Data + log directories ──────────────────────────────────────────────────
+mkdir -p /var/lib/dispatch /var/log/dispatch
+
+# ─── Enable + start ──────────────────────────────────────────────────────────
+systemctl daemon-reload
+systemctl enable dispatch
+
+if grep -q 'sk-\.\.\.' /etc/dispatch/env 2>/dev/null; then
+	echo ""
+	echo "[install] done — but DISPATCH_API_KEY is still the placeholder."
+	echo "  1. Edit /etc/dispatch/env and set your API key"
+	echo "  2. systemctl start dispatch"
+	echo "  3. journalctl -u dispatch -f"
+else
+	echo "[install] starting service…"
+	systemctl start dispatch
+	echo ""
+	echo "[install] done!"
+	echo "  Status:  systemctl status dispatch"
+	echo "  Logs:    journalctl -u dispatch -f"
+	echo "  Config:  /etc/dispatch/env"
+	echo "  Frontend: http://localhost:24991"
+	echo "  API:      http://localhost:24991/chat"
+fi

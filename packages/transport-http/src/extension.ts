@@ -73,6 +73,9 @@ export function createTransportHttpExtension(): Extension & {
 				lspService,
 				logger,
 				emit: host.emit.bind(host),
+				...(process.env.DISPATCH_WEB_DIR !== undefined
+					? { webDir: process.env.DISPATCH_WEB_DIR }
+					: {}),
 			});
 
 			const port = host.config.get<number>("httpPort") ?? 24203;
