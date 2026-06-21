@@ -57,7 +57,7 @@ describe("formatCompleted", () => {
 });
 
 describe("formatQueued", () => {
-	it("returns status + position + estimated time + pending file instruction", () => {
+	it("returns status + position + estimated time", () => {
 		const data: QueuedResponse = {
 			status: "queued",
 			video_id: "vid456",
@@ -70,12 +70,11 @@ describe("formatQueued", () => {
 		const expected =
 			`Transcript not yet available (status: queued, queue position: 3).\n` +
 			`Estimated available at: ${expectedTime} (in ~120s).\n` +
-			`You must append this video URL to .youtube_subtitles_pending in the current ` +
-			`working directory: https://youtu.be/vid456`;
+			`URL: https://youtu.be/vid456`;
 		expect(out).toBe(expected);
 	});
 
-	it("includes the processing status + pending-file instruction", () => {
+	it("includes the processing status", () => {
 		const data: QueuedResponse = {
 			status: "processing",
 			video_id: "vid457",
@@ -86,7 +85,6 @@ describe("formatQueued", () => {
 		expect(out).toContain("status: processing");
 		expect(out).toContain("queue position: 0");
 		expect(out).toContain("(in ~46s)");
-		expect(out).toContain(".youtube_subtitles_pending");
 		expect(out).toContain("https://youtu.be/vid457");
 	});
 });

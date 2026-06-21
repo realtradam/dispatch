@@ -41,7 +41,7 @@ describe("youtube_transcript", () => {
 		expect(result.content).toContain("[0:00] Hello world.");
 	});
 
-	it("returns queued message with pending file instruction", async () => {
+	it("returns queued message with status and ETA", async () => {
 		const client = makeStubClient(async () => ({
 			status: "queued",
 			video_id: "vid2",
@@ -54,7 +54,6 @@ describe("youtube_transcript", () => {
 		expect(result.content).toContain("status: queued");
 		expect(result.content).toContain("queue position: 1");
 		expect(result.content).toContain("in ~30s");
-		expect(result.content).toContain(".youtube_subtitles_pending");
 		expect(result.content).toContain("https://youtu.be/vid2");
 	});
 
