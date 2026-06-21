@@ -693,6 +693,7 @@ export function createWarmService(
 }
 
 const DEFAULT_KEEP_LAST_N = 10;
+const DEFAULT_COMPACT_THRESHOLD = 350000;
 
 const COMPACTION_SYSTEM_PROMPT =
 	"You are a conversation summarizer. Summarize the following conversation concord concisely but comprehensively. " +
@@ -734,10 +735,12 @@ export function createCompactionService(
 				return { error: "conversation too short to compact" };
 			}
 
-			// Auto mode: check threshold
+			// Auto mode: check threshold (default 350k if not explicitly set;
+			// 0 explicitly disables).
 			if (opts?.auto === true) {
-				const threshold = await deps.conversationStore.getCompactThreshold(conversationId);
-				if (threshold === null || threshold <= 0) return { error: "auto-compact disabled" };
+				const stored = await deps.conversationStore.getCompactThreshold(conversationId);
+				const threshold = stored ?? DEFAULT_COMPACT_THRESHOLD;
+				if (threshold <= 0) return { error: "auto-compact disabled" };
 				const metrics = await deps.conversationStore.loadMetrics(conversationId);
 				const lastTurn = metrics[metrics.length - 1];
 				if (lastTurn === undefined) return { error: "no metrics" };
