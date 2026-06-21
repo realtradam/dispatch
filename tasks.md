@@ -599,7 +599,9 @@ conversation tab. Short-ID prefix resolution (4+ chars → full ID via `GET /con
      - `POST /conversations/:id/close` to mark closed (already exists for
        aborting turns — extend or add a separate endpoint for status).
      - `GET /conversations?status=active,idle` filter on the list endpoint (or
-       default to excluding `closed`).
+       default to excluding `closed`). CLI `dispatch list` also defaults to
+       `active,idle`; add `--status <state>` flag to filter by a single state,
+       and `--all` to include closed.
      - WS broadcast `conversation.statusChanged` so all connected clients update
        their tab bars in real time.
      - Persist status in the conversation store (in-memory for now, same as other
