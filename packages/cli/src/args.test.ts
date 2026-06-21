@@ -51,6 +51,7 @@ describe("parseArgs", () => {
 				conversationId: undefined,
 				reasoningEffort: undefined,
 				showReasoning: false,
+				open: false,
 			});
 		});
 
@@ -66,6 +67,7 @@ describe("parseArgs", () => {
 				conversationId: undefined,
 				reasoningEffort: undefined,
 				showReasoning: false,
+				open: false,
 			});
 		});
 
@@ -100,6 +102,7 @@ describe("parseArgs", () => {
 				conversationId: "abc",
 				reasoningEffort: undefined,
 				showReasoning: true,
+				open: false,
 			});
 		});
 
@@ -115,6 +118,7 @@ describe("parseArgs", () => {
 				conversationId: undefined,
 				reasoningEffort: "high",
 				showReasoning: false,
+				open: false,
 			});
 		});
 
