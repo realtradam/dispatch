@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# bin/build — compile the backend + CLI binaries and the frontend static bundle.
+#
+# Output:
+#   dist/dispatch-server   — standalone backend binary (Bun compile)
+#   dist/dispatch          — standalone CLI binary (Bun compile)
+#   dist/web/              — built frontend static files (vite build)
+#
+# The frontend is built with VITE_HTTP_PORT=24991 + VITE_WS_PORT=24990 so the
+# bundle talks to the backend on :24991 (HTTP) and :24990 (WS) at runtime.
+# The backend serves the frontend from DISPATCH_WEB_DIR (set in the systemd env).
+#
+# Usage: bin/build [--no-frontend]   (skip the frontend build if already built)
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+BACKEND="$ROOT"
+FRONTEND="$(cd "$ROOT/.." && pwd)/dispatch-web"
+
+BUILD_FRONTEND=1
+if [[ "${1:-}" == "--no-frontend" ]]; then
+	BUILD_FRONTEND=0
+fi
+
+echo "[build] backend binary → dist/dispatch-server"
+mkdir -p "$ROOT/dist"
+bun build --compile "$BACKEND/packages/host-bin/src/main.ts" \
+	--outfile "$ROOT/dist/dispatch-server" \
+	--minify 2>&1 | tail -3
+
+echo "[build] CLI binary → dist/dispatch"
+bun build --compile "$BACKEND/packages/cli/src/main.ts" \
+	--outfile "$ROOT/dist/dispatch" \
+	--minify 2>&1 | tail -3
+
+if [[ "$BUILD_FRONTEND" -eq 1 ]]; then
+	if [[ ! -d "$FRONTEND" ]]; then
+		echo "[build] frontend not found at $FRONTEND — skipping" >&2
+	else
+		echo "[build] frontend → dist/web/ (VITE_HTTP_PORT=24991 VITE_WS_PORT=24990)"
+		(
+			cd "$FRONTEND"
+			VITE_HTTP_PORT=24991 VITE_WS_PORT=24990 bun run build 2>&1 | tail -5
+		)
+		rm -rf "$ROOT/dist/web"
+		cp -r "$FRONTEND/dist" "$ROOT/dist/web"
+		echo "[build] copied $(find "$ROOT/dist/web" -type f | wc -l) files"
+	fi
+fi
+
+echo "[build] done."
+echo "  dist/dispatch-server   ($(du -h "$ROOT/dist/dispatch-server" | cut -f1))"
+echo "  dist/dispatch          ($(du -h "$ROOT/dist/dispatch" | cut -f1))"
+[[ -d "$ROOT/dist/web" ]] && echo "  dist/web/              ($(du -sh "$ROOT/dist/web" | cut -f1))"
