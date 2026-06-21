@@ -25,7 +25,7 @@ const USAGE = `Usage:
   dispatch list [<prefix>] [--server <url>]
   dispatch read <conversationId> [--server <url>]
   dispatch send <conversationId> --text "..." [--queue] [--open] [--cwd <dir>] [--effort <level>] [--server <url>]
-  dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--server <url>] [--show-reasoning]
+  dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--server <url>] [--show-reasoning] [--open]
   dispatch --help
 
 Effort levels: low, medium, high (default), xhigh, max`;
@@ -153,6 +153,14 @@ async function main(): Promise<void> {
 
 			if (conversationId) {
 				process.stdout.write(`\n[conversation] ${conversationId}\n`);
+
+				if (parsed.open) {
+					await openConversation(
+						{ fetchImpl: globalThis.fetch },
+						{ server: parsed.server, conversationId },
+					);
+					process.stdout.write(`Signaled frontend to open ${conversationId}\n`);
+				}
 			}
 			break;
 		}

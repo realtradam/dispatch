@@ -25,6 +25,7 @@ export type ParsedCommand =
 			readonly conversationId?: string | undefined;
 			readonly reasoningEffort?: ReasoningEffort | undefined;
 			readonly showReasoning: boolean;
+			readonly open: boolean;
 	  }
 	| { readonly kind: "list"; readonly server: string; readonly query?: string }
 	| { readonly kind: "read"; readonly server: string; readonly conversationId: string }
@@ -189,6 +190,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 	let conversationId: string | undefined;
 	let reasoningEffort: ReasoningEffort | undefined;
 	let showReasoning = false;
+	let open = false;
 	let server = opts.defaultServer;
 
 	for (let i = 1; i < argv.length; i++) {
@@ -217,6 +219,9 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 				break;
 			case "--show-reasoning":
 				showReasoning = true;
+				break;
+			case "--open":
+				open = true;
 				break;
 			case "--effort":
 				if (i + 1 >= argv.length)
@@ -256,5 +261,6 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 		conversationId,
 		reasoningEffort,
 		showReasoning,
+		open,
 	};
 }
