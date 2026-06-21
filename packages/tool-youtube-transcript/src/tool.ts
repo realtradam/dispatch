@@ -20,7 +20,7 @@ import {
 import { validateUrl } from "./validate.js";
 
 const OUTPUT_CAP = 50_000;
-const FULL_OUTPUT_DIR = "/tmp/dispatch";
+const FULL_OUTPUT_DIR = "/tmp/dispatch/youtube-transcribe";
 
 export interface YoutubeTranscriptToolDeps {
 	readonly client: TranscriptClient;
@@ -33,8 +33,10 @@ const DESCRIPTION =
 	"Fetch the transcript/subtitles for a YouTube video from the local transcriber " +
 	"service. If the transcript has not been downloaded before, the video will be " +
 	"queued for processing and the tool will return the estimated time when the " +
-	"transcript will be available. Once available, the tool returns the full " +
-	"transcript text and timestamped segments. Accepted URL formats: " +
+	"transcript will be available. Once available, the tool returns the transcript " +
+	"text and timestamped segments (truncated if very long). The full transcript " +
+	"is always saved to /tmp/dispatch/youtube-transcribe/{video_id}.txt — use " +
+	"read_file to access it. Accepted URL formats: " +
 	"youtube.com/watch?v=, youtu.be/, youtube.com/embed/, youtube.com/shorts/";
 
 /**
@@ -91,13 +93,15 @@ export function createYoutubeTranscriptTool(deps: YoutubeTranscriptToolDeps): To
 				}
 				span.end();
 
-				if (output.length > cap && videoId !== undefined) {
+				if (videoId !== undefined) {
 					const filePath = `${FULL_OUTPUT_DIR}/${videoId}.txt`;
 					try {
 						writeFile(filePath, output);
-						return { content: truncateOutput(output, cap, filePath) };
 					} catch {
-						return { content: truncateOutput(output, cap) };
+						// File write failed — continue with truncated output only.
+					}
+					if (output.length > cap) {
+						return { content: truncateOutput(output, cap, filePath) };
 					}
 				}
 				return { content: truncateOutput(output, cap) };
