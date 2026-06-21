@@ -132,6 +132,7 @@ export const conversationStatusChanged: EventHookDescriptor<ConversationStatusCh
 /** Payload for the conversationCompacted bus event. */
 export interface ConversationCompactedPayload {
 	readonly conversationId: string;
+	readonly archiveId: string;
 	readonly messagesSummarized: number;
 	readonly messagesKept: number;
 }
@@ -801,6 +802,11 @@ export function createCompactionService(
 				return { error: "model produced empty summary" };
 			}
 
+			// Non-destructive: fork the full pre-compaction history to an
+			// archive conversation before replacing it.
+			const archiveId = crypto.randomUUID();
+			await deps.conversationStore.forkHistory(conversationId, archiveId);
+
 			// Replace history: [system: summary] + recent messages
 			const summaryMessage: ChatMessage = {
 				role: "system",
@@ -813,15 +819,18 @@ export function createCompactionService(
 			};
 
 			await deps.conversationStore.replaceHistory(conversationId, [summaryMessage, ...toKeep]);
+			await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
 
 			const result: CompactionResult = {
 				summary,
+				archiveId,
 				messagesSummarized: toSummarize.length,
 				messagesKept: toKeep.length,
 			};
 
 			deps.emit(conversationCompacted, {
 				conversationId,
+				archiveId,
 				messagesSummarized: toSummarize.length,
 				messagesKept: toKeep.length,
 			});

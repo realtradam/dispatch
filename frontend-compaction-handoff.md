@@ -21,6 +21,7 @@ retain the most recent N messages. Two modes:
 // @dispatch/wire
 export interface CompactionResult {
   readonly summary: string;
+  readonly archiveId: string;  // ID of the archive conversation with full pre-compaction history
   readonly messagesSummarized: number;
   readonly messagesKept: number;
 }
@@ -29,6 +30,7 @@ export interface CompactionResult {
 export interface ConversationCompactedMessage {
   readonly type: "conversation.compacted";
   readonly conversationId: string;
+  readonly archiveId: string;  // ID of the archive conversation
   readonly messagesSummarized: number;
   readonly messagesKept: number;
 }
@@ -37,6 +39,7 @@ export interface ConversationCompactedMessage {
 // @dispatch/transport-contract — HTTP response types
 export interface CompactResponse {
   readonly conversationId: string;
+  readonly archiveId: string;  // ID of the archive conversation
   readonly messagesSummarized: number;
   readonly messagesKept: number;
 }
@@ -89,14 +92,27 @@ Broadcast to all connected WS clients when compaction completes. The FE should
 reload the conversation history via `GET /conversations/:id` to reflect the
 compacted state (the old messages are replaced by a system summary + recent N).
 
-## How compaction works (backend)
+## How compaction works (backend) — non-destructive
 
 1. Load full conversation history.
 2. Split: old messages (to summarize) + recent N (to keep, default 10).
-3. Call the model with a summarization system prompt + old messages.
-4. Replace the entire history with: `[system: "Summary of previous conversation: ..."] + recent N messages`.
-5. Emit `conversationCompacted` hook → WS broadcast.
-6. The summary preserves key decisions, file paths, and unresolved questions.
+3. **Fork** the full pre-compaction history to a new archive conversation
+   (new UUID). The archive gets `status: "closed"`, title `"Archive: <original>"`,
+   and `compactedFrom: <originalId>`.
+4. Call the model with a summarization system prompt + old messages.
+5. **Replace** the original conversation's history with:
+   `[system: "Summary of previous conversation: ..."] + recent N messages`.
+6. Set `compactedFrom: <archiveId>` on the original conversation's metadata.
+7. Emit `conversationCompacted` hook → WS broadcast (includes `archiveId`).
+
+**The original history is never destroyed.** The archive conversation is a
+complete copy of the pre-compaction state, accessible via `GET /conversations/:id`
+using the archive ID. The FE can link to it from the compacted conversation.
+
+`ConversationMeta` now has an optional `compactedFrom?: string` field. On a
+compacted conversation, it points to the archive ID. On the archive, it points
+to the original conversation ID. The FE can use this to show a "View full
+history" link.
 
 ## What the FE needs to do
 

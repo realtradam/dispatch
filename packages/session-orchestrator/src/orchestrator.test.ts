@@ -95,6 +95,8 @@ function createInMemoryStore(): ConversationStore & {
 			return null;
 		},
 		async setCompactThreshold() {},
+		async forkHistory() {},
+		async setCompactedFrom() {},
 	};
 }
 
@@ -550,6 +552,8 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async setCompactThreshold() {},
+			async forkHistory() {},
+			async setCompactedFrom() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -621,6 +625,8 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async setCompactThreshold() {},
+			async forkHistory() {},
+			async setCompactedFrom() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -981,6 +987,8 @@ describe("turn metrics persistence", () => {
 				return null;
 			},
 			async setCompactThreshold() {},
+			async forkHistory() {},
+			async setCompactedFrom() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({

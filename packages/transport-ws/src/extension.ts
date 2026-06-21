@@ -151,14 +151,18 @@ export function createTransportWsExtension(): Extension {
 			// Broadcast `conversation.compacted` to all connected clients so
 			// the FE reloads the conversation history after compaction.
 			disposers.push(
-				host.on(conversationCompacted, ({ conversationId, messagesSummarized, messagesKept }) => {
-					broadcast({
-						type: "conversation.compacted",
-						conversationId,
-						messagesSummarized,
-						messagesKept,
-					});
-				}),
+				host.on(
+					conversationCompacted,
+					({ conversationId, archiveId, messagesSummarized, messagesKept }) => {
+						broadcast({
+							type: "conversation.compacted",
+							conversationId,
+							archiveId,
+							messagesSummarized,
+							messagesKept,
+						});
+					},
+				),
 			);
 
 			server = Bun.serve<ConnectionState>({
