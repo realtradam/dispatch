@@ -18,6 +18,17 @@ retain the most recent N messages. Two modes:
 ## New types
 
 ```ts
+// @dispatch/wire — ConversationMeta now has compactedFrom
+export interface ConversationMeta {
+  readonly id: string;
+  readonly createdAt: number;
+  readonly lastActivityAt: number;
+  readonly title: string;
+  readonly status: ConversationStatus;  // "active" | "idle" | "closed"
+  /** Points to the archive conversation with full pre-compaction history. */
+  readonly compactedFrom?: string;
+}
+
 // @dispatch/wire
 export interface CompactionResult {
   readonly summary: string;
@@ -120,14 +131,23 @@ history" link.
    Show a loading indicator while waiting for the response.
 
 2. **Settings UI** for compact threshold: `PUT /conversations/:id/compact-threshold`
-   with `{ threshold: number }`. A number input (0 = manual only). Read the
-   current value via `GET /conversations/:id/compact-threshold`.
+   with `{ threshold: number }`. A number input (0 = manual only, default 350000).
+   Read the current value via `GET /conversations/:id/compact-threshold`.
 
 3. **Handle `conversation.compacted` WS messages**: reload the conversation
    history via `GET /conversations/:id`. The first message will now be a system
    summary instead of the original conversation.
 
-4. **Visual indicator**: show a badge or divider indicating the conversation
+4. **"View full history" link**: when `ConversationMeta.compactedFrom` is present,
+   show a link/badge that opens the archive conversation (the `compactedFrom`
+   value is the archive conversation ID). Load it via `GET /conversations/:id`
+   with that ID. The archive has `status: "closed"` and title `"Archive: <original>"`.
+
+5. **Archives in conversation list**: archives appear in `GET /conversations?status=closed`.
+   They have `compactedFrom` pointing to the original conversation. The FE can
+   show them in a history/archive view, distinct from active/idle tabs.
+
+6. **Visual indicator**: show a badge or divider indicating the conversation
    has been compacted (e.g. "N messages summarized" from the WS payload or the
    HTTP response).
 
