@@ -92,6 +92,9 @@ function fakeOrchestrator(): SessionOrchestrator {
 		closeConversation() {
 			return { abortedTurn: false };
 		},
+		stopTurn() {
+			return { abortedTurn: false };
+		},
 		async handleMessage() {},
 	};
 }

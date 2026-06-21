@@ -204,6 +204,26 @@ export async function compactConversation(
 	return (await res.json()) as CompactResponse;
 }
 
+interface StopTurnOpts {
+	readonly server: string;
+	readonly conversationId: string;
+}
+
+export async function stopTurn(
+	deps: FetchDeps,
+	opts: StopTurnOpts,
+): Promise<{ conversationId: string; abortedTurn: boolean }> {
+	const url = `${opts.server}/conversations/${encodeURIComponent(opts.conversationId)}/stop`;
+	const res = await deps.fetchImpl(url, { method: "POST" });
+
+	if (!res.ok) {
+		const body = await res.text();
+		throw new Error(`POST /conversations/:id/stop failed with status ${res.status}: ${body}`);
+	}
+
+	return (await res.json()) as { conversationId: string; abortedTurn: boolean };
+}
+
 /**
  * The outcome of short-ID resolution: either the full conversation id to use,
  * or a human-readable error describing why resolution failed.

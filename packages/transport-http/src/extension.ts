@@ -39,6 +39,7 @@ export const manifest: Manifest = {
 			"/conversations/:id/open",
 			"/conversations/:id/queue",
 			"/conversations/:id/reasoning-effort",
+			"/conversations/:id/stop",
 			"/conversations/:id/title",
 			"/health",
 			"/models",

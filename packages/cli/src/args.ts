@@ -47,6 +47,7 @@ export type ParsedCommand =
 			readonly cwd?: string;
 			readonly reasoningEffort?: ReasoningEffort;
 	  }
+	| { readonly kind: "stop"; readonly server: string; readonly conversationId: string }
 	| { readonly kind: "help" }
 	| { readonly kind: "error"; readonly message: string };
 
@@ -129,6 +130,28 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			return { kind: "error", message: "'compact' requires a conversation id" };
 		}
 		return { kind: "compact", server, conversationId };
+	}
+
+	if (first === "stop") {
+		let server = opts.defaultServer;
+		let conversationId: string | undefined;
+		for (let i = 1; i < argv.length; i++) {
+			const arg = argv[i] as string;
+			if (arg === "--server") {
+				if (i + 1 >= argv.length) return { kind: "error", message: "--server requires a value" };
+				server = argv[++i] as string;
+			} else if (arg.startsWith("--")) {
+				return { kind: "error", message: `Unknown flag: ${arg}` };
+			} else if (conversationId !== undefined) {
+				return { kind: "error", message: `Unexpected argument for 'stop': ${arg}` };
+			} else {
+				conversationId = arg;
+			}
+		}
+		if (conversationId === undefined) {
+			return { kind: "error", message: "'stop' requires a conversation id" };
+		}
+		return { kind: "stop", server, conversationId };
 	}
 
 	if (first === "read") {

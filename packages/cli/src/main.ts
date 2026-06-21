@@ -16,6 +16,7 @@ import {
 	fetchModels,
 	openConversation,
 	resolveConversationId,
+	stopTurn,
 	streamChat,
 } from "./http.js";
 import { buildChatRequest, composeMessage } from "./message.js";
@@ -24,6 +25,7 @@ import { extractLastText, formatConversationList, renderEvent } from "./render.j
 const USAGE = `Usage:
   dispatch models [--server <url>]
   dispatch list [<prefix>] [--status <active|idle|closed>] [--all] [--server <url>]
+  dispatch stop <conversationId> [--server <url>]
   dispatch compact <conversationId> [--server <url>]
   dispatch read <conversationId> [--server <url>]
   dispatch open <conversationId> [--server <url>]
@@ -96,6 +98,26 @@ async function main(): Promise<void> {
 			);
 			process.stdout.write(
 				`Compacted ${resolved}: ${result.messagesSummarized} messages summarized, ${result.messagesKept} kept.\n`,
+			);
+			break;
+		}
+		case "stop": {
+			const resolved = await resolveConversationId(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, shortId: parsed.conversationId },
+			);
+			if (typeof resolved !== "string") {
+				process.stderr.write(`${resolved.error}\n`);
+				process.exit(1);
+			}
+			const result = await stopTurn(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, conversationId: resolved },
+			);
+			process.stdout.write(
+				result.abortedTurn
+					? `Stopped generation for ${resolved}\n`
+					: `No active generation for ${resolved}\n`,
 			);
 			break;
 		}

@@ -165,6 +165,9 @@ function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
 		closeConversation() {
 			return { abortedTurn: false };
 		},
+		stopTurn() {
+			return { abortedTurn: false };
+		},
 		async handleMessage(input) {
 			for (const event of events) {
 				input.onEvent(event);
@@ -198,6 +201,9 @@ function createCapturingOrchestrator(): SessionOrchestrator & {
 		closeConversation() {
 			return { abortedTurn: false };
 		},
+		stopTurn() {
+			return { abortedTurn: false };
+		},
 		async handleMessage(input) {
 			state.received = input;
 		},
@@ -219,6 +225,9 @@ function createThrowingOrchestrator(error: Error): SessionOrchestrator {
 			return { startedTurn: false, queue: [] };
 		},
 		closeConversation() {
+			return { abortedTurn: false };
+		},
+		stopTurn() {
 			return { abortedTurn: false };
 		},
 		async handleMessage() {
