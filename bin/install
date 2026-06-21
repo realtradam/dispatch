@@ -82,19 +82,24 @@ fi
 
 # ─── Install systemd service ─────────────────────────────────────────────────
 echo "[install] systemd service → /etc/systemd/system/"
-install -Dm644 "$ROOT/systemd/dispatch.service" /etc/systemd/system/dispatch.service
+# Patch User=/Group= with the real user (so it doesn't run as root)
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_GROUP=$(id -gn "$REAL_USER" 2>/dev/null || echo "$REAL_USER")
+sed "s/# User\/Group are set by bin/install (patched from SUDO_USER)/User=$REAL_USER\nGroup=$REAL_GROUP/" \
+	"$ROOT/systemd/dispatch.service" > /etc/systemd/system/dispatch.service
+chmod 644 /etc/systemd/system/dispatch.service
 
 # ─── Config (don't overwrite if it exists) ───────────────────────────────────
 if [[ ! -f /etc/dispatch/env ]]; then
-	echo "[install] config → /etc/dispatch/env (edit with your API key)"
+	echo "[install] config → /etc/dispatch/env (run sudo bin/setup-env to populate)"
 	install -Dm600 "$ROOT/systemd/dispatch.env" /etc/dispatch/env
-	echo "  ⚠️  Edit /etc/dispatch/env and set DISPATCH_API_KEY before starting!"
 else
 	echo "[install] config /etc/dispatch/env already exists — keeping"
 fi
 
 # ─── Data + log directories ──────────────────────────────────────────────────
 mkdir -p /var/lib/dispatch /var/log/dispatch
+chown -R "$REAL_USER:$REAL_GROUP" /var/lib/dispatch /var/log/dispatch
 
 # ─── Enable + start ──────────────────────────────────────────────────────────
 systemctl daemon-reload
