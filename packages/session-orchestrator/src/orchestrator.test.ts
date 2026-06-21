@@ -79,6 +79,13 @@ function createInMemoryStore(): ConversationStore & {
 		async setReasoningEffort(conversationId, effort) {
 			effortData.set(conversationId, effort);
 		},
+		async listConversations() {
+			return [];
+		},
+		async getConversationMeta() {
+			return null;
+		},
+		async setConversationTitle() {},
 	};
 }
 
@@ -518,6 +525,13 @@ describe("turn-sealed event", () => {
 			async setReasoningEffort(conversationId, effort) {
 				await store.setReasoningEffort(conversationId, effort);
 			},
+			async listConversations() {
+				return [];
+			},
+			async getConversationMeta() {
+				return null;
+			},
+			async setConversationTitle() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -573,6 +587,13 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async setReasoningEffort() {},
+			async listConversations() {
+				return [];
+			},
+			async getConversationMeta() {
+				return null;
+			},
+			async setConversationTitle() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -917,6 +938,13 @@ describe("turn metrics persistence", () => {
 				return null;
 			},
 			async setReasoningEffort() {},
+			async listConversations() {
+				return [];
+			},
+			async getConversationMeta() {
+				return null;
+			},
+			async setConversationTitle() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({

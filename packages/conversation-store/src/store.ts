@@ -1,6 +1,7 @@
 import type {
 	ChatMessage,
 	Chunk,
+	ConversationMeta,
 	Logger,
 	ReasoningEffort,
 	Role,
@@ -63,6 +64,16 @@ export interface ConversationStore {
 	readonly getReasoningEffort: (conversationId: string) => Promise<ReasoningEffort | null>;
 	/** Persist (upsert) the reasoning-effort level for a conversation. */
 	readonly setReasoningEffort: (conversationId: string, effort: ReasoningEffort) => Promise<void>;
+	/**
+	 * List all known conversations, sorted by `lastActivityAt` descending (most
+	 * recent first). Metadata (createdAt, lastActivityAt, title) is tracked
+	 * automatically on append; title defaults to the first user message.
+	 */
+	readonly listConversations: () => Promise<readonly ConversationMeta[]>;
+	/** Single conversation metadata, or null if unknown. */
+	readonly getConversationMeta: (conversationId: string) => Promise<ConversationMeta | null>;
+	/** Set/update the human-readable title for a conversation. */
+	readonly setConversationTitle: (conversationId: string, title: string) => Promise<void>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -245,5 +256,12 @@ export function createConversationStore(
 				logger.debug("reasoning-effort set", { conversationId });
 			}
 		},
+		async listConversations() {
+			return [];
+		},
+		async getConversationMeta(_conversationId: string) {
+			return null;
+		},
+		async setConversationTitle(_conversationId: string, _title: string) {},
 	};
 }
