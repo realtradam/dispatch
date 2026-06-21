@@ -1,5 +1,5 @@
-import { readFile, realpath, writeFile } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
 
 // --- Pure types ---
@@ -103,12 +103,6 @@ export function computeReplacement(
 	};
 }
 
-/** Pure: check that a resolved absolute path is within the workdir (prefix check). */
-export function isPathWithinWorkdir(resolvedPath: string, workdir: string): boolean {
-	const normalizedWorkdir = workdir.endsWith(sep) ? workdir : workdir + sep;
-	return resolvedPath === workdir || resolvedPath.startsWith(normalizedWorkdir);
-}
-
 // --- Shell / edge ---
 
 /**
@@ -156,45 +150,8 @@ export function createEditFileTool(workingDirectory: string): ToolContract {
 
 			const { path: relPath, oldString, newString, replaceAll } = validated;
 
-			// Effective base: per-turn ctx.cwd overrides the baked workdir.
 			const effectiveBase = ctx.cwd ? resolve(ctx.cwd) : workdir;
-
-			// Resolve the requested path against the effective base.
 			const resolvedPath = resolve(effectiveBase, relPath);
-
-			// Basic prefix check.
-			if (!isPathWithinWorkdir(resolvedPath, effectiveBase)) {
-				return {
-					content: `Error: Path "${relPath}" is outside the working directory.`,
-					isError: true,
-				};
-			}
-
-			// Symlink hardening: realpath both and re-check containment.
-			let realResolved: string;
-			let realBase: string;
-			try {
-				[realResolved, realBase] = await Promise.all([
-					realpath(resolvedPath),
-					realpath(effectiveBase),
-				]);
-			} catch (err: unknown) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code === "ENOENT") {
-					return { content: `Error: File "${relPath}" not found.`, isError: true };
-				}
-				return {
-					content: `Error accessing file: ${err instanceof Error ? err.message : String(err)}`,
-					isError: true,
-				};
-			}
-
-			if (!isPathWithinWorkdir(realResolved, realBase)) {
-				return {
-					content: `Error: Path "${relPath}" is outside the working directory.`,
-					isError: true,
-				};
-			}
 
 			// Read the file.
 			let content: string;

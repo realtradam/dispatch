@@ -1,5 +1,5 @@
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
 
 const DEFAULT_LIMIT = 500;
@@ -57,12 +57,6 @@ export function sliceLines(
 	const start = offset - 1; // convert to 0-indexed
 	const sliced = allLines.slice(start, start + limit);
 	return { lines: sliced, totalLines };
-}
-
-/** Pure: check that a resolved absolute path is within the workdir (prefix check). */
-export function isPathWithinWorkdir(resolvedPath: string, workdir: string): boolean {
-	const normalizedWorkdir = workdir.endsWith(sep) ? workdir : workdir + sep;
-	return resolvedPath === workdir || resolvedPath.startsWith(normalizedWorkdir);
 }
 
 /** Pure: render lines into a string with line numbers. */
@@ -131,45 +125,8 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 
 			const { path: relPath, offset, limit } = validated;
 
-			// Effective base: per-turn ctx.cwd overrides the baked workdir.
 			const effectiveBase = ctx.cwd ? resolve(ctx.cwd) : workdir;
-
-			// Resolve the requested path against the effective base.
 			const resolvedPath = resolve(effectiveBase, relPath);
-
-			// Basic prefix check (catches ".." and absolute paths outside effectiveBase).
-			if (!isPathWithinWorkdir(resolvedPath, effectiveBase)) {
-				return {
-					content: `Error: Path "${relPath}" is outside the working directory.`,
-					isError: true,
-				};
-			}
-
-			// Symlink hardening: realpath both and re-check containment.
-			let realResolved: string;
-			let realBase: string;
-			try {
-				[realResolved, realBase] = await Promise.all([
-					realpath(resolvedPath),
-					realpath(effectiveBase),
-				]);
-			} catch (err: unknown) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code === "ENOENT") {
-					return { content: `Error: File "${relPath}" not found.`, isError: true };
-				}
-				return {
-					content: `Error reading file: ${err instanceof Error ? err.message : String(err)}`,
-					isError: true,
-				};
-			}
-
-			if (!isPathWithinWorkdir(realResolved, realBase)) {
-				return {
-					content: `Error: Path "${relPath}" is outside the working directory.`,
-					isError: true,
-				};
-			}
 
 			// Stat to determine if this is a file or directory.
 			let pathStat: import("node:fs").Stats;

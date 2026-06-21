@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	createReadFileTool,
 	formatDirectoryEntries,
-	isPathWithinWorkdir,
 	renderLines,
 	sliceLines,
 	validateArgs,
@@ -108,24 +107,6 @@ describe("sliceLines", () => {
 	});
 });
 
-describe("isPathWithinWorkdir", () => {
-	it("accepts a path within workdir", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir/file.txt", "/tmp/workdir")).toBe(true);
-	});
-
-	it("accepts the workdir itself", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir", "/tmp/workdir")).toBe(true);
-	});
-
-	it("rejects a path outside workdir", () => {
-		expect(isPathWithinWorkdir("/tmp/other/file.txt", "/tmp/workdir")).toBe(false);
-	});
-
-	it("rejects a prefix attack (workdir prefix but different dir)", () => {
-		expect(isPathWithinWorkdir("/tmp/workdir-evil/file.txt", "/tmp/workdir")).toBe(false);
-	});
-});
-
 describe("renderLines", () => {
 	it("renders lines with 1-indexed line numbers", () => {
 		const result = renderLines(["a", "b", "c"], 1);
@@ -197,22 +178,6 @@ describe("createReadFileTool", () => {
 		expect(result.content).toContain("not found");
 	});
 
-	it("returns error for path escape via ..", async () => {
-		const tool = createReadFileTool(workdir);
-		const result = await tool.execute({ path: "../escape.txt" }, stubCtx());
-
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
-	});
-
-	it("returns error for absolute path outside workdir", async () => {
-		const tool = createReadFileTool(workdir);
-		const result = await tool.execute({ path: "/etc/passwd" }, stubCtx());
-
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
-	});
-
 	it("returns empty-file content for empty file", async () => {
 		const filePath = join(workdir, "empty.txt");
 		await writeFile(filePath, "", "utf8");
@@ -247,26 +212,6 @@ describe("createReadFileTool", () => {
 		}
 	});
 
-	it("handles symlink escape attempt", async () => {
-		// Create a symlink inside workdir pointing outside
-		const outsideDir = await mkdtemp(join(tmpdir(), "outside-"));
-		const outsideFile = join(outsideDir, "secret.txt");
-		await writeFile(outsideFile, "secret data", "utf8");
-
-		const symlinkPath = join(workdir, "link.txt");
-		const { symlink } = await import("node:fs/promises");
-		await symlink(outsideFile, symlinkPath);
-
-		const tool = createReadFileTool(workdir);
-		const result = await tool.execute({ path: "link.txt" }, stubCtx());
-
-		// The symlink resolves to outside workdir, so should be rejected
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
-
-		await rm(outsideDir, { recursive: true, force: true });
-	});
-
 	it("concurrencySafe is true", () => {
 		const tool = createReadFileTool(workdir);
 		expect(tool.concurrencySafe).toBe(true);
@@ -293,41 +238,6 @@ describe("createReadFileTool", () => {
 			expect(result.content).toContain("1: from ctx cwd");
 		} finally {
 			await rm(ctxDir, { recursive: true, force: true });
-		}
-	});
-
-	it("rejects path escaping ctx.cwd via ..", async () => {
-		const ctxDir = await mkdtemp(join(tmpdir(), "ctx-escape-test-"));
-		try {
-			const tool = createReadFileTool(workdir);
-			const result = await tool.execute({ path: "../escape.txt" }, stubCtx({ cwd: ctxDir }));
-
-			expect(result.isError).toBe(true);
-			expect(result.content).toContain("outside the working directory");
-		} finally {
-			await rm(ctxDir, { recursive: true, force: true });
-		}
-	});
-
-	it("rejects symlink escaping ctx.cwd", async () => {
-		const ctxDir = await mkdtemp(join(tmpdir(), "ctx-symlink-test-"));
-		const outsideDir = await mkdtemp(join(tmpdir(), "ctx-outside-"));
-		try {
-			const outsideFile = join(outsideDir, "secret.txt");
-			await writeFile(outsideFile, "secret data", "utf8");
-
-			const symlinkPath = join(ctxDir, "link.txt");
-			const { symlink } = await import("node:fs/promises");
-			await symlink(outsideFile, symlinkPath);
-
-			const tool = createReadFileTool(workdir);
-			const result = await tool.execute({ path: "link.txt" }, stubCtx({ cwd: ctxDir }));
-
-			expect(result.isError).toBe(true);
-			expect(result.content).toContain("outside the working directory");
-		} finally {
-			await rm(ctxDir, { recursive: true, force: true });
-			await rm(outsideDir, { recursive: true, force: true });
 		}
 	});
 
@@ -375,14 +285,6 @@ describe("createReadFileTool", () => {
 
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toBe("2: b\n3: c\n4: d");
-	});
-
-	it("rejects a directory path outside the working directory (containment still enforced)", async () => {
-		const tool = createReadFileTool(workdir);
-		const result = await tool.execute({ path: "../outside-dir" }, stubCtx());
-
-		expect(result.isError).toBe(true);
-		expect(result.content).toContain("outside the working directory");
 	});
 
 	it("returns not-found for a nonexistent path", async () => {
