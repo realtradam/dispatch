@@ -572,10 +572,78 @@ conversation tab. Short-ID prefix resolution (4+ chars → full ID via `GET /con
     closed conversation). Decide: does closing discard pending steering, or honor
     it? If "discard," gate the carry on `finishReason !== "aborted"` in
     session-orchestrator (one-line). No FE action either way.
- 8. **Live-verify the steering flow (once the frontend is complete):** run a live
-    `chat.queue` → tool-call → `steering` event flow against a real tool-calling
-    model, end-to-end. The logic is unit/integration tested + boot-smoke-clean;
-    this is the live end-to-end smoke. Blocked on the frontend wiring the queue
-    surface + `chat.queue` op (or run it backend-only with a probe client).
+  8. **Live-verify the steering flow (once the frontend is complete):** run a live
+     `chat.queue` → tool-call → `steering` event flow against a real tool-calling
+     model, end-to-end. The logic is unit/integration tested + boot-smoke-clean;
+     this is the live end-to-end smoke. Blocked on the frontend wiring the queue
+     surface + `chat.queue` op (or run it backend-only with a probe client).
+  9. **Tab persistence across devices (conversation lifecycle):** conversations
+     need a lifecycle status so a new browser connection can restore the user's
+     tab state. Three states:
+     - **`active`** — an agent is currently connected and generating (live stream
+       in progress).
+     - **`idle`** — conversation exists, not actively generating. User can send a
+       message to resume.
+     - **`closed`** — user dismissed the tab (hidden from the tab bar, but the
+       conversation is not deleted — can be reopened from history).
+
+     On browser connect, the frontend fetches all `active` + `idle` conversations
+     and restores the tab bar. `active` tabs reconnect to the live stream;
+     `idle` tabs load their history. `closed` tabs are hidden unless explicitly
+     reopened from a conversation list/history view.
+
+     **Backend work:**
+     - Add `status: "active" | "idle" | "closed"` to `ConversationMeta` (wire type).
+     - Track status transitions: `idle → active` on turn-start, `active → idle` on
+       done/error, `idle → closed` on user close.
+     - `POST /conversations/:id/close` to mark closed (already exists for
+       aborting turns — extend or add a separate endpoint for status).
+     - `GET /conversations?status=active,idle` filter on the list endpoint (or
+       default to excluding `closed`).
+     - WS broadcast `conversation.statusChanged` so all connected clients update
+       their tab bars in real time.
+     - Persist status in the conversation store (in-memory for now, same as other
+       metadata; `createdAt`/`lastActivityAt`/`title` pattern).
+
+     **Frontend work:**
+     - On connect: fetch conversations, restore tab bar from `active` + `idle`.
+     - `active` tabs: reconnect to live stream (subscribe to WS events for that
+       conversation).
+     - `idle` tabs: load history via `GET /conversations/:id`.
+     - Tab close button → `POST /conversations/:id/close` → mark `closed` →
+       remove from tab bar (but not from history).
+     - Listen for `conversation.statusChanged` WS messages to sync tab state
+       across devices.
+  10. **Conversation compacting:** summarize/compress conversation history to
+      reclaim context window without losing the thread. Two modes:
+      - **Automatic (token-threshold):** a setting (per-conversation or global)
+        that triggers compaction when `contextSize` reaches a configurable token
+        count (e.g. 100k). When the threshold is hit, the backend summarizes the
+        conversation history (excluding the most recent N messages) and replaces
+        the old history with the summary + recent messages.
+      - **Manual (button click):** a frontend button that triggers compaction on
+        demand for the current conversation, regardless of token count.
+
+      **Backend work:**
+      - `POST /conversations/:id/compact` endpoint — triggers compaction.
+      - Compaction logic: call the model with a summarization prompt over the
+        conversation history, produce a summary, then replace old chunks with a
+        single system-injected "conversation summary" chunk + retain the most
+        recent N messages (configurable, default ~10).
+      - Settings: `compactThreshold` (token count, 0 = disabled) stored per
+        conversation or as a global default. Exposed via settings/config.
+      - Automatic trigger: check `contextSize` after each turn; if it exceeds
+        `compactThreshold`, run compaction before the next turn starts.
+      - Emit a `conversation.compacted` WS event so the FE can refresh history.
+      - Journal/span for compaction (observable: what was summarized, tokens
+        saved).
+
+      **Frontend work:**
+      - Settings UI for `compactThreshold` (number input, 0 = manual only).
+      - Compact button in the conversation toolbar (triggers
+        `POST /conversations/:id/compact`).
+      - Handle `conversation.compacted` WS event to reload history.
+      - Show a visual indicator that a conversation has been compacted (e.g. a
+        badge or divider showing where the summary begins).
 
 (Done and dropped from the list: CLI; dedup / storage growth; message queue + steering injection.)
