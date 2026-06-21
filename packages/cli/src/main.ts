@@ -101,6 +101,14 @@ async function main(): Promise<void> {
 			}
 			const conversationId = resolved;
 
+			if (parsed.open) {
+				await openConversation(
+					{ fetchImpl: globalThis.fetch },
+					{ server: parsed.server, conversationId },
+				);
+				process.stdout.write(`Signaled frontend to open ${conversationId}\n`);
+			}
+
 			if (parsed.queue) {
 				const queued = await enqueueMessage(
 					{ fetchImpl: globalThis.fetch },
@@ -133,14 +141,6 @@ async function main(): Promise<void> {
 				process.stdout.write(`${extractLastText(collected)}\n`);
 				process.stdout.write(`[conversation] ${conversationId}\n`);
 			}
-
-			if (parsed.open) {
-				await openConversation(
-					{ fetchImpl: globalThis.fetch },
-					{ server: parsed.server, conversationId },
-				);
-				process.stdout.write(`Signaled frontend to open ${conversationId}\n`);
-			}
 			break;
 		}
 		case "chat": {
@@ -162,6 +162,14 @@ async function main(): Promise<void> {
 				{ server: parsed.server, request },
 			);
 
+			if (conversationId && parsed.open) {
+				await openConversation(
+					{ fetchImpl: globalThis.fetch },
+					{ server: parsed.server, conversationId },
+				);
+				process.stdout.write(`Signaled frontend to open ${conversationId}\n`);
+			}
+
 			for await (const event of events) {
 				const rendered = renderEvent(event, { showReasoning: parsed.showReasoning });
 				if (rendered?.stdout) process.stdout.write(rendered.stdout);
@@ -170,14 +178,6 @@ async function main(): Promise<void> {
 
 			if (conversationId) {
 				process.stdout.write(`\n[conversation] ${conversationId}\n`);
-
-				if (parsed.open) {
-					await openConversation(
-						{ fetchImpl: globalThis.fetch },
-						{ server: parsed.server, conversationId },
-					);
-					process.stdout.write(`Signaled frontend to open ${conversationId}\n`);
-				}
 			}
 			break;
 		}
