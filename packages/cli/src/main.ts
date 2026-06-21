@@ -8,12 +8,23 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "./args.js";
 import { formatCatalog } from "./catalog.js";
-import { fetchModels, streamChat } from "./http.js";
+import {
+	enqueueMessage,
+	fetchConversations,
+	fetchLastMessage,
+	fetchModels,
+	openConversation,
+	resolveConversationId,
+	streamChat,
+} from "./http.js";
 import { buildChatRequest, composeMessage } from "./message.js";
-import { renderEvent } from "./render.js";
+import { extractLastText, formatConversationList, renderEvent } from "./render.js";
 
 const USAGE = `Usage:
   dispatch models [--server <url>]
+  dispatch list [<prefix>] [--server <url>]
+  dispatch read <conversationId> [--server <url>]
+  dispatch send <conversationId> --text "..." [--queue] [--open] [--cwd <dir>] [--effort <level>] [--server <url>]
   dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--server <url>] [--show-reasoning]
   dispatch --help
 
@@ -35,6 +46,84 @@ async function main(): Promise<void> {
 		case "models": {
 			const result = await fetchModels({ fetchImpl: globalThis.fetch }, { server: parsed.server });
 			process.stdout.write(`${formatCatalog(result)}\n`);
+			break;
+		}
+		case "list": {
+			const result = await fetchConversations(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, ...(parsed.query !== undefined && { query: parsed.query }) },
+			);
+			const table = formatConversationList(result.conversations, Date.now());
+			if (table.length > 0) process.stdout.write(`${table}\n`);
+			break;
+		}
+		case "read": {
+			const resolved = await resolveConversationId(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, shortId: parsed.conversationId },
+			);
+			if (typeof resolved !== "string") {
+				process.stderr.write(`${resolved.error}\n`);
+				process.exit(1);
+			}
+			const last = await fetchLastMessage(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, conversationId: resolved },
+			);
+			if (last.content.length > 0) process.stdout.write(`${last.content}\n`);
+			break;
+		}
+		case "send": {
+			const resolved = await resolveConversationId(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, shortId: parsed.conversationId },
+			);
+			if (typeof resolved !== "string") {
+				process.stderr.write(`${resolved.error}\n`);
+				process.exit(1);
+			}
+			const conversationId = resolved;
+
+			if (parsed.queue) {
+				const queued = await enqueueMessage(
+					{ fetchImpl: globalThis.fetch },
+					{ server: parsed.server, conversationId, text: parsed.text },
+				);
+				const line = queued.startedTurn
+					? `Started turn for ${conversationId}`
+					: `Queued to ${conversationId}`;
+				process.stdout.write(`${line}\n`);
+			} else {
+				const request = {
+					conversationId,
+					message: parsed.text,
+					...(parsed.cwd !== undefined && { cwd: parsed.cwd }),
+					...(parsed.reasoningEffort !== undefined && { reasoningEffort: parsed.reasoningEffort }),
+				};
+				const { events } = await streamChat(
+					{ fetchImpl: globalThis.fetch },
+					{ server: parsed.server, request },
+				);
+				const collected = [];
+				for await (const event of events) {
+					if (event.type === "error") {
+						process.stderr.write(`${event.message}\n`);
+						process.exit(1);
+					}
+					collected.push(event);
+					if (event.type === "done") break;
+				}
+				process.stdout.write(`${extractLastText(collected)}\n`);
+				process.stdout.write(`[conversation] ${conversationId}\n`);
+			}
+
+			if (parsed.open) {
+				await openConversation(
+					{ fetchImpl: globalThis.fetch },
+					{ server: parsed.server, conversationId },
+				);
+				process.stdout.write(`Signaled frontend to open ${conversationId}\n`);
+			}
 			break;
 		}
 		case "chat": {

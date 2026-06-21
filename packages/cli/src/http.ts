@@ -7,7 +7,15 @@
  * The fetchImpl dependency is injected (outermost edge mock allowed).
  */
 
-import type { AgentEvent, ChatRequest, ModelsResponse } from "@dispatch/transport-contract";
+import type {
+	AgentEvent,
+	ChatRequest,
+	ConversationListResponse,
+	LastMessageResponse,
+	ModelsResponse,
+	OpenConversationResponse,
+	QueueResponse,
+} from "@dispatch/transport-contract";
 import { splitNdjsonLines } from "./ndjson.js";
 
 interface FetchDeps {
@@ -83,4 +91,136 @@ export async function fetchModels(deps: FetchDeps, opts: FetchModelsOpts): Promi
 	}
 
 	return (await res.json()) as ModelsResponse;
+}
+
+interface FetchConversationsOpts {
+	readonly server: string;
+	readonly query?: string;
+}
+
+export async function fetchConversations(
+	deps: FetchDeps,
+	opts: FetchConversationsOpts,
+): Promise<ConversationListResponse> {
+	const url =
+		opts.query !== undefined
+			? `${opts.server}/conversations?q=${encodeURIComponent(opts.query)}`
+			: `${opts.server}/conversations`;
+	const res = await deps.fetchImpl(url);
+
+	if (!res.ok) {
+		const body = await res.text();
+		throw new Error(`GET /conversations failed with status ${res.status}: ${body}`);
+	}
+
+	return (await res.json()) as ConversationListResponse;
+}
+
+interface FetchLastMessageOpts {
+	readonly server: string;
+	readonly conversationId: string;
+}
+
+export async function fetchLastMessage(
+	deps: FetchDeps,
+	opts: FetchLastMessageOpts,
+): Promise<LastMessageResponse> {
+	const url = `${opts.server}/conversations/${encodeURIComponent(opts.conversationId)}/last`;
+	const res = await deps.fetchImpl(url);
+
+	if (!res.ok) {
+		const body = await res.text();
+		throw new Error(`GET /conversations/:id/last failed with status ${res.status}: ${body}`);
+	}
+
+	return (await res.json()) as LastMessageResponse;
+}
+
+interface EnqueueMessageOpts {
+	readonly server: string;
+	readonly conversationId: string;
+	readonly text: string;
+}
+
+export async function enqueueMessage(
+	deps: FetchDeps,
+	opts: EnqueueMessageOpts,
+): Promise<QueueResponse> {
+	const url = `${opts.server}/conversations/${encodeURIComponent(opts.conversationId)}/queue`;
+	const res = await deps.fetchImpl(url, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ text: opts.text }),
+	});
+
+	if (!res.ok) {
+		const body = await res.text();
+		throw new Error(`POST /conversations/:id/queue failed with status ${res.status}: ${body}`);
+	}
+
+	return (await res.json()) as QueueResponse;
+}
+
+interface OpenConversationOpts {
+	readonly server: string;
+	readonly conversationId: string;
+}
+
+export async function openConversation(
+	deps: FetchDeps,
+	opts: OpenConversationOpts,
+): Promise<OpenConversationResponse> {
+	const url = `${opts.server}/conversations/${encodeURIComponent(opts.conversationId)}/open`;
+	const res = await deps.fetchImpl(url, { method: "POST" });
+
+	if (!res.ok) {
+		const body = await res.text();
+		throw new Error(`POST /conversations/:id/open failed with status ${res.status}: ${body}`);
+	}
+
+	return (await res.json()) as OpenConversationResponse;
+}
+
+/**
+ * The outcome of short-ID resolution: either the full conversation id to use,
+ * or a human-readable error describing why resolution failed.
+ */
+export type ConversationIdResolution = string | { readonly error: string };
+
+interface ResolveConversationIdOpts {
+	readonly server: string;
+	readonly shortId: string;
+}
+
+/**
+ * Resolve a user-typed conversation prefix to a full id. A 32+ char input is
+ * assumed to be a full UUID and returned untouched. Otherwise the conversation
+ * list is filtered by the prefix: 1 match → its id; 0 → error; >1 → error with
+ * the candidate short ids + titles so the user can disambiguate.
+ */
+export async function resolveConversationId(
+	deps: FetchDeps,
+	opts: ResolveConversationIdOpts,
+): Promise<ConversationIdResolution> {
+	if (opts.shortId.length >= 32) {
+		return opts.shortId;
+	}
+
+	const list = await fetchConversations(deps, { server: opts.server, query: opts.shortId });
+	const matches = list.conversations;
+
+	if (matches.length === 0) {
+		return { error: `No conversation matching "${opts.shortId}"` };
+	}
+
+	if (matches.length === 1) {
+		const only = matches[0];
+		if (only === undefined) return { error: `No conversation matching "${opts.shortId}"` };
+		return only.id;
+	}
+
+	const lines = matches.map((m) => `${m.id.slice(0, 8)}  ${m.title}`).join("\n");
+	return {
+		error: `Multiple conversations matching "${opts.shortId}"\n${lines}`,
+	};
 }

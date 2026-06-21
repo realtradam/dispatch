@@ -26,6 +26,18 @@ export type ParsedCommand =
 			readonly reasoningEffort?: ReasoningEffort | undefined;
 			readonly showReasoning: boolean;
 	  }
+	| { readonly kind: "list"; readonly server: string; readonly query?: string }
+	| { readonly kind: "read"; readonly server: string; readonly conversationId: string }
+	| {
+			readonly kind: "send";
+			readonly server: string;
+			readonly conversationId: string;
+			readonly text: string;
+			readonly queue: boolean;
+			readonly open: boolean;
+			readonly cwd?: string;
+			readonly reasoningEffort?: ReasoningEffort;
+	  }
 	| { readonly kind: "help" }
 	| { readonly kind: "error"; readonly message: string };
 
@@ -54,6 +66,119 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			}
 		}
 		return { kind: "models", server };
+	}
+
+	if (first === "list") {
+		let server = opts.defaultServer;
+		let query: string | undefined;
+		for (let i = 1; i < argv.length; i++) {
+			const arg = argv[i] as string;
+			if (arg === "--server") {
+				if (i + 1 >= argv.length) return { kind: "error", message: "--server requires a value" };
+				server = argv[++i] as string;
+			} else if (arg.startsWith("--")) {
+				return { kind: "error", message: `Unknown flag: ${arg}` };
+			} else if (query !== undefined) {
+				return { kind: "error", message: `Unexpected argument for 'list': ${arg}` };
+			} else {
+				query = arg;
+			}
+		}
+		return { kind: "list", server, ...(query !== undefined && { query }) };
+	}
+
+	if (first === "read") {
+		let server = opts.defaultServer;
+		let conversationId: string | undefined;
+		for (let i = 1; i < argv.length; i++) {
+			const arg = argv[i] as string;
+			if (arg === "--server") {
+				if (i + 1 >= argv.length) return { kind: "error", message: "--server requires a value" };
+				server = argv[++i] as string;
+			} else if (arg.startsWith("--")) {
+				return { kind: "error", message: `Unknown flag: ${arg}` };
+			} else if (conversationId !== undefined) {
+				return { kind: "error", message: `Unexpected argument for 'read': ${arg}` };
+			} else {
+				conversationId = arg;
+			}
+		}
+		if (conversationId === undefined) {
+			return { kind: "error", message: "'read' requires a conversation id" };
+		}
+		return { kind: "read", server, conversationId };
+	}
+
+	if (first === "send") {
+		let server = opts.defaultServer;
+		let conversationId: string | undefined;
+		let text: string | undefined;
+		let queue = false;
+		let open = false;
+		let cwd: string | undefined;
+		let reasoningEffort: ReasoningEffort | undefined;
+
+		for (let i = 1; i < argv.length; i++) {
+			const arg = argv[i] as string;
+			switch (arg) {
+				case "--server":
+					if (i + 1 >= argv.length) return { kind: "error", message: "--server requires a value" };
+					server = argv[++i] as string;
+					break;
+				case "--text":
+					if (i + 1 >= argv.length) return { kind: "error", message: "--text requires a value" };
+					text = argv[++i];
+					break;
+				case "--queue":
+					queue = true;
+					break;
+				case "--open":
+					open = true;
+					break;
+				case "--cwd":
+					if (i + 1 >= argv.length) return { kind: "error", message: "--cwd requires a value" };
+					cwd = argv[++i];
+					break;
+				case "--effort": {
+					if (i + 1 >= argv.length)
+						return {
+							kind: "error",
+							message: `--effort requires a value (one of: ${VALID_EFFORTS.join(", ")})`,
+						};
+					const val = argv[++i] as string;
+					if (!isValidEffort(val))
+						return {
+							kind: "error",
+							message: `Invalid effort level "${val}". Must be one of: ${VALID_EFFORTS.join(", ")}`,
+						};
+					reasoningEffort = val;
+					break;
+				}
+				default:
+					if (arg.startsWith("--")) return { kind: "error", message: `Unknown flag: ${arg}` };
+					if (conversationId !== undefined)
+						return { kind: "error", message: `Unexpected argument for 'send': ${arg}` };
+					conversationId = arg;
+			}
+		}
+
+		if (conversationId === undefined) {
+			return { kind: "error", message: "'send' requires a conversation id" };
+		}
+		if (text === undefined) {
+			return { kind: "error", message: "'send' requires --text" };
+		}
+
+		return {
+			kind: "send",
+			server,
+			conversationId,
+			text,
+			queue,
+			open,
+			...(cwd !== undefined && { cwd }),
+			...(reasoningEffort !== undefined && { reasoningEffort }),
+		};
 	}
 
 	// Chat mode: first arg is the model name
