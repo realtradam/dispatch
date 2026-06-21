@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1123 vitest + 199 transport bun green**.
+`tsc -b` EXIT 0 · biome clean · **1152 vitest + 199 transport bun green**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -487,6 +487,16 @@ conversation surface (`rendererId: "todo"`, `scope: "conversation"`) via subscri
 - Verified: full-graph `tsc -b` EXIT 0, biome clean (314 files), **1123 vitest** pass.
   **Boot smoke:** `"todo: registered"` + activated.
 - [ ] Live-verify (model uses `todo_write` in a real turn — the dev stack has it loaded).
+
+## youtube_transcript tool (DONE)
+Standard tool extension `tool-youtube-transcript` backed by a self-hosted transcriber
+service (`http://100.102.55.49:41090`, Tailscale, no API key). One tool
+`youtube_transcript` — takes a YouTube URL, fetches the transcript (completed → full
+text + timestamped segments; queued/processing → position + ETA + `.youtube_subtitles_pending`
+retry convention; failed → error). Pure core: `validateUrl` + `format*` functions +
+`truncateOutput`. Injected edge: `TranscriptClient` (injectable `fetchFn`, `AbortSignal.any`
+for cancellation). `concurrencySafe: true`, `capabilities: { network: true }`. 30 tests.
+Report: `reports/tool-youtube-transcript.md`.
 
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max
