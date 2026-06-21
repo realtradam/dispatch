@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import { parseArgs } from "./args.js";
 import { formatCatalog } from "./catalog.js";
 import {
+	compactConversation,
 	enqueueMessage,
 	fetchConversations,
 	fetchLastMessage,
@@ -23,6 +24,7 @@ import { extractLastText, formatConversationList, renderEvent } from "./render.j
 const USAGE = `Usage:
   dispatch models [--server <url>]
   dispatch list [<prefix>] [--status <active|idle|closed>] [--all] [--server <url>]
+  dispatch compact <conversationId> [--server <url>]
   dispatch read <conversationId> [--server <url>]
   dispatch open <conversationId> [--server <url>]
   dispatch send <conversationId> --text "..." [--queue] [--open] [--cwd <dir>] [--effort <level>] [--server <url>]
@@ -77,6 +79,24 @@ async function main(): Promise<void> {
 				{ server: parsed.server, conversationId: resolved },
 			);
 			if (last.content.length > 0) process.stdout.write(`${last.content}\n`);
+			break;
+		}
+		case "compact": {
+			const resolved = await resolveConversationId(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, shortId: parsed.conversationId },
+			);
+			if (typeof resolved !== "string") {
+				process.stderr.write(`${resolved.error}\n`);
+				process.exit(1);
+			}
+			const result = await compactConversation(
+				{ fetchImpl: globalThis.fetch },
+				{ server: parsed.server, conversationId: resolved },
+			);
+			process.stdout.write(
+				`Compacted ${resolved}: ${result.messagesSummarized} messages summarized, ${result.messagesKept} kept.\n`,
+			);
 			break;
 		}
 		case "open": {

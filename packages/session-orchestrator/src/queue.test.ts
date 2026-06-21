@@ -86,6 +86,11 @@ function createInMemoryStore(): ConversationStore & {
 			return null;
 		},
 		async setConversationStatus() {},
+		async replaceHistory() {},
+		async getCompactThreshold() {
+			return null;
+		},
+		async setCompactThreshold() {},
 	};
 }
 

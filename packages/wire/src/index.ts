@@ -522,3 +522,16 @@ export interface ConversationMeta {
 	readonly title: string;
 	readonly status: ConversationStatus;
 }
+
+// ─── Compaction ──────────────────────────────────────────────────────────────
+
+/**
+ * Result of a compaction operation. `summary` is the text the model produced;
+ * `messagesKept` is how many recent messages were retained after the summary;
+ * `messagesSummarized` is how many old messages were replaced by the summary.
+ */
+export interface CompactionResult {
+	readonly summary: string;
+	readonly messagesSummarized: number;
+	readonly messagesKept: number;
+}

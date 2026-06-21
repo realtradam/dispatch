@@ -34,6 +34,7 @@ export type ParsedCommand =
 			readonly status?: string;
 			readonly all: boolean;
 	  }
+	| { readonly kind: "compact"; readonly server: string; readonly conversationId: string }
 	| { readonly kind: "open"; readonly server: string; readonly conversationId: string }
 	| { readonly kind: "read"; readonly server: string; readonly conversationId: string }
 	| {
@@ -106,6 +107,28 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			...(status !== undefined && { status }),
 			all,
 		};
+	}
+
+	if (first === "compact") {
+		let server = opts.defaultServer;
+		let conversationId: string | undefined;
+		for (let i = 1; i < argv.length; i++) {
+			const arg = argv[i] as string;
+			if (arg === "--server") {
+				if (i + 1 >= argv.length) return { kind: "error", message: "--server requires a value" };
+				server = argv[++i] as string;
+			} else if (arg.startsWith("--")) {
+				return { kind: "error", message: `Unknown flag: ${arg}` };
+			} else if (conversationId !== undefined) {
+				return { kind: "error", message: `Unexpected argument for 'compact': ${arg}` };
+			} else {
+				conversationId = arg;
+			}
+		}
+		if (conversationId === undefined) {
+			return { kind: "error", message: "'compact' requires a conversation id" };
+		}
+		return { kind: "compact", server, conversationId };
 	}
 
 	if (first === "read") {

@@ -1,6 +1,8 @@
 import type { AgentEvent, HostAPI, Logger } from "@dispatch/kernel";
 import type {
 	CloseConversationResponse,
+	CompactResponse,
+	CompactThresholdResponse,
 	ConversationHistoryResponse,
 	ConversationListResponse,
 	ConversationMetricsResponse,
@@ -12,6 +14,7 @@ import type {
 	OpenConversationResponse,
 	QueueResponse,
 	ReasoningEffortResponse,
+	SetCompactThresholdRequest,
 	ThroughputResponse,
 	TitleResponse,
 	WarmResponse,
@@ -36,6 +39,7 @@ import {
 	serializeEventLine,
 } from "./logic.js";
 import {
+	type CompactionService,
 	type ConversationStore,
 	type CredentialStore,
 	conversationOpened,
@@ -52,6 +56,7 @@ export interface CreateServerOptions {
 	readonly orchestrator: SessionOrchestrator;
 	readonly credentialStore: CredentialStore;
 	readonly warmService?: WarmService;
+	readonly compactionService?: CompactionService;
 	readonly lspService?: LspService;
 	/** Optional — defaults to a no-op store (recording disabled, empty reports). */
 	readonly throughputStore?: ThroughputStore;
@@ -681,6 +686,79 @@ export function createApp(opts: CreateServerOptions): Hono {
 			log.error("conversations: title set failure", { err });
 			return c.json({ error: "Failed to set conversation title" }, 500);
 		}
+	});
+
+	// ─── Compaction ──────────────────────────────────────────────────────────
+
+	app.post("/conversations/:id/compact", async (c) => {
+		if (opts.compactionService === undefined) {
+			return c.json({ error: "Compaction service not available" }, 503);
+		}
+		const conversationId = c.req.param("id");
+		let body: unknown = {};
+		try {
+			body = await c.req.json();
+		} catch {
+			// No body is fine — use defaults.
+		}
+		const obj = body as Record<string, unknown>;
+		const keepLastN =
+			typeof obj.keepLastN === "number" && Number.isFinite(obj.keepLastN) && obj.keepLastN > 0
+				? Math.floor(obj.keepLastN)
+				: undefined;
+		const modelName = typeof obj.modelName === "string" ? obj.modelName : undefined;
+
+		log.info("conversations: compact request", { conversationId });
+
+		const result = await opts.compactionService.compact(conversationId, {
+			...(keepLastN !== undefined ? { keepLastN } : {}),
+			...(modelName !== undefined ? { modelName } : {}),
+		});
+
+		if ("error" in result) {
+			log.warn("conversations: compact returned error", {
+				conversationId,
+				error: result.error,
+			});
+			return c.json({ error: result.error }, 409);
+		}
+
+		const response: CompactResponse = {
+			conversationId,
+			messagesSummarized: result.messagesSummarized,
+			messagesKept: result.messagesKept,
+		};
+		return c.json(response, 200);
+	});
+
+	app.get("/conversations/:id/compact-threshold", async (c) => {
+		const conversationId = c.req.param("id");
+		const threshold = (await opts.conversationStore.getCompactThreshold(conversationId)) ?? 0;
+		const response: CompactThresholdResponse = { conversationId, threshold };
+		return c.json(response, 200);
+	});
+
+	app.put("/conversations/:id/compact-threshold", async (c) => {
+		const conversationId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+		const parsed = body as SetCompactThresholdRequest;
+		if (
+			typeof parsed.threshold !== "number" ||
+			!Number.isFinite(parsed.threshold) ||
+			parsed.threshold < 0
+		) {
+			return c.json({ error: "threshold must be a non-negative number" }, 400);
+		}
+		const threshold = Math.floor(parsed.threshold);
+		await opts.conversationStore.setCompactThreshold(conversationId, threshold);
+		log.info("conversations: compact-threshold set", { conversationId, threshold });
+		const response: CompactThresholdResponse = { conversationId, threshold };
+		return c.json(response, 200);
 	});
 
 	// ─── Static frontend serving (catch-all, API routes take precedence) ──────

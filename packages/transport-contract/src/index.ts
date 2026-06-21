@@ -32,6 +32,7 @@ import type {
 
 export type {
 	AgentEvent,
+	CompactionResult,
 	ConversationMeta,
 	ConversationStatus,
 	QueuedMessage,
@@ -486,7 +487,8 @@ export type WsServerMessage =
 	| ChatDeltaMessage
 	| ChatErrorMessage
 	| ConversationOpenMessage
-	| ConversationStatusChangedMessage;
+	| ConversationStatusChangedMessage
+	| ConversationCompactedMessage;
 
 // ─── Conversation list + metadata ────────────────────────────────────────────
 
@@ -509,6 +511,18 @@ export interface ConversationStatusChangedMessage {
 	readonly type: "conversation.statusChanged";
 	readonly conversationId: string;
 	readonly status: ConversationStatus;
+}
+
+/**
+ * Broadcast to all connected WS clients when a conversation's history has been
+ * compacted (summarized). The frontend should reload the conversation history
+ * via `GET /conversations/:id` to reflect the compacted state.
+ */
+export interface ConversationCompactedMessage {
+	readonly type: "conversation.compacted";
+	readonly conversationId: string;
+	readonly messagesSummarized: number;
+	readonly messagesKept: number;
 }
 
 /**
@@ -554,4 +568,30 @@ export interface SetTitleRequest {
 export interface TitleResponse {
 	readonly conversationId: string;
 	readonly title: string;
+}
+
+/**
+ * Response for `POST /conversations/:id/compact` — confirms the conversation
+ * history was compacted (old messages summarized, recent messages retained).
+ */
+export interface CompactResponse {
+	readonly conversationId: string;
+	readonly messagesSummarized: number;
+	readonly messagesKept: number;
+}
+
+/**
+ * Response for `GET /conversations/:id/compact-threshold` — the token count
+ * at which automatic compaction triggers (0 = manual only).
+ */
+export interface CompactThresholdResponse {
+	readonly conversationId: string;
+	readonly threshold: number;
+}
+
+/**
+ * Request body for `PUT /conversations/:id/compact-threshold`.
+ */
+export interface SetCompactThresholdRequest {
+	readonly threshold: number;
 }

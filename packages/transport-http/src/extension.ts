@@ -2,6 +2,7 @@ import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { createApp } from "./app.js";
 import {
 	cacheWarmHandle,
+	compactionHandle,
 	conversationStoreHandle,
 	credentialStoreHandle,
 	lspServiceHandle,
@@ -30,6 +31,8 @@ export const manifest: Manifest = {
 			"/conversations",
 			"/conversations/:id",
 			"/conversations/:id/close",
+			"/conversations/:id/compact",
+			"/conversations/:id/compact-threshold",
 			"/conversations/:id/cwd",
 			"/conversations/:id/last",
 			"/conversations/:id/lsp",
@@ -61,6 +64,7 @@ export function createTransportHttpExtension(): Extension & {
 			const credentialStore = host.getService(credentialStoreHandle);
 			const throughputStore = host.getService(throughputStoreHandle);
 			const warmService = host.getService(cacheWarmHandle);
+			const compactionService = host.getService(compactionHandle);
 			const lspService = host.getService(lspServiceHandle);
 			const logger = host.logger;
 
@@ -70,6 +74,7 @@ export function createTransportHttpExtension(): Extension & {
 				credentialStore,
 				throughputStore,
 				warmService,
+				compactionService,
 				lspService,
 				logger,
 				emit: host.emit.bind(host),
