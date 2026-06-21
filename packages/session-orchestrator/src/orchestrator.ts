@@ -2,6 +2,7 @@ import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
 	AgentEvent,
 	ChatMessage,
+	CompactionResult,
 	ConversationStatus,
 	EventHookDescriptor,
 	Logger,
@@ -128,6 +129,21 @@ export const conversationStatusChanged: EventHookDescriptor<ConversationStatusCh
 		"session-orchestrator/conversation-status-changed",
 	);
 
+/** Payload for the conversationCompacted bus event. */
+export interface ConversationCompactedPayload {
+	readonly conversationId: string;
+	readonly messagesSummarized: number;
+	readonly messagesKept: number;
+}
+
+/**
+ * Fired when a conversation's history has been compacted (old messages
+ * summarized, recent messages retained). Transport-ws subscribes and
+ * broadcasts a `conversation.compacted` WS message so the FE reloads history.
+ */
+export const conversationCompacted: EventHookDescriptor<ConversationCompactedPayload> =
+	defineEventHook<ConversationCompactedPayload>("session-orchestrator/conversation-compacted");
+
 /** Payload for the warmCompleted bus event. */
 export interface WarmCompletedPayload {
 	readonly conversationId: string;
@@ -156,6 +172,26 @@ export interface WarmService {
 
 export const cacheWarmHandle: ServiceHandle<WarmService> = defineService<WarmService>(
 	"session-orchestrator/warm",
+);
+
+// --- Compaction service ---
+
+export interface CompactionService {
+	/**
+	 * Compact a conversation: summarize old messages and replace history with
+	 * the summary + the most recent `keepLastN` messages. Returns the result
+	 * or an error object. No-ops if the conversation is too short (≤ keepLastN
+	 * messages). When `auto` is true, checks the compact-threshold setting and
+	 * only compacts if the last turn's input tokens exceeded it.
+	 */
+	readonly compact: (
+		conversationId: string,
+		opts?: { readonly keepLastN?: number; readonly modelName?: string; readonly auto?: boolean },
+	) => Promise<CompactionResult | { readonly error: string }>;
+}
+
+export const compactionHandle: ServiceHandle<CompactionService> = defineService<CompactionService>(
+	"session-orchestrator/compaction",
 );
 
 export interface SessionOrchestrator {
@@ -214,6 +250,12 @@ export interface SessionOrchestratorDeps {
 	 * stays reproducible from its inputs and tests use a fake queue.
 	 */
 	readonly resolveQueue?: () => MessageQueueService | undefined;
+	/**
+	 * Lazily resolves the compaction service, or `undefined` when not loaded.
+	 * Used for automatic compaction after a turn settles (if the compact
+	 * threshold is exceeded). Lazy so activation order doesn't matter.
+	 */
+	readonly resolveCompaction?: () => CompactionService | undefined;
 	/** Apply the per-turn tools filter chain. Injected for testability. */
 	readonly applyToolsFilter: (assembly: ToolAssembly) => Promise<ToolAssembly>;
 	/** Base logger (auto-scoped to this extension); childed per turn for span capture. */
@@ -444,6 +486,13 @@ export function createSessionOrchestrator(
 							status: "idle",
 						});
 						void deps.conversationStore.setConversationStatus(conversationId, "idle");
+						// Fire-and-forget auto-compaction: check threshold and
+						// compact if exceeded. Non-blocking — the next turn
+						// starts fresh either way.
+						const compaction = deps.resolveCompaction?.();
+						if (compaction !== undefined) {
+							void compaction.compact(conversationId, { auto: true }).catch(() => {});
+						}
 					}
 				});
 			}
@@ -638,6 +687,142 @@ export function createWarmService(
 
 			const result: WarmResult = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
 			deps.emit(warmCompleted, { conversationId, usage: result });
+			return result;
+		},
+	};
+}
+
+const DEFAULT_KEEP_LAST_N = 10;
+
+const COMPACTION_SYSTEM_PROMPT =
+	"You are a conversation summarizer. Summarize the following conversation concord concisely but comprehensively. " +
+	"Focus on key decisions, context, file paths, and any unresolved questions. " +
+	"The summary must preserve enough detail for the conversation to continue with full context.";
+
+function formatMessagesForSummary(messages: readonly ChatMessage[]): string {
+	return messages
+		.map((msg) => {
+			const text = msg.chunks
+				.map((c) => {
+					if (c.type === "text") return c.text;
+					if (c.type === "tool-call") return `[tool: ${c.toolName}]`;
+					if (c.type === "tool-result") return `[tool result: ${c.content.slice(0, 200)}]`;
+					return "";
+				})
+				.join("");
+			return `${msg.role}: ${text}`;
+		})
+		.join("\n\n");
+}
+
+export function createCompactionService(
+	deps: SessionOrchestratorDeps & {
+		readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
+	},
+	activeConversations: ReadonlySet<string>,
+): CompactionService {
+	return {
+		async compact(conversationId, opts) {
+			if (activeConversations.has(conversationId)) {
+				return { error: "conversation is generating" };
+			}
+
+			const history = await deps.conversationStore.load(conversationId);
+			const keepLastN = opts?.keepLastN ?? DEFAULT_KEEP_LAST_N;
+
+			if (history.length <= keepLastN) {
+				return { error: "conversation too short to compact" };
+			}
+
+			// Auto mode: check threshold
+			if (opts?.auto === true) {
+				const threshold = await deps.conversationStore.getCompactThreshold(conversationId);
+				if (threshold === null || threshold <= 0) return { error: "auto-compact disabled" };
+				const metrics = await deps.conversationStore.loadMetrics(conversationId);
+				const lastTurn = metrics[metrics.length - 1];
+				if (lastTurn === undefined) return { error: "no metrics" };
+				const lastInputTokens = lastTurn.usage.inputTokens + (lastTurn.usage.cacheReadTokens ?? 0);
+				if (lastInputTokens < threshold) return { error: "threshold not exceeded" };
+			}
+
+			// Split: old messages to summarize + recent messages to keep.
+			const toSummarize = history.slice(0, history.length - keepLastN);
+			const toKeep = history.slice(history.length - keepLastN);
+
+			// Resolve provider
+			let provider: ProviderContract;
+			let modelOverride: string | undefined;
+			if (opts?.modelName !== undefined && deps.resolveModel !== undefined) {
+				const resolved = deps.resolveModel(opts.modelName);
+				if (resolved === undefined) return { error: `unknown model: ${opts.modelName}` };
+				provider = resolved.provider;
+				modelOverride = resolved.model;
+			} else {
+				provider = deps.resolveProvider();
+			}
+
+			// Build the summarization request: system prompt + conversation text + instruction
+			const conversationText = formatMessagesForSummary(toSummarize);
+			const summaryRequest: ChatMessage = {
+				role: "user",
+				chunks: [
+					{
+						type: "text",
+						text: `Please summarize the following conversation:\n\n${conversationText}`,
+					},
+				],
+			};
+
+			const providerOpts: ProviderStreamOptions = {
+				maxTokens: 2000,
+				...(modelOverride !== undefined ? { model: modelOverride } : {}),
+				...(deps.logger !== undefined
+					? { logger: deps.logger.child({ conversationId, attrs: { compaction: true } }) }
+					: {}),
+			};
+
+			// Call the provider and accumulate the summary
+			let summary = "";
+			for await (const event of provider.stream([summaryRequest], [], {
+				...providerOpts,
+				systemPrompt: COMPACTION_SYSTEM_PROMPT,
+			})) {
+				if ((event as ProviderEvent).type === "text-delta") {
+					summary += (event as { delta: string }).delta;
+				} else if ((event as ProviderEvent).type === "error") {
+					return { error: (event as { message: string }).message };
+				}
+			}
+
+			if (summary.trim().length === 0) {
+				return { error: "model produced empty summary" };
+			}
+
+			// Replace history: [system: summary] + recent messages
+			const summaryMessage: ChatMessage = {
+				role: "system",
+				chunks: [
+					{
+						type: "text",
+						text: `The following is a summary of the previous conversation:\n\n${summary}`,
+					},
+				],
+			};
+
+			await deps.conversationStore.replaceHistory(conversationId, [summaryMessage, ...toKeep]);
+
+			const result: CompactionResult = {
+				summary,
+				messagesSummarized: toSummarize.length,
+				messagesKept: toKeep.length,
+			};
+
+			deps.emit(conversationCompacted, {
+				conversationId,
+				messagesSummarized: toSummarize.length,
+				messagesKept: toKeep.length,
+			});
+
 			return result;
 		},
 	};

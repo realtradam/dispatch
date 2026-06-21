@@ -15,6 +15,7 @@ export type {
 export type {
 	ChatMessage,
 	Chunk,
+	CompactionResult,
 	ConversationMeta,
 	ConversationStatus,
 	ErrorChunk,

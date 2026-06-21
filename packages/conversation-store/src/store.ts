@@ -15,6 +15,7 @@ import {
 	CONVERSATION_INDEX_KEY,
 	chunkKey,
 	chunkPrefix,
+	compactThresholdKey,
 	cwdKey,
 	metaKey,
 	metricsKey,
@@ -86,6 +87,20 @@ export interface ConversationStore {
 		conversationId: string,
 		status: ConversationStatus,
 	) => Promise<void>;
+	/**
+	 * Replace the entire conversation history with the given messages. Deletes
+	 * all existing chunks, resets the seq counter, and appends the new messages.
+	 * Used by compaction to replace old history with a summary + recent messages.
+	 * Metadata (createdAt, title, status) is preserved.
+	 */
+	readonly replaceHistory: (
+		conversationId: string,
+		messages: readonly ChatMessage[],
+	) => Promise<void>;
+	/** Get the compact threshold (token count, 0 = manual only), or null if unset. */
+	readonly getCompactThreshold: (conversationId: string) => Promise<number | null>;
+	/** Set the compact threshold (token count, 0 = manual only). */
+	readonly setCompactThreshold: (conversationId: string, threshold: number) => Promise<void>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -528,6 +543,33 @@ export function createConversationStore(
 				status,
 			};
 			await storage.set(metaKey(conversationId), JSON.stringify(row));
+		},
+
+		async replaceHistory(conversationId, messages) {
+			// Delete all existing chunks.
+			const keys = await storage.keys(chunkPrefix(conversationId));
+			for (const k of keys) {
+				await storage.delete(k);
+			}
+			// Reset the seq counter so the new messages start from seq 1.
+			await storage.set(seqKey(conversationId), "0");
+			// Append the new messages (re-uses the append logic for seq
+			// numbering + metadata upsert).
+			await this.append(conversationId, messages);
+		},
+
+		async getCompactThreshold(conversationId) {
+			const raw = await storage.get(compactThresholdKey(conversationId));
+			if (raw === null) return null;
+			const n = Number.parseInt(raw, 10);
+			return Number.isNaN(n) ? null : n;
+		},
+
+		async setCompactThreshold(conversationId, threshold) {
+			await storage.set(compactThresholdKey(conversationId), String(threshold));
+			if (logger !== undefined) {
+				logger.debug("compact-threshold set", { conversationId, threshold });
+			}
 		},
 	};
 }

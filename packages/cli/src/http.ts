@@ -10,6 +10,7 @@
 import type {
 	AgentEvent,
 	ChatRequest,
+	CompactResponse,
 	ConversationListResponse,
 	LastMessageResponse,
 	ModelsResponse,
@@ -181,6 +182,26 @@ export async function openConversation(
 	}
 
 	return (await res.json()) as OpenConversationResponse;
+}
+
+interface CompactConversationOpts {
+	readonly server: string;
+	readonly conversationId: string;
+}
+
+export async function compactConversation(
+	deps: FetchDeps,
+	opts: CompactConversationOpts,
+): Promise<CompactResponse> {
+	const url = `${opts.server}/conversations/${encodeURIComponent(opts.conversationId)}/compact`;
+	const res = await deps.fetchImpl(url, { method: "POST" });
+
+	if (!res.ok) {
+		const body = await res.text();
+		throw new Error(`POST /conversations/:id/compact failed with status ${res.status}: ${body}`);
+	}
+
+	return (await res.json()) as CompactResponse;
 }
 
 /**

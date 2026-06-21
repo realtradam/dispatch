@@ -9,6 +9,7 @@
 import type { Extension, HostAPI } from "@dispatch/kernel";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
 import {
+	conversationCompacted,
 	conversationOpened,
 	conversationStatusChanged,
 	sessionOrchestratorHandle,
@@ -144,6 +145,19 @@ export function createTransportWsExtension(): Extension {
 			disposers.push(
 				host.on(conversationStatusChanged, ({ conversationId, status }) => {
 					broadcast({ type: "conversation.statusChanged", conversationId, status });
+				}),
+			);
+
+			// Broadcast `conversation.compacted` to all connected clients so
+			// the FE reloads the conversation history after compaction.
+			disposers.push(
+				host.on(conversationCompacted, ({ conversationId, messagesSummarized, messagesKept }) => {
+					broadcast({
+						type: "conversation.compacted",
+						conversationId,
+						messagesSummarized,
+						messagesKept,
+					});
 				}),
 			);
 

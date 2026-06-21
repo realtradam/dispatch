@@ -5,6 +5,8 @@ import { runTurn } from "@dispatch/kernel";
 import { messageQueueHandle } from "@dispatch/message-queue";
 import {
 	cacheWarmHandle,
+	compactionHandle,
+	createCompactionService,
 	createSessionOrchestrator,
 	createWarmService,
 	sessionOrchestratorHandle,
@@ -21,13 +23,18 @@ export const manifest: Manifest = {
 	dependsOn: ["conversation-store", "credential-store"],
 	activation: "eager",
 	contributes: {
-		services: ["session-orchestrator/orchestrator", "session-orchestrator/warm"],
+		services: [
+			"session-orchestrator/orchestrator",
+			"session-orchestrator/warm",
+			"session-orchestrator/compaction",
+		],
 		hooks: [
 			"session-orchestrator/turn-started",
 			"session-orchestrator/turn-settled",
 			"session-orchestrator/warm-completed",
 			"session-orchestrator/conversation-closed",
 			"session-orchestrator/conversation-status-changed",
+			"session-orchestrator/conversation-compacted",
 		],
 	},
 };
@@ -60,6 +67,16 @@ export function activate(host: HostAPI): void {
 			const loaded = host.getExtensions().some((m) => m.id === "message-queue");
 			return loaded ? host.getService(messageQueueHandle) : undefined;
 		},
+		resolveCompaction: () => {
+			// Lazily resolve the compaction service (registered below after
+			// the orchestrator). By the time this is called at runtime
+			// (after a turn settles), the service is registered.
+			try {
+				return host.getService(compactionHandle);
+			} catch {
+				return undefined;
+			}
+		},
 	});
 
 	host.provideService(sessionOrchestratorHandle, orchestrator);
@@ -86,6 +103,29 @@ export function activate(host: HostAPI): void {
 	);
 
 	host.provideService(cacheWarmHandle, warmService);
+
+	const compactionService = createCompactionService(
+		{
+			conversationStore,
+			resolveProvider: () => selectFirstProvider(host.getProviders()),
+			resolveTools: () => [...host.getTools().values()],
+			resolveModel: (modelName: string) => {
+				const store = host.getService(credentialStoreHandle);
+				const r = store.resolve(modelName);
+				if (r === undefined) return undefined;
+				const provider = host.getProviders().get(r.providerId);
+				return provider ? { provider, model: r.model } : undefined;
+			},
+			applyToolsFilter: (assembly) => host.applyFilters(toolsFilter, assembly),
+			runTurn,
+			logger: host.logger,
+			now: () => Date.now(),
+			emit: (hook, payload) => host.emit(hook, payload),
+		},
+		activeConversations,
+	);
+
+	host.provideService(compactionHandle, compactionService);
 }
 
 export const extension: Extension = {

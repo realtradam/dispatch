@@ -8,6 +8,7 @@
 export type {
 	ChatMessage,
 	Chunk,
+	CompactionResult,
 	ConversationMeta,
 	ConversationStatus,
 	ErrorChunk,
