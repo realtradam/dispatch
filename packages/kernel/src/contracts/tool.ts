@@ -70,6 +70,14 @@ export interface ToolExecuteContext {
 	 * workdir. The kernel never interprets it.
 	 */
 	readonly cwd?: string;
+
+	/**
+	 * The conversation this tool-call belongs to. Tools that maintain
+	 * per-conversation state (e.g. a todo list) key on this. Forwarded
+	 * verbatim from `RunTurnInput.conversationId`. Optional: when omitted,
+	 * a tool has no conversation scope (e.g. a global tool).
+	 */
+	readonly conversationId?: string;
 }
 
 /**

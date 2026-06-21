@@ -32,6 +32,7 @@ export async function executeToolCall(
 			emit(toolOutputEvent(conversationId, turnId, call.id, data, stream));
 		},
 		log: toolSpan?.log ?? createNoopLogger(),
+		conversationId,
 		...(cwd !== undefined ? { cwd } : {}),
 	};
 	try {

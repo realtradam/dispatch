@@ -16,6 +16,7 @@
 		"@dispatch/session-orchestrator": "workspace:*",
 		"@dispatch/skills": "workspace:*",
 		"@dispatch/throughput-store": "workspace:*",
+		"@dispatch/todo": "workspace:*",
 		"@dispatch/transport-http": "workspace:*",
 		"@dispatch/tool-read-file": "workspace:*",
 		"@dispatch/tool-shell": "workspace:*",

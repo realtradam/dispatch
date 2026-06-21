@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1097 vitest + 199 transport bun green**.
+`tsc -b` EXIT 0 · biome clean · **1123 vitest + 199 transport bun green**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -468,6 +468,26 @@ for per-request timeout + caller cancellation. `concurrencySafe: true`, `capabil
 - **LIVE-VERIFIED:** the dev stack (umans-glm-5.2) called `web_search` → Firecrawl returned
   real results (Paris, France) — first live Umans API call too.
 
+## todo tool — per-conversation task list + surface (DONE)
+Standard tool extension with a single `todo_write` tool (opencode `todowrite` pattern:
+full-list replace, returns JSON, no business-rule enforcement — the description guides
+the model). Per-conversation in-memory state (`Map<conversationId, TodoItem[]>`). Per-
+conversation surface (`rendererId: "todo"`, `scope: "conversation"`) via subscriber-notify
+(message-queue pattern). `concurrencySafe: false` (mutates shared state).
+- **Wave 0 (orchestrator, kernel contract):** added `conversationId?: string` to
+  `ToolExecuteContext` (additive, backward-compatible). Wired in `dispatch.ts` — the
+  kernel already had `conversationId` as a parameter, just wasn't passing it through to
+  the tool context. 170 kernel tests pass.
+- **Wave 1 (todo extension):** pure core (`validateTodos` — shape only; `getTodos`/
+  `setTodos`/`clearTodos` — fresh array copies; `buildTodoSpec`; `formatTodoResult` →
+  `JSON.stringify`). Shell: `createTodoWriteTool({ state, notify })` + surface provider.
+  26 tests. Report: `reports/todo.md`.
+- **Wave 2 (host-bin wiring):** registered `todo` in `CORE_EXTENSIONS` + dep + root tsconfig
+  ref. 28 host-bin tests.
+- Verified: full-graph `tsc -b` EXIT 0, biome clean (314 files), **1123 vitest** pass.
+  **Boot smoke:** `"todo: registered"` + activated.
+- [ ] Live-verify (model uses `todo_write` in a real turn — the dev stack has it loaded).
+
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max
   context-window token limit so the FE can render `contextSize / limit` (e.g. `1286 / 200000`).
@@ -484,6 +504,11 @@ for per-request timeout + caller cancellation. `concurrencySafe: true`, `capabil
   §12). The scheduler mechanism (`host.scheduler.register`) already exists.
 - **D8 `prompt.assembly` segments:** deferred-by-design (await the context-filter
   chain).
+- **In-memory state persistence (message queue + todo list):** both the message
+  queue and the todo list are in-memory only (`Map<conversationId, …>` in the
+  extension's `activate`). Neither persists across server restarts. If persistence
+  is needed later, both would write through `host.storage` (the conversation-store
+  pattern: separate key space per feature, append/write per conversation).
 
 ## Roadmap
 1. **Web frontend** (in progress, SEPARATE repo `../dispatch-web`; Svelte +
@@ -516,9 +541,7 @@ for per-request timeout + caller cancellation. `concurrencySafe: true`, `capabil
    conversation" push (only the inverse, `POST /conversations/:id/close`).
    Needs a new broadcast WS op + endpoint/flag here, and FE handling couriered
    to `../dispatch-web`.
-5. **`todo` tool** — a per-conversation task-list tool the model maintains
-   (like opencode's todowrite/todoread), as a standard tool extension; likely a
-   surface so the FE can render the live list.
+ 5. ~~**`todo` tool**~~ — **DONE** (see milestone section above).
  6. ~~**`web_search` tool**~~ — **DONE** (see milestone section above).
  7. **Message queue — close-with-queued-messages (deferred product decision):**
     if a client closes a conversation (`POST /conversations/:id/close`) while the
