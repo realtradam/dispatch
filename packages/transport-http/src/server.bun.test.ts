@@ -70,6 +70,8 @@ function fakeConversationStore(): ConversationStore {
 			return null;
 		},
 		async setCompactThreshold() {},
+		async forkHistory() {},
+		async setCompactedFrom() {},
 	};
 }
 

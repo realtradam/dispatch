@@ -97,10 +97,23 @@ export interface ConversationStore {
 		conversationId: string,
 		messages: readonly ChatMessage[],
 	) => Promise<void>;
+	/**
+	 * Fork (copy) the full conversation history from `sourceId` to `targetId`.
+	 * Copies all chunks, metadata, cwd, and reasoning-effort. The target's
+	 * status is set to "closed" (it's an archive) and `compactedFrom` is set
+	 * to `sourceId`. Used by compaction to preserve the pre-compaction history
+	 * non-destructively before replacing it with a summary.
+	 */
+	readonly forkHistory: (sourceId: string, targetId: string) => Promise<void>;
 	/** Get the compact threshold (token count, 0 = manual only), or null if unset. */
 	readonly getCompactThreshold: (conversationId: string) => Promise<number | null>;
 	/** Set the compact threshold (token count, 0 = manual only). */
 	readonly setCompactThreshold: (conversationId: string, threshold: number) => Promise<void>;
+	/**
+	 * Set the `compactedFrom` field on a conversation's metadata, pointing to
+	 * the archive conversation that holds the pre-compaction history.
+	 */
+	readonly setCompactedFrom: (conversationId: string, archiveId: string) => Promise<void>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -146,6 +159,7 @@ interface ConversationMetaRow {
 	readonly lastActivityAt: number;
 	readonly title: string;
 	readonly status: ConversationStatus;
+	readonly compactedFrom?: string;
 }
 
 /** Maximum title length (in characters) before truncation with an ellipsis. */
@@ -195,7 +209,13 @@ function parseMetaRow(raw: string): ConversationMetaRow | null {
 	const row = parsed as ConversationMetaRow;
 	const status: ConversationStatus =
 		row.status === "active" || row.status === "closed" ? row.status : "idle";
-	return { createdAt: row.createdAt, lastActivityAt: row.lastActivityAt, title: row.title, status };
+	return {
+		createdAt: row.createdAt,
+		lastActivityAt: row.lastActivityAt,
+		title: row.title,
+		status,
+		...(row.compactedFrom !== undefined ? { compactedFrom: row.compactedFrom } : {}),
+	};
 }
 
 function toMeta(id: string, row: ConversationMetaRow): ConversationMeta {
@@ -205,6 +225,7 @@ function toMeta(id: string, row: ConversationMetaRow): ConversationMeta {
 		lastActivityAt: row.lastActivityAt,
 		title: row.title,
 		status: row.status,
+		...(row.compactedFrom !== undefined ? { compactedFrom: row.compactedFrom } : {}),
 	};
 }
 
@@ -558,6 +579,43 @@ export function createConversationStore(
 			await this.append(conversationId, messages);
 		},
 
+		async forkHistory(sourceId, targetId) {
+			// Copy all chunks from source to target, re-numbered from seq 1.
+			const keys = await storage.keys(chunkPrefix(sourceId));
+			const sorted = [...keys].sort();
+			let seq = 1;
+			for (const key of sorted) {
+				const value = await storage.get(key);
+				if (value === null) continue;
+				await storage.set(chunkKey(targetId, seq), value);
+				seq++;
+			}
+			await storage.set(seqKey(targetId), String(Math.max(seq - 1, 0)));
+
+			// Copy metadata with archive title + closed status + compactedFrom.
+			const metaRaw = await storage.get(metaKey(sourceId));
+			if (metaRaw !== null) {
+				const existing = parseMetaRow(metaRaw);
+				if (existing !== null) {
+					const row: ConversationMetaRow = {
+						createdAt: existing.createdAt,
+						lastActivityAt: existing.lastActivityAt,
+						title: `Archive: ${existing.title}`,
+						status: "closed",
+						compactedFrom: sourceId,
+					};
+					await storage.set(metaKey(targetId), JSON.stringify(row));
+				}
+			}
+			await ensureInIndex(targetId);
+
+			// Copy cwd + reasoning-effort (so the archive is self-contained).
+			const cwd = await storage.get(cwdKey(sourceId));
+			if (cwd !== null) await storage.set(cwdKey(targetId), cwd);
+			const effort = await storage.get(reasoningEffortKey(sourceId));
+			if (effort !== null) await storage.set(reasoningEffortKey(targetId), effort);
+		},
+
 		async getCompactThreshold(conversationId) {
 			const raw = await storage.get(compactThresholdKey(conversationId));
 			if (raw === null) return null;
@@ -570,6 +628,22 @@ export function createConversationStore(
 			if (logger !== undefined) {
 				logger.debug("compact-threshold set", { conversationId, threshold });
 			}
+		},
+
+		async setCompactedFrom(conversationId, archiveId) {
+			const raw = await storage.get(metaKey(conversationId));
+			const existing = raw !== null ? parseMetaRow(raw) : null;
+			const ts = now();
+			const row: ConversationMetaRow = existing ?? {
+				createdAt: ts,
+				lastActivityAt: ts,
+				title: "Untitled",
+				status: "idle",
+			};
+			await storage.set(
+				metaKey(conversationId),
+				JSON.stringify({ ...row, compactedFrom: archiveId }),
+			);
 		},
 	};
 }

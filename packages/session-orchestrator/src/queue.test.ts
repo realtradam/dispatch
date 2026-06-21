@@ -91,6 +91,8 @@ function createInMemoryStore(): ConversationStore & {
 			return null;
 		},
 		async setCompactThreshold() {},
+		async forkHistory() {},
+		async setCompactedFrom() {},
 	};
 }
 

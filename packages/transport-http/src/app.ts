@@ -725,6 +725,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 
 		const response: CompactResponse = {
 			conversationId,
+			archiveId: result.archiveId,
 			messagesSummarized: result.messagesSummarized,
 			messagesKept: result.messagesKept,
 		};

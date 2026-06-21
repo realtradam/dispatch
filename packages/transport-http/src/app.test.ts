@@ -143,6 +143,8 @@ function createFakeConversationStore(
 			return null;
 		},
 		async setCompactThreshold() {},
+		async forkHistory() {},
+		async setCompactedFrom() {},
 	};
 }
 
@@ -869,6 +871,8 @@ describe("GET /conversations/:id", () => {
 					return null;
 				},
 				async setCompactThreshold() {},
+				async forkHistory() {},
+				async setCompactedFrom() {},
 			};
 			const app = createApp({
 				conversationStore: store,
@@ -942,6 +946,8 @@ describe("GET /conversations/:id", () => {
 				return null;
 			},
 			async setCompactThreshold() {},
+			async forkHistory() {},
+			async setCompactedFrom() {},
 		};
 		const app = createApp({
 			conversationStore: store,
@@ -1084,6 +1090,8 @@ describe("GET /conversations/:id/metrics", () => {
 				return null;
 			},
 			async setCompactThreshold() {},
+			async forkHistory() {},
+			async setCompactedFrom() {},
 		};
 		const app = createApp({
 			conversationStore: brokenStore,
@@ -2059,6 +2067,8 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 				return null;
 			},
 			async setCompactThreshold() {},
+			async forkHistory() {},
+			async setCompactedFrom() {},
 		};
 		const app = createApp({
 			conversationStore: store,
