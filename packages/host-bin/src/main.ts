@@ -35,6 +35,7 @@ import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
 import { extension as toolShellExt } from "@dispatch/tool-shell";
 import { extension as toolWebSearchExt } from "@dispatch/tool-web-search";
 import { extension as toolWriteFileExt } from "@dispatch/tool-write-file";
+import { extension as toolYoutubeTranscriptExt } from "@dispatch/tool-youtube-transcript";
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
 import type { ChildHandle } from "./collector-supervisor.js";
@@ -78,6 +79,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	toolShellExt,
 	toolWriteFileExt,
 	toolWebSearchExt,
+	toolYoutubeTranscriptExt,
 	throughputStoreExt,
 	todoExt,
 	messageQueueExt,

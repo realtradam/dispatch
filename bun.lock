@@ -76,6 +76,7 @@
         "@dispatch/tool-shell": "workspace:*",
         "@dispatch/tool-web-search": "workspace:*",
         "@dispatch/tool-write-file": "workspace:*",
+        "@dispatch/tool-youtube-transcript": "workspace:*",
         "@dispatch/transport-http": "workspace:*",
         "@dispatch/transport-ws": "workspace:*",
       },
@@ -238,6 +239,13 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/tool-youtube-transcript": {
+      "name": "@dispatch/tool-youtube-transcript",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/trace-replay": {
       "name": "@dispatch/trace-replay",
       "version": "0.0.0",
@@ -361,6 +369,8 @@
     "@dispatch/tool-web-search": ["@dispatch/tool-web-search@workspace:packages/tool-web-search"],
 
     "@dispatch/tool-write-file": ["@dispatch/tool-write-file@workspace:packages/tool-write-file"],
+
+    "@dispatch/tool-youtube-transcript": ["@dispatch/tool-youtube-transcript@workspace:packages/tool-youtube-transcript"],
 
     "@dispatch/trace-replay": ["@dispatch/trace-replay@workspace:packages/trace-replay"],
 

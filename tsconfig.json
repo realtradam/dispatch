@@ -24,6 +24,7 @@
 		{ "path": "./packages/tool-edit-file" },
 		{ "path": "./packages/tool-write-file" },
 		{ "path": "./packages/tool-web-search" },
+		{ "path": "./packages/tool-youtube-transcript" },
 		{ "path": "./packages/skills" },
 		{ "path": "./packages/cache-warming" },
 		{ "path": "./packages/message-queue" },
