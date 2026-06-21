@@ -35,6 +35,11 @@ bun install
    DISPATCH_MODEL=deepseek-v4-flash                # default model when a request omits one
    BACKEND_PORT=24203                              # port the HTTP server listens on
    FRONTEND_PORT=24204                             # reserved for the future web UI
+
+   # Optional — Umans AI Coding Plan provider (https://code.umans.ai)
+   UMANS_API_KEY=sk-...                            # if set, the "umans" provider is registered
+   # UMANS_BASE_URL=https://api.code.umans.ai/v1   # override the default base URL
+   # UMANS_MODEL=umans-coder                       # default model (umans-coder|umans-kimi-k2.7|umans-glm-5.2|umans-flash)
    ```
 
    Bun auto-loads `.env`. (If your shell also needs the vars: `set -a; source .env; set +a`.)

@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1043 vitest + transport bun green**.
+`tsc -b` EXIT 0 · biome clean · **1059 vitest + 199 transport bun green**.
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -423,6 +423,38 @@ additive `steering` `AgentEvent`; queue state via the surface (NOT the chat stre
 - [x] FE courier handoff written: `frontend-message-queue-handoff.md` (user couriers to
   `../dispatch-web`): surface (`rendererId:"message-queue"`), `chat.queue` WS op, `steering`
   event, HTTP `POST /queue`, auto-start-when-idle, carry semantics, version bumps.
+
+## Umans AI Coding Plan provider (DONE)
+User-gated calls: a new **`provider-umans`** standard extension wrapping the Umans
+OpenAI-compatible backend (`https://api.code.umans.ai/v1`). Built via the **full-refactor
+path**: first extract a generic `@dispatch/openai-stream` library from
+`provider-openai-compat`, then build `provider-umans` on top. Self-contained (reads
+`UMANS_API_KEY` from env directly — no `auth-apikey` dep).
+- **Wave 1 — `@dispatch/openai-stream` lib (NEW package):** extracted the generic OpenAI
+  functions (convert-messages, convert-tools, parse-sse, listModels, stream, provider)
+  from `provider-openai-compat` into a pure library package. `createOpenAICompatProvider`
+  parameterized: `id: string` (was hardcoded `"openai-compat"`) + `transformBody?: (body,
+  opts) => Record<string,unknown>` hook (for provider-specific body fields). Refactored
+  `provider-openai-compat` to import from the lib (thin extension.ts, backward-compat
+  re-exports, manifest unchanged, byte-identical behavior). Full tsc EXIT 0, 66 vitest,
+  biome clean. Report: `reports/provider-umans-wave1-openai-stream.md`.
+- **Wave 2 — `provider-umans` (NEW ext):** imports `createOpenAICompatProvider` from the
+  lib; registers provider id `"umans"`; `transformBody` maps Dispatch `reasoningEffort`
+  (`low|medium|high|xhigh|max`) → Umans `reasoning_effort` (`none|low|medium|high`,
+  capping `xhigh`/`max`→`high`); dynamic `listModels` (GET /v1/models); default model
+  `umans-coder` (env `UMANS_MODEL` or config `provider.umans.model`); baseURL env
+  `UMANS_BASE_URL`; absent key → warn + skip registration (graceful). Pure core:
+  `mapReasoningEffort` + `resolveUmansConfig` (factored out for direct unit testing).
+  12 tests. Report: `reports/provider-umans.md`.
+- **Wave 3 — host-bin wiring:** registered `provider-umans` in `CORE_EXTENSIONS` + added
+  `@dispatch/provider-umans` dep + root tsconfig ref. No credential-store entry needed
+  (self-contained — reads env directly, doesn't go through `auth-apikey`). 28 host-bin
+  tests.
+- Verified: full-graph `tsc -b` EXIT 0, biome clean (293 files), **1059 vitest** pass.
+  **Boot smoke:** without `UMANS_API_KEY` → `"provider-umans: no UMANS_API_KEY. Provider
+  not registered."` (graceful skip); with `UMANS_API_KEY=sk-test` → `"provider-umans:
+  registered (model=umans-coder)"`.
+- [ ] Live-verify against the real Umans API (not yet exercised end-to-end).
 
 ## Open items
 - **Context window LIMIT (deferred, sibling of context size):** expose the selected model's max

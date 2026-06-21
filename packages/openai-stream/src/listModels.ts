@@ -2,12 +2,13 @@ import type { ModelInfo } from "@dispatch/kernel";
 import type { FetchLike } from "@dispatch/trace-replay";
 
 /**
- * opencode-go specifics (model-list URL, usage/cache-token mapping, headers)
- * live in this generic `provider-openai-compat` for now. When a SECOND
- * OpenAI-compatible backend lands, split this into a generic OpenAI-stream
- * capability exposed as a typed SERVICE handle and a `provider-opencode-go`
- * extension that `dependsOn` it and layers the specifics — coupling via the
- * typed handle only (isolation-over-DRY: no cross-extension code import).
+ * Generic OpenAI-compatible model-list fetch + mapping. Lives in this library
+ * (`@dispatch/openai-stream`) so any OpenAI-compatible provider extension can
+ * reuse it without cross-extension code import (isolation-over-DRY: coupling
+ * is via this typed library surface, not a sibling's internals).
+ *
+ * A provider extension supplies its own `id` (used in error labels) via
+ * `createOpenAICompatProvider({ id })`.
  */
 
 interface OpenAIModelEntry {

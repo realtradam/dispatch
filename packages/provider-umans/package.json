@@ -1,5 +1,5 @@
 {
-	"name": "@dispatch/provider-openai-compat",
+	"name": "@dispatch/provider-umans",
 	"version": "0.0.0",
 	"type": "module",
 	"private": true,
@@ -7,7 +7,6 @@
 	"types": "dist/index.d.ts",
 	"dependencies": {
 		"@dispatch/kernel": "workspace:*",
-		"@dispatch/openai-stream": "workspace:*",
-		"@dispatch/trace-replay": "workspace:*"
+		"@dispatch/openai-stream": "workspace:*"
 	}
 }
