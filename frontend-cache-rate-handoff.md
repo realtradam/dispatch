@@ -83,6 +83,32 @@ old session-cumulative-only panel could show.
   breakpoints), and short prompts below the provider's cache threshold simply won't be cached —
   `cacheReadTokens: 0` is a real "miss", not missing data. Cache reads grow as a conversation's
   resent prefix gets large enough.
+- **Provider doesn't report cache at all — distinguish from 0.** Some providers (e.g.
+  **Umans**) never include `cache_read_tokens` / `cache_write_tokens` in their usage
+  payload. In that case `cacheReadTokens` is `undefined` — the provider can't tell you
+  whether cache was hit or missed. This is **different from `cacheReadTokens: 0`**,
+  which means "cache was checked and there were 0 hits" (a real miss).
+
+  The FE should distinguish these three states:
+
+  | `cacheReadTokens` | Meaning | FE display |
+  |---|---|---|
+  | `undefined` | Provider doesn't report cache | Hide cache panel, or show "N/A" |
+  | `0` | Provider reports cache; this request had 0 hits | Show "0%" (genuine miss) |
+  | `> 0` | Cache hit | Show percentage |
+
+  ```ts
+  function cacheDisplay(u: Usage): { kind: "not-reported" } | { kind: "reported"; hitPct: number } {
+    if (u.cacheReadTokens === undefined) return { kind: "not-reported" };
+    const read = u.cacheReadTokens;
+    const hitRate = u.inputTokens > 0 ? read / u.inputTokens : 0;
+    return { kind: "reported", hitPct: Math.round(hitRate * 100) };
+  }
+  ```
+
+  When `kind === "not-reported"`, do NOT show "0%" — that's misleading. Either hide the
+  cache panel entirely or show "Cache: not reported". This also applies to `cacheWriteTokens`
+  (if `undefined`, don't show a write row).
 
 ## Worked example (real numbers, captured live against OpenCode Go flash)
 | Turn | inputTokens | cacheReadTokens | hit % |
