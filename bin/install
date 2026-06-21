@@ -82,11 +82,34 @@ fi
 
 # ─── Install systemd service ─────────────────────────────────────────────────
 echo "[install] systemd service → /etc/systemd/system/"
-# Patch User=/Group= with the real user (so it doesn't run as root)
+# Detect the real user to run the service as (not root)
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_GROUP=$(id -gn "$REAL_USER" 2>/dev/null || echo "$REAL_USER")
-sed "s/# User\/Group are set by bin/install (patched from SUDO_USER)/User=$REAL_USER\nGroup=$REAL_GROUP/" \
-	"$ROOT/systemd/dispatch.service" > /etc/systemd/system/dispatch.service
+
+# Unmask if previously masked
+rm -f /etc/systemd/system/dispatch.service 2>/dev/null || true
+
+# Write the service file directly with the user patched in
+cat > /etc/systemd/system/dispatch.service << EOF
+[Unit]
+Description=Dispatch AI Agent Server
+After=network.target
+
+[Service]
+Type=simple
+User=$REAL_USER
+Group=$REAL_GROUP
+ExecStart=/usr/bin/dispatch-server
+EnvironmentFile=/etc/dispatch/env
+WorkingDirectory=/var/lib/dispatch
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
 chmod 644 /etc/systemd/system/dispatch.service
 
 # ─── Config (don't overwrite if it exists) ───────────────────────────────────
