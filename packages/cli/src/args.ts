@@ -28,6 +28,7 @@ export type ParsedCommand =
 			readonly open: boolean;
 	  }
 	| { readonly kind: "list"; readonly server: string; readonly query?: string }
+	| { readonly kind: "open"; readonly server: string; readonly conversationId: string }
 	| { readonly kind: "read"; readonly server: string; readonly conversationId: string }
 	| {
 			readonly kind: "send";
@@ -108,6 +109,28 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			return { kind: "error", message: "'read' requires a conversation id" };
 		}
 		return { kind: "read", server, conversationId };
+	}
+
+	if (first === "open") {
+		let server = opts.defaultServer;
+		let conversationId: string | undefined;
+		for (let i = 1; i < argv.length; i++) {
+			const arg = argv[i] as string;
+			if (arg === "--server") {
+				if (i + 1 >= argv.length) return { kind: "error", message: "--server requires a value" };
+				server = argv[++i] as string;
+			} else if (arg.startsWith("--")) {
+				return { kind: "error", message: `Unknown flag: ${arg}` };
+			} else if (conversationId !== undefined) {
+				return { kind: "error", message: `Unexpected argument for 'open': ${arg}` };
+			} else {
+				conversationId = arg;
+			}
+		}
+		if (conversationId === undefined) {
+			return { kind: "error", message: "'open' requires a conversation id" };
+		}
+		return { kind: "open", server, conversationId };
 	}
 
 	if (first === "send") {
