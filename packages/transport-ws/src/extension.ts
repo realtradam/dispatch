@@ -153,11 +153,11 @@ export function createTransportWsExtension(): Extension {
 			disposers.push(
 				host.on(
 					conversationCompacted,
-					({ conversationId, archiveId, messagesSummarized, messagesKept }) => {
+					({ conversationId, newConversationId, messagesSummarized, messagesKept }) => {
 						broadcast({
 							type: "conversation.compacted",
 							conversationId,
-							archiveId,
+							newConversationId,
 							messagesSummarized,
 							messagesKept,
 						});
