@@ -7,7 +7,7 @@ import type {
 	TurnMetrics,
 } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createConversationStore } from "./store.js";
+import { createConversationStore, extractTitle } from "./store.js";
 
 interface SpanEvent {
 	readonly kind: "span-open" | "span-close";
@@ -980,5 +980,294 @@ describe("ConversationStore reasoning effort", () => {
 		const metricsResult = await store.loadMetrics("conv1");
 		expect(metricsResult).toHaveLength(1);
 		expect(metricsResult[0]).toEqual(metrics);
+	});
+});
+
+describe("ConversationStore conversation metadata + list + title", () => {
+	let storage: StorageNamespace;
+
+	beforeEach(() => {
+		storage = createMemoryStorage();
+	});
+
+	it("listConversations: returns empty array when no conversations exist", async () => {
+		const store = createConversationStore(storage);
+		expect(await store.listConversations()).toEqual([]);
+	});
+
+	it("listConversations: returns conversations sorted by lastActivityAt desc", async () => {
+		let clock = 1000;
+		const store = createConversationStore(storage, undefined, () => clock);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "first" }] }]);
+		clock = 2000;
+		await store.append("conv2", [{ role: "user", chunks: [{ type: "text", text: "second" }] }]);
+		clock = 3000;
+		await store.append("conv3", [{ role: "user", chunks: [{ type: "text", text: "third" }] }]);
+		// Bump conv1 to the most recent activity.
+		clock = 4000;
+		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "reply" }] }]);
+
+		const list = await store.listConversations();
+		expect(list.map((c) => c.id)).toEqual(["conv1", "conv3", "conv2"]);
+	});
+
+	it("listConversations: includes id + createdAt + lastActivityAt + title", async () => {
+		const store = createConversationStore(storage, undefined, () => 12345);
+		await store.append("convX", [{ role: "user", chunks: [{ type: "text", text: "my title" }] }]);
+		const list = await store.listConversations();
+		expect(list).toHaveLength(1);
+		const first = list[0];
+		if (first === undefined) throw new Error("expected list entry");
+		expect(first).toEqual({
+			id: "convX",
+			createdAt: 12345,
+			lastActivityAt: 12345,
+			title: "my title",
+		});
+	});
+
+	it("getConversationMeta: returns null for unknown conversation", async () => {
+		const store = createConversationStore(storage);
+		expect(await store.getConversationMeta("unknown")).toBeNull();
+	});
+
+	it("getConversationMeta: returns metadata for known conversation", async () => {
+		const store = createConversationStore(storage, undefined, () => 7777);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+		expect(await store.getConversationMeta("conv1")).toEqual({
+			id: "conv1",
+			createdAt: 7777,
+			lastActivityAt: 7777,
+			title: "hello",
+		});
+	});
+
+	it("getConversationMeta: returns null on a corrupt meta row", async () => {
+		const store = createConversationStore(storage);
+		// Write a meta row with the wrong shape directly to storage.
+		await storage.set("conv:conv1:meta", "{not json");
+		expect(await store.getConversationMeta("conv1")).toBeNull();
+	});
+
+	it("setConversationTitle: updates the title", async () => {
+		const store = createConversationStore(storage, undefined, () => 1000);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "original" }] }]);
+		await store.setConversationTitle("conv1", "custom title");
+		const meta = await store.getConversationMeta("conv1");
+		expect(meta?.title).toBe("custom title");
+		// createdAt + lastActivityAt are preserved (setTitle does not bump them).
+		expect(meta?.createdAt).toBe(1000);
+		expect(meta?.lastActivityAt).toBe(1000);
+	});
+
+	it("setConversationTitle: creates meta if conversation is new", async () => {
+		const store = createConversationStore(storage, undefined, () => 5000);
+		await store.setConversationTitle("convNew", "preset title");
+		expect(await store.getConversationMeta("convNew")).toEqual({
+			id: "convNew",
+			createdAt: 5000,
+			lastActivityAt: 5000,
+			title: "preset title",
+		});
+		// And the new conversation is discoverable in the index.
+		const list = await store.listConversations();
+		expect(list.map((c) => c.id)).toEqual(["convNew"]);
+	});
+
+	it("append: auto-sets title from first user message", async () => {
+		const store = createConversationStore(storage, undefined, () => 1000);
+		await store.append("conv1", [
+			{ role: "system", chunks: [{ type: "text", text: "system prompt" }] },
+			{ role: "user", chunks: [{ type: "text", text: "hello world" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "hi" }] },
+		]);
+		expect((await store.getConversationMeta("conv1"))?.title).toBe("hello world");
+	});
+
+	it("append: truncates long titles to 80 chars", async () => {
+		const store = createConversationStore(storage, undefined, () => 1000);
+		const longText = "x".repeat(100);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: longText }] }]);
+		const meta = await store.getConversationMeta("conv1");
+		expect(meta?.title).toBe(`${longText.slice(0, 80)}…`);
+		expect(meta?.title.length).toBe(81);
+	});
+
+	it("append: sets createdAt on first write, preserves on subsequent", async () => {
+		let clock = 1000;
+		const store = createConversationStore(storage, undefined, () => clock);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "first" }] }]);
+		clock = 5000;
+		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "reply" }] }]);
+		const meta = await store.getConversationMeta("conv1");
+		expect(meta?.createdAt).toBe(1000);
+		expect(meta?.lastActivityAt).toBe(5000);
+	});
+
+	it("append: updates lastActivityAt on every write", async () => {
+		let clock = 1000;
+		const store = createConversationStore(storage, undefined, () => clock);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
+		expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(1000);
+		clock = 2000;
+		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "b" }] }]);
+		expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(2000);
+		clock = 3000;
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
+		expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(3000);
+	});
+
+	it('append: title "Untitled" updated when first user message arrives in later append', async () => {
+		const store = createConversationStore(storage, undefined, () => 1000);
+		// First append — assistant only, no user message yet → "Untitled".
+		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "hi" }] }]);
+		expect((await store.getConversationMeta("conv1"))?.title).toBe("Untitled");
+		// Second append — the first user message arrives → title is re-derived.
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "what now" }] }]);
+		expect((await store.getConversationMeta("conv1"))?.title).toBe("what now");
+	});
+
+	it("append: a non-Untitled title is NOT overwritten by a later user message", async () => {
+		const store = createConversationStore(storage, undefined, () => 1000);
+		await store.append("conv1", [
+			{ role: "user", chunks: [{ type: "text", text: "first question" }] },
+		]);
+		await store.append("conv1", [
+			{ role: "user", chunks: [{ type: "text", text: "second question" }] },
+		]);
+		// The title stays as the first user message; later user messages do not clobber.
+		expect((await store.getConversationMeta("conv1"))?.title).toBe("first question");
+	});
+
+	it("append: does not add the same conversation to the index twice", async () => {
+		const store = createConversationStore(storage, undefined, () => 1000);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
+		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "b" }] }]);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
+		const list = await store.listConversations();
+		expect(list).toHaveLength(1);
+		expect(list[0]?.id).toBe("conv1");
+	});
+
+	it("listConversations: skips index entries whose meta row is missing", async () => {
+		const store = createConversationStore(storage, undefined, () => 1000);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
+		// Manually corrupt the index by adding an id with no meta row.
+		await storage.set("conv-index", JSON.stringify(["conv1", "ghost"]));
+		const list = await store.listConversations();
+		expect(list.map((c) => c.id)).toEqual(["conv1"]);
+	});
+
+	it("metadata persists across a fresh store instance on the same storage", async () => {
+		const clock = 1000;
+		const store1 = createConversationStore(storage, undefined, () => clock);
+		await store1.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "persisted" }] }]);
+
+		const store2 = createConversationStore(storage);
+		const meta = await store2.getConversationMeta("conv1");
+		expect(meta).toEqual({
+			id: "conv1",
+			createdAt: 1000,
+			lastActivityAt: 1000,
+			title: "persisted",
+		});
+		const list = await store2.listConversations();
+		expect(list).toHaveLength(1);
+		expect(list[0]?.id).toBe("conv1");
+	});
+});
+
+describe("extractTitle (pure)", () => {
+	it("extractTitle: returns first user text", () => {
+		const messages: ChatMessage[] = [
+			{ role: "system", chunks: [{ type: "text", text: "sys" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "greeting" }] },
+			{ role: "user", chunks: [{ type: "text", text: "my question" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "answer" }] },
+		];
+		expect(extractTitle(messages)).toBe("my question");
+	});
+
+	it('extractTitle: returns "Untitled" when no user message', () => {
+		expect(extractTitle([])).toBe("Untitled");
+		expect(
+			extractTitle([
+				{ role: "system", chunks: [{ type: "text", text: "sys" }] },
+				{ role: "assistant", chunks: [{ type: "text", text: "hi" }] },
+			]),
+		).toBe("Untitled");
+		// A user message with no text chunk also yields "Untitled".
+		expect(
+			extractTitle([
+				{
+					role: "user",
+					chunks: [
+						{
+							type: "tool-result",
+							toolCallId: "c",
+							toolName: "t",
+							content: "x",
+							isError: false,
+						},
+					],
+				},
+			]),
+		).toBe("Untitled");
+	});
+
+	it("extractTitle: truncates to 80 chars", () => {
+		const exactly80 = "a".repeat(80);
+		const over80 = "a".repeat(81);
+		const wayOver = "The quick brown fox jumps over the lazy dog. ".repeat(10);
+		expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: exactly80 }] }])).toBe(
+			exactly80,
+		);
+		expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: over80 }] }])).toBe(
+			`${over80.slice(0, 80)}…`,
+		);
+		expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: wayOver }] }])).toBe(
+			`${wayOver.slice(0, 80)}…`,
+		);
+	});
+
+	it("extractTitle: uses the first text chunk of the first user message", () => {
+		expect(
+			extractTitle([
+				{
+					role: "user",
+					chunks: [
+						{ type: "text", text: "first chunk" },
+						{ type: "text", text: "second chunk" },
+					],
+				},
+			]),
+		).toBe("first chunk");
+	});
+
+	it("extractTitle: skips a user message with no text chunk, finds the next", () => {
+		expect(
+			extractTitle([
+				{
+					role: "user",
+					chunks: [
+						{
+							type: "tool-result",
+							toolCallId: "c",
+							toolName: "t",
+							content: "x",
+							isError: false,
+						},
+					],
+				},
+				{ role: "user", chunks: [{ type: "text", text: "real question" }] },
+			]),
+		).toBe("real question");
+	});
+
+	it("extractTitle: does not mutate the input", () => {
+		const messages: ChatMessage[] = [{ role: "user", chunks: [{ type: "text", text: "hello" }] }];
+		const snapshot = JSON.stringify(messages);
+		extractTitle(messages);
+		expect(JSON.stringify(messages)).toBe(snapshot);
 	});
 });

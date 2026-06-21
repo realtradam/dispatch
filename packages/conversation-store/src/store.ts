@@ -11,9 +11,11 @@ import type {
 } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
 import {
+	CONVERSATION_INDEX_KEY,
 	chunkKey,
 	chunkPrefix,
 	cwdKey,
+	metaKey,
 	metricsKey,
 	metricsPrefix,
 	metricsSeqKey,
@@ -110,10 +112,102 @@ interface PersistedChunkEntry {
 	readonly chunkIdx: number;
 }
 
+/**
+ * The persisted shape of a conversation's metadata (JSON at `metaKey(id)`).
+ * Maps to `ConversationMeta` (from `@dispatch/wire`) by adding the `id`.
+ */
+interface ConversationMetaRow {
+	readonly createdAt: number;
+	readonly lastActivityAt: number;
+	readonly title: string;
+}
+
+/** Maximum title length (in characters) before truncation with an ellipsis. */
+const TITLE_MAX = 80;
+
+/**
+ * Derive a human-readable title from a batch of messages: the text of the
+ * first `role: "user"` message's first `type: "text"` chunk, truncated to
+ * {@link TITLE_MAX} characters with a trailing `"…"` when longer. Returns
+ * `"Untitled"` when no user text chunk is present.
+ *
+ * Pure (input → output); exported so callers can preview a title without
+ * persisting.
+ */
+export function extractTitle(messages: readonly ChatMessage[]): string {
+	for (const msg of messages) {
+		if (msg.role !== "user") continue;
+		for (const chunk of msg.chunks) {
+			if (chunk.type === "text") {
+				return chunk.text.length > TITLE_MAX ? `${chunk.text.slice(0, TITLE_MAX)}…` : chunk.text;
+			}
+		}
+	}
+	return "Untitled";
+}
+
+/**
+ * Parse a persisted {@link ConversationMetaRow}, returning `null` on any
+ * parse / shape failure so callers can treat a corrupt row as missing.
+ */
+function parseMetaRow(raw: string): ConversationMetaRow | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		typeof (parsed as ConversationMetaRow).createdAt !== "number" ||
+		typeof (parsed as ConversationMetaRow).lastActivityAt !== "number" ||
+		typeof (parsed as ConversationMetaRow).title !== "string"
+	) {
+		return null;
+	}
+	return parsed as ConversationMetaRow;
+}
+
+function toMeta(id: string, row: ConversationMetaRow): ConversationMeta {
+	return {
+		id,
+		createdAt: row.createdAt,
+		lastActivityAt: row.lastActivityAt,
+		title: row.title,
+	};
+}
+
 export function createConversationStore(
 	storage: StorageNamespace,
 	logger?: Logger,
+	now: () => number = Date.now,
 ): ConversationStore {
+	/**
+	 * Add `conversationId` to the persisted index (idempotent). The store is
+	 * not highly concurrent — the session-orchestrator serializes turns per
+	 * conversation — so a simple read-modify-write suffices; `listConversations`
+	 * deduplicates on read in case of a race on this update.
+	 */
+	async function ensureInIndex(conversationId: string): Promise<void> {
+		const raw = await storage.get(CONVERSATION_INDEX_KEY);
+		let ids: string[];
+		if (raw === null) {
+			ids = [];
+		} else {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(raw);
+			} catch {
+				parsed = [];
+			}
+			ids = Array.isArray(parsed) ? (parsed.filter((v) => typeof v === "string") as string[]) : [];
+		}
+		if (ids.includes(conversationId)) return;
+		ids.push(conversationId);
+		await storage.set(CONVERSATION_INDEX_KEY, JSON.stringify(ids));
+	}
+
 	return {
 		async append(conversationId, messages) {
 			const raw = await storage.get(seqKey(conversationId));
@@ -137,6 +231,43 @@ export function createConversationStore(
 			}
 
 			await storage.set(seqKey(conversationId), String(seq - 1));
+
+			// Metadata upsert: track createdAt/lastActivityAt/title and keep the
+			// conversation discoverable in the index.
+			const ts = now();
+			const metaRaw = await storage.get(metaKey(conversationId));
+			if (metaRaw === null) {
+				const row: ConversationMetaRow = {
+					createdAt: ts,
+					lastActivityAt: ts,
+					title: extractTitle(messages),
+				};
+				await storage.set(metaKey(conversationId), JSON.stringify(row));
+				await ensureInIndex(conversationId);
+			} else {
+				const existing = parseMetaRow(metaRaw);
+				if (existing === null) {
+					// Corrupt row — rewrite from scratch using this append.
+					const row: ConversationMetaRow = {
+						createdAt: ts,
+						lastActivityAt: ts,
+						title: extractTitle(messages),
+					};
+					await storage.set(metaKey(conversationId), JSON.stringify(row));
+					await ensureInIndex(conversationId);
+				} else {
+					const title =
+						existing.title === "Untitled" || existing.title === ""
+							? extractTitle(messages)
+							: existing.title;
+					const row: ConversationMetaRow = {
+						createdAt: existing.createdAt,
+						lastActivityAt: ts,
+						title,
+					};
+					await storage.set(metaKey(conversationId), JSON.stringify(row));
+				}
+			}
 		},
 
 		async load(conversationId) {
@@ -257,11 +388,79 @@ export function createConversationStore(
 			}
 		},
 		async listConversations() {
-			return [];
+			const raw = await storage.get(CONVERSATION_INDEX_KEY);
+			if (raw === null) return [];
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(raw);
+			} catch {
+				return [];
+			}
+			if (!Array.isArray(parsed)) return [];
+			// Deduplicate (in case of a race on the index update) while preserving
+			// first-seen order.
+			const seen = new Set<string>();
+			const ids: string[] = [];
+			for (const v of parsed) {
+				if (typeof v !== "string" || seen.has(v)) continue;
+				seen.add(v);
+				ids.push(v);
+			}
+
+			const metas: ConversationMeta[] = [];
+			for (const id of ids) {
+				const metaRaw = await storage.get(metaKey(id));
+				if (metaRaw === null) continue;
+				const row = parseMetaRow(metaRaw);
+				if (row === null) continue;
+				metas.push(toMeta(id, row));
+			}
+			// Sort by lastActivityAt descending (most recent first). Stable sort
+			// keeps first-seen (index) order for ties.
+			return metas.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
 		},
-		async getConversationMeta(_conversationId: string) {
-			return null;
+
+		async getConversationMeta(conversationId) {
+			const raw = await storage.get(metaKey(conversationId));
+			if (raw === null) return null;
+			const row = parseMetaRow(raw);
+			if (row === null) return null;
+			return toMeta(conversationId, row);
 		},
-		async setConversationTitle(_conversationId: string, _title: string) {},
+
+		async setConversationTitle(conversationId, title) {
+			const ts = now();
+			const raw = await storage.get(metaKey(conversationId));
+			if (raw === null) {
+				// Title set before any message was appended — create a minimal row.
+				const row: ConversationMetaRow = {
+					createdAt: ts,
+					lastActivityAt: ts,
+					title,
+				};
+				await storage.set(metaKey(conversationId), JSON.stringify(row));
+				await ensureInIndex(conversationId);
+				return;
+			}
+			const existing = parseMetaRow(raw);
+			if (existing === null) {
+				// Corrupt row — rewrite from scratch with this title.
+				const row: ConversationMetaRow = {
+					createdAt: ts,
+					lastActivityAt: ts,
+					title,
+				};
+				await storage.set(metaKey(conversationId), JSON.stringify(row));
+				await ensureInIndex(conversationId);
+				return;
+			}
+			// Preserve createdAt + lastActivityAt; update only the title.
+			const row: ConversationMetaRow = {
+				createdAt: existing.createdAt,
+				lastActivityAt: existing.lastActivityAt,
+				title,
+			};
+			await storage.set(metaKey(conversationId), JSON.stringify(row));
+		},
 	};
 }

@@ -53,3 +53,9 @@ export function cwdKey(conversationId: string): string {
 export function reasoningEffortKey(conversationId: string): string {
 	return `conv:${conversationId}:reasoning-effort`;
 }
+
+export function metaKey(conversationId: string): string {
+	return `conv:${conversationId}:meta`;
+}
+
+export const CONVERSATION_INDEX_KEY = "conv-index";
