@@ -111,7 +111,7 @@ describe("youtube_transcript", () => {
 		expect(spanOpen?.conversationId).toBe("conv-xyz");
 	});
 
-	it("writes full transcript to /tmp/dispatch/{video_id}.txt when truncated", async () => {
+	it("writes full transcript to /tmp/dispatch/youtube-transcribe/{video_id}.txt when truncated", async () => {
 		const longText = "x".repeat(60_000);
 		const client = makeStubClient(async () => ({
 			status: "completed",
@@ -130,10 +130,31 @@ describe("youtube_transcript", () => {
 			},
 		});
 		const result = await tool.execute({ url: "https://youtu.be/vid5" }, stubCtx());
-		expect(writtenPath).toBe("/tmp/dispatch/vid5.txt");
+		expect(writtenPath).toBe("/tmp/dispatch/youtube-transcribe/vid5.txt");
 		expect(writtenContent).toContain("x".repeat(60_000));
-		expect(result.content).toContain("/tmp/dispatch/vid5.txt");
+		expect(result.content).toContain("/tmp/dispatch/youtube-transcribe/vid5.txt");
 		expect(result.content).toContain("use read_file to access it");
 		expect(result.content.length).toBeLessThan(writtenContent.length);
+	});
+
+	it("writes transcript to file even when not truncated", async () => {
+		const client = makeStubClient(async () => ({
+			status: "completed",
+			video_id: "vid6",
+			full_text: "short transcript",
+			segments: [{ text: "short transcript", start: 0, duration: 2 }],
+		}));
+		let writtenPath = "";
+		let writtenContent = "";
+		const tool = createYoutubeTranscriptTool({
+			client,
+			writeFile: (path, content) => {
+				writtenPath = path;
+				writtenContent = content;
+			},
+		});
+		const result = await tool.execute({ url: "https://youtu.be/vid6" }, stubCtx());
+		expect(writtenPath).toBe("/tmp/dispatch/youtube-transcribe/vid6.txt");
+		expect(writtenContent).toBe(result.content);
 	});
 });
