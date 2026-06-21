@@ -145,6 +145,7 @@ describe("transformBody", () => {
 			model: "test-model",
 			messages: [{ role: "user", content: "Hello" }],
 			stream: true,
+			stream_options: { include_usage: true },
 			temperature: 0.5,
 			max_tokens: 42,
 		});
