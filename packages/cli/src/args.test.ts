@@ -190,6 +190,7 @@ describe("parseArgs", () => {
 			expect(parseArgs(["list"], { defaultServer })).toEqual({
 				kind: "list",
 				server: "http://localhost:24203",
+				all: false,
 			});
 		});
 
@@ -198,6 +199,7 @@ describe("parseArgs", () => {
 				kind: "list",
 				server: "http://localhost:24203",
 				query: "abc12345",
+				all: false,
 			});
 		});
 
@@ -206,7 +208,34 @@ describe("parseArgs", () => {
 				kind: "list",
 				server: "http://s",
 				query: "abc",
+				all: false,
 			});
+		});
+
+		it("parses 'list' with --status", () => {
+			expect(parseArgs(["list", "--status", "closed"], { defaultServer })).toEqual({
+				kind: "list",
+				server: "http://localhost:24203",
+				status: "closed",
+				all: false,
+			});
+		});
+
+		it("parses 'list' with --all", () => {
+			expect(parseArgs(["list", "--all"], { defaultServer })).toEqual({
+				kind: "list",
+				server: "http://localhost:24203",
+				all: true,
+			});
+		});
+
+		it("parses 'list' with --status and --all ( --all takes precedence)", () => {
+			const result = parseArgs(["list", "--status", "active", "--all"], { defaultServer });
+			expect(result.kind).toBe("list");
+			if (result.kind === "list") {
+				expect(result.all).toBe(true);
+				expect(result.status).toBe("active");
+			}
 		});
 
 		it("errors on a second positional argument", () => {

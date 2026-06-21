@@ -7,6 +7,7 @@ import type {
 	TurnMetrics,
 } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
+import { CONVERSATION_INDEX_KEY, metaKey } from "./keys.js";
 import { createConversationStore, extractTitle } from "./store.js";
 
 interface SpanEvent {
@@ -1023,6 +1024,7 @@ describe("ConversationStore conversation metadata + list + title", () => {
 			createdAt: 12345,
 			lastActivityAt: 12345,
 			title: "my title",
+			status: "idle",
 		});
 	});
 
@@ -1039,6 +1041,7 @@ describe("ConversationStore conversation metadata + list + title", () => {
 			createdAt: 7777,
 			lastActivityAt: 7777,
 			title: "hello",
+			status: "idle",
 		});
 	});
 
@@ -1068,6 +1071,7 @@ describe("ConversationStore conversation metadata + list + title", () => {
 			createdAt: 5000,
 			lastActivityAt: 5000,
 			title: "preset title",
+			status: "idle",
 		});
 		// And the new conversation is discoverable in the index.
 		const list = await store.listConversations();
@@ -1170,14 +1174,105 @@ describe("ConversationStore conversation metadata + list + title", () => {
 			createdAt: 1000,
 			lastActivityAt: 1000,
 			title: "persisted",
+			status: "idle",
 		});
 		const list = await store2.listConversations();
 		expect(list).toHaveLength(1);
 		expect(list[0]?.id).toBe("conv1");
 	});
-});
 
-describe("extractTitle (pure)", () => {
+	describe("ConversationStore conversation status", () => {
+		it("new conversation defaults to idle", async () => {
+			const store = createConversationStore(storage, undefined, () => 1000);
+			await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+			expect(await store.getConversationStatus("conv1")).toBe("idle");
+			expect((await store.getConversationMeta("conv1"))?.status).toBe("idle");
+		});
+
+		it("setConversationStatus updates status on existing conversation", async () => {
+			const store = createConversationStore(storage, undefined, () => 1000);
+			await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+
+			await store.setConversationStatus("conv1", "active");
+			expect(await store.getConversationStatus("conv1")).toBe("active");
+
+			await store.setConversationStatus("conv1", "idle");
+			expect(await store.getConversationStatus("conv1")).toBe("idle");
+
+			await store.setConversationStatus("conv1", "closed");
+			expect(await store.getConversationStatus("conv1")).toBe("closed");
+		});
+
+		it("setConversationStatus creates minimal row for unknown conversation", async () => {
+			const store = createConversationStore(storage, undefined, () => 2000);
+			await store.setConversationStatus("convNew", "closed");
+			expect(await store.getConversationStatus("convNew")).toBe("closed");
+			const meta = await store.getConversationMeta("convNew");
+			expect(meta?.status).toBe("closed");
+			expect(meta?.title).toBe("Untitled");
+		});
+
+		it("setConversationStatus preserves other metadata", async () => {
+			const store = createConversationStore(storage, undefined, () => 1000);
+			await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+			await store.setConversationTitle("conv1", "custom title");
+
+			await store.setConversationStatus("conv1", "active");
+
+			const meta = await store.getConversationMeta("conv1");
+			expect(meta?.title).toBe("custom title");
+			expect(meta?.createdAt).toBe(1000);
+			expect(meta?.status).toBe("active");
+		});
+
+		it("listConversations filters by status", async () => {
+			const store = createConversationStore(storage, undefined, () => 1000);
+			await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
+			await store.append("conv2", [{ role: "user", chunks: [{ type: "text", text: "b" }] }]);
+			await store.append("conv3", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
+
+			await store.setConversationStatus("conv1", "active");
+			await store.setConversationStatus("conv2", "closed");
+
+			const activeOnly = await store.listConversations({ status: ["active"] });
+			expect(activeOnly.map((m) => m.id)).toEqual(["conv1"]);
+
+			const idleOnly = await store.listConversations({ status: ["idle"] });
+			expect(idleOnly.map((m) => m.id)).toEqual(["conv3"]);
+
+			const activeIdle = await store.listConversations({ status: ["active", "idle"] });
+			expect(activeIdle.map((m) => m.id)).toEqual(["conv1", "conv3"]);
+
+			const all = await store.listConversations();
+			expect(all.map((m) => m.id)).toEqual(["conv1", "conv2", "conv3"]);
+		});
+
+		it("status persists across a fresh store instance", async () => {
+			const store1 = createConversationStore(storage, undefined, () => 1000);
+			await store1.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+			await store1.setConversationStatus("conv1", "active");
+
+			const store2 = createConversationStore(storage);
+			expect(await store2.getConversationStatus("conv1")).toBe("active");
+		});
+
+		it("old meta rows without status default to idle on read", async () => {
+			// Simulate a pre-status meta row written by an older version.
+			await storage.set(
+				metaKey("conv1"),
+				JSON.stringify({
+					createdAt: 1000,
+					lastActivityAt: 1000,
+					title: "old",
+				}),
+			);
+			await storage.set(CONVERSATION_INDEX_KEY, JSON.stringify(["conv1"]));
+
+			const store = createConversationStore(storage);
+			const meta = await store.getConversationMeta("conv1");
+			expect(meta?.status).toBe("idle");
+		});
+	});
 	it("extractTitle: returns first user text", () => {
 		const messages: ChatMessage[] = [
 			{ role: "system", chunks: [{ type: "text", text: "sys" }] },

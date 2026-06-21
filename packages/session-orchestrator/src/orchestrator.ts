@@ -2,6 +2,7 @@ import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
 	AgentEvent,
 	ChatMessage,
+	ConversationStatus,
 	EventHookDescriptor,
 	Logger,
 	ProviderContract,
@@ -110,6 +111,22 @@ export interface ConversationOpenedPayload {
  */
 export const conversationOpened: EventHookDescriptor<ConversationOpenedPayload> =
 	defineEventHook<ConversationOpenedPayload>("session-orchestrator/conversation-opened");
+
+/** Payload for the conversationStatusChanged bus event. */
+export interface ConversationStatusChangedPayload {
+	readonly conversationId: string;
+	readonly status: ConversationStatus;
+}
+
+/**
+ * Fired when a conversation's lifecycle status changes (active/idle/closed).
+ * Transport-ws subscribes and broadcasts a `conversation.statusChanged` WS
+ * message to all connected frontend clients so tabs sync across devices.
+ */
+export const conversationStatusChanged: EventHookDescriptor<ConversationStatusChangedPayload> =
+	defineEventHook<ConversationStatusChangedPayload>(
+		"session-orchestrator/conversation-status-changed",
+	);
 
 /** Payload for the warmCompleted bus event. */
 export interface WarmCompletedPayload {
@@ -288,6 +305,8 @@ export function createSessionOrchestrator(
 
 		payloadPromise.then((payload) => {
 			deps.emit?.(turnStarted, payload);
+			deps.emit?.(conversationStatusChanged, { conversationId, status: "active" });
+			void deps.conversationStore.setConversationStatus(conversationId, "active");
 		});
 
 		void (async () => {
@@ -419,6 +438,13 @@ export function createSessionOrchestrator(
 				}
 				void payloadPromise.then((payload) => {
 					deps.emit?.(turnSettled, payload);
+					if (!carried) {
+						deps.emit?.(conversationStatusChanged, {
+							conversationId,
+							status: "idle",
+						});
+						void deps.conversationStore.setConversationStatus(conversationId, "idle");
+					}
 				});
 			}
 		})();
@@ -486,6 +512,8 @@ export function createSessionOrchestrator(
 				turn.controller.abort();
 			}
 			deps.emit?.(conversationClosed, { conversationId });
+			deps.emit?.(conversationStatusChanged, { conversationId, status: "closed" });
+			void deps.conversationStore.setConversationStatus(conversationId, "closed");
 			return { abortedTurn };
 		},
 

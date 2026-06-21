@@ -251,7 +251,9 @@ describe("fetchConversations", () => {
 	it("requests GET /conversations with no query when query omitted", async () => {
 		let calledUrl: string | undefined;
 		const list: ConversationListResponse = {
-			conversations: [{ id: "abcdef1234567890", title: "first", createdAt: 1, lastActivityAt: 2 }],
+			conversations: [
+				{ id: "abcdef1234567890", title: "first", createdAt: 1, lastActivityAt: 2, status: "idle" },
+			],
 		};
 		const fakeFetch = (async (url: string | URL | Request): Promise<Response> => {
 			calledUrl = String(url);
@@ -277,7 +279,7 @@ describe("fetchConversations", () => {
 			{ fetchImpl: fakeFetch },
 			{ server: "http://localhost:24203", query: "abc def" },
 		);
-		expect(calledUrl).toBe("http://localhost:24203/conversations?q=abc%20def");
+		expect(calledUrl).toBe("http://localhost:24203/conversations?q=abc+def");
 	});
 
 	it("throws on non-OK status", async () => {
@@ -400,7 +402,13 @@ describe("resolveConversationId", () => {
 	it("returns the full id on a single match", async () => {
 		const fetchImpl = listFetch({
 			conversations: [
-				{ id: "abcdef1234567890abcdef1234567890", title: "only", createdAt: 1, lastActivityAt: 2 },
+				{
+					id: "abcdef1234567890abcdef1234567890",
+					title: "only",
+					createdAt: 1,
+					lastActivityAt: 2,
+					status: "idle",
+				},
 			],
 		});
 		const result = await resolveConversationId(
@@ -426,12 +434,19 @@ describe("resolveConversationId", () => {
 	it("returns an error object listing matches on multiple matches", async () => {
 		const fetchImpl = listFetch({
 			conversations: [
-				{ id: "abcdef1234567890aaaaaaaaaaaaaaaa", title: "first", createdAt: 1, lastActivityAt: 2 },
+				{
+					id: "abcdef1234567890aaaaaaaaaaaaaaaa",
+					title: "first",
+					createdAt: 1,
+					lastActivityAt: 2,
+					status: "idle",
+				},
 				{
 					id: "abcdef1234567890bbbbbbbbbbbbbbbb",
 					title: "second",
 					createdAt: 1,
 					lastActivityAt: 3,
+					status: "idle",
 				},
 			],
 		});

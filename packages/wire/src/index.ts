@@ -500,14 +500,25 @@ export interface TurnSteeringEvent {
 // ─── Conversation metadata ───────────────────────────────────────────────────
 
 /**
+ * The lifecycle status of a conversation, used for tab persistence across
+ * devices. `active` = an agent is currently generating; `idle` = exists but not
+ * generating; `closed` = user dismissed the tab (hidden from the tab bar, not
+ * deleted). New conversations start as `idle`; transitions to `active` on
+ * turn-start, back to `idle` on turn done/error, and to `closed` on user close.
+ */
+export type ConversationStatus = "active" | "idle" | "closed";
+
+/**
  * Metadata for a conversation, returned by `GET /conversations` (the list
  * endpoint). The title defaults to the first user message (truncated) and can
  * be set via `PUT /conversations/:id/title`. `createdAt` is set on first write;
- * `lastActivityAt` is updated on every append.
+ * `lastActivityAt` is updated on every append. `status` tracks the tab lifecycle
+ * for cross-device persistence.
  */
 export interface ConversationMeta {
 	readonly id: string;
 	readonly createdAt: number;
 	readonly lastActivityAt: number;
 	readonly title: string;
+	readonly status: ConversationStatus;
 }

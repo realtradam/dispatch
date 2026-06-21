@@ -2,9 +2,11 @@ export { extension, manifest } from "./extension.js";
 export {
 	type ConversationClosedPayload,
 	type ConversationOpenedPayload,
+	type ConversationStatusChangedPayload,
 	cacheWarmHandle,
 	conversationClosed,
 	conversationOpened,
+	conversationStatusChanged,
 	createSessionOrchestrator,
 	createWarmService,
 	type EnqueueInput,

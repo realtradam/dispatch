@@ -82,6 +82,10 @@ function createInMemoryStore(): ConversationStore & {
 			return null;
 		},
 		async setConversationTitle() {},
+		async getConversationStatus() {
+			return null;
+		},
+		async setConversationStatus() {},
 	};
 }
 

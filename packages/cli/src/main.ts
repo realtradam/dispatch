@@ -22,7 +22,7 @@ import { extractLastText, formatConversationList, renderEvent } from "./render.j
 
 const USAGE = `Usage:
   dispatch models [--server <url>]
-  dispatch list [<prefix>] [--server <url>]
+  dispatch list [<prefix>] [--status <active|idle|closed>] [--all] [--server <url>]
   dispatch read <conversationId> [--server <url>]
   dispatch open <conversationId> [--server <url>]
   dispatch send <conversationId> --text "..." [--queue] [--open] [--cwd <dir>] [--effort <level>] [--server <url>]
@@ -50,9 +50,14 @@ async function main(): Promise<void> {
 			break;
 		}
 		case "list": {
+			const status = parsed.all ? undefined : (parsed.status ?? "active,idle");
 			const result = await fetchConversations(
 				{ fetchImpl: globalThis.fetch },
-				{ server: parsed.server, ...(parsed.query !== undefined && { query: parsed.query }) },
+				{
+					server: parsed.server,
+					...(parsed.query !== undefined && { query: parsed.query }),
+					...(status !== undefined && { status }),
+				},
 			);
 			const table = formatConversationList(result.conversations, Date.now());
 			if (table.length > 0) process.stdout.write(`${table}\n`);

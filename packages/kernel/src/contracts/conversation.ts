@@ -9,6 +9,7 @@ export type {
 	ChatMessage,
 	Chunk,
 	ConversationMeta,
+	ConversationStatus,
 	ErrorChunk,
 	Role,
 	StepId,
