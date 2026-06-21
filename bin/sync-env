@@ -1,0 +1,30 @@
+#!/bin/bash
+set -euo pipefail
+
+ENV_FILE="/etc/dispatch/env"
+OPENCODE_KEY="sk-P2DW7UFzQZgI8TnYzp6wWKxv6suzFvSGRrwewhUK0OjA4C7bLzsKHki7r7zZOAH1"
+UMANS_KEY="sk-bvI-mgUrp5qJzMlK8ndoDqJ3dK0U-ds_8KYS8pzpRLw"
+
+if [ ! -f "$ENV_FILE" ]; then
+	echo "Error: $ENV_FILE not found" >&2
+	exit 1
+fi
+
+# Update DISPATCH_API_KEY
+if grep -q "^DISPATCH_API_KEY=" "$ENV_FILE"; then
+	sed -i "s|^DISPATCH_API_KEY=.*|DISPATCH_API_KEY=$OPENCODE_KEY|" "$ENV_FILE"
+else
+	echo "DISPATCH_API_KEY=$OPENCODE_KEY" >> "$ENV_FILE"
+fi
+
+# Update UMANS_API_KEY
+if grep -q "^UMANS_API_KEY=" "$ENV_FILE"; then
+	sed -i "s|^UMANS_API_KEY=.*|UMANS_API_KEY=$UMANS_KEY|" "$ENV_FILE"
+else
+	echo "UMANS_API_KEY=$UMANS_KEY" >> "$ENV_FILE"
+fi
+
+# Delete the backup key line
+sed -i "/^DISPATCH_API_KEY_OPENCODE2=/d" "$ENV_FILE"
+
+echo "Updated $ENV_FILE"
