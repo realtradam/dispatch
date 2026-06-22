@@ -117,6 +117,18 @@ export interface RunTurnInput {
 	 * what to do with any pending messages after the turn ends).
 	 */
 	readonly drainSteering?: () => readonly ChatMessage[];
+
+	/**
+	 * Optional. Called by the runtime after each step's messages are finalized
+	 * (the assistant message + tool-result messages are built). The caller can
+	 * use this to persist step messages incrementally — assigning seq numbers
+	 * during generation so consumers can `GET /conversations/:id?sinceSeq=N`
+	 * mid-turn. When omitted, the caller must persist all messages at turn end
+	 * (via `RunTurnResult.messages`). The messages passed to this callback are
+	 * the SAME objects in `RunTurnResult.messages` — the caller must NOT
+	 * double-persist them.
+	 */
+	readonly onStepComplete?: (messages: readonly ChatMessage[]) => Promise<void> | void;
 }
 
 /**
