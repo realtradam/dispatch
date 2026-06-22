@@ -530,6 +530,23 @@ conversation tab. Short-ID prefix resolution (4+ chars → full ID via `GET /con
   → `{content:""}`, `POST /conversations/:id/open` → `{conversationId}`.
 - [ ] Live-verify end-to-end (CLI → real conversation → FE tab open).
 
+## Workspaces — FE design response (in review)
+Cross-repo design ask from `../dispatch-web` (`backend-handoff-workspaces.md`).
+Outbound courier: `frontend-workspaces-handoff.md` (final shapes + Q1–Q8). Status:
+**contracts finalized, awaiting user approval to implement.**
+- **Boundary decision:** workspaces live inside `conversation-store` (metadata +
+  cwd persistence owner); no new extension. Single owner-agent for all workspace
+  storage + service methods.
+- **Versions:** `@dispatch/wire` `0.11.0→0.12.0`, `@dispatch/transport-contract`
+  `0.15.0→0.16.0`, `@dispatch/ui-contract` unchanged.
+- **Key decisions:** `DELETE /workspaces/:id` closes all conversations (status→
+  "closed") + reassigns to "default" + deletes workspace; auto-create workspace on
+  turn start if missing; `PUT /workspaces/:id` create-on-miss with optional
+  `title`/`defaultCwd`; `DELETE /conversations/:id/cwd` to clear explicit cwd;
+  `GET /conversations/:id/lsp` roots at effective cwd; WS lifecycle push deferred.
+- **Waves:** Wave 0 (contracts, orchestrator) → Wave 1 (conversation-store) →
+  Wave 2 (session-orchestrator) → Wave 3 (transport-http + transport-ws + cli, parallel).
+
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled
   from dedup by the content-addressed decision; also gated on cache-warming being

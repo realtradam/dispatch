@@ -28,6 +28,8 @@ import type {
 	ReasoningEffort,
 	StoredChunk,
 	TurnMetrics,
+	Workspace,
+	WorkspaceEntry,
 } from "@dispatch/wire";
 
 export type {
@@ -40,6 +42,8 @@ export type {
 	StepMetrics,
 	StoredChunk,
 	TurnMetrics,
+	Workspace,
+	WorkspaceEntry,
 } from "@dispatch/wire";
 
 /**
@@ -80,6 +84,13 @@ export interface ChatRequest {
 	 * unrecognized value → HTTP 400 `{ error }`.
 	 */
 	readonly reasoningEffort?: ReasoningEffort;
+
+	/**
+	 * The workspace to assign this conversation to. Omit for `"default"`.
+	 * If the workspace doesn't exist yet, it is auto-created (title = id,
+	 * defaultCwd = null).
+	 */
+	readonly workspaceId?: string;
 }
 
 /**
@@ -289,6 +300,11 @@ export interface CloseConversationResponse {
  */
 export interface QueueRequest {
 	readonly text: string;
+	/**
+	 * The workspace to assign the conversation to (if a new conversation is
+	 * started). Omit for `"default"`. Auto-creates if missing.
+	 */
+	readonly workspaceId?: string;
 }
 
 /**
@@ -474,6 +490,11 @@ export interface ChatQueueMessage {
 	readonly type: "chat.queue";
 	readonly conversationId: string;
 	readonly text: string;
+	/**
+	 * The workspace to assign the conversation to (if a new conversation is
+	 * started). Omit for `"default"`. Auto-creates if missing.
+	 */
+	readonly workspaceId?: string;
 }
 
 /**
@@ -605,4 +626,47 @@ export interface CompactPercentResponse {
  */
 export interface SetCompactPercentRequest {
 	readonly threshold: number;
+}
+
+// ─── Workspaces ───────────────────────────────────────────────────────────────
+
+/**
+ * Body of `PUT /workspaces/:id` — the idempotent create-on-miss call. All
+ * fields are optional and only applied when the workspace is first created;
+ * an existing workspace is returned as-is.
+ */
+export interface EnsureWorkspaceRequest {
+	/** Display title. Default: the workspace id. Only used on create. */
+	readonly title?: string;
+	/** Default cwd. Default: null (inherit server default). Only used on create. */
+	readonly defaultCwd?: string | null;
+}
+
+/** Response of `GET`/`PUT /workspaces/:id` — the workspace itself. */
+export interface WorkspaceResponse extends Workspace {}
+
+/** Response of `GET /workspaces` — all workspaces sorted by `lastActivityAt` desc. */
+export interface WorkspaceListResponse {
+	readonly workspaces: readonly WorkspaceEntry[];
+}
+
+/** Body of `PUT /workspaces/:id/title` — rename (display only; id unchanged). */
+export interface SetWorkspaceTitleRequest {
+	readonly title: string;
+}
+
+/** Body of `PUT /workspaces/:id/default-cwd` — set or clear the default cwd. */
+export interface SetWorkspaceDefaultCwdRequest {
+	readonly defaultCwd: string | null;
+}
+
+/**
+ * Response of `DELETE /workspaces/:id`. All conversations in the workspace
+ * are closed (status → "closed") and reassigned to "default", then the
+ * workspace entity is deleted. `"default"` is non-deletable (HTTP 409).
+ */
+export interface DeleteWorkspaceResponse {
+	readonly workspaceId: string;
+	/** Conversations that were closed (status → "closed") by this delete. */
+	readonly closedCount: number;
 }

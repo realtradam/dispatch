@@ -30,6 +30,8 @@ export type {
 	ToolResultChunk,
 	TurnId,
 	TurnMetrics,
+	Workspace,
+	WorkspaceEntry,
 } from "./conversation.js";
 export type { ToolDispatchPolicy } from "./dispatch.js";
 export type {

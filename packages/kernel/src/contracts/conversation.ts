@@ -23,4 +23,6 @@ export type {
 	ToolResultChunk,
 	TurnId,
 	TurnMetrics,
+	Workspace,
+	WorkspaceEntry,
 } from "@dispatch/wire";
