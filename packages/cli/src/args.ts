@@ -26,6 +26,7 @@ export type ParsedCommand =
 			readonly reasoningEffort?: ReasoningEffort | undefined;
 			readonly showReasoning: boolean;
 			readonly open: boolean;
+			readonly workspaceId?: string | undefined;
 	  }
 	| {
 			readonly kind: "list";
@@ -46,6 +47,7 @@ export type ParsedCommand =
 			readonly open: boolean;
 			readonly cwd?: string;
 			readonly reasoningEffort?: ReasoningEffort;
+			readonly workspaceId?: string;
 	  }
 	| { readonly kind: "stop"; readonly server: string; readonly conversationId: string }
 	| { readonly kind: "help" }
@@ -206,6 +208,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 		let open = false;
 		let cwd: string | undefined;
 		let reasoningEffort: ReasoningEffort | undefined;
+		let workspaceId: string | undefined;
 
 		for (let i = 1; i < argv.length; i++) {
 			const arg = argv[i] as string;
@@ -243,6 +246,12 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 					reasoningEffort = val;
 					break;
 				}
+				case "--workspace":
+				case "-w":
+					if (i + 1 >= argv.length)
+						return { kind: "error", message: "--workspace requires a value" };
+					workspaceId = argv[++i];
+					break;
 				default:
 					if (arg.startsWith("--")) return { kind: "error", message: `Unknown flag: ${arg}` };
 					if (conversationId !== undefined)
@@ -267,6 +276,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			open,
 			...(cwd !== undefined && { cwd }),
 			...(reasoningEffort !== undefined && { reasoningEffort }),
+			...(workspaceId !== undefined && { workspaceId }),
 		};
 	}
 
@@ -280,6 +290,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 	let showReasoning = false;
 	let open = false;
 	let server = opts.defaultServer;
+	let workspaceId: string | undefined;
 
 	for (let i = 1; i < argv.length; i++) {
 		const arg = argv[i] as string;
@@ -327,6 +338,11 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 					reasoningEffort = val;
 				}
 				break;
+			case "--workspace":
+			case "-w":
+				if (i + 1 >= argv.length) return { kind: "error", message: "--workspace requires a value" };
+				workspaceId = argv[++i];
+				break;
 			default:
 				return { kind: "error", message: `Unknown flag: ${arg}` };
 		}
@@ -350,5 +366,6 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 		reasoningEffort,
 		showReasoning,
 		open,
+		...(workspaceId !== undefined && { workspaceId }),
 	};
 }

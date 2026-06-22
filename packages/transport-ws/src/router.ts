@@ -48,6 +48,7 @@ export interface ChatRouteResult {
 	readonly model: string | undefined;
 	readonly cwd: string | undefined;
 	readonly reasoningEffort?: ReasoningEffort;
+	readonly workspaceId?: string;
 }
 
 /** A malformed chat.send that should yield a chat.error reply. */
@@ -80,6 +81,7 @@ export interface ChatQueueRouteResult {
 	readonly kind: "chat-queue";
 	readonly conversationId: string;
 	readonly text: string;
+	readonly workspaceId?: string;
 }
 
 /** The effect any client WS message should produce. */
@@ -170,6 +172,7 @@ function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError 
 		model: msg.model,
 		cwd: msg.cwd,
 		...(msg.reasoningEffort !== undefined ? { reasoningEffort: msg.reasoningEffort } : {}),
+		...(msg.workspaceId !== undefined ? { workspaceId: msg.workspaceId } : {}),
 	};
 }
 
@@ -199,6 +202,7 @@ function handleChatQueue(msg: ChatQueueMessage): ChatQueueRouteResult | ChatRout
 		kind: "chat-queue",
 		conversationId: msg.conversationId,
 		text: msg.text,
+		...(msg.workspaceId !== undefined ? { workspaceId: msg.workspaceId } : {}),
 	};
 }
 

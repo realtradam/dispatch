@@ -97,6 +97,31 @@ function createInMemoryStore(): ConversationStore & {
 		async setCompactPercent() {},
 		async forkHistory() {},
 		async setCompactedFrom() {},
+		async getWorkspace() {
+			return null;
+		},
+		async ensureWorkspace(id) {
+			return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async setWorkspaceTitle(id, title) {
+			return { id, title, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async setWorkspaceDefaultCwd(id, defaultCwd) {
+			return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+		},
+		async deleteWorkspace() {
+			return { closedCount: 0 };
+		},
+		async listWorkspaces() {
+			return [];
+		},
+		async getWorkspaceId() {
+			return "default";
+		},
+		async setWorkspaceId() {},
+		async getEffectiveCwd(conversationId) {
+			return cwdData.get(conversationId) ?? null;
+		},
 	};
 }
 
@@ -507,53 +532,15 @@ describe("turn-sealed event", () => {
 
 		const ordering: string[] = [];
 		const wrappedStore: ConversationStore = {
+			...store,
 			async append(conversationId, messages) {
 				await store.append(conversationId, messages);
 				ordering.push("append");
-			},
-			async load(conversationId) {
-				return store.load(conversationId);
-			},
-			async loadSince(conversationId, sinceSeq) {
-				return store.loadSince(conversationId, sinceSeq);
 			},
 			async appendMetrics(conversationId, metrics) {
 				await store.appendMetrics(conversationId, metrics);
 				ordering.push("appendMetrics");
 			},
-			async loadMetrics(conversationId) {
-				return store.loadMetrics(conversationId);
-			},
-			async getCwd(conversationId) {
-				return store.getCwd(conversationId);
-			},
-			async setCwd(conversationId, cwd) {
-				await store.setCwd(conversationId, cwd);
-			},
-			async getReasoningEffort(conversationId) {
-				return store.getReasoningEffort(conversationId);
-			},
-			async setReasoningEffort(conversationId, effort) {
-				await store.setReasoningEffort(conversationId, effort);
-			},
-			async listConversations() {
-				return [];
-			},
-			async getConversationMeta() {
-				return null;
-			},
-			async setConversationTitle() {},
-			async getConversationStatus() {
-				return null;
-			},
-			async setConversationStatus() {},
-			async replaceHistory() {},
-			async getCompactPercent() {
-				return null;
-			},
-			async setCompactPercent() {},
-			async forkHistory() {},
-			async setCompactedFrom() {},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -627,6 +614,31 @@ describe("turn-sealed event", () => {
 			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
+			async getWorkspace() {
+				return null;
+			},
+			async ensureWorkspace(id) {
+				return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			},
+			async setWorkspaceTitle(id, title) {
+				return { id, title, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			},
+			async setWorkspaceDefaultCwd(id, defaultCwd) {
+				return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+			},
+			async deleteWorkspace() {
+				return { closedCount: 0 };
+			},
+			async listWorkspaces() {
+				return [];
+			},
+			async getWorkspaceId() {
+				return "default";
+			},
+			async setWorkspaceId() {},
+			async getEffectiveCwd() {
+				return null;
+			},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -989,6 +1001,31 @@ describe("turn metrics persistence", () => {
 			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
+			async getWorkspace() {
+				return null;
+			},
+			async ensureWorkspace(id) {
+				return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			},
+			async setWorkspaceTitle(id, title) {
+				return { id, title, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			},
+			async setWorkspaceDefaultCwd(id, defaultCwd) {
+				return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+			},
+			async deleteWorkspace() {
+				return { closedCount: 0 };
+			},
+			async listWorkspaces() {
+				return [];
+			},
+			async getWorkspaceId() {
+				return "default";
+			},
+			async setWorkspaceId() {},
+			async getEffectiveCwd() {
+				return null;
+			},
 		};
 
 		const { orchestrator } = createSessionOrchestrator({
@@ -2484,5 +2521,268 @@ describe("reasoning effort resolution", () => {
 		expect(captured).toHaveLength(1);
 		expect(captured[0]?.providerOpts?.reasoningEffort).toBe("medium");
 		expect(warmOpts?.reasoningEffort).toBe(captured[0]?.providerOpts?.reasoningEffort);
+	});
+});
+
+// --- Workspace integration (workspaceId threading + effective cwd) ---
+
+describe("workspace integration", () => {
+	function waitForSealed(
+		orchestrator: ReturnType<typeof createSessionOrchestrator>["orchestrator"],
+		conversationId: string,
+	): Promise<void> {
+		return new Promise((resolve) => {
+			const unsub = orchestrator.subscribe(conversationId, (e) => {
+				if (e.type === "turn-sealed") {
+					unsub();
+					resolve();
+				}
+			});
+		});
+	}
+
+	it("startTurn stamps workspaceId on new conversation", async () => {
+		const base = createInMemoryStore();
+		const setWorkspaceIdCalls: Array<{ conversationId: string; workspaceId: string }> = [];
+		const store: ConversationStore = {
+			...base,
+			async setWorkspaceId(conversationId, workspaceId) {
+				setWorkspaceIdCalls.push({ conversationId, workspaceId });
+			},
+		};
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: createCapturingRunTurn().captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-ws-stamp",
+			text: "hi",
+			onEvent: () => {},
+			workspaceId: "my-workspace",
+		});
+
+		expect(setWorkspaceIdCalls).toContainEqual({
+			conversationId: "conv-ws-stamp",
+			workspaceId: "my-workspace",
+		});
+	});
+
+	it("startTurn defaults workspaceId to default", async () => {
+		const base = createInMemoryStore();
+		const setWorkspaceIdCalls: Array<{ conversationId: string; workspaceId: string }> = [];
+		const store: ConversationStore = {
+			...base,
+			async setWorkspaceId(conversationId, workspaceId) {
+				setWorkspaceIdCalls.push({ conversationId, workspaceId });
+			},
+		};
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: createCapturingRunTurn().captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-ws-default",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(setWorkspaceIdCalls).toContainEqual({
+			conversationId: "conv-ws-default",
+			workspaceId: "default",
+		});
+	});
+
+	it("startTurn auto-creates workspace if missing", async () => {
+		const base = createInMemoryStore();
+		const ensureWorkspaceCalls: string[] = [];
+		const store: ConversationStore = {
+			...base,
+			async ensureWorkspace(id) {
+				ensureWorkspaceCalls.push(id);
+				return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			},
+		};
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: createCapturingRunTurn().captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-ws-autocreate",
+			text: "hi",
+			onEvent: () => {},
+			workspaceId: "brand-new-workspace",
+		});
+
+		expect(ensureWorkspaceCalls).toContain("brand-new-workspace");
+	});
+
+	it("startTurn uses effective cwd when no explicit cwd", async () => {
+		const base = createInMemoryStore();
+		const store: ConversationStore = {
+			...base,
+			async getEffectiveCwd() {
+				return "/workspace/default/cwd";
+			},
+		};
+
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-ws-effcwd",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("/workspace/default/cwd");
+	});
+
+	it("startTurn explicit cwd overrides workspace default", async () => {
+		const base = createInMemoryStore();
+		const store: ConversationStore = {
+			...base,
+			async getEffectiveCwd() {
+				return "/workspace/default/cwd";
+			},
+		};
+
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-ws-override",
+			text: "hi",
+			onEvent: () => {},
+			cwd: "/explicit/cwd",
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("/explicit/cwd");
+	});
+
+	it("startTurn effective cwd null when nothing set", async () => {
+		const store = createInMemoryStore();
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-ws-null-cwd",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBeUndefined();
+	});
+
+	it("warm uses effective cwd", async () => {
+		const base = createInMemoryStore();
+		await base.append("conv-warm-effcwd", [
+			{ role: "user", chunks: [{ type: "text", text: "hi" }] },
+		]);
+		const store: ConversationStore = {
+			...base,
+			async getEffectiveCwd() {
+				return "/workspace/warm/cwd";
+			},
+		};
+
+		let assemblyCwd: string | undefined = "UNSET";
+		const provider: ProviderContract = {
+			id: "p",
+			stream: async function* () {
+				yield {
+					type: "usage",
+					usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+				} as ProviderEvent;
+				yield { type: "finish", reason: "stop" } as ProviderEvent;
+			},
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: (assembly: ToolAssembly) => {
+				assemblyCwd = assembly.cwd;
+				return Promise.resolve(assembly);
+			},
+			runTurn,
+			emit: () => {},
+		};
+
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		await warmService.warm("conv-warm-effcwd");
+		expect(assemblyCwd).toBe("/workspace/warm/cwd");
+	});
+
+	it("enqueue threads workspaceId", async () => {
+		const base = createInMemoryStore();
+		const setWorkspaceIdCalls: Array<{ conversationId: string; workspaceId: string }> = [];
+		const store: ConversationStore = {
+			...base,
+			async setWorkspaceId(conversationId, workspaceId) {
+				setWorkspaceIdCalls.push({ conversationId, workspaceId });
+			},
+		};
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: createCapturingRunTurn().captureRunTurn,
+		});
+
+		orchestrator.enqueue({
+			conversationId: "conv-enq-ws",
+			text: "hello",
+			workspaceId: "enqueued-ws",
+		});
+		await waitForSealed(orchestrator, "conv-enq-ws");
+
+		expect(setWorkspaceIdCalls).toContainEqual({
+			conversationId: "conv-enq-ws",
+			workspaceId: "enqueued-ws",
+		});
 	});
 });

@@ -47,6 +47,7 @@ export interface ChatCommand {
 	readonly model?: string;
 	readonly cwd?: string;
 	readonly reasoningEffort?: ReasoningEffort;
+	readonly workspaceId?: string;
 }
 
 export interface ParseError {
@@ -97,6 +98,13 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
 			};
 		}
 		(result as { reasoningEffort?: ReasoningEffort }).reasoningEffort = obj.reasoningEffort;
+	}
+
+	if (obj.workspaceId !== undefined) {
+		if (typeof obj.workspaceId !== "string") {
+			return { error: "Field 'workspaceId' must be a string" };
+		}
+		(result as { workspaceId?: string }).workspaceId = obj.workspaceId;
 	}
 
 	return result;
@@ -208,6 +216,7 @@ export function computeExpectedCacheRate(
  */
 export interface QueueBodyParsed {
 	readonly text: string;
+	readonly workspaceId?: string;
 }
 
 /**
@@ -229,7 +238,16 @@ export function parseQueueBody(body: unknown): QueueBodyParsed | ParseError {
 		return { error: "Field 'text' is required and must be a non-empty string" };
 	}
 
-	return { text: text.trim() };
+	const result: QueueBodyParsed = { text: text.trim() };
+
+	if (obj.workspaceId !== undefined) {
+		if (typeof obj.workspaceId !== "string") {
+			return { error: "Field 'workspaceId' must be a string" };
+		}
+		return { text: text.trim(), workspaceId: obj.workspaceId };
+	}
+
+	return result;
 }
 
 export function parseReasoningEffortBody(body: unknown): ReasoningEffort | ParseError {

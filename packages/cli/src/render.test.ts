@@ -230,6 +230,7 @@ describe("formatConversationList", () => {
 		createdAt: now - ageMs - 1000,
 		lastActivityAt: now - ageMs,
 		status: "idle",
+		workspaceId: "default",
 	});
 
 	it("returns empty string for an empty list", () => {

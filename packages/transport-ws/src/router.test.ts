@@ -347,6 +347,38 @@ describe("routeClientMessage", () => {
 			expect(result.cwd).toBe("/tmp");
 		});
 
+		it("chat.send threads workspaceId", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				conversationId: "conv-ws",
+				message: "hello workspace",
+				workspaceId: "my-workspace",
+			});
+
+			expect(result.kind).toBe("chat");
+			if (result.kind !== "chat") throw new Error("expected chat");
+			expect(result.workspaceId).toBe("my-workspace");
+		});
+
+		it("chat.send defaults workspaceId when omitted", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				message: "hello no workspace",
+			});
+
+			expect(result.kind).toBe("chat");
+			if (result.kind !== "chat") throw new Error("expected chat");
+			// workspaceId is absent (undefined) — the orchestrator receives no
+			// workspaceId and applies its own "default" resolution.
+			expect(result).not.toHaveProperty("workspaceId");
+		});
+
 		it("rejects a malformed chat.send (empty message)", () => {
 			const registry = fakeRegistry([]);
 			const connSubs = new Set<string>();
@@ -468,6 +500,22 @@ describe("routeClientMessage", () => {
 				conversationId: "conv-1",
 				text: "steer here",
 			});
+		});
+
+		it("chat.queue threads workspaceId", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.queue",
+				conversationId: "conv-ws",
+				text: "steer here",
+				workspaceId: "my-workspace",
+			});
+
+			expect(result.kind).toBe("chat-queue");
+			if (result.kind !== "chat-queue") throw new Error("expected chat-queue");
+			expect(result.workspaceId).toBe("my-workspace");
 		});
 
 		it("rejects empty/whitespace text → chat-error (no enqueue signal)", () => {

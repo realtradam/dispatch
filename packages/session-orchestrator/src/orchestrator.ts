@@ -36,6 +36,13 @@ export interface StartTurnInput {
 	readonly modelName?: string;
 	readonly cwd?: string;
 	readonly reasoningEffort?: ReasoningEffort;
+	/**
+	 * The workspace this conversation belongs to. Defaults to `"default"` when
+	 * omitted. On the first turn for a new conversation, the workspaceId is
+	 * persisted (the workspace is auto-created if missing) so subsequent turns
+	 * resolve the effective cwd from the workspace's `defaultCwd`.
+	 */
+	readonly workspaceId?: string;
 }
 
 export type StartTurnResult =
@@ -46,6 +53,8 @@ export type StartTurnResult =
 export interface EnqueueInput {
 	readonly conversationId: string;
 	readonly text: string;
+	/** Workspace to stamp on a new conversation. Defaults to `"default"`. */
+	readonly workspaceId?: string;
 }
 
 /**
@@ -234,6 +243,7 @@ export interface SessionOrchestrator {
 		modelName?: string;
 		cwd?: string;
 		reasoningEffort?: ReasoningEffort;
+		workspaceId?: string;
 	}): Promise<void>;
 }
 
@@ -338,6 +348,7 @@ export function createSessionOrchestrator(
 		modelName: string | undefined,
 		cwd: string | undefined,
 		reasoningEffortOverride: ReasoningEffort | undefined,
+		workspaceId: string,
 	): void {
 		const turnId = generateTurnId();
 		const controller = new AbortController();
@@ -349,7 +360,7 @@ export function createSessionOrchestrator(
 		const effectiveCwdPromise =
 			cwd !== undefined
 				? Promise.resolve(cwd)
-				: deps.conversationStore.getCwd(conversationId).then((c) => c ?? undefined);
+				: deps.conversationStore.getEffectiveCwd(conversationId).then((c) => c ?? undefined);
 
 		const storedEffortPromise = deps.conversationStore.getReasoningEffort(conversationId);
 
@@ -383,6 +394,15 @@ export function createSessionOrchestrator(
 
 				const history = await deps.conversationStore.load(conversationId);
 				const userMsg = buildUserMessage(text);
+
+				// New conversation: stamp the workspaceId so subsequent turns resolve
+				// the effective cwd from the workspace's defaultCwd. Auto-create the
+				// workspace if missing (idempotent). Only for new conversations (no
+				// history) — existing conversations keep their assigned workspace.
+				if (history.length === 0) {
+					await deps.conversationStore.ensureWorkspace(workspaceId);
+					await deps.conversationStore.setWorkspaceId(conversationId, workspaceId);
+				}
 
 				let provider: ProviderContract;
 				let modelOverride: string | undefined;
@@ -540,18 +560,29 @@ export function createSessionOrchestrator(
 	}
 
 	const orchestrator: SessionOrchestrator = {
-		startTurn({ conversationId, text, modelName, cwd, reasoningEffort }) {
+		startTurn({ conversationId, text, modelName, cwd, reasoningEffort, workspaceId }) {
 			if (activeTurns.has(conversationId)) {
 				return { started: false, reason: "already-active" };
 			}
-			runTurnDetached(conversationId, text, modelName, cwd, reasoningEffort);
+			runTurnDetached(
+				conversationId,
+				text,
+				modelName,
+				cwd,
+				reasoningEffort,
+				workspaceId ?? "default",
+			);
 			const turn = activeTurns.get(conversationId);
 			const turnId = turn !== undefined ? turn.turnId : "";
 			return { started: true, turnId };
 		},
 
-		enqueue({ conversationId, text }) {
-			const result = orchestrator.startTurn({ conversationId, text });
+		enqueue({ conversationId, text, workspaceId }) {
+			const result = orchestrator.startTurn({
+				conversationId,
+				text,
+				...(workspaceId !== undefined ? { workspaceId } : {}),
+			});
 			if (result.started) {
 				return { startedTurn: true, queue: [] };
 			}
@@ -615,13 +646,22 @@ export function createSessionOrchestrator(
 			return { abortedTurn };
 		},
 
-		async handleMessage({ conversationId, text, onEvent, modelName, cwd, reasoningEffort }) {
+		async handleMessage({
+			conversationId,
+			text,
+			onEvent,
+			modelName,
+			cwd,
+			reasoningEffort,
+			workspaceId,
+		}) {
 			const turnInput: StartTurnInput = {
 				conversationId,
 				text,
 				...(modelName !== undefined ? { modelName } : {}),
 				...(cwd !== undefined ? { cwd } : {}),
 				...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+				...(workspaceId !== undefined ? { workspaceId } : {}),
 			};
 			const result = orchestrator.startTurn(turnInput);
 			if (!result.started) {
@@ -687,7 +727,8 @@ export function createWarmService(
 			// the prompt-cache prefix — diverges and the cache misses entirely (0%).
 			// A manual reheat sends no cwd, so without this fallback it would warm the
 			// wrong prefix. See notes/observability-design.md §3.1.
-			const cwd = opts?.cwd ?? (await deps.conversationStore.getCwd(conversationId)) ?? undefined;
+			const cwd =
+				opts?.cwd ?? (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? undefined;
 			const assembled = await deps.applyToolsFilter({
 				tools: baseTools,
 				conversationId,

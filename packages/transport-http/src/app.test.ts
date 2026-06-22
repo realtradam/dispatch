@@ -12,10 +12,14 @@ import type {
 } from "@dispatch/kernel";
 import { createThroughputStore, dayKeyOf } from "@dispatch/throughput-store";
 import type {
+	DeleteWorkspaceResponse,
 	QueuedMessage,
 	QueueResponse,
 	ThroughputResponse,
+	WorkspaceListResponse,
+	WorkspaceResponse,
 } from "@dispatch/transport-contract";
+import type { Workspace } from "@dispatch/wire";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { extractLastAssistantText } from "./logic.js";
@@ -145,6 +149,31 @@ function createFakeConversationStore(
 		async setCompactPercent() {},
 		async forkHistory() {},
 		async setCompactedFrom() {},
+		async getWorkspace() {
+			return null;
+		},
+		async ensureWorkspace() {
+			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async setWorkspaceTitle() {
+			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async setWorkspaceDefaultCwd() {
+			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async deleteWorkspace() {
+			return { closedCount: 0 };
+		},
+		async listWorkspaces() {
+			return [];
+		},
+		async getWorkspaceId() {
+			return "default";
+		},
+		async setWorkspaceId() {},
+		async getEffectiveCwd(conversationId) {
+			return cwdStore.get(conversationId) ?? null;
+		},
 	};
 }
 
@@ -888,6 +917,49 @@ describe("GET /conversations/:id", () => {
 				async setCompactPercent() {},
 				async forkHistory() {},
 				async setCompactedFrom() {},
+				async getWorkspace() {
+					return null;
+				},
+				async ensureWorkspace() {
+					return {
+						id: "default",
+						title: "default",
+						defaultCwd: null,
+						createdAt: 0,
+						lastActivityAt: 0,
+					};
+				},
+				async setWorkspaceTitle() {
+					return {
+						id: "default",
+						title: "default",
+						defaultCwd: null,
+						createdAt: 0,
+						lastActivityAt: 0,
+					};
+				},
+				async setWorkspaceDefaultCwd() {
+					return {
+						id: "default",
+						title: "default",
+						defaultCwd: null,
+						createdAt: 0,
+						lastActivityAt: 0,
+					};
+				},
+				async deleteWorkspace() {
+					return { closedCount: 0 };
+				},
+				async listWorkspaces() {
+					return [];
+				},
+				async getWorkspaceId() {
+					return "default";
+				},
+				async setWorkspaceId() {},
+				async getEffectiveCwd() {
+					return null;
+				},
 			};
 			const app = createApp({
 				conversationStore: store,
@@ -963,6 +1035,49 @@ describe("GET /conversations/:id", () => {
 			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
+			async getWorkspace() {
+				return null;
+			},
+			async ensureWorkspace() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceTitle() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceDefaultCwd() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async deleteWorkspace() {
+				return { closedCount: 0 };
+			},
+			async listWorkspaces() {
+				return [];
+			},
+			async getWorkspaceId() {
+				return "default";
+			},
+			async setWorkspaceId() {},
+			async getEffectiveCwd() {
+				return null;
+			},
 		};
 		const app = createApp({
 			conversationStore: store,
@@ -1107,6 +1222,49 @@ describe("GET /conversations/:id/metrics", () => {
 			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
+			async getWorkspace() {
+				return null;
+			},
+			async ensureWorkspace() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceTitle() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceDefaultCwd() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async deleteWorkspace() {
+				return { closedCount: 0 };
+			},
+			async listWorkspaces() {
+				return [];
+			},
+			async getWorkspaceId() {
+				return "default";
+			},
+			async setWorkspaceId() {},
+			async getEffectiveCwd() {
+				return null;
+			},
 		};
 		const app = createApp({
 			conversationStore: brokenStore,
@@ -2084,6 +2242,49 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
+			async getWorkspace() {
+				return null;
+			},
+			async ensureWorkspace() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceTitle() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceDefaultCwd() {
+				return {
+					id: "default",
+					title: "default",
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async deleteWorkspace() {
+				return { closedCount: 0 };
+			},
+			async listWorkspaces() {
+				return [];
+			},
+			async getWorkspaceId() {
+				return "default";
+			},
+			async setWorkspaceId() {},
+			async getEffectiveCwd() {
+				return null;
+			},
 		};
 		const app = createApp({
 			conversationStore: store,
@@ -2104,9 +2305,30 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 
 describe("GET /conversations", () => {
 	const sampleConvos: ConversationMeta[] = [
-		{ id: "conv-1", createdAt: 1000, lastActivityAt: 2000, title: "First", status: "idle" },
-		{ id: "conv-2", createdAt: 1500, lastActivityAt: 2500, title: "Second", status: "idle" },
-		{ id: "other-1", createdAt: 3000, lastActivityAt: 4000, title: "Other", status: "idle" },
+		{
+			id: "conv-1",
+			createdAt: 1000,
+			lastActivityAt: 2000,
+			title: "First",
+			status: "idle",
+			workspaceId: "default",
+		},
+		{
+			id: "conv-2",
+			createdAt: 1500,
+			lastActivityAt: 2500,
+			title: "Second",
+			status: "idle",
+			workspaceId: "default",
+		},
+		{
+			id: "other-1",
+			createdAt: 3000,
+			lastActivityAt: 4000,
+			title: "Other",
+			status: "idle",
+			workspaceId: "default",
+		},
 	];
 
 	function appWithList(list: ConversationMeta[]) {
@@ -2470,4 +2692,284 @@ describe("extractLastAssistantText", () => {
 	it("returns empty string for an empty message list", () => {
 		expect(extractLastAssistantText([])).toBe("");
 	});
+});
+
+describe("Workspaces", () => {
+	const sampleWorkspace: Workspace = {
+		id: "proj",
+		title: "proj",
+		defaultCwd: null,
+		createdAt: 1000,
+		lastActivityAt: 2000,
+	};
+
+	it("GET /workspaces returns list", async () => {
+		const workspaceEntries = [{ ...sampleWorkspace, conversationCount: 1 }];
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async listWorkspaces() {
+				return workspaceEntries;
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as WorkspaceListResponse;
+		expect(body.workspaces).toEqual(workspaceEntries);
+	});
+
+	it("PUT /workspaces/:id creates on miss", async () => {
+		let ensured = false;
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async ensureWorkspace(id, opts) {
+				ensured = true;
+				return { ...sampleWorkspace, id, ...opts };
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/proj", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: "Project", defaultCwd: "/home/proj" }),
+		});
+		expect(res.status).toBe(200);
+		expect(ensured).toBe(true);
+		const body = (await res.json()) as WorkspaceResponse;
+		expect(body.id).toBe("proj");
+		expect(body.title).toBe("Project");
+		expect(body.defaultCwd).toBe("/home/proj");
+	});
+
+	it("PUT /workspaces/:id returns existing", async () => {
+		const existing: Workspace = { ...sampleWorkspace, title: "Existing", defaultCwd: "/old" };
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async ensureWorkspace() {
+				return existing;
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/proj", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: "New Title" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as WorkspaceResponse;
+		expect(body.title).toBe("Existing");
+		expect(body.defaultCwd).toBe("/old");
+	});
+
+	it("PUT /workspaces/:id rejects invalid slug", async () => {
+		let ensured = false;
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async ensureWorkspace() {
+				ensured = true;
+				return sampleWorkspace;
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/Bad Slug!", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		expect(ensured).toBe(false);
+	});
+
+	it("GET /workspaces/:id returns 404 for missing", async () => {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async getWorkspace() {
+				return null;
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/unknown");
+		expect(res.status).toBe(404);
+	});
+
+	it("PUT /workspaces/:id/title renames", async () => {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async setWorkspaceTitle(id, title) {
+				return { ...sampleWorkspace, id, title };
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/proj/title", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title: "Renamed" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as WorkspaceResponse;
+		expect(body.title).toBe("Renamed");
+	});
+
+	it("PUT /workspaces/:id/default-cwd sets", async () => {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async setWorkspaceDefaultCwd(id, defaultCwd) {
+				return { ...sampleWorkspace, id, defaultCwd };
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/proj/default-cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ defaultCwd: "/new/cwd" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as WorkspaceResponse;
+		expect(body.defaultCwd).toBe("/new/cwd");
+	});
+
+	it("DELETE /workspaces/:id closes conversations", async () => {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async deleteWorkspace() {
+				return { closedCount: 3 };
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/proj", { method: "DELETE" });
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as DeleteWorkspaceResponse;
+		expect(body.workspaceId).toBe("proj");
+		expect(body.closedCount).toBe(3);
+	});
+
+	it("DELETE /workspaces/default returns 409", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/default", { method: "DELETE" });
+		expect(res.status).toBe(409);
+	});
+});
+
+it("POST /chat threads workspaceId", async () => {
+	const cap = createCapturingOrchestrator();
+	const app = createApp({
+		conversationStore: createFakeConversationStore(),
+		orchestrator: cap,
+		credentialStore: createFakeCredentialStore([]),
+	});
+	const res = await app.request("/chat", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ message: "hi", conversationId: "conv1", workspaceId: "proj" }),
+	});
+	expect(res.status).toBe(200);
+	expect(cap.received).toBeDefined();
+	expect(cap.received?.workspaceId).toBe("proj");
+});
+
+it("GET /conversations?workspaceId= filters", async () => {
+	const calls: Parameters<ConversationStore["listConversations"]>[0][] = [];
+	const store: ConversationStore = {
+		...createFakeConversationStore(),
+		async listConversations(filter) {
+			calls.push(filter);
+			return [];
+		},
+	};
+	const app = createApp({
+		conversationStore: store,
+		orchestrator: createFakeOrchestrator([]),
+		credentialStore: createFakeCredentialStore([]),
+		logger: noopLogger,
+	});
+	const res = await app.request("/conversations?workspaceId=proj");
+	expect(res.status).toBe(200);
+	expect(calls).toHaveLength(1);
+	expect(calls[0]).toEqual({ workspaceId: "proj" });
+});
+
+it("GET /conversations/:id/lsp uses effective cwd", async () => {
+	let effectiveCwdCalled = false;
+	let getCwdCalled = false;
+	let lspCwd: string | null = null;
+	const store: ConversationStore = {
+		...createFakeConversationStore(),
+		async getEffectiveCwd(_conversationId) {
+			effectiveCwdCalled = true;
+			return "/effective";
+		},
+		async getCwd(_conversationId) {
+			getCwdCalled = true;
+			return "/explicit";
+		},
+	};
+	const lsp: LspService = {
+		async status(cwd) {
+			lspCwd = cwd;
+			return [];
+		},
+	};
+	const app = createApp({
+		conversationStore: store,
+		orchestrator: createFakeOrchestrator([]),
+		credentialStore: createFakeCredentialStore([]),
+		lspService: lsp,
+		logger: noopLogger,
+	});
+	const res = await app.request("/conversations/conv1/lsp");
+	expect(res.status).toBe(200);
+	expect(effectiveCwdCalled).toBe(true);
+	expect(getCwdCalled).toBe(false);
+	expect(lspCwd).toBe("/effective");
+	const body = (await res.json()) as {
+		conversationId: string;
+		cwd: string | null;
+		servers: readonly unknown[];
+	};
+	expect(body.cwd).toBe("/effective");
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseArgs } from "./args.js";
 import { buildChatRequest, composeMessage } from "./message.js";
 
 describe("composeMessage", () => {
@@ -93,5 +94,54 @@ describe("buildChatRequest", () => {
 			{ cwd: "/work", message: "x" },
 		);
 		expect(req).not.toHaveProperty("reasoningEffort");
+	});
+
+	it("includes workspaceId when provided", () => {
+		const req = buildChatRequest(
+			{ modelName: "m", text: "x", workspaceId: "my-work", showReasoning: false },
+			{ cwd: "/work", message: "x" },
+		);
+		expect(req.workspaceId).toBe("my-work");
+	});
+
+	it("omits workspaceId when not provided", () => {
+		const req = buildChatRequest(
+			{ modelName: "m", text: "x", showReasoning: false },
+			{ cwd: "/work", message: "x" },
+		);
+		expect(req).not.toHaveProperty("workspaceId");
+	});
+});
+
+describe("workspace flag → ChatRequest", () => {
+	const defaultServer = "http://localhost:24203";
+
+	it("--workspace flag sets workspaceId on request", () => {
+		const parsed = parseArgs(["my-model", "--text", "hi", "--workspace", "my-work"], {
+			defaultServer,
+		});
+		expect(parsed.kind).toBe("chat");
+		if (parsed.kind !== "chat") return;
+		const req = buildChatRequest(parsed, { cwd: "/work", message: "hi" });
+		expect(req.workspaceId).toBe("my-work");
+	});
+
+	it("--workspace flag omitted sends no workspaceId", () => {
+		const parsed = parseArgs(["my-model", "--text", "hi"], { defaultServer });
+		expect(parsed.kind).toBe("chat");
+		if (parsed.kind !== "chat") return;
+		const req = buildChatRequest(parsed, { cwd: "/work", message: "hi" });
+		expect(req.workspaceId).toBeUndefined();
+		expect(req).not.toHaveProperty("workspaceId");
+	});
+
+	it("-w shorthand sets workspaceId on request", () => {
+		const parsed = parseArgs(["my-model", "--text", "hi", "-w", "shorthand"], {
+			defaultServer,
+		});
+		expect(parsed.kind).toBe("chat");
+		if (parsed.kind !== "chat") return;
+		const req = buildChatRequest(parsed, { cwd: "/work", message: "hi" });
+		expect(req.workspaceId).toBe("shorthand");
 	});
 });
