@@ -36,6 +36,7 @@ export {
 	cacheWarmHandle,
 	conversationStoreHandle,
 	credentialStoreHandle,
+	isValidWorkspaceSlug,
 	lspServiceHandle,
 	sessionOrchestratorHandle,
 } from "./seam.js";

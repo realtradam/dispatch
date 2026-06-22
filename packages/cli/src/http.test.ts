@@ -252,7 +252,14 @@ describe("fetchConversations", () => {
 		let calledUrl: string | undefined;
 		const list: ConversationListResponse = {
 			conversations: [
-				{ id: "abcdef1234567890", title: "first", createdAt: 1, lastActivityAt: 2, status: "idle" },
+				{
+					id: "abcdef1234567890",
+					title: "first",
+					createdAt: 1,
+					lastActivityAt: 2,
+					status: "idle",
+					workspaceId: "default",
+				},
 			],
 		};
 		const fakeFetch = (async (url: string | URL | Request): Promise<Response> => {
@@ -408,6 +415,7 @@ describe("resolveConversationId", () => {
 					createdAt: 1,
 					lastActivityAt: 2,
 					status: "idle",
+					workspaceId: "default",
 				},
 			],
 		});
@@ -440,6 +448,7 @@ describe("resolveConversationId", () => {
 					createdAt: 1,
 					lastActivityAt: 2,
 					status: "idle",
+					workspaceId: "default",
 				},
 				{
 					id: "abcdef1234567890bbbbbbbbbbbbbbbb",
@@ -447,6 +456,7 @@ describe("resolveConversationId", () => {
 					createdAt: 1,
 					lastActivityAt: 3,
 					status: "idle",
+					workspaceId: "default",
 				},
 			],
 		});

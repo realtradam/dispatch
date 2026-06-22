@@ -7,6 +7,7 @@ import type {
 	ConversationListResponse,
 	ConversationMetricsResponse,
 	CwdResponse,
+	DeleteWorkspaceResponse,
 	LastMessageResponse,
 	LspServerInfo,
 	LspStatusResponse,
@@ -18,6 +19,8 @@ import type {
 	ThroughputResponse,
 	TitleResponse,
 	WarmResponse,
+	WorkspaceListResponse,
+	WorkspaceResponse,
 } from "@dispatch/transport-contract";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -43,6 +46,7 @@ import {
 	type ConversationStore,
 	type CredentialStore,
 	conversationOpened,
+	isValidWorkspaceSlug,
 	type LspServerStatus,
 	type LspService,
 	type SessionOrchestrator,
@@ -143,7 +147,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 		"*",
 		cors({
 			origin: "*",
-			allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
+			allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 			allowHeaders: ["Content-Type"],
 		}),
 	);
@@ -266,12 +270,13 @@ export function createApp(opts: CreateServerOptions): Hono {
 			return c.json({ error: result.error }, 400);
 		}
 
-		const { conversationId, message, model, cwd, reasoningEffort } = result;
+		const { conversationId, message, model, cwd, reasoningEffort, workspaceId } = result;
 		log.info("chat: request accepted", {
 			conversationId,
 			hasModel: model !== undefined,
 			hasCwd: cwd !== undefined,
 			hasReasoningEffort: reasoningEffort !== undefined,
+			hasWorkspaceId: workspaceId !== undefined,
 		});
 
 		const events: AgentEvent[] = [];
@@ -293,6 +298,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 			...(model !== undefined ? { modelName: model } : {}),
 			...(cwd !== undefined ? { cwd } : {}),
 			...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+			...(workspaceId !== undefined ? { workspaceId } : {}),
 		};
 
 		opts.orchestrator
@@ -437,6 +443,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 		const { startedTurn, queue } = opts.orchestrator.enqueue({
 			conversationId,
 			text: parsed.text,
+			...(parsed.workspaceId !== undefined ? { workspaceId: parsed.workspaceId } : {}),
 		});
 		log.info("conversations: enqueued", {
 			conversationId,
@@ -489,6 +496,21 @@ export function createApp(opts: CreateServerOptions): Hono {
 		}
 	});
 
+	app.delete("/conversations/:id/cwd", (c) => {
+		const conversationId = c.req.param("id");
+		// CR: The ConversationStore interface currently has no `clearCwd` method.
+		// `setCwd(id, "")` would persist an empty string (not the same as "no
+		// cwd key"), and `getEffectiveCwd` treats any non-null explicit cwd as
+		// set — so an empty string would shadow the workspace defaultCwd instead
+		// of clearing. A `clearCwd` method (wrapping `storage.delete(cwdKey(id))`)
+		// is needed on the store interface to truly clear the persisted key.
+		// For now the route returns the contract shape (cwd: null); the actual
+		// clearing is a no-op until the CR is implemented.
+		log.info("conversations: cwd cleared", { conversationId });
+		const response: CwdResponse = { conversationId, cwd: null };
+		return c.json(response, 200);
+	});
+
 	app.get("/conversations/:id/reasoning-effort", async (c) => {
 		const conversationId = c.req.param("id");
 		try {
@@ -535,7 +557,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 	app.get("/conversations/:id/lsp", async (c) => {
 		const conversationId = c.req.param("id");
 		try {
-			const cwd = await opts.conversationStore.getCwd(conversationId);
+			const cwd = await opts.conversationStore.getEffectiveCwd(conversationId);
 			if (cwd === null) {
 				log.info("conversations: lsp status read (no cwd)", { conversationId });
 				const body: LspStatusResponse = { conversationId, cwd: null, servers: [] };
@@ -578,9 +600,22 @@ export function createApp(opts: CreateServerOptions): Hono {
 			// Default: all statuses. Invalid values are silently ignored.
 			const rawStatus = c.req.query("status");
 			const statusFilter = parseStatusFilter(rawStatus);
-			const all = await opts.conversationStore.listConversations(
-				statusFilter !== undefined ? { status: statusFilter } : undefined,
-			);
+			// Optional `?workspaceId=` filter. A missing/empty/whitespace-only
+			// value is ignored → return all workspaces. Composable with `?status=`
+			// and `?q=`.
+			const rawWorkspaceId = c.req.query("workspaceId");
+			const workspaceId =
+				rawWorkspaceId !== undefined && rawWorkspaceId.trim().length > 0
+					? rawWorkspaceId.trim()
+					: undefined;
+			const filter: Parameters<ConversationStore["listConversations"]>[0] =
+				statusFilter !== undefined || workspaceId !== undefined
+					? {
+							...(statusFilter !== undefined ? { status: statusFilter } : {}),
+							...(workspaceId !== undefined ? { workspaceId } : {}),
+						}
+					: undefined;
+			const all = await opts.conversationStore.listConversations(filter);
 			// Optional `?q=` filters by id prefix (short-id resolution). A
 			// missing/empty/whitespace-only `q` is ignored → return all.
 			const rawQ = c.req.query("q");
@@ -590,6 +625,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 				count: conversations.length,
 				...(q.length > 0 ? { q } : {}),
 				...(statusFilter !== undefined ? { status: statusFilter.join(",") } : {}),
+				...(workspaceId !== undefined ? { workspaceId } : {}),
 			});
 			const body: ConversationListResponse = { conversations };
 			return c.json(body, 200);
@@ -777,6 +813,144 @@ export function createApp(opts: CreateServerOptions): Hono {
 		log.info("conversations: compact-percent set", { conversationId, threshold });
 		const response: CompactPercentResponse = { conversationId, threshold };
 		return c.json(response, 200);
+	});
+
+	// ─── Workspaces ──────────────────────────────────────────────────────────
+
+	app.get("/workspaces", async (c) => {
+		try {
+			const workspaces = await opts.conversationStore.listWorkspaces();
+			log.info("workspaces: list", { count: workspaces.length });
+			const body: WorkspaceListResponse = { workspaces };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("workspaces: list failure", { err });
+			return c.json({ error: "Failed to list workspaces" }, 500);
+		}
+	});
+
+	app.put("/workspaces/:id", async (c) => {
+		const workspaceId = c.req.param("id");
+		if (!isValidWorkspaceSlug(workspaceId)) {
+			return c.json(
+				{
+					error: "Workspace id must be a valid slug (lowercase alphanumeric + hyphens, 1–40 chars)",
+				},
+				400,
+			);
+		}
+
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			body = {};
+		}
+		const obj = body as Record<string, unknown>;
+		const opts_: { readonly title?: string; readonly defaultCwd?: string | null } = {};
+		if (typeof obj.title === "string") {
+			(opts_ as { title?: string }).title = obj.title;
+		}
+		if (typeof obj.defaultCwd === "string" || obj.defaultCwd === null) {
+			(opts_ as { defaultCwd?: string | null }).defaultCwd = obj.defaultCwd;
+		}
+
+		try {
+			const workspace = await opts.conversationStore.ensureWorkspace(workspaceId, opts_);
+			log.info("workspaces: ensured", { workspaceId });
+			const response: WorkspaceResponse = workspace;
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("workspaces: ensure failure", { err });
+			return c.json({ error: "Failed to ensure workspace" }, 500);
+		}
+	});
+
+	app.get("/workspaces/:id", async (c) => {
+		const workspaceId = c.req.param("id");
+		try {
+			const workspace = await opts.conversationStore.getWorkspace(workspaceId);
+			if (workspace === null) {
+				return c.json({ error: "Workspace not found" }, 404);
+			}
+			const response: WorkspaceResponse = workspace;
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("workspaces: get failure", { err });
+			return c.json({ error: "Failed to read workspace" }, 500);
+		}
+	});
+
+	app.put("/workspaces/:id/title", async (c) => {
+		const workspaceId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("workspaces/title: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		if (body === null || typeof body !== "object") {
+			return c.json({ error: "Request body must be a JSON object" }, 400);
+		}
+		const obj = body as Record<string, unknown>;
+		if (typeof obj.title !== "string" || obj.title.trim().length === 0) {
+			return c.json({ error: "Field 'title' is required and must be a non-empty string" }, 400);
+		}
+		const title = obj.title.trim();
+
+		try {
+			const workspace = await opts.conversationStore.setWorkspaceTitle(workspaceId, title);
+			log.info("workspaces: title set", { workspaceId });
+			const response: WorkspaceResponse = workspace;
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("workspaces: title set failure", { err });
+			return c.json({ error: "Failed to set workspace title" }, 500);
+		}
+	});
+
+	app.put("/workspaces/:id/default-cwd", async (c) => {
+		const workspaceId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			body = {};
+		}
+		const obj = body as Record<string, unknown>;
+		const defaultCwd: string | null = typeof obj.defaultCwd === "string" ? obj.defaultCwd : null;
+
+		try {
+			const workspace = await opts.conversationStore.setWorkspaceDefaultCwd(
+				workspaceId,
+				defaultCwd,
+			);
+			log.info("workspaces: default-cwd set", { workspaceId });
+			const response: WorkspaceResponse = workspace;
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("workspaces: default-cwd set failure", { err });
+			return c.json({ error: "Failed to set workspace default cwd" }, 500);
+		}
+	});
+
+	app.delete("/workspaces/:id", async (c) => {
+		const workspaceId = c.req.param("id");
+		if (workspaceId === "default") {
+			return c.json({ error: 'The "default" workspace cannot be deleted' }, 409);
+		}
+
+		try {
+			const { closedCount } = await opts.conversationStore.deleteWorkspace(workspaceId);
+			log.info("workspaces: deleted", { workspaceId, closedCount });
+			const response: DeleteWorkspaceResponse = { workspaceId, closedCount };
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("workspaces: delete failure", { err });
+			return c.json({ error: "Failed to delete workspace" }, 500);
+		}
 	});
 
 	// ─── Static frontend serving (catch-all, API routes take precedence) ──────

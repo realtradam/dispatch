@@ -278,6 +278,7 @@ export function createTransportWsExtension(): Extension {
 									...(result.reasoningEffort !== undefined
 										? { reasoningEffort: result.reasoningEffort }
 										: {}),
+									...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
 								});
 								if (!startResult.started) {
 									send(ws, {
@@ -319,6 +320,7 @@ export function createTransportWsExtension(): Extension {
 								const enqueueResult = orchestrator.enqueue({
 									conversationId: result.conversationId,
 									text: result.text,
+									...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
 								});
 								if (enqueueResult.startedTurn) {
 									ensureChatSubscribed(ws, state, result.conversationId);

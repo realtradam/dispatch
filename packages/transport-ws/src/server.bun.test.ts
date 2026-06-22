@@ -104,8 +104,8 @@ interface FakeOrchestratorOpts {
 
 function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
 	readonly listeners: Map<string, Set<TurnEventListener>>;
-	readonly startCalls: readonly { conversationId: string; text: string }[];
-	readonly enqueueCalls: readonly { conversationId: string; text: string }[];
+	readonly startCalls: readonly { conversationId: string; text: string; workspaceId?: string }[];
+	readonly enqueueCalls: readonly { conversationId: string; text: string; workspaceId?: string }[];
 	readonly aborted: boolean;
 } {
 	const listeners = opts?.listeners ?? new Map<string, Set<TurnEventListener>>();
@@ -126,7 +126,11 @@ function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
 			return aborted;
 		},
 		startTurn(input) {
-			startCalls.push({ conversationId: input.conversationId, text: input.text });
+			startCalls.push({
+				conversationId: input.conversationId,
+				text: input.text,
+				...(input.workspaceId !== undefined ? { workspaceId: input.workspaceId } : {}),
+			});
 			if (opts?.startTurn) {
 				return opts.startTurn(input);
 			}
@@ -136,7 +140,11 @@ function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
 			return { started: true, turnId: "fake-turn-id" };
 		},
 		enqueue(input) {
-			enqueueCalls.push({ conversationId: input.conversationId, text: input.text });
+			enqueueCalls.push({
+				conversationId: input.conversationId,
+				text: input.text,
+				...(input.workspaceId !== undefined ? { workspaceId: input.workspaceId } : {}),
+			});
 			if (opts?.enqueue) {
 				return opts.enqueue(input);
 			}
@@ -181,7 +189,7 @@ function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
 /** Create a fake orchestrator that broadcasts events when `broadcast` is called. */
 function fakeOrchestratorWithBroadcast(): SessionOrchestrator & {
 	readonly listeners: Map<string, Set<TurnEventListener>>;
-	readonly enqueueCalls: readonly { conversationId: string; text: string }[];
+	readonly enqueueCalls: readonly { conversationId: string; text: string; workspaceId?: string }[];
 	broadcast(conversationId: string, event: AgentEvent): void;
 } {
 	const listeners = new Map<string, Set<TurnEventListener>>();
@@ -202,7 +210,11 @@ function fakeOrchestratorWithBroadcast(): SessionOrchestrator & {
 			return { started: true, turnId: "fake-turn-id" };
 		},
 		enqueue(input) {
-			enqueueCalls.push({ conversationId: input.conversationId, text: input.text });
+			enqueueCalls.push({
+				conversationId: input.conversationId,
+				text: input.text,
+				...(input.workspaceId !== undefined ? { workspaceId: input.workspaceId } : {}),
+			});
 			return { startedTurn: true, queue: [] };
 		},
 		subscribe(conversationId, listener) {
@@ -332,6 +344,7 @@ function startServer(
 							text: result.message,
 							...(result.model !== undefined ? { modelName: result.model } : {}),
 							...(result.cwd !== undefined ? { cwd: result.cwd } : {}),
+							...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
 						});
 						if (!startResult.started) {
 							ws.send(
@@ -376,6 +389,7 @@ function startServer(
 						const enqueueResult = orchestrator.enqueue({
 							conversationId: result.conversationId,
 							text: result.text,
+							...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
 						});
 						if (enqueueResult.startedTurn) {
 							if (!state.chatSubscriptions.has(result.conversationId)) {
@@ -606,6 +620,55 @@ describe("chat ops (new orchestrator API)", () => {
 		ws.close();
 	});
 
+	test("chat.send threads workspaceId — orchestrator receives it", async () => {
+		const orch = fakeOrchestrator();
+		const registry = fakeRegistry([]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		ws.send(
+			JSON.stringify({
+				type: "chat.send",
+				conversationId: "c1",
+				message: "hello workspace",
+				workspaceId: "my-workspace",
+			}),
+		);
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(orch.startCalls).toHaveLength(1);
+		expect(orch.startCalls[0]?.workspaceId).toBe("my-workspace");
+
+		ws.close();
+	});
+
+	test("chat.send defaults workspaceId when omitted — orchestrator receives undefined", async () => {
+		const orch = fakeOrchestrator();
+		const registry = fakeRegistry([]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		ws.send(
+			JSON.stringify({
+				type: "chat.send",
+				conversationId: "c1",
+				message: "hello no workspace",
+			}),
+		);
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(orch.startCalls).toHaveLength(1);
+		expect(orch.startCalls[0]).not.toHaveProperty("workspaceId");
+
+		ws.close();
+	});
+
 	test("multi-client fan-out — two connections both subscribe the same conversation", async () => {
 		const orch = fakeOrchestratorWithBroadcast();
 		const registry = fakeRegistry([]);
@@ -756,6 +819,32 @@ describe("chat.queue (steering enqueue)", () => {
 		expect(orch.startCalls).toHaveLength(0);
 		// Fire-and-forget: no chat.error, no ack — only the catalog was sent.
 		// (startedTurn:true path auto-subscribes but emits nothing itself.)
+
+		ws.close();
+	});
+
+	test("chat.queue threads workspaceId — orchestrator receives it", async () => {
+		const orch = fakeOrchestrator(); // idle → startedTurn:true
+		const registry = fakeRegistry([]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		ws.send(
+			JSON.stringify({
+				type: "chat.queue",
+				conversationId: "c1",
+				text: "steer here",
+				workspaceId: "my-workspace",
+			}),
+		);
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(orch.enqueueCalls).toEqual([
+			{ conversationId: "c1", text: "steer here", workspaceId: "my-workspace" },
+		]);
 
 		ws.close();
 	});

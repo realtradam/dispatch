@@ -93,6 +93,31 @@ function createInMemoryStore(): ConversationStore & {
 		async setCompactPercent() {},
 		async forkHistory() {},
 		async setCompactedFrom() {},
+		async getWorkspace() {
+			return null;
+		},
+		async ensureWorkspace(id) {
+			return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async setWorkspaceTitle(id, title) {
+			return { id, title, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async setWorkspaceDefaultCwd(id, defaultCwd) {
+			return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+		},
+		async deleteWorkspace() {
+			return { closedCount: 0 };
+		},
+		async listWorkspaces() {
+			return [];
+		},
+		async getWorkspaceId() {
+			return "default";
+		},
+		async setWorkspaceId() {},
+		async getEffectiveCwd(conversationId) {
+			return cwdData.get(conversationId) ?? null;
+		},
 	};
 }
 

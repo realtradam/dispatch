@@ -52,6 +52,7 @@ describe("parseArgs", () => {
 				reasoningEffort: undefined,
 				showReasoning: false,
 				open: false,
+				workspaceId: undefined,
 			});
 		});
 
@@ -68,6 +69,7 @@ describe("parseArgs", () => {
 				reasoningEffort: undefined,
 				showReasoning: false,
 				open: false,
+				workspaceId: undefined,
 			});
 		});
 
@@ -103,6 +105,7 @@ describe("parseArgs", () => {
 				reasoningEffort: undefined,
 				showReasoning: true,
 				open: false,
+				workspaceId: undefined,
 			});
 		});
 
@@ -119,6 +122,7 @@ describe("parseArgs", () => {
 				reasoningEffort: "high",
 				showReasoning: false,
 				open: false,
+				workspaceId: undefined,
 			});
 		});
 
@@ -182,6 +186,35 @@ describe("parseArgs", () => {
 		it("errors when --conversation has no value", () => {
 			const result = parseArgs(["m", "--text", "x", "--conversation"], { defaultServer });
 			expect(result.kind).toBe("error");
+		});
+
+		it("parses --workspace flag", () => {
+			const result = parseArgs(["m", "--text", "x", "--workspace", "my-work"], { defaultServer });
+			expect(result).toEqual({
+				kind: "chat",
+				server: "http://localhost:24203",
+				modelName: "m",
+				text: "x",
+				file: undefined,
+				cwd: undefined,
+				conversationId: undefined,
+				reasoningEffort: undefined,
+				showReasoning: false,
+				open: false,
+				workspaceId: "my-work",
+			});
+		});
+
+		it("parses -w shorthand", () => {
+			const result = parseArgs(["m", "--text", "x", "-w", "ws"], { defaultServer });
+			expect(result.kind).toBe("chat");
+			if (result.kind === "chat") expect(result.workspaceId).toBe("ws");
+		});
+
+		it("errors when --workspace has no value", () => {
+			const result = parseArgs(["m", "--text", "x", "--workspace"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("--workspace requires a value");
 		});
 	});
 

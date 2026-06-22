@@ -29,8 +29,8 @@ const USAGE = `Usage:
   dispatch compact <conversationId> [--server <url>]
   dispatch read <conversationId> [--server <url>]
   dispatch open <conversationId> [--server <url>]
-  dispatch send <conversationId> --text "..." [--queue] [--open] [--cwd <dir>] [--effort <level>] [--server <url>]
-  dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--server <url>] [--show-reasoning] [--open]
+  dispatch send <conversationId> --text "..." [--queue] [--open] [--cwd <dir>] [--effort <level>] [--workspace <id>] [--server <url>]
+  dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--workspace <id>] [--server <url>] [--show-reasoning] [--open]
   dispatch --help
 
 Effort levels: low, medium, high (default), xhigh, max`;
@@ -171,6 +171,7 @@ async function main(): Promise<void> {
 					message: parsed.text,
 					...(parsed.cwd !== undefined && { cwd: parsed.cwd }),
 					...(parsed.reasoningEffort !== undefined && { reasoningEffort: parsed.reasoningEffort }),
+					...(parsed.workspaceId !== undefined && { workspaceId: parsed.workspaceId }),
 				};
 				const { events } = await streamChat(
 					{ fetchImpl: globalThis.fetch },

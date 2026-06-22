@@ -72,6 +72,31 @@ function fakeConversationStore(): ConversationStore {
 		async setCompactPercent() {},
 		async forkHistory() {},
 		async setCompactedFrom() {},
+		async getWorkspace() {
+			return null;
+		},
+		async ensureWorkspace() {
+			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async setWorkspaceTitle() {
+			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async setWorkspaceDefaultCwd() {
+			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+		},
+		async deleteWorkspace() {
+			return { closedCount: 0 };
+		},
+		async listWorkspaces() {
+			return [];
+		},
+		async getWorkspaceId() {
+			return "default";
+		},
+		async setWorkspaceId() {},
+		async getEffectiveCwd() {
+			return null;
+		},
 	};
 }
 
