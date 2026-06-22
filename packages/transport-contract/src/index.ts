@@ -85,11 +85,20 @@ export interface ChatRequest {
 /**
  * Response body for `GET /models` — the model catalog.
  *
- * Each entry is a model name in `<credentialName>/<model>` form: exactly the
- * string a client passes back as `ChatRequest.model`.
+ * Each entry in `models` is a model name in `<credentialName>/<model>` form:
+ * exactly the string a client passes back as `ChatRequest.model`.
+ * `modelInfo` is an optional map from the same `<credentialName>/<model>` key
+ * to model metadata (e.g. `contextWindow`). Additive — clients that only
+ * read `models` are unaffected.
  */
 export interface ModelsResponse {
 	readonly models: readonly string[];
+	readonly modelInfo?: Readonly<Record<string, ModelMetadata>>;
+}
+
+/** Per-model metadata returned alongside the model catalog. */
+export interface ModelMetadata {
+	readonly contextWindow?: number;
 }
 
 /**
@@ -583,17 +592,17 @@ export interface CompactResponse {
 }
 
 /**
- * Response for `GET /conversations/:id/compact-threshold` — the token count
+ * Response for `GET /conversations/:id/compact-percent` — the token count
  * at which automatic compaction triggers (0 = manual only).
  */
-export interface CompactThresholdResponse {
+export interface CompactPercentResponse {
 	readonly conversationId: string;
 	readonly threshold: number;
 }
 
 /**
- * Request body for `PUT /conversations/:id/compact-threshold`.
+ * Request body for `PUT /conversations/:id/compact-percent`.
  */
-export interface SetCompactThresholdRequest {
+export interface SetCompactPercentRequest {
 	readonly threshold: number;
 }

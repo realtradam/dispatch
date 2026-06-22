@@ -91,10 +91,10 @@ function createInMemoryStore(): ConversationStore & {
 		},
 		async setConversationStatus() {},
 		async replaceHistory() {},
-		async getCompactThreshold() {
+		async getCompactPercent() {
 			return null;
 		},
-		async setCompactThreshold() {},
+		async setCompactPercent() {},
 		async forkHistory() {},
 		async setCompactedFrom() {},
 	};
@@ -548,10 +548,10 @@ describe("turn-sealed event", () => {
 			},
 			async setConversationStatus() {},
 			async replaceHistory() {},
-			async getCompactThreshold() {
+			async getCompactPercent() {
 				return null;
 			},
-			async setCompactThreshold() {},
+			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
 		};
@@ -621,10 +621,10 @@ describe("turn-sealed event", () => {
 			},
 			async setConversationStatus() {},
 			async replaceHistory() {},
-			async getCompactThreshold() {
+			async getCompactPercent() {
 				return null;
 			},
-			async setCompactThreshold() {},
+			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
 		};
@@ -983,10 +983,10 @@ describe("turn metrics persistence", () => {
 			},
 			async setConversationStatus() {},
 			async replaceHistory() {},
-			async getCompactThreshold() {
+			async getCompactPercent() {
 				return null;
 			},
-			async setCompactThreshold() {},
+			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
 		};

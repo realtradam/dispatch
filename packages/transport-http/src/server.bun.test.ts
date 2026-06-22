@@ -66,10 +66,10 @@ function fakeConversationStore(): ConversationStore {
 		},
 		async setConversationStatus() {},
 		async replaceHistory() {},
-		async getCompactThreshold() {
+		async getCompactPercent() {
 			return null;
 		},
-		async setCompactThreshold() {},
+		async setCompactPercent() {},
 		async forkHistory() {},
 		async setCompactedFrom() {},
 	};
@@ -102,6 +102,9 @@ function fakeOrchestrator(): SessionOrchestrator {
 function fakeCredentialStore(): CredentialStore {
 	return {
 		resolve() {
+			return undefined;
+		},
+		async getModelInfo() {
 			return undefined;
 		},
 		async listCatalog() {

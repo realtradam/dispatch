@@ -55,7 +55,7 @@ export function reasoningEffortKey(conversationId: string): string {
 }
 
 export function compactThresholdKey(conversationId: string): string {
-	return `conv:${conversationId}:compact-threshold`;
+	return `conv:${conversationId}:compact-percent`;
 }
 
 export function metaKey(conversationId: string): string {

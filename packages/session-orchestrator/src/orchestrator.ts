@@ -6,6 +6,7 @@ import type {
 	ConversationStatus,
 	EventHookDescriptor,
 	Logger,
+	ModelInfo,
 	ProviderContract,
 	ProviderEvent,
 	ProviderStreamOptions,
@@ -248,6 +249,12 @@ export interface SessionOrchestratorDeps {
 	readonly resolveModel?: (
 		modelName: string,
 	) => { provider: ProviderContract; model: string } | undefined;
+	/**
+	 * Resolve full `ModelInfo` (including `contextWindow`) for a model name.
+	 * Used by the compaction service to calculate the auto-compact threshold
+	 * as a percentage of the context window.
+	 */
+	readonly resolveModelInfo?: (modelName: string) => Promise<ModelInfo | undefined>;
 	readonly runTurn: (input: RunTurnInput) => Promise<RunTurnResult>;
 	/**
 	 * Lazily resolves the message-queue service (the steering queue), or
@@ -519,7 +526,12 @@ export function createSessionOrchestrator(
 						// starts fresh either way.
 						const compaction = deps.resolveCompaction?.();
 						if (compaction !== undefined) {
-							void compaction.compact(conversationId, { auto: true }).catch(() => {});
+							void compaction
+								.compact(conversationId, {
+									auto: true,
+									...(payload.modelName !== undefined ? { modelName: payload.modelName } : {}),
+								})
+								.catch(() => {});
 						}
 					}
 				});
@@ -730,7 +742,7 @@ export function createWarmService(
 }
 
 const DEFAULT_KEEP_LAST_N = 10;
-const DEFAULT_COMPACT_THRESHOLD = 350000;
+const DEFAULT_COMPACT_PERCENT = 85;
 
 const COMPACTION_SYSTEM_PROMPT =
 	"You are a conversation summarizer. Summarize the following conversation concord concisely but comprehensively. " +
@@ -772,17 +784,28 @@ export function createCompactionService(
 				return { error: "conversation too short to compact" };
 			}
 
-			// Auto mode: check threshold (default 350k if not explicitly set;
-			// 0 explicitly disables).
+			// Auto mode: check if contextSize exceeds percent of contextWindow.
 			if (opts?.auto === true) {
-				const stored = await deps.conversationStore.getCompactThreshold(conversationId);
-				const threshold = stored ?? DEFAULT_COMPACT_THRESHOLD;
-				if (threshold <= 0) return { error: "auto-compact disabled" };
+				const stored = await deps.conversationStore.getCompactPercent(conversationId);
+				const percent = stored ?? DEFAULT_COMPACT_PERCENT;
+				if (percent <= 0) return { error: "auto-compact disabled" };
 				const metrics = await deps.conversationStore.loadMetrics(conversationId);
 				const lastTurn = metrics[metrics.length - 1];
 				if (lastTurn === undefined) return { error: "no metrics" };
-				const lastInputTokens = lastTurn.usage.inputTokens + (lastTurn.usage.cacheReadTokens ?? 0);
-				if (lastInputTokens < threshold) return { error: "threshold not exceeded" };
+				const contextSize = lastTurn.contextSize;
+				if (contextSize === undefined) return { error: "no context size" };
+
+				// Resolve the model's context window.
+				const modelName = opts.modelName;
+				if (modelName === undefined || deps.resolveModelInfo === undefined) {
+					return { error: "cannot resolve model info" };
+				}
+				const info = await deps.resolveModelInfo(modelName);
+				if (info?.contextWindow === undefined) {
+					return { error: "model context window unknown" };
+				}
+				const threshold = Math.floor(info.contextWindow * (percent / 100));
+				if (contextSize < threshold) return { error: "threshold not exceeded" };
 			}
 
 			// Split: old messages to summarize + recent messages to keep.

@@ -1,8 +1,8 @@
 import type { AgentEvent, HostAPI, Logger } from "@dispatch/kernel";
 import type {
 	CloseConversationResponse,
+	CompactPercentResponse,
 	CompactResponse,
-	CompactThresholdResponse,
 	ConversationHistoryResponse,
 	ConversationListResponse,
 	ConversationMetricsResponse,
@@ -14,7 +14,7 @@ import type {
 	OpenConversationResponse,
 	QueueResponse,
 	ReasoningEffortResponse,
-	SetCompactThresholdRequest,
+	SetCompactPercentRequest,
 	ThroughputResponse,
 	TitleResponse,
 	WarmResponse,
@@ -233,7 +233,17 @@ export function createApp(opts: CreateServerOptions): Hono {
 	app.get("/models", async (c) => {
 		try {
 			const models = await opts.credentialStore.listCatalog();
-			const body: ModelsResponse = { models };
+			const modelInfo: Record<string, { contextWindow?: number }> = {};
+			for (const modelName of models) {
+				const info = await opts.credentialStore.getModelInfo(modelName);
+				if (info?.contextWindow !== undefined) {
+					modelInfo[modelName] = { contextWindow: info.contextWindow };
+				}
+			}
+			const body: ModelsResponse = {
+				models,
+				...(Object.keys(modelInfo).length > 0 ? { modelInfo } : {}),
+			};
 			return c.json(body, 200);
 		} catch (err) {
 			log.error("models: failed to retrieve catalog", { err });
@@ -739,14 +749,14 @@ export function createApp(opts: CreateServerOptions): Hono {
 		return c.json(response, 200);
 	});
 
-	app.get("/conversations/:id/compact-threshold", async (c) => {
+	app.get("/conversations/:id/compact-percent", async (c) => {
 		const conversationId = c.req.param("id");
-		const threshold = (await opts.conversationStore.getCompactThreshold(conversationId)) ?? 0;
-		const response: CompactThresholdResponse = { conversationId, threshold };
+		const threshold = (await opts.conversationStore.getCompactPercent(conversationId)) ?? 0;
+		const response: CompactPercentResponse = { conversationId, threshold };
 		return c.json(response, 200);
 	});
 
-	app.put("/conversations/:id/compact-threshold", async (c) => {
+	app.put("/conversations/:id/compact-percent", async (c) => {
 		const conversationId = c.req.param("id");
 		let body: unknown;
 		try {
@@ -754,7 +764,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 		} catch {
 			return c.json({ error: "Invalid JSON body" }, 400);
 		}
-		const parsed = body as SetCompactThresholdRequest;
+		const parsed = body as SetCompactPercentRequest;
 		if (
 			typeof parsed.threshold !== "number" ||
 			!Number.isFinite(parsed.threshold) ||
@@ -763,9 +773,9 @@ export function createApp(opts: CreateServerOptions): Hono {
 			return c.json({ error: "threshold must be a non-negative number" }, 400);
 		}
 		const threshold = Math.floor(parsed.threshold);
-		await opts.conversationStore.setCompactThreshold(conversationId, threshold);
-		log.info("conversations: compact-threshold set", { conversationId, threshold });
-		const response: CompactThresholdResponse = { conversationId, threshold };
+		await opts.conversationStore.setCompactPercent(conversationId, threshold);
+		log.info("conversations: compact-percent set", { conversationId, threshold });
+		const response: CompactPercentResponse = { conversationId, threshold };
 		return c.json(response, 200);
 	});
 
