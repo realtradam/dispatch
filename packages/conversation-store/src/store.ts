@@ -105,10 +105,10 @@ export interface ConversationStore {
 	 * non-destructively before replacing it with a summary.
 	 */
 	readonly forkHistory: (sourceId: string, targetId: string) => Promise<void>;
-	/** Get the compact threshold (token count, 0 = manual only), or null if unset. */
-	readonly getCompactThreshold: (conversationId: string) => Promise<number | null>;
-	/** Set the compact threshold (token count, 0 = manual only). */
-	readonly setCompactThreshold: (conversationId: string, threshold: number) => Promise<void>;
+	/** Get the compact percent (0-100, 0 = manual only), or null if unset. */
+	readonly getCompactPercent: (conversationId: string) => Promise<number | null>;
+	/** Set the compact percent (0-100, 0 = manual only). */
+	readonly setCompactPercent: (conversationId: string, percent: number) => Promise<void>;
 	/**
 	 * Set the `compactedFrom` field on a conversation's metadata, pointing to
 	 * the archive conversation that holds the pre-compaction history.
@@ -620,17 +620,17 @@ export function createConversationStore(
 			if (effort !== null) await storage.set(reasoningEffortKey(targetId), effort);
 		},
 
-		async getCompactThreshold(conversationId) {
+		async getCompactPercent(conversationId) {
 			const raw = await storage.get(compactThresholdKey(conversationId));
 			if (raw === null) return null;
 			const n = Number.parseInt(raw, 10);
 			return Number.isNaN(n) ? null : n;
 		},
 
-		async setCompactThreshold(conversationId, threshold) {
-			await storage.set(compactThresholdKey(conversationId), String(threshold));
+		async setCompactPercent(conversationId, percent) {
+			await storage.set(compactThresholdKey(conversationId), String(percent));
 			if (logger !== undefined) {
-				logger.debug("compact-threshold set", { conversationId, threshold });
+				logger.debug("compact-percent set", { conversationId, percent });
 			}
 		},
 

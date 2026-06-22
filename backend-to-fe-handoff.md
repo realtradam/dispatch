@@ -45,7 +45,7 @@ after `runTurn` returns — backward compatible.
 |---|---|---|
 | `POST` | `/chat` | Stream a turn (NDJSON response, `X-Conversation-Id` header) |
 | `POST` | `/chat/warm` | Cache-warm probe |
-| `GET` | `/models` | List available models |
+| `GET` | `/models` | Model catalog (now includes `modelInfo` with `contextWindow` per model) |
 | `GET` | `/conversations` | List conversations (`?q=` prefix filter, `?status=active,idle` status filter) |
 | `GET` | `/conversations/:id` | Conversation history (`?sinceSeq=`, `?beforeSeq=`, `?limit=` windowing) |
 | `GET` | `/conversations/:id/metrics` | Per-turn metrics (tokens, timing) |
@@ -55,8 +55,8 @@ after `runTurn` returns — backward compatible.
 | `GET` | `/conversations/:id/reasoning-effort` | Per-conversation reasoning effort |
 | `PUT` | `/conversations/:id/reasoning-effort` | Set reasoning effort |
 | `GET` | `/conversations/:id/lsp` | LSP server status |
-| `GET` | `/conversations/:id/compact-threshold` | Auto-compact threshold (0=manual, null=default 350k) |
-| `PUT` | `/conversations/:id/compact-threshold` | Set auto-compact threshold |
+| `GET` | `/conversations/:id/compact-percent` | Auto-compact percent (0=manual, null=default 85%) |
+| `PUT` | `/conversations/:id/compact-percent` | Set auto-compact percent |
 | `GET` | `/conversations/:id/title` | Read conversation title |
 | `PUT` | `/conversations/:id/title` | Set conversation title |
 | `POST` | `/conversations/:id/close` | Close tab (abort turn + mark `closed`) |
@@ -119,13 +119,13 @@ interface CompactResponse {
   messagesKept: number;
 }
 
-interface CompactThresholdResponse {
+interface CompactPercentResponse {
   conversationId: string;
-  threshold: number;  // 0 = manual; null = default 350000
+  percent: number;  // 0 = manual; null = default 85
 }
 
-interface SetCompactThresholdRequest {
-  threshold: number;
+interface SetCompactPercentRequest {
+  percent: number;
 }
 ```
 

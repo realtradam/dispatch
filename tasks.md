@@ -589,8 +589,8 @@ conversation tab. Short-ID prefix resolution (4+ chars → full ID via `GET /con
      history with `[system: summary] + recent N` (ID stays the same so messaging
      is unaffected). `compactedFrom` chains backward: A → Y → X. Manual via
      `POST /conversations/:id/compact`; automatic after turn settles if
-     `compactThreshold` (default 350k) is exceeded. `GET/PUT
-     /conversations/:id/compact-threshold` for the setting. `conversation.compacted`
+     `compactThreshold` (default 85%) is exceeded. `GET/PUT
+     /conversations/:id/compact-percent` for the setting. `conversation.compacted`
      WS broadcast. CLI `dispatch compact <id>`. FE handoff:
      `frontend-compaction-handoff.md`.
 

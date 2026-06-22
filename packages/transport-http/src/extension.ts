@@ -32,7 +32,7 @@ export const manifest: Manifest = {
 			"/conversations/:id",
 			"/conversations/:id/close",
 			"/conversations/:id/compact",
-			"/conversations/:id/compact-threshold",
+			"/conversations/:id/compact-percent",
 			"/conversations/:id/cwd",
 			"/conversations/:id/last",
 			"/conversations/:id/lsp",

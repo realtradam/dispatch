@@ -11,7 +11,7 @@ Creates a linked chain of archives you can walk backward.
 Two modes:
 - **Manual**: `POST /conversations/:id/compact` — triggers immediately.
 - **Automatic**: after each turn settles, the backend checks if the last turn's
-  input tokens exceeded the per-conversation `compactThreshold` (default 350000).
+  input tokens exceeded the per-conversation `compactThreshold` (default 85).
   If so, compaction runs automatically (fire-and-forget, non-blocking).
 
 ## How compaction works — non-destructive, chained
@@ -84,13 +84,13 @@ export interface CompactResponse {
   readonly messagesKept: number;
 }
 
-export interface CompactThresholdResponse {
+export interface CompactPercentResponse {
   readonly conversationId: string;
-  readonly threshold: number;  // 0 = manual only; null = default 350000
+  readonly percent: number;  // 0 = manual only; null = default 85
 }
 
-export interface SetCompactThresholdRequest {
-  readonly threshold: number;
+export interface SetCompactPercentRequest {
+  readonly percent: number;
 }
 ```
 
@@ -107,24 +107,24 @@ Triggers compaction on demand. Optional JSON body:
 The conversation ID in the response is the same as the request — the ID doesn't
 change. The FE should reload the conversation history.
 
-409: `{ error: string }` — conversation is generating, too short, threshold not exceeded, etc.
+409: `{ error: string }` — conversation is generating, too short, percent not exceeded, etc.
 503: compaction service not available.
 
-## `GET /conversations/:id/compact-threshold` — read threshold
+## `GET /conversations/:id/compact-percent` — read percent
 
-200: `CompactThresholdResponse { conversationId, threshold }`
-- `threshold: 0` — auto-compact explicitly disabled (manual only).
-- `threshold: null` (not stored) — **default: 350000** (350k tokens). The FE
-  should display 350000 as the default value in the settings UI.
+200: `CompactPercentResponse { conversationId, percent }`
+- `percent: 0` — auto-compact explicitly disabled (manual only).
+- `percent: null` (not stored) — **default: 85** (85% tokens). The FE
+  should display 85 as the default value in the settings UI.
 - Any positive number — auto-compact triggers when the last turn's input tokens
   exceed this value.
 
-## `PUT /conversations/:id/compact-threshold` — set threshold
+## `PUT /conversations/:id/compact-percent` — set percent
 
-Body: `SetCompactThresholdRequest { threshold: number }`
+Body: `SetCompactPercentRequest { percent: number }`
 - `0` explicitly disables auto-compact.
-- Any positive number sets the trigger threshold.
-- To "reset to default", set it to 350000.
+- Any positive number sets the trigger percent.
+- To "reset to default", set it to 85.
 
 ## `conversation.compacted` WS message
 
@@ -141,9 +141,9 @@ No tab switching needed — the ID is the same.
    Show a loading indicator while waiting. On success, reload the conversation
    history (same ID — just re-fetch).
 
-2. **Settings UI** for compact threshold: `PUT /conversations/:id/compact-threshold`
-   with `{ threshold: number }`. A number input (0 = manual only, default 350000).
-   Read the current value via `GET /conversations/:id/compact-threshold`.
+2. **Settings UI** for compact percent: `PUT /conversations/:id/compact-percent`
+   with `{ percent: number }`. A number input (0 = manual only, default 85).
+   Read the current value via `GET /conversations/:id/compact-percent`.
 
 3. **Handle `conversation.compacted` WS messages**: reload the conversation
    history via `GET /conversations/:id` (same ID, no tab switch).

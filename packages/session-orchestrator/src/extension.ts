@@ -53,6 +53,10 @@ export function activate(host: HostAPI): void {
 			const provider = host.getProviders().get(r.providerId);
 			return provider ? { provider, model: r.model } : undefined;
 		},
+		resolveModelInfo: async (modelName: string) => {
+			const store = host.getService(credentialStoreHandle);
+			return store.getModelInfo(modelName);
+		},
 		applyToolsFilter: (assembly) => host.applyFilters(toolsFilter, assembly),
 		runTurn,
 		logger: host.logger,
@@ -115,6 +119,10 @@ export function activate(host: HostAPI): void {
 				if (r === undefined) return undefined;
 				const provider = host.getProviders().get(r.providerId);
 				return provider ? { provider, model: r.model } : undefined;
+			},
+			resolveModelInfo: async (modelName: string) => {
+				const store = host.getService(credentialStoreHandle);
+				return store.getModelInfo(modelName);
 			},
 			applyToolsFilter: (assembly) => host.applyFilters(toolsFilter, assembly),
 			runTurn,

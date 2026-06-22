@@ -1,4 +1,4 @@
-import type { ProviderContract } from "@dispatch/kernel";
+import type { ModelInfo, ProviderContract } from "@dispatch/kernel";
 
 export interface Credential {
 	readonly name: string;
@@ -24,6 +24,13 @@ export interface CredentialStore {
 	 * missing or has no listModels.
 	 */
 	listCatalog(): Promise<readonly string[]>;
+
+	/**
+	 * Returns the full `ModelInfo` for a `<credentialName>/<model>` string, or
+	 * undefined if unknown. Caches the result of `listModels` per credential.
+	 * Used to look up `contextWindow` for auto-compaction.
+	 */
+	getModelInfo(modelName: string): Promise<ModelInfo | undefined>;
 }
 
 export interface CredentialStoreDeps {
@@ -75,6 +82,23 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
 			}
 
 			return results;
+		},
+
+		async getModelInfo(modelName: string): Promise<ModelInfo | undefined> {
+			const slashIndex = modelName.indexOf("/");
+			if (slashIndex === -1) return undefined;
+			const credentialName = modelName.slice(0, slashIndex);
+			const modelId = modelName.slice(slashIndex + 1);
+			if (!modelId) return undefined;
+
+			const providerId = credentialMap.get(credentialName);
+			if (providerId === undefined) return undefined;
+
+			const provider = deps.getProvider(providerId);
+			if (provider?.listModels === undefined) return undefined;
+
+			const models = await provider.listModels();
+			return models.find((m) => m.id === modelId);
 		},
 	};
 }

@@ -13,6 +13,10 @@ import type { FetchLike } from "@dispatch/trace-replay";
 
 interface OpenAIModelEntry {
 	readonly id: string;
+	readonly context_length?: number;
+	readonly context_window?: number;
+	readonly max_context_length?: number;
+	readonly max_tokens?: number;
 }
 
 interface OpenAIModelListResponse {
@@ -21,10 +25,18 @@ interface OpenAIModelListResponse {
 
 /**
  * Pure mapping: raw OpenAI-compatible model list → ModelInfo[].
+ * Extracts `contextWindow` from common field names (providers vary).
  * Extracted for direct unit testing with no I/O.
  */
 export function parseModelList(data: readonly OpenAIModelEntry[]): readonly ModelInfo[] {
-	return data.map((entry) => ({ id: entry.id }));
+	return data.map((entry) => {
+		const contextWindow =
+			entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_tokens;
+		return {
+			id: entry.id,
+			...(contextWindow !== undefined ? { contextWindow } : {}),
+		};
+	});
 }
 
 export interface ListModelsConfig {

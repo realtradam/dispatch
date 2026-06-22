@@ -112,6 +112,8 @@ export interface ProviderStreamOptions {
 export interface ModelInfo {
 	readonly id: string;
 	readonly displayName?: string;
+	/** The model's max context window in tokens (e.g. 200000). Optional — providers that don't report it leave it undefined. */
+	readonly contextWindow?: number;
 }
 
 /**

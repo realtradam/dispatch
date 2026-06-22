@@ -139,10 +139,10 @@ function createFakeConversationStore(
 		},
 		async setConversationStatus() {},
 		async replaceHistory() {},
-		async getCompactThreshold() {
+		async getCompactPercent() {
 			return null;
 		},
-		async setCompactThreshold() {},
+		async setCompactPercent() {},
 		async forkHistory() {},
 		async setCompactedFrom() {},
 	};
@@ -241,6 +241,9 @@ function createFakeCredentialStore(models: string[]): CredentialStore {
 		resolve() {
 			return undefined;
 		},
+		async getModelInfo() {
+			return undefined;
+		},
 		async listCatalog() {
 			return models;
 		},
@@ -250,6 +253,9 @@ function createFakeCredentialStore(models: string[]): CredentialStore {
 function createThrowingCredentialStore(error: Error): CredentialStore {
 	return {
 		resolve() {
+			return undefined;
+		},
+		async getModelInfo() {
 			return undefined;
 		},
 		async listCatalog() {
@@ -876,10 +882,10 @@ describe("GET /conversations/:id", () => {
 				},
 				async setConversationStatus() {},
 				async replaceHistory() {},
-				async getCompactThreshold() {
+				async getCompactPercent() {
 					return null;
 				},
-				async setCompactThreshold() {},
+				async setCompactPercent() {},
 				async forkHistory() {},
 				async setCompactedFrom() {},
 			};
@@ -951,10 +957,10 @@ describe("GET /conversations/:id", () => {
 			},
 			async setConversationStatus() {},
 			async replaceHistory() {},
-			async getCompactThreshold() {
+			async getCompactPercent() {
 				return null;
 			},
-			async setCompactThreshold() {},
+			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
 		};
@@ -1095,10 +1101,10 @@ describe("GET /conversations/:id/metrics", () => {
 			},
 			async setConversationStatus() {},
 			async replaceHistory() {},
-			async getCompactThreshold() {
+			async getCompactPercent() {
 				return null;
 			},
-			async setCompactThreshold() {},
+			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
 		};
@@ -2072,10 +2078,10 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 			},
 			async setConversationStatus() {},
 			async replaceHistory() {},
-			async getCompactThreshold() {
+			async getCompactPercent() {
 				return null;
 			},
-			async setCompactThreshold() {},
+			async setCompactPercent() {},
 			async forkHistory() {},
 			async setCompactedFrom() {},
 		};
