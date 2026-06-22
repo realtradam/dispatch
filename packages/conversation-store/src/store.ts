@@ -11,6 +11,7 @@ import type {
 	TurnMetrics,
 } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
+import type { Workspace, WorkspaceEntry } from "@dispatch/wire";
 import {
 	CONVERSATION_INDEX_KEY,
 	chunkKey,
@@ -24,6 +25,7 @@ import {
 	parseSeq,
 	reasoningEffortKey,
 	seqKey,
+	workspaceKey,
 } from "./keys.js";
 import { reconcileWithReport } from "./reconcile.js";
 
@@ -75,6 +77,7 @@ export interface ConversationStore {
 	 */
 	readonly listConversations: (filter?: {
 		readonly status?: readonly ConversationStatus[];
+		readonly workspaceId?: string;
 	}) => Promise<readonly ConversationMeta[]>;
 	/** Single conversation metadata, or null if unknown. */
 	readonly getConversationMeta: (conversationId: string) => Promise<ConversationMeta | null>;
@@ -114,6 +117,57 @@ export interface ConversationStore {
 	 * the archive conversation that holds the pre-compaction history.
 	 */
 	readonly setCompactedFrom: (conversationId: string, newConversationId: string) => Promise<void>;
+	/**
+	 * Returns the workspace, or synthesizes `"default"` if `id === "default"`
+	 * and it was never persisted (title `"default"`, defaultCwd `null`,
+	 * timestamps `0`). Returns `null` for any other non-existent id.
+	 */
+	readonly getWorkspace: (id: string) => Promise<Workspace | null>;
+	/**
+	 * Create-on-miss: if absent, create with `title = opts.title ?? id`,
+	 * `defaultCwd = opts.defaultCwd ?? null`, `createdAt/lastActivityAt = now`.
+	 * If present, return as-is (ignore `opts`). The `"default"` workspace is
+	 * always returned as-is (never re-created). This is the `PUT
+	 * /workspaces/:id` handler.
+	 */
+	readonly ensureWorkspace: (
+		id: string,
+		opts?: { readonly title?: string; readonly defaultCwd?: string | null },
+	) => Promise<Workspace>;
+	/** Rename a workspace. Creates the workspace if missing. */
+	readonly setWorkspaceTitle: (id: string, title: string) => Promise<Workspace>;
+	/** Set/clear a workspace's default cwd. Creates the workspace if missing. */
+	readonly setWorkspaceDefaultCwd: (id: string, defaultCwd: string | null) => Promise<Workspace>;
+	/**
+	 * Delete a workspace: (1) find all conversations with `workspaceId === id`,
+	 * (2) set each to `status = "closed"` and reassign `workspaceId = "default"`,
+	 * (3) delete the workspace entity. Returns `closedCount`. Throws if `id
+	 * === "default"`.
+	 */
+	readonly deleteWorkspace: (id: string) => Promise<{ closedCount: number }>;
+	/**
+	 * All workspaces sorted by `lastActivityAt` descending. Each entry includes
+	 * `conversationCount`. Always includes `"default"` (synthesized if not
+	 * persisted, with the count of legacy/unassigned conversations).
+	 */
+	readonly listWorkspaces: () => Promise<readonly WorkspaceEntry[]>;
+	/**
+	 * Returns the conversation's workspaceId, or `"default"` if the
+	 * conversation has no workspaceId persisted (or doesn't exist).
+	 */
+	readonly getWorkspaceId: (conversationId: string) => Promise<string>;
+	/**
+	 * Persist the conversation's workspace assignment. If the conversation
+	 * doesn't exist yet, create a minimal metadata row (like
+	 * `setConversationStatus` does).
+	 */
+	readonly setWorkspaceId: (conversationId: string, workspaceId: string) => Promise<void>;
+	/**
+	 * Resolve the effective cwd: explicit conversation cwd (`getCwd`) →
+	 * workspace `defaultCwd` (`getWorkspaceId` + `getWorkspace`) → `null` (null
+	 * = use server default). Returns `null` when neither is set.
+	 */
+	readonly getEffectiveCwd: (conversationId: string) => Promise<string | null>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -160,6 +214,22 @@ interface ConversationMetaRow {
 	readonly title: string;
 	readonly status: ConversationStatus;
 	readonly compactedFrom?: string;
+	/**
+	 * The workspace this conversation belongs to. Absent on legacy rows
+	 * (read as `"default"`). Persisted only when explicitly assigned.
+	 */
+	readonly workspaceId?: string;
+}
+
+/**
+ * The persisted shape of a `Workspace` (JSON at `workspaceKey(id)`). The `id`
+ * is the key, so it is not duplicated in the row.
+ */
+interface WorkspaceRow {
+	readonly title: string;
+	readonly defaultCwd: string | null;
+	readonly createdAt: number;
+	readonly lastActivityAt: number;
 }
 
 /** Maximum title length (in characters) before truncation with an ellipsis. */
@@ -215,6 +285,7 @@ function parseMetaRow(raw: string): ConversationMetaRow | null {
 		title: row.title,
 		status,
 		...(row.compactedFrom !== undefined ? { compactedFrom: row.compactedFrom } : {}),
+		...(row.workspaceId !== undefined ? { workspaceId: row.workspaceId } : {}),
 	};
 }
 
@@ -225,7 +296,61 @@ function toMeta(id: string, row: ConversationMetaRow): ConversationMeta {
 		lastActivityAt: row.lastActivityAt,
 		title: row.title,
 		status: row.status,
+		workspaceId: row.workspaceId ?? "default",
 		...(row.compactedFrom !== undefined ? { compactedFrom: row.compactedFrom } : {}),
+	};
+}
+
+/**
+ * Validate a workspace slug: 1–40 chars, lowercase alphanumeric + internal
+ * hyphens (must start and end alphanumeric). The transport layer calls this
+ * to validate before hitting the store. Pure (input → boolean).
+ */
+export function isValidWorkspaceSlug(id: string): boolean {
+	return /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(id);
+}
+
+/** The always-present, non-deletable default workspace id. */
+const DEFAULT_WORKSPACE_ID = "default";
+
+/**
+ * Parse a persisted {@link WorkspaceRow}, returning `null` on any parse /
+ * shape failure so callers can treat a corrupt row as missing.
+ */
+function parseWorkspaceRow(raw: string): WorkspaceRow | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		typeof (parsed as WorkspaceRow).title !== "string" ||
+		typeof (parsed as WorkspaceRow).createdAt !== "number" ||
+		typeof (parsed as WorkspaceRow).lastActivityAt !== "number"
+	) {
+		return null;
+	}
+	const row = parsed as WorkspaceRow;
+	// `defaultCwd` may be null OR a string; treat anything else as null.
+	const defaultCwd = typeof row.defaultCwd === "string" ? row.defaultCwd : null;
+	return {
+		title: row.title,
+		defaultCwd,
+		createdAt: row.createdAt,
+		lastActivityAt: row.lastActivityAt,
+	};
+}
+
+function toWorkspace(id: string, row: WorkspaceRow): Workspace {
+	return {
+		id,
+		title: row.title,
+		defaultCwd: row.defaultCwd,
+		createdAt: row.createdAt,
+		lastActivityAt: row.lastActivityAt,
 	};
 }
 
@@ -259,6 +384,36 @@ export function createConversationStore(
 		await storage.set(CONVERSATION_INDEX_KEY, JSON.stringify(ids));
 	}
 
+	/**
+	 * Read a persisted {@link WorkspaceRow} by id, or `null` if absent/corrupt.
+	 */
+	async function readWorkspaceRow(id: string): Promise<WorkspaceRow | null> {
+		const raw = await storage.get(workspaceKey(id));
+		if (raw === null) return null;
+		return parseWorkspaceRow(raw);
+	}
+
+	/**
+	 * Bump a workspace's `lastActivityAt` to `ts`. Creates the workspace row on
+	 * miss (with `title = id`, `defaultCwd = null`, `createdAt/lastActivityAt
+	 * = ts`) so that the first activity in any workspace — including the
+	 * synthesized `"default"` — is recorded. Does NOT touch `title` or
+	 * `defaultCwd` on an existing row.
+	 */
+	async function bumpWorkspaceLastActivityAt(workspaceId: string, ts: number): Promise<void> {
+		const existing = await readWorkspaceRow(workspaceId);
+		const row: WorkspaceRow =
+			existing === null
+				? { title: workspaceId, defaultCwd: null, createdAt: ts, lastActivityAt: ts }
+				: {
+						title: existing.title,
+						defaultCwd: existing.defaultCwd,
+						createdAt: existing.createdAt,
+						lastActivityAt: ts,
+					};
+		await storage.set(workspaceKey(workspaceId), JSON.stringify(row));
+	}
+
 	return {
 		async append(conversationId, messages) {
 			const raw = await storage.get(seqKey(conversationId));
@@ -286,6 +441,7 @@ export function createConversationStore(
 			// Metadata upsert: track createdAt/lastActivityAt/title and keep the
 			// conversation discoverable in the index.
 			const ts = now();
+			let conversationWorkspaceId = DEFAULT_WORKSPACE_ID;
 			const metaRaw = await storage.get(metaKey(conversationId));
 			if (metaRaw === null) {
 				const row: ConversationMetaRow = {
@@ -309,6 +465,7 @@ export function createConversationStore(
 					await storage.set(metaKey(conversationId), JSON.stringify(row));
 					await ensureInIndex(conversationId);
 				} else {
+					conversationWorkspaceId = existing.workspaceId ?? DEFAULT_WORKSPACE_ID;
 					const title =
 						existing.title === "Untitled" || existing.title === ""
 							? extractTitle(messages)
@@ -318,10 +475,16 @@ export function createConversationStore(
 						lastActivityAt: ts,
 						title,
 						status: existing.status,
+						...(existing.compactedFrom !== undefined
+							? { compactedFrom: existing.compactedFrom }
+							: {}),
+						...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
 					};
 					await storage.set(metaKey(conversationId), JSON.stringify(row));
 				}
 			}
+			// Bump the owning workspace's lastActivityAt to this append's time.
+			await bumpWorkspaceLastActivityAt(conversationWorkspaceId, ts);
 		},
 
 		async load(conversationId) {
@@ -462,6 +625,7 @@ export function createConversationStore(
 			}
 
 			const statusFilter = filter?.status;
+			const workspaceFilter = filter?.workspaceId;
 			const metas: ConversationMeta[] = [];
 			for (const id of ids) {
 				const metaRaw = await storage.get(metaKey(id));
@@ -469,6 +633,10 @@ export function createConversationStore(
 				const row = parseMetaRow(metaRaw);
 				if (row === null) continue;
 				if (statusFilter !== undefined && !statusFilter.includes(row.status)) continue;
+				if (workspaceFilter !== undefined) {
+					const wsId = row.workspaceId ?? DEFAULT_WORKSPACE_ID;
+					if (wsId !== workspaceFilter) continue;
+				}
 				metas.push(toMeta(id, row));
 			}
 			// Sort by lastActivityAt descending (most recent first). Stable sort
@@ -518,6 +686,8 @@ export function createConversationStore(
 				lastActivityAt: existing.lastActivityAt,
 				title,
 				status: existing.status,
+				...(existing.compactedFrom !== undefined ? { compactedFrom: existing.compactedFrom } : {}),
+				...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
 			};
 			await storage.set(metaKey(conversationId), JSON.stringify(row));
 		},
@@ -562,6 +732,8 @@ export function createConversationStore(
 				lastActivityAt: existing.lastActivityAt,
 				title: existing.title,
 				status,
+				...(existing.compactedFrom !== undefined ? { compactedFrom: existing.compactedFrom } : {}),
+				...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
 			};
 			await storage.set(metaKey(conversationId), JSON.stringify(row));
 		},
@@ -607,6 +779,7 @@ export function createConversationStore(
 						...(existing.compactedFrom !== undefined
 							? { compactedFrom: existing.compactedFrom }
 							: {}),
+						...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
 					};
 					await storage.set(metaKey(targetId), JSON.stringify(row));
 				}
@@ -648,6 +821,242 @@ export function createConversationStore(
 				metaKey(conversationId),
 				JSON.stringify({ ...row, compactedFrom: newConversationId }),
 			);
+		},
+
+		async getWorkspace(id) {
+			const row = await readWorkspaceRow(id);
+			if (row !== null) return toWorkspace(id, row);
+			// Synthesize the always-present "default" workspace when it was
+			// never persisted (title "default", defaultCwd null, timestamps 0).
+			if (id === DEFAULT_WORKSPACE_ID) {
+				return {
+					id: DEFAULT_WORKSPACE_ID,
+					title: DEFAULT_WORKSPACE_ID,
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			}
+			return null;
+		},
+
+		async ensureWorkspace(id, opts) {
+			const existing = await readWorkspaceRow(id);
+			if (existing !== null) return toWorkspace(id, existing);
+			// Absent — create with defaults. The synthesized "default" is also
+			// materialized here when first explicitly ensured.
+			const ts = now();
+			const row: WorkspaceRow = {
+				title: opts?.title ?? id,
+				defaultCwd: opts?.defaultCwd ?? null,
+				createdAt: ts,
+				lastActivityAt: ts,
+			};
+			await storage.set(workspaceKey(id), JSON.stringify(row));
+			return toWorkspace(id, row);
+		},
+
+		async setWorkspaceTitle(id, title) {
+			const existing = await readWorkspaceRow(id);
+			const ts = now();
+			const base =
+				existing === null
+					? {
+							title: id,
+							defaultCwd: null as string | null,
+							createdAt: ts,
+							lastActivityAt: ts,
+						}
+					: existing;
+			const row: WorkspaceRow = {
+				title,
+				defaultCwd: base.defaultCwd,
+				createdAt: base.createdAt,
+				lastActivityAt: base.lastActivityAt,
+			};
+			await storage.set(workspaceKey(id), JSON.stringify(row));
+			return toWorkspace(id, row);
+		},
+
+		async setWorkspaceDefaultCwd(id, defaultCwd) {
+			const existing = await readWorkspaceRow(id);
+			const ts = now();
+			const base =
+				existing === null
+					? {
+							title: id,
+							defaultCwd: null as string | null,
+							createdAt: ts,
+							lastActivityAt: ts,
+						}
+					: existing;
+			const row: WorkspaceRow = {
+				title: base.title,
+				defaultCwd,
+				createdAt: base.createdAt,
+				lastActivityAt: base.lastActivityAt,
+			};
+			await storage.set(workspaceKey(id), JSON.stringify(row));
+			return toWorkspace(id, row);
+		},
+
+		async deleteWorkspace(id) {
+			if (id === DEFAULT_WORKSPACE_ID) {
+				throw new Error('The "default" workspace cannot be deleted.');
+			}
+			// (1) Find all conversations with workspaceId === id, (2) set each
+			// to status "closed" and reassign workspaceId to "default".
+			let closedCount = 0;
+			const indexRaw = await storage.get(CONVERSATION_INDEX_KEY);
+			if (indexRaw !== null) {
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(indexRaw);
+				} catch {
+					parsed = [];
+				}
+				const ids = Array.isArray(parsed)
+					? (parsed.filter((v) => typeof v === "string") as string[])
+					: [];
+				for (const convId of ids) {
+					const metaRaw = await storage.get(metaKey(convId));
+					if (metaRaw === null) continue;
+					const row = parseMetaRow(metaRaw);
+					if (row === null) continue;
+					const wsId = row.workspaceId ?? DEFAULT_WORKSPACE_ID;
+					if (wsId !== id) continue;
+					const updated: ConversationMetaRow = {
+						createdAt: row.createdAt,
+						lastActivityAt: row.lastActivityAt,
+						title: row.title,
+						status: "closed",
+						...(row.compactedFrom !== undefined ? { compactedFrom: row.compactedFrom } : {}),
+						workspaceId: DEFAULT_WORKSPACE_ID,
+					};
+					await storage.set(metaKey(convId), JSON.stringify(updated));
+					closedCount++;
+				}
+			}
+			// (3) Delete the workspace entity.
+			await storage.delete(workspaceKey(id));
+			return { closedCount };
+		},
+
+		async listWorkspaces() {
+			// Collect persisted workspace rows via the `workspace:` key prefix.
+			const wsPrefix = "workspace:";
+			const wsKeys = await storage.keys(wsPrefix);
+			const byId = new Map<string, Workspace>();
+			for (const key of wsKeys) {
+				// Key shape: `workspace:<id>`. Strip the prefix to recover the id.
+				const id = key.slice(wsPrefix.length);
+				if (id.length === 0) continue;
+				const raw = await storage.get(key);
+				if (raw === null) continue;
+				const row = parseWorkspaceRow(raw);
+				if (row === null) continue;
+				byId.set(id, toWorkspace(id, row));
+			}
+			// Always include "default" (synthesized if not persisted).
+			if (!byId.has(DEFAULT_WORKSPACE_ID)) {
+				byId.set(DEFAULT_WORKSPACE_ID, {
+					id: DEFAULT_WORKSPACE_ID,
+					title: DEFAULT_WORKSPACE_ID,
+					defaultCwd: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				});
+			}
+			// Count conversations per workspace by scanning the index + meta.
+			const counts = new Map<string, number>();
+			for (const id of byId.keys()) counts.set(id, 0);
+			const indexRaw = await storage.get(CONVERSATION_INDEX_KEY);
+			if (indexRaw !== null) {
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(indexRaw);
+				} catch {
+					parsed = [];
+				}
+				const ids = Array.isArray(parsed)
+					? (parsed.filter((v) => typeof v === "string") as string[])
+					: [];
+				for (const convId of ids) {
+					const metaRaw = await storage.get(metaKey(convId));
+					if (metaRaw === null) continue;
+					const row = parseMetaRow(metaRaw);
+					if (row === null) continue;
+					const wsId = row.workspaceId ?? DEFAULT_WORKSPACE_ID;
+					counts.set(wsId, (counts.get(wsId) ?? 0) + 1);
+				}
+			}
+			const entries: WorkspaceEntry[] = [];
+			for (const [id, ws] of byId) {
+				entries.push({ ...ws, conversationCount: counts.get(id) ?? 0 });
+			}
+			// Sort by lastActivityAt descending (most recent first). Stable sort
+			// keeps insertion order for ties.
+			return entries.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+		},
+
+		async getWorkspaceId(conversationId) {
+			const raw = await storage.get(metaKey(conversationId));
+			if (raw === null) return DEFAULT_WORKSPACE_ID;
+			const row = parseMetaRow(raw);
+			if (row === null) return DEFAULT_WORKSPACE_ID;
+			return row.workspaceId ?? DEFAULT_WORKSPACE_ID;
+		},
+
+		async setWorkspaceId(conversationId, workspaceId) {
+			const ts = now();
+			const raw = await storage.get(metaKey(conversationId));
+			if (raw === null) {
+				// Conversation doesn't exist yet — create a minimal metadata row
+				// (like setConversationStatus does), with the workspace assigned.
+				const row: ConversationMetaRow = {
+					createdAt: ts,
+					lastActivityAt: ts,
+					title: "Untitled",
+					status: "idle",
+					workspaceId,
+				};
+				await storage.set(metaKey(conversationId), JSON.stringify(row));
+				await ensureInIndex(conversationId);
+				return;
+			}
+			const existing = parseMetaRow(raw);
+			if (existing === null) {
+				const row: ConversationMetaRow = {
+					createdAt: ts,
+					lastActivityAt: ts,
+					title: "Untitled",
+					status: "idle",
+					workspaceId,
+				};
+				await storage.set(metaKey(conversationId), JSON.stringify(row));
+				await ensureInIndex(conversationId);
+				return;
+			}
+			const row: ConversationMetaRow = {
+				createdAt: existing.createdAt,
+				lastActivityAt: existing.lastActivityAt,
+				title: existing.title,
+				status: existing.status,
+				...(existing.compactedFrom !== undefined ? { compactedFrom: existing.compactedFrom } : {}),
+				workspaceId,
+			};
+			await storage.set(metaKey(conversationId), JSON.stringify(row));
+		},
+
+		async getEffectiveCwd(conversationId) {
+			// Explicit per-conversation cwd wins.
+			const explicit = await storage.get(cwdKey(conversationId));
+			if (explicit !== null) return explicit;
+			// Otherwise fall through to the workspace's defaultCwd.
+			const workspaceId = await this.getWorkspaceId(conversationId);
+			const workspace = await this.getWorkspace(workspaceId);
+			if (workspace === null) return null;
+			return workspace.defaultCwd;
 		},
 	};
 }

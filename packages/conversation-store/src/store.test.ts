@@ -1025,6 +1025,7 @@ describe("ConversationStore conversation metadata + list + title", () => {
 			lastActivityAt: 12345,
 			title: "my title",
 			status: "idle",
+			workspaceId: "default",
 		});
 	});
 
@@ -1042,6 +1043,7 @@ describe("ConversationStore conversation metadata + list + title", () => {
 			lastActivityAt: 7777,
 			title: "hello",
 			status: "idle",
+			workspaceId: "default",
 		});
 	});
 
@@ -1072,6 +1074,7 @@ describe("ConversationStore conversation metadata + list + title", () => {
 			lastActivityAt: 5000,
 			title: "preset title",
 			status: "idle",
+			workspaceId: "default",
 		});
 		// And the new conversation is discoverable in the index.
 		const list = await store.listConversations();
@@ -1175,6 +1178,7 @@ describe("ConversationStore conversation metadata + list + title", () => {
 			lastActivityAt: 1000,
 			title: "persisted",
 			status: "idle",
+			workspaceId: "default",
 		});
 		const list = await store2.listConversations();
 		expect(list).toHaveLength(1);

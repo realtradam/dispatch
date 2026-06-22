@@ -522,6 +522,12 @@ export interface ConversationMeta {
 	readonly title: string;
 	readonly status: ConversationStatus;
 	/**
+	 * The workspace this conversation belongs to. Always present; reads as
+	 * `"default"` for legacy conversations that were never explicitly assigned.
+	 * Conversations created with no `workspaceId` default to `"default"`.
+	 */
+	readonly workspaceId: string;
+	/**
 	 * Set on a compacted conversation: points to the archive conversation ID
 	 * that holds the full pre-compaction history. Absent on conversations
 	 * that have never been compacted.
@@ -543,4 +549,38 @@ export interface CompactionResult {
 	readonly newConversationId: string;
 	readonly messagesSummarized: number;
 	readonly messagesKept: number;
+}
+
+// ─── Workspaces ──────────────────────────────────────────────────────────────
+
+/**
+ * A named, URL-driven grouping of conversations that owns a default cwd.
+ * Every conversation belongs to exactly one workspace; conversations that
+ * haven't set their own per-conversation cwd inherit `defaultCwd`.
+ *
+ * Workspaces are backend-owned (so cross-device just works): the workspace
+ * entity and each conversation's `workspaceId` live server-side. The
+ * `"default"` workspace is always present and non-deletable; conversations
+ * created with no `workspaceId` are assigned to `"default"`.
+ */
+export interface Workspace {
+	/** The URL slug (immutable). Lowercase `[a-z0-9-]`, 1–40 chars. */
+	readonly id: string;
+	/** Display title (editable). Defaults to `id` on creation. */
+	readonly title: string;
+	/** The workspace's default cwd, or `null` (fall through to server default). */
+	readonly defaultCwd: string | null;
+	/** Epoch-ms when the workspace was first created. */
+	readonly createdAt: number;
+	/** Epoch-ms of the most recent conversation activity in this workspace. */
+	readonly lastActivityAt: number;
+}
+
+/**
+ * A workspace entry in the list response (`GET /workspaces`) — a `Workspace`
+ * plus a conversation count.
+ */
+export interface WorkspaceEntry extends Workspace {
+	/** Number of conversations assigned to this workspace. */
+	readonly conversationCount: number;
 }

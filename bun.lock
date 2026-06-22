@@ -41,6 +41,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/wire": "workspace:*",
       },
     },
     "packages/credential-store": {
@@ -259,7 +260,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.12.0",
+      "version": "0.16.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
@@ -296,7 +297,7 @@
     },
     "packages/wire": {
       "name": "@dispatch/wire",
-      "version": "0.8.0",
+      "version": "0.12.0",
     },
   },
   "packages": {

@@ -62,4 +62,8 @@ export function metaKey(conversationId: string): string {
 	return `conv:${conversationId}:meta`;
 }
 
+export function workspaceKey(workspaceId: string): string {
+	return `workspace:${workspaceId}`;
+}
+
 export const CONVERSATION_INDEX_KEY = "conv-index";
