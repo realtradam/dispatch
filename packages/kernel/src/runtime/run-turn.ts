@@ -526,6 +526,23 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				resultMessages.push(msg);
 			}
 
+			// Incremental persistence: notify the caller that this step's
+			// messages are finalized. The caller can persist them immediately
+			// (assigning seq numbers during generation). The messages are the
+			// SAME objects in resultMessages — the caller must NOT double-persist.
+			if (input.onStepComplete !== undefined) {
+				const stepMessages: ChatMessage[] = [];
+				if (stepResult.assistantMessage !== undefined) {
+					stepMessages.push(stepResult.assistantMessage);
+				}
+				for (const msg of stepResult.toolMessages) {
+					stepMessages.push(msg);
+				}
+				if (stepMessages.length > 0) {
+					await input.onStepComplete(stepMessages);
+				}
+			}
+
 			if (signal.aborted) {
 				finishReason = "aborted";
 				break;

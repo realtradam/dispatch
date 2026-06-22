@@ -574,7 +574,7 @@ describe("turn-sealed event", () => {
 			},
 		});
 
-		expect(ordering).toEqual(["append", "appendMetrics", "turn-sealed"]);
+		expect(ordering).toEqual(["append", "append", "appendMetrics", "turn-sealed"]);
 	});
 
 	it("does not emit turn-sealed when append throws — emits error event instead", async () => {

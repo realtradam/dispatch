@@ -457,10 +457,29 @@ export function createSessionOrchestrator(
 					...(drainSteering !== undefined ? { drainSteering } : {}),
 				};
 
-				const result = await deps.runTurn(opts);
+				// Persist the user message at turn start so it has a seq
+				// number before the first step generates. This enables the
+				// FE to syncTail during generation (CR-6).
+				await deps.conversationStore.append(conversationId, [userMsg]);
 
-				const toPersist: ChatMessage[] = [userMsg, ...result.messages];
-				await deps.conversationStore.append(conversationId, toPersist);
+				let stepsPersisted = false;
+				const result = await deps.runTurn({
+					...opts,
+					// Incremental persistence: persist each step's messages
+					// as they are finalized. Seq numbers are assigned during
+					// generation, so the FE can GET /conversations/:id?sinceSeq=N
+					// mid-turn and pick up committed chunks (CR-6).
+					onStepComplete: async (stepMessages) => {
+						await deps.conversationStore.append(conversationId, stepMessages);
+						stepsPersisted = true;
+					},
+				});
+
+				// Fallback: if onStepComplete was never called (e.g., a fake
+				// runTurn in tests), persist all result messages as a batch.
+				if (!stepsPersisted && result.messages.length > 0) {
+					await deps.conversationStore.append(conversationId, result.messages);
+				}
 
 				const turnMetrics = metrics.build(turnId);
 				await deps.conversationStore.appendMetrics(conversationId, turnMetrics);
