@@ -530,22 +530,41 @@ conversation tab. Short-ID prefix resolution (4+ chars → full ID via `GET /con
   → `{content:""}`, `POST /conversations/:id/open` → `{conversationId}`.
 - [ ] Live-verify end-to-end (CLI → real conversation → FE tab open).
 
-## Workspaces — FE design response (in review)
+## Workspaces (DONE)
 Cross-repo design ask from `../dispatch-web` (`backend-handoff-workspaces.md`).
-Outbound courier: `frontend-workspaces-handoff.md` (final shapes + Q1–Q8). Status:
-**contracts finalized, awaiting user approval to implement.**
+Outbound courier: `frontend-workspaces-handoff.md` (final shapes + Q1–Q8).
 - **Boundary decision:** workspaces live inside `conversation-store` (metadata +
   cwd persistence owner); no new extension. Single owner-agent for all workspace
   storage + service methods.
 - **Versions:** `@dispatch/wire` `0.11.0→0.12.0`, `@dispatch/transport-contract`
-  `0.15.0→0.16.0`, `@dispatch/ui-contract` unchanged.
+  `0.15.0→0.16.0`, `@dispatch/ui-contract` unchanged. Kernel re-exports
+  `Workspace`/`WorkspaceEntry`.
 - **Key decisions:** `DELETE /workspaces/:id` closes all conversations (status→
   "closed") + reassigns to "default" + deletes workspace; auto-create workspace on
   turn start if missing; `PUT /workspaces/:id` create-on-miss with optional
   `title`/`defaultCwd`; `DELETE /conversations/:id/cwd` to clear explicit cwd;
   `GET /conversations/:id/lsp` roots at effective cwd; WS lifecycle push deferred.
-- **Waves:** Wave 0 (contracts, orchestrator) → Wave 1 (conversation-store) →
-  Wave 2 (session-orchestrator) → Wave 3 (transport-http + transport-ws + cli, parallel).
+- **Waves:**
+  - **Wave 0 (orchestrator):** contracts (wire `0.12.0` + transport-contract
+    `0.16.0` + kernel re-exports). tsc + biome clean.
+  - **Wave 1 (conversation-store):** workspace persistence + service methods
+    (`getWorkspace`, `ensureWorkspace`, `setWorkspaceTitle`, `setWorkspaceDefaultCwd`,
+    `deleteWorkspace`, `listWorkspaces`, `getWorkspaceId`, `setWorkspaceId`,
+    `getEffectiveCwd`, `isValidWorkspaceSlug`); `listConversations` filter;
+    `forkHistory`/`replaceHistory` preserve `workspaceId`. 111 bun tests. CRs
+    (kernel re-exports, `bun install`) resolved by orchestrator.
+  - **Wave 2 (session-orchestrator):** `workspaceId` on `StartTurnInput`/
+    `EnqueueInput`; effective cwd resolution (`getCwd` → `getEffectiveCwd`); auto-
+    create workspace on turn start; warm parity. 93 vitest (+8).
+  - **Wave 3 (parallel):** `transport-http` (workspace routes, `workspaceId`
+    threading, `?workspaceId=` filter, `DELETE /conversations/:id/cwd`, effective
+    cwd for LSP, slug validation; 166 tests), `transport-ws` (`workspaceId` on
+    `chat.send`/`chat.queue`; 32 tests), `cli` (`--workspace`/`-w` flag; 123 tests).
+  - FE handoff sent to agent 4091 via `dispatch send --queue` (non-blocking).
+- Verified: full-graph `tsc -b` EXIT 0, biome clean (328 files), **1283 vitest +
+  199 transport bun** pass (1 pre-existing `tool-shell` failure unrelated).
+- [ ] Live-verify (workspace CRUD + cwd inheritance + LSP root + delete cascade).
+- [ ] Rebuild `dist/` for FE to re-pin `file:` deps.
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled
