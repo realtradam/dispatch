@@ -563,8 +563,12 @@ Outbound courier: `frontend-workspaces-handoff.md` (final shapes + Q1–Q8).
   - FE handoff sent to agent 4091 via `dispatch send --queue` (non-blocking).
 - Verified: full-graph `tsc -b` EXIT 0, biome clean (328 files), **1283 vitest +
   199 transport bun** pass (1 pre-existing `tool-shell` failure unrelated).
-- [ ] Live-verify (workspace CRUD + cwd inheritance + LSP root + delete cascade).
-- [ ] Rebuild `dist/` for FE to re-pin `file:` deps.
+- **LIVE-VERIFIED** against dev stack (`bin/up`): 11/11 workspace checks pass —
+  create-on-miss, rename, set default-cwd, invalid-slug 400, unknown 404, delete-
+  default 409, chat with workspaceId stamps conversation, workspace filter, cwd
+  inheritance (null = inheriting), delete cascade (closedCount:1, workspace→404).
+- `dist/` rebuilt for FE (wire + transport-contract + kernel .d.ts contain Workspace
+  types). FE agent 4091 notified twice (handoff + dist-ready).
 
 ## Open items
 - **`prefix.fingerprint` / `warm|real` cache-bust attributes (deferred):** decoupled
