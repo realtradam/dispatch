@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1332 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1396 vitest** green.
 
 ## LSP cwd resolution — server-default fallthrough + workspace assignment (DONE)
 Bug: `GET /conversations/:id/lsp` called `getEffectiveCwd` directly, which falls through
@@ -757,3 +757,31 @@ sealed → the FE spinner spun forever AND the conversation was bricked (next `c
 - [ ] **Live-verify** (needs a fresh `bin/up` — the dev stack is currently wedged, the very symptom
   of this bug): start a hanging tool (`run_shell` sleep/grandchild), Stop, then send a NEW message →
   it must be ACCEPTED (conversation not bricked) and the spinner clears.
+
+## System prompt builder — template-based system context (DONE)
+Design: `notes/system-prompt-design.md`. FE courier: `frontend-system-prompt-handoff.md`.
+Problem: no system prompt was sent to the provider for regular turns (the messages array
+started with the user message; `providerOpts.systemPrompt` was never set). This adds a
+template-based system prompt builder with variable placeholders (`[type:name]`) and
+conditionals (`[if]`/`[else]`/`[endif]`).
+- **Cache constraint (critical):** the system prompt is constructed ONCE (first turn of
+  a new conversation) and persisted. Reused on all subsequent turns (no reconstruction —
+  cache-safe). Reconstructed only on **compaction** (fresh variable resolution + compaction
+  instructions appended).
+- **Variable types:** `system:time/date/os/hostname`, `prompt:cwd/model/conversation_id`,
+  `git:branch/status`, `file:<path>` (dynamic — any path).
+- **Wave 0 (orchestrator, contracts):** `@dispatch/transport-contract` `0.17.0→0.18.0` —
+  `SystemPromptTemplateResponse`, `SetSystemPromptTemplateRequest`, `SystemPromptVariable`,
+  `SystemPromptVariablesResponse`.
+- **Wave 1 — `system-prompt` (NEW ext):** pure parser (29 tests) + variable resolver
+  (injected adapters, 12 tests) + catalog (3 tests) + service handle (`construct` +
+  `get` + `getTemplate` + `setTemplate`, 8 tests). 52 tests total. Default template:
+  persona + AGENTS.md if exists + cwd.
+- **Wave 2 (parallel):** `session-orchestrator` (wire service: construct on first turn,
+  get on subsequent, construct+append on compaction; 12 tests) + `transport-http`
+  (GET/PUT `/system-prompt`, GET `/system-prompt/variables`; 6 tests).
+- **Wave 3 — host-bin:** registered `system-prompt` in `CORE_EXTENSIONS`.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1396 vitest** pass.
+- [ ] Live-verify (boot smoke: extension activates, `GET /system-prompt` returns default
+  template, `GET /system-prompt/variables` returns catalog).
+- [x] **FE courier** sent to FE agent `ffe3`: `frontend-system-prompt-handoff.md`.
