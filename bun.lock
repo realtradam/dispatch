@@ -189,6 +189,14 @@
         "@dispatch/ui-contract": "workspace:*",
       },
     },
+    "packages/system-prompt": {
+      "name": "@dispatch/system-prompt",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
+      },
+    },
     "packages/throughput-store": {
       "name": "@dispatch/throughput-store",
       "version": "0.0.0",
@@ -260,7 +268,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.16.0",
+      "version": "0.18.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
@@ -356,6 +364,8 @@
     "@dispatch/surface-loaded-extensions": ["@dispatch/surface-loaded-extensions@workspace:packages/surface-loaded-extensions"],
 
     "@dispatch/surface-registry": ["@dispatch/surface-registry@workspace:packages/surface-registry"],
+
+    "@dispatch/system-prompt": ["@dispatch/system-prompt@workspace:packages/system-prompt"],
 
     "@dispatch/throughput-store": ["@dispatch/throughput-store@workspace:packages/throughput-store"],
 
