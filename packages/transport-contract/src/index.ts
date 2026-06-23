@@ -277,6 +277,29 @@ export interface SetReasoningEffortRequest {
 	readonly reasoningEffort: ReasoningEffort;
 }
 
+// ─── Per-conversation model ──────────────────────────────────────────────────
+
+/**
+ * Response of `GET /conversations/:id/model`. `model` is the persisted model
+ * name in `<credentialName>/<model>` form, or null when never set (the server
+ * then resolves turns using the default provider + model).
+ */
+export interface ModelResponse {
+	readonly conversationId: string;
+	readonly model: string | null;
+}
+
+/**
+ * Body of `PUT /conversations/:id/model` — persists the conversation's sticky
+ * model selection (used for every later turn that does not carry a per-turn
+ * `ChatRequest.model` override). Pass `null` to clear the persisted selection.
+ * An unrecognized model name is not validated here (the provider resolves it
+ * at turn time; an unknown model → turn error, not a 400).
+ */
+export interface SetModelRequest {
+	readonly model: string | null;
+}
+
 // ─── Conversation close (explicit tab close) ──────────────────────────────────
 
 /**

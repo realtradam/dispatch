@@ -25,16 +25,19 @@ function createInMemoryStore(): ConversationStore & {
 	readonly metricsData: Map<string, TurnMetrics[]>;
 	readonly cwdData: Map<string, string>;
 	readonly effortData: Map<string, ReasoningEffort>;
+	readonly modelData: Map<string, string>;
 } {
 	const data = new Map<string, ChatMessage[]>();
 	const metricsData = new Map<string, TurnMetrics[]>();
 	const cwdData = new Map<string, string>();
 	const effortData = new Map<string, ReasoningEffort>();
+	const modelData = new Map<string, string>();
 	return {
 		data,
 		metricsData,
 		cwdData,
 		effortData,
+		modelData,
 		async append(conversationId, messages) {
 			const existing = data.get(conversationId) ?? [];
 			data.set(conversationId, [...existing, ...messages]);
@@ -74,6 +77,16 @@ function createInMemoryStore(): ConversationStore & {
 		},
 		async setReasoningEffort(conversationId, effort) {
 			effortData.set(conversationId, effort);
+		},
+		async getModel(conversationId) {
+			return modelData.get(conversationId) ?? null;
+		},
+		async setModel(conversationId, model) {
+			if (model === "") {
+				modelData.delete(conversationId);
+			} else {
+				modelData.set(conversationId, model);
+			}
 		},
 		async listConversations() {
 			return [];

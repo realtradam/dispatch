@@ -98,6 +98,7 @@ function createFakeConversationStore(
 	metricsStore: Map<string, TurnMetrics[]> = new Map(),
 	cwdStore: Map<string, string> = new Map(),
 	reasoningEffortStore: Map<string, ReasoningEffort> = new Map(),
+	modelStore: Map<string, string> = new Map(),
 ): ConversationStore {
 	return {
 		async append() {},
@@ -136,6 +137,16 @@ function createFakeConversationStore(
 		},
 		async setReasoningEffort(conversationId, effort) {
 			reasoningEffortStore.set(conversationId, effort);
+		},
+		async getModel(conversationId) {
+			return modelStore.get(conversationId) ?? null;
+		},
+		async setModel(conversationId, model) {
+			if (model === "") {
+				modelStore.delete(conversationId);
+			} else {
+				modelStore.set(conversationId, model);
+			}
 		},
 		async listConversations() {
 			return [];
@@ -2609,6 +2620,222 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ reasoningEffort: "invalid" }),
+		});
+		expect(res.status).toBe(400);
+		expect(storeCalled).toBe(false);
+	});
+});
+
+describe("GET /conversations/:id/model", () => {
+	it("returns null when never set", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/model");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; model: string | null };
+		expect(body.conversationId).toBe("conv1");
+		expect(body.model).toBeNull();
+	});
+
+	it("returns the model after PUT", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		await app.request("/conversations/conv1/model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ model: "umans/umans-glm-5.2" }),
+		});
+
+		const res = await app.request("/conversations/conv1/model");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; model: string | null };
+		expect(body.model).toBe("umans/umans-glm-5.2");
+	});
+
+	it("returns null for an unknown conversation", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/unknown/model");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; model: string | null };
+		expect(body.conversationId).toBe("unknown");
+		expect(body.model).toBeNull();
+	});
+});
+
+describe("PUT /conversations/:id/model", () => {
+	it("persists a non-empty model and returns it", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ model: "umans/umans-glm-5.2" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; model: string | null };
+		expect(body.conversationId).toBe("conv1");
+		expect(body.model).toBe("umans/umans-glm-5.2");
+
+		// A subsequent GET reflects the persisted value.
+		const getRes = await app.request("/conversations/conv1/model");
+		const getBody = (await getRes.json()) as { model: string | null };
+		expect(getBody.model).toBe("umans/umans-glm-5.2");
+	});
+
+	it("clears the model when model is null and GET returns null", async () => {
+		const modelStore = new Map<string, string>([["conv1", "umans/umans-glm-5.2"]]);
+		const store = createFakeConversationStore(
+			new Map(),
+			new Map(),
+			new Map(),
+			new Map(),
+			modelStore,
+		);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		// Preconditions: a model is set.
+		const before = await app.request("/conversations/conv1/model");
+		expect(((await before.json()) as { model: string | null }).model).toBe("umans/umans-glm-5.2");
+
+		const res = await app.request("/conversations/conv1/model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ model: null }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; model: string | null };
+		expect(body.model).toBeNull();
+
+		const getRes = await app.request("/conversations/conv1/model");
+		const getBody = (await getRes.json()) as { model: string | null };
+		expect(getBody.model).toBeNull();
+	});
+
+	it("clears the model when model is an empty string and GET returns null", async () => {
+		const modelStore = new Map<string, string>([["conv1", "umans/umans-glm-5.2"]]);
+		const store = createFakeConversationStore(
+			new Map(),
+			new Map(),
+			new Map(),
+			new Map(),
+			modelStore,
+		);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ model: "" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; model: string | null };
+		expect(body.model).toBeNull();
+
+		const getRes = await app.request("/conversations/conv1/model");
+		const getBody = (await getRes.json()) as { model: string | null };
+		expect(getBody.model).toBeNull();
+	});
+
+	it("returns 400 for invalid JSON body", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: "not json",
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 400 when model field is missing", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("model");
+	});
+
+	it("returns 400 when model is a non-string non-null type", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ model: 42 }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("does not call store on validation failure", async () => {
+		let storeCalled = false;
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async setModel() {
+				storeCalled = true;
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const res = await app.request("/conversations/conv1/model", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
 		});
 		expect(res.status).toBe(400);
 		expect(storeCalled).toBe(false);

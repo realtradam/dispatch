@@ -1,3 +1,4 @@
+import { resolve as pathResolve } from "node:path";
 import type {
 	ChatMessage,
 	Chunk,
@@ -22,6 +23,7 @@ import {
 	metricsKey,
 	metricsPrefix,
 	metricsSeqKey,
+	modelKey,
 	parseSeq,
 	reasoningEffortKey,
 	seqKey,
@@ -66,10 +68,21 @@ export interface ConversationStore {
 	readonly getCwd: (conversationId: string) => Promise<string | null>;
 	/** Persist (upsert) the working directory for a conversation. */
 	readonly setCwd: (conversationId: string, cwd: string) => Promise<void>;
+	/** Clear (delete) the persisted working directory for a conversation. */
+	readonly clearCwd: (conversationId: string) => Promise<void>;
 	/** The persisted reasoning-effort level for a conversation, or null if never set. */
 	readonly getReasoningEffort: (conversationId: string) => Promise<ReasoningEffort | null>;
 	/** Persist (upsert) the reasoning-effort level for a conversation. */
 	readonly setReasoningEffort: (conversationId: string, effort: ReasoningEffort) => Promise<void>;
+	/** The persisted model name for a conversation, or null if never set. */
+	readonly getModel: (conversationId: string) => Promise<string | null>;
+	/**
+	 * Persist (upsert) the model name for a conversation (a model name in
+	 * `<credentialName>/<model>` form). Passing an empty string clears the
+	 * persisted selection (idempotent) — this is how transport-http clears via
+	 * `PUT /conversations/:id/model` with a `null` body.
+	 */
+	readonly setModel: (conversationId: string, model: string) => Promise<void>;
 	/**
 	 * List all known conversations, sorted by `lastActivityAt` descending (most
 	 * recent first). Metadata (createdAt, lastActivityAt, title) is tracked
@@ -102,10 +115,10 @@ export interface ConversationStore {
 	) => Promise<void>;
 	/**
 	 * Fork (copy) the full conversation history from `sourceId` to `targetId`.
-	 * Copies all chunks, metadata, cwd, and reasoning-effort. The target's
-	 * status is set to "closed" (it's an archive) and `compactedFrom` is set
-	 * to `sourceId`. Used by compaction to preserve the pre-compaction history
-	 * non-destructively before replacing it with a summary.
+	 * Copies all chunks, metadata, cwd, reasoning-effort, and model. The
+	 * target's status is set to "closed" (it's an archive) and `compactedFrom`
+	 * is set to `sourceId`. Used by compaction to preserve the pre-compaction
+	 * history non-destructively before replacing it with a summary.
 	 */
 	readonly forkHistory: (sourceId: string, targetId: string) => Promise<void>;
 	/** Get the compact percent (0-100, 0 = manual only), or null if unset. */
@@ -163,11 +176,35 @@ export interface ConversationStore {
 	 */
 	readonly setWorkspaceId: (conversationId: string, workspaceId: string) => Promise<void>;
 	/**
-	 * Resolve the effective cwd: explicit conversation cwd (`getCwd`) →
-	 * workspace `defaultCwd` (`getWorkspaceId` + `getWorkspace`) → `null` (null
-	 * = use server default). Returns `null` when neither is set.
+	 * Resolve the effective working directory for a conversation:
+	 *
+	 * 1. **Absolute conversation cwd** — an explicit per-conversation cwd
+	 *    (`getCwd`, or `overrideCwd` when provided) that starts with `/`
+	 *    overrides outright.
+	 * 2. **Relative conversation cwd** — an explicit cwd that does NOT start
+	 *    with `/` is resolved against the workspace `defaultCwd` (or
+	 *    `serverDefaultCwd` when the workspace has no `defaultCwd`) via
+	 *    `path.resolve`.
+	 * 3. **No conversation cwd** — the workspace `defaultCwd` is used.
+	 * 4. **Neither set** — the `serverDefaultCwd` (defaulting to
+	 *    `process.cwd()` at construction time) is used.
+	 *
+	 * The workspace is resolved via `getWorkspaceId` (falling back to
+	 * `"default"`) + `getWorkspace`.
+	 *
+	 * @param overrideCwd — an explicit cwd to resolve INSTEAD of the persisted
+	 *   `getCwd` value. When provided (not `undefined`), it is fed through the
+	 *   same algorithm above (absolute → returned as-is; relative → resolved
+	 *   against the workspace `defaultCwd`). Used by the session-orchestrator
+	 *   for a per-turn cwd override (sent by the client on `chat.send`) so a
+	 *   transient relative cwd is resolved the same way a persisted one is,
+	 *   instead of being resolved against `process.cwd()`. When omitted, the
+	 *   persisted `getCwd` is read as today.
 	 */
-	readonly getEffectiveCwd: (conversationId: string) => Promise<string | null>;
+	readonly getEffectiveCwd: (
+		conversationId: string,
+		overrideCwd?: string,
+	) => Promise<string | null>;
 }
 
 export const conversationStoreHandle = defineService<ConversationStore>("conversation-store/store");
@@ -358,6 +395,7 @@ export function createConversationStore(
 	storage: StorageNamespace,
 	logger?: Logger,
 	now: () => number = Date.now,
+	serverDefaultCwd: string = process.cwd(),
 ): ConversationStore {
 	/**
 	 * Add `conversationId` to the persisted index (idempotent). The store is
@@ -594,6 +632,14 @@ export function createConversationStore(
 			}
 		},
 
+		async clearCwd(conversationId) {
+			// Idempotent: deleting an already-absent key is a no-op (no error).
+			await storage.delete(cwdKey(conversationId));
+			if (logger !== undefined) {
+				logger.debug("cwd cleared", { conversationId });
+			}
+		},
+
 		async getReasoningEffort(conversationId) {
 			return (await storage.get(reasoningEffortKey(conversationId))) as ReasoningEffort | null;
 		},
@@ -602,6 +648,26 @@ export function createConversationStore(
 			await storage.set(reasoningEffortKey(conversationId), effort);
 			if (logger !== undefined) {
 				logger.debug("reasoning-effort set", { conversationId });
+			}
+		},
+
+		async getModel(conversationId) {
+			return await storage.get(modelKey(conversationId));
+		},
+
+		async setModel(conversationId, model) {
+			if (model === "") {
+				// Idempotent clear: an empty model clears the persisted
+				// selection. Deleting an already-absent key is a no-op.
+				await storage.delete(modelKey(conversationId));
+				if (logger !== undefined) {
+					logger.debug("model cleared", { conversationId });
+				}
+				return;
+			}
+			await storage.set(modelKey(conversationId), model);
+			if (logger !== undefined) {
+				logger.debug("model set", { conversationId });
 			}
 		},
 		async listConversations(filter) {
@@ -786,11 +852,13 @@ export function createConversationStore(
 			}
 			await ensureInIndex(targetId);
 
-			// Copy cwd + reasoning-effort (so the archive is self-contained).
+			// Copy cwd + reasoning-effort + model (so the archive is self-contained).
 			const cwd = await storage.get(cwdKey(sourceId));
 			if (cwd !== null) await storage.set(cwdKey(targetId), cwd);
 			const effort = await storage.get(reasoningEffortKey(sourceId));
 			if (effort !== null) await storage.set(reasoningEffortKey(targetId), effort);
+			const model = await storage.get(modelKey(sourceId));
+			if (model !== null) await storage.set(modelKey(targetId), model);
 		},
 
 		async getCompactPercent(conversationId) {
@@ -1048,15 +1116,22 @@ export function createConversationStore(
 			await storage.set(metaKey(conversationId), JSON.stringify(row));
 		},
 
-		async getEffectiveCwd(conversationId) {
-			// Explicit per-conversation cwd wins.
-			const explicit = await storage.get(cwdKey(conversationId));
-			if (explicit !== null) return explicit;
-			// Otherwise fall through to the workspace's defaultCwd.
+		async getEffectiveCwd(conversationId, overrideCwd) {
 			const workspaceId = await this.getWorkspaceId(conversationId);
 			const workspace = await this.getWorkspace(workspaceId);
-			if (workspace === null) return null;
-			return workspace.defaultCwd;
+			const workspaceCwd = workspace?.defaultCwd ?? null;
+			// When an explicit override is given, resolve IT instead of the
+			// persisted cwd — it is always a string, never null.
+			const conversationCwd =
+				overrideCwd !== undefined ? overrideCwd : await this.getCwd(conversationId);
+
+			if (conversationCwd === null) {
+				return workspaceCwd ?? serverDefaultCwd;
+			}
+			if (conversationCwd.startsWith("/")) {
+				return conversationCwd;
+			}
+			return pathResolve(workspaceCwd ?? serverDefaultCwd, conversationCwd);
 		},
 	};
 }

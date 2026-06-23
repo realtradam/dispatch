@@ -25,6 +25,7 @@ import {
 	buildUserMessage,
 	defaultDispatchPolicy,
 	generateTurnId,
+	resolveModelName,
 	resolveReasoningEffort,
 } from "./pure.js";
 import type { ToolAssembly } from "./tools-filter.js";
@@ -411,14 +412,24 @@ export function createSessionOrchestrator(
 		);
 
 		const storedEffortPromise = deps.conversationStore.getReasoningEffort(conversationId);
+		// Resolve the persisted model (if any) in parallel with the other
+		// per-conversation reads. The effective model name is
+		// per-turn override → persisted → (undefined → default provider), the
+		// same resolution chain as `resolveReasoningEffort`.
+		const storedModelPromise = deps.conversationStore.getModel(conversationId);
 
-		const payloadPromise = Promise.all([effectiveCwdPromise, storedEffortPromise]).then(
-			([effectiveCwd]) => ({
+		const payloadPromise = Promise.all([
+			effectiveCwdPromise,
+			storedEffortPromise,
+			storedModelPromise,
+		]).then(([effectiveCwd, _storedEffort, storedModel]) => {
+			const effectiveModelName = resolveModelName(modelName, storedModel);
+			return {
 				conversationId,
 				...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-				...(modelName !== undefined ? { modelName } : {}),
-			}),
-		);
+				...(effectiveModelName !== undefined ? { modelName: effectiveModelName } : {}),
+			};
+		});
 
 		payloadPromise.then((payload) => {
 			deps.emit?.(turnStarted, payload);
@@ -437,10 +448,11 @@ export function createSessionOrchestrator(
 		void (async () => {
 			let sealed = false;
 			try {
-				const [effectiveCwd, storedEffort, isNewConversation] = await Promise.all([
+				const [effectiveCwd, storedEffort, isNewConversation, storedModel] = await Promise.all([
 					effectiveCwdPromise,
 					storedEffortPromise,
 					workspaceSetupPromise,
+					storedModelPromise,
 				]);
 
 				if (cwd !== undefined) {
@@ -448,6 +460,11 @@ export function createSessionOrchestrator(
 				}
 
 				const resolvedEffort = resolveReasoningEffort(reasoningEffortOverride, storedEffort);
+				// Effective model name: per-turn override → persisted → undefined
+				// (→ default provider). Resolved here so every downstream consumer
+				// (resolveModel, system prompt, payload) sees the same model as if
+				// the caller had passed it explicitly.
+				const effectiveModelName = resolveModelName(modelName, storedModel);
 
 				const history = await deps.conversationStore.load(conversationId);
 				const userMsg = buildUserMessage(text);
@@ -461,19 +478,27 @@ export function createSessionOrchestrator(
 				let provider: ProviderContract;
 				let modelOverride: string | undefined;
 
-				if (modelName !== undefined && deps.resolveModel !== undefined) {
-					const resolved = deps.resolveModel(modelName);
+				if (effectiveModelName !== undefined && deps.resolveModel !== undefined) {
+					const resolved = deps.resolveModel(effectiveModelName);
 					if (resolved === undefined) {
 						emitToHub(conversationId, {
 							type: "error",
 							conversationId,
 							turnId,
-							message: `unknown model: ${modelName}`,
+							message: `unknown model: ${effectiveModelName}`,
 						});
 						return;
 					}
 					provider = resolved.provider;
 					modelOverride = resolved.model;
+					// Persist the resolved model so it sticks for future turns
+					// and browser sessions (per-conversation model persistence).
+					// Only stamped when a model was actually used — NOT on the
+					// default-provider fallthrough (nothing to persist). Idempotent
+					// when the value is unchanged (re-stamps the same persisted
+					// model). The early `return` above means an unknown model is
+					// never persisted.
+					await deps.conversationStore.setModel(conversationId, effectiveModelName);
 				} else {
 					provider = deps.resolveProvider();
 				}
@@ -513,7 +538,7 @@ export function createSessionOrchestrator(
 							conversationId,
 							effectiveCwd ?? process.cwd(),
 							{
-								...(modelName !== undefined ? { model: modelName } : {}),
+								...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
 								...(workspaceId !== undefined ? { workspaceId } : {}),
 							},
 						);
@@ -524,7 +549,7 @@ export function createSessionOrchestrator(
 							systemPrompt = meta.prompt;
 						} else {
 							systemPrompt = await systemPromptService.construct(conversationId, currentCwd, {
-								...(modelName !== undefined ? { model: modelName } : {}),
+								...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
 								...(workspaceId !== undefined ? { workspaceId } : {}),
 							});
 						}
@@ -816,10 +841,19 @@ export function createWarmService(
 			let provider: ProviderContract;
 			let modelOverride: string | undefined;
 
-			if (opts?.modelName !== undefined && deps.resolveModel !== undefined) {
-				const resolved = deps.resolveModel(opts.modelName);
+			// Resolve the model the SAME way the real turn does: per-turn override
+			// → persisted per-conversation model → default provider. A mismatch here
+			// silently busts the prompt cache (the model block of the prompt prefix
+			// diverges from the real turn's). Warm is a probe — it does NOT persist
+			// (no setModel), it only reads so it sends the same model the next real
+			// turn will. See notes/observability-design.md §3.1.
+			const storedModel = await deps.conversationStore.getModel(conversationId);
+			const effectiveModelName = resolveModelName(opts?.modelName, storedModel);
+
+			if (effectiveModelName !== undefined && deps.resolveModel !== undefined) {
+				const resolved = deps.resolveModel(effectiveModelName);
 				if (resolved === undefined) {
-					return { error: `unknown model: ${opts.modelName}` };
+					return { error: `unknown model: ${effectiveModelName}` };
 				}
 				provider = resolved.provider;
 				modelOverride = resolved.model;

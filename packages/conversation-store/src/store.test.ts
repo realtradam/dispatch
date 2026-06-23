@@ -907,6 +907,69 @@ describe("ConversationStore cwd", () => {
 		expect(await store.getCwd("convA")).toBe("/path/a");
 		expect(await store.getCwd("convB")).toBe("/path/b");
 	});
+
+	it("setCwd then clearCwd → getCwd returns null", async () => {
+		const store = createConversationStore(storage);
+		await store.setCwd("conv1", "/some/path");
+		await store.clearCwd("conv1");
+		expect(await store.getCwd("conv1")).toBeNull();
+	});
+
+	it("clearCwd on a conversation that never had a cwd set → no error, getCwd null", async () => {
+		const store = createConversationStore(storage);
+		await expect(store.clearCwd("never-seen")).resolves.toBeUndefined();
+		expect(await store.getCwd("never-seen")).toBeNull();
+	});
+
+	it("clearCwd does not affect other conversations' cwds or other key spaces", async () => {
+		const store = createConversationStore(storage);
+		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+		await store.append("conv1", [msg]);
+		await store.setCwd("conv1", "/path/one");
+		await store.setCwd("conv2", "/path/two");
+		await store.setReasoningEffort("conv1", "high");
+		const metrics: TurnMetrics = {
+			turnId: "turn_iso",
+			usage: { inputTokens: 100, outputTokens: 50 },
+			steps: [],
+		};
+		await store.appendMetrics("conv1", metrics);
+
+		// Clear conv1's cwd only.
+		await store.clearCwd("conv1");
+
+		// conv1 cwd is gone, but conv2 cwd survives.
+		expect(await store.getCwd("conv1")).toBeNull();
+		expect(await store.getCwd("conv2")).toBe("/path/two");
+
+		// Other key spaces on conv1 are untouched.
+		expect(await store.getReasoningEffort("conv1")).toBe("high");
+		expect(await store.load("conv1")).toEqual([msg]);
+		const chunks = await store.loadSince("conv1");
+		expect(chunks).toHaveLength(1);
+		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+		const metricsResult = await store.loadMetrics("conv1");
+		expect(metricsResult).toHaveLength(1);
+		expect(metricsResult[0]).toEqual(metrics);
+	});
+
+	it("clearCwd is idempotent (clearing twice is a no-op)", async () => {
+		const store = createConversationStore(storage);
+		await store.setCwd("conv1", "/some/path");
+		await store.clearCwd("conv1");
+		// Second clear on an already-absent key — no error.
+		await expect(store.clearCwd("conv1")).resolves.toBeUndefined();
+		expect(await store.getCwd("conv1")).toBeNull();
+	});
+
+	it("setCwd after clearCwd re-persists the cwd (clear is a true delete, not a tombstone)", async () => {
+		const store = createConversationStore(storage);
+		await store.setCwd("conv1", "/first");
+		await store.clearCwd("conv1");
+		expect(await store.getCwd("conv1")).toBeNull();
+		await store.setCwd("conv1", "/second");
+		expect(await store.getCwd("conv1")).toBe("/second");
+	});
 });
 
 describe("ConversationStore reasoning effort", () => {
@@ -981,6 +1044,128 @@ describe("ConversationStore reasoning effort", () => {
 		const metricsResult = await store.loadMetrics("conv1");
 		expect(metricsResult).toHaveLength(1);
 		expect(metricsResult[0]).toEqual(metrics);
+	});
+});
+
+describe("ConversationStore model", () => {
+	let storage: StorageNamespace;
+
+	beforeEach(() => {
+		storage = createMemoryStorage();
+	});
+
+	it("getModel returns null when never set", async () => {
+		const store = createConversationStore(storage);
+		expect(await store.getModel("conv_unknown")).toBeNull();
+	});
+
+	it("setModel then getModel returns the model name", async () => {
+		const store = createConversationStore(storage);
+		await store.setModel("conv1", "umans/umans-glm-5.2");
+		expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+	});
+
+	it("setModel is an upsert (second set overwrites with the latest)", async () => {
+		const store = createConversationStore(storage);
+		await store.setModel("conv1", "umans/umans-glm-5.2");
+		await store.setModel("conv1", "openai/gpt-4o");
+		expect(await store.getModel("conv1")).toBe("openai/gpt-4o");
+	});
+
+	it("setModel with an empty string clears the key (getModel returns null)", async () => {
+		const store = createConversationStore(storage);
+		await store.setModel("conv1", "umans/umans-glm-5.2");
+		expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+		// Clear via the empty-string sentinel.
+		await store.setModel("conv1", "");
+		expect(await store.getModel("conv1")).toBeNull();
+	});
+
+	it("setModel('') on a never-set conversation is a no-op (idempotent clear)", async () => {
+		const store = createConversationStore(storage);
+		await expect(store.setModel("never-seen", "")).resolves.toBeUndefined();
+		expect(await store.getModel("never-seen")).toBeNull();
+	});
+
+	it("setModel after a clear re-persists the model (clear is a true delete, not a tombstone)", async () => {
+		const store = createConversationStore(storage);
+		await store.setModel("conv1", "umans/umans-glm-5.2");
+		await store.setModel("conv1", "");
+		expect(await store.getModel("conv1")).toBeNull();
+		await store.setModel("conv1", "openai/gpt-4o");
+		expect(await store.getModel("conv1")).toBe("openai/gpt-4o");
+	});
+
+	it("model of one conversation does not leak into another", async () => {
+		const store = createConversationStore(storage);
+		await store.setModel("convA", "umans/umans-glm-5.2");
+		await store.setModel("convB", "openai/gpt-4o");
+		expect(await store.getModel("convA")).toBe("umans/umans-glm-5.2");
+		expect(await store.getModel("convB")).toBe("openai/gpt-4o");
+	});
+
+	it("model persists across a fresh store instance on the same storage", async () => {
+		const store1 = createConversationStore(storage);
+		await store1.setModel("conv1", "umans/umans-glm-5.2");
+
+		const store2 = createConversationStore(storage);
+		expect(await store2.getModel("conv1")).toBe("umans/umans-glm-5.2");
+	});
+
+	it("model keys do not collide with chunk/cwd/metrics/reasoning-effort key spaces", async () => {
+		const store = createConversationStore(storage);
+		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+		await store.append("conv1", [msg]);
+		await store.setCwd("conv1", "/some/path");
+		await store.setReasoningEffort("conv1", "low");
+		await store.setModel("conv1", "umans/umans-glm-5.2");
+		const metrics: TurnMetrics = {
+			turnId: "turn_iso",
+			usage: { inputTokens: 100, outputTokens: 50 },
+			steps: [],
+		};
+		await store.appendMetrics("conv1", metrics);
+
+		expect(await store.load("conv1")).toEqual([msg]);
+		const chunks = await store.loadSince("conv1");
+		expect(chunks).toHaveLength(1);
+		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+		expect(await store.getCwd("conv1")).toBe("/some/path");
+		expect(await store.getReasoningEffort("conv1")).toBe("low");
+		expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+		const metricsResult = await store.loadMetrics("conv1");
+		expect(metricsResult).toHaveLength(1);
+		expect(metricsResult[0]).toEqual(metrics);
+	});
+
+	it("forkHistory copies the model to the target", async () => {
+		const store = createConversationStore(storage);
+		await store.append("source", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+		await store.setModel("source", "umans/umans-glm-5.2");
+		await store.forkHistory("source", "target");
+		expect(await store.getModel("target")).toBe("umans/umans-glm-5.2");
+	});
+
+	it("forkHistory copies a cleared (unset) model as absent (target reads null)", async () => {
+		const store = createConversationStore(storage);
+		await store.append("source", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+		// No model set on source.
+		await store.forkHistory("source", "target");
+		expect(await store.getModel("target")).toBeNull();
+	});
+
+	it("replaceHistory preserves the model", async () => {
+		const store = createConversationStore(storage);
+		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "original" }] }]);
+		await store.setModel("conv1", "umans/umans-glm-5.2");
+		await store.replaceHistory("conv1", [
+			{ role: "user", chunks: [{ type: "text", text: "replaced" }] },
+		]);
+		expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+		// History was replaced; the model survived the chunk-only sweep.
+		expect(await store.load("conv1")).toEqual([
+			{ role: "user", chunks: [{ type: "text", text: "replaced" }] },
+		]);
 	});
 });
 

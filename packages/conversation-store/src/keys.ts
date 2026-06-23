@@ -54,6 +54,10 @@ export function reasoningEffortKey(conversationId: string): string {
 	return `conv:${conversationId}:reasoning-effort`;
 }
 
+export function modelKey(conversationId: string): string {
+	return `conv:${conversationId}:model`;
+}
+
 export function compactThresholdKey(conversationId: string): string {
 	return `conv:${conversationId}:compact-percent`;
 }

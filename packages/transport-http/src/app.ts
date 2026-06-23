@@ -13,6 +13,7 @@ import type {
 	LastMessageResponse,
 	LspServerInfo,
 	LspStatusResponse,
+	ModelResponse,
 	ModelsResponse,
 	OpenConversationResponse,
 	QueueResponse,
@@ -33,11 +34,13 @@ import {
 	computeCachePct,
 	computeExpectedCacheRate,
 	extractLastAssistantText,
+	isModelParseError,
 	isParseError,
 	isReasoningEffortParseError,
 	isSinceSeqError,
 	isWindowParamError,
 	parseChatBody,
+	parseModelBody,
 	parseQueueBody,
 	parseReasoningEffortBody,
 	parseSinceSeq,
@@ -610,6 +613,56 @@ export function createApp(opts: CreateServerOptions): Hono {
 		} catch (err) {
 			log.error("conversations: reasoning-effort set failure", { err });
 			return c.json({ error: "Failed to set conversation reasoning effort" }, 500);
+		}
+	});
+
+	app.get("/conversations/:id/model", async (c) => {
+		const conversationId = c.req.param("id");
+		try {
+			const model = await opts.conversationStore.getModel(conversationId);
+			log.info("conversations: model read", {
+				conversationId,
+				hasModel: model !== null,
+			});
+			const body: ModelResponse = { conversationId, model };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("conversations: model read failure", { err });
+			return c.json({ error: "Failed to read conversation model" }, 500);
+		}
+	});
+
+	app.put("/conversations/:id/model", async (c) => {
+		const conversationId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("conversations/model: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		const parsed = parseModelBody(body);
+		if (isModelParseError(parsed)) {
+			log.warn("conversations/model: validation failed", { reason: parsed.error });
+			return c.json({ error: parsed.error }, 400);
+		}
+
+		// A non-null non-empty model persists the selection; `null` or an empty
+		// string clears the key (the store treats an empty string as "delete").
+		// The response carries the resulting value: the model name, or null when
+		// cleared (mirroring how `getModel` returns null after a clear).
+		const resultModel = parsed !== null && parsed.length > 0 ? parsed : null;
+		const persistedValue = resultModel !== null ? resultModel : "";
+
+		try {
+			await opts.conversationStore.setModel(conversationId, persistedValue);
+			log.debug("conversations: model set", { conversationId, model: resultModel });
+			const response: ModelResponse = { conversationId, model: resultModel };
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("conversations: model set failure", { err });
+			return c.json({ error: "Failed to set conversation model" }, 500);
 		}
 	});
 
