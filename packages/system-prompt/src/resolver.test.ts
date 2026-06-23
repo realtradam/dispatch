@@ -75,6 +75,86 @@ describe("resolver", () => {
 		});
 	});
 
+	describe("system:os rich resolution", () => {
+		it("returns distro from /etc/os-release PRETTY_NAME on Linux", async () => {
+			const files = new Map<string, string>([
+				["/etc/os-release", 'PRETTY_NAME="Ubuntu 22.04 LTS"\nNAME="Ubuntu"\n'],
+			]);
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(files),
+				platform: () => "linux",
+			});
+			expect(map.get("system:os")).toBe("Ubuntu 22.04 LTS");
+		});
+
+		it("falls back to NAME + VERSION_ID when no PRETTY_NAME", async () => {
+			const files = new Map<string, string>([
+				["/etc/os-release", 'NAME="Debian"\nVERSION_ID="12"\n'],
+			]);
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(files),
+				platform: () => "linux",
+			});
+			expect(map.get("system:os")).toBe("Debian 12");
+		});
+
+		it("appends (WSL) when WSLInterop exists", async () => {
+			const files = new Map<string, string>([
+				["/etc/os-release", 'PRETTY_NAME="Ubuntu 22.04 LTS"\n'],
+				["/proc/sys/fs/binfmt_misc/WSLInterop", "enabled\n"],
+			]);
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(files),
+				platform: () => "linux",
+			});
+			expect(map.get("system:os")).toBe("Ubuntu 22.04 LTS (WSL)");
+		});
+
+		it("detects WSL via 'microsoft' in /proc/version", async () => {
+			const files = new Map<string, string>([
+				["/etc/os-release", 'PRETTY_NAME="Ubuntu 22.04 LTS"\n'],
+				["/proc/version", "Linux version 5.15.153.1-microsoft-standard-WSL2\n"],
+			]);
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(files),
+				platform: () => "linux",
+			});
+			expect(map.get("system:os")).toBe("Ubuntu 22.04 LTS (WSL)");
+		});
+
+		it("returns 'Linux (WSL)' when WSL detected but no distro info", async () => {
+			const files = new Map<string, string>([["/proc/sys/fs/binfmt_misc/WSLInterop", "enabled\n"]]);
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(files),
+				platform: () => "linux",
+			});
+			expect(map.get("system:os")).toBe("Linux (WSL)");
+		});
+
+		it("returns plain 'linux' when no os-release and no WSL", async () => {
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(new Map()),
+				platform: () => "linux",
+			});
+			expect(map.get("system:os")).toBe("linux");
+		});
+
+		it("returns platform as-is for non-Linux (darwin)", async () => {
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(new Map()),
+				platform: () => "darwin",
+			});
+			expect(map.get("system:os")).toBe("darwin");
+		});
+	});
+
 	describe("file variables", () => {
 		it("reads a file relative to cwd", async () => {
 			// 12. file variable reads relative path; missing → null
