@@ -24,7 +24,7 @@ export interface SystemPromptService {
 	construct(
 		conversationId: string,
 		cwd: string,
-		context?: { readonly model?: string },
+		context?: { readonly model?: string; readonly workspaceId?: string },
 	): Promise<string>;
 
 	/** Read the persisted resolved system prompt, or `null` if never constructed. */

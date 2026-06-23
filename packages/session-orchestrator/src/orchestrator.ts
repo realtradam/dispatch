@@ -489,6 +489,7 @@ export function createSessionOrchestrator(
 							effectiveCwd ?? process.cwd(),
 							{
 								...(modelName !== undefined ? { model: modelName } : {}),
+								...(workspaceId !== undefined ? { workspaceId } : {}),
 							},
 						);
 					} else {
@@ -952,8 +953,10 @@ export function createCompactionService(
 			let compactionSystemPrompt: string;
 			if (systemPromptService !== undefined) {
 				const cwd = (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? process.cwd();
+				const workspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
 				const constructed = await systemPromptService.construct(conversationId, cwd, {
 					...(opts?.modelName !== undefined ? { model: opts.modelName } : {}),
+					workspaceId,
 				});
 				compactionSystemPrompt = `${constructed}\n\n${COMPACTION_SYSTEM_PROMPT}`;
 			} else {

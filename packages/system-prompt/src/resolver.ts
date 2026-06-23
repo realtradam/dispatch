@@ -55,6 +55,7 @@ export interface ResolverAdapters {
 export interface ResolverContext {
 	readonly model?: string;
 	readonly conversationId?: string;
+	readonly workspaceId?: string;
 }
 
 export interface ResolveOptions {
@@ -116,6 +117,7 @@ export async function resolveVariables(
 	vars.set("prompt:cwd", cwd);
 	vars.set("prompt:model", ctx?.model ?? null);
 	vars.set("prompt:conversation_id", ctx?.conversationId ?? null);
+	vars.set("prompt:workspace_id", ctx?.workspaceId ?? null);
 
 	// ── git:* ────────────────────────────────────────────────────────────────
 	// branch is a single value — trim fully; status keeps its leading status
