@@ -16,7 +16,7 @@
 
 ## 2. System context builder — referenced files not loaded
 
-**Status:** PENDING.
+**Status:** DONE (commit `b180cc1`).
 
 **Symptom:** The system context builder does not load referenced files that live
 in the conversation's working directory. Concrete reproduction: the orchestrator
