@@ -70,6 +70,7 @@
         "@dispatch/storage-sqlite": "workspace:*",
         "@dispatch/surface-loaded-extensions": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
+        "@dispatch/system-prompt": "workspace:*",
         "@dispatch/throughput-store": "workspace:*",
         "@dispatch/todo": "workspace:*",
         "@dispatch/tool-edit-file": "workspace:*",

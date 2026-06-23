@@ -1,22 +1,59 @@
 {
 	"extends": "../../tsconfig.base.json",
-	"compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
+	"compilerOptions": {
+		"rootDir": "src",
+		"outDir": "dist",
+		"composite": true
+	},
 	"include": ["src/**/*.ts"],
 	"references": [
-		{ "path": "../cache-warming" },
-		{ "path": "../kernel" },
-		{ "path": "../message-queue" },
-		{ "path": "../storage-sqlite" },
-		{ "path": "../surface-loaded-extensions" },
-		{ "path": "../surface-registry" },
-		{ "path": "../tool-read-file" },
-		{ "path": "../tool-shell" },
-		{ "path": "../tool-edit-file" },
-		{ "path": "../tool-write-file" },
-		{ "path": "../skills" },
-		{ "path": "../throughput-store" },
-		{ "path": "../transport-http" },
-		{ "path": "../transport-ws" },
-		{ "path": "../lsp" }
+		{
+			"path": "../cache-warming"
+		},
+		{
+			"path": "../kernel"
+		},
+		{
+			"path": "../lsp"
+		},
+		{
+			"path": "../message-queue"
+		},
+		{
+			"path": "../skills"
+		},
+		{
+			"path": "../storage-sqlite"
+		},
+		{
+			"path": "../surface-loaded-extensions"
+		},
+		{
+			"path": "../surface-registry"
+		},
+		{
+			"path": "../system-prompt"
+		},
+		{
+			"path": "../throughput-store"
+		},
+		{
+			"path": "../tool-edit-file"
+		},
+		{
+			"path": "../tool-read-file"
+		},
+		{
+			"path": "../tool-shell"
+		},
+		{
+			"path": "../tool-write-file"
+		},
+		{
+			"path": "../transport-http"
+		},
+		{
+			"path": "../transport-ws"
+		}
 	]
 }
