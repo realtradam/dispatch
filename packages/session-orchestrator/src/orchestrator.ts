@@ -113,6 +113,12 @@ export const conversationClosed: EventHookDescriptor<ConversationClosedPayload> 
 /** Payload for the conversationOpened bus event. */
 export interface ConversationOpenedPayload {
 	readonly conversationId: string;
+	/**
+	 * The conversation's actual persisted workspace id (resolved from the
+	 * store, not the per-turn start option), so a frontend can open/focus the
+	 * tab in the correct workspace. Falls back to `"default"`.
+	 */
+	readonly workspaceId: string;
 }
 
 /**
@@ -128,6 +134,12 @@ export const conversationOpened: EventHookDescriptor<ConversationOpenedPayload> 
 export interface ConversationStatusChangedPayload {
 	readonly conversationId: string;
 	readonly status: ConversationStatus;
+	/**
+	 * The conversation's actual persisted workspace id (resolved from the
+	 * store, not the per-turn start option), so a frontend can sync the tab
+	 * in the correct workspace. Falls back to `"default"`.
+	 */
+	readonly workspaceId: string;
 }
 
 /**
@@ -410,7 +422,15 @@ export function createSessionOrchestrator(
 
 		payloadPromise.then((payload) => {
 			deps.emit?.(turnStarted, payload);
-			deps.emit?.(conversationStatusChanged, { conversationId, status: "active" });
+			// Resolve the persisted workspace id (not the per-turn start option)
+			// before emitting so the broadcast carries the correct workspace.
+			void deps.conversationStore.getWorkspaceId(conversationId).then((workspaceId) => {
+				deps.emit?.(conversationStatusChanged, {
+					conversationId,
+					status: "active",
+					workspaceId,
+				});
+			});
 			void deps.conversationStore.setConversationStatus(conversationId, "active");
 		});
 
@@ -595,9 +615,14 @@ export function createSessionOrchestrator(
 				void payloadPromise.then((payload) => {
 					deps.emit?.(turnSettled, payload);
 					if (!carried) {
-						deps.emit?.(conversationStatusChanged, {
-							conversationId,
-							status: "idle",
+						// Resolve the persisted workspace id before emitting so the
+						// broadcast carries the correct workspace.
+						void deps.conversationStore.getWorkspaceId(conversationId).then((workspaceId) => {
+							deps.emit?.(conversationStatusChanged, {
+								conversationId,
+								status: "idle",
+								workspaceId,
+							});
 						});
 						void deps.conversationStore.setConversationStatus(conversationId, "idle");
 						// Fire-and-forget auto-compaction: check threshold and
@@ -691,7 +716,17 @@ export function createSessionOrchestrator(
 				turn.controller.abort();
 			}
 			deps.emit?.(conversationClosed, { conversationId });
-			deps.emit?.(conversationStatusChanged, { conversationId, status: "closed" });
+			// Resolve the persisted workspace id before emitting so the
+			// broadcast carries the correct workspace. The hook is
+			// fire-and-forget; closeConversation stays synchronous (returns
+			// immediately) while the status-changed emit resolves async.
+			void deps.conversationStore.getWorkspaceId(conversationId).then((workspaceId) => {
+				deps.emit?.(conversationStatusChanged, {
+					conversationId,
+					status: "closed",
+					workspaceId,
+				});
+			});
 			void deps.conversationStore.setConversationStatus(conversationId, "closed");
 			return { abortedTurn };
 		},

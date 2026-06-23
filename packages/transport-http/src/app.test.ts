@@ -2814,8 +2814,13 @@ describe("POST /conversations/:id/open", () => {
 		const emit: HostAPI["emit"] = (hook, payload) => {
 			emitCalls.push({ hook, payload });
 		};
+		// A store whose getWorkspaceId returns a non-default id, so the test
+		// proves the handler resolves and forwards the PERSISTED workspace id
+		// (not a hard-coded "default").
+		const store = createFakeConversationStore();
+		store.getWorkspaceId = async () => "open-workspace";
 		const app = createApp({
-			conversationStore: createFakeConversationStore(),
+			conversationStore: store,
 			orchestrator: createFakeOrchestrator([]),
 			credentialStore: createFakeCredentialStore([]),
 			emit,
@@ -2825,7 +2830,10 @@ describe("POST /conversations/:id/open", () => {
 		expect(res.status).toBe(200);
 		expect(emitCalls).toHaveLength(1);
 		expect(emitCalls[0]?.hook).toBe(conversationOpened);
-		expect(emitCalls[0]?.payload).toEqual({ conversationId: "conv1" });
+		expect(emitCalls[0]?.payload).toEqual({
+			conversationId: "conv1",
+			workspaceId: "open-workspace",
+		});
 	});
 
 	it("returns 500 when emit is absent", async () => {

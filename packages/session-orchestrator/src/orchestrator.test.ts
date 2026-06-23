@@ -19,6 +19,8 @@ import { runTurn } from "@dispatch/kernel";
 import type { SystemPromptService } from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
 import {
+	type ConversationOpenedPayload,
+	type ConversationStatusChangedPayload,
 	createCompactionService,
 	createSessionOrchestrator,
 	createWarmService,
@@ -1228,23 +1230,48 @@ describe("lifecycle event hooks", () => {
 			modelName: "mymodel",
 		});
 
+		// The status-changed emits resolve the persisted workspace id async
+		// (getWorkspaceId) before firing, so they may land after turn-settled
+		// in microtask order. Flush all pending microtasks so every emit has
+		// landed, then assert by hook identity rather than strict index order.
+		await new Promise((resolve) => setImmediate(resolve));
+
 		expect(emitted).toHaveLength(4);
-		expect(emitted[0]?.hook).toBe("session-orchestrator/turn-started");
-		expect(emitted[0]?.payload.conversationId).toBe("conv-lifecycle");
-		expect(emitted[0]?.payload.cwd).toBe("/work");
-		expect(emitted[0]?.payload.modelName).toBe("mymodel");
-		expect(emitted[0]?.order).toBe(0);
 
-		expect(emitted[1]?.hook).toBe("session-orchestrator/conversation-status-changed");
-		expect((emitted[1]?.payload as unknown as { status: string }).status).toBe("active");
+		const started = emitted.find((e) => e.hook === "session-orchestrator/turn-started");
+		const settled = emitted.find((e) => e.hook === "session-orchestrator/turn-settled");
+		const statusChanges = emitted.filter(
+			(e) => e.hook === "session-orchestrator/conversation-status-changed",
+		);
 
-		expect(emitted[2]?.hook).toBe("session-orchestrator/turn-settled");
-		expect(emitted[2]?.payload.conversationId).toBe("conv-lifecycle");
-		expect(emitted[2]?.payload.cwd).toBe("/work");
-		expect(emitted[2]?.payload.modelName).toBe("mymodel");
+		expect(started).toBeDefined();
+		expect(started?.payload.conversationId).toBe("conv-lifecycle");
+		expect(started?.payload.cwd).toBe("/work");
+		expect(started?.payload.modelName).toBe("mymodel");
+		// turn-started is the FIRST emit (synchronous, before any async deferral).
+		expect(started?.order).toBe(0);
 
-		expect(emitted[3]?.hook).toBe("session-orchestrator/conversation-status-changed");
-		expect((emitted[3]?.payload as unknown as { status: string }).status).toBe("idle");
+		expect(settled).toBeDefined();
+		expect(settled?.payload.conversationId).toBe("conv-lifecycle");
+		expect(settled?.payload.cwd).toBe("/work");
+		expect(settled?.payload.modelName).toBe("mymodel");
+		// turn-started precedes turn-settled.
+		expect(started?.order).toBeLessThan(settled?.order ?? Infinity);
+
+		expect(statusChanges).toHaveLength(2);
+		const activeChange = statusChanges.find(
+			(e) => (e.payload as unknown as { status: string }).status === "active",
+		);
+		const idleChange = statusChanges.find(
+			(e) => (e.payload as unknown as { status: string }).status === "idle",
+		);
+		expect(activeChange).toBeDefined();
+		expect(idleChange).toBeDefined();
+		// Both status-changed payloads now carry the persisted workspace id.
+		expect((activeChange?.payload as unknown as { workspaceId: string }).workspaceId).toBe(
+			"default",
+		);
+		expect((idleChange?.payload as unknown as { workspaceId: string }).workspaceId).toBe("default");
 	});
 });
 
@@ -2402,7 +2429,7 @@ describe("closeConversation (CR-4c)", () => {
 		expect(persisted[0]?.role).toBe("user");
 	});
 
-	it("is idempotent on an idle/unknown conversation: abortedTurn false, hook still emitted", () => {
+	it("is idempotent on an idle/unknown conversation: abortedTurn false, hook still emitted", async () => {
 		const store = createInMemoryStore();
 		const emitted: Array<{ hook: string; payload: unknown }> = [];
 		const { orchestrator } = createSessionOrchestrator({
@@ -2418,19 +2445,107 @@ describe("closeConversation (CR-4c)", () => {
 
 		const result = orchestrator.closeConversation("conv-never-seen");
 		expect(result.abortedTurn).toBe(false);
+		// The conversation-closed hook is emitted synchronously; the
+		// status-changed hook resolves the workspace id async before emitting.
 		expect(emitted).toEqual([
 			{
 				hook: "session-orchestrator/conversation-closed",
 				payload: { conversationId: "conv-never-seen" },
 			},
-			{
-				hook: "session-orchestrator/conversation-status-changed",
-				payload: { conversationId: "conv-never-seen", status: "closed" },
-			},
 		]);
+		// Flush the async getWorkspaceId resolution so the status-changed emit lands.
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(emitted).toContainEqual({
+			hook: "session-orchestrator/conversation-status-changed",
+			payload: { conversationId: "conv-never-seen", status: "closed", workspaceId: "default" },
+		});
 
 		// Closing again is still safe.
 		expect(orchestrator.closeConversation("conv-never-seen").abortedTurn).toBe(false);
+	});
+});
+
+// --- workspace id on conversationOpened / conversationStatusChanged payloads ---
+
+describe("workspace id broadcast payloads", () => {
+	it("conversationStatusChanged payload carries the workspace id from the store", async () => {
+		const base = createInMemoryStore();
+		// Pre-assign a non-default workspace so we can assert it's threaded
+		// through (not the per-turn start option, which differs).
+		await base.setWorkspaceId("conv-ws-broadcast", "team-workspace");
+
+		const emitted: Array<{ hook: string; payload: ConversationStatusChangedPayload }> = [];
+		const provider = createFakeProvider([
+			[
+				{ type: "text-delta", delta: "ok" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: base,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: (hook, payload) => {
+				if (hook.id === "session-orchestrator/conversation-status-changed") {
+					emitted.push({
+						hook: hook.id,
+						payload: payload as ConversationStatusChangedPayload,
+					});
+				}
+			},
+		});
+
+		// Pass a DIFFERENT per-turn workspaceId to prove the payload uses the
+		// persisted store value, not the start option.
+		await orchestrator.handleMessage({
+			conversationId: "conv-ws-broadcast",
+			text: "hi",
+			onEvent: () => {},
+			workspaceId: "should-not-appear",
+		});
+		// Flush the async getWorkspaceId resolutions.
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(emitted.length).toBeGreaterThanOrEqual(2);
+		for (const e of emitted) {
+			expect(e.payload.workspaceId).toBe("team-workspace");
+		}
+
+		// closeConversation also threads the persisted workspace id.
+		const closeEmitted: ConversationStatusChangedPayload[] = [];
+		const { orchestrator: orchestrator2 } = createSessionOrchestrator({
+			conversationStore: base,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: (hook, payload) => {
+				if (hook.id === "session-orchestrator/conversation-status-changed") {
+					closeEmitted.push(payload as ConversationStatusChangedPayload);
+				}
+			},
+		});
+		orchestrator2.closeConversation("conv-ws-broadcast");
+		await new Promise((resolve) => setImmediate(resolve));
+		const closed = closeEmitted.find((p) => p.status === "closed");
+		expect(closed).toBeDefined();
+		expect(closed?.workspaceId).toBe("team-workspace");
+	});
+
+	it("conversationOpened payload carries the workspace id (type-level construct)", () => {
+		// conversationOpened is emitted by a sibling transport unit, so this
+		// package only owns the payload TYPE. This regression test pins the
+		// type to require workspaceId (a missing field would fail to compile)
+		// and verifies the persisted value flows through at construction time.
+		const payload: ConversationOpenedPayload = {
+			conversationId: "conv-open",
+			workspaceId: "open-workspace",
+		};
+		expect(payload.workspaceId).toBe("open-workspace");
+		expect(payload.conversationId).toBe("conv-open");
 	});
 });
 

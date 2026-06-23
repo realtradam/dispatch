@@ -133,18 +133,29 @@ export function createTransportWsExtension(): Extension {
 			// whenever the orchestrator signals a conversation was opened (e.g. the
 			// CLI `--open` flag). The frontend decides whether to open/focus a tab —
 			// the backend just signals. This is a GLOBAL fan-out (like the catalog),
-			// NOT a per-conversation chat broadcast.
+			// NOT a per-conversation chat broadcast. The payload's `workspaceId`
+			// is the conversation's actual persisted workspace (resolved by the
+			// orchestrator from the store), so a frontend opens/focuses the tab in
+			// the correct workspace.
 			disposers.push(
-				host.on(conversationOpened, ({ conversationId }) => {
-					broadcast({ type: "conversation.open", conversationId });
+				host.on(conversationOpened, ({ conversationId, workspaceId }) => {
+					broadcast({ type: "conversation.open", conversationId, workspaceId });
 				}),
 			);
 
 			// Broadcast `conversation.statusChanged` to all connected clients so
-			// tabs sync across devices in real time.
+			// tabs sync across devices in real time. `workspaceId` is the
+			// conversation's actual persisted workspace (resolved by the
+			// orchestrator from the store), forwarded so a frontend syncs the tab
+			// in the correct workspace.
 			disposers.push(
-				host.on(conversationStatusChanged, ({ conversationId, status }) => {
-					broadcast({ type: "conversation.statusChanged", conversationId, status });
+				host.on(conversationStatusChanged, ({ conversationId, status, workspaceId }) => {
+					broadcast({
+						type: "conversation.statusChanged",
+						conversationId,
+						status,
+						workspaceId,
+					});
 				}),
 			);
 
