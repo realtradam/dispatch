@@ -5,7 +5,24 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1411 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1433 vitest** green.
+
+## Per-conversation model persistence (DONE)
+Bug: a chat's selected provider + model was NOT persisted per conversation.
+Opening the same chat in a new browser session defaulted to the server's
+default model rather than recalling the originally selected one.
+- **Wave 0 (orchestrator, contracts):** `@dispatch/transport-contract`
+  `0.19.0→0.20.0` — additive `ModelResponse` + `SetModelRequest` types for
+  `GET/PUT /conversations/:id/model`.
+- **Wave 1 — `conversation-store`:** `getModel`/`setModel` (`model:<id>` key,
+  mirrors `getReasoningEffort`/`setReasoningEffort`); `forkHistory` copies model;
+  empty string clears (idempotent). +13 tests.
+- **Wave 2 (parallel):** `session-orchestrator` (resolve model from persisted
+  store when no per-turn override → `resolveModel`; persist the resolved model
+  so it sticks; warm path parity; `resolveModelName` pure helper; +4 tests) +
+  `transport-http` (`GET/PUT /conversations/:id/model` with validation +
+  `parseModelBody` pure validator; +10 tests).
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1433 vitest** pass; all in-lane.
 
 ## System-prompt stale on cwd change (DONE)
 Bug: the system-prompt service constructed the resolved prompt once on the first

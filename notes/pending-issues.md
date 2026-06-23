@@ -46,7 +46,7 @@ injecting from the cwd.
 
 ## 3. Persistent provider + model selection per chat
 
-**Status:** PENDING.
+**Status:** DONE (commit `f2e452b`).
 
 **Symptom:** A chat's selected provider + model is NOT persisted per
 conversation. Opening the same chat in a new browser session defaults to a
