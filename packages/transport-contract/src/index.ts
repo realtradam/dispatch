@@ -181,6 +181,14 @@ export interface ConversationMetricsResponse {
 	readonly turns: readonly TurnMetrics[];
 }
 
+export interface ConversationStatusResponse {
+	readonly conversationId: string;
+	/** True if the orchestrator has an in-memory active turn for this conversation. */
+	readonly isActive: boolean;
+	/** The persisted lifecycle status from the conversation store. */
+	readonly status: ConversationStatus;
+}
+
 /** The aggregation window for `GET /metrics/throughput`. */
 export type ThroughputPeriod = "day" | "week" | "month";
 
@@ -232,9 +240,19 @@ export interface CwdResponse {
 	readonly cwd: string | null;
 }
 
-/** Body of `PUT /conversations/:id/cwd`. */
+/**
+ * Body of `PUT /conversations/:id/cwd`.
+ *
+ * When `workspaceId` is provided, the conversation is assigned to that
+ * workspace BEFORE the cwd is persisted — so a subsequent
+ * `GET /conversations/:id/lsp` resolves a relative cwd against the
+ * workspace's `defaultCwd` (not the server default). Omit for unchanged
+ * workspace assignment (the conversation keeps its current workspace, or
+ * `"default"` if none).
+ */
 export interface SetCwdRequest {
 	readonly cwd: string;
+	readonly workspaceId?: string;
 }
 
 // ─── Per-conversation reasoning effort ────────────────────────────────────────
@@ -345,7 +363,12 @@ export interface LspServerInfo {
 /** Response of `GET /conversations/:id/lsp`. */
 export interface LspStatusResponse {
 	readonly conversationId: string;
-	/** The conversation's persisted cwd, or null if unset (then `servers` is empty). */
+	/**
+	 * The resolved working directory the LSP connects on, or `null` when no
+	 * cwd has been set for the conversation (then `servers` is empty). When
+	 * non-null, this is the effective cwd — a relative persisted cwd resolved
+	 * against the conversation's workspace `defaultCwd`.
+	 */
 	readonly cwd: string | null;
 	/** The language servers configured for `cwd` and their live state. */
 	readonly servers: readonly LspServerInfo[];

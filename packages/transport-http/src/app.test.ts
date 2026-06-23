@@ -125,6 +125,9 @@ function createFakeConversationStore(
 		async setCwd(conversationId, cwd) {
 			cwdStore.set(conversationId, cwd);
 		},
+		async clearCwd(conversationId) {
+			cwdStore.delete(conversationId);
+		},
 		async getReasoningEffort(conversationId) {
 			return reasoningEffortStore.get(conversationId) ?? null;
 		},
@@ -173,6 +176,35 @@ function createFakeConversationStore(
 		async setWorkspaceId() {},
 		async getEffectiveCwd(conversationId) {
 			return cwdStore.get(conversationId) ?? null;
+		},
+	};
+}
+
+/**
+ * Wraps a ConversationStore to record the ORDER of mutating calls
+ * (ensureWorkspace, setWorkspaceId, setCwd) as a labeled list — so tests can
+ * assert that workspace assignment happens BEFORE setCwd.
+ */
+function createCallTrackingStore(
+	base: ConversationStore,
+): ConversationStore & { readonly calls: readonly string[] } {
+	const calls: string[] = [];
+	return {
+		...base,
+		get calls() {
+			return calls;
+		},
+		async ensureWorkspace(id, opts) {
+			calls.push(`ensureWorkspace:${id}`);
+			return base.ensureWorkspace(id, opts);
+		},
+		async setWorkspaceId(conversationId, workspaceId) {
+			calls.push(`setWorkspaceId:${workspaceId}`);
+			await base.setWorkspaceId(conversationId, workspaceId);
+		},
+		async setCwd(conversationId, cwd) {
+			calls.push(`setCwd:${cwd}`);
+			await base.setCwd(conversationId, cwd);
 		},
 	};
 }
@@ -322,6 +354,28 @@ function createFakeLspService(
 ): LspService {
 	return {
 		async status() {
+			return statuses;
+		},
+	};
+}
+
+function createCapturingLspService(
+	statuses: readonly {
+		readonly id: string;
+		readonly name: string;
+		readonly root: string;
+		readonly extensions: readonly string[];
+		readonly state: "connected" | "starting" | "error" | "not-started";
+		readonly error?: string;
+	}[] = [],
+): LspService & { readonly statusCalls: readonly string[] } {
+	const calls: string[] = [];
+	return {
+		get statusCalls() {
+			return calls;
+		},
+		async status(cwd) {
+			calls.push(cwd);
 			return statuses;
 		},
 	};
@@ -895,6 +949,7 @@ describe("GET /conversations/:id", () => {
 					return null;
 				},
 				async setCwd() {},
+				async clearCwd() {},
 				async getReasoningEffort() {
 					return null;
 				},
@@ -1013,6 +1068,7 @@ describe("GET /conversations/:id", () => {
 				return null;
 			},
 			async setCwd() {},
+			async clearCwd() {},
 			async getReasoningEffort() {
 				return null;
 			},
@@ -1200,6 +1256,7 @@ describe("GET /conversations/:id/metrics", () => {
 				return null;
 			},
 			async setCwd() {},
+			async clearCwd() {},
 			async getReasoningEffort() {
 				return null;
 			},
@@ -1888,6 +1945,78 @@ describe("PUT then GET /conversations/:id/cwd", () => {
 	});
 });
 
+describe("DELETE /conversations/:id/cwd", () => {
+	it("after a PUT cwd → returns { cwd: null } and a subsequent GET returns cwd: null", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const putRes = await app.request("/conversations/conv1/cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ cwd: "/home/user/project" }),
+		});
+		expect(putRes.status).toBe(200);
+
+		const deleteRes = await app.request("/conversations/conv1/cwd", { method: "DELETE" });
+		expect(deleteRes.status).toBe(200);
+		const deleteBody = (await deleteRes.json()) as { conversationId: string; cwd: string | null };
+		expect(deleteBody.conversationId).toBe("conv1");
+		expect(deleteBody.cwd).toBeNull();
+
+		const getRes = await app.request("/conversations/conv1/cwd");
+		expect(getRes.status).toBe(200);
+		const getBody = (await getRes.json()) as { conversationId: string; cwd: string | null };
+		expect(getBody.cwd).toBeNull();
+	});
+
+	it("on a conversation that never had a cwd set → returns { cwd: null }, no error (idempotent)", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const deleteRes = await app.request("/conversations/conv1/cwd", { method: "DELETE" });
+		expect(deleteRes.status).toBe(200);
+		const deleteBody = (await deleteRes.json()) as { conversationId: string; cwd: string | null };
+		expect(deleteBody.conversationId).toBe("conv1");
+		expect(deleteBody.cwd).toBeNull();
+	});
+
+	it("does NOT affect other conversations' cwds (isolation)", async () => {
+		const cwdStore = new Map<string, string>([
+			["conv1", "/home/user/project"],
+			["conv2", "/other/path"],
+		]);
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const deleteRes = await app.request("/conversations/conv1/cwd", { method: "DELETE" });
+		expect(deleteRes.status).toBe(200);
+
+		const get1Res = await app.request("/conversations/conv1/cwd");
+		expect(get1Res.status).toBe(200);
+		const get1Body = (await get1Res.json()) as { conversationId: string; cwd: string | null };
+		expect(get1Body.cwd).toBeNull();
+
+		const get2Res = await app.request("/conversations/conv2/cwd");
+		expect(get2Res.status).toBe(200);
+		const get2Body = (await get2Res.json()) as { conversationId: string; cwd: string | null };
+		expect(get2Body.cwd).toBe("/other/path");
+	});
+});
+
 describe("PUT /conversations/:id/cwd", () => {
 	it("with missing cwd returns 400", async () => {
 		const app = createApp({
@@ -1919,6 +2048,80 @@ describe("PUT /conversations/:id/cwd", () => {
 			body: JSON.stringify({ cwd: "" }),
 		});
 		expect(res.status).toBe(400);
+	});
+
+	it("PUT cwd with workspaceId: assigns workspace before setCwd", async () => {
+		const base = createFakeConversationStore();
+		const store = createCallTrackingStore(base);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ cwd: "/home/user/project", workspaceId: "my-team" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { conversationId: string; cwd: string };
+		expect(body.cwd).toBe("/home/user/project");
+		// ensureWorkspace + setWorkspaceId called (in that order) BEFORE setCwd.
+		expect(store.calls).toEqual([
+			"ensureWorkspace:my-team",
+			"setWorkspaceId:my-team",
+			"setCwd:/home/user/project",
+		]);
+	});
+
+	it("PUT cwd without workspaceId: only setCwd", async () => {
+		const base = createFakeConversationStore();
+		const store = createCallTrackingStore(base);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ cwd: "/home/user/project" }),
+		});
+		expect(res.status).toBe(200);
+		// ensureWorkspace and setWorkspaceId NOT called.
+		expect(store.calls).toEqual(["setCwd:/home/user/project"]);
+	});
+
+	it("PUT cwd with invalid workspaceId: returns 400", async () => {
+		const base = createFakeConversationStore();
+		const store = createCallTrackingStore(base);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		// Uppercase is not a valid workspace slug.
+		const res = await app.request("/conversations/conv1/cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ cwd: "/home/user/project", workspaceId: "UPPER" }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("Invalid workspaceId");
+		// No mutating calls should have been made.
+		expect(store.calls).toEqual([]);
+
+		// Empty string is also invalid.
+		const res2 = await app.request("/conversations/conv1/cwd", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ cwd: "/home/user/project", workspaceId: "" }),
+		});
+		expect(res2.status).toBe(400);
 	});
 });
 
@@ -1993,6 +2196,79 @@ describe("GET /conversations/:id/lsp", () => {
 		expect(body.servers[1]?.id).toBe("lua-lsp");
 		expect(body.servers[1]?.state).toBe("error");
 		expect(body.servers[1]?.error).toBe("spawn failed");
+	});
+
+	it("LSP: returns null+empty when no persisted cwd — lspService.status NOT called", async () => {
+		const cwdStore = new Map<string, string>(); // no persisted cwd
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		const lsp = createCapturingLspService([
+			{
+				id: "typescript",
+				name: "TypeScript",
+				root: "/irrelevant",
+				extensions: [".ts"],
+				state: "connected" as const,
+			},
+		]);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			lspService: lsp,
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/lsp");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly unknown[];
+		};
+		expect(body.conversationId).toBe("conv1");
+		expect(body.cwd).toBeNull();
+		expect(body.servers).toEqual([]);
+		expect(lsp.statusCalls).toEqual([]); // status NOT called
+	});
+
+	it("LSP: uses effectiveCwd when persisted cwd is set — status called with resolved cwd", async () => {
+		// Persisted (relative) cwd differs from the resolved effective cwd.
+		const cwdStore = new Map<string, string>([["conv1", "subdir"]]);
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		// Override getEffectiveCwd to return the resolved (absolute) value.
+		const resolvedStore: ConversationStore = {
+			...store,
+			async getEffectiveCwd() {
+				return "/workspace/subdir";
+			},
+		};
+		const lsp = createCapturingLspService([
+			{
+				id: "typescript",
+				name: "TypeScript",
+				root: "/workspace/subdir",
+				extensions: [".ts", ".tsx"],
+				state: "connected" as const,
+			},
+		]);
+		const app = createApp({
+			conversationStore: resolvedStore,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			lspService: lsp,
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/lsp");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly { readonly id: string }[];
+		};
+		expect(body.conversationId).toBe("conv1");
+		expect(body.cwd).toBe("/workspace/subdir"); // effective, not persisted
+		expect(lsp.statusCalls).toEqual(["/workspace/subdir"]);
+		expect(body.servers).toHaveLength(1);
+		expect(body.servers[0]?.id).toBe("typescript");
 	});
 });
 
@@ -2964,7 +3240,7 @@ it("GET /conversations/:id/lsp uses effective cwd", async () => {
 	const res = await app.request("/conversations/conv1/lsp");
 	expect(res.status).toBe(200);
 	expect(effectiveCwdCalled).toBe(true);
-	expect(getCwdCalled).toBe(false);
+	expect(getCwdCalled).toBe(true); // gated on persisted cwd first
 	expect(lspCwd).toBe("/effective");
 	const body = (await res.json()) as {
 		conversationId: string;

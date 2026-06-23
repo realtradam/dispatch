@@ -6,6 +6,7 @@ import type {
 	ConversationHistoryResponse,
 	ConversationListResponse,
 	ConversationMetricsResponse,
+	ConversationStatusResponse,
 	CwdResponse,
 	DeleteWorkspaceResponse,
 	LastMessageResponse,
@@ -234,6 +235,17 @@ export function createApp(opts: CreateServerOptions): Hono {
 		}
 	});
 
+	app.get("/conversations/:id/status", async (c) => {
+		const conversationId = c.req.param("id");
+		const isActive = opts.orchestrator.isActive(conversationId);
+		const status = await opts.conversationStore.getConversationStatus(conversationId);
+		if (status === null) {
+			return c.json({ error: "Conversation not found" }, 404);
+		}
+		const body: ConversationStatusResponse = { conversationId, isActive, status };
+		return c.json(body, 200);
+	});
+
 	app.get("/models", async (c) => {
 		try {
 			const models = await opts.credentialStore.listCatalog();
@@ -281,6 +293,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 
 		const events: AgentEvent[] = [];
 		let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
+		let streamClosed = false;
 
 		const stream = new ReadableStream<Uint8Array>({
 			start(controller) {
@@ -288,12 +301,38 @@ export function createApp(opts: CreateServerOptions): Hono {
 			},
 		});
 
+		function safeEnqueue(data: Uint8Array): void {
+			if (streamClosed) return;
+			try {
+				controllerRef?.enqueue(data);
+			} catch (err) {
+				streamClosed = true;
+				log.warn("chat: stream enqueue failed", {
+					conversationId,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
+		function safeClose(): void {
+			if (streamClosed) return;
+			streamClosed = true;
+			try {
+				controllerRef?.close();
+			} catch (err) {
+				log.warn("chat: stream close failed", {
+					conversationId,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
 		const orchestratorInput: Parameters<SessionOrchestrator["handleMessage"]>[0] = {
 			conversationId,
 			text: message,
 			onEvent: (event) => {
 				events.push(event);
-				controllerRef?.enqueue(new TextEncoder().encode(serializeEventLine(event)));
+				safeEnqueue(new TextEncoder().encode(serializeEventLine(event)));
 			},
 			...(model !== undefined ? { modelName: model } : {}),
 			...(cwd !== undefined ? { cwd } : {}),
@@ -304,7 +343,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 		opts.orchestrator
 			.handleMessage(orchestratorInput)
 			.then(async () => {
-				controllerRef?.close();
+				safeClose();
 				await recordThroughput(events, model);
 			})
 			.catch((err) => {
@@ -315,8 +354,8 @@ export function createApp(opts: CreateServerOptions): Hono {
 					turnId: "",
 					message: err instanceof Error ? err.message : String(err),
 				};
-				controllerRef?.enqueue(new TextEncoder().encode(serializeEventLine(errorEvent)));
-				controllerRef?.close();
+				safeEnqueue(new TextEncoder().encode(serializeEventLine(errorEvent)));
+				safeClose();
 			});
 
 		return new Response(stream, {
@@ -485,7 +524,22 @@ export function createApp(opts: CreateServerOptions): Hono {
 			return c.json({ error: "Field 'cwd' is required and must be a non-empty string" }, 400);
 		}
 
+		// When a workspaceId is provided, assign the conversation to that
+		// workspace BEFORE persisting the cwd — so a subsequent
+		// GET /conversations/:id/lsp resolves a relative cwd against the
+		// workspace's defaultCwd (not the server default). Omit for unchanged
+		// workspace assignment (backward compatible).
+		if (obj.workspaceId !== undefined) {
+			if (typeof obj.workspaceId !== "string" || !isValidWorkspaceSlug(obj.workspaceId)) {
+				return c.json({ error: "Invalid workspaceId" }, 400);
+			}
+		}
+
 		try {
+			if (typeof obj.workspaceId === "string") {
+				await opts.conversationStore.ensureWorkspace(obj.workspaceId);
+				await opts.conversationStore.setWorkspaceId(conversationId, obj.workspaceId);
+			}
 			await opts.conversationStore.setCwd(conversationId, obj.cwd);
 			log.info("conversations: cwd set", { conversationId });
 			const response: CwdResponse = { conversationId, cwd: obj.cwd };
@@ -496,19 +550,17 @@ export function createApp(opts: CreateServerOptions): Hono {
 		}
 	});
 
-	app.delete("/conversations/:id/cwd", (c) => {
+	app.delete("/conversations/:id/cwd", async (c) => {
 		const conversationId = c.req.param("id");
-		// CR: The ConversationStore interface currently has no `clearCwd` method.
-		// `setCwd(id, "")` would persist an empty string (not the same as "no
-		// cwd key"), and `getEffectiveCwd` treats any non-null explicit cwd as
-		// set — so an empty string would shadow the workspace defaultCwd instead
-		// of clearing. A `clearCwd` method (wrapping `storage.delete(cwdKey(id))`)
-		// is needed on the store interface to truly clear the persisted key.
-		// For now the route returns the contract shape (cwd: null); the actual
-		// clearing is a no-op until the CR is implemented.
-		log.info("conversations: cwd cleared", { conversationId });
-		const response: CwdResponse = { conversationId, cwd: null };
-		return c.json(response, 200);
+		try {
+			await opts.conversationStore.clearCwd(conversationId);
+			log.info("conversations: cwd cleared", { conversationId });
+			const response: CwdResponse = { conversationId, cwd: null };
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("conversations: cwd clear failure", { err });
+			return c.json({ error: "Failed to clear conversation cwd" }, 500);
+		}
 	});
 
 	app.get("/conversations/:id/reasoning-effort", async (c) => {
@@ -557,9 +609,22 @@ export function createApp(opts: CreateServerOptions): Hono {
 	app.get("/conversations/:id/lsp", async (c) => {
 		const conversationId = c.req.param("id");
 		try {
-			const cwd = await opts.conversationStore.getEffectiveCwd(conversationId);
-			if (cwd === null) {
+			// Gate on the PERSISTED cwd first: when no cwd has been set for the
+			// conversation, the LSP does NOT connect (return null + empty servers)
+			// rather than falling through to the server default (process.cwd()).
+			const persistedCwd = await opts.conversationStore.getCwd(conversationId);
+			if (persistedCwd === null) {
 				log.info("conversations: lsp status read (no cwd)", { conversationId });
+				const body: LspStatusResponse = { conversationId, cwd: null, servers: [] };
+				return c.json(body, 200);
+			}
+
+			// A persisted cwd exists → resolve the EFFECTIVE cwd (relative cwd
+			// resolved against the workspace defaultCwd; absolute → as-is).
+			const effectiveCwd = await opts.conversationStore.getEffectiveCwd(conversationId);
+			if (effectiveCwd === null) {
+				// Edge case: persisted cwd exists but resolution returned null.
+				log.info("conversations: lsp status read (no effective cwd)", { conversationId });
 				const body: LspStatusResponse = { conversationId, cwd: null, servers: [] };
 				return c.json(body, 200);
 			}
@@ -569,7 +634,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 				return c.json({ error: "LSP service not available" }, 503);
 			}
 
-			const statuses = await opts.lspService.status(cwd);
+			const statuses = await opts.lspService.status(effectiveCwd);
 			const servers: LspServerInfo[] = statuses.map((s: LspServerStatus) => {
 				const info: LspServerInfo = {
 					id: s.id,
@@ -583,10 +648,10 @@ export function createApp(opts: CreateServerOptions): Hono {
 			});
 			log.info("conversations: lsp status read", {
 				conversationId,
-				cwd,
+				cwd: effectiveCwd,
 				serverCount: servers.length,
 			});
-			const body: LspStatusResponse = { conversationId, cwd, servers };
+			const body: LspStatusResponse = { conversationId, cwd: effectiveCwd, servers };
 			return c.json(body, 200);
 		} catch (err) {
 			log.error("conversations: lsp status failure", { err });
