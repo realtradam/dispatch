@@ -299,6 +299,57 @@ export interface CloseConversationResponse {
 	readonly abortedTurn: boolean;
 }
 
+// ─── System prompt template ───────────────────────────────────────────────────
+
+/**
+ * Response of `GET /system-prompt` — the current global system prompt template.
+ *
+ * The template is a text string with variable placeholders (`[type:name]`) and
+ * conditional blocks (`[if]`/`[else]`/`[endif]`). At construction time (first
+ * turn or compaction), variables are resolved against the conversation's cwd
+ * and system state. The resolved system prompt is persisted per conversation
+ * and reused on all subsequent turns (cache-safe — no per-turn reconstruction).
+ */
+export interface SystemPromptTemplateResponse {
+	/** The template text (may be empty — then no system prompt is sent). */
+	readonly template: string;
+}
+
+/**
+ * Body of `PUT /system-prompt` — set the global system prompt template.
+ *
+ * Changing the template does NOT affect existing conversations until they are
+ * compacted (the persisted resolved system prompt is stable). New
+ * conversations use the new template on their first turn.
+ */
+export interface SetSystemPromptTemplateRequest {
+	readonly template: string;
+}
+
+/**
+ * One available variable for the system prompt template, as reported by
+ * `GET /system-prompt/variables` so the frontend can render the variable
+ * selector buttons.
+ */
+export interface SystemPromptVariable {
+	/** The variable type/source: `"system"`, `"file"`, `"prompt"`, `"git"`. */
+	readonly type: string;
+	/** The variable name (e.g. `"time"`, `"date"`, `"os"`). For dynamic types, a description. */
+	readonly name: string;
+	/** Human-readable description of what the variable resolves to. */
+	readonly description: string;
+	/**
+	 * When `true`, any name is valid for this type (e.g. `file:<path>` accepts
+	 * any file path). The frontend should allow free-text input for the name.
+	 */
+	readonly dynamic?: boolean;
+}
+
+/** Response of `GET /system-prompt/variables`. */
+export interface SystemPromptVariablesResponse {
+	readonly variables: readonly SystemPromptVariable[];
+}
+
 // ─── Message queue (steering) ─────────────────────────────────────────────────
 
 /**

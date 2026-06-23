@@ -29,6 +29,7 @@
 		{ "path": "./packages/cache-warming" },
 		{ "path": "./packages/message-queue" },
 		{ "path": "./packages/lsp" },
+		{ "path": "./packages/system-prompt" },
 		{ "path": "./packages/cli" },
 		{ "path": "./packages/journal-sink" },
 		{ "path": "./packages/trace-store" },

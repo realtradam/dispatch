@@ -1,0 +1,210 @@
+import { describe, expect, it } from "vitest";
+import type { GitSpawnResult, ResolverAdapters, ResolverFs } from "./resolver.js";
+import { resolveVariables } from "./resolver.js";
+
+/** A spawn that returns canned output per command (joined argv → result). */
+function fakeSpawn(
+	table: ReadonlyMap<string, GitSpawnResult> | GitSpawnResult,
+): ResolverAdapters["spawn"] {
+	return async (command) => {
+		if (table instanceof Map) {
+			return table.get(command.join(" ")) ?? { stdout: "", stderr: "", exitCode: 128 };
+		}
+		return table;
+	};
+}
+
+function fakeFs(files: ReadonlyMap<string, string>): ResolverFs {
+	return {
+		readText: async (path: string) => files.get(path) ?? "",
+		exists: async (path: string) => files.has(path),
+	};
+}
+
+const failSpawn = (): ResolverAdapters["spawn"] => async () => ({
+	stdout: "",
+	stderr: "not a git repo",
+	exitCode: 128,
+});
+
+const fixedNow = new Date("2024-06-15T12:30:00.000Z");
+
+describe("resolver", () => {
+	describe("system variables", () => {
+		it("resolves system:* to non-null strings", async () => {
+			// 11. system:time, system:date, system:os, system:hostname
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(new Map()),
+				now: () => fixedNow,
+				platform: () => "linux",
+				hostname: () => "myhost",
+			});
+
+			expect(map.get("system:time")).toBe("2024-06-15T12:30:00.000Z");
+			expect(map.get("system:date")).toBe("2024-06-15");
+			expect(map.get("system:os")).toBe("linux");
+			expect(map.get("system:hostname")).toBe("myhost");
+		});
+
+		it("prompt:cwd is the cwd, model/conversation_id follow context", async () => {
+			const map = await resolveVariables(
+				"/proj",
+				{
+					spawn: failSpawn(),
+					fs: fakeFs(new Map()),
+					now: () => fixedNow,
+				},
+				{ context: { model: "gpt-4", conversationId: "conv-1" } },
+			);
+
+			expect(map.get("prompt:cwd")).toBe("/proj");
+			expect(map.get("prompt:model")).toBe("gpt-4");
+			expect(map.get("prompt:conversation_id")).toBe("conv-1");
+		});
+
+		it("prompt:model / prompt:conversation_id are null when absent", async () => {
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(new Map()),
+				now: () => fixedNow,
+			});
+
+			expect(map.get("prompt:model")).toBeNull();
+			expect(map.get("prompt:conversation_id")).toBeNull();
+		});
+	});
+
+	describe("file variables", () => {
+		it("reads a file relative to cwd", async () => {
+			// 12. file variable reads relative path; missing → null
+			const files = new Map<string, string>([["/proj/AGENTS.md", "rules"]]);
+			const map = await resolveVariables(
+				"/proj",
+				{
+					spawn: failSpawn(),
+					fs: fakeFs(files),
+					now: () => fixedNow,
+				},
+				{ referencedKeys: ["file:AGENTS.md"] },
+			);
+
+			expect(map.get("file:AGENTS.md")).toBe("rules");
+		});
+
+		it("missing file → null", async () => {
+			const map = await resolveVariables(
+				"/proj",
+				{
+					spawn: failSpawn(),
+					fs: fakeFs(new Map()),
+					now: () => fixedNow,
+				},
+				{ referencedKeys: ["file:missing.md"] },
+			);
+
+			expect(map.get("file:missing.md")).toBeNull();
+		});
+
+		it("absolute path reads from absolute location", async () => {
+			const files = new Map<string, string>([["/etc/config", "data"]]);
+			const map = await resolveVariables(
+				"/proj",
+				{
+					spawn: failSpawn(),
+					fs: fakeFs(files),
+					now: () => fixedNow,
+				},
+				{ referencedKeys: ["file:/etc/config"] },
+			);
+
+			expect(map.get("file:/etc/config")).toBe("data");
+		});
+
+		it("reads nested relative path", async () => {
+			const files = new Map<string, string>([["/proj/src/foo.ts", "export {}"]]);
+			const map = await resolveVariables(
+				"/proj",
+				{
+					spawn: failSpawn(),
+					fs: fakeFs(files),
+					now: () => fixedNow,
+				},
+				{ referencedKeys: ["file:src/foo.ts"] },
+			);
+
+			expect(map.get("file:src/foo.ts")).toBe("export {}");
+		});
+
+		it("non-file referenced keys are not added to the map", async () => {
+			const map = await resolveVariables(
+				"/proj",
+				{
+					spawn: failSpawn(),
+					fs: fakeFs(new Map()),
+					now: () => fixedNow,
+				},
+				{ referencedKeys: ["unknown:foo"] },
+			);
+
+			expect(map.has("unknown:foo")).toBe(false);
+		});
+	});
+
+	describe("git variables", () => {
+		it("git:branch returns the branch name", async () => {
+			// 13. git:branch via injected spawn
+			const table = new Map<string, GitSpawnResult>([
+				["git rev-parse --abbrev-ref HEAD", { stdout: "feature/x\n", stderr: "", exitCode: 0 }],
+				["git status --short", { stdout: " M a.ts\n", stderr: "", exitCode: 0 }],
+			]);
+			const map = await resolveVariables("/proj", {
+				spawn: fakeSpawn(table),
+				fs: fakeFs(new Map()),
+				now: () => fixedNow,
+			});
+
+			expect(map.get("git:branch")).toBe("feature/x");
+			expect(map.get("git:status")).toBe(" M a.ts");
+		});
+
+		it("non-git cwd → null", async () => {
+			const map = await resolveVariables("/proj", {
+				spawn: failSpawn(),
+				fs: fakeFs(new Map()),
+				now: () => fixedNow,
+			});
+
+			expect(map.get("git:branch")).toBeNull();
+			expect(map.get("git:status")).toBeNull();
+		});
+
+		it("throwing spawn → null", async () => {
+			const throwingSpawn = async (): Promise<GitSpawnResult> => {
+				throw new Error("git not installed");
+			};
+			const map = await resolveVariables("/proj", {
+				spawn: throwingSpawn,
+				fs: fakeFs(new Map()),
+				now: () => fixedNow,
+			});
+
+			expect(map.get("git:branch")).toBeNull();
+			expect(map.get("git:status")).toBeNull();
+		});
+
+		it("clean repo → git:status is empty string (existing)", async () => {
+			const table = new Map<string, GitSpawnResult>([
+				["git rev-parse --abbrev-ref HEAD", { stdout: "main\n", stderr: "", exitCode: 0 }],
+				["git status --short", { stdout: "", stderr: "", exitCode: 0 }],
+			]);
+			const map = await resolveVariables("/proj", {
+				spawn: fakeSpawn(table),
+				fs: fakeFs(new Map()),
+				now: () => fixedNow,
+			});
+
+			expect(map.get("git:status")).toBe("");
+		});
+	});
+});
