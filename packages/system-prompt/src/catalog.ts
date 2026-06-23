@@ -16,6 +16,7 @@ export function getVariableCatalog(): SystemPromptVariable[] {
 		{ type: "prompt", name: "cwd", description: "Conversation working directory" },
 		{ type: "prompt", name: "model", description: "Current model name" },
 		{ type: "prompt", name: "conversation_id", description: "Conversation identifier" },
+		{ type: "prompt", name: "workspace_id", description: "Workspace identifier" },
 		{ type: "git", name: "branch", description: "Current git branch" },
 		{ type: "git", name: "status", description: "Short git status" },
 		{

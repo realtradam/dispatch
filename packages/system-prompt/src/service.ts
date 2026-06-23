@@ -46,10 +46,11 @@ export function createSystemPromptService(deps: SystemPromptServiceDeps): System
 			if (template === null) template = DEFAULT_TEMPLATE;
 
 			const referencedKeys = extractVariables(template);
-			const resolverContext: ResolverContext =
-				context?.model !== undefined
-					? { model: context.model, conversationId }
-					: { conversationId };
+			const resolverContext: ResolverContext = {
+				conversationId,
+				...(context?.model !== undefined ? { model: context.model } : {}),
+				...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
+			};
 			const vars = await resolveVariables(cwd, deps.adapters, {
 				context: resolverContext,
 				referencedKeys,
