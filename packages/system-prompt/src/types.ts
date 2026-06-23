@@ -30,6 +30,16 @@ export interface SystemPromptService {
 	/** Read the persisted resolved system prompt, or `null` if never constructed. */
 	get(conversationId: string): Promise<string | null>;
 
+	/**
+	 * Read the persisted resolved system prompt AND the cwd it was built
+	 * against. Returns `{ prompt: null, cwd: null }` if never constructed.
+	 * Consumers use this to detect whether the cached prompt is stale
+	 * relative to the current effective cwd.
+	 */
+	getWithMeta(
+		conversationId: string,
+	): Promise<{ readonly prompt: string | null; readonly cwd: string | null }>;
+
 	/** Read the global template (or `DEFAULT_TEMPLATE` when none is stored). */
 	getTemplate(): Promise<string>;
 

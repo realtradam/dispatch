@@ -3327,11 +3327,18 @@ function createFakeSystemPromptService(
 		cwd: string,
 		context?: { readonly model?: string },
 	) => Promise<string>,
-	getImpl: (conversationId: string) => Promise<string | null> = () => Promise.resolve(null),
+	getWithMetaImpl: (
+		conversationId: string,
+	) => Promise<{ readonly prompt: string | null; readonly cwd: string | null }> = () =>
+		Promise.resolve({ prompt: null, cwd: null }),
 ): SystemPromptService {
 	return {
 		construct: constructImpl,
-		get: getImpl,
+		async get(conversationId) {
+			const meta = await getWithMetaImpl(conversationId);
+			return meta.prompt;
+		},
+		getWithMeta: getWithMetaImpl,
 		async getTemplate() {
 			return "";
 		},
@@ -3393,7 +3400,7 @@ describe("system prompt: regular turn flow", () => {
 		expect(captured[0]?.providerOpts?.systemPrompt).toBe("CONSTRUCTED_PROMPT");
 	});
 
-	it("Subsequent turn: get called — existing conversation (meta non-null) → get called → result set on providerOpts.systemPrompt", async () => {
+	it("Subsequent turn: stored cwd === effective cwd → uses cached prompt (no construct)", async () => {
 		const store = createInMemoryStore();
 		// Seed an existing conversation so getConversationMeta returns non-null.
 		await store.append("conv-sp-sub", [
@@ -3405,7 +3412,7 @@ describe("system prompt: regular turn flow", () => {
 		const { captured, captureRunTurn } = createCapturingRunTurn();
 
 		const constructCalls: string[] = [];
-		const getCalls: string[] = [];
+		const getWithMetaCalls: string[] = [];
 
 		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
@@ -3420,8 +3427,8 @@ describe("system prompt: regular turn flow", () => {
 						return "SHOULD_NOT_BE_USED";
 					},
 					async (conversationId) => {
-						getCalls.push(conversationId);
-						return "PERSISTED_PROMPT";
+						getWithMetaCalls.push(conversationId);
+						return { prompt: "PERSISTED_PROMPT", cwd: "/work/dir" };
 					},
 				),
 		});
@@ -3430,17 +3437,18 @@ describe("system prompt: regular turn flow", () => {
 			conversationId: "conv-sp-sub",
 			text: "second",
 			onEvent: () => {},
+			cwd: "/work/dir",
 		});
 
-		expect(getCalls).toHaveLength(1);
-		expect(getCalls[0]).toBe("conv-sp-sub");
+		expect(getWithMetaCalls).toHaveLength(1);
+		expect(getWithMetaCalls[0]).toBe("conv-sp-sub");
 		expect(constructCalls).toHaveLength(0);
 
 		expect(captured).toHaveLength(1);
 		expect(captured[0]?.providerOpts?.systemPrompt).toBe("PERSISTED_PROMPT");
 	});
 
-	it("Subsequent turn: get returns null → systemPrompt omitted from providerOpts", async () => {
+	it("Subsequent turn: no stored prompt (getWithMeta returns null) → calls construct", async () => {
 		const store = createInMemoryStore();
 		await store.append("conv-sp-null", [
 			{ role: "user", chunks: [{ type: "text", text: "first" }] },
@@ -3450,6 +3458,12 @@ describe("system prompt: regular turn flow", () => {
 		const provider: ProviderContract = { id: "p", stream: async function* () {} };
 		const { captured, captureRunTurn } = createCapturingRunTurn();
 
+		const constructCalls: Array<{
+			conversationId: string;
+			cwd: string;
+			model: string | undefined;
+		}> = [];
+
 		const { orchestrator } = createSessionOrchestrator({
 			conversationStore: store,
 			resolveProvider: () => provider,
@@ -3458,8 +3472,11 @@ describe("system prompt: regular turn flow", () => {
 			runTurn: captureRunTurn,
 			resolveSystemPrompt: () =>
 				createFakeSystemPromptService(
-					async () => "SHOULD_NOT_BE_USED",
-					async () => null,
+					async (conversationId, cwd, context) => {
+						constructCalls.push({ conversationId, cwd, model: context?.model });
+						return "RECONSTRUCTED_PROMPT";
+					},
+					async () => ({ prompt: null, cwd: null }),
 				),
 		});
 
@@ -3467,10 +3484,76 @@ describe("system prompt: regular turn flow", () => {
 			conversationId: "conv-sp-null",
 			text: "second",
 			onEvent: () => {},
+			cwd: "/work/dir",
+			modelName: "my-model",
 		});
 
+		expect(constructCalls).toHaveLength(1);
+		expect(constructCalls[0]?.conversationId).toBe("conv-sp-null");
+		expect(constructCalls[0]?.cwd).toBe("/work/dir");
+		expect(constructCalls[0]?.model).toBe("my-model");
+
 		expect(captured).toHaveLength(1);
-		expect(captured[0]?.providerOpts?.systemPrompt).toBeUndefined();
+		expect(captured[0]?.providerOpts?.systemPrompt).toBe("RECONSTRUCTED_PROMPT");
+	});
+
+	it("Subsequent turn: stored cwd ≠ effective cwd → calls construct with new cwd (prompt rebuilt)", async () => {
+		const store = createInMemoryStore();
+		await store.append("conv-sp-cwd-change", [
+			{ role: "user", chunks: [{ type: "text", text: "first" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "reply" }] },
+		]);
+
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const constructCalls: Array<{
+			conversationId: string;
+			cwd: string;
+			model: string | undefined;
+		}> = [];
+		const getWithMetaCalls: string[] = [];
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+			resolveSystemPrompt: () =>
+				createFakeSystemPromptService(
+					async (conversationId, cwd, context) => {
+						constructCalls.push({ conversationId, cwd, model: context?.model });
+						return "REBUILT_PROMPT";
+					},
+					async (conversationId) => {
+						getWithMetaCalls.push(conversationId);
+						// Stored prompt was built against an OLD cwd.
+						return { prompt: "STALE_PROMPT", cwd: "/old/dir" };
+					},
+				),
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-sp-cwd-change",
+			text: "second",
+			onEvent: () => {},
+			// Current turn's effective cwd differs from the stored cwd.
+			cwd: "/new/dir",
+			modelName: "my-model",
+		});
+
+		expect(getWithMetaCalls).toHaveLength(1);
+		expect(getWithMetaCalls[0]).toBe("conv-sp-cwd-change");
+
+		expect(constructCalls).toHaveLength(1);
+		expect(constructCalls[0]?.conversationId).toBe("conv-sp-cwd-change");
+		expect(constructCalls[0]?.cwd).toBe("/new/dir");
+		expect(constructCalls[0]?.model).toBe("my-model");
+
+		expect(captured).toHaveLength(1);
+		// The rebuilt prompt is used — NOT the stale cached one.
+		expect(captured[0]?.providerOpts?.systemPrompt).toBe("REBUILT_PROMPT");
 	});
 
 	it("Service unavailable: no system prompt — resolveSystemPrompt is undefined → providerOpts.systemPrompt is NOT set", async () => {

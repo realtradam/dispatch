@@ -148,4 +148,80 @@ describe("system-prompt service", () => {
 		expect(DEFAULT_TEMPLATE).toContain("[file:AGENTS.md]");
 		expect(DEFAULT_TEMPLATE).toContain("[prompt:cwd]");
 	});
+
+	it("getWithMeta on a never-constructed conversation returns { prompt: null, cwd: null }", async () => {
+		// 1. never constructed → both fields null.
+		const service = createSystemPromptService({
+			storage: memoryStorage(),
+			adapters: adapters(new Map()),
+		});
+
+		const meta = await service.getWithMeta("never-constructed");
+		expect(meta).toEqual({ prompt: null, cwd: null });
+	});
+
+	it("getWithMeta after construct returns the resolved prompt and the exact cwd", async () => {
+		// 2. after construct → prompt + exact cwd passed to construct.
+		const service = createSystemPromptService({
+			storage: memoryStorage(),
+			adapters: adapters(new Map([["/proj/AGENTS.md", "RULES"]])),
+		});
+
+		const result = await service.construct("conv-meta", "/proj", { model: "gpt-4" });
+		const meta = await service.getWithMeta("conv-meta");
+
+		expect(meta.prompt).toBe(result);
+		expect(meta.cwd).toBe("/proj");
+	});
+
+	it("get still returns the same value as before (backward compat)", async () => {
+		// 3. get() behavior is unchanged by the additive getWithMeta.
+		const service = createSystemPromptService({
+			storage: memoryStorage(),
+			adapters: adapters(new Map()),
+		});
+
+		// before construct → null
+		expect(await service.get("conv-bc")).toBeNull();
+
+		const result = await service.construct("conv-bc", "/proj");
+		expect(await service.get("conv-bc")).toBe(result);
+	});
+
+	it("construct called twice with different cwds stores the latest cwd", async () => {
+		// 4. second construct overwrites the cwd (not the first).
+		const storage = memoryStorage();
+		await storage.set("template", "[prompt:cwd]");
+		const service = createSystemPromptService({
+			storage,
+			adapters: adapters(new Map()),
+		});
+
+		await service.construct("conv-twice", "/first");
+		expect(await storage.get("resolved-cwd:conv-twice")).toBe("/first");
+
+		const second = await service.construct("conv-twice", "/second");
+		expect(second).toBe("/second");
+		expect(await storage.get("resolved-cwd:conv-twice")).toBe("/second");
+		expect(await storage.get("resolved-cwd:conv-twice")).not.toBe("/first");
+	});
+
+	it("getWithMeta after a second construct with a different cwd returns the new cwd and new prompt", async () => {
+		// 5. getWithMeta reflects the latest construct, not the first.
+		const storage = memoryStorage();
+		await storage.set("template", "[prompt:cwd]");
+		const service = createSystemPromptService({
+			storage,
+			adapters: adapters(new Map()),
+		});
+
+		const first = await service.construct("conv-second", "/dir-a");
+		const firstMeta = await service.getWithMeta("conv-second");
+		expect(firstMeta).toEqual({ prompt: first, cwd: "/dir-a" });
+
+		const second = await service.construct("conv-second", "/dir-b");
+		const secondMeta = await service.getWithMeta("conv-second");
+		expect(secondMeta).toEqual({ prompt: second, cwd: "/dir-b" });
+		expect(secondMeta.cwd).not.toBe("/dir-a");
+	});
 });
