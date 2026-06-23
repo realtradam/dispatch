@@ -91,6 +91,53 @@ async function readFile(filePath: string, cwd: string, fs: ResolverFs): Promise<
 }
 
 /**
+ * Resolve a rich OS description string.
+ *
+ * - **Linux:** reads `/etc/os-release` for the distro name (PRETTY_NAME or
+ *   NAME+VERSION_ID). Detects WSL via `/proc/sys/fs/binfmt_misc/WSLInterop` or
+ *   "microsoft" in `/proc/version`. Returns e.g. `"Ubuntu 22.04 (WSL)"` or
+ *   `"Ubuntu 22.04"`.
+ * - **Other platforms:** returns `process.platform` (e.g. `"darwin"`, `"win32"`).
+ *
+ * All file reads use the injected `fs` adapter — failures are non-fatal (fall back
+ * to the base platform string). The `platform` override is honored for tests.
+ */
+async function resolveOs(platform: string, fs: ResolverFs): Promise<string> {
+	if (platform !== "linux") return platform;
+
+	let distro: string | null = null;
+	const osRelease = await readFile("/etc/os-release", "/", fs);
+	if (osRelease !== null) {
+		const pretty = osRelease.match(/^PRETTY_NAME="(.+)"/m);
+		if (pretty?.[1] !== undefined) {
+			distro = pretty[1];
+		} else {
+			const name = osRelease.match(/^NAME="(.+)"/m);
+			const version = osRelease.match(/^VERSION_ID="(.+)"/m);
+			if (name?.[1] !== undefined) {
+				distro = version?.[1] !== undefined ? `${name[1]} ${version[1]}` : name[1];
+			}
+		}
+	}
+
+	let isWsl = false;
+	const wslInterop = await readFile("/proc/sys/fs/binfmt_misc/WSLInterop", "/", fs);
+	if (wslInterop !== null) {
+		isWsl = true;
+	} else {
+		const procVersion = await readFile("/proc/version", "/", fs);
+		if (procVersion !== null && /microsoft/i.test(procVersion)) {
+			isWsl = true;
+		}
+	}
+
+	if (distro !== null) {
+		return isWsl ? `${distro} (WSL)` : distro;
+	}
+	return isWsl ? "Linux (WSL)" : "linux";
+}
+
+/**
  * Resolve all variables for a construction.
  *
  * Always resolves the fixed catalog (`system:*`, `prompt:*`, `git:*`), plus any
@@ -110,7 +157,8 @@ export async function resolveVariables(
 	// ── system:* ────────────────────────────────────────────────────────────
 	vars.set("system:time", now.toISOString());
 	vars.set("system:date", now.toISOString().slice(0, 10));
-	vars.set("system:os", adapters.platform?.() ?? process.platform);
+	const platform = adapters.platform?.() ?? process.platform;
+	vars.set("system:os", await resolveOs(platform, adapters.fs));
 	vars.set("system:hostname", adapters.hostname?.() ?? osHostname());
 
 	// ── prompt:* ────────────────────────────────────────────────────────────
