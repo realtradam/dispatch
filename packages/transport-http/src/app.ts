@@ -1,4 +1,5 @@
 import type { AgentEvent, HostAPI, Logger } from "@dispatch/kernel";
+import { DEFAULT_TEMPLATE, getVariableCatalog } from "@dispatch/system-prompt";
 import type {
 	CloseConversationResponse,
 	CompactPercentResponse,
@@ -17,6 +18,9 @@ import type {
 	QueueResponse,
 	ReasoningEffortResponse,
 	SetCompactPercentRequest,
+	SetSystemPromptTemplateRequest,
+	SystemPromptTemplateResponse,
+	SystemPromptVariablesResponse,
 	ThroughputResponse,
 	TitleResponse,
 	WarmResponse,
@@ -51,6 +55,7 @@ import {
 	type LspServerStatus,
 	type LspService,
 	type SessionOrchestrator,
+	type SystemPromptService,
 	ThroughputQueryError,
 	type ThroughputStore,
 	type WarmService,
@@ -63,6 +68,8 @@ export interface CreateServerOptions {
 	readonly warmService?: WarmService;
 	readonly compactionService?: CompactionService;
 	readonly lspService?: LspService;
+	/** Optional — system prompt builder service (GET/PUT template). */
+	readonly systemPromptService?: SystemPromptService;
 	/** Optional — defaults to a no-op store (recording disabled, empty reports). */
 	readonly throughputStore?: ThroughputStore;
 	readonly logger?: Logger;
@@ -1016,6 +1023,55 @@ export function createApp(opts: CreateServerOptions): Hono {
 			log.error("workspaces: delete failure", { err });
 			return c.json({ error: "Failed to delete workspace" }, 500);
 		}
+	});
+
+	// ─── System prompt template ───────────────────────────────────────────────
+
+	app.get("/system-prompt/variables", (c) => {
+		// Static catalog — no service call needed. Always available.
+		const variables = getVariableCatalog();
+		const body: SystemPromptVariablesResponse = { variables };
+		return c.json(body, 200);
+	});
+
+	app.get("/system-prompt", async (c) => {
+		if (opts.systemPromptService === undefined) {
+			// FE always gets something useful — the built-in default template.
+			const body: SystemPromptTemplateResponse = { template: DEFAULT_TEMPLATE };
+			return c.json(body, 200);
+		}
+		const template = await opts.systemPromptService.getTemplate();
+		const body: SystemPromptTemplateResponse = { template };
+		return c.json(body, 200);
+	});
+
+	app.put("/system-prompt", async (c) => {
+		if (opts.systemPromptService === undefined) {
+			return c.json({ error: "System prompt service not available" }, 503);
+		}
+
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("system-prompt: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		if (body === null || typeof body !== "object") {
+			return c.json({ error: "Request body must be a JSON object" }, 400);
+		}
+		const obj = body as Record<string, unknown>;
+		// `template` must be a string; empty string is valid ("no system prompt").
+		if (typeof obj.template !== "string") {
+			return c.json({ error: "Field 'template' is required and must be a string" }, 400);
+		}
+
+		const { template } = obj as unknown as SetSystemPromptTemplateRequest;
+		await opts.systemPromptService.setTemplate(template);
+		log.info("system-prompt: template set");
+		const response: SystemPromptTemplateResponse = { template };
+		return c.json(response, 200);
 	});
 
 	// ─── Static frontend serving (catch-all, API routes take precedence) ──────

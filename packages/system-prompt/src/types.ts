@@ -29,6 +29,12 @@ export interface SystemPromptService {
 
 	/** Read the persisted resolved system prompt, or `null` if never constructed. */
 	get(conversationId: string): Promise<string | null>;
+
+	/** Read the global template (or `DEFAULT_TEMPLATE` when none is stored). */
+	getTemplate(): Promise<string>;
+
+	/** Set (upsert) the global template. An empty string means "no system prompt". */
+	setTemplate(template: string): Promise<void>;
 }
 
 /**

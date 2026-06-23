@@ -8,6 +8,7 @@
 		{ "path": "../kernel" },
 		{ "path": "../lsp" },
 		{ "path": "../session-orchestrator" },
+		{ "path": "../system-prompt" },
 		{ "path": "../throughput-store" },
 		{ "path": "../transport-contract" }
 	]

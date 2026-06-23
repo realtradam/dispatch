@@ -63,5 +63,14 @@ export function createSystemPromptService(deps: SystemPromptServiceDeps): System
 		async get(conversationId) {
 			return deps.storage.get(resolvedKey(conversationId));
 		},
+
+		async getTemplate() {
+			const stored = await deps.storage.get(TEMPLATE_KEY);
+			return stored ?? DEFAULT_TEMPLATE;
+		},
+
+		async setTemplate(template) {
+			await deps.storage.set(TEMPLATE_KEY, template);
+		},
 	};
 }

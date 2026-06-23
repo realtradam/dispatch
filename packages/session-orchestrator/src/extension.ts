@@ -3,6 +3,7 @@ import { credentialStoreHandle } from "@dispatch/credential-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import { messageQueueHandle } from "@dispatch/message-queue";
+import { systemPromptHandle } from "@dispatch/system-prompt";
 import {
 	cacheWarmHandle,
 	compactionHandle,
@@ -81,6 +82,17 @@ export function activate(host: HostAPI): void {
 				return undefined;
 			}
 		},
+		resolveSystemPrompt: () => {
+			// Lazily resolve the system-prompt service. Returns undefined when
+			// the system-prompt extension isn't loaded (no system prompt sent —
+			// current behavior). Lazy so activation order with system-prompt
+			// doesn't matter; called per-turn / per-compaction, not at activate.
+			try {
+				return host.getService(systemPromptHandle);
+			} catch {
+				return undefined;
+			}
+		},
 	});
 
 	host.provideService(sessionOrchestratorHandle, orchestrator);
@@ -123,6 +135,13 @@ export function activate(host: HostAPI): void {
 			resolveModelInfo: async (modelName: string) => {
 				const store = host.getService(credentialStoreHandle);
 				return store.getModelInfo(modelName);
+			},
+			resolveSystemPrompt: () => {
+				try {
+					return host.getService(systemPromptHandle);
+				} catch {
+					return undefined;
+				}
 			},
 			applyToolsFilter: (assembly) => host.applyFilters(toolsFilter, assembly),
 			runTurn,

@@ -155,6 +155,7 @@
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
+        "@dispatch/system-prompt": "workspace:*",
       },
     },
     "packages/skills": {
@@ -283,6 +284,7 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/lsp": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/system-prompt": "workspace:*",
         "@dispatch/throughput-store": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
         "hono": "^4.0.0",
