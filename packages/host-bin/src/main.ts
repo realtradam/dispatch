@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { extension as authApikeyExt } from "@dispatch/auth-apikey";
 import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
@@ -28,6 +28,7 @@ import { extension as skillsExt } from "@dispatch/skills";
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
 import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
 import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
+import { extension as systemPromptExt } from "@dispatch/system-prompt";
 import { extension as throughputStoreExt } from "@dispatch/throughput-store";
 import { extension as todoExt } from "@dispatch/todo";
 import { extension as toolEditFileExt } from "@dispatch/tool-edit-file";
@@ -85,6 +86,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	messageQueueExt,
 	sessionOrchestratorExt,
 	skillsExt,
+	systemPromptExt,
 	cacheWarmingExt,
 	lspExt,
 	createTransportHttpExtension(),
@@ -111,20 +113,25 @@ async function boot(): Promise<void> {
 
 	const traceDbPath = process.env.DISPATCH_TRACE_DB ?? "./.dispatch-data/traces.db";
 
-	const supervisor = createCollectorSupervisor({
-		spawn: (cmd: string[]) => {
-			const proc = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit" });
-			const handle: ChildHandle = {
-				kill: (signal?: string) => proc.kill(signal as NodeJS.Signals),
-				exited: proc.exited,
-			};
-			return handle;
-		},
-		journalPath,
-		dbPath: traceDbPath,
-		logger: logger.child({ extensionId: "collector-supervisor" }),
-	});
-	supervisor.start();
+	// Only start the collector supervisor in dev mode (source files available).
+	// Compiled binaries don't have the source tree, so the collector can't spawn.
+	let supervisor: ReturnType<typeof createCollectorSupervisor> | undefined;
+	if (existsSync("packages/observability-collector/src/main.ts")) {
+		supervisor = createCollectorSupervisor({
+			spawn: (cmd: string[]) => {
+				const proc = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit" });
+				const handle: ChildHandle = {
+					kill: (signal?: string) => proc.kill(signal as NodeJS.Signals),
+					exited: proc.exited,
+				};
+				return handle;
+			},
+			journalPath,
+			dbPath: traceDbPath,
+			logger: logger.child({ extensionId: "collector-supervisor" }),
+		});
+		supervisor.start();
+	}
 
 	const dbPath = process.env.DISPATCH_DB ?? "./.dispatch-data/dispatch.db";
 	mkdirSync(dirname(dbPath), { recursive: true });
@@ -196,7 +203,7 @@ async function boot(): Promise<void> {
 		logger.info("Shutting down — deactivating extensions");
 		await host.deactivate();
 		logger.info("Draining collector");
-		await supervisor.stop();
+		await supervisor?.stop();
 		process.exit(0);
 	};
 	process.on("SIGINT", shutdown);
