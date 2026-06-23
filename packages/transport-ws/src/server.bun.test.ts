@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AgentEvent, Attributes, ErrorAttributes, Logger } from "@dispatch/kernel";
 import type { SessionOrchestrator, TurnEventListener } from "@dispatch/session-orchestrator";
 import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
-import type { WsServerMessage } from "@dispatch/transport-contract";
+import type { ConversationStatus, WsServerMessage } from "@dispatch/transport-contract";
 import type { SurfaceCatalogEntry, SurfaceClientMessage, SurfaceSpec } from "@dispatch/ui-contract";
 import { catalogMessage, routeClientMessage, subKey } from "./router.js";
 
@@ -445,11 +445,30 @@ function startServer(
 	/**
 	 * Simulate the `conversationOpened` hook firing — mirrors the
 	 * `host.on(conversationOpened, ...)` subscription in extension.ts, which
-	 * broadcasts a `conversation.open` WS message to every connected client.
+	 * broadcasts a `conversation.open` WS message (carrying the conversation's
+	 * persisted `workspaceId`) to every connected client.
 	 */
 	return Object.assign(server, {
-		triggerConversationOpen(conversationId: string): void {
-			broadcast({ type: "conversation.open", conversationId });
+		triggerConversationOpen(conversationId: string, workspaceId: string): void {
+			broadcast({ type: "conversation.open", conversationId, workspaceId });
+		},
+		/**
+		 * Simulate the `conversationStatusChanged` hook firing — mirrors the
+		 * `host.on(conversationStatusChanged, ...)` subscription in extension.ts,
+		 * which broadcasts a `conversation.statusChanged` WS message (carrying the
+		 * conversation's persisted `workspaceId`) to every connected client.
+		 */
+		triggerConversationStatusChanged(
+			conversationId: string,
+			status: ConversationStatus,
+			workspaceId: string,
+		): void {
+			broadcast({
+				type: "conversation.statusChanged",
+				conversationId,
+				status,
+				workspaceId,
+			});
 		},
 	});
 }
@@ -1079,10 +1098,14 @@ describe("conversation.open broadcast (conversationOpened hook)", () => {
 
 		// Simulate the conversationOpened hook firing (extension.ts's
 		// `host.on(conversationOpened, ...)` handler runs and broadcasts).
-		server.triggerConversationOpen("conv-42");
+		server.triggerConversationOpen("conv-42", "ws-7");
 
 		const msg = await waitForMessage(ws);
-		expect(msg).toEqual({ type: "conversation.open", conversationId: "conv-42" });
+		expect(msg).toEqual({
+			type: "conversation.open",
+			conversationId: "conv-42",
+			workspaceId: "ws-7",
+		});
 
 		ws.close();
 	});
@@ -1099,12 +1122,87 @@ describe("conversation.open broadcast (conversationOpened hook)", () => {
 		await waitForMessage(ws2); // drain catalog
 
 		// Global fan-out: BOTH connected clients receive the broadcast,
-		// regardless of any per-conversation subscription state.
-		server.triggerConversationOpen("shared-conv");
+		// regardless of any per-conversation subscription state. The forwarded
+		// `workspaceId` is identical on both.
+		server.triggerConversationOpen("shared-conv", "ws-shared");
 
 		const [msg1, msg2] = await Promise.all([waitForMessage(ws1), waitForMessage(ws2)]);
-		expect(msg1).toEqual({ type: "conversation.open", conversationId: "shared-conv" });
-		expect(msg2).toEqual({ type: "conversation.open", conversationId: "shared-conv" });
+		expect(msg1).toEqual({
+			type: "conversation.open",
+			conversationId: "shared-conv",
+			workspaceId: "ws-shared",
+		});
+		expect(msg2).toEqual({
+			type: "conversation.open",
+			conversationId: "shared-conv",
+			workspaceId: "ws-shared",
+		});
+
+		ws1.close();
+		ws2.close();
+	});
+});
+
+describe("conversation.statusChanged broadcast (conversationStatusChanged hook)", () => {
+	let server: ReturnType<typeof startServer>;
+	let port: number;
+
+	afterEach(() => {
+		server.stop();
+	});
+
+	test("conversation.statusChanged broadcast forwards workspaceId", async () => {
+		const orch = fakeOrchestrator();
+		const registry = fakeRegistry([fakeProvider("demo", "Demo Surface")]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws); // drain catalog
+
+		// Simulate the conversationStatusChanged hook firing (extension.ts's
+		// `host.on(conversationStatusChanged, ...)` handler runs and broadcasts).
+		server.triggerConversationStatusChanged("conv-9", "active", "ws-9");
+
+		const msg = await waitForMessage(ws);
+		expect(msg).toEqual({
+			type: "conversation.statusChanged",
+			conversationId: "conv-9",
+			status: "active",
+			workspaceId: "ws-9",
+		});
+
+		ws.close();
+	});
+
+	test("conversation.statusChanged sent to all connected clients with the same workspaceId", async () => {
+		const orch = fakeOrchestrator();
+		const registry = fakeRegistry([fakeProvider("demo", "Demo Surface")]);
+		server = startServer(registry, orch);
+		port = server.port as number;
+
+		const ws1 = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws1); // drain catalog
+		const ws2 = new WebSocket(`ws://localhost:${port}`);
+		await waitForMessage(ws2); // drain catalog
+
+		// Global fan-out: BOTH connected clients receive the broadcast with the
+		// conversation's persisted workspaceId forwarded unchanged.
+		server.triggerConversationStatusChanged("shared-conv", "idle", "ws-shared");
+
+		const [msg1, msg2] = await Promise.all([waitForMessage(ws1), waitForMessage(ws2)]);
+		expect(msg1).toEqual({
+			type: "conversation.statusChanged",
+			conversationId: "shared-conv",
+			status: "idle",
+			workspaceId: "ws-shared",
+		});
+		expect(msg2).toEqual({
+			type: "conversation.statusChanged",
+			conversationId: "shared-conv",
+			status: "idle",
+			workspaceId: "ws-shared",
+		});
 
 		ws1.close();
 		ws2.close();

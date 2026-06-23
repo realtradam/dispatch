@@ -767,7 +767,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 		return c.json(body, 200);
 	});
 
-	app.post("/conversations/:id/open", (c) => {
+	app.post("/conversations/:id/open", async (c) => {
 		const conversationId = c.req.param("id");
 		if (opts.emit === undefined) {
 			log.warn("conversations: open requested but emit is not available", {
@@ -775,8 +775,13 @@ export function createApp(opts: CreateServerOptions): Hono {
 			});
 			return c.json({ error: "not available" }, 500);
 		}
-		opts.emit(conversationOpened, { conversationId });
-		log.info("conversations: opened", { conversationId });
+		// Resolve the conversation's persisted workspace id so the frontend can
+		// open/focus the tab in the correct workspace. The store falls back to
+		// `"default"` when no workspaceId is persisted (or the conversation is
+		// unknown), so this never throws for a missing conversation.
+		const workspaceId = await opts.conversationStore.getWorkspaceId(conversationId);
+		opts.emit(conversationOpened, { conversationId, workspaceId });
+		log.info("conversations: opened", { conversationId, workspaceId });
 		const body: OpenConversationResponse = { conversationId };
 		return c.json(body, 200);
 	});

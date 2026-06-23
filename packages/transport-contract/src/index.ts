@@ -604,6 +604,12 @@ export type WsServerMessage =
 export interface ConversationOpenMessage {
 	readonly type: "conversation.open";
 	readonly conversationId: string;
+	/**
+	 * The conversation's actual workspace id, so a frontend can open/focus it
+	 * in the correct workspace instead of stamping it with the viewer's current
+	 * workspace.
+	 */
+	readonly workspaceId: string;
 }
 
 /**
@@ -615,6 +621,12 @@ export interface ConversationStatusChangedMessage {
 	readonly type: "conversation.statusChanged";
 	readonly conversationId: string;
 	readonly status: ConversationStatus;
+	/**
+	 * The conversation's actual workspace id, so a frontend can open/focus it
+	 * in the correct workspace instead of stamping it with the viewer's current
+	 * workspace.
+	 */
+	readonly workspaceId: string;
 }
 
 /**

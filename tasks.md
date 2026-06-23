@@ -5,7 +5,28 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1396 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1405 vitest** green.
+
+## Workspace tab issue — conversation.open drops workspaceId (DONE)
+Cross-repo additive fix: `conversation.open` / `conversation.statusChanged` WS
+broadcasts now carry the conversation's persisted workspace id, so a frontend
+opens/focuses a tab in the correct workspace instead of the viewer's current
+workspace (`activeWorkspaceId`). CLI `dispatch <model> --open --workspace my-ws`
+now opens only in `my-ws`.
+- **Wave 0 (orchestrator, contracts):** `@dispatch/transport-contract`
+  `0.18.0→0.19.0` — additive `readonly workspaceId: string` on
+  `ConversationOpenMessage` and `ConversationStatusChangedMessage`.
+- **Wave 1 (parallel):** `session-orchestrator` (add `workspaceId` to
+  `ConversationOpenedPayload`/`ConversationStatusChangedPayload`; resolve from
+  `conversationStore.getWorkspaceId` at all status-change emit sites) +
+  `transport-ws` (thread `workspaceId` from hook payload into WS broadcasts) —
+  disjoint packages.
+- **Wave 2:** `transport-http` — `POST /conversations/:id/open` now awaits
+  `getWorkspaceId(conversationId)` and emits `conversationOpened` with it.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1405 vitest** green; all agents in-lane.
+- [x] **FE courier** to `29ae`: `frontend-workspace-open-handoff.md` — parse/use
+  `workspaceId` from `conversation.open` and `conversation.statusChanged`;
+  re-pin `@dispatch/transport-contract` `0.19.0`; re-mirror reference.md.
 
 ## LSP cwd resolution — server-default fallthrough + workspace assignment (DONE)
 Bug: `GET /conversations/:id/lsp` called `getEffectiveCwd` directly, which falls through
