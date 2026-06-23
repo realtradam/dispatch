@@ -5,7 +5,24 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1405 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1411 vitest** green.
+
+## System-prompt stale on cwd change (DONE)
+Bug: the system-prompt service constructed the resolved prompt once on the first
+turn and reused it via `get()` on subsequent turns (cache-safe design). But the
+prompt is cwd-sensitive (`[file:AGENTS.md]`, `[prompt:cwd]` variables). When a
+conversation's cwd changed after the first turn, the cached prompt was stale —
+referenced files from the new cwd were not loaded.
+- **Wave 1 — `system-prompt`:** added `getWithMeta(conversationId)` returning
+  `{ prompt, cwd }` — reads both `resolved:<id>` and a new `resolved-cwd:<id>`
+  sibling key. `construct()` now also stores the cwd. All additive, no existing
+  method signature/behavior changed. +5 tests.
+- **Wave 2 — `session-orchestrator`:** subsequent turns call `getWithMeta`,
+  compare stored cwd vs `effectiveCwd ?? process.cwd()`, and `construct` if they
+  differ (or if no stored prompt exists). Compaction path (always constructs)
+  and warm path (no system prompt) unaffected. +1 test.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1411 vitest** pass; both in-lane.
+- No FE handoff needed (backend-only fix; no contract version bump).
 
 ## Workspace tab issue — conversation.open drops workspaceId (DONE)
 Cross-repo additive fix: `conversation.open` / `conversation.statusChanged` WS
