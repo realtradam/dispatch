@@ -30,8 +30,8 @@ describe("WorkspaceStore", () => {
 		clock = 1000;
 	});
 
-	function makeStore() {
-		return createConversationStore(storage, undefined, () => clock);
+	function makeStore(serverDefaultCwd?: string) {
+		return createConversationStore(storage, undefined, () => clock, serverDefaultCwd);
 	}
 
 	function userMessage(text: string): ChatMessage {
@@ -231,26 +231,139 @@ describe("WorkspaceStore", () => {
 		expect(meta?.status).toBe("idle");
 	});
 
-	it("getEffectiveCwd explicit conversation", async () => {
-		const store = makeStore();
+	it("getEffectiveCwd: absolute conversation cwd overrides workspace defaultCwd", async () => {
+		const store = makeStore("/server/default");
 		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/default" });
 		await store.setWorkspaceId("conv1", "my-work");
 		await store.setCwd("conv1", "/explicit/path");
 		expect(await store.getEffectiveCwd("conv1")).toBe("/explicit/path");
 	});
 
-	it("getEffectiveCwd inherits workspace default", async () => {
-		const store = makeStore();
+	it("getEffectiveCwd: workspace defaultCwd used when conversation cwd is unset (bug fix)", async () => {
+		const store = makeStore("/server/default");
 		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/default" });
 		await store.setWorkspaceId("conv1", "my-work");
 		expect(await store.getEffectiveCwd("conv1")).toBe("/workspace/default");
 	});
 
-	it("getEffectiveCwd returns null when nothing set", async () => {
-		const store = makeStore();
+	it("getEffectiveCwd: serverDefaultCwd fallback when both conversation and workspace cwd are null", async () => {
+		const store = makeStore("/server/default");
 		await store.ensureWorkspace("my-work");
 		await store.setWorkspaceId("conv1", "my-work");
-		expect(await store.getEffectiveCwd("conv1")).toBeNull();
+		expect(await store.getEffectiveCwd("conv1")).toBe("/server/default");
+	});
+
+	it("getEffectiveCwd: relative conversation cwd resolved against workspace defaultCwd", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/root" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setCwd("conv1", "subdir");
+		expect(await store.getEffectiveCwd("conv1")).toBe("/workspace/root/subdir");
+	});
+
+	it("getEffectiveCwd: relative conversation cwd resolved against serverDefaultCwd when workspace defaultCwd is null", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work");
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setCwd("conv1", "subdir");
+		expect(await store.getEffectiveCwd("conv1")).toBe("/server/default/subdir");
+	});
+
+	it("getEffectiveCwd: relative cwd with nested segments resolved against workspace defaultCwd", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/root" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setCwd("conv1", "a/b/c");
+		expect(await store.getEffectiveCwd("conv1")).toBe("/workspace/root/a/b/c");
+	});
+
+	it("getEffectiveCwd: relative cwd with .. segments normalizes via path.resolve", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/root/sub" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setCwd("conv1", "../sibling");
+		expect(await store.getEffectiveCwd("conv1")).toBe("/workspace/root/sibling");
+	});
+
+	it("getEffectiveCwd: default workspace (no defaultCwd) falls through to serverDefaultCwd", async () => {
+		const store = makeStore("/server/default");
+		// No explicit workspace assignment — defaults to "default" workspace
+		// which has defaultCwd null.
+		expect(await store.getEffectiveCwd("conv1")).toBe("/server/default");
+	});
+
+	// --- overrideCwd (per-turn cwd override) ---
+
+	it("getEffectiveCwd: overrideCwd absolute (starts with /) returned as-is, overriding workspace defaultCwd", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/default" });
+		await store.setWorkspaceId("conv1", "my-work");
+		// An absolute override wins outright, even over a workspace defaultCwd.
+		expect(await store.getEffectiveCwd("conv1", "/override/abs")).toBe("/override/abs");
+	});
+
+	it("getEffectiveCwd: overrideCwd relative resolved against workspace defaultCwd", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/root" });
+		await store.setWorkspaceId("conv1", "my-work");
+		expect(await store.getEffectiveCwd("conv1", "subdir")).toBe("/workspace/root/subdir");
+	});
+
+	it("getEffectiveCwd: overrideCwd relative resolved against serverDefaultCwd when workspace defaultCwd is null", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work");
+		await store.setWorkspaceId("conv1", "my-work");
+		expect(await store.getEffectiveCwd("conv1", "subdir")).toBe("/server/default/subdir");
+	});
+
+	it("getEffectiveCwd: overrideCwd does NOT read the persisted getCwd (override wins over persisted)", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/root" });
+		await store.setWorkspaceId("conv1", "my-work");
+		// Persist a cwd that differs from the override — the override must win.
+		await store.setCwd("conv1", "/persisted/path");
+		expect(await store.getEffectiveCwd("conv1", "override-rel")).toBe(
+			"/workspace/root/override-rel",
+		);
+	});
+
+	it("getEffectiveCwd: overrideCwd omitted behaves as today (uses persisted cwd)", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/root" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setCwd("conv1", "persisted-rel");
+		// No second arg — persisted cwd is used.
+		expect(await store.getEffectiveCwd("conv1")).toBe("/workspace/root/persisted-rel");
+	});
+
+	it("clearCwd → getEffectiveCwd falls through to workspace defaultCwd (un-shadows it)", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/default" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setCwd("conv1", "/explicit/path");
+		// Before clear: the conversation cwd shadows the workspace defaultCwd.
+		expect(await store.getEffectiveCwd("conv1")).toBe("/explicit/path");
+		// After clear: the workspace defaultCwd is used (fall-through).
+		await store.clearCwd("conv1");
+		expect(await store.getEffectiveCwd("conv1")).toBe("/workspace/default");
+	});
+
+	it("getEffectiveCwd: an empty-string cwd does NOT fall through (proving clear ≠ setCwd(''))", async () => {
+		const store = makeStore("/server/default");
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/default" });
+		await store.setWorkspaceId("conv1", "my-work");
+		// An empty string is a non-null explicit cwd — it is resolved (not
+		// treated as absent), so it does NOT fall through to the workspace
+		// defaultCwd. This is the gap clearCwd fixes.
+		await store.setCwd("conv1", "");
+		expect(await store.getCwd("conv1")).toBe("");
+		// path.resolve("/workspace/default", "") === "/workspace/default" —
+		// but this is a RELATIVE cwd resolution, not a fall-through. The point
+		// is that getCwd returns "" (not null), so the relative branch runs.
+		// With a clearCwd, getCwd returns null and the fall-through branch runs.
+		await store.clearCwd("conv1");
+		expect(await store.getCwd("conv1")).toBeNull();
+		expect(await store.getEffectiveCwd("conv1")).toBe("/workspace/default");
 	});
 
 	it("listConversations filtered by workspaceId", async () => {

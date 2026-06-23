@@ -14,9 +14,18 @@ export const manifest: Manifest = {
 
 export const extension: Extension = {
 	manifest,
-	activate: (host: HostAPI) => {
+	activate: async (host: HostAPI) => {
 		const storage = host.storage("conversation-store");
-		const store = createConversationStore(storage, host.logger);
+		const store = createConversationStore(storage, host.logger, undefined, process.cwd());
+
+		const stale = await store.listConversations({ status: ["active"] });
+		for (const m of stale) {
+			await store.setConversationStatus(m.id, "idle");
+		}
+		if (stale.length > 0) {
+			host.logger.info("conversation-store: boot-sweep", { resetCount: stale.length });
+		}
+
 		host.provideService(conversationStoreHandle, store);
 	},
 };

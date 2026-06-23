@@ -34,12 +34,14 @@ function createInMemoryStore(): ConversationStore & {
 	readonly metricsData: Map<string, TurnMetrics[]>;
 	readonly cwdData: Map<string, string>;
 	readonly effortData: Map<string, ReasoningEffort>;
+	readonly modelData: Map<string, string>;
 	readonly workspaceIdData: Map<string, string>;
 } {
 	const data = new Map<string, ChatMessage[]>();
 	const metricsData = new Map<string, TurnMetrics[]>();
 	const cwdData = new Map<string, string>();
 	const effortData = new Map<string, ReasoningEffort>();
+	const modelData = new Map<string, string>();
 	const workspaceIdData = new Map<string, string>();
 	// Track conversations that have a meta row. In the real store, append,
 	// setWorkspaceId, setConversationStatus, setConversationTitle, and
@@ -52,6 +54,7 @@ function createInMemoryStore(): ConversationStore & {
 		metricsData,
 		cwdData,
 		effortData,
+		modelData,
 		workspaceIdData,
 		async append(conversationId, messages) {
 			knownConversations.add(conversationId);
@@ -93,6 +96,17 @@ function createInMemoryStore(): ConversationStore & {
 		},
 		async setReasoningEffort(conversationId, effort) {
 			effortData.set(conversationId, effort);
+		},
+		async getModel(conversationId) {
+			return modelData.get(conversationId) ?? null;
+		},
+		async setModel(conversationId, model) {
+			// Mirror the real store contract: an empty string clears the key.
+			if (model === "") {
+				modelData.delete(conversationId);
+			} else {
+				modelData.set(conversationId, model);
+			}
 		},
 		async listConversations() {
 			return [];
@@ -633,6 +647,10 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async setReasoningEffort() {},
+			async getModel() {
+				return null;
+			},
+			async setModel() {},
 			async listConversations() {
 				return [];
 			},
@@ -1020,6 +1038,10 @@ describe("turn metrics persistence", () => {
 				return null;
 			},
 			async setReasoningEffort() {},
+			async getModel() {
+				return null;
+			},
+			async setModel() {},
 			async listConversations() {
 				return [];
 			},

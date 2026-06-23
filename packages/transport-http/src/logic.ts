@@ -270,6 +270,33 @@ export function isReasoningEffortParseError(
 }
 
 /**
+ * Parse + validate a `PUT /conversations/:id/model` body (`SetModelRequest`).
+ * `model` must be present and either a string (any value, including the empty
+ * string — which clears the persisted selection) or `null`. A missing field or
+ * a non-string/non-null value → {@link ParseError}. There is no enum
+ * validation (the provider resolves model names at turn time).
+ *
+ * Returns the validated `model` value (`string | null`) on success.
+ */
+export function parseModelBody(body: unknown): string | null | ParseError {
+	if (body === null || typeof body !== "object") {
+		return { error: "Request body must be a JSON object" };
+	}
+	const obj = body as Record<string, unknown>;
+	if (obj.model === undefined) {
+		return { error: "Field 'model' is required and must be a string or null" };
+	}
+	if (obj.model !== null && typeof obj.model !== "string") {
+		return { error: "Field 'model' must be a string or null" };
+	}
+	return obj.model as string | null;
+}
+
+export function isModelParseError(result: string | null | ParseError): result is ParseError {
+	return typeof result === "object" && result !== null && "error" in result;
+}
+
+/**
  * Extract the text of the last assistant message's last `text` chunk — the
  * "show me the last reply" affordance for `GET /conversations/:id/last`.
  *

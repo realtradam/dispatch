@@ -21,6 +21,23 @@ export function resolveReasoningEffort(
 	return override ?? stored ?? "high";
 }
 
+/**
+ * Resolve the model name for a turn:
+ *   per-turn override → persisted per-conversation value → `undefined`.
+ *
+ * Unlike {@link resolveReasoningEffort}, there is NO default model name: when
+ * both the override and the persisted value are absent, this returns
+ * `undefined` and the caller falls through to `resolveProvider()` (the default
+ * provider). Returning `undefined` (rather than a sentinel) keeps the existing
+ * "no model override" code path untouched. Pure — no I/O, no ambient state.
+ */
+export function resolveModelName(
+	override: string | undefined,
+	stored: string | null,
+): string | undefined {
+	return override ?? stored ?? undefined;
+}
+
 export function selectFirstProvider(
 	providers: ReadonlyMap<string, ProviderContract>,
 ): ProviderContract {
