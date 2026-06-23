@@ -496,10 +496,15 @@ export function createSessionOrchestrator(
 				// Resolve the system prompt for this turn (cache-safe). On the
 				// FIRST turn of a new conversation, construct it once (resolves all
 				// template variables + persists the result). On subsequent turns,
-				// reuse the persisted prompt via `get` (no reconstruction — the
-				// system prompt is part of the cacheable prefix). When the
-				// system-prompt service isn't loaded, no system prompt is sent
-				// (current behavior preserved).
+				// reuse the persisted prompt via `getWithMeta` — but ONLY when the
+				// stored cwd matches the current effective cwd. If the cwd changed
+				// since the prompt was constructed (or no prompt was ever stored),
+				// reconstruct against the new cwd so the prompt is never stale.
+				// This preserves the cache-safe design (construct once per cwd,
+				// reuse on subsequent turns with the same cwd) while fixing the bug
+				// where a cwd change left the prompt stale. When the system-prompt
+				// service isn't loaded, no system prompt is sent (current behavior
+				// preserved).
 				const systemPromptService = deps.resolveSystemPrompt?.();
 				let systemPrompt: string | undefined;
 				if (systemPromptService !== undefined) {
@@ -513,7 +518,16 @@ export function createSessionOrchestrator(
 							},
 						);
 					} else {
-						systemPrompt = (await systemPromptService.get(conversationId)) ?? undefined;
+						const meta = await systemPromptService.getWithMeta(conversationId);
+						const currentCwd = effectiveCwd ?? process.cwd();
+						if (meta.prompt !== null && meta.cwd === currentCwd) {
+							systemPrompt = meta.prompt;
+						} else {
+							systemPrompt = await systemPromptService.construct(conversationId, currentCwd, {
+								...(modelName !== undefined ? { model: modelName } : {}),
+								...(workspaceId !== undefined ? { workspaceId } : {}),
+							});
+						}
 					}
 				}
 

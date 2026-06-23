@@ -27,6 +27,7 @@ The current working directory is [prompt:cwd].
 /** Storage keys. */
 const TEMPLATE_KEY = "template";
 const resolvedKey = (conversationId: string): string => `resolved:${conversationId}`;
+const resolvedCwdKey = (conversationId: string): string => `resolved-cwd:${conversationId}`;
 
 export interface SystemPromptServiceDeps {
 	/** Namespaced KV (`host.storage("system-prompt")`). */
@@ -58,11 +59,20 @@ export function createSystemPromptService(deps: SystemPromptServiceDeps): System
 			const result = parseTemplate(template, vars);
 
 			await deps.storage.set(resolvedKey(conversationId), result);
+			await deps.storage.set(resolvedCwdKey(conversationId), cwd);
 			return result;
 		},
 
 		async get(conversationId) {
 			return deps.storage.get(resolvedKey(conversationId));
+		},
+
+		async getWithMeta(conversationId) {
+			const [prompt, cwd] = await Promise.all([
+				deps.storage.get(resolvedKey(conversationId)),
+				deps.storage.get(resolvedCwdKey(conversationId)),
+			]);
+			return { prompt, cwd };
 		},
 
 		async getTemplate() {
