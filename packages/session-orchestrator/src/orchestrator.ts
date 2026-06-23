@@ -19,6 +19,7 @@ import type {
 } from "@dispatch/kernel";
 import { defineEventHook, defineService, type ServiceHandle } from "@dispatch/kernel";
 import type { MessageQueueService, QueuedMessage } from "@dispatch/message-queue";
+import type { SystemPromptService } from "@dispatch/system-prompt";
 import { createMetricsAccumulator } from "./metrics.js";
 import {
 	buildUserMessage,
@@ -282,6 +283,14 @@ export interface SessionOrchestratorDeps {
 	 * threshold is exceeded). Lazy so activation order doesn't matter.
 	 */
 	readonly resolveCompaction?: () => CompactionService | undefined;
+	/**
+	 * Lazily resolves the system-prompt service, or `undefined` when the
+	 * system-prompt extension isn't loaded. Used to construct the per-
+	 * conversation system prompt once (first turn) and reuse it (cache-safe) on
+	 * subsequent turns, and to reconstruct it on compaction. Lazy so activation
+	 * order doesn't matter.
+	 */
+	readonly resolveSystemPrompt?: () => SystemPromptService | undefined;
 	/** Apply the per-turn tools filter chain. Injected for testability. */
 	readonly applyToolsFilter: (assembly: ToolAssembly) => Promise<ToolAssembly>;
 	/** Base logger (auto-scoped to this extension); childed per turn for span capture. */
@@ -357,10 +366,37 @@ export function createSessionOrchestrator(
 
 		emitToHub(conversationId, { type: "user-message", conversationId, turnId, text });
 
-		const effectiveCwdPromise =
-			cwd !== undefined
-				? Promise.resolve(cwd)
-				: deps.conversationStore.getEffectiveCwd(conversationId).then((c) => c ?? undefined);
+		// For a NEW conversation the workspace MUST be assigned (persisted)
+		// BEFORE getEffectiveCwd runs, so the effective cwd resolves against
+		// the intended workspace's defaultCwd rather than the stale "default"
+		// workspace returned by getWorkspaceId for a not-yet-persisted
+		// conversation. Detect newness via getConversationMeta === null
+		// (equivalent to history.length === 0 in practice). Existing
+		// conversations keep their assigned workspace — never overwritten.
+		// The newness flag is also reused to decide whether to construct
+		// (first turn) or get (subsequent turn) the system prompt — see the
+		// providerOpts assembly below.
+		const workspaceSetupPromise = (async (): Promise<boolean> => {
+			const meta = await deps.conversationStore.getConversationMeta(conversationId);
+			if (meta === null) {
+				await deps.conversationStore.ensureWorkspace(workspaceId);
+				await deps.conversationStore.setWorkspaceId(conversationId, workspaceId);
+				return true;
+			}
+			return false;
+		})();
+
+		// ALWAYS resolve the effective cwd through getEffectiveCwd, passing the
+		// per-turn cwd as the overrideCwd when present. A relative per-turn cwd
+		// (e.g. "arch-rewrite") must be resolved against the workspace's
+		// defaultCwd via the same workspace-relative algorithm the persisted cwd
+		// uses — NOT used raw (which would resolve against process.cwd() and
+		// break). When cwd is undefined, getEffectiveCwd reads the persisted cwd.
+		// Chained after workspaceSetupPromise so the workspace is assigned
+		// first for new conversations (the timing invariant this enforces).
+		const effectiveCwdPromise = workspaceSetupPromise.then(() =>
+			deps.conversationStore.getEffectiveCwd(conversationId, cwd).then((c) => c ?? undefined),
+		);
 
 		const storedEffortPromise = deps.conversationStore.getReasoningEffort(conversationId);
 
@@ -381,9 +417,10 @@ export function createSessionOrchestrator(
 		void (async () => {
 			let sealed = false;
 			try {
-				const [effectiveCwd, storedEffort] = await Promise.all([
+				const [effectiveCwd, storedEffort, isNewConversation] = await Promise.all([
 					effectiveCwdPromise,
 					storedEffortPromise,
+					workspaceSetupPromise,
 				]);
 
 				if (cwd !== undefined) {
@@ -395,14 +432,11 @@ export function createSessionOrchestrator(
 				const history = await deps.conversationStore.load(conversationId);
 				const userMsg = buildUserMessage(text);
 
-				// New conversation: stamp the workspaceId so subsequent turns resolve
-				// the effective cwd from the workspace's defaultCwd. Auto-create the
-				// workspace if missing (idempotent). Only for new conversations (no
-				// history) — existing conversations keep their assigned workspace.
-				if (history.length === 0) {
-					await deps.conversationStore.ensureWorkspace(workspaceId);
-					await deps.conversationStore.setWorkspaceId(conversationId, workspaceId);
-				}
+				// Workspace assignment for new conversations happens BEFORE
+				// effective-cwd resolution (see workspaceSetupPromise above) so
+				// getEffectiveCwd resolves against the intended workspace, not
+				// the stale "default". The history-load + append flow below is
+				// otherwise unchanged.
 
 				let provider: ProviderContract;
 				let modelOverride: string | undefined;
@@ -439,9 +473,33 @@ export function createSessionOrchestrator(
 					emitToHub(conversationId, event);
 				};
 
+				// Resolve the system prompt for this turn (cache-safe). On the
+				// FIRST turn of a new conversation, construct it once (resolves all
+				// template variables + persists the result). On subsequent turns,
+				// reuse the persisted prompt via `get` (no reconstruction — the
+				// system prompt is part of the cacheable prefix). When the
+				// system-prompt service isn't loaded, no system prompt is sent
+				// (current behavior preserved).
+				const systemPromptService = deps.resolveSystemPrompt?.();
+				let systemPrompt: string | undefined;
+				if (systemPromptService !== undefined) {
+					if (isNewConversation) {
+						systemPrompt = await systemPromptService.construct(
+							conversationId,
+							effectiveCwd ?? process.cwd(),
+							{
+								...(modelName !== undefined ? { model: modelName } : {}),
+							},
+						);
+					} else {
+						systemPrompt = (await systemPromptService.get(conversationId)) ?? undefined;
+					}
+				}
+
 				const providerOpts: ProviderStreamOptions = {
 					reasoningEffort: resolvedEffort,
 					...(modelOverride !== undefined ? { model: modelOverride } : {}),
+					...(systemPrompt !== undefined ? { systemPrompt } : {}),
 				};
 
 				// Resolve the steering queue once for this turn. When present, wire
@@ -720,7 +778,7 @@ export function createWarmService(
 			}
 
 			const baseTools = deps.resolveTools();
-			// Resolve cwd the SAME way handleMessage does (caller value → stored cwd).
+			// Resolve cwd the SAME way handleMessage does — pass opts.cwd as the overrideCwd
 			// The tools filter is cwd-sensitive (e.g. skill discovery rewrites the
 			// `load_skill` description per-cwd). If the warm assembles tools under a
 			// different cwd than the real turn, the tools block — the FIRST bytes of
@@ -728,7 +786,7 @@ export function createWarmService(
 			// A manual reheat sends no cwd, so without this fallback it would warm the
 			// wrong prefix. See notes/observability-design.md §3.1.
 			const cwd =
-				opts?.cwd ?? (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? undefined;
+				(await deps.conversationStore.getEffectiveCwd(conversationId, opts?.cwd)) ?? undefined;
 			const assembled = await deps.applyToolsFilter({
 				tools: baseTools,
 				conversationId,
@@ -885,11 +943,28 @@ export function createCompactionService(
 					: {}),
 			};
 
+			// Reconstruct the system prompt on compaction (fresh variable
+			// resolution — files/cwd/time may have changed since construction).
+			// The construct call also persists the result for future turns. When
+			// the system-prompt service is unavailable, fall back to the
+			// compaction-only system prompt (current behavior, no regression).
+			const systemPromptService = deps.resolveSystemPrompt?.();
+			let compactionSystemPrompt: string;
+			if (systemPromptService !== undefined) {
+				const cwd = (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? process.cwd();
+				const constructed = await systemPromptService.construct(conversationId, cwd, {
+					...(opts?.modelName !== undefined ? { model: opts.modelName } : {}),
+				});
+				compactionSystemPrompt = `${constructed}\n\n${COMPACTION_SYSTEM_PROMPT}`;
+			} else {
+				compactionSystemPrompt = COMPACTION_SYSTEM_PROMPT;
+			}
+
 			// Call the provider and accumulate the summary
 			let summary = "";
 			for await (const event of provider.stream([summaryRequest], [], {
 				...providerOpts,
-				systemPrompt: COMPACTION_SYSTEM_PROMPT,
+				systemPrompt: compactionSystemPrompt,
 			})) {
 				if ((event as ProviderEvent).type === "text-delta") {
 					summary += (event as { delta: string }).delta;

@@ -13,6 +13,7 @@
 		"@dispatch/session-orchestrator": "workspace:*",
 		"@dispatch/throughput-store": "workspace:*",
 		"@dispatch/transport-contract": "workspace:*",
-		"hono": "^4.0.0"
+		"hono": "^4.0.0",
+		"@dispatch/system-prompt": "workspace:*"
 	}
 }

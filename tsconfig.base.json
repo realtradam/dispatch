@@ -1,4 +1,5 @@
 {
+	"exclude": ["**/*.test.ts", "**/*.test.tsx"],
 	"compilerOptions": {
 		"target": "ES2022",
 		"module": "ESNext",

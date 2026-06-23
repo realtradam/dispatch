@@ -6,6 +6,7 @@
 		{ "path": "../kernel" },
 		{ "path": "../conversation-store" },
 		{ "path": "../credential-store" },
-		{ "path": "../message-queue" }
+		{ "path": "../message-queue" },
+		{ "path": "../system-prompt" }
 	]
 }

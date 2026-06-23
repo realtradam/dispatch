@@ -15,5 +15,7 @@ export {
 	conversationOpened,
 	sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
+export type { SystemPromptService } from "@dispatch/system-prompt";
+export { systemPromptHandle } from "@dispatch/system-prompt";
 export type { ThroughputStore } from "@dispatch/throughput-store";
 export { ThroughputQueryError, throughputStoreHandle } from "@dispatch/throughput-store";

@@ -1,3 +1,4 @@
+import { resolve as pathResolve } from "node:path";
 import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
 	AgentEvent,
@@ -15,8 +16,10 @@ import type {
 	TurnMetrics,
 } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
+import type { SystemPromptService } from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
 import {
+	createCompactionService,
 	createSessionOrchestrator,
 	createWarmService,
 	type TurnLifecyclePayload,
@@ -29,17 +32,27 @@ function createInMemoryStore(): ConversationStore & {
 	readonly metricsData: Map<string, TurnMetrics[]>;
 	readonly cwdData: Map<string, string>;
 	readonly effortData: Map<string, ReasoningEffort>;
+	readonly workspaceIdData: Map<string, string>;
 } {
 	const data = new Map<string, ChatMessage[]>();
 	const metricsData = new Map<string, TurnMetrics[]>();
 	const cwdData = new Map<string, string>();
 	const effortData = new Map<string, ReasoningEffort>();
+	const workspaceIdData = new Map<string, string>();
+	// Track conversations that have a meta row. In the real store, append,
+	// setWorkspaceId, setConversationStatus, setConversationTitle, and
+	// setCompactedFrom all create a minimal meta row on first contact.
+	// getConversationMeta returns non-null for known conversations so the
+	// orchestrator's newness detection (meta === null) matches reality.
+	const knownConversations = new Set<string>();
 	return {
 		data,
 		metricsData,
 		cwdData,
 		effortData,
+		workspaceIdData,
 		async append(conversationId, messages) {
+			knownConversations.add(conversationId);
 			const existing = data.get(conversationId) ?? [];
 			data.set(conversationId, [...existing, ...messages]);
 		},
@@ -82,21 +95,40 @@ function createInMemoryStore(): ConversationStore & {
 		async listConversations() {
 			return [];
 		},
-		async getConversationMeta() {
-			return null;
+		async getConversationMeta(conversationId) {
+			if (!knownConversations.has(conversationId)) return null;
+			return {
+				id: conversationId,
+				createdAt: 0,
+				lastActivityAt: 0,
+				title: "Untitled",
+				status: "idle",
+				workspaceId: workspaceIdData.get(conversationId) ?? "default",
+			};
 		},
-		async setConversationTitle() {},
+		async setConversationTitle(conversationId) {
+			knownConversations.add(conversationId);
+		},
 		async getConversationStatus() {
 			return null;
 		},
-		async setConversationStatus() {},
-		async replaceHistory() {},
+		async setConversationStatus(conversationId) {
+			knownConversations.add(conversationId);
+		},
+		async replaceHistory(conversationId, messages) {
+			knownConversations.add(conversationId);
+			data.set(conversationId, [...messages]);
+		},
 		async getCompactPercent() {
 			return null;
 		},
 		async setCompactPercent() {},
-		async forkHistory() {},
-		async setCompactedFrom() {},
+		async forkHistory(_sourceId, targetId) {
+			knownConversations.add(targetId);
+		},
+		async setCompactedFrom(conversationId) {
+			knownConversations.add(conversationId);
+		},
 		async getWorkspace() {
 			return null;
 		},
@@ -115,12 +147,15 @@ function createInMemoryStore(): ConversationStore & {
 		async listWorkspaces() {
 			return [];
 		},
-		async getWorkspaceId() {
-			return "default";
+		async getWorkspaceId(conversationId) {
+			return workspaceIdData.get(conversationId) ?? "default";
 		},
-		async setWorkspaceId() {},
-		async getEffectiveCwd(conversationId) {
-			return cwdData.get(conversationId) ?? null;
+		async setWorkspaceId(conversationId, workspaceId) {
+			workspaceIdData.set(conversationId, workspaceId);
+			knownConversations.add(conversationId);
+		},
+		async getEffectiveCwd(conversationId, overrideCwd) {
+			return overrideCwd ?? cwdData.get(conversationId) ?? null;
 		},
 	};
 }
@@ -2664,8 +2699,8 @@ describe("workspace integration", () => {
 		const base = createInMemoryStore();
 		const store: ConversationStore = {
 			...base,
-			async getEffectiveCwd() {
-				return "/workspace/default/cwd";
+			async getEffectiveCwd(_conversationId, overrideCwd) {
+				return overrideCwd ?? "/workspace/default/cwd";
 			},
 		};
 
@@ -2784,5 +2819,679 @@ describe("workspace integration", () => {
 			conversationId: "conv-enq-ws",
 			workspaceId: "enqueued-ws",
 		});
+	});
+
+	// --- cwd-timing invariant: workspace assigned BEFORE getEffectiveCwd ---
+
+	it("new conversation: workspace assigned before getEffectiveCwd resolves (relative per-turn cwd)", async () => {
+		// A fake store that implements the REAL getEffectiveCwd algorithm:
+		// a relative overrideCwd is resolved against the workspace's
+		// defaultCwd via path.resolve. Different workspaces have different
+		// defaultCwds so we can assert which workspace was active when
+		// getEffectiveCwd ran.
+		const workspaceDefaultCwds = new Map<string, string | null>([
+			["default", null],
+			["my-workspace", "/projects/my-workspace"],
+		]);
+		const assignedWorkspaceIds = new Map<string, string>();
+		const callOrder: string[] = [];
+
+		const store: ConversationStore = {
+			...createInMemoryStore(),
+			async getConversationMeta(conversationId) {
+				// A conversation is "known" once setWorkspaceId has been called
+				// (matching the real store, where setWorkspaceId creates a meta
+				// row). This lets us assert the ordering: getConversationMeta
+				// sees null first (new), then setWorkspaceId is called, then
+				// getEffectiveCwd runs and sees the assigned workspace.
+				const wsId = assignedWorkspaceIds.get(conversationId);
+				return wsId !== undefined
+					? {
+							id: conversationId,
+							createdAt: 0,
+							lastActivityAt: 0,
+							title: "Untitled",
+							status: "idle",
+							workspaceId: wsId,
+						}
+					: null;
+			},
+			async ensureWorkspace(id) {
+				callOrder.push(`ensureWorkspace:${id}`);
+				return {
+					id,
+					title: id,
+					defaultCwd: workspaceDefaultCwds.get(id) ?? null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceId(conversationId, workspaceId) {
+				callOrder.push(`setWorkspaceId:${workspaceId}`);
+				assignedWorkspaceIds.set(conversationId, workspaceId);
+			},
+			async getWorkspaceId(conversationId) {
+				return assignedWorkspaceIds.get(conversationId) ?? "default";
+			},
+			async getWorkspace(id) {
+				const defaultCwd = workspaceDefaultCwds.get(id) ?? null;
+				return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+			},
+			async getEffectiveCwd(conversationId, overrideCwd) {
+				// Real algorithm: relative cwd resolved against workspace defaultCwd.
+				const wsId = assignedWorkspaceIds.get(conversationId) ?? "default";
+				callOrder.push(`getEffectiveCwd(workspace=${wsId})`);
+				const workspaceCwd = workspaceDefaultCwds.get(wsId) ?? null;
+				const conversationCwd = overrideCwd ?? null;
+				if (conversationCwd === null) {
+					return workspaceCwd;
+				}
+				if (conversationCwd.startsWith("/")) {
+					return conversationCwd;
+				}
+				return pathResolve(workspaceCwd ?? "/server-default", conversationCwd);
+			},
+		};
+
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-cwd-timing",
+			text: "hi",
+			onEvent: () => {},
+			cwd: "arch-rewrite",
+			workspaceId: "my-workspace",
+		});
+
+		// The workspace was assigned before getEffectiveCwd ran.
+		const ensureIdx = callOrder.indexOf("ensureWorkspace:my-workspace");
+		const setWsIdx = callOrder.indexOf("setWorkspaceId:my-workspace");
+		const effCwdIdx = callOrder.indexOf("getEffectiveCwd(workspace=my-workspace)");
+		expect(ensureIdx).toBeGreaterThanOrEqual(0);
+		expect(setWsIdx).toBeGreaterThan(ensureIdx);
+		expect(effCwdIdx).toBeGreaterThan(setWsIdx);
+
+		// The relative cwd "arch-rewrite" resolved against my-workspace's
+		// defaultCwd "/projects/my-workspace", NOT against the default
+		// workspace's null (→ server default / process.cwd()).
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("/projects/my-workspace/arch-rewrite");
+	});
+
+	it("new conversation with no per-turn cwd: workspace assigned, effective cwd = workspace defaultCwd", async () => {
+		const workspaceDefaultCwds = new Map<string, string | null>([
+			["default", null],
+			["my-workspace", "/projects/my-workspace"],
+		]);
+		const assignedWorkspaceIds = new Map<string, string>();
+
+		const store: ConversationStore = {
+			...createInMemoryStore(),
+			async getConversationMeta(conversationId) {
+				const wsId = assignedWorkspaceIds.get(conversationId);
+				return wsId !== undefined
+					? {
+							id: conversationId,
+							createdAt: 0,
+							lastActivityAt: 0,
+							title: "Untitled",
+							status: "idle",
+							workspaceId: wsId,
+						}
+					: null;
+			},
+			async ensureWorkspace(id) {
+				return {
+					id,
+					title: id,
+					defaultCwd: workspaceDefaultCwds.get(id) ?? null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceId(conversationId, workspaceId) {
+				assignedWorkspaceIds.set(conversationId, workspaceId);
+			},
+			async getWorkspaceId(conversationId) {
+				return assignedWorkspaceIds.get(conversationId) ?? "default";
+			},
+			async getWorkspace(id) {
+				const defaultCwd = workspaceDefaultCwds.get(id) ?? null;
+				return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+			},
+			async getEffectiveCwd(conversationId, overrideCwd) {
+				const wsId = assignedWorkspaceIds.get(conversationId) ?? "default";
+				const workspaceCwd = workspaceDefaultCwds.get(wsId) ?? null;
+				const conversationCwd = overrideCwd ?? null;
+				if (conversationCwd === null) {
+					return workspaceCwd;
+				}
+				if (conversationCwd.startsWith("/")) {
+					return conversationCwd;
+				}
+				return pathResolve(workspaceCwd ?? "/server-default", conversationCwd);
+			},
+		};
+
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-cwd-timing-no-cwd",
+			text: "hi",
+			onEvent: () => {},
+			workspaceId: "my-workspace",
+		});
+
+		// No per-turn cwd → effective cwd = workspace defaultCwd.
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("/projects/my-workspace");
+	});
+
+	it("existing conversation: workspace NOT re-assigned, effective cwd resolves as before", async () => {
+		const setWorkspaceIdCalls: Array<{ conversationId: string; workspaceId: string }> = [];
+		const base = createInMemoryStore();
+		// Pre-populate the conversation so getConversationMeta returns non-null
+		// (existing conversation with history + workspace already assigned).
+		await base.append("conv-existing", [
+			{ role: "user", chunks: [{ type: "text", text: "previous turn" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "reply" }] },
+		]);
+
+		const store: ConversationStore = {
+			...base,
+			async setWorkspaceId(conversationId, workspaceId) {
+				setWorkspaceIdCalls.push({ conversationId, workspaceId });
+			},
+			async getEffectiveCwd(_conversationId, overrideCwd) {
+				return overrideCwd ?? "/existing/workspace/cwd";
+			},
+		};
+
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-existing",
+			text: "follow up",
+			onEvent: () => {},
+			cwd: "arch-rewrite",
+			workspaceId: "should-not-be-stamped",
+		});
+
+		// setWorkspaceId was NOT called (existing conversation keeps its workspace).
+		expect(setWorkspaceIdCalls).toHaveLength(0);
+
+		// Effective cwd still resolves (here via the fake store's override).
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.cwd).toBe("arch-rewrite");
+	});
+});
+
+describe("getEffectiveCwd override (per-turn cwd resolution)", () => {
+	it("turn start with a per-turn cwd → getEffectiveCwd called with that cwd as overrideCwd", async () => {
+		const base = createInMemoryStore();
+		const effectiveCwdCalls: Array<{ conversationId: string; overrideCwd: string | undefined }> =
+			[];
+		const store: ConversationStore = {
+			...base,
+			async getEffectiveCwd(conversationId, overrideCwd) {
+				effectiveCwdCalls.push({ conversationId, overrideCwd });
+				return overrideCwd ?? (await base.getEffectiveCwd(conversationId));
+			},
+		};
+
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-turn-override",
+			text: "hi",
+			onEvent: () => {},
+			cwd: "arch-rewrite",
+		});
+
+		expect(effectiveCwdCalls).toHaveLength(1);
+		expect(effectiveCwdCalls[0]?.overrideCwd).toBe("arch-rewrite");
+	});
+
+	it("turn start with no per-turn cwd → getEffectiveCwd called with undefined override", async () => {
+		const base = createInMemoryStore();
+		const effectiveCwdCalls: Array<{ conversationId: string; overrideCwd: string | undefined }> =
+			[];
+		const store: ConversationStore = {
+			...base,
+			async getEffectiveCwd(conversationId, overrideCwd) {
+				effectiveCwdCalls.push({ conversationId, overrideCwd });
+				return overrideCwd ?? (await base.getEffectiveCwd(conversationId));
+			},
+		};
+
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-turn-no-override",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(effectiveCwdCalls).toHaveLength(1);
+		expect(effectiveCwdCalls[0]?.overrideCwd).toBeUndefined();
+	});
+
+	it("warm with opts.cwd → getEffectiveCwd called with opts.cwd as override", async () => {
+		const base = createInMemoryStore();
+		await base.append("conv-warm-override", [
+			{ role: "user", chunks: [{ type: "text", text: "hi" }] },
+		]);
+		const effectiveCwdCalls: Array<{ conversationId: string; overrideCwd: string | undefined }> =
+			[];
+		const store: ConversationStore = {
+			...base,
+			async getEffectiveCwd(conversationId, overrideCwd) {
+				effectiveCwdCalls.push({ conversationId, overrideCwd });
+				return overrideCwd ?? (await base.getEffectiveCwd(conversationId));
+			},
+		};
+
+		const provider: ProviderContract = {
+			id: "p",
+			stream: async function* () {
+				yield {
+					type: "usage",
+					usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+				} as ProviderEvent;
+				yield { type: "finish", reason: "stop" } as ProviderEvent;
+			},
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: () => {},
+		};
+
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		await warmService.warm("conv-warm-override", { cwd: "arch-rewrite" });
+
+		expect(effectiveCwdCalls).toHaveLength(1);
+		expect(effectiveCwdCalls[0]?.overrideCwd).toBe("arch-rewrite");
+	});
+
+	it("warm without opts.cwd → getEffectiveCwd called with undefined override", async () => {
+		const base = createInMemoryStore();
+		await base.append("conv-warm-no-override", [
+			{ role: "user", chunks: [{ type: "text", text: "hi" }] },
+		]);
+		const effectiveCwdCalls: Array<{ conversationId: string; overrideCwd: string | undefined }> =
+			[];
+		const store: ConversationStore = {
+			...base,
+			async getEffectiveCwd(conversationId, overrideCwd) {
+				effectiveCwdCalls.push({ conversationId, overrideCwd });
+				return overrideCwd ?? (await base.getEffectiveCwd(conversationId));
+			},
+		};
+
+		const provider: ProviderContract = {
+			id: "p",
+			stream: async function* () {
+				yield {
+					type: "usage",
+					usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+				} as ProviderEvent;
+				yield { type: "finish", reason: "stop" } as ProviderEvent;
+			},
+		};
+
+		const deps = {
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn,
+			emit: () => {},
+		};
+
+		const { activeConversations } = createSessionOrchestrator(deps);
+		const warmService = createWarmService(deps, activeConversations);
+
+		await warmService.warm("conv-warm-no-override");
+
+		expect(effectiveCwdCalls).toHaveLength(1);
+		expect(effectiveCwdCalls[0]?.overrideCwd).toBeUndefined();
+	});
+});
+
+// --- System prompt integration ---
+
+function createFakeSystemPromptService(
+	constructImpl: (
+		conversationId: string,
+		cwd: string,
+		context?: { readonly model?: string },
+	) => Promise<string>,
+	getImpl: (conversationId: string) => Promise<string | null> = () => Promise.resolve(null),
+): SystemPromptService {
+	return {
+		construct: constructImpl,
+		get: getImpl,
+		async getTemplate() {
+			return "";
+		},
+		async setTemplate() {},
+	};
+}
+
+describe("system prompt: regular turn flow", () => {
+	it("First turn: construct called — new conversation (meta null) → construct called with conversationId + cwd + model → result set on providerOpts.systemPrompt", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const constructCalls: Array<{
+			conversationId: string;
+			cwd: string;
+			model: string | undefined;
+		}> = [];
+		const getCalls: string[] = [];
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+			resolveSystemPrompt: () =>
+				createFakeSystemPromptService(
+					async (conversationId, cwd, context) => {
+						constructCalls.push({
+							conversationId,
+							cwd,
+							model: context?.model,
+						});
+						return "CONSTRUCTED_PROMPT";
+					},
+					async (conversationId) => {
+						getCalls.push(conversationId);
+						return null;
+					},
+				),
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-sp-first",
+			text: "hi",
+			onEvent: () => {},
+			cwd: "/work/dir",
+			modelName: "my-model",
+		});
+
+		expect(constructCalls).toHaveLength(1);
+		expect(constructCalls[0]?.conversationId).toBe("conv-sp-first");
+		expect(constructCalls[0]?.cwd).toBe("/work/dir");
+		expect(constructCalls[0]?.model).toBe("my-model");
+		expect(getCalls).toHaveLength(0);
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.providerOpts?.systemPrompt).toBe("CONSTRUCTED_PROMPT");
+	});
+
+	it("Subsequent turn: get called — existing conversation (meta non-null) → get called → result set on providerOpts.systemPrompt", async () => {
+		const store = createInMemoryStore();
+		// Seed an existing conversation so getConversationMeta returns non-null.
+		await store.append("conv-sp-sub", [
+			{ role: "user", chunks: [{ type: "text", text: "first" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "reply" }] },
+		]);
+
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const constructCalls: string[] = [];
+		const getCalls: string[] = [];
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+			resolveSystemPrompt: () =>
+				createFakeSystemPromptService(
+					async (conversationId) => {
+						constructCalls.push(conversationId);
+						return "SHOULD_NOT_BE_USED";
+					},
+					async (conversationId) => {
+						getCalls.push(conversationId);
+						return "PERSISTED_PROMPT";
+					},
+				),
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-sp-sub",
+			text: "second",
+			onEvent: () => {},
+		});
+
+		expect(getCalls).toHaveLength(1);
+		expect(getCalls[0]).toBe("conv-sp-sub");
+		expect(constructCalls).toHaveLength(0);
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.providerOpts?.systemPrompt).toBe("PERSISTED_PROMPT");
+	});
+
+	it("Subsequent turn: get returns null → systemPrompt omitted from providerOpts", async () => {
+		const store = createInMemoryStore();
+		await store.append("conv-sp-null", [
+			{ role: "user", chunks: [{ type: "text", text: "first" }] },
+			{ role: "assistant", chunks: [{ type: "text", text: "reply" }] },
+		]);
+
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+			resolveSystemPrompt: () =>
+				createFakeSystemPromptService(
+					async () => "SHOULD_NOT_BE_USED",
+					async () => null,
+				),
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-sp-null",
+			text: "second",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.providerOpts?.systemPrompt).toBeUndefined();
+	});
+
+	it("Service unavailable: no system prompt — resolveSystemPrompt is undefined → providerOpts.systemPrompt is NOT set", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+			// resolveSystemPrompt omitted entirely
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-sp-none",
+			text: "hi",
+			onEvent: () => {},
+			cwd: "/work",
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.providerOpts?.systemPrompt).toBeUndefined();
+	});
+});
+
+describe("system prompt: compaction flow", () => {
+	function seedHistory(
+		store: ReturnType<typeof createInMemoryStore>,
+		conversationId: string,
+		count: number,
+	): void {
+		const messages: ChatMessage[] = [];
+		for (let i = 0; i < count; i++) {
+			messages.push({
+				role: i % 2 === 0 ? "user" : "assistant",
+				chunks: [{ type: "text", text: `message ${i}` }],
+			});
+		}
+		store.data.set(conversationId, messages);
+	}
+
+	it("Compaction: construct + append — compaction flow calls construct → result appended with COMPACTION_SYSTEM_PROMPT → combined string set as systemPrompt", async () => {
+		const store = createInMemoryStore();
+		seedHistory(store, "conv-compact-sp", 15);
+
+		const constructCalls: Array<{
+			conversationId: string;
+			cwd: string;
+			model: string | undefined;
+		}> = [];
+
+		let capturedSystemPrompt: string | undefined;
+		const provider: ProviderContract = {
+			id: "compaction-provider",
+			stream(_messages, _tools, opts) {
+				capturedSystemPrompt = opts?.systemPrompt;
+				return (async function* () {
+					yield { type: "text-delta", delta: "Summary text" } as ProviderEvent;
+					yield { type: "finish", reason: "stop" } as ProviderEvent;
+				})();
+			},
+		};
+
+		const compactionService = createCompactionService(
+			{
+				conversationStore: store,
+				resolveProvider: () => provider,
+				resolveTools: () => [],
+				applyToolsFilter: identityApplyToolsFilter,
+				runTurn,
+				resolveSystemPrompt: () =>
+					createFakeSystemPromptService(async (conversationId, cwd, context) => {
+						constructCalls.push({ conversationId, cwd, model: context?.model });
+						return "RECONSTRUCTED_PROMPT";
+					}),
+				emit: () => {},
+			},
+			new Set(),
+		);
+
+		const result = await compactionService.compact("conv-compact-sp", {
+			modelName: "compaction-model",
+		});
+
+		expect("summary" in result).toBe(true);
+		expect(constructCalls).toHaveLength(1);
+		expect(constructCalls[0]?.conversationId).toBe("conv-compact-sp");
+		expect(constructCalls[0]?.model).toBe("compaction-model");
+
+		// The system prompt sent to the provider must be the constructed prompt
+		// appended with the COMPACTION_SYSTEM_PROMPT.
+		expect(capturedSystemPrompt).toBeDefined();
+		expect(capturedSystemPrompt?.startsWith("RECONSTRUCTED_PROMPT\n\n")).toBe(true);
+		expect(capturedSystemPrompt).toContain("conversation summarizer");
+	});
+
+	it("Compaction: fallback when service unavailable — compaction flow with no service → COMPACTION_SYSTEM_PROMPT alone", async () => {
+		const store = createInMemoryStore();
+		seedHistory(store, "conv-compact-nosp", 15);
+
+		let capturedSystemPrompt: string | undefined;
+		const provider: ProviderContract = {
+			id: "compaction-provider",
+			stream(_messages, _tools, opts) {
+				capturedSystemPrompt = opts?.systemPrompt;
+				return (async function* () {
+					yield { type: "text-delta", delta: "Summary text" } as ProviderEvent;
+					yield { type: "finish", reason: "stop" } as ProviderEvent;
+				})();
+			},
+		};
+
+		const compactionService = createCompactionService(
+			{
+				conversationStore: store,
+				resolveProvider: () => provider,
+				resolveTools: () => [],
+				applyToolsFilter: identityApplyToolsFilter,
+				runTurn,
+				// resolveSystemPrompt omitted — service unavailable
+				emit: () => {},
+			},
+			new Set(),
+		);
+
+		const result = await compactionService.compact("conv-compact-nosp", {
+			modelName: "compaction-model",
+		});
+
+		expect("summary" in result).toBe(true);
+		expect(capturedSystemPrompt).toBeDefined();
+		// Must be the COMPACTION_SYSTEM_PROMPT alone — no constructed prefix.
+		expect(capturedSystemPrompt).toContain("conversation summarizer");
+		expect(capturedSystemPrompt?.startsWith("RECONSTRUCTED")).toBe(false);
 	});
 });

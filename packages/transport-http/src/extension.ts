@@ -7,6 +7,7 @@ import {
 	credentialStoreHandle,
 	lspServiceHandle,
 	sessionOrchestratorHandle,
+	systemPromptHandle,
 	throughputStoreHandle,
 } from "./seam.js";
 
@@ -39,11 +40,14 @@ export const manifest: Manifest = {
 			"/conversations/:id/open",
 			"/conversations/:id/queue",
 			"/conversations/:id/reasoning-effort",
+			"/conversations/:id/status",
 			"/conversations/:id/stop",
 			"/conversations/:id/title",
 			"/health",
 			"/models",
 			"/metrics/throughput",
+			"/system-prompt",
+			"/system-prompt/variables",
 			"/workspaces",
 			"/workspaces/:id",
 			"/workspaces/:id/title",
@@ -71,6 +75,7 @@ export function createTransportHttpExtension(): Extension & {
 			const warmService = host.getService(cacheWarmHandle);
 			const compactionService = host.getService(compactionHandle);
 			const lspService = host.getService(lspServiceHandle);
+			const systemPromptService = host.getService(systemPromptHandle);
 			const logger = host.logger;
 
 			const app = createApp({
@@ -81,6 +86,7 @@ export function createTransportHttpExtension(): Extension & {
 				warmService,
 				compactionService,
 				lspService,
+				systemPromptService,
 				logger,
 				emit: host.emit.bind(host),
 				...(process.env.DISPATCH_WEB_DIR !== undefined
@@ -93,6 +99,7 @@ export function createTransportHttpExtension(): Extension & {
 			server = Bun.serve({
 				port,
 				fetch: app.fetch,
+				idleTimeout: 0,
 			});
 
 			logger.info("transport-http: listening", { port });

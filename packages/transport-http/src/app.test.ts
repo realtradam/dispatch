@@ -10,11 +10,13 @@ import type {
 	StoredChunk,
 	TurnMetrics,
 } from "@dispatch/kernel";
+import { DEFAULT_TEMPLATE } from "@dispatch/system-prompt";
 import { createThroughputStore, dayKeyOf } from "@dispatch/throughput-store";
 import type {
 	DeleteWorkspaceResponse,
 	QueuedMessage,
 	QueueResponse,
+	SystemPromptVariable,
 	ThroughputResponse,
 	WorkspaceListResponse,
 	WorkspaceResponse,
@@ -28,6 +30,7 @@ import type {
 	CredentialStore,
 	LspService,
 	SessionOrchestrator,
+	SystemPromptService,
 	WarmService,
 } from "./seam.js";
 import { conversationOpened } from "./seam.js";
@@ -377,6 +380,39 @@ function createCapturingLspService(
 		async status(cwd) {
 			calls.push(cwd);
 			return statuses;
+		},
+	};
+}
+
+function createFakeSystemPromptService(
+	template: string = "custom template",
+): SystemPromptService & {
+	readonly setTemplateCalls: readonly string[];
+	readonly getTemplateCalls: number;
+} {
+	const setCalls: string[] = [];
+	let getTemplateCount = 0;
+	let currentTemplate = template;
+	return {
+		get setTemplateCalls() {
+			return setCalls;
+		},
+		get getTemplateCalls() {
+			return getTemplateCount;
+		},
+		async construct() {
+			return currentTemplate;
+		},
+		async get() {
+			return currentTemplate;
+		},
+		async getTemplate() {
+			getTemplateCount++;
+			return currentTemplate;
+		},
+		async setTemplate(t) {
+			setCalls.push(t);
+			currentTemplate = t;
 		},
 	};
 }
@@ -3248,4 +3284,115 @@ it("GET /conversations/:id/lsp uses effective cwd", async () => {
 		servers: readonly unknown[];
 	};
 	expect(body.cwd).toBe("/effective");
+});
+
+describe("GET /system-prompt", () => {
+	it("returns stored template", async () => {
+		const service = createFakeSystemPromptService("custom template");
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			systemPromptService: service,
+			logger: noopLogger,
+		});
+		const res = await app.request("/system-prompt");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { template: string };
+		expect(body.template).toBe("custom template");
+		expect(service.getTemplateCalls).toBe(1);
+	});
+
+	it("returns default when service unavailable", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/system-prompt");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { template: string };
+		expect(body.template).toBe(DEFAULT_TEMPLATE);
+	});
+});
+
+describe("PUT /system-prompt", () => {
+	it("sets template", async () => {
+		const service = createFakeSystemPromptService();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			systemPromptService: service,
+			logger: noopLogger,
+		});
+		const res = await app.request("/system-prompt", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ template: "new" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { template: string };
+		expect(body.template).toBe("new");
+		expect(service.setTemplateCalls).toEqual(["new"]);
+	});
+
+	it("missing template → 400", async () => {
+		const service = createFakeSystemPromptService();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			systemPromptService: service,
+			logger: noopLogger,
+		});
+		const res = await app.request("/system-prompt", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		expect(service.setTemplateCalls).toEqual([]);
+	});
+
+	it("service unavailable → 503", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/system-prompt", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ template: "new" }),
+		});
+		expect(res.status).toBe(503);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("System prompt service not available");
+	});
+});
+
+describe("GET /system-prompt/variables", () => {
+	it("returns catalog", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/system-prompt/variables");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { variables: readonly SystemPromptVariable[] };
+		expect(Array.isArray(body.variables)).toBe(true);
+		// Contains at least system:time, prompt:cwd, and a dynamic file:<path>.
+		const hasSystemTime = body.variables.some((v) => v.type === "system" && v.name === "time");
+		const hasPromptCwd = body.variables.some((v) => v.type === "prompt" && v.name === "cwd");
+		const fileEntry = body.variables.find((v) => v.type === "file");
+		expect(hasSystemTime).toBe(true);
+		expect(hasPromptCwd).toBe(true);
+		expect(fileEntry).toBeDefined();
+		expect(fileEntry?.dynamic).toBe(true);
+	});
 });

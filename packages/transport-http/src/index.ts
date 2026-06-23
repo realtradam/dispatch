@@ -30,6 +30,7 @@ export type {
 	CredentialStore,
 	LspService,
 	SessionOrchestrator,
+	SystemPromptService,
 	WarmService,
 } from "./seam.js";
 export {
@@ -39,4 +40,5 @@ export {
 	isValidWorkspaceSlug,
 	lspServiceHandle,
 	sessionOrchestratorHandle,
+	systemPromptHandle,
 } from "./seam.js";
