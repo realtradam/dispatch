@@ -5,7 +5,96 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1240 vitest + 199 transport bun green**.
+`tsc -b` EXIT 0 · biome clean · **1332 vitest** green.
+
+## LSP cwd resolution — server-default fallthrough + workspace assignment (DONE)
+Bug: `GET /conversations/:id/lsp` called `getEffectiveCwd` directly, which falls through
+to `serverDefaultCwd` (`process.cwd()`) when no conversation cwd is set — the LSP
+connected on the wrong dir. Additionally, a new conversation's workspace isn't assigned
+until the first `chat.send`, so `getEffectiveCwd` resolved against `"default"` (not the
+intended workspace) when the FE set the cwd before the first turn.
+- **Wave 0 (orchestrator, contracts):** `@dispatch/transport-contract` `0.16.0→0.17.0` —
+  additive `SetCwdRequest.workspaceId?: string` + updated `LspStatusResponse.cwd` comment
+  ("resolved working directory the LSP connects on, or null when no cwd is set").
+- **Wave 1 — transport-http:** `GET /conversations/:id/lsp` now gates on `getCwd`
+  (persisted) first — returns `{ cwd: null, servers: [] }` when no cwd set (LSP does NOT
+  connect); only calls `getEffectiveCwd` + `lspService.status()` when a persisted cwd
+  exists. `PUT /conversations/:id/cwd` now accepts optional `workspaceId` — validates
+  with `isValidWorkspaceSlug`, then `ensureWorkspace` → `setWorkspaceId` → `setCwd`
+  (assigns workspace before persisting cwd). 5 new tests + 1 assertion updated.
+  Report: `reports/transport-http.md`.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1332 vitest** pass; agent in-lane.
+- [x] **FE courier** sent to FE agent `ffe3`: `frontend-lsp-cwd-workspace-handoff.md`
+  — send `workspaceId` on `PUT /conversations/:id/cwd`; `GET /conversations/:id/lsp`
+  now returns `cwd: null` + empty `servers` when no working dir is set.
+
+## Workspace cwd fallthrough + relative resolution (DONE)
+FE courier in: bug report + behavior change (`workspace defaultCwd` not used at turn start when
+a conversation has no explicit cwd; plus per-conversation cwd should be **relative to the workspace
+`defaultCwd`** unless absolute). Resolution is backend-owned (the FE omits `cwd` on `chat.send`).
+- **Scope:** single unit — `conversation-store` owns `getEffectiveCwd` (already consumed unchanged
+  by `session-orchestrator` turn/warm + `transport-http` `GET /conversations/:id/lsp`), so no
+  cross-package surface change and no fan-out. `GET /conversations/:id/cwd` uses `getCwd` (raw
+  explicit cwd) — unchanged.
+- [x] **conversation-store** — added injectable `serverDefaultCwd` (default `process.cwd()`) to
+  `createConversationStore`; rewrote `getEffectiveCwd` with the new algorithm: explicit conversation
+  cwd null → `workspaceCwd ?? serverDefaultCwd` (bug fix: was returning null, skipping the workspace
+  default); absolute (starts `/`) → overrides; relative → `path.resolve(workspaceCwd ??
+  serverDefaultCwd, conversationCwd)`. Public signature `(conversationId) => Promise<string | null>`
+  unchanged. 8 regression tests. Report: `reports/conversation-store-workspace-cwd.md`.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1289 vitest** pass; agent in-lane; zero internal mocks.
+
+## Per-turn cwd override not resolved relative to workspace (CURRENT — live-found)
+Live investigation (dev stack, tab 4ef4 in workspace `test` with `defaultCwd=/home/tradam/projects/
+dispatch`): `getEffectiveCwd` resolves a persisted relative cwd correctly (LSP endpoint + a chat
+**omitting** `cwd` both return `/home/tradam/projects/dispatch/arch-rewrite`). BUT a per-turn `cwd`
+sent on `chat.send` is used **as-is** by `session-orchestrator` (`cwd !== undefined ?
+Promise.resolve(cwd)`, orchestrator.ts:360), bypassing `getEffectiveCwd`. So raw `arch-rewrite`
+reaches `run_shell` → `resolve("arch-rewrite")` = `<process.cwd>/arch-rewrite` (nonexistent) → `pwd`
+broken; `./` → `resolve("./")` = `process.cwd()` (valid) → "works". The FE sends the CwdField value
+as a per-turn `cwd` (transport-ws threads it: router.ts:173 → extension.ts:277).
+- **Fix (2 waves):** add an optional `overrideCwd?: string` to `ConversationStore.getEffectiveCwd`
+  (resolve the override if provided, else the persisted `getCwd` — same relative algorithm), then
+  `session-orchestrator` passes the per-turn `cwd` (turn start + warm `opts.cwd`) as the override.
+- [x] **Wave 1 — conversation-store:** added `overrideCwd?` param + impl + tests.
+- [x] **Wave 2 — session-orchestrator:** pass per-turn cwd as override (turn start + warm) + tests.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1298 vitest** pass; both agents in-lane; zero
+  internal mocks.
+- [x] **LIVE-VERIFIED** (dev stack, workspace `test` defaultCwd `/home/tradam/projects/dispatch`):
+  a per-turn `cwd:"arch-rewrite"` on an existing conversation (assigned to `test`) → `pwd`
+  returns `/home/tradam/projects/dispatch/arch-rewrite` (resolved, not broken). Both the
+  omit-cwd path (Wave 0) and the per-turn-cwd path (Wave 2) confirmed working.
+- **Known edge case (pre-existing, not a regression):** a brand-NEW conversation's FIRST turn runs
+  `getEffectiveCwd` *before* the workspace is assigned (orchestrator.ts assigns it later in the
+  IIFE), so a relative per-turn cwd resolves against the "default" workspace (server default)
+  instead of the intended one. Uncommon (CwdField typically set after the first message). Deferred.
+- **Note (separate pre-existing bug, not touched):** `DELETE /conversations/:id/cwd` returns
+  `cwd:null` but does NOT clear the persisted cwd (transport-http app.ts:538 — the route is a stub).
+
+## Cwd edge cases — timing + DELETE stub (DONE)
+Two pre-existing bugs surfaced during live-verify of the relative-cwd fix:
+- **Edge 1 (timing):** a NEW conversation's first turn ran `getEffectiveCwd` BEFORE the workspace
+  was assigned, so a relative per-turn cwd resolved against `"default"` (server default) not the
+  intended workspace. **Fix:** session-orchestrator now assigns the workspace (for new
+  conversations, detected via `getConversationMeta === null`) BEFORE resolving the effective cwd;
+  removed the duplicate assignment site. 3 tests.
+- **Edge 2 (DELETE stub):** `DELETE /conversations/:id/cwd` returned `{cwd:null}` but did NOT
+  clear the persisted cwd (no `clearCwd` on the store). **Fix:** conversation-store added
+  `clearCwd(id)` (`storage.delete(cwdKey)`, idempotent) + tests; transport-http DELETE handler now
+  `await clearCwd` for real.
+- [x] **Wave A (parallel):** conversation-store (clearCwd) + session-orchestrator (timing) — disjoint.
+- [x] **Wave B:** transport-http (DELETE handler uses clearCwd).
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1311 vitest** pass; all in-lane; zero internal mocks.
+- [x] **LIVE-VERIFIED** (dev stack): Edge 2 — PUT→GET(`/tmp/test`)→DELETE→GET(`null`) actually
+  cleared. Edge 1 — NEW conversation, workspace `test`, per-turn `cwd:"arch-rewrite"` → `pwd`
+  returns `/home/tradam/projects/dispatch/arch-rewrite` (resolved against workspace default, not
+  broken).
+- [x] **FE courier handoff** written + sent: `frontend-cwd-resolution-handoff.md` couriered to FE
+  orchestrator conversation `b18a` via `dispatch send b18a --queue` (turn started). Behavior-only
+  — no `@dispatch/wire`/`transport-contract`/`ui-contract` version bumps; no FE contract change
+  needed. Notes: `DELETE /conversations/:id/cwd` now actually clears; per-turn `cwd` on `chat.send`
+  resolved relative to workspace `defaultCwd`; FE MAY omit `cwd` on `chat.send` (backend resolves
+  persisted).
 
 Built and verified live (full-fidelity: every feature is a manifest-loaded
 extension through the host):
@@ -626,6 +715,45 @@ Outbound courier: `frontend-workspaces-handoff.md` (final shapes + Q1–Q8).
      `compactThreshold` (default 85%) is exceeded. `GET/PUT
      /conversations/:id/compact-percent` for the setting. `conversation.compacted`
      WS broadcast. CLI `dispatch compact <id>`. FE handoff:
-     `frontend-compaction-handoff.md`.
+      `frontend-compaction-handoff.md`.
+  11. **FE: consume `GET /conversations/:id/status` for crash-recovery re-sync.**
+      Backend endpoint shipped (branch `fix/stuck-generating`): returns
+      `{ conversationId, isActive, status }` where `isActive` is the orchestrator's
+      in-memory truth and `status` is the persisted lifecycle status. On reconnect
+      (WS re-establish or page reload), the FE should call this for any tab it
+      believes is "generating"; if `isActive: false`, override the local spinner
+      to idle regardless of the persisted `status` (defense-in-depth against
+      status drift the boot-sweep didn't catch). No FE handoff doc needed — the
+      endpoint is self-documenting (`GET /conversations/:id/status`).
 
 (Done and dropped from the list: CLI; dedup / storage growth; message queue + steering injection.)
+
+## Stop generation must abort a hanging tool + not brick the conversation (DONE)
+FE courier in: "Stop generation doesn't abort a hanging tool call." When the user clicks Stop during
+a tool that hangs (e.g. `run_shell` with a blocking/grandchild-holding process), the turn never
+sealed → the FE spinner spun forever AND the conversation was bricked (next `chat.send` rejected as
+`"already-active"` because `activeTurns` was never cleared).
+- **Root cause:** the kernel's `executeToolCall` awaited `tool.execute(...)` with **no race against
+  the abort signal** — a tool that ignored `ctx.signal` (or blocked on something it couldn't
+  interrupt) blocked `drain` → `runTurn` never returned → session-orchestrator's `finally` (which
+  clears `activeTurns`) never ran. (The `/stop` endpoint, `stopTurn`, and the `finally` cleanup were
+  already correct — they just needed `runTurn` to return.) Secondary: `realSpawn` resolved on
+  `child.on("close")` (waits for stdio) and killed only the immediate child, so a grandchild holding
+  the pipes could stall the spawn promise + leak.
+- [x] **kernel** — `executeToolCall` now **races** `tool.execute` against `signal` via `Promise.race`;
+  on abort it **resolves** (not rejects) `{ content: "Aborted", isError: true }` so the step completes
+  normally → kernel's existing `signal.aborted → finishReason "aborted"` path runs → turn seals
+  cleanly (`done` + `turn-sealed`) → `finally` clears `activeTurns` → **conversation freed, next
+  message accepted**. Late rejections from the orphaned tool promise are swallowed. 11 tests incl.
+  the durability test (hanging tool `new Promise(() => {})` + abort → `runTurn` returns
+  `finishReason "aborted"`, doesn't hang). Report: `reports/kernel-abort-race.md`.
+- [x] **tool-shell** — `realSpawn` spawns `detached: true` (own process group); on abort **and**
+  timeout kills the **group** (`process.kill(-pgid, "SIGKILL")`) AND resolves immediately (no
+  `close`-dependency) so a grandchild holding the pipes can't stall the spawn or leak. 4 tests
+  (grandchild abort, grandchild timeout, normal-completion stdout capture, simple abort). Report:
+  `reports/tool-shell-process-group-kill.md`.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1326 vitest** pass; both in-lane; kernel zero
+  internal mocks.
+- [ ] **Live-verify** (needs a fresh `bin/up` — the dev stack is currently wedged, the very symptom
+  of this bug): start a hanging tool (`run_shell` sleep/grandchild), Stop, then send a NEW message →
+  it must be ACCEPTED (conversation not bricked) and the spinner clears.
