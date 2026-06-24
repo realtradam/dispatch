@@ -256,4 +256,109 @@ describe("convertMessages", () => {
 		const result = convertMessages(messages);
 		expect(result).toEqual([{ role: "assistant", content: "Let me think...Here is my answer." }]);
 	});
+
+	it("arguments is valid JSON when input is a malformed string", () => {
+		// Production seq-134 shape: the model emitted broken JSON as the tool
+		// arguments and it was stored verbatim. Unquoted key fails JSON.parse at
+		// some column (position 1 here).
+		const malformed = '{path: "/src/main.ts"}';
+		expect(() => JSON.parse(malformed)).toThrow();
+
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_bad",
+						toolName: "read_file",
+						input: malformed,
+					},
+				],
+			},
+		];
+
+		const result = convertMessages(messages);
+		const args = result[0]?.tool_calls?.[0]?.function.arguments;
+		expect(args).toBeDefined();
+		// The output MUST parse without throwing — the provider receives valid JSON.
+		expect(() => JSON.parse(args as string)).not.toThrow();
+		// And it is the fallback object preserving a truncated hint.
+		expect(JSON.parse(args as string)).toEqual({
+			_malformed_arguments: malformed.slice(0, 200),
+		});
+	});
+
+	it("arguments passes through valid string input", () => {
+		const validJson = '{"path":"/src/main.ts"}';
+		expect(() => JSON.parse(validJson)).not.toThrow();
+
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_str",
+						toolName: "read_file",
+						input: validJson,
+					},
+				],
+			},
+		];
+
+		const result = convertMessages(messages);
+		const args = result[0]?.tool_calls?.[0]?.function.arguments;
+		// A valid-JSON string round-trips to a canonical JSON string.
+		expect(args).toBe(JSON.stringify(JSON.parse(validJson)));
+		expect(args).toBe('{"path":"/src/main.ts"}');
+	});
+
+	it("stringifies object input", () => {
+		const input = { path: "/src/main.ts", line: 42 };
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_obj",
+						toolName: "read_file",
+						input,
+					},
+				],
+			},
+		];
+
+		const result = convertMessages(messages);
+		const args = result[0]?.tool_calls?.[0]?.function.arguments;
+		expect(args).toBe(JSON.stringify(input));
+	});
+
+	it("truncates the malformed input hint to 200 characters", () => {
+		// A long bare run of letters is not valid JSON (no quotes/braces).
+		const malformed = "x".repeat(500);
+		expect(() => JSON.parse(malformed)).toThrow();
+
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{
+						type: "tool-call",
+						toolCallId: "call_long",
+						toolName: "read_file",
+						input: malformed,
+					},
+				],
+			},
+		];
+
+		const result = convertMessages(messages);
+		const args = result[0]?.tool_calls?.[0]?.function.arguments;
+		expect(() => JSON.parse(args as string)).not.toThrow();
+		const parsed = JSON.parse(args as string);
+		expect(parsed).toEqual({ _malformed_arguments: malformed.slice(0, 200) });
+		expect(parsed._malformed_arguments.length).toBe(200);
+	});
 });

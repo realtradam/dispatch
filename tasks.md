@@ -5,7 +5,49 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1443 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1453 vitest** green.
+
+## Broken-chat self-repair (read-time reconcile) (DONE)
+Conversation `77574596` broke unrecoverably: `reconcile()` only repaired orphaned
+tool-calls, not (a) a trailing assistant message whose only chunk is `error`
+(serializes to empty content → uncontinuable) and (b) a `tool-call` whose `input`
+is a raw malformed-JSON string (re-sent as OpenAI `arguments` → provider 400s on
+every continuation). `load()` also had no try/catch on `JSON.parse` (one corrupt
+row would brick a chat). Fix = read-time repair so broken chats auto-heal on next
+open — NO DB surgery (append-only preserved; repair is a turn-path transform on
+`load()`). Full diagnosis + plan: `broken-chat-repair-handoff.md` +
+`reports/broken-chat-repair-diagnosis.md`.
+- **Layer 1 — `conversation-store` `reconcile.ts` (protects ALL providers):**
+  `reconcileWithReport` now (1) strips `error` chunks from assistant messages, (2)
+  drops any assistant message left with no `text`/`tool-call` (the emptied error-only
+  msg — safe: never followed by a `tool` msg), (3) keeps orphaned-tool-call synthesis
+  unchanged. `ReconcileReport` +2 additive counts (`strippedErrorChunks`,
+  `droppedEmptyMessages`) for the repair span. `loadSince` (FE reads) intentionally
+  NOT reconciled — the user still SEES the error while the provider gets clean history.
+  **Hardening:** `store.ts` `load()` wraps per-chunk `JSON.parse` in try/catch →
+  corrupt row skipped (log + continue), reconcile runs on the rest. +6 reconcile/store
+  tests.
+- **Layer 2 — `openai-stream` `convert-messages.ts` (per-provider args safety):** new
+  pure `serializeToolArguments` — object→stringify; valid-string→parse+restringify;
+  malformed-string→fallback `{ _malformed_arguments: <truncated 200> }`. Output ALWAYS
+  `JSON.parse`s → provider stops 400ing on stored malformed args. +4 tests.
+- **Layer 2 (equiv) — `../claude` `provider-anthropic` `convert.ts`:** `safeJson` now
+  returns a valid object fallback (`{ _malformed_arguments: s.slice(0,200) }`) on
+  parse failure, not the raw string (`tool_use.input` must be an object for Anthropic).
+  Exported for direct testing. +3 tests. (Separate repo, separate agent.)
+- **Wave 1+2 (parallel, disjoint):** conversation-store + openai-stream (arch-rewrite)
+  + provider-anthropic (`../claude`). All in-lane; zero internal mocks; no contract/type
+  change. Reports: `reports/conversation-store.md`, `reports/openai-stream.md`,
+  `../claude/reports/provider-anthropic.md`.
+- [x] Verified: arch-rewrite `tsc -b` EXIT 0, biome clean, **1453 vitest** (was 1443);
+  `../claude` `tsc -b` EXIT 0, 71 vitest, biome clean. Both pure-core units zero
+  internal mocks.
+- [x] **LIVE-VERIFIED** (dev stack `bin/up` :24203): reproduced 77574596's REAL broken
+  tail (the actual malformed-args tool-call + trailing error chunk) in the dev DB;
+  `POST /chat` continued it cleanly (`text-delta:"OK"` → `done` reason `"stop"`, no
+  400) — the provider accepted the reconciled history (error stripped, args sanitized).
+  The historical error chunk remains in storage by design (read-time repair only); no
+  new error was appended. Cleaned up the test conversation after.
 
 ## LSP — broken-server recovery + config source attribution (DONE)
 Handoff from an agent running in raylib-jamstack (configuring ruby-lsp under the

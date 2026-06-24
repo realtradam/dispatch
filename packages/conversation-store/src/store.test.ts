@@ -7,7 +7,7 @@ import type {
 	TurnMetrics,
 } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
-import { CONVERSATION_INDEX_KEY, metaKey } from "./keys.js";
+import { CONVERSATION_INDEX_KEY, chunkKey, metaKey } from "./keys.js";
 import { createConversationStore, extractTitle } from "./store.js";
 
 interface SpanEvent {
@@ -408,6 +408,52 @@ describe("ConversationStore", () => {
 			expect(chunk.isError).toBe(true);
 			expect(chunk.content).toBe("interrupted: tool execution did not complete");
 		}
+	});
+
+	it("load() skips a corrupt-JSON chunk row and reconciles the rest (no throw)", async () => {
+		// "Never leave the system broken": a single bad row must not brick the
+		// conversation. The corrupt chunk is skipped; the rest loads and reconcile
+		// still runs normally. Fake only the OUTERMOST edge (the injected storage)
+		// — no @dispatch/* mocks.
+		const { logger } = createCapturingLogger();
+		const store = createConversationStore(storage, logger);
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
+			{
+				role: "assistant",
+				chunks: [
+					{ type: "text", text: "calling" },
+					{ type: "tool-call", toolCallId: "call_x", toolName: "t", input: {} },
+				],
+			},
+		];
+		await store.append("conv_corrupt", messages);
+		// Corrupt the assistant text chunk (seq 2) directly in storage.
+		await storage.set(chunkKey("conv_corrupt", 2), "{this is not valid json");
+
+		const result = await store.load("conv_corrupt");
+		// No throw. The user message survives; the assistant message keeps its
+		// tool-call (its text chunk was the corrupt row, skipped); reconcile
+		// synthesizes the missing tool-result for the now-orphaned tool-call.
+		expect(result).toEqual([
+			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
+			{
+				role: "assistant",
+				chunks: [{ type: "tool-call", toolCallId: "call_x", toolName: "t", input: {} }],
+			},
+			{
+				role: "tool",
+				chunks: [
+					{
+						type: "tool-result",
+						toolCallId: "call_x",
+						toolName: "t",
+						content: "interrupted: tool execution did not complete",
+						isError: true,
+					},
+				],
+			},
+		]);
 	});
 
 	it("loadSince returns empty array for unknown conversation", async () => {
