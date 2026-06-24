@@ -43,7 +43,11 @@ echo "[up] frontend → http://localhost:24204                          [vite HM
 echo "[up] Ctrl-C to stop both."
 echo
 
-setsid bash -c "cd '$BACKEND' && exec bun --watch packages/host-bin/src/main.ts" \
+# Force the dev ports: a shell-exported BACKEND_PORT (e.g. 24991 from ~/.bashrc,
+# set so the Dispatch CLI hits prod) would otherwise override .env and bind the
+# dev server onto the production port (colliding with the prod systemd service).
+# Bun lets shell env win over .env, so pin the dev ports here.
+setsid bash -c "cd '$BACKEND' && exec env BACKEND_PORT=24203 SURFACE_WS_PORT=24205 bun --watch packages/host-bin/src/main.ts" \
 	> >(sed -u 's/^/[backend]  /') 2>&1 &
 BACK_PG=$!
 
