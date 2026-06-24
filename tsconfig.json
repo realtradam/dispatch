@@ -1,40 +1,113 @@
 {
 	"files": [],
 	"references": [
-		{ "path": "./packages/wire" },
-		{ "path": "./packages/kernel" },
-		{ "path": "./packages/transport-contract" },
-		{ "path": "./packages/ui-contract" },
-		{ "path": "./packages/surface-registry" },
-		{ "path": "./packages/transport-ws" },
-		{ "path": "./packages/surface-loaded-extensions" },
-		{ "path": "./packages/storage-sqlite" },
-		{ "path": "./packages/auth-apikey" },
-		{ "path": "./packages/provider-openai-compat" },
-		{ "path": "./packages/openai-stream" },
-		{ "path": "./packages/provider-umans" },
-		{ "path": "./packages/credential-store" },
-		{ "path": "./packages/conversation-store" },
-		{ "path": "./packages/throughput-store" },
-		{ "path": "./packages/todo" },
-		{ "path": "./packages/session-orchestrator" },
-		{ "path": "./packages/transport-http" },
-		{ "path": "./packages/tool-read-file" },
-		{ "path": "./packages/tool-shell" },
-		{ "path": "./packages/tool-edit-file" },
-		{ "path": "./packages/tool-write-file" },
-		{ "path": "./packages/tool-web-search" },
-		{ "path": "./packages/tool-youtube-transcript" },
-		{ "path": "./packages/skills" },
-		{ "path": "./packages/cache-warming" },
-		{ "path": "./packages/message-queue" },
-		{ "path": "./packages/lsp" },
-		{ "path": "./packages/system-prompt" },
-		{ "path": "./packages/cli" },
-		{ "path": "./packages/journal-sink" },
-		{ "path": "./packages/trace-store" },
-		{ "path": "./packages/observability-collector" },
-		{ "path": "./packages/trace-replay" },
-		{ "path": "./packages/host-bin" }
+		{
+			"path": "./packages/wire"
+		},
+		{
+			"path": "./packages/kernel"
+		},
+		{
+			"path": "./packages/transport-contract"
+		},
+		{
+			"path": "./packages/ui-contract"
+		},
+		{
+			"path": "./packages/surface-registry"
+		},
+		{
+			"path": "./packages/transport-ws"
+		},
+		{
+			"path": "./packages/surface-loaded-extensions"
+		},
+		{
+			"path": "./packages/storage-sqlite"
+		},
+		{
+			"path": "./packages/auth-apikey"
+		},
+		{
+			"path": "./packages/provider-openai-compat"
+		},
+		{
+			"path": "./packages/openai-stream"
+		},
+		{
+			"path": "./packages/provider-umans"
+		},
+		{
+			"path": "./packages/credential-store"
+		},
+		{
+			"path": "./packages/conversation-store"
+		},
+		{
+			"path": "./packages/throughput-store"
+		},
+		{
+			"path": "./packages/todo"
+		},
+		{
+			"path": "./packages/session-orchestrator"
+		},
+		{
+			"path": "./packages/transport-http"
+		},
+		{
+			"path": "./packages/tool-read-file"
+		},
+		{
+			"path": "./packages/tool-shell"
+		},
+		{
+			"path": "./packages/tool-edit-file"
+		},
+		{
+			"path": "./packages/tool-write-file"
+		},
+		{
+			"path": "./packages/tool-web-search"
+		},
+		{
+			"path": "./packages/tool-youtube-transcript"
+		},
+		{
+			"path": "./packages/skills"
+		},
+		{
+			"path": "./packages/cache-warming"
+		},
+		{
+			"path": "./packages/message-queue"
+		},
+		{
+			"path": "./packages/mcp"
+		},
+		{
+			"path": "./packages/lsp"
+		},
+		{
+			"path": "./packages/system-prompt"
+		},
+		{
+			"path": "./packages/cli"
+		},
+		{
+			"path": "./packages/journal-sink"
+		},
+		{
+			"path": "./packages/trace-store"
+		},
+		{
+			"path": "./packages/observability-collector"
+		},
+		{
+			"path": "./packages/trace-replay"
+		},
+		{
+			"path": "./packages/host-bin"
+		}
 	]
 }

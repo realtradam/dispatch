@@ -20,6 +20,7 @@ import {
 	type StorageNamespace,
 } from "@dispatch/kernel";
 import { extension as lspExt } from "@dispatch/lsp";
+import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
@@ -84,6 +85,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	throughputStoreExt,
 	todoExt,
 	messageQueueExt,
+	mcpExt,
 	sessionOrchestratorExt,
 	skillsExt,
 	systemPromptExt,
