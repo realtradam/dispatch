@@ -5,7 +5,23 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1453 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1468 vitest** green.
+
+## Per-edit LSP diagnostics auto-append (DONE)
+After a successful `edit_file`, the extension now calls LSP `getDiagnostics` on the
+post-edit buffer and appends any errors/warnings (severity ≤ 2) to the tool result —
+so the model sees lint/diagnostics feedback inline without a separate round-trip.
+Multi-server aggregation queries ALL connected servers matching the file's extension
+(not just the first), merging diagnostics tagged by source (`[steep]`, `[ruby-lsp]`, etc.).
+Incremental sync (`textDocument/didChange`) captures each server's `change` kind during
+`initialize` and computes prefix/suffix diff ranges for `change:2` servers, full content
+for `change:1`. New pure `diff.ts` (`computeChangeRange` + `offsetToPosition`, O(n)).
+60s timeout; slow warning if >10s; graceful degradation when no LSP available. Generic
+— works for any LSP. `languageId` mapping extended (`.rb`/`.rbs`/`.c`/`.cpp`/etc.).
+- [x] Wave 1 — `packages/lsp/` (single unit): diff.ts, client, tool, diagnostics, language, types, extension. 15 new diff tests + multi-server tool test.
+- [x] Wave 2 — `packages/tool-edit-file/`: optional dep on `@dispatch/lsp` via `host.getService()` (not manifest `dependsOn`); appends diagnostics after successful edit.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1468 vitest** pass (was 1453, +15).
+- [ ] **LIVE-VERIFIED** — not yet exercised against a real running server.
 
 ## Broken-chat self-repair (read-time reconcile) (DONE)
 Conversation `77574596` broke unrecoverably: `reconcile()` only repaired orphaned
