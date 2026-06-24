@@ -538,7 +538,23 @@ export function createConversationStore(
 			for (const key of sorted) {
 				const value = await storage.get(key);
 				if (value === null) continue;
-				const entry = JSON.parse(value) as PersistedChunkEntry;
+				let entry: PersistedChunkEntry;
+				try {
+					entry = JSON.parse(value) as PersistedChunkEntry;
+				} catch (err) {
+					// "Never leave the system broken": a single corrupt/unparseable
+					// row must not brick the whole conversation. Skip it (append-only
+					// storage untouched) and let reconcile run on the rest. loadSince
+					// is intentionally NOT hardened here — it is the raw FE read path.
+					if (logger !== undefined) {
+						logger.warn("skipping corrupt chunk row", {
+							conversationId,
+							key,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+					continue;
+				}
 
 				if (entry.msgIdx !== currentMsgIdx) {
 					if (currentMsgIdx >= 0 && currentRole !== undefined) {
@@ -558,11 +574,17 @@ export function createConversationStore(
 
 			const { messages: repaired, report } = reconcileWithReport(messages);
 
-			if (report.repairedCount > 0 && logger !== undefined) {
+			const hasReconcileActivity =
+				report.repairedCount > 0 ||
+				report.strippedErrorChunks > 0 ||
+				report.droppedEmptyMessages > 0;
+			if (hasReconcileActivity && logger !== undefined) {
 				const child = logger.child({ conversationId });
 				const span = child.span("reconcile.repair", {
 					repairedCount: report.repairedCount,
 					firstRepairedToolCallId: report.repairedToolCallIds[0] ?? null,
+					strippedErrorChunks: report.strippedErrorChunks,
+					droppedEmptyMessages: report.droppedEmptyMessages,
 				});
 				span.end();
 			}

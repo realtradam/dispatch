@@ -1,6 +1,6 @@
 import type { ChatMessage, StepId } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
-import { reconcile } from "./reconcile.js";
+import { reconcile, reconcileWithReport } from "./reconcile.js";
 
 describe("reconcile", () => {
 	it("returns empty array for empty input", () => {
@@ -284,5 +284,137 @@ describe("reconcile", () => {
 		if (chunk.type === "tool-result") {
 			expect(chunk).not.toHaveProperty("stepId");
 		}
+	});
+
+	// --- Layer 1: read-time self-repair of broken chats (error chunks) ---
+
+	it("reconcile strips error-only trailing assistant message", () => {
+		// The 77574596/102587c0 shape: [user, assistant{error}] -> [user].
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "hi" }] },
+			{ role: "assistant", chunks: [{ type: "error", message: "boom" }] },
+		];
+		const { messages: result, report } = reconcileWithReport(messages);
+		expect(result).toEqual([{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+		expect(report.strippedErrorChunks).toBe(1);
+		expect(report.droppedEmptyMessages).toBe(1);
+		expect(report.repairedCount).toBe(0);
+	});
+
+	it("reconcile strips error chunk but keeps sibling text", () => {
+		// assistant{text,error} -> assistant{text}.
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{ type: "text", text: "hello" },
+					{ type: "error", message: "boom" },
+				],
+			},
+		];
+		const { messages: result, report } = reconcileWithReport(messages);
+		expect(result).toEqual([{ role: "assistant", chunks: [{ type: "text", text: "hello" }] }]);
+		expect(report.strippedErrorChunks).toBe(1);
+		expect(report.droppedEmptyMessages).toBe(0);
+		expect(report.repairedCount).toBe(0);
+	});
+
+	it("reconcile drops assistant message left empty after stripping error", () => {
+		// assistant{error} only -> dropped entirely.
+		const messages: ChatMessage[] = [
+			{ role: "assistant", chunks: [{ type: "error", message: "boom" }] },
+		];
+		const { messages: result, report } = reconcileWithReport(messages);
+		expect(result).toEqual([]);
+		expect(report.strippedErrorChunks).toBe(1);
+		expect(report.droppedEmptyMessages).toBe(1);
+		expect(report.repairedCount).toBe(0);
+	});
+
+	it("reconcile keeps tool-call + strips error", () => {
+		// assistant{tool-call,error} with a matching result -> assistant{tool-call}.
+		const messages: ChatMessage[] = [
+			{
+				role: "assistant",
+				chunks: [
+					{ type: "tool-call", toolCallId: "call_1", toolName: "t", input: {} },
+					{ type: "error", message: "boom" },
+				],
+			},
+			{
+				role: "tool",
+				chunks: [
+					{
+						type: "tool-result",
+						toolCallId: "call_1",
+						toolName: "t",
+						content: "ok",
+						isError: false,
+					},
+				],
+			},
+		];
+		const { messages: result, report } = reconcileWithReport(messages);
+		expect(result).toEqual([
+			{
+				role: "assistant",
+				chunks: [{ type: "tool-call", toolCallId: "call_1", toolName: "t", input: {} }],
+			},
+			{
+				role: "tool",
+				chunks: [
+					{
+						type: "tool-result",
+						toolCallId: "call_1",
+						toolName: "t",
+						content: "ok",
+						isError: false,
+					},
+				],
+			},
+		]);
+		expect(report.strippedErrorChunks).toBe(1);
+		expect(report.droppedEmptyMessages).toBe(0);
+		expect(report.repairedCount).toBe(0); // the tool-call has a matching result
+	});
+
+	it("reconcile strips error and still synthesizes a result for an orphaned tool-call", () => {
+		// Ordering guard: strip error chunks first, then run orphaned-tool-call
+		// synthesis on what remains. assistant{tool-call,error} with NO result ->
+		// the error is stripped, the tool-call survives, and a result is synthesized.
+		const messages: ChatMessage[] = [
+			{ role: "user", chunks: [{ type: "text", text: "go" }] },
+			{
+				role: "assistant",
+				chunks: [
+					{ type: "tool-call", toolCallId: "call_orph", toolName: "t", input: {} },
+					{ type: "error", message: "boom" },
+				],
+			},
+		];
+		const { messages: result, report } = reconcileWithReport(messages);
+		expect(result).toEqual([
+			{ role: "user", chunks: [{ type: "text", text: "go" }] },
+			{
+				role: "assistant",
+				chunks: [{ type: "tool-call", toolCallId: "call_orph", toolName: "t", input: {} }],
+			},
+			{
+				role: "tool",
+				chunks: [
+					{
+						type: "tool-result",
+						toolCallId: "call_orph",
+						toolName: "t",
+						content: "interrupted: tool execution did not complete",
+						isError: true,
+					},
+				],
+			},
+		]);
+		expect(report.strippedErrorChunks).toBe(1);
+		expect(report.droppedEmptyMessages).toBe(0);
+		expect(report.repairedCount).toBe(1);
+		expect(report.repairedToolCallIds).toEqual(["call_orph"]);
 	});
 });

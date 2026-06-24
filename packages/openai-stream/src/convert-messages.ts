@@ -71,7 +71,7 @@ function convertAssistantMessage(msg: ChatMessage): OpenAIMessage {
 				type: "function",
 				function: {
 					name: c.toolName,
-					arguments: typeof c.input === "string" ? c.input : JSON.stringify(c.input),
+					arguments: serializeToolArguments(c.input),
 				},
 			}),
 		);
@@ -96,4 +96,32 @@ function convertToolResultMessages(msg: ChatMessage): OpenAIMessage[] {
 				tool_call_id: c.toolCallId,
 			}),
 		);
+}
+
+/**
+ * Serialize a tool-call's `input` into a JSON string the provider will accept.
+ *
+ * The OpenAI `arguments` field MUST be a valid JSON string. A broken chat can
+ * have a tool-call whose `input` is a raw malformed-JSON string (the model
+ * emitted broken JSON as the tool arguments and it was stored verbatim).
+ * Passing that string straight through makes the provider 400
+ * `unexpected character` on EVERY continuation, bricking the chat.
+ *
+ * - object input → `JSON.stringify(input)` (regression, unchanged shape).
+ * - string input that is valid JSON → re-serialized to canonical JSON.
+ * - string input that fails to parse → a valid fallback object preserving a
+ *   truncated hint of the original, so the chat can continue (the model sees
+ *   its tool-call had no usable args and adjusts).
+ *
+ * Pure: input → output, no I/O.
+ */
+function serializeToolArguments(input: unknown): string {
+	if (typeof input === "string") {
+		try {
+			return JSON.stringify(JSON.parse(input));
+		} catch {
+			return JSON.stringify({ _malformed_arguments: input.slice(0, 200) });
+		}
+	}
+	return JSON.stringify(input);
 }
