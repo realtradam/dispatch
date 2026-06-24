@@ -76,3 +76,11 @@ describe("rpc", () => {
 		expect(response.result).toEqual([{ setting: true }]);
 	});
 });
+
+it("handleMessage does not throw on malformed JSON", async () => {
+	const { conn } = makeConnection();
+	// A corrupted/truncated LSP message — must not throw or reject.
+	await expect(conn.handleMessage("{ broken json")).resolves.toBeUndefined();
+	await expect(conn.handleMessage("")).resolves.toBeUndefined();
+	await expect(conn.handleMessage("not json at all")).resolves.toBeUndefined();
+});
