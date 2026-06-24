@@ -5,7 +5,7 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1468 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1537 vitest** green.
 
 ## Per-edit LSP diagnostics auto-append (DONE)
 After a successful `edit_file`, the extension now calls LSP `getDiagnostics` on the
@@ -21,7 +21,30 @@ for `change:1`. New pure `diff.ts` (`computeChangeRange` + `offsetToPosition`, O
 - [x] Wave 1 — `packages/lsp/` (single unit): diff.ts, client, tool, diagnostics, language, types, extension. 15 new diff tests + multi-server tool test.
 - [x] Wave 2 — `packages/tool-edit-file/`: optional dep on `@dispatch/lsp` via `host.getService()` (not manifest `dependsOn`); appends diagnostics after successful edit.
 - [x] Verified: `tsc -b` EXIT 0, biome clean, **1468 vitest** pass (was 1453, +15).
-- [ ] **LIVE-VERIFIED** — not yet exercised against a real running server.
+- [x] **LIVE-VERIFIED** (production dispatch-server :24991): edit_file now surfaces LSP diagnostics inline — a deliberate type error (`const x: number = "not a number"`) in a .ts file produces `[TypeScript Language Server] ERROR (2322) L3:9: Type 'string' is not assignable to type 'number'` appended to the edit result. Required a lazy LSP service lookup fix (commits e03a96e + d4ff45c) — tool-edit-file activates at position 5 in CORE_EXTENSIONS while lsp activates at position 20, so getService always threw at activation time.
+
+## MCP (Model Context Protocol) integration (DONE)
+Dispatch is now an MCP host. A new `mcp` standard extension (`packages/mcp/`) spawns
+configured MCP servers (stdio child processes), performs the MCP handshake, discovers
+tools via `tools/list`, and registers each as a first-class Dispatch `ToolContract` via
+`host.defineTool`. When the model calls an MCP tool, the extension proxies to `tools/call`
+on the MCP server and returns the flattened result. Config: `.dispatch/mcp.json` (servers
+key) → `opencode.json` mcp key fallback, resolved per-cwd (mirrors LSP). Tool names namespaced
+as `<serverId>__<toolName>`. A `toolsFilter` drops tools from disconnected servers. Phase 1:
+stdio only, Tools only (no Resources/Prompts/HTTP/sampling). Hand-rolled JSON-RPC (zero deps).
+- **Design:** `notes/mcp-design.md` + `PLAN-mcp.md`.
+- [x] Wave 1 — `packages/mcp/` (agent via dispatch CLI): 12 source + 8 test files, 69 tests.
+- [x] Wave 2 — orchestrator: root tsconfig ref, host-bin CORE_EXTENSIONS registration, bun install.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1537 vitest** pass (was 1468, +69).
+- [x] **LIVE-VERIFIED** (production dispatch-server :24991): a minimal test MCP server (stdio,
+  one `ping` tool) configured in `.dispatch/mcp.json` → model discovered `test__ping`,
+  called it with `{"msg":"hello"}`, received `pong` — full turn lifecycle (tool-call →
+  tool-result → done). Tool name namespacing (`<serverId>__<toolName>`) confirmed on the wire.
+- **Bug found + fixed during live-verify:** `edit_file` tool was missing from the toolset
+  because the per-edit diagnostics change called `host.getService(lspServiceHandle)` at
+  activation time, but `tool-edit-file` activates BEFORE `lsp` in CORE_EXTENSIONS → getService
+  threw → activate crashed → tool never registered. Fix: lazy lookup at edit time (commits
+  e03a96e, d4ff45c).
 
 ## Broken-chat self-repair (read-time reconcile) (DONE)
 Conversation `77574596` broke unrecoverably: `reconcile()` only repaired orphaned
