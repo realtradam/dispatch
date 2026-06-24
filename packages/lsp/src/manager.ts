@@ -11,7 +11,7 @@ import {
 	LanguageServerClient,
 	type SpawnProcess,
 } from "./client.js";
-import { type ResolvedServer, resolveServers } from "./config.js";
+import { configFingerprint, type ResolvedServer, resolveServers } from "./config.js";
 import { findRoot } from "./root.js";
 import type { LspServerState, LspServerStatus } from "./types.js";
 
@@ -26,6 +26,11 @@ export interface ManagerDeps {
 	readonly fileWatcher: FileWatcher;
 	readonly fs: FsAccess;
 	readonly logger?: Logger | undefined;
+	/**
+	 * Injected clock (epoch-ms) for bounded-backoff bookkeeping. Defaults to
+	 * `Date.now`; injected in tests so backoff is deterministic.
+	 */
+	readonly now?: (() => number) | undefined;
 }
 
 type ClientEntry = {
@@ -34,14 +39,35 @@ type ClientEntry = {
 	readonly promise: Promise<void>;
 };
 
+/**
+ * A failed server's recovery bookkeeping. `configFingerprint` is the resolved
+ * config captured at failure time: a config edit produces a different
+ * fingerprint (a discrete event → cannot storm) and the next `status()` clears
+ * the entry and re-spawns. `brokenAt` seeds a bounded backoff so transient
+ * failures (e.g. a not-yet-installed binary) also self-heal without a storm.
+ * `error` is the enriched failure reason surfaced while the server stays
+ * broken.
+ */
+type BrokenEntry = {
+	readonly configFingerprint: string;
+	readonly brokenAt: number;
+	readonly error: string;
+};
+
+/** Bounded backoff before a transient (config-unchanged) failure is retried. */
+const BACKOFF_MS = 30_000;
+
 export class LspManager {
 	private clients = new Map<string, ClientEntry>();
-	private broken = new Set<string>();
+	private broken = new Map<string, BrokenEntry>();
 	private spawning = new Map<string, Promise<void>>();
-	private deps: ManagerDeps;
+	private shadowWarned = new Set<string>();
+	private readonly deps: ManagerDeps;
+	private readonly now: () => number;
 
 	constructor(deps: ManagerDeps) {
 		this.deps = deps;
+		this.now = deps.now ?? Date.now;
 	}
 
 	async status(cwd: string): Promise<readonly LspServerStatus[]> {
@@ -49,12 +75,23 @@ export class LspManager {
 		// project) gets its own .dispatch/lsp.json or opencode.json, not a global one.
 		const dispatchLspJson = await this.readOrNull(join(cwd, ".dispatch", "lsp.json"));
 		const opencodeJson = await this.readOrNull(join(cwd, "opencode.json"));
-		const servers = await resolveServers({
+		const { servers, shadowed } = await resolveServers({
 			cwd,
 			dispatchLspJson,
 			opencodeJson,
 			exists: this.deps.fs.exists,
 		});
+
+		// A present `.dispatch/lsp.json` silently shadows `opencode.json`'s lsp
+		// key — warn once per cwd so a broken shadow names itself (an agent
+		// running inside dispatch can only see `status()`, not the journal).
+		if (shadowed && !this.shadowWarned.has(cwd)) {
+			this.shadowWarned.add(cwd);
+			this.deps.logger?.warn(
+				`.dispatch/lsp.json is shadowing the opencode.json "lsp" config — its servers take precedence and the opencode.json lsp entry is ignored`,
+				{ cwd },
+			);
+		}
 
 		const results: LspServerStatus[] = [];
 
@@ -62,17 +99,35 @@ export class LspManager {
 			const root = await findRoot(cwd, cwd, server.rootMarkers, this.deps.fs.exists);
 			const key = `${server.id}:${root}`;
 
-			if (this.broken.has(key)) {
-				const status: LspServerStatus = {
-					id: server.id,
-					name: server.name,
-					root,
-					extensions: server.extensions,
-					state: "error",
-					error: "Previously failed to start",
-				};
-				results.push(status);
-				continue;
+			const brokenEntry = this.broken.get(key);
+			if (brokenEntry) {
+				// Recovery, storm-safe: a config change is a discrete event, so it
+				// cannot loop. Transient failures (config unchanged) are retried
+				// only after a bounded backoff — never in a tight loop.
+				const configChanged = configFingerprint(server) !== brokenEntry.configFingerprint;
+				const backoffElapsed = this.now() - brokenEntry.brokenAt >= BACKOFF_MS;
+				if (configChanged || backoffElapsed) {
+					this.broken.delete(key);
+					// Discard the stale client entry (and any leaked process) from
+					// the failed spawn so status() re-spawns fresh.
+					const stale = this.clients.get(key);
+					if (stale) {
+						this.clients.delete(key);
+						stale.client.shutdown();
+					}
+					// fall through to (re)spawn
+				} else {
+					results.push({
+						id: server.id,
+						name: server.name,
+						root,
+						extensions: server.extensions,
+						state: "error",
+						error: brokenEntry.error,
+						configSource: server.configSource,
+					});
+					continue;
+				}
 			}
 
 			const existing = this.clients.get(key);
@@ -85,9 +140,10 @@ export class LspManager {
 					root,
 					extensions: server.extensions,
 					state: mapState(state),
+					configSource: server.configSource,
 				};
 				if (stateError !== undefined) {
-					(status as { error?: string }).error = stateError;
+					(status as { error?: string }).error = enrichError(server, stateError);
 				}
 				results.push(status);
 				continue;
@@ -105,23 +161,29 @@ export class LspManager {
 						root,
 						extensions: server.extensions,
 						state: mapState(state),
+						configSource: server.configSource,
 					};
 					if (stateError !== undefined) {
-						(status as { error?: string }).error = stateError;
+						(status as { error?: string }).error = enrichError(server, stateError);
 					}
 					results.push(status);
 				}
 			} catch (err: unknown) {
-				this.broken.add(key);
-				const status: LspServerStatus = {
+				const message = err instanceof Error ? err.message : String(err);
+				this.broken.set(key, {
+					configFingerprint: configFingerprint(server),
+					brokenAt: this.now(),
+					error: enrichError(server, message),
+				});
+				results.push({
 					id: server.id,
 					name: server.name,
 					root,
 					extensions: server.extensions,
 					state: "error",
-					error: err instanceof Error ? err.message : String(err),
-				};
-				results.push(status);
+					error: enrichError(server, message),
+					configSource: server.configSource,
+				});
 			}
 		}
 
@@ -185,11 +247,17 @@ export class LspManager {
 		await entry.promise;
 
 		if (client.getState() === "error") {
-			this.broken.add(key);
+			const message = client.getStateError() ?? "unknown";
+			this.broken.set(key, {
+				configFingerprint: configFingerprint(server),
+				brokenAt: this.now(),
+				error: enrichError(server, message),
+			});
 			this.deps.logger?.warn("LSP server failed to start", {
 				serverId: server.id,
 				root,
-				error: client.getStateError() ?? "unknown",
+				configSource: server.configSource ?? "unknown",
+				error: message,
 			});
 		} else {
 			this.deps.logger?.info("LSP server connected", {
@@ -207,9 +275,20 @@ export class LspManager {
 		this.clients.clear();
 		this.broken.clear();
 		this.spawning.clear();
+		this.shadowWarned.clear();
 	}
 }
 
 function mapState(state: LspServerState): LspServerState {
 	return state;
+}
+
+/**
+ * Prefix a failure reason with the server id + its config source, so a broken
+ * config file names itself in the `status()` response (e.g.
+ * `ruby-lsp [from .dispatch/lsp.json]: spawn failed`).
+ */
+function enrichError(server: ResolvedServer, message: string): string {
+	const source = server.configSource ?? "unknown";
+	return `${server.id} [from ${source}]: ${message}`;
 }

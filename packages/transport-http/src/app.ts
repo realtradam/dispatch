@@ -703,6 +703,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 					extensions: s.extensions,
 					state: s.state,
 					...(s.error !== undefined ? { error: s.error } : {}),
+					...(s.configSource !== undefined ? { configSource: s.configSource } : {}),
 				};
 				return info;
 			});

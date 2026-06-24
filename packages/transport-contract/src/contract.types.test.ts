@@ -59,6 +59,15 @@ const _serverErr: LspServerInfo = {
 	error: "Failed to start: binary not found",
 };
 
+const _serverWithSource: LspServerInfo = {
+	id: "ruby-lsp",
+	name: "Ruby LSP",
+	root: "/home/user/raylib",
+	extensions: [".rb"],
+	state: "connected",
+	configSource: ".dispatch/lsp.json",
+};
+
 // ─── LspStatusResponse ───────────────────────────────────────────────────────
 
 const _lspNoCwd: LspStatusResponse = {
@@ -106,6 +115,11 @@ describe("transport-contract types compile and are exported", () => {
 	it("LspServerInfo: error server carries error message", () => {
 		expect(_serverErr.state).toBe("error");
 		expect(_serverErr.error).toBe("Failed to start: binary not found");
+	});
+
+	it("LspServerInfo: carries optional configSource", () => {
+		expect(_serverWithSource.configSource).toBe(".dispatch/lsp.json");
+		expect(_serverOk.configSource).toBeUndefined();
 	});
 
 	it("LspStatusResponse: empty servers when cwd is null", () => {

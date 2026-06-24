@@ -364,6 +364,7 @@ function createFakeLspService(
 		readonly extensions: readonly string[];
 		readonly state: "connected" | "starting" | "error" | "not-started";
 		readonly error?: string;
+		readonly configSource?: string;
 	}[] = [],
 ): LspService {
 	return {
@@ -381,6 +382,7 @@ function createCapturingLspService(
 		readonly extensions: readonly string[];
 		readonly state: "connected" | "starting" | "error" | "not-started";
 		readonly error?: string;
+		readonly configSource?: string;
 	}[] = [],
 ): LspService & { readonly statusCalls: readonly string[] } {
 	const calls: string[] = [];
@@ -2316,6 +2318,69 @@ describe("GET /conversations/:id/lsp", () => {
 		expect(lsp.statusCalls).toEqual(["/workspace/subdir"]);
 		expect(body.servers).toHaveLength(1);
 		expect(body.servers[0]?.id).toBe("typescript");
+	});
+
+	it("GET /conversations/:id/lsp: configSource passes through to the wire", async () => {
+		const cwdStore = new Map<string, string>([["conv1", "/home/user/project"]]);
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		// Case 1: configSource is defined → reaches the wire verbatim.
+		const lspWithSource = createFakeLspService([
+			{
+				id: "typescript",
+				name: "TypeScript",
+				root: "/home/user/project",
+				extensions: [".ts", ".tsx"],
+				state: "connected" as const,
+				configSource: ".dispatch/lsp.json",
+			},
+		]);
+		const appWithSource = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			lspService: lspWithSource,
+			logger: noopLogger,
+		});
+		const resWithSource = await appWithSource.request("/conversations/conv1/lsp");
+		expect(resWithSource.status).toBe(200);
+		const bodyWithSource = (await resWithSource.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly {
+				readonly id: string;
+				readonly configSource?: string;
+			}[];
+		};
+		expect(bodyWithSource.servers[0]?.configSource).toBe(".dispatch/lsp.json");
+
+		// Case 2: configSource is undefined → the field is OMITTED from the
+		// response (proves exactOptionalPropertyTypes is respected — never
+		// stamping `undefined` onto the wire object).
+		const lspWithoutSource = createFakeLspService([
+			{
+				id: "typescript",
+				name: "TypeScript",
+				root: "/home/user/project",
+				extensions: [".ts", ".tsx"],
+				state: "connected" as const,
+			},
+		]);
+		const appWithoutSource = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			lspService: lspWithoutSource,
+			logger: noopLogger,
+		});
+		const resWithoutSource = await appWithoutSource.request("/conversations/conv1/lsp");
+		expect(resWithoutSource.status).toBe(200);
+		const bodyWithoutSource = (await resWithoutSource.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly Record<string, unknown>[];
+		};
+		expect(bodyWithoutSource.servers).toHaveLength(1);
+		expect(bodyWithoutSource.servers[0]).not.toHaveProperty("configSource");
 	});
 });
 
