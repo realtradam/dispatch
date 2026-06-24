@@ -52,10 +52,10 @@ they justify every rule below.
    existing one?" — surface it to the user; never decide granularity silently.
 4. **Write the prompt** to `prompts/<unit>.md` (gitignored). See §3 for the
    prompt recipe.
-5. **Summon the wave** via the Task tool (`subagent_type: "Opus 4.8"`, see §2); disjoint units
-   run in PARALLEL (§2a). RE-READ the §3 scoping map before each wave so you point each agent at
-   the right rule files. You MAY read the rules/briefs themselves (they are tiny) — what you must
-   NEVER do is INLINE their contents into a Task prompt (§2 TOKEN RULE).
+5. **Summon the wave** via the `dispatch` CLI (`umans/umans-glm-5.2`, see §2); disjoint units
+   run in PARALLEL (§2a). RE-READ the §3 scoping map before each wave so you attach the right
+   rule files via `--file` for each agent. You MAY read the rules/briefs themselves (they are
+   tiny) — what you must NEVER do is INLINE their contents into the `--text` (§2 TOKEN RULE).
 6. **Verify** the reports + independently re-run checks (see §4). Trust nothing
    until you've re-run `typecheck`/`test`/`check` yourself.
 7. **Resolve** any contract gaps / errors (see §5).
@@ -63,77 +63,85 @@ they justify every rule below.
 
 ---
 
-## 2. Summoning agents via the Task tool (Opus 4.8)
+## 2. Summoning agents via the `dispatch` CLI
 
-The **Task tool** is the summon mechanism; **`subagent_type: "Opus 4.8"`** is the BUILDING
-agent (Claude Opus 4.8 — capable coder). `deepseek-v4-flash` remains the *app's own runtime
-testbench*, never a builder. (The legacy `opencode run` CLI path is retired;
+The **`dispatch` CLI** is the summon mechanism; **`umans/umans-glm-5.2`** is the BUILDING
+agent (capable coder; browse alternatives with `dispatch models`). `$DISPATCH_MODEL` (`opencode/deepseek-v4-flash`) is the *app's own
+runtime testbench*, never a builder. (The legacy `opencode run` and Task-tool paths are retired;
 `notes/opencode-agents.md` is historical.)
 
-**Same session, full tools.** A Task subagent runs in THIS session's working directory (the repo
-root, `/home/tradam/projects/dispatch/arch-rewrite`) with the normal coding toolset
-(Read/Edit/Write/Bash/`lsp`) and the same permissions — so its `lsp`/typecheck work and there is
-NO headless cross-dir permission hang. The visibility/ownership rules (§6) are NOT enforced by a
-sandbox here — they hold only because the prompt states them (the briefs do).
+**Prerequisites.** The Dispatch server must be up — probe with `dispatch models` ("Unable to
+connect" → boot it, §8); the CLI defaults to it, no `--server` needed. The summoned agent is a
+SEPARATE conversation on that server, NOT this session — so set `--cwd` to the repo root so its
+file tools operate on the repo. It has the Dispatch runtime's coding toolset (read_file /
+write_file / bash — the tool extensions `host-bin` wires); it runs `tsc -b`/vitest/biome via bash
+and writes its report to `reports/<unit>.md`. The visibility/ownership rules (§6) are NOT enforced
+by a sandbox — they hold only because the briefs state them.
 
-**THE TOKEN RULE — never INLINE the briefs/rules/TASK into the prompt.** This is the whole point
-of the file-based harness: pasting `.dispatch/*` or `prompts/<unit>.md` contents into the Task
-`prompt` burns YOUR context and duplicates what the agent can read itself — exactly what we avoid.
-(Reading the small rule/brief files for your OWN understanding is allowed — the rule is about
-prompt assembly, not about you being ignorant of the rules.) Instead the Task `prompt`
-is a SHORT pointer that tells the subagent to READ those files ITSELF. The guardrail bytes then
-land in the SUBAGENT's context, never the orchestrator's — the same property the old
-`"$(cat …)"` shell-concat gave us (the concat just moves from the shell to the agent's own Read).
+**THE TOKEN RULE — use `--file` to attach guardrails; never inline into `--text`.** The `dispatch`
+CLI's `--file <path>` flag (repeatable) reads a file from disk and attaches its contents to the
+agent's message — the guardrail bytes land in the SUBAGENT's context, never the orchestrator's.
+This is the whole point of the file-based harness: the briefs/rules/task are delivered to the agent
+by the CLI, not pasted by you. NEVER put `.dispatch/*` or `prompts/<unit>.md` contents into the
+`--text` message — that duplicates what `--file` already delivers AND burns YOUR context. (Reading
+the small rule/brief files for your OWN understanding is allowed — the rule is about prompt
+assembly, not about you being ignorant of the rules.) The `--text` is a SHORT instruction that
+tells the agent what to DO (implement, verify, report) — not what the rules SAY.
 
-**Canonical summon** — ONE Task call per unit:
-- `description`: `"build <unit>"`
-- `subagent_type`: `"Opus 4.8"`
-- `prompt`: the SHORT pointer below — fill in `<unit>` + its scoped-rule files (§3 map). Do NOT
-  inline any file contents.
+**Canonical summon** — ONE `dispatch` call per unit (fill in `<unit>` + its scoped-rule `--file`s
+per the §3 map; the `--file` ORDER is the assembly order: constitution → brief → rules → task;
+omit `--file .dispatch/extension-agent.md` for non-extension units):
 
+```bash
+cd /home/tradam/projects/dispatch/arch-rewrite
+dispatch umans/umans-glm-5.2 \
+  --cwd /home/tradam/projects/dispatch/arch-rewrite \
+  --text "You are the single owner-agent for packages/<unit>/. The attached files are your constitution, brief, rules, and task — follow them exactly in the order given. Then IMPLEMENT the task now: edit ONLY files under packages/<unit>/, run tsc -b / vitest / biome for your package, and write your report to reports/<unit>.md. Reply with ONLY a one-line status + the path reports/<unit>.md — no diffs, no logs." \
+  --file AGENTS.md \
+  --file .dispatch/package-agent.md \
+  --file .dispatch/extension-agent.md \
+  --file .dispatch/rules/one-owner.md \
+  --file .dispatch/rules/isolation-over-dry.md \
+  --file .dispatch/rules/biome-clean.md \
+  --file prompts/<unit>.md \
+  > reports/<unit>.run.log 2>&1
 ```
-You are the single owner-agent for packages/<unit>/. Read these files IN FULL with your own tools
-and follow them exactly, in this order (do NOT skip — they are your constitution, brief, rules,
-and task; do NOT paste them back to me):
-  1. AGENTS.md                                   (project constitution; may already be in context)
-  2. .dispatch/package-agent.md                  (base owner brief)
-  3. .dispatch/extension-agent.md                (ONLY if your unit is an extension — else skip)
-  4. .dispatch/rules/one-owner.md .dispatch/rules/isolation-over-dry.md .dispatch/rules/biome-clean.md
-     (+ the unit's other scoped rules per the §3 map — list them here)
-  5. prompts/<unit>.md                           (YOUR task)
-Then IMPLEMENT it now: edit ONLY files under packages/<unit>/, run tsc -b / vitest / biome for
-your package, and write your report to reports/<unit>.md.
-Reply with ONLY a one-line status + the path reports/<unit>.md — no diffs, no logs.
-```
 
-The read list IS the old fixed assembly order (constitution → package brief → extension supplement
-→ scoped rules → TASK); the ONLY change is the AGENT reads it instead of the shell concatenating
-it. Name in line 4 ONLY the scoped-rule files matching the unit's layer (§3 map) — don't dump
-every rule. `prompts/<unit>.md` stays JUST the TASK block (§3).
+The `--file` list IS the fixed assembly order (constitution → package brief → extension
+supplement → scoped rules → TASK); the CLI delivers their contents to the agent directly — no
+read_file round-trips needed. Attach ONLY the scoped-rule files matching the unit's layer
+(§3 map) — don't attach every rule. `prompts/<unit>.md` stays JUST the TASK block (§3).
 
-**Output discipline.** The Task tool returns ONE short final message (not the agent's stream), so
-the firehose can't flood you. Keep it that way: the agent replies tiny and writes the real report
-to `reports/<unit>.md`, which you then `Read` from disk. NEVER ask an agent to paste diffs/logs
-back; never `Read` a giant log into context — `Grep` it for a specific error if needed.
+**Output discipline — capture the stream, never display it.** The `dispatch` summon STREAMS the
+agent's full response (reasoning + tool calls + results) to stdout — enormous for a building
+task. ALWAYS redirect to a log file (`> reports/<unit>.run.log 2>&1`) and do NOT `cat` it back
+wholesale. You don't need the raw stream: read the agent's `reports/<unit>.md` report, and, if you
+must, `grep`/`tail` the log for a specific error. The conversation ID prints at the end of the
+stream as `[conversation] <uuid>` — capture it so you can `dispatch read <short-id>` later (fetch
+the last message without re-streaming) or `dispatch send <short-id> --text "…" --queue` to steer
+mid-turn. Treat dumping a full run log into context as a hard failure.
 
-**Parallel waves.** Launch a wave by emitting MULTIPLE Task calls IN ONE message (concurrent) —
-one per unit — but ONLY when their file sets are disjoint (single-writer, §6/§2a). Sequence
-dependent waves across separate messages (later waves compile against earlier ones). Log parallel
-runs in `tasks.md`. No timeout/backgrounding knobs to manage — the Task tool handles long runs and
-notifies on completion.
+**Run discipline:**
+- **Do NOT background it. Use a large timeout** (e.g. 1800000 ms = 30 min) — these are long tasks.
+  The `dispatch` call blocks until the agent's turn completes; if a `run_shell` times out, the
+  conversation KEEPS RUNNING on the server — recover with `dispatch read <short-id>`.
+- One `run_shell` per summon (foreground, large timeout). For PARALLEL agents on disjoint files,
+  launch multiple summons as CONCURRENT `run_shell` tool calls — but ONLY when their file sets
+  do not overlap (single-writer rule, §6/§2a). Log parallel runs in `tasks.md`.
 
 **GOTCHAS:**
-- **Don't burn your own tokens.** Re-read THE TOKEN RULE above: point the agent at the files;
-  never inline them. The biggest failure mode here is the orchestrator pasting briefs/rules/
-  prompts into a fat Task prompt — that defeats the harness. (Reading them yourself is fine.)
-- **No sandbox = state the rules.** Because the subagent shares your tools/cwd, nothing stops it
-  editing out of its lane except the prompt. Always include the ownership/visibility briefs (they
-  tell the agent: never edit outside `packages/<unit>/`; read only OTHER units' contracts; if you
-  think you must read another unit's impl, REPORT and STOP).
-- **Make agents IMPLEMENT, not deliberate** (§3): the pointer says "IMPLEMENT it now … write the
-  report". A plan-only return → re-summon (§5a).
-- **Smoke check:** `Task(subagent_type:"Opus 4.8", prompt:"Reply with exactly SMOKE_OK")` should
-  return `SMOKE_OK`.
+- **Don't burn your own tokens.** Re-read THE TOKEN RULE above: attach the files via `--file`;
+  never paste their contents into `--text`. The biggest failure mode here is the orchestrator
+  inlining briefs/rules/prompts — that defeats the harness AND pollutes the orchestrator's
+  context. (Reading them yourself is fine.)
+- **No sandbox = state the rules.** Because the subagent shares the repo cwd (via `--cwd`),
+  nothing stops it editing out of its lane except the prompt. Always include the
+  ownership/visibility briefs (they tell the agent: never edit outside `packages/<unit>/`; read
+  only OTHER units' contracts; if you think you must read another unit's impl, REPORT and STOP).
+- **Make agents IMPLEMENT, not deliberate** (§3): the `--text` says "IMPLEMENT the task now …
+  write the report". A plan-only return → re-summon (§5a).
+- **Smoke check:** `dispatch umans/umans-glm-5.2 --text "Reply with exactly SMOKE_OK"` should
+  print `SMOKE_OK`.
 
 ---
 
@@ -142,7 +150,7 @@ notifies on completion.
 Throughput comes from running disjoint units at once. Organise it as waves:
 - **A wave = units that (a) touch DISJOINT files and (b) have no compile-time dependency
   on each other** (each imports only already-built packages + existing contracts). Launch a
-  wave by emitting one summon per unit as CONCURRENT tool calls (§2). Later waves depend on
+  wave by emitting one `dispatch` summon per unit as CONCURRENT `run_shell` calls (§2). Later waves depend on
   earlier ones; the composition root (`packages/host-bin/`) is almost always the LAST wave.
 - **Pre-author the seam to widen the wave.** Because the orchestrator OWNS contracts (§6),
   author the shared contract / typed handle in `packages/kernel/src/contracts/*` FIRST, then
@@ -164,7 +172,7 @@ Throughput comes from running disjoint units at once. Organise it as waves:
 
 The invariant guardrails — single-writer directory ownership, visibility, coupling, the
 engineering standard, isolated verification, and the report format — live ONCE in the
-standardized briefs the summon points the agent at (§2; the agent reads them itself):
+standardized briefs the summon attaches via `--file` (§2; the CLI delivers them to the agent):
 - **`.dispatch/package-agent.md`** — the base for EVERY package owner.
 - **`.dispatch/extension-agent.md`** — the extension-only supplement (added for extension summons).
 
@@ -262,8 +270,9 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
   barrel `index.ts`, a sibling conforming to a contract change), the orchestrator
   **summons the owning agent** — it does NOT edit implementation itself.
 - **Live API errors:** an HTTP 429 `GoUsageLimitError` is an UPSTREAM rate limit,
-  not a bug. The `opencode-2` key has a monthly cap; `opencode-1` is the backup.
-  Swap `DISPATCH_API_KEY` in `.env` (both keys are there).
+  not a bug — and now that building agents are dispatched THROUGH the server's provider (not a
+  host model), a mid-build 429 is just as likely as a runtime one. The provider key has a monthly
+  cap; swap `DISPATCH_API_KEY` in `.env` (backup keys noted there) and retry.
 
 ---
 
@@ -340,7 +349,7 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
 ```
 /home/tradam/projects/dispatch/arch-rewrite   # THE worktree (branch arch/rewrite)
 
-  AGENTS.md        the subagent constitution (auto-loaded by opencode; you enforce it)
+  AGENTS.md        the subagent constitution (the summon points each agent at it; you enforce it)
   ORCHESTRATOR.md  the orchestrator's operating manual (this file)
   GLOSSARY.md      canonical vocabulary + aliases-to-avoid (human-gated)
   tasks.md         live progress checklist / milestone log
@@ -358,7 +367,7 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
     observability-design.md  logging/spans/collector/trace-store design (Phase A–B)
     cli-design.md            CLI design decisions + unit plan (built; §3 = settled decisions)
     frontend-design.md       future web frontend design (IDEATION; separate repo)
-    opencode-agents.md       LEGACY — notes on the retired `opencode run` CLI summon path (§2 now uses the Task tool / Opus 4.8)
+    opencode-agents.md       LEGACY — notes on the retired `opencode run` CLI summon path (§2 now uses the `dispatch` CLI)
 
   prompts/   (gitignored — orchestrator→agent TASK blocks)
   reports/   (gitignored — agent→orchestrator reports)

@@ -12,6 +12,7 @@ export interface ValidatedArgs {
 export interface SpawnResult {
 	readonly exitCode: number | null;
 	readonly timedOut: boolean;
+	readonly aborted: boolean;
 }
 
 export type SpawnShell = (params: {
@@ -139,7 +140,6 @@ export function createRunShellTool(deps: {
 			};
 
 			let spawnResult: SpawnResult;
-			let aborted = false;
 
 			try {
 				spawnResult = await deps.spawn({
@@ -154,7 +154,6 @@ export function createRunShellTool(deps: {
 				});
 			} catch (err: unknown) {
 				if (ctx.signal.aborted) {
-					aborted = true;
 					return buildResult({
 						exitCode: null,
 						timedOut: false,
@@ -172,7 +171,7 @@ export function createRunShellTool(deps: {
 			return buildResult({
 				exitCode: spawnResult.exitCode,
 				timedOut: spawnResult.timedOut,
-				aborted,
+				aborted: spawnResult.aborted,
 				output,
 				cap,
 			});

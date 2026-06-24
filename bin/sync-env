@@ -4,10 +4,19 @@ set -euo pipefail
 ENV_FILE="/etc/dispatch/env"
 OPENCODE_KEY="sk-P2DW7UFzQZgI8TnYzp6wWKxv6suzFvSGRrwewhUK0OjA4C7bLzsKHki7r7zZOAH1"
 UMANS_KEY="sk-bvI-mgUrp5qJzMlK8ndoDqJ3dK0U-ds_8KYS8pzpRLw"
+# PATH that includes user-installed tools (mise, bun, npm global, etc.)
+DISPATCH_PATH="/home/tradam/.local/bin:/home/tradam/.local/share/mise/shims:/home/tradam/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/bin"
 
 if [ ! -f "$ENV_FILE" ]; then
 	echo "Error: $ENV_FILE not found" >&2
 	exit 1
+fi
+
+# Update PATH (so tools like typescript-language-server, npm, bun are found)
+if grep -q "^PATH=" "$ENV_FILE"; then
+	sed -i "s|^PATH=.*|PATH=$DISPATCH_PATH|" "$ENV_FILE"
+else
+	echo "PATH=$DISPATCH_PATH" >> "$ENV_FILE"
 fi
 
 # Update DISPATCH_API_KEY

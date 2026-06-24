@@ -1,3 +1,5 @@
+Operating manual for the dispatch arch-rewrite orchestrator: plan topological waves of single-owner agents, summon via opencode run, verify from contracts + tests (never read implementation), resolve contract gaps. Project-specific to this repo.
+---
 # ORCHESTRATOR.md — how to drive this project
 
 > **You are the orchestrator.** You do NOT write feature code yourself. You plan,

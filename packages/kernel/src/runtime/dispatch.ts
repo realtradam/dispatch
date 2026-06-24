@@ -35,8 +35,24 @@ export async function executeToolCall(
 		conversationId,
 		...(cwd !== undefined ? { cwd } : {}),
 	};
+	// Race the tool's execute promise against the abort signal so a tool
+	// that hangs (ignores ctx.signal, or blocks on something the signal
+	// can't interrupt) can't keep runTurn from returning. When the signal
+	// fires we RESOLVE (not reject) with an "Aborted" result so the step
+	// completes normally and the existing signal.aborted → finishReason =
+	// "aborted" path seals the turn cleanly (done event), letting the
+	// caller's finally clear active state and the FE clear its spinner.
 	try {
-		return await tool.execute(call.input, ctx);
+		const toolPromise = tool.execute(call.input, ctx);
+		const abortPromise = new Promise<ToolResult>((resolve) => {
+			signal.addEventListener("abort", () => resolve({ content: "Aborted", isError: true }), {
+				once: true,
+			});
+		});
+		// Swallow late rejections from the orphaned tool promise: the tool
+		// may reject after the race already resolved with "Aborted".
+		void toolPromise.catch(() => {});
+		return await Promise.race([toolPromise, abortPromise]);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return { content: `Tool execution error: ${message}`, isError: true };

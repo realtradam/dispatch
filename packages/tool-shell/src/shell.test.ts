@@ -22,8 +22,12 @@ function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
 	};
 }
 
-function fakeSpawn(result: { exitCode: number | null; timedOut: boolean }): SpawnShell {
-	return async () => result;
+function fakeSpawn(result: {
+	exitCode: number | null;
+	timedOut: boolean;
+	aborted?: boolean;
+}): SpawnShell {
+	return async () => ({ aborted: false, ...result });
 }
 
 describe("validateArgs", () => {
@@ -201,7 +205,7 @@ describe("createRunShellTool", () => {
 			workdir: "/tmp",
 			spawn: async (_params) => {
 				_params.onOutput("hello\n", "stdout");
-				return { exitCode: 0, timedOut: false };
+				return { exitCode: 0, timedOut: false, aborted: false };
 			},
 		});
 		const result = await tool.execute({ command: "echo hello" }, stubCtx());
@@ -214,7 +218,7 @@ describe("createRunShellTool", () => {
 			workdir: "/tmp",
 			spawn: async (_params) => {
 				_params.onOutput("error output\n", "stderr");
-				return { exitCode: 1, timedOut: false };
+				return { exitCode: 1, timedOut: false, aborted: false };
 			},
 		});
 		const result = await tool.execute({ command: "false" }, stubCtx());
@@ -227,7 +231,7 @@ describe("createRunShellTool", () => {
 			workdir: "/tmp",
 			spawn: async (_params) => {
 				_params.onOutput("partial\n", "stdout");
-				return { exitCode: null, timedOut: true };
+				return { exitCode: null, timedOut: true, aborted: false };
 			},
 		});
 		const result = await tool.execute({ command: "sleep 999" }, stubCtx());
@@ -242,7 +246,7 @@ describe("createRunShellTool", () => {
 			outputCap: cap,
 			spawn: async (_params) => {
 				_params.onOutput("a".repeat(200), "stdout");
-				return { exitCode: 0, timedOut: false };
+				return { exitCode: 0, timedOut: false, aborted: false };
 			},
 		});
 		const result = await tool.execute({ command: "gen" }, stubCtx());
@@ -258,7 +262,7 @@ describe("createRunShellTool", () => {
 				params.onOutput("line1\n", "stdout");
 				params.onOutput("err1\n", "stderr");
 				params.onOutput("line2\n", "stdout");
-				return { exitCode: 0, timedOut: false };
+				return { exitCode: 0, timedOut: false, aborted: false };
 			},
 		});
 		await tool.execute(
@@ -280,7 +284,7 @@ describe("createRunShellTool", () => {
 			workdir: "/baked",
 			spawn: async (params) => {
 				receivedCwd = params.cwd;
-				return { exitCode: 0, timedOut: false };
+				return { exitCode: 0, timedOut: false, aborted: false };
 			},
 		});
 		await tool.execute({ command: "pwd" }, stubCtx({ cwd: "/custom" }));
@@ -293,7 +297,7 @@ describe("createRunShellTool", () => {
 			workdir: "/baked",
 			spawn: async (params) => {
 				receivedCwd = params.cwd;
-				return { exitCode: 0, timedOut: false };
+				return { exitCode: 0, timedOut: false, aborted: false };
 			},
 		});
 		await tool.execute({ command: "pwd" }, stubCtx());
@@ -317,7 +321,7 @@ describe("createRunShellTool", () => {
 		controller.abort();
 		const tool = createRunShellTool({
 			workdir: "/tmp",
-			spawn: async () => ({ exitCode: 0, timedOut: false }),
+			spawn: async () => ({ exitCode: 0, timedOut: false, aborted: false }),
 		});
 		const result = await tool.execute({ command: "test" }, stubCtx({ signal: controller.signal }));
 		expect(result.isError).toBe(true);
@@ -329,7 +333,7 @@ describe("createRunShellTool", () => {
 			workdir: "/tmp",
 			spawn: async (params) => {
 				receivedTimeout = params.timeout;
-				return { exitCode: 0, timedOut: false };
+				return { exitCode: 0, timedOut: false, aborted: false };
 			},
 		});
 		await tool.execute({ command: "test", timeout: 5000 }, stubCtx());
@@ -353,5 +357,135 @@ describe("createRunShellTool (integration)", () => {
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toContain("hello-from-shell");
 		expect(streamed).toContain("hello-from-shell");
+	});
+});
+
+describe("realSpawn — process-group kill on abort/timeout", () => {
+	it("aborts a command with a grandchild holding the pipes and resolves immediately", async () => {
+		const { realSpawn } = await import("./spawn.js");
+		const controller = new AbortController();
+
+		// "sleep 30 & wait" spawns a grandchild (sleep) that inherits the stdio
+		// pipes. Killing just the sh parent does NOT close the pipes → close never
+		// fires. With detached:true + process-group kill, the grandchild dies too.
+		const promise = realSpawn({
+			command: "sleep 30 & wait",
+			cwd: "/tmp",
+			signal: controller.signal,
+			timeout: 60_000,
+			onOutput: () => {},
+		});
+
+		// Give the shell time to actually spawn the grandchild.
+		await new Promise((r) => setTimeout(r, 500));
+
+		controller.abort();
+
+		// Must resolve promptly (not wait 30s for the grandchild's sleep).
+		const result = await promise;
+		expect(result.aborted).toBe(true);
+		expect(result.timedOut).toBe(false);
+
+		// Give the OS a moment to reap the killed processes.
+		await new Promise((r) => setTimeout(r, 200));
+
+		// The grandchild sleep process should be gone. Check via pgrep.
+		const { execSync } = await import("node:child_process");
+		let sleeping: string[];
+		try {
+			sleeping = execSync("pgrep -f 'sleep 30'", { encoding: "utf-8" }).trim().split("\n");
+		} catch {
+			// pgrep returns non-zero when no processes match → all gone.
+			sleeping = [];
+		}
+		expect(sleeping.length).toBe(0);
+	});
+
+	it("times out a command with a grandchild holding the pipes and resolves promptly", async () => {
+		const { realSpawn } = await import("./spawn.js");
+		const controller = new AbortController();
+
+		const promise = realSpawn({
+			command: "sleep 30 & wait",
+			cwd: "/tmp",
+			signal: controller.signal,
+			timeout: 500,
+			onOutput: () => {},
+		});
+
+		// Must resolve within a short window (not 30s).
+		const start = Date.now();
+		const result = await promise;
+		const elapsed = Date.now() - start;
+
+		expect(result.timedOut).toBe(true);
+		expect(result.aborted).toBe(false);
+		// Should resolve shortly after the 500ms timeout, well under 30s.
+		expect(elapsed).toBeLessThan(10_000);
+
+		// Grandchild should be dead.
+		await new Promise((r) => setTimeout(r, 200));
+		const { execSync } = await import("node:child_process");
+		let sleeping: string[];
+		try {
+			sleeping = execSync("pgrep -f 'sleep 30'", { encoding: "utf-8" }).trim().split("\n");
+		} catch {
+			sleeping = [];
+		}
+		expect(sleeping.length).toBe(0);
+	});
+
+	it("captures stdout on normal completion (regression guard)", async () => {
+		const { realSpawn } = await import("./spawn.js");
+		const controller = new AbortController();
+		let output = "";
+
+		const result = await realSpawn({
+			command: "echo hi",
+			cwd: "/tmp",
+			signal: controller.signal,
+			timeout: 5_000,
+			onOutput: (data) => {
+				output += data;
+			},
+		});
+
+		expect(result.aborted).toBe(false);
+		expect(result.timedOut).toBe(false);
+		expect(result.exitCode).toBe(0);
+		expect(output).toContain("hi");
+	});
+
+	it("aborts a simple single-process command and resolves with aborted: true", async () => {
+		const { realSpawn } = await import("./spawn.js");
+		const controller = new AbortController();
+
+		const promise = realSpawn({
+			command: "sleep 30",
+			cwd: "/tmp",
+			signal: controller.signal,
+			timeout: 60_000,
+			onOutput: () => {},
+		});
+
+		// Let the sleep actually start.
+		await new Promise((r) => setTimeout(r, 300));
+
+		controller.abort();
+
+		const result = await promise;
+		expect(result.aborted).toBe(true);
+		expect(result.timedOut).toBe(false);
+
+		// The sleep process should be gone.
+		await new Promise((r) => setTimeout(r, 200));
+		const { execSync } = await import("node:child_process");
+		let sleeping: string[];
+		try {
+			sleeping = execSync("pgrep -f 'sleep 30'", { encoding: "utf-8" }).trim().split("\n");
+		} catch {
+			sleeping = [];
+		}
+		expect(sleeping.length).toBe(0);
 	});
 });
