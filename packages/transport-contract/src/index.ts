@@ -455,6 +455,37 @@ export interface LspStatusResponse {
 	readonly servers: readonly LspServerInfo[];
 }
 
+// ─── MCP status ──────────────────────────────────────────────────────
+
+export type McpServerState = "connecting" | "connected" | "error" | "disconnected";
+
+/** One MCP server's status as reported to the frontend. */
+export interface McpServerInfo {
+	/** Stable server id (the config key from `.dispatch/mcp.json`), e.g. "freecad". */
+	readonly id: string;
+	/** Current connection state. */
+	readonly state: McpServerState;
+	/** Present only when `state === "error"`: a short human-readable reason. */
+	readonly error?: string;
+	/** Number of tools discovered from this server. */
+	readonly toolCount: number;
+	/** Which config source this server was resolved from. */
+	readonly configSource?: string;
+}
+
+/** Response of `GET /conversations/:id/mcp`. */
+export interface McpStatusResponse {
+	readonly conversationId: string;
+	/**
+	 * The resolved working directory the MCP servers are configured for, or
+	 * `null` when no cwd has been set for the conversation (then `servers` is
+	 * empty). Mirrors the LSP status endpoint behavior.
+	 */
+	readonly cwd: string | null;
+	/** The MCP servers configured for `cwd` and their live state. */
+	readonly servers: readonly McpServerInfo[];
+}
+
 /**
  * Request body for `POST /chat/warm` — manually trigger a prompt-cache WARMING
  * request for a conversation (e.g. a frontend "warm now" button, or fast tests

@@ -12,6 +12,7 @@ import type {
 	LspServerInfo,
 	LspServerState,
 	LspStatusResponse,
+	McpStatusResponse,
 	SetCwdRequest,
 } from "./index.js";
 
@@ -128,5 +129,26 @@ describe("transport-contract types compile and are exported", () => {
 
 	it("LspStatusResponse: populated servers when cwd is set", () => {
 		expect(_lspWithServers.servers).toHaveLength(2);
+	});
+
+	// ─── MCP status ─────────────────────────────────────────────────────────────
+
+	it("McpStatusResponse: empty servers when cwd is null", () => {
+		const _noCwd: McpStatusResponse = { conversationId: "c1", cwd: null, servers: [] };
+		expect(_noCwd.servers).toEqual([]);
+	});
+
+	it("McpStatusResponse: populated servers when cwd is set", () => {
+		const _withServers: McpStatusResponse = {
+			conversationId: "c2",
+			cwd: "/home/user/project",
+			servers: [
+				{ id: "freecad", state: "connected", toolCount: 12, configSource: ".dispatch/mcp.json" },
+				{ id: "chrome", state: "error", error: "spawn failed", toolCount: 0 },
+			],
+		};
+		expect(_withServers.servers).toHaveLength(2);
+		expect(_withServers.servers[0]?.toolCount).toBe(12);
+		expect(_withServers.servers[1]?.error).toBe("spawn failed");
 	});
 });
