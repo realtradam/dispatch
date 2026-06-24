@@ -5,12 +5,18 @@
  * lspServiceHandle, and wires deactivate to manager.shutdownAll().
  */
 
+import { extname, join } from "node:path";
 import type { Extension, HostAPI, ServiceHandle } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
 import type { SpawnedProcess } from "./client.js";
 import { LspManager } from "./manager.js";
 import { createLspTool } from "./tool.js";
-import type { LspServerStatus, LspService } from "./types.js";
+import type {
+	DiagnosticsResult,
+	GetDiagnosticsOpts,
+	LspServerStatus,
+	LspService,
+} from "./types.js";
 
 export const lspServiceHandle: ServiceHandle<LspService> = defineService<LspService>("lsp");
 
@@ -100,6 +106,53 @@ export const extension: Extension = {
 		const service: LspService = {
 			async status(cwd: string): Promise<readonly LspServerStatus[]> {
 				return manager.status(cwd);
+			},
+			async getDiagnostics(opts: GetDiagnosticsOpts): Promise<DiagnosticsResult> {
+				const timeoutMs = opts.timeoutMs ?? 60_000;
+				const slowThreshold = 10_000;
+				const fileExt = extname(opts.filePath).toLowerCase();
+				const absolutePath = opts.filePath.startsWith("/")
+					? opts.filePath
+					: join(opts.cwd, opts.filePath);
+
+				// Get all connected servers matching this file's extension.
+				const statuses = await manager.status(opts.cwd);
+				const matching = statuses.filter(
+					(s) => s.state === "connected" && s.extensions.some((ext) => ext === fileExt),
+				);
+
+				if (matching.length === 0) {
+					return { formatted: "", slow: false, timedOut: false };
+				}
+
+				const parts: string[] = [];
+				let anySlow = false;
+				let anyTimedOut = false;
+				const start = Date.now();
+
+				for (const s of matching) {
+					const client = manager.getClient(s.id, s.root);
+					if (!client) continue;
+					const waitOpts: { text?: string; timeoutMs?: number; minSeverity?: number } = {
+						timeoutMs,
+					};
+					if (opts.text !== undefined) waitOpts.text = opts.text;
+					if (opts.minSeverity !== undefined) waitOpts.minSeverity = opts.minSeverity;
+					const result = await client.waitForDiagnostics(absolutePath, waitOpts);
+					if (result.slow) anySlow = true;
+					if (result.timedOut) anyTimedOut = true;
+					if (result.formatted) {
+						parts.push(`[${s.name}]\n${result.formatted}`);
+					}
+				}
+
+				const elapsed = Date.now() - start;
+
+				return {
+					formatted: parts.join("\n\n"),
+					slow: anySlow || elapsed > slowThreshold,
+					timedOut: anyTimedOut,
+				};
 			},
 		};
 		host.provideService(lspServiceHandle, service);

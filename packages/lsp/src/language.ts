@@ -26,6 +26,22 @@ const extensionMap: Record<string, string> = {
 	".sh": "shellscript",
 	".bash": "shellscript",
 	".zsh": "shellscript",
+	".rb": "ruby",
+	".rbs": "ruby",
+	".c": "c",
+	".h": "c",
+	".cpp": "cpp",
+	".cc": "cpp",
+	".cxx": "cpp",
+	".hpp": "cpp",
+	".hxx": "cpp",
+	".java": "java",
+	".kt": "kotlin",
+	".swift": "swift",
+	".php": "php",
+	".cs": "csharp",
+	".sql": "sql",
+	".dockerfile": "dockerfile",
 };
 
 export function languageId(filePath: string): string {

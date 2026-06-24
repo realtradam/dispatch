@@ -220,6 +220,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/lsp": "workspace:*",
       },
     },
     "packages/tool-read-file": {
@@ -270,7 +271,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.18.0",
+      "version": "0.21.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
