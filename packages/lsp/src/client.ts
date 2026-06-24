@@ -175,7 +175,11 @@ export class LanguageServerClient {
 	private handleBytes(chunk: Uint8Array): void {
 		const messages = this.decoder.decode(chunk);
 		for (const msg of messages) {
-			this.rpc?.handleMessage(msg);
+			// handleMessage is async — catch rejections so a malformed
+			// message never becomes an unhandled rejection that crashes
+			// the server. (handleMessage also has its own try/catch around
+			// JSON.parse, but this is the defence-in-depth boundary.)
+			void this.rpc?.handleMessage(msg).catch(() => {});
 		}
 	}
 

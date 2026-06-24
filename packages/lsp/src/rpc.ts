@@ -62,7 +62,16 @@ export class JsonRpcConnection {
 	}
 
 	async handleMessage(json: string): Promise<void> {
-		const msg = JSON.parse(json) as JsonRpcMessage;
+		let msg: JsonRpcMessage;
+		try {
+			msg = JSON.parse(json) as JsonRpcMessage;
+		} catch {
+			// A malformed LSP message must never crash the server. The most
+			// common cause is a multi-byte UTF-8 character split across stdout
+			// chunks (see FrameDecoder). Log and skip — the language server
+			// will re-send diagnostics on the next file change.
+			return;
+		}
 		const { id, method } = msg;
 
 		if (id !== undefined && method !== undefined) {
