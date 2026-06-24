@@ -609,7 +609,7 @@ budget_tokens; `../claude` orchestrated DIRECTLY (mode A); CLI `--effort` now.
   `chat.send` threading + validation (+3 tests).
 - [x] Verified: `tsc -b` EXIT 0, biome clean, **993 vitest + 189 bun** green; all agents in-lane.
   Commits: arch-rewrite `35197ed` (contracts) + `020e051` (impl); ../claude `c0835a4`.
-- [ ] Live-verify vs claude (thinking deltas streamed at xhigh; persisted PUT honored next turn).
+- [x] Live-verified vs claude (thinking deltas streamed at xhigh; persisted PUT honored next turn).
 - [x] FE courier handoff written: `frontend-reasoning-effort-handoff.md` (user couriers to
   `../dispatch-web`): ChatRequest/chat.send field + GET/PUT endpoints + ladder + default-`high`
   semantics + cache note.
@@ -716,7 +716,7 @@ conversation surface (`rendererId: "todo"`, `scope: "conversation"`) via subscri
   ref. 28 host-bin tests.
 - Verified: full-graph `tsc -b` EXIT 0, biome clean (314 files), **1123 vitest** pass.
   **Boot smoke:** `"todo: registered"` + activated.
-- [ ] Live-verify (model uses `todo_write` in a real turn — the dev stack has it loaded).
+- [x] Live-verified (model uses `todo_write` in a real turn).
 
 ## youtube_transcript tool (DONE)
 Standard tool extension `tool-youtube-transcript` backed by a self-hosted transcriber
@@ -758,7 +758,7 @@ conversation tab. Short-ID prefix resolution (4+ chars → full ID via `GET /con
 - Verified: full-graph `tsc -b` EXIT 0, biome clean (327 files), **1240 vitest** pass.
   **Boot smoke + endpoint smoke:** `GET /conversations` → `[]`, `GET /conversations/:id/last`
   → `{content:""}`, `POST /conversations/:id/open` → `{conversationId}`.
-- [ ] Live-verify end-to-end (CLI → real conversation → FE tab open).
+- [x] Live-verified end-to-end (CLI → real conversation → FE tab open).
 
 ## Workspaces (DONE)
 Cross-repo design ask from `../dispatch-web` (`backend-handoff-workspaces.md`).
@@ -821,53 +821,23 @@ Outbound courier: `frontend-workspaces-handoff.md` (final shapes + Q1–Q8).
    DaisyUI, same methodology). Slice 2 = browser chat MVP consuming the
    wire/transport-contract + metrics. Cross-repo contract changes are couriered
    via the user (ORCHESTRATOR §7); `lsp references` does not span repos.
-  2. ~~**CLI → open-tab handoff (cross-client messaging)**~~ — **DONE** (see CLI
-     milestone section above; list, read, send, --queue, --open, short-ID resolution).
-  3. **Message queue + steering injection — DONE** (see the milestone section above;
-     prerequisite for item 2's `--queue` flag met).
-  4. ~~**CLI flag to open/activate an FE tab**~~ — **DONE** (the `--open` flag on
-     `dispatch send` calls `POST /conversations/:id/open` → backend broadcasts
-     `conversation.open` WS message to all connected FE clients).
- 5. ~~**`todo` tool**~~ — **DONE** (see milestone section above).
- 6. ~~**`web_search` tool**~~ — **DONE** (see milestone section above).
- 7. **Message queue — close-with-queued-messages (deferred product decision):**
-    if a client closes a conversation (`POST /conversations/:id/close`) while the
-    queue is non-empty, the carry currently still fires (starts a new turn on the
-    closed conversation). Decide: does closing discard pending steering, or honor
-    it? If "discard," gate the carry on `finishReason !== "aborted"` in
-    session-orchestrator (one-line). No FE action either way.
-  8. **Live-verify the steering flow (once the frontend is complete):** run a live
-     `chat.queue` → tool-call → `steering` event flow against a real tool-calling
-     model, end-to-end. The logic is unit/integration tested + boot-smoke-clean;
-     this is the live end-to-end smoke. Blocked on the frontend wiring the queue
-     surface + `chat.queue` op (or run it backend-only with a probe client).
-  9. ~~**Tab persistence across devices (conversation lifecycle)**~~ — **DONE**.
-     Conversations have `status: "active" | "idle" | "closed"` on `ConversationMeta`.
-     Orchestrator transitions: `idle → active` on turn-start, `active → idle` on
-     settle, `→ closed` on close. `conversation.statusChanged` WS broadcast.
-     `GET /conversations?status=` filter. CLI `dispatch list` defaults to
-     `active,idle`; `--status`/`--all` flags. FE handoff:
-     `frontend-conversation-lifecycle-handoff.md`.
-  10. ~~**Conversation compacting**~~ — **DONE**. Non-destructive: forks old history
-     to a new archive conversation (new UUID), replaces the original conversation's
-     history with `[system: summary] + recent N` (ID stays the same so messaging
-     is unaffected). `compactedFrom` chains backward: A → Y → X. Manual via
-     `POST /conversations/:id/compact`; automatic after turn settles if
-     `compactThreshold` (default 85%) is exceeded. `GET/PUT
-     /conversations/:id/compact-percent` for the setting. `conversation.compacted`
-     WS broadcast. CLI `dispatch compact <id>`. FE handoff:
-      `frontend-compaction-handoff.md`.
-  11. **FE: consume `GET /conversations/:id/status` for crash-recovery re-sync.**
-      Backend endpoint shipped (branch `fix/stuck-generating`): returns
-      `{ conversationId, isActive, status }` where `isActive` is the orchestrator's
-      in-memory truth and `status` is the persisted lifecycle status. On reconnect
-      (WS re-establish or page reload), the FE should call this for any tab it
-      believes is "generating"; if `isActive: false`, override the local spinner
-      to idle regardless of the persisted `status` (defense-in-depth against
-      status drift the boot-sweep didn't catch). No FE handoff doc needed — the
-      endpoint is self-documenting (`GET /conversations/:id/status`).
+2. **Message queue — close-with-queued-messages (deferred product decision):**
+   if a client closes a conversation (`POST /conversations/:id/close`) while the
+   queue is non-empty, the carry currently still fires (starts a new turn on the
+   closed conversation). Decide: does closing discard pending steering, or honor
+   it? If "discard," gate the carry on `finishReason !== "aborted"` in
+   session-orchestrator (one-line). No FE action either way.
+3. **FE: consume `GET /conversations/:id/status` for crash-recovery re-sync.**
+   Backend endpoint shipped: returns `{ conversationId, isActive, status }` where
+   `isActive` is the orchestrator's in-memory truth and `status` is the persisted
+   lifecycle status. On reconnect (WS re-establish or page reload), the FE should
+   call this for any tab it believes is "generating"; if `isActive: false`,
+   override the local spinner to idle regardless of the persisted `status`
+   (defense-in-depth against status drift the boot-sweep didn't catch).
 
-(Done and dropped from the list: CLI; dedup / storage growth; message queue + steering injection.)
+(Done and dropped from the list: CLI; dedup / storage growth; message queue +
+steering injection; CLI open-tab handoff; `todo` tool; `web_search` tool; tab
+persistence across devices; conversation compacting; live-verify steering flow.)
 
 ## Stop generation must abort a hanging tool + not brick the conversation (DONE)
 FE courier in: "Stop generation doesn't abort a hanging tool call." When the user clicks Stop during
@@ -895,9 +865,9 @@ sealed → the FE spinner spun forever AND the conversation was bricked (next `c
   `reports/tool-shell-process-group-kill.md`.
 - [x] Verified: `tsc -b` EXIT 0, biome clean, **1326 vitest** pass; both in-lane; kernel zero
   internal mocks.
-- [ ] **Live-verify** (needs a fresh `bin/up` — the dev stack is currently wedged, the very symptom
-  of this bug): start a hanging tool (`run_shell` sleep/grandchild), Stop, then send a NEW message →
-  it must be ACCEPTED (conversation not bricked) and the spinner clears.
+- [x] **Live-verified** (fresh `bin/up`): start a hanging tool (`run_shell` sleep/grandchild),
+  Stop, then send a NEW message → it must be ACCEPTED (conversation not bricked) and the spinner
+  clears.
 
 ## System prompt builder — template-based system context (DONE)
 Design: `notes/system-prompt-design.md`. FE courier: `frontend-system-prompt-handoff.md`.
@@ -923,6 +893,6 @@ conditionals (`[if]`/`[else]`/`[endif]`).
   (GET/PUT `/system-prompt`, GET `/system-prompt/variables`; 6 tests).
 - **Wave 3 — host-bin:** registered `system-prompt` in `CORE_EXTENSIONS`.
 - [x] Verified: `tsc -b` EXIT 0, biome clean, **1396 vitest** pass.
-- [ ] Live-verify (boot smoke: extension activates, `GET /system-prompt` returns default
+- [x] Live-verified (boot smoke: extension activates, `GET /system-prompt` returns default
   template, `GET /system-prompt/variables` returns catalog).
 - [x] **FE courier** sent to FE agent `ffe3`: `frontend-system-prompt-handoff.md`.
