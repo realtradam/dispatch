@@ -1,50 +1,18 @@
-# FE Courier Handoff: System Prompt Builder
+# FE Courier Handoff: System Prompt Builder (Updated)
 
-> Backend→FE courier. The user couriers this to `../dispatch-web` (FE agent `ffe3`).
-> `@dispatch/transport-contract` bumped to `0.18.0` (additive types).
-
-## Overview
-
-A template-based system prompt builder. The user defines a template with variable
-placeholders (`[type:name]`) and conditionals (`[if]`/`[else]`/`[endif]`). Variables are
-resolved at construction time (once per conversation, persisted for cache safety —
-reconstructed only on compaction).
+> Backend→FE courier. Send to FE agent `ffe3`.
+> Supersedes the earlier `frontend-system-prompt-handoff.md` — adds `prompt:workspace_id`.
 
 ## API endpoints
 
-### `GET /system-prompt` → `SystemPromptTemplateResponse`
-```ts
-{ template: string }
-```
-Returns the current global template. When no template is stored (or the service is
-unavailable), returns the built-in `DEFAULT_TEMPLATE`.
+### `GET /system-prompt` → `{ template: string }`
+Returns the current global template. When none is stored, returns the built-in default.
 
-### `PUT /system-prompt` ← `SetSystemPromptTemplateRequest`
-```ts
-// Request body:
-{ template: string }
-// Response:
-{ template: string }  // echoed back
-```
-- `template` can be empty (means "no system prompt").
-- 400 if `template` is missing or not a string.
-- 503 if the system-prompt service is unavailable.
+### `PUT /system-prompt` ← `{ template: string }` → `{ template: string }`
+Set the global template. Empty string = "no system prompt". 400 if `template` missing/wrong type. 503 if service unavailable.
 
-### `GET /system-prompt/variables` → `SystemPromptVariablesResponse`
-```ts
-{
-  variables: readonly SystemPromptVariable[]
-}
-// SystemPromptVariable:
-{
-  type: string;        // "system", "file", "prompt", "git"
-  name: string;        // "time", "date", "os", "cwd", etc.
-  description: string; // human-readable
-  dynamic?: boolean;   // true for file: (any path is valid)
-}
-```
-Static catalog — always available (no service dependency). Use this to render the
-variable selector buttons in the builder UI.
+### `GET /system-prompt/variables` → `{ variables: SystemPromptVariable[] }`
+Static catalog — always available (no service dependency). Use this to render the variable selector buttons.
 
 ## Template format
 
@@ -52,28 +20,25 @@ variable selector buttons in the builder UI.
 ```
 [type:name]
 ```
-Resolves the variable at construction time. Unknown type → blank string. Non-existent
-variable (e.g. file not found) → blank string.
+Resolves at construction time. Unknown type → blank. Non-existent variable (e.g. file not found) → blank.
 
 ### Conditional blocks
 ```
 [if type:name]
-  ...content if variable exists...
+  ...if variable exists...
 [else]
-  ...content if variable does NOT exist...
+  ...if not...
 [endif]
 ```
-Negated condition:
+Negated:
 ```
 [if !type:name]
-  ...content if variable does NOT exist...
+  ...if variable does NOT exist...
 [endif]
 ```
-- Nested `[if]` blocks: supported.
-- Multi-line content: supported.
-- Unmatched `[if]`/`[endif]`: treated as literal text.
+Nested `[if]`: supported. Multi-line: supported. Unmatched `[if]`/`[endif]`: literal text.
 
-## Available variables
+## Available variables (updated)
 
 | Type:Name | Description | Dynamic? |
 |---|---|---|
@@ -84,26 +49,19 @@ Negated condition:
 | `prompt:cwd` | Working directory | No |
 | `prompt:model` | Current model name | No |
 | `prompt:conversation_id` | Conversation ID | No |
+| `prompt:workspace_id` | Workspace identifier — lets the AI know which workspace it's in, useful when summoning agents | No |
 | `git:branch` | Current git branch | No |
 | `git:status` | Short git status | No |
 | `file:<path>` | File contents (relative to cwd, or absolute if starts `/`) | **Yes** |
 
-For `file:<path>`, the FE should allow free-text input for the path. Any filename is
-valid — the backend resolves it relative to the conversation's cwd (or absolute if it
-starts with `/`).
+For `file:<path>`, allow free-text input for the path.
 
-## Caching behavior (important for FE)
+## Caching behavior
 
-The system prompt is **constructed once** (on the first turn of a new conversation) and
-**persisted**. It is reused on all subsequent turns (no reconstruction — this preserves
-the prompt cache). It is only **reconstructed on compaction** (fresh variable resolution).
-
-Changing the template (via `PUT /system-prompt`) does NOT affect existing conversations
-until they are compacted. New conversations use the new template on their first turn.
+System prompt is **constructed once** (first turn of a new conversation) and **persisted**. Reused on all subsequent turns (cache-safe). Reconstructed only on **compaction**. Changing the template does NOT affect existing conversations until compacted.
 
 ## Default template
 
-When no template is stored, the backend uses:
 ```
 You are a helpful coding assistant.
 
@@ -113,11 +71,3 @@ You are a helpful coding assistant.
 
 The current working directory is [prompt:cwd].
 ```
-
-## FE UI suggestion
-
-The builder is a full-page modal split into two:
-1. **Text editor** (left/main): the template text.
-2. **Variable selectors** (right/side): buttons grouped by type. Clicking a variable
-   inserts `[type:name]` at the cursor position. For `file:` (dynamic), show a text
-   input for the path + an "insert" button.

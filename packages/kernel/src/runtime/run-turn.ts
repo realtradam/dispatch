@@ -89,6 +89,19 @@ function appendThinkingDelta(chunks: Chunk[], delta: string): void {
 	}
 }
 
+/**
+ * Remove tool-call chunks from an assistant message, returning a new message
+ * with only the non-tool-call chunks (text, thinking, error). Returns
+ * `undefined` when all chunks were tool-calls (so the caller can omit the
+ * message entirely). Used when a step is aborted to avoid persisting
+ * incomplete tool calls whose placeholder "Aborted" results would create
+ * orphaned `tool` messages in the next turn's history.
+ */
+function stripToolCallChunks(msg: ChatMessage): ChatMessage | undefined {
+	const stripped = msg.chunks.filter((c) => c.type !== "tool-call");
+	return stripped.length > 0 ? { role: msg.role, chunks: stripped } : undefined;
+}
+
 interface StepContext {
 	readonly provider: ProviderContract;
 	readonly messages: ChatMessage[];
@@ -516,12 +529,36 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 			totalUsage = addUsage(totalUsage, stepResult.usage);
 			lastStepUsage = stepResult.usage;
 
-			if (stepResult.assistantMessage !== undefined) {
-				messages.push(stepResult.assistantMessage);
-				resultMessages.push(stepResult.assistantMessage);
+			// When the signal is aborted mid-step, the tool results are
+			// placeholders ({ content: "Aborted", isError: true }). If these
+			// are persisted and included in the next turn's message history,
+			// the provider sees a `tool` role message without a preceding
+			// `assistant` message carrying `tool_calls` → 400 error.
+			//
+			// To prevent this, when the signal is aborted we:
+			//  1. Strip tool-call chunks from the assistant message (keep
+			//     text/thinking/error chunks so the partial response is
+			//     preserved).
+			//  2. Omit tool-result messages entirely (they are not persisted,
+			//     not added to resultMessages, and not passed to onStepComplete).
+			//
+			// This keeps the conversation history clean: the assistant's
+			// partial text is preserved, but no incomplete tool calls are
+			// left dangling. The `done` event still carries
+			// `reason: "aborted"`, so the turn seals cleanly.
+			const stepAborted = signal.aborted;
+			const assistantMessage =
+				stepAborted && stepResult.assistantMessage !== undefined
+					? stripToolCallChunks(stepResult.assistantMessage)
+					: stepResult.assistantMessage;
+			const toolMessages = stepAborted ? [] : stepResult.toolMessages;
+
+			if (assistantMessage !== undefined) {
+				messages.push(assistantMessage);
+				resultMessages.push(assistantMessage);
 			}
 
-			for (const msg of stepResult.toolMessages) {
+			for (const msg of toolMessages) {
 				messages.push(msg);
 				resultMessages.push(msg);
 			}
@@ -532,10 +569,10 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 			// SAME objects in resultMessages — the caller must NOT double-persist.
 			if (input.onStepComplete !== undefined) {
 				const stepMessages: ChatMessage[] = [];
-				if (stepResult.assistantMessage !== undefined) {
-					stepMessages.push(stepResult.assistantMessage);
+				if (assistantMessage !== undefined) {
+					stepMessages.push(assistantMessage);
 				}
-				for (const msg of stepResult.toolMessages) {
+				for (const msg of toolMessages) {
 					stepMessages.push(msg);
 				}
 				if (stepMessages.length > 0) {
@@ -543,7 +580,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				}
 			}
 
-			if (signal.aborted) {
+			if (stepAborted) {
 				finishReason = "aborted";
 				break;
 			}
