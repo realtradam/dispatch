@@ -13,6 +13,8 @@ import type {
 	LastMessageResponse,
 	LspServerInfo,
 	LspStatusResponse,
+	McpServerInfo,
+	McpStatusResponse,
 	ModelResponse,
 	ModelsResponse,
 	OpenConversationResponse,
@@ -57,6 +59,8 @@ import {
 	isValidWorkspaceSlug,
 	type LspServerStatus,
 	type LspService,
+	type McpServerStatus,
+	type McpService,
 	type SessionOrchestrator,
 	type SystemPromptService,
 	ThroughputQueryError,
@@ -71,6 +75,7 @@ export interface CreateServerOptions {
 	readonly warmService?: WarmService;
 	readonly compactionService?: CompactionService;
 	readonly lspService?: LspService;
+	readonly mcpService?: McpService;
 	/** Optional — system prompt builder service (GET/PUT template). */
 	readonly systemPromptService?: SystemPromptService;
 	/** Optional — defaults to a no-op store (recording disabled, empty reports). */
@@ -717,6 +722,53 @@ export function createApp(opts: CreateServerOptions): Hono {
 		} catch (err) {
 			log.error("conversations: lsp status failure", { err });
 			return c.json({ error: "Failed to read LSP status" }, 500);
+		}
+	});
+
+	// Mirrors GET /conversations/:id/lsp: gate on persisted then effective cwd,
+	// 503 when no MCP service, map McpServerStatus → McpServerInfo.
+	app.get("/conversations/:id/mcp", async (c) => {
+		const conversationId = c.req.param("id");
+		try {
+			const persistedCwd = await opts.conversationStore.getCwd(conversationId);
+			if (persistedCwd === null) {
+				log.info("conversations: mcp status read (no cwd)", { conversationId });
+				const body: McpStatusResponse = { conversationId, cwd: null, servers: [] };
+				return c.json(body, 200);
+			}
+
+			const effectiveCwd = await opts.conversationStore.getEffectiveCwd(conversationId);
+			if (effectiveCwd === null) {
+				log.info("conversations: mcp status read (no effective cwd)", { conversationId });
+				const body: McpStatusResponse = { conversationId, cwd: null, servers: [] };
+				return c.json(body, 200);
+			}
+
+			if (opts.mcpService === undefined) {
+				log.warn("conversations: mcp service not available", { conversationId });
+				return c.json({ error: "MCP service not available" }, 503);
+			}
+
+			const statuses = await opts.mcpService.status(effectiveCwd);
+			const servers: McpServerInfo[] = statuses.map((s: McpServerStatus) => {
+				const info: McpServerInfo = {
+					id: s.id,
+					state: s.state,
+					toolCount: s.toolCount,
+					...(s.error !== undefined ? { error: s.error } : {}),
+				};
+				return info;
+			});
+			log.info("conversations: mcp status read", {
+				conversationId,
+				cwd: effectiveCwd,
+				serverCount: servers.length,
+			});
+			const body: McpStatusResponse = { conversationId, cwd: effectiveCwd, servers };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("conversations: mcp status failure", { err });
+			return c.json({ error: "Failed to read MCP status" }, 500);
 		}
 	});
 

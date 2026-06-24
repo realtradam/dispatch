@@ -6,6 +6,7 @@ import {
 	conversationStoreHandle,
 	credentialStoreHandle,
 	lspServiceHandle,
+	mcpServiceHandle,
 	sessionOrchestratorHandle,
 	systemPromptHandle,
 	throughputStoreHandle,
@@ -21,6 +22,7 @@ export const manifest: Manifest = {
 		"conversation-store",
 		"credential-store",
 		"lsp",
+		"mcp",
 		"session-orchestrator",
 		"throughput-store",
 	],
@@ -37,6 +39,7 @@ export const manifest: Manifest = {
 			"/conversations/:id/cwd",
 			"/conversations/:id/last",
 			"/conversations/:id/lsp",
+			"/conversations/:id/mcp",
 			"/conversations/:id/open",
 			"/conversations/:id/queue",
 			"/conversations/:id/reasoning-effort",
@@ -75,6 +78,7 @@ export function createTransportHttpExtension(): Extension & {
 			const warmService = host.getService(cacheWarmHandle);
 			const compactionService = host.getService(compactionHandle);
 			const lspService = host.getService(lspServiceHandle);
+			const mcpService = host.getService(mcpServiceHandle);
 			const systemPromptService = host.getService(systemPromptHandle);
 			const logger = host.logger;
 
@@ -86,6 +90,7 @@ export function createTransportHttpExtension(): Extension & {
 				warmService,
 				compactionService,
 				lspService,
+				mcpService,
 				systemPromptService,
 				logger,
 				emit: host.emit.bind(host),
