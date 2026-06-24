@@ -1,4 +1,4 @@
-Operating manual for the dispatch arch-rewrite orchestrator: plan topological waves of single-owner agents, summon via opencode run, verify from contracts + tests (never read implementation), resolve contract gaps. Project-specific to this repo.
+Operating manual for the dispatch orchestrator: plan topological waves of single-owner agents, summon via dispatch CLI, verify from contracts + tests (never read implementation), resolve contract gaps. Project-specific to this repo.
 ---
 # ORCHESTRATOR.md — how to drive this project
 
@@ -69,7 +69,7 @@ they justify every rule below.
 OpenCode CLI is the summon mechanism (see `notes/opencode-agents.md`).
 
 **Working dir:** always the repo root,
-`/home/tradam/projects/dispatch/arch-rewrite` (so the agents' `lsp` tool works —
+`/home/tradam/projects/dispatch/dispatch-backend` (so the agents' `lsp` tool works —
 TS language server is configured globally).
 
 **Model:** use `opencode-go/mimo-v2.5-pro` for BUILDING agents (capable coder).
@@ -81,8 +81,8 @@ scoped rules + the per-summon TASK. The invariant guardrails live ONCE in the br
 `prompts/<unit>.md` is now JUST the TASK block (§3). Do NOT use `-f` (see gotcha); ALWAYS
 redirect output to a file.
 ```bash
-cd /home/tradam/projects/dispatch/arch-rewrite && \
-opencode run --dir /home/tradam/projects/dispatch/arch-rewrite \
+cd /home/tradam/projects/dispatch/dispatch-backend && \
+opencode run --dir /home/tradam/projects/dispatch/dispatch-backend \
   -m opencode-go/mimo-v2.5-pro \
   "$(cat .dispatch/package-agent.md)
 $(cat .dispatch/extension-agent.md)
@@ -222,7 +222,7 @@ fix it. You diagnose from symptoms; the agent reads the code.
 
 After every agent, independently:
 ```bash
-cd /home/tradam/projects/dispatch/arch-rewrite
+cd /home/tradam/projects/dispatch/dispatch-backend
 bun run typecheck   # tsc -b --pretty — must be clean (EXIT 0)
 bun run test        # vitest — note the pass count
 bun run check       # biome — must be clean
@@ -338,7 +338,7 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
 ## 7. Repo geography
 
 ```
-/home/tradam/projects/dispatch/arch-rewrite   # THE worktree (branch arch/rewrite)
+/home/tradam/projects/dispatch/dispatch-backend   # THE worktree (branch dev)
 
   AGENTS.md        the subagent constitution (auto-loaded by opencode; you enforce it)
   ORCHESTRATOR.md  the orchestrator's operating manual (this file)
@@ -402,7 +402,7 @@ See `tasks.md` for the live checklist. As of MVP completion:
 
 **Boot + smoke test:**
 ```bash
-cd /home/tradam/projects/dispatch/arch-rewrite
+cd /home/tradam/projects/dispatch/dispatch-backend
 KEY1=$(grep DISPATCH_API_KEY_OPENCODE1 .env | cut -d= -f2)
 PORT=4567 DISPATCH_API_KEY="$KEY1" bun packages/host-bin/src/main.ts   # boots server
 # in another shell:
