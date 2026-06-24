@@ -103,13 +103,35 @@ export function computeReplacement(
 	};
 }
 
+// --- Diagnostics hook ---
+
+/**
+ * Optional post-edit diagnostics hook. Returns formatted diagnostics string
+ * (empty if none) + timing metadata. Injected by the extension from the LSP
+ * service; absent when no LSP is available (graceful degradation).
+ */
+export type DiagnosticsHook = (opts: {
+	readonly filePath: string;
+	readonly text: string;
+	readonly cwd: string;
+}) => Promise<{
+	readonly formatted: string;
+	readonly slow: boolean;
+	readonly timedOut: boolean;
+}>;
+
 // --- Shell / edge ---
 
 /**
  * Factory: create an edit_file ToolContract bound to a working directory.
  * The working directory is injected so the tool is testable.
+ * `diagnostics` is optional — when provided, errors+warnings from LSP servers
+ * are appended to successful edit results (only when errors exist).
  */
-export function createEditFileTool(workingDirectory: string): ToolContract {
+export function createEditFileTool(
+	workingDirectory: string,
+	diagnostics?: DiagnosticsHook,
+): ToolContract {
 	const workdir = resolve(workingDirectory);
 
 	return {
@@ -202,7 +224,36 @@ export function createEditFileTool(workingDirectory: string): ToolContract {
 			}
 
 			const plural = result.count === 1 ? "" : "s";
-			return { content: `Replaced ${result.count} occurrence${plural} in "${relPath}".` };
+			let baseContent = `Replaced ${result.count} occurrence${plural} in "${relPath}".`;
+
+			// After a successful edit, query LSP diagnostics (if available).
+			// Only append if there are actual errors/warnings (no noise on clean edits).
+			if (diagnostics) {
+				try {
+					const cwd = ctx.cwd ?? process.cwd();
+					const diag = await diagnostics({
+						filePath: resolvedPath,
+						text: result.content,
+						cwd,
+					});
+					const suffix: string[] = [];
+					if (diag.slow) {
+						suffix.push(
+							"⚠️ LSP is taking unusually long. If this happens more than once, raise it to the user.",
+						);
+					}
+					if (diag.formatted) {
+						suffix.push(diag.formatted);
+					}
+					if (suffix.length > 0) {
+						baseContent += `\n\n${suffix.join("\n\n")}`;
+					}
+				} catch {
+					// LSP diagnostics failure is non-fatal — the edit already succeeded.
+				}
+			}
+
+			return { content: baseContent };
 		},
 	};
 }

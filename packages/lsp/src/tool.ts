@@ -4,7 +4,7 @@
  * Operations: diagnostics, hover, definition, references, documentSymbol.
  */
 
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "@dispatch/kernel";
 import type { LspManager } from "./manager.js";
 
@@ -153,30 +153,61 @@ export function createLspTool(manager: LspManager): ToolContract {
 					return { content: "No language server configured for this workspace.", isError: true };
 				}
 
-				const connected = statuses.find((s) => s.state === "connected");
-				if (!connected) {
-					const first = statuses[0];
-					const detail = first
-						? `"${first.name}" is not connected (state: ${first.state})`
-						: "is not connected";
-					return {
-						content: `Language server ${detail}.`,
-						isError: true,
-					};
-				}
-
-				// Find the client for this server
-				const client = manager.getClient(connected.id, connected.root);
-				if (!client) {
-					return { content: "Language server client not available.", isError: true };
-				}
+				const fileExt = extname(absolutePath).toLowerCase();
 
 				switch (operation) {
 					case "diagnostics": {
-						const diags = await client.waitForDiagnostics(absolutePath);
-						return { content: diags || "No diagnostics found." };
+						// Query ALL connected servers whose extensions match this file.
+						const matching = statuses.filter(
+							(s) => s.state === "connected" && s.extensions.some((ext) => ext === fileExt),
+						);
+
+						if (matching.length === 0) {
+							// No matching server — fall back to any connected server.
+							const connected = statuses.find((s) => s.state === "connected");
+							if (!connected) {
+								const first = statuses[0];
+								const detail = first
+									? `"${first.name}" is not connected (state: ${first.state})`
+									: "is not connected";
+								return {
+									content: `Language server ${detail}.`,
+									isError: true,
+								};
+							}
+							const client = manager.getClient(connected.id, connected.root);
+							if (!client) {
+								return { content: "Language server client not available.", isError: true };
+							}
+							const result = await client.waitForDiagnostics(absolutePath);
+							return { content: result.formatted || "No diagnostics found." };
+						}
+
+						// Query each matching server and merge results, tagged by source.
+						const parts: string[] = [];
+						let anyTimedOut = false;
+						for (const s of matching) {
+							const client = manager.getClient(s.id, s.root);
+							if (!client) continue;
+							const result = await client.waitForDiagnostics(absolutePath, { timeoutMs: 60_000 });
+							if (result.timedOut) anyTimedOut = true;
+							if (result.slow) {
+								parts.push(
+									`⚠️ LSP is taking unusually long. If this happens more than once, raise it to the user.`,
+								);
+							}
+							if (result.formatted) {
+								parts.push(`[${s.name}]\n${result.formatted}`);
+							}
+						}
+						if (anyTimedOut && parts.length === 0) {
+							parts.push("Diagnostics timed out (server may still be indexing).");
+						}
+						return { content: parts.length > 0 ? parts.join("\n\n") : "No diagnostics found." };
 					}
 					case "hover": {
+						const client = await getFirstMatchingClient(manager, statuses, fileExt);
+						if (!client) return { content: "No language server available.", isError: true };
 						const result = await client.request("textDocument/hover", {
 							textDocument: { uri: `file://${absolutePath}` },
 							position: toPosition(line, character),
@@ -190,6 +221,8 @@ export function createLspTool(manager: LspManager): ToolContract {
 						return { content };
 					}
 					case "definition": {
+						const client = await getFirstMatchingClient(manager, statuses, fileExt);
+						if (!client) return { content: "No language server available.", isError: true };
 						const result = await client.request("textDocument/definition", {
 							textDocument: { uri: `file://${absolutePath}` },
 							position: toPosition(line, character),
@@ -198,6 +231,8 @@ export function createLspTool(manager: LspManager): ToolContract {
 						return { content: JSON.stringify(result) };
 					}
 					case "references": {
+						const client = await getFirstMatchingClient(manager, statuses, fileExt);
+						if (!client) return { content: "No language server available.", isError: true };
 						const result = await client.request("textDocument/references", {
 							textDocument: { uri: `file://${absolutePath}` },
 							position: toPosition(line, character),
@@ -207,6 +242,8 @@ export function createLspTool(manager: LspManager): ToolContract {
 						return { content: JSON.stringify(result) };
 					}
 					case "documentSymbol": {
+						const client = await getFirstMatchingClient(manager, statuses, fileExt);
+						if (!client) return { content: "No language server available.", isError: true };
 						const result = await client.request("textDocument/documentSymbol", {
 							textDocument: { uri: `file://${absolutePath}` },
 						});
@@ -222,4 +259,30 @@ export function createLspTool(manager: LspManager): ToolContract {
 			}
 		},
 	};
+}
+
+/**
+ * Find the first connected client whose server claims the file's extension.
+ * Falls back to any connected server if no extension match is found.
+ * Used by hover/definition/references/documentSymbol (single-server ops).
+ */
+async function getFirstMatchingClient(
+	manager: LspManager,
+	statuses: readonly {
+		readonly id: string;
+		readonly name: string;
+		readonly root: string;
+		readonly extensions: readonly string[];
+		readonly state: string;
+	}[],
+	fileExt: string,
+): Promise<
+	{ readonly request: (method: string, params?: unknown) => Promise<unknown> } | undefined
+> {
+	const matching = statuses.filter(
+		(s) => s.state === "connected" && s.extensions.some((ext) => ext === fileExt),
+	);
+	const target = matching[0] ?? statuses.find((s) => s.state === "connected");
+	if (!target) return undefined;
+	return manager.getClient(target.id, target.root);
 }

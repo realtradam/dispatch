@@ -34,9 +34,11 @@ const severityNames: Record<number, string> = {
 export class DiagnosticsStore {
 	private pushDiagnostics = new Map<string, readonly Diagnostic[]>();
 	private pullDiagnostics = new Map<string, readonly Diagnostic[]>();
+	private pushReceived = new Set<string>();
 
 	setPushDiagnostics(params: PublishDiagnosticsParams): void {
 		this.pushDiagnostics.set(params.uri, params.diagnostics);
+		this.pushReceived.add(params.uri);
 	}
 
 	setPullDiagnostics(uri: string, report: DocumentDiagnosticReport): void {
@@ -45,14 +47,32 @@ export class DiagnosticsStore {
 		}
 	}
 
+	/** True if the server has pushed at least one publishDiagnostics for this URI. */
+	hasReceivedPush(uri: string): boolean {
+		return this.pushReceived.has(uri);
+	}
+
+	/** Clear the "received" flag so the next waitForDiagnostics poll detects fresh pushes. */
+	clearReceived(uri: string): void {
+		this.pushReceived.delete(uri);
+	}
+
 	getMerged(uri: string): readonly Diagnostic[] {
 		const push = this.pushDiagnostics.get(uri) ?? [];
 		const pull = this.pullDiagnostics.get(uri) ?? [];
 		return dedupeDiagnostics([...push, ...pull]);
 	}
 
-	format(uri: string): string {
-		const diags = this.getMerged(uri);
+	/**
+	 * Format diagnostics for a URI, optionally filtering by minimum severity.
+	 * `minSeverity` includes only diagnostics with severity ≤ the given value
+	 * (1=Error, 2=Warning, 3=Info, 4=Hint). Omit to include all.
+	 */
+	formatFiltered(uri: string, minSeverity?: number): string {
+		let diags = this.getMerged(uri);
+		if (minSeverity !== undefined) {
+			diags = diags.filter((d) => (d.severity ?? 0) <= minSeverity);
+		}
 		if (diags.length === 0) return "";
 		const lines: string[] = [];
 		for (const d of diags) {
@@ -64,6 +84,10 @@ export class DiagnosticsStore {
 			lines.push(`${sev}${code}${src} L${line}:${col}: ${d.message}`);
 		}
 		return lines.join("\n");
+	}
+
+	format(uri: string): string {
+		return this.formatFiltered(uri);
 	}
 }
 

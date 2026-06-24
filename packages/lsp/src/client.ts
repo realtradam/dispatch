@@ -5,7 +5,9 @@
  */
 
 import { DiagnosticsStore, type PublishDiagnosticsParams } from "./diagnostics.js";
+import { computeChangeRange } from "./diff.js";
 import { FrameDecoder } from "./framing.js";
+import { languageId as resolveLanguageId } from "./language.js";
 import { JsonRpcConnection, type WriteFn } from "./rpc.js";
 import { FileChangeType, WatchedFilesRegistry } from "./watched-files.js";
 
@@ -97,7 +99,9 @@ export class LanguageServerClient {
 	private state: ClientState = "not-started";
 	private stateError: string | undefined;
 	private deps: ClientDeps;
-	private openDocuments = new Map<string, number>();
+	private openDocuments = new Map<string, { version: number; text: string }>();
+	/** Sync mode captured from the server's initialize capabilities: 1=Full, 2=Incremental. */
+	private textDocumentChange: 1 | 2 = 1;
 
 	constructor(deps: ClientDeps) {
 		this.deps = deps;
@@ -262,7 +266,22 @@ export class LanguageServerClient {
 			setTimeout(() => reject(new Error("Initialize timeout")), timeout);
 		});
 
-		await Promise.race([initPromise, timeoutPromise]);
+		const result = (await Promise.race([initPromise, timeoutPromise])) as {
+			readonly capabilities?: {
+				readonly textDocumentSync?:
+					| number
+					| { readonly openClose?: boolean; readonly change?: number }
+					| undefined;
+			};
+		};
+
+		// Capture the server's text document sync mode for didChange.
+		const sync = result.capabilities?.textDocumentSync;
+		if (typeof sync === "number") {
+			this.textDocumentChange = sync as 1 | 2;
+		} else if (sync && typeof sync === "object" && sync.change !== undefined) {
+			this.textDocumentChange = sync.change as 1 | 2;
+		}
 
 		rpc.sendNotification("initialized", {});
 
@@ -301,36 +320,99 @@ export class LanguageServerClient {
 		const rpc = this.rpc;
 		if (!rpc || this.state !== "connected") return;
 
-		const version = (this.openDocuments.get(filePath) ?? 0) + 1;
-		this.openDocuments.set(filePath, version);
-
 		try {
 			const text = await this.deps.fs.readText(filePath);
-			rpc.sendNotification("textDocument/didOpen", {
-				textDocument: {
-					uri: `file://${filePath}`,
-					languageId: "unknown",
-					version,
-					text,
-				},
-			});
+			await this.openWithText(filePath, text);
 		} catch {
 			// file may not exist
 		}
 	}
 
-	async waitForDiagnostics(filePath: string, timeoutMs = 10_000): Promise<string> {
-		await this.open(filePath);
-		return new Promise<string>((resolve) => {
-			const start = Date.now();
+	async openWithText(filePath: string, text: string, langId?: string): Promise<void> {
+		const rpc = this.rpc;
+		if (!rpc || this.state !== "connected") return;
+
+		// If already open, use didChange instead of re-opening.
+		if (this.openDocuments.has(filePath)) {
+			await this.change(filePath, text);
+			return;
+		}
+
+		const version = 1;
+		this.openDocuments.set(filePath, { version, text });
+
+		rpc.sendNotification("textDocument/didOpen", {
+			textDocument: {
+				uri: `file://${filePath}`,
+				languageId: langId ?? resolveLanguageId(filePath),
+				version,
+				text,
+			},
+		});
+	}
+
+	async change(filePath: string, newText: string): Promise<void> {
+		const rpc = this.rpc;
+		if (!rpc || this.state !== "connected") return;
+
+		const existing = this.openDocuments.get(filePath);
+		if (!existing) {
+			// Not open yet — didOpen instead.
+			await this.openWithText(filePath, newText);
+			return;
+		}
+
+		const version = existing.version + 1;
+		this.openDocuments.set(filePath, { version, text: newText });
+
+		if (this.textDocumentChange === 2) {
+			// Incremental sync — compute the minimal change range.
+			const changeEvent = computeChangeRange(existing.text, newText);
+			rpc.sendNotification("textDocument/didChange", {
+				textDocument: { uri: `file://${filePath}`, version },
+				contentChanges: [changeEvent],
+			});
+		} else {
+			// Full sync — send the entire content.
+			rpc.sendNotification("textDocument/didChange", {
+				textDocument: { uri: `file://${filePath}`, version },
+				contentChanges: [{ text: newText }],
+			});
+		}
+	}
+
+	async waitForDiagnostics(
+		filePath: string,
+		opts?: { readonly text?: string; readonly timeoutMs?: number; readonly minSeverity?: number },
+	): Promise<{ readonly formatted: string; readonly slow: boolean; readonly timedOut: boolean }> {
+		const timeoutMs = opts?.timeoutMs ?? 10_000;
+		const uri = `file://${filePath}`;
+
+		// Clear the "received" flag so we detect fresh publishDiagnostics after our sync.
+		this.diagnostics.clearReceived(uri);
+
+		// Sync the document: use didChange with the provided text (post-edit buffer)
+		// or fall back to didOpen reading from disk.
+		if (opts?.text !== undefined) {
+			await this.change(filePath, opts.text);
+		} else {
+			await this.open(filePath);
+		}
+
+		const slowThreshold = 10_000;
+		const start = Date.now();
+
+		// Poll until the server pushes diagnostics (even empty = done) or timeout.
+		return new Promise((resolve) => {
 			const check = () => {
-				const formatted = this.diagnostics.format(`file://${filePath}`);
-				if (formatted) {
-					resolve(formatted);
-					return;
-				}
-				if (Date.now() - start >= timeoutMs) {
-					resolve(this.diagnostics.format(`file://${filePath}`) || "");
+				const elapsed = Date.now() - start;
+				const received = this.diagnostics.hasReceivedPush(uri);
+				if (received || elapsed >= timeoutMs) {
+					resolve({
+						formatted: this.diagnostics.formatFiltered(uri, opts?.minSeverity),
+						slow: elapsed > slowThreshold,
+						timedOut: !received,
+					});
 					return;
 				}
 				setTimeout(check, 100);
