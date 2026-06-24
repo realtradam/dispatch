@@ -206,25 +206,26 @@ bun run dispatch -- send <id> --text "follow up" --queue --open
 
 ## Web frontend (dispatch-web)
 
-The web UI is a **separate repo** at `../dispatch-web` (Svelte 5 + Vite + DaisyUI), built to the
-same methodology and consuming the backend's typed contracts (`@dispatch/wire`,
-`@dispatch/transport-contract`, `@dispatch/ui-contract`). The browser chat MVP is in progress — it
-streams turns over the chat WebSocket, renders the surface system (loaded extensions, cache-warming
-controls, message queue, todo list), and supports conversation lifecycle, workspaces, LSP status,
-and per-conversation settings.
+The web UI is a **separate repo** ([github.com/realtradam/dispatch-web](https://github.com/realtradam/dispatch-web),
+Svelte 5 + Vite + DaisyUI), built to the same methodology and consuming the backend's typed contracts
+(`@dispatch/wire`, `@dispatch/transport-contract`, `@dispatch/ui-contract`). The browser chat MVP
+is in progress — it streams turns over the chat WebSocket, renders the surface system (loaded
+extensions, cache-warming controls, message queue, todo list), and supports conversation lifecycle,
+workspaces, LSP status, and per-conversation settings.
 
-**Run both at once with live reload:**
+**Run both at once with live reload:** clone both repos as siblings, then from the workspace root:
 
 ```sh
-cd /home/tradam/projects/dispatch
+git clone git@github.com:realtradam/dispatch.git
+git clone git@github.com:realtradam/dispatch-web.git
 bin/up      # backend (bun --watch :24203 + WS :24205) + frontend (vite HMR :24204)
 ```
 
 `bin/up2` starts a second, stable stack on ports 25203/25205/25204 with isolated data — runs
 alongside `bin/up` without interference. Both Ctrl-C cleanly (including the collector child).
 
-Then open **http://localhost:24204** (or your Tailscale hostname). See `../dispatch-web/README.md`
-for full setup.
+Then open **http://localhost:24204** (or your Tailscale hostname). See the
+[dispatch-web README](https://github.com/realtradam/dispatch-web#readme) for full setup.
 
 ---
 
@@ -309,17 +310,19 @@ bun run check:fix   # biome --write (auto-fix)
 
 | Script | Backend | Frontend | Notes |
 |---|---|---|---|
-| `bin/up` | `:24203` + WS `:24205` (`bun --watch`) | `:24204` (vite HMR) | Full restart on backend change; loads `../claude` as external extensions |
+| `bin/up` | `:24203` + WS `:24205` (`bun --watch`) | `:24204` (vite HMR) | Full restart on backend change; loads the [Claude extension](https://github.com/realtradam/dispatch-adapter-claude) as external extensions |
 | `bin/up2` | `:25203` + WS `:25205` (no watch) | `:25204` (vite preview) | Stable second stack; isolated data; runs alongside `bin/up` |
 
 ### Workspace layout
 
+Clone these repos as siblings:
+
 ```
-/home/tradam/projects/dispatch/
-├── dispatch-backend/   this repo (branch dev)
-├── dispatch-web/       separate repo — web frontend (Svelte + DaisyUI)
-├── claude/             separate repo — Claude provider-anthropic extension
-└── bin/                shared dev scripts (up, up2)
+dispatch/                  workspace root (shared bin/ scripts)
+├── dispatch/              this repo — backend (branch dev)
+├── dispatch-web/          [github.com/realtradam/dispatch-web](https://github.com/realtradam/dispatch-web) — web frontend
+├── dispatch-adapter-claude/  [github.com/realtradam/dispatch-adapter-claude](https://github.com/realtradam/dispatch-adapter-claude) — Claude provider extension
+└── bin/                   shared dev scripts (up, up2)
 ```
 
 ---
