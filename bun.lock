@@ -62,6 +62,7 @@
         "@dispatch/journal-sink": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/lsp": "workspace:*",
+        "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
         "@dispatch/provider-umans": "workspace:*",
@@ -102,6 +103,14 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/mcp": {
+      "name": "@dispatch/mcp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
       },
     },
     "packages/message-queue": {
@@ -348,6 +357,8 @@
     "@dispatch/kernel": ["@dispatch/kernel@workspace:packages/kernel"],
 
     "@dispatch/lsp": ["@dispatch/lsp@workspace:packages/lsp"],
+
+    "@dispatch/mcp": ["@dispatch/mcp@workspace:packages/mcp"],
 
     "@dispatch/message-queue": ["@dispatch/message-queue@workspace:packages/message-queue"],
 
