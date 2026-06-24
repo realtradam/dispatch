@@ -29,6 +29,7 @@ import type {
 	ConversationStore,
 	CredentialStore,
 	LspService,
+	McpService,
 	SessionOrchestrator,
 	SystemPromptService,
 	WarmService,
@@ -385,6 +386,41 @@ function createCapturingLspService(
 		readonly configSource?: string;
 	}[] = [],
 ): LspService & { readonly statusCalls: readonly string[] } {
+	const calls: string[] = [];
+	return {
+		get statusCalls() {
+			return calls;
+		},
+		async status(cwd) {
+			calls.push(cwd);
+			return statuses;
+		},
+	};
+}
+
+function createFakeMcpService(
+	statuses: readonly {
+		readonly id: string;
+		readonly state: "connecting" | "connected" | "error" | "disconnected";
+		readonly error?: string;
+		readonly toolCount: number;
+	}[] = [],
+): McpService {
+	return {
+		async status() {
+			return statuses;
+		},
+	};
+}
+
+function createCapturingMcpService(
+	statuses: readonly {
+		readonly id: string;
+		readonly state: "connecting" | "connected" | "error" | "disconnected";
+		readonly error?: string;
+		readonly toolCount: number;
+	}[] = [],
+): McpService & { readonly statusCalls: readonly string[] } {
 	const calls: string[] = [];
 	return {
 		get statusCalls() {
@@ -2381,6 +2417,139 @@ describe("GET /conversations/:id/lsp", () => {
 		};
 		expect(bodyWithoutSource.servers).toHaveLength(1);
 		expect(bodyWithoutSource.servers[0]).not.toHaveProperty("configSource");
+	});
+});
+
+describe("GET /conversations/:id/mcp", () => {
+	it("MCP: returns null+empty when no persisted cwd — mcpService.status NOT called", async () => {
+		const cwdStore = new Map<string, string>(); // no persisted cwd
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		const mcp = createCapturingMcpService([
+			{
+				id: "freecad",
+				state: "connected" as const,
+				toolCount: 3,
+			},
+		]);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			mcpService: mcp,
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/mcp");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly unknown[];
+		};
+		expect(body.conversationId).toBe("conv1");
+		expect(body.cwd).toBeNull();
+		expect(body.servers).toEqual([]);
+		expect(mcp.statusCalls).toEqual([]); // status NOT called
+	});
+
+	it("MCP: maps service statuses to McpServerInfo[] when cwd is set (error omitted when undefined)", async () => {
+		const cwdStore = new Map<string, string>([["conv1", "/home/user/project"]]);
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		const mcpStatuses = [
+			{
+				id: "freecad",
+				state: "connected" as const,
+				toolCount: 5,
+			},
+			{
+				id: "broken",
+				state: "error" as const,
+				toolCount: 0,
+				error: "spawn failed",
+			},
+		];
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			mcpService: createFakeMcpService(mcpStatuses),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/mcp");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly {
+				readonly id: string;
+				readonly state: string;
+				readonly toolCount: number;
+				readonly error?: string;
+			}[];
+		};
+		expect(body.conversationId).toBe("conv1");
+		expect(body.cwd).toBe("/home/user/project");
+		expect(body.servers).toHaveLength(2);
+		expect(body.servers[0]?.id).toBe("freecad");
+		expect(body.servers[0]?.state).toBe("connected");
+		expect(body.servers[0]?.toolCount).toBe(5);
+		expect(body.servers[0]?.error).toBeUndefined();
+		expect(body.servers[1]?.id).toBe("broken");
+		expect(body.servers[1]?.state).toBe("error");
+		expect(body.servers[1]?.toolCount).toBe(0);
+		expect(body.servers[1]?.error).toBe("spawn failed");
+	});
+
+	it("MCP: uses effectiveCwd when persisted cwd is set — status called with resolved cwd", async () => {
+		const cwdStore = new Map<string, string>([["conv1", "subdir"]]);
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		const resolvedStore: ConversationStore = {
+			...store,
+			async getEffectiveCwd() {
+				return "/workspace/subdir";
+			},
+		};
+		const mcp = createCapturingMcpService([
+			{
+				id: "freecad",
+				state: "connected" as const,
+				toolCount: 2,
+			},
+		]);
+		const app = createApp({
+			conversationStore: resolvedStore,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			mcpService: mcp,
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/mcp");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			conversationId: string;
+			cwd: string | null;
+			servers: readonly { readonly id: string }[];
+		};
+		expect(body.conversationId).toBe("conv1");
+		expect(body.cwd).toBe("/workspace/subdir"); // effective, not persisted
+		expect(mcp.statusCalls).toEqual(["/workspace/subdir"]);
+		expect(body.servers).toHaveLength(1);
+		expect(body.servers[0]?.id).toBe("freecad");
+	});
+
+	it("MCP: returns 503 when mcpService is undefined", async () => {
+		const cwdStore = new Map<string, string>([["conv1", "/home/user/project"]]);
+		const store = createFakeConversationStore(new Map(), new Map(), cwdStore);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			// mcpService intentionally omitted
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/mcp");
+		expect(res.status).toBe(503);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("MCP service not available");
 	});
 });
 

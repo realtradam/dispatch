@@ -280,7 +280,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.21.0",
+      "version": "0.22.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
@@ -294,6 +294,7 @@
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/lsp": "workspace:*",
+        "@dispatch/mcp": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/system-prompt": "workspace:*",
         "@dispatch/throughput-store": "workspace:*",
