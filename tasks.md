@@ -39,8 +39,17 @@ investigation + Wave 0 + wrote the prompt; its chat broke mid-summon — resumed
 - [x] Verified: `tsc -b` EXIT 0, biome clean, **1443 vitest** pass; all agents in-lane
   (only packages/lsp + transport-contract + transport-http touched; pre-existing
   uncommitted WIP in kernel/tool-shell left untouched). Zero internal mocks.
-- [ ] Live-verify against the dev stack (a failed server recovers after a config edit
-  without a restart; `configSource` visible on `GET /conversations/:id/lsp`).
+- [x] **LIVE-VERIFIED** (dev stack `bin/up` on :24203, new code via `--watch`):
+  (A) `configSource` reaches the wire — built-in TS server reports
+  `configSource:"built-in"`, `state:"connected"` (Wave 0 + transport-http pass-through
+  confirmed end-to-end); (B) a broken server (`.dispatch/lsp.json` → nonexistent binary)
+  reports `state:"error"` + `configSource:".dispatch/lsp.json"` + a source-named error
+  string (`broken-ts [from .dispatch/lsp.json]: Executable not found in $PATH: …`);
+  (C) **recovery without restart** (the blocker) — same conversation/process went
+  `error`→`connected` after the config was fixed (config change clears the broken key →
+  re-spawn → connects); (D) no retry storm — repeated `status()` with no config change
+  stays `error`; (E) shadow warning logged via `host.logger` (`extensionId:"lsp"`,
+  level `warn`) when both `.dispatch/lsp.json` and `opencode.json` declare lsp.
 
 ## Per-conversation model persistence (DONE)
 Bug: a chat's selected provider + model was NOT persisted per conversation.
