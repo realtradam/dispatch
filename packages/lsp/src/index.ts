@@ -7,8 +7,15 @@ export type {
 	SpawnProcess,
 } from "./client.js";
 export { LanguageServerClient } from "./client.js";
-export type { LspJsonConfig, OpencodeJsonConfig, ResolvedServer, ServerConfig } from "./config.js";
-export { resolveServers } from "./config.js";
+export type {
+	ConfigSource,
+	LspJsonConfig,
+	OpencodeJsonConfig,
+	ResolvedServer,
+	ResolveResult,
+	ServerConfig,
+} from "./config.js";
+export { configFingerprint, resolveServers } from "./config.js";
 export type {
 	Diagnostic,
 	DocumentDiagnosticReport,

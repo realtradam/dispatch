@@ -5,7 +5,42 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1433 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1443 vitest** green.
+
+## LSP — broken-server recovery + config source attribution (DONE)
+Handoff from an agent running in raylib-jamstack (configuring ruby-lsp under the
+installed Dispatch harness `/usr/bin/dispatch-server`): two issues found by
+decompiling the running binary. (Previous orchestrator session 77574596 did the
+investigation + Wave 0 + wrote the prompt; its chat broke mid-summon — resumed.)
+- **Issue 2 (blocker):** a failed LSP server was `broken` FOREVER — the manager's
+  `broken` set (keyed `${serverId}:${root}`) was cleared ONLY in `shutdownAll()`, so a
+  server that failed (bad env, missing binary, OR a since-fixed bad config) stayed
+  `state:"error"` for the whole process. For an agent running *inside* dispatch the
+  only recovery (server restart) kills its own session.
+- **Issue 1:** `.dispatch/lsp.json` (read first) silently shadowed `opencode.json`'s
+  `lsp` key — a broken entry won with no warning, and the caller couldn't tell which
+  config source a server came from (`status()` was its only visibility).
+- **Wave 0 (orchestrator, contracts):** additive `readonly configSource?: string` on
+  `LspServerInfo` (`@dispatch/transport-contract` `0.20.0→0.21.0`) + a type-test
+  assertion (8→9). tsc/biome/vitest clean.
+- **Wave 1 — `lsp` extension:** (a) broken-server now self-heals when its *resolved
+  config changes* since it was marked broken (a config edit is a discrete event → no
+  retry storm; bounded backoff for transient failures); (b) `configSource?` mirrored on
+  `LspServerStatus` + populated in `status()` (`.dispatch/lsp.json` / `opencode.json` /
+  `built-in`); (c) shadow warning via `host.logger` when both configs declare lsp; (d)
+  spawn-failure `error` strings now name the config source. 6 required named tests +
+  extras. Report: (agent cut off before writing `reports/lsp.md`; work independently
+  verified — 50 lsp tests, tsc EXIT 0, biome clean).
+- **Wave 1 CR (transport-http):** the `GET /conversations/:id/lsp` handler mapped
+  `LspServerStatus`→`LspServerInfo` field-by-field and DROPPED `configSource` (never
+  reached the wire). Summoned the transport-http owner for the one-line conditional-spread
+  pass-through (mirrors `error`, honors `exactOptionalPropertyTypes`) + a named pass-through
+  test (present + undefined-omitted). Report: `reports/transport-http.md`.
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1443 vitest** pass; all agents in-lane
+  (only packages/lsp + transport-contract + transport-http touched; pre-existing
+  uncommitted WIP in kernel/tool-shell left untouched). Zero internal mocks.
+- [ ] Live-verify against the dev stack (a failed server recovers after a config edit
+  without a restart; `configSource` visible on `GET /conversations/:id/lsp`).
 
 ## Per-conversation model persistence (DONE)
 Bug: a chat's selected provider + model was NOT persisted per conversation.

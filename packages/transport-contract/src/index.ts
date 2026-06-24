@@ -432,6 +432,13 @@ export interface LspServerInfo {
 	readonly state: LspServerState;
 	/** Present only when `state === "error"`: a short human-readable reason. */
 	readonly error?: string;
+	/**
+	 * Which config source this server was resolved from: `".dispatch/lsp.json"`,
+	 * `"opencode.json"`, or `"built-in"` (the built-in TypeScript default). Omitted
+	 * when not yet resolved. Surfaces config-shadow debugging to the status caller
+	 * (a broken `.dispatch/lsp.json` silently shadowing `opencode.json`).
+	 */
+	readonly configSource?: string;
 }
 
 /** Response of `GET /conversations/:id/lsp`. */

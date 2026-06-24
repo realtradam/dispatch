@@ -201,4 +201,164 @@ describe("manager", () => {
 		expect(a.map((s) => s.id)).toEqual(["a"]);
 		expect(b.map((s) => s.id)).toEqual(["b"]);
 	}, 10000);
+
+	it("manager: broken server recovers after config is fixed (no shutdownAll)", async () => {
+		const files: Record<string, string> = {
+			"/project/tsconfig.json": "{}",
+			"/project/.dispatch/lsp.json": JSON.stringify({
+				servers: {
+					test: {
+						command: ["bad-lsp"],
+						extensions: [".ts"],
+						rootMarkers: ["tsconfig.json"],
+					},
+				},
+			}),
+		};
+
+		const spawn: SpawnProcess = (command, opts) => {
+			if (command[0] === "bad-lsp") throw new Error("spawn failed");
+			return makeAutoHandshakeSpawn()(command, opts);
+		};
+
+		const manager = new LspManager({
+			spawn,
+			fileWatcher: noopFileWatcher(),
+			fs: fakeFs(files),
+			now: () => 0,
+		});
+
+		// Bad config → spawn fails → broken.
+		const s1 = await manager.status("/project");
+		expect(s1[0]?.state).toBe("error");
+
+		// Fix the config: switch the command to a working one. NO shutdownAll.
+		files["/project/.dispatch/lsp.json"] = JSON.stringify({
+			servers: {
+				test: {
+					command: ["good-lsp"],
+					extensions: [".ts"],
+					rootMarkers: ["tsconfig.json"],
+				},
+			},
+		});
+
+		// Next status() re-reads config, detects the change, and re-spawns.
+		const s2 = await manager.status("/project");
+		expect(s2[0]?.state).toBe("connected");
+	}, 10000);
+
+	it("manager: no retry storm — repeated status() with no config change does not re-spawn a broken server in a loop", async () => {
+		let spawnCount = 0;
+		const failingSpawn: SpawnProcess = () => {
+			spawnCount++;
+			throw new Error("spawn failed");
+		};
+
+		const manager = new LspManager({
+			spawn: failingSpawn,
+			fileWatcher: noopFileWatcher(),
+			fs: fakeFs({
+				"/project/.dispatch/lsp.json": JSON.stringify({
+					servers: { test: { command: ["test-lsp"], extensions: [".ts"] } },
+				}),
+			}),
+			// Frozen clock: the bounded backoff never elapses, so a config-unchanged
+			// broken server is never retried in a loop.
+			now: () => 0,
+		});
+
+		await manager.status("/project");
+		await manager.status("/project");
+		await manager.status("/project");
+		await manager.status("/project");
+
+		expect(spawnCount).toBe(1);
+	});
+
+	it("manager: configSource reaches status()", async () => {
+		const manager = new LspManager({
+			spawn: makeAutoHandshakeSpawn(),
+			fileWatcher: noopFileWatcher(),
+			fs: fakeFs({
+				"/d/.dispatch/lsp.json": JSON.stringify({
+					servers: { d: { command: ["d-lsp"], extensions: [".d"], rootMarkers: [] } },
+				}),
+				"/o/opencode.json": JSON.stringify({
+					lsp: { o: { command: ["o-lsp"], extensions: [".o"] } },
+				}),
+				"/b/tsconfig.json": "{}",
+			}),
+			now: () => 0,
+		});
+
+		const d = await manager.status("/d");
+		expect(d[0]?.configSource).toBe(".dispatch/lsp.json");
+
+		const o = await manager.status("/o");
+		expect(o[0]?.configSource).toBe("opencode.json");
+
+		const b = await manager.status("/b");
+		expect(b[0]?.configSource).toBe("built-in");
+	}, 10000);
+
+	it("config: shadow warning logged when .dispatch/lsp.json present and opencode.json also has lsp", async () => {
+		const warns: Array<{
+			msg: string;
+			attrs?: Record<string, string | number | boolean | null>;
+		}> = [];
+
+		const manager = new LspManager({
+			spawn: makeAutoHandshakeSpawn(),
+			fileWatcher: noopFileWatcher(),
+			fs: fakeFs({
+				"/project/.dispatch/lsp.json": JSON.stringify({
+					servers: { d: { command: ["d-lsp"], extensions: [".d"] } },
+				}),
+				"/project/opencode.json": JSON.stringify({
+					lsp: { o: { command: ["o-lsp"], extensions: [".o"] } },
+				}),
+			}),
+			logger: {
+				info: () => {},
+				warn: (msg, attrs) => warns.push({ msg, attrs }),
+				error: () => {},
+			},
+			now: () => 0,
+		});
+
+		await manager.status("/project");
+
+		const shadow = warns.find((w) => w.msg.includes("shadowing"));
+		expect(shadow).toBeDefined();
+		expect(shadow?.attrs?.cwd).toBe("/project");
+
+		// A second status() over the SAME (still-shadowed) cwd does not re-warn.
+		const before = warns.length;
+		await manager.status("/project");
+		expect(warns.length).toBe(before);
+	}, 10000);
+
+	it("status: error string includes config source on spawn failure", async () => {
+		const failingSpawn: SpawnProcess = () => {
+			throw new Error("spawn failed");
+		};
+
+		const manager = new LspManager({
+			spawn: failingSpawn,
+			fileWatcher: noopFileWatcher(),
+			fs: fakeFs({
+				"/project/.dispatch/lsp.json": JSON.stringify({
+					servers: { test: { command: ["test-lsp"], extensions: [".ts"] } },
+				}),
+			}),
+			now: () => 0,
+		});
+
+		const s = await manager.status("/project");
+		expect(s[0]?.state).toBe("error");
+		expect(s[0]?.configSource).toBe(".dispatch/lsp.json");
+		expect(s[0]?.error).toContain("[from .dispatch/lsp.json]");
+		expect(s[0]?.error).toContain("spawn failed");
+	});
 });

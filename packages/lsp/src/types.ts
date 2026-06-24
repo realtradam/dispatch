@@ -11,6 +11,13 @@ export interface LspServerStatus {
 	readonly extensions: readonly string[];
 	readonly state: LspServerState;
 	readonly error?: string | undefined;
+	/**
+	 * Which config source this server was resolved from: `".dispatch/lsp.json"`,
+	 * `"opencode.json"`, or `"built-in"` (the built-in TypeScript default).
+	 * Mirrors the wire `LspServerInfo.configSource` so a broken config file
+	 * names itself in the status response.
+	 */
+	readonly configSource?: string | undefined;
 }
 
 export interface LspService {
