@@ -310,7 +310,7 @@ bun run check:fix   # biome --write (auto-fix)
 
 | Script | Backend | Frontend | Notes |
 |---|---|---|---|
-| `bin/up` | `:24203` + WS `:24205` (`bun --watch`) | `:24204` (vite HMR) | Full restart on backend change; loads the [Claude extension](https://github.com/realtradam/dispatch-adapter-claude) as external extensions |
+| `bin/up` | `:24203` + WS `:24205` (`bun --watch`) | `:24204` (vite HMR) | Full restart on backend change; loads external extensions if configured |
 | `bin/up2` | `:25203` + WS `:25205` (no watch) | `:25204` (vite preview) | Stable second stack; isolated data; runs alongside `bin/up` |
 
 ### Workspace layout
@@ -321,7 +321,6 @@ Clone these repos as siblings:
 dispatch/                  workspace root (shared bin/ scripts)
 ├── dispatch/              this repo — backend (branch dev)
 ├── dispatch-web/          [github.com/realtradam/dispatch-web](https://github.com/realtradam/dispatch-web) — web frontend
-├── dispatch-adapter-claude/  [github.com/realtradam/dispatch-adapter-claude](https://github.com/realtradam/dispatch-adapter-claude) — Claude provider extension
 └── bin/                   shared dev scripts (up, up2)
 ```
 
