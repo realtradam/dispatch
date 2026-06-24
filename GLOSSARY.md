@@ -57,6 +57,10 @@
 | **reasoning effort** | The per-request thinking-depth knob: how much extended thinking the model spends before answering. Ladder `low \| medium \| high \| xhigh \| max` (`ReasoningEffort` in `@dispatch/wire`). Resolution per turn: `ChatRequest.reasoningEffort` override → persisted per-conversation value → default `high`. Each provider maps a level to its native knob in its own code (e.g. Anthropic `thinking.budget_tokens`); providers without such a knob ignore it. | thinking level, effort level, thinking budget (that's the provider-NATIVE knob a level maps to) |
 | **context size** | The number of tokens a conversation currently occupies: the most recent turn's FINAL step `inputTokens + outputTokens` (NOT the aggregate per-turn `usage`, which sums per-step prompts and overcounts a multi-step turn). Stamped on `TurnDoneEvent.contextSize` (live) + `TurnMetrics.contextSize` (persisted); a client reads the LATEST turn's value as current usage. Distinct from the model's **context window** (its max token limit — a later feature). | context window (when meaning current usage), context length, tokens used, context usage |
 
+| **MCP** | Model Context Protocol — the JSON-RPC 2.0-over-stdio/HTTP protocol an `MCP server` speaks. Used as the adjective for the feature (the `mcp` extension). | — |
+| **MCP server** | A process/service speaking MCP that exposes Tools, Resources, and/or Prompts. Spawned (stdio) or connected (HTTP) by Dispatch acting as `MCP host`. Configured per-cwd via `.dispatch/mcp.json` or `opencode.json`'s `mcp` key. | MCP provider (that's a Dispatch provider) |
+| **MCP host** | The application (Dispatch) that manages MCP clients, discovers server capabilities, and proxies tool calls. Dispatch is always the host. | — |
+
 ## Known vocabulary drift
 
 - _None._ The former `tabId` drift in `AgentEvent`s and `RunTurnInput` was fully
