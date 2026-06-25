@@ -46,6 +46,13 @@ export interface ChatCommand {
 	readonly message: string;
 	readonly model?: string;
 	readonly cwd?: string;
+	/**
+	 * Per-turn computer override (SSH `Host` alias). Mirrors `cwd`: forwarded
+	 * to the orchestrator verbatim and never part of the model prompt. When
+	 * absent, the orchestrator resolves the per-conversation → workspace
+	 * default → local chain.
+	 */
+	readonly computerId?: string;
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly workspaceId?: string;
 }
@@ -89,6 +96,13 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
 			return { error: "Field 'cwd' must be a string" };
 		}
 		(result as { cwd?: string }).cwd = obj.cwd;
+	}
+
+	if (obj.computerId !== undefined) {
+		if (typeof obj.computerId !== "string") {
+			return { error: "Field 'computerId' must be a string" };
+		}
+		(result as { computerId?: string }).computerId = obj.computerId;
 	}
 
 	if (obj.reasoningEffort !== undefined) {

@@ -49,6 +49,15 @@ export interface ChatRouteResult {
 	readonly cwd: string | undefined;
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly workspaceId?: string;
+	/**
+	 * The computer (SSH config alias) to run this turn's tools on — forwarded
+	 * verbatim to the orchestrator's `startTurn` (which resolves it via
+	 * `getEffectiveComputer`). Mirrors `cwd`/`workspaceId`: an opaque per-turn
+	 * override, unvalidated here (validation happens at SSH connect time).
+	 * Absent when the client omits it (the orchestrator then inherits the
+	 * conversation → workspace → local chain).
+	 */
+	readonly computerId?: string;
 }
 
 /** A malformed chat.send that should yield a chat.error reply. */
@@ -173,6 +182,7 @@ function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError 
 		cwd: msg.cwd,
 		...(msg.reasoningEffort !== undefined ? { reasoningEffort: msg.reasoningEffort } : {}),
 		...(msg.workspaceId !== undefined ? { workspaceId: msg.workspaceId } : {}),
+		...(msg.computerId !== undefined ? { computerId: msg.computerId } : {}),
 	};
 }
 

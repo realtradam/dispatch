@@ -31,8 +31,10 @@ owner-agents on disjoint packages).
       API types). `tsc -b` EXIT 0, biome clean, **1620 vitest** (was 1599).
       CR-1 (non-blocking): MCP filter doesn't preserve `computerId` on
       ToolAssembly — fix folded into wave 4.
-- [ ] **Wave 4** (parallel): `transport-http` + `transport-ws` (computer
-      endpoints + chat threading) + `mcp` (CR-1: preserve computerId in filter).
+- [x] **Wave 4** (parallel): `transport-http` (computer endpoints + `/chat`
+      threading + the `ComputerService` seam the ssh package will provide) +
+      `transport-ws` (computerId through chat.send/queue) + `mcp` (CR-1: preserve
+      computerId in filter). `tsc -b` EXIT 0, biome clean, **1641 vitest** (was 1620).
 - [ ] **Wave 5**: `host-bin` wiring + `ssh` package (SshConnectionPool,
       SshExecBackend, ~/.ssh/config reader via ssh-config, known_hosts pinning).
 - [ ] **DEFERRED — cache-warming**: computerId threading intentionally NOT done

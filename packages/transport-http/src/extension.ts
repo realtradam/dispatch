@@ -1,8 +1,10 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { createApp } from "./app.js";
 import {
+	type ComputerService,
 	cacheWarmHandle,
 	compactionHandle,
+	computerServiceHandle,
 	conversationStoreHandle,
 	credentialStoreHandle,
 	lspServiceHandle,
@@ -31,11 +33,16 @@ export const manifest: Manifest = {
 		routes: [
 			"/chat",
 			"/chat/warm",
+			"/computers",
+			"/computers/:alias",
+			"/computers/:alias/status",
+			"/computers/:alias/test",
 			"/conversations",
 			"/conversations/:id",
 			"/conversations/:id/close",
 			"/conversations/:id/compact",
 			"/conversations/:id/compact-percent",
+			"/conversations/:id/computer",
 			"/conversations/:id/cwd",
 			"/conversations/:id/last",
 			"/conversations/:id/lsp",
@@ -55,6 +62,7 @@ export const manifest: Manifest = {
 			"/workspaces/:id",
 			"/workspaces/:id/title",
 			"/workspaces/:id/default-cwd",
+			"/workspaces/:id/default-computer",
 		],
 	},
 	activation: "eager",
@@ -80,6 +88,17 @@ export function createTransportHttpExtension(): Extension & {
 			const lspService = host.getService(lspServiceHandle);
 			const mcpService = host.getService(mcpServiceHandle);
 			const systemPromptService = host.getService(systemPromptHandle);
+			// Optional: the `ssh` extension provides ComputerService. It is NOT in
+			// dependsOn (ssh may be absent), so resolve defensively — when no
+			// provider registered the handle, the computer routes degrade to
+			// empty/disconnected (see app.ts). Wrapped because getService throws
+			// for an unregistered handle.
+			let computerService: ComputerService | undefined;
+			try {
+				computerService = host.getService(computerServiceHandle);
+			} catch {
+				computerService = undefined;
+			}
 			const logger = host.logger;
 
 			const app = createApp({
@@ -92,6 +111,7 @@ export function createTransportHttpExtension(): Extension & {
 				lspService,
 				mcpService,
 				systemPromptService,
+				...(computerService !== undefined ? { computerService } : {}),
 				logger,
 				emit: host.emit.bind(host),
 				...(process.env.DISPATCH_WEB_DIR !== undefined

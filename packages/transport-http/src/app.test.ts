@@ -21,11 +21,12 @@ import type {
 	WorkspaceListResponse,
 	WorkspaceResponse,
 } from "@dispatch/transport-contract";
-import type { Workspace } from "@dispatch/wire";
+import type { Computer, ComputerEntry, Workspace } from "@dispatch/wire";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { extractLastAssistantText } from "./logic.js";
 import type {
+	ComputerService,
 	ConversationStore,
 	CredentialStore,
 	LspService,
@@ -100,7 +101,16 @@ function createFakeConversationStore(
 	cwdStore: Map<string, string> = new Map(),
 	reasoningEffortStore: Map<string, ReasoningEffort> = new Map(),
 	modelStore: Map<string, string> = new Map(),
+	computerStore: Map<string, string> = new Map(),
 ): ConversationStore {
+	const sampleWorkspace = {
+		id: "default",
+		title: "default",
+		defaultCwd: null,
+		defaultComputerId: null,
+		createdAt: 0,
+		lastActivityAt: 0,
+	};
 	return {
 		async append() {},
 		async load() {
@@ -132,6 +142,19 @@ function createFakeConversationStore(
 		},
 		async clearCwd(conversationId) {
 			cwdStore.delete(conversationId);
+		},
+		async getComputerId(conversationId) {
+			return computerStore.get(conversationId) ?? null;
+		},
+		async setComputerId(conversationId, alias) {
+			if (alias === null) {
+				computerStore.delete(conversationId);
+			} else {
+				computerStore.set(conversationId, alias);
+			}
+		},
+		async clearComputerId(conversationId) {
+			computerStore.delete(conversationId);
 		},
 		async getReasoningEffort(conversationId) {
 			return reasoningEffortStore.get(conversationId) ?? null;
@@ -171,13 +194,16 @@ function createFakeConversationStore(
 			return null;
 		},
 		async ensureWorkspace() {
-			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			return sampleWorkspace;
 		},
 		async setWorkspaceTitle() {
-			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			return sampleWorkspace;
 		},
 		async setWorkspaceDefaultCwd() {
-			return { id: "default", title: "default", defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			return sampleWorkspace;
+		},
+		async setWorkspaceDefaultComputerId(id, defaultComputerId) {
+			return { ...sampleWorkspace, id, defaultComputerId };
 		},
 		async deleteWorkspace() {
 			return { closedCount: 0 };
@@ -191,6 +217,9 @@ function createFakeConversationStore(
 		async setWorkspaceId() {},
 		async getEffectiveCwd(conversationId) {
 			return cwdStore.get(conversationId) ?? null;
+		},
+		async getEffectiveComputer(conversationId) {
+			return computerStore.get(conversationId) ?? null;
 		},
 	};
 }
@@ -462,6 +491,27 @@ function createFakeSystemPromptService(
 		async setTemplate(t) {
 			setCalls.push(t);
 			currentTemplate = t;
+		},
+	};
+}
+
+function createFakeComputerService(computers: readonly ComputerEntry[] = []): ComputerService {
+	const byAlias = new Map<string, Computer>(computers.map((c) => [c.alias, c]));
+	return {
+		async listComputers() {
+			return computers;
+		},
+		async getComputer(alias) {
+			return byAlias.get(alias) ?? null;
+		},
+		async getStatus(alias) {
+			const known = byAlias.has(alias);
+			return { alias, state: "disconnected", knownHost: known };
+		},
+		async test(alias) {
+			return byAlias.has(alias)
+				? { alias, ok: true }
+				: { alias, ok: false, error: "Computer not found" };
 		},
 	};
 }
@@ -1065,6 +1115,7 @@ describe("GET /conversations/:id", () => {
 						id: "default",
 						title: "default",
 						defaultCwd: null,
+						defaultComputerId: null,
 						createdAt: 0,
 						lastActivityAt: 0,
 					};
@@ -1074,6 +1125,7 @@ describe("GET /conversations/:id", () => {
 						id: "default",
 						title: "default",
 						defaultCwd: null,
+						defaultComputerId: null,
 						createdAt: 0,
 						lastActivityAt: 0,
 					};
@@ -1083,6 +1135,7 @@ describe("GET /conversations/:id", () => {
 						id: "default",
 						title: "default",
 						defaultCwd: null,
+						defaultComputerId: null,
 						createdAt: 0,
 						lastActivityAt: 0,
 					};
@@ -1184,6 +1237,7 @@ describe("GET /conversations/:id", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -1193,6 +1247,7 @@ describe("GET /conversations/:id", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -1202,6 +1257,7 @@ describe("GET /conversations/:id", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -1372,6 +1428,7 @@ describe("GET /conversations/:id/metrics", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -1381,6 +1438,7 @@ describe("GET /conversations/:id/metrics", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -1390,6 +1448,7 @@ describe("GET /conversations/:id/metrics", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -2807,6 +2866,7 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -2816,6 +2876,7 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -2825,6 +2886,7 @@ describe("PUT /conversations/:id/reasoning-effort", () => {
 					id: "default",
 					title: "default",
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -3480,6 +3542,7 @@ describe("Workspaces", () => {
 		id: "proj",
 		title: "proj",
 		defaultCwd: null,
+		defaultComputerId: null,
 		createdAt: 1000,
 		lastActivityAt: 2000,
 	};
@@ -3863,5 +3926,407 @@ describe("GET /system-prompt/variables", () => {
 		expect(hasPromptCwd).toBe(true);
 		expect(fileEntry).toBeDefined();
 		expect(fileEntry?.dynamic).toBe(true);
+	});
+});
+
+// ─── Computers (mirrors the cwd / workspace routes) ─────────────────────────
+
+const sampleComputer: Computer = {
+	alias: "myserver",
+	hostName: "10.0.0.5",
+	port: 22,
+	user: "deploy",
+	identityFile: "/home/user/.ssh/id_ed25519",
+	knownHost: true,
+};
+
+describe("GET /computers", () => {
+	it("returns [] when no ComputerService is wired (graceful degrade)", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/computers");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { computers: readonly ComputerEntry[] };
+		expect(body.computers).toEqual([]);
+	});
+
+	it("delegates to the ComputerService when wired", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			computerService: createFakeComputerService([{ ...sampleComputer, usageCount: 2 }]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/computers");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { computers: readonly ComputerEntry[] };
+		expect(body.computers).toHaveLength(1);
+		expect(body.computers[0]?.alias).toBe("myserver");
+		expect(body.computers[0]?.usageCount).toBe(2);
+	});
+});
+
+describe("GET /computers/:alias", () => {
+	it("returns the computer when the alias is configured", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			computerService: createFakeComputerService([{ ...sampleComputer, usageCount: 0 }]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/computers/myserver");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Computer;
+		expect(body.alias).toBe("myserver");
+		expect(body.hostName).toBe("10.0.0.5");
+	});
+
+	it("returns 404 when the alias is not in the config", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			computerService: createFakeComputerService([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/computers/unknown");
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 404 when no ComputerService is wired (no ssh)", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/computers/myserver");
+		expect(res.status).toBe(404);
+	});
+});
+
+describe("GET /computers/:alias/status", () => {
+	it("returns disconnected + knownHost:false when no ComputerService is wired", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/computers/myserver/status");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			alias: string;
+			state: string;
+			knownHost: boolean;
+		};
+		expect(body.alias).toBe("myserver");
+		expect(body.state).toBe("disconnected");
+		expect(body.knownHost).toBe(false);
+	});
+});
+
+describe("POST /computers/:alias/test", () => {
+	it("returns ok:false + 'SSH not configured' when no ComputerService is wired", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/computers/myserver/test", { method: "POST" });
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { alias: string; ok: boolean; error?: string };
+		expect(body.alias).toBe("myserver");
+		expect(body.ok).toBe(false);
+		expect(body.error).toBe("SSH not configured");
+	});
+});
+
+describe("GET then PUT then GET /conversations/:id/computer", () => {
+	it("round-trips the value", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const get0 = await app.request("/conversations/conv1/computer");
+		expect(get0.status).toBe(200);
+		const get0Body = (await get0.json()) as { conversationId: string; computerId: string | null };
+		expect(get0Body.conversationId).toBe("conv1");
+		expect(get0Body.computerId).toBeNull();
+
+		const putRes = await app.request("/conversations/conv1/computer", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ computerId: "myserver" }),
+		});
+		expect(putRes.status).toBe(200);
+		const putBody = (await putRes.json()) as { conversationId: string; computerId: string };
+		expect(putBody.conversationId).toBe("conv1");
+		expect(putBody.computerId).toBe("myserver");
+
+		const getRes = await app.request("/conversations/conv1/computer");
+		expect(getRes.status).toBe(200);
+		const getBody = (await getRes.json()) as { conversationId: string; computerId: string | null };
+		expect(getBody.computerId).toBe("myserver");
+	});
+});
+
+describe("PUT /conversations/:id/computer with null clears (→ DELETE parity)", () => {
+	it("PUT null clears a previously-set computer", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const putRes = await app.request("/conversations/conv1/computer", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ computerId: "myserver" }),
+		});
+		expect(putRes.status).toBe(200);
+
+		const clearRes = await app.request("/conversations/conv1/computer", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ computerId: null }),
+		});
+		expect(clearRes.status).toBe(200);
+		const clearBody = (await clearRes.json()) as {
+			conversationId: string;
+			computerId: string | null;
+		};
+		expect(clearBody.computerId).toBeNull();
+
+		const getRes = await app.request("/conversations/conv1/computer");
+		expect(getRes.status).toBe(200);
+		const getBody = (await getRes.json()) as { computerId: string | null };
+		expect(getBody.computerId).toBeNull();
+	});
+});
+
+describe("DELETE /conversations/:id/computer", () => {
+	it("after a PUT computer → returns { computerId: null } and a subsequent GET returns null", async () => {
+		const store = createFakeConversationStore();
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const putRes = await app.request("/conversations/conv1/computer", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ computerId: "myserver" }),
+		});
+		expect(putRes.status).toBe(200);
+
+		const deleteRes = await app.request("/conversations/conv1/computer", { method: "DELETE" });
+		expect(deleteRes.status).toBe(200);
+		const deleteBody = (await deleteRes.json()) as {
+			conversationId: string;
+			computerId: string | null;
+		};
+		expect(deleteBody.conversationId).toBe("conv1");
+		expect(deleteBody.computerId).toBeNull();
+
+		const getRes = await app.request("/conversations/conv1/computer");
+		expect(getRes.status).toBe(200);
+		const getBody = (await getRes.json()) as { computerId: string | null };
+		expect(getBody.computerId).toBeNull();
+	});
+
+	it("on a conversation that never had a computer set → returns { computerId: null } (idempotent)", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const deleteRes = await app.request("/conversations/conv1/computer", { method: "DELETE" });
+		expect(deleteRes.status).toBe(200);
+		const deleteBody = (await deleteRes.json()) as {
+			conversationId: string;
+			computerId: string | null;
+		};
+		expect(deleteBody.computerId).toBeNull();
+	});
+
+	it("does NOT affect other conversations' computers (isolation)", async () => {
+		const computerStore = new Map<string, string>([
+			["conv1", "myserver"],
+			["conv2", "otherbox"],
+		]);
+		const store = createFakeConversationStore(
+			new Map(),
+			new Map(),
+			new Map(),
+			new Map(),
+			new Map(),
+			computerStore,
+		);
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+
+		const deleteRes = await app.request("/conversations/conv1/computer", { method: "DELETE" });
+		expect(deleteRes.status).toBe(200);
+
+		const get1 = await app.request("/conversations/conv1/computer");
+		expect(get1.status).toBe(200);
+		expect((await get1.json()).computerId).toBeNull();
+
+		const get2 = await app.request("/conversations/conv2/computer");
+		expect(get2.status).toBe(200);
+		expect((await get2.json()).computerId).toBe("otherbox");
+	});
+});
+
+describe("PUT /conversations/:id/computer validation", () => {
+	it("with missing computerId returns 400", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/computer", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("computerId");
+	});
+
+	it("with empty-string computerId returns 400", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/conversations/conv1/computer", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ computerId: "" }),
+		});
+		expect(res.status).toBe(400);
+	});
+});
+
+describe("PUT /workspaces/:id/default-computer", () => {
+	const wsSample: Workspace = {
+		id: "proj",
+		title: "proj",
+		defaultCwd: null,
+		defaultComputerId: null,
+		createdAt: 1000,
+		lastActivityAt: 2000,
+	};
+
+	it("sets the default computer", async () => {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async setWorkspaceDefaultComputerId(id, defaultComputerId) {
+				return { ...wsSample, id, defaultComputerId };
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/proj/default-computer", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ computerId: "myserver" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as WorkspaceResponse;
+		expect(body.defaultComputerId).toBe("myserver");
+	});
+
+	it("clears the default computer with null", async () => {
+		const store: ConversationStore = {
+			...createFakeConversationStore(),
+			async setWorkspaceDefaultComputerId(id, defaultComputerId) {
+				return { ...wsSample, id, defaultComputerId };
+			},
+		};
+		const app = createApp({
+			conversationStore: store,
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/proj/default-computer", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ computerId: null }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as WorkspaceResponse;
+		expect(body.defaultComputerId).toBeNull();
+	});
+});
+
+describe("POST /chat threads computerId", () => {
+	it("forwards computerId into the orchestrator input when present", async () => {
+		const cap = createCapturingOrchestrator();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: cap,
+			credentialStore: createFakeCredentialStore([]),
+		});
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				message: "hi",
+				conversationId: "conv1",
+				computerId: "myserver",
+			}),
+		});
+		expect(res.status).toBe(200);
+		expect(cap.received).toBeDefined();
+		expect(cap.received?.conversationId).toBe("conv1");
+		expect(cap.received?.computerId).toBe("myserver");
+	});
+
+	it("omits computerId when not provided", async () => {
+		const cap = createCapturingOrchestrator();
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: cap,
+			credentialStore: createFakeCredentialStore([]),
+		});
+		const res = await app.request("/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message: "hi", conversationId: "conv1" }),
+		});
+		expect(res.status).toBe(200);
+		expect(cap.received).toBeDefined();
+		expect(cap.received?.computerId).toBeUndefined();
 	});
 });
