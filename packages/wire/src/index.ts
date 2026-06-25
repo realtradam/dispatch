@@ -273,6 +273,7 @@ export type AgentEvent =
 	| TurnUsageEvent
 	| TurnStepCompleteEvent
 	| TurnErrorEvent
+	| TurnProviderRetryEvent
 	| TurnDoneEvent
 	| TurnSealedEvent
 	| TurnSteeringEvent;
@@ -426,6 +427,31 @@ export interface TurnErrorEvent {
 	readonly conversationId: string;
 	readonly turnId: string;
 	readonly message: string;
+	readonly code?: string;
+}
+
+/**
+ * A retryable provider error is being retried with backoff. Emitted once per
+ * scheduled retry, BEFORE the sleep, so the UI can show "⚠ Server overloaded —
+ * retrying in 5s…" immediately. TRANSIENT: emitted to the frontend but NOT
+ * persisted into the model's message history (it never pollutes the prompt).
+ *
+ * When the retry budget is exhausted, the existing `error` event is emitted and
+ * the turn seals — so the final failure is still a persisted error. `attempt` is
+ * 0-based (the Nth retry about to happen); `delayMs` is the scheduled sleep
+ * before that retry fires.
+ */
+export interface TurnProviderRetryEvent {
+	readonly type: "provider-retry";
+	readonly conversationId: string;
+	readonly turnId: string;
+	/** 0-based: this is the Nth retry about to happen. */
+	readonly attempt: number;
+	/** ms the client should expect to wait before the retry fires. */
+	readonly delayMs: number;
+	/** The endpoint's error verbatim (e.g. "HTTP 429: {…overloaded_error…}"). */
+	readonly message: string;
+	/** The HTTP code when known (e.g. "429"). */
 	readonly code?: string;
 }
 

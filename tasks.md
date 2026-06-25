@@ -5,7 +5,43 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1537 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1574 vitest** green.
+
+## Retry with backoff on retryable provider errors (DONE)
+When the upstream LLM API returns a retryable error (HTTP 429 / 5xx "overloaded"),
+the kernel now retries `provider.stream()` with a stepped backoff, visibly, until
+the 8h cumulative-sleep budget is exhausted — then emits the final error and
+seals the turn. Retries fire ONLY when no content was emitted yet this step (the
+safety invariant — never duplicate partial output). Plan:
+`notes/retry-with-backoff-plan.md`; report: `reports/retry-with-backoff.md`.
+- **Architecture (kernel hook + shell policy/I/O):** kernel provides the hook
+  (`RetryStrategy` contract + the retry loop in `runTurn`); the shell
+  (session-orchestrator) provides the policy (the schedule) + the I/O (an
+  abortable `setTimeout` sleep). Kernel imports no timer. `retry?` is optional
+  → omit = no retry (backward-compatible).
+- **New transient `AgentEvent` variant** `provider-retry` (`@dispatch/wire`),
+  emitted once per scheduled retry BEFORE the sleep so the UI can show
+  "⚠ retrying in Ns…" immediately; NOT persisted to model history (never
+  pollutes the prompt). Final failure is still a persisted `error` + seal.
+- **Schedule:** `5s,10s,30s,60s,5m,10m,15m,30m`, then repeat 30m until 8h of
+  cumulative scheduled sleep → ~21 retries then give up. Pure `delayFor(attempt)`.
+- **Retry trigger:** emitted `error` with `retryable===true` → retry;
+  `retryable` false/absent → give up; a THROWN error → retryable-by-default
+  ONLY when pre-content. All gated on `!hadContent` (text/reasoning/tool-call/usage).
+- [x] Verified: `tsc -b` EXIT 0, biome clean, **1574 vitest** pass (+16 new: 11
+  kernel retry tests with an injected fake `sleep` + pure `delayFor` + stub
+  provider — zero `@dispatch/*` mocks; 5 pure schedule tests). Transports
+  unchanged — transport-ws forwards `AgentEvent` verbatim inside `chat.delta`;
+  transport-http is generic `JSON.stringify`. Unit-tested only — not yet
+  live-verified against a real 429.
+- **Optional follow-up (roadmap):** the CLI renderer
+  (`packages/cli/src/render.ts` `renderEvent`) has no `default` case and silently
+  drops `provider-retry` — the yellow-warning/countdown target is the web
+  frontend, not the CLI, so non-blocking. Optional: render `provider-retry` in
+  the CLI as a stderr warning + `delayMs` countdown.
+- **Frontend handoff (5d3f, separate repo `../dispatch-web`):** render
+  `provider-retry` as a yellow warning system-message bubble showing `message`
+  (+`code`) with the `delayMs` countdown.
 
 ## Per-edit LSP diagnostics auto-append (DONE)
 After a successful `edit_file`, the extension now calls LSP `getDiagnostics` on the

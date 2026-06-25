@@ -129,6 +129,22 @@ export interface RunTurnInput {
 	 * double-persist them.
 	 */
 	readonly onStepComplete?: (messages: readonly ChatMessage[]) => Promise<void> | void;
+
+	/**
+	 * Optional injected retry strategy for retryable provider errors (e.g. HTTP
+	 * 429 / 5xx "overloaded"). When omitted, a retryable error ends the step
+	 * exactly as before (backward-compatible). When provided, the runtime wraps
+	 * `provider.stream()` consumption in a retry loop: on a retryable error
+	 * (an emitted `error` ProviderEvent with `retryable === true`, OR a thrown
+	 * error) — ONLY when no content was emitted yet this step (the safety
+	 * invariant — never duplicate partial output) — it asks `retry.delayFor`
+	 * for a delay, emits a transient `provider-retry` AgentEvent, sleeps via the
+	 * injected `retry.sleep` (abortable), and re-calls `provider.stream()`.
+	 *
+	 * Injected (not ambient): the kernel imports no timer and owns no schedule.
+	 * Mirrors the `now`/`logger` injection pattern — optional + backward-compatible.
+	 */
+	readonly retry?: RetryStrategy;
 }
 
 /**
@@ -144,4 +160,32 @@ export interface RunTurnResult {
 
 	/** Why the turn ended. */
 	readonly finishReason: FinishReason;
+}
+
+/**
+ * Injected retry strategy for retryable provider errors (e.g. HTTP 429 / 5xx).
+ *
+ * The kernel provides the HOOK (this contract + the retry loop in `runTurn`);
+ * the shell (session-orchestrator) provides the POLICY (the concrete schedule)
+ * and the I/O (the actual sleep). The kernel imports no timer — `sleep` is an
+ * injected effect so the runtime stays pure and deterministic in tests.
+ *
+ * Retries are ONLY attempted when NO content was emitted yet this step (the
+ * safety invariant — never duplicate partial output). When omitted on
+ * `RunTurnInput`, no retry happens (backward-compatible: a retryable error ends
+ * the step exactly as before).
+ */
+export interface RetryStrategy {
+	/**
+	 * Pure, deterministic decision: given the 0-based attempt index, return the
+	 * delay in ms to sleep before the next retry, or `undefined` to stop (budget
+	 * exhausted). No I/O, no clock — fully testable.
+	 */
+	readonly delayFor: (attempt: number) => number | undefined;
+	/**
+	 * Injected effect: actually sleep for the given ms. Must honor the abort
+	 * signal — reject when aborted so the turn seals `aborted`. The kernel
+	 * imports no timer; the shell provides a `setTimeout`-based implementation.
+	 */
+	readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
 }
