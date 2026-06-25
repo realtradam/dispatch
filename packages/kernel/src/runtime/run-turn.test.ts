@@ -2821,4 +2821,539 @@ describe("runTurn", () => {
 			expect(drainCallCount).toBe(MAX_STEPS - 1);
 		});
 	});
+
+	// ── Retry with backoff ──────────────────────────────────────────────────
+	//
+	// PURE tests: a fake `sleep` (records calls, resolves instantly, can abort
+	// on a chosen call) + a pure `delayFor` (the canonical schedule + 8h budget).
+	// A stub `ProviderContract` whose `stream` yields a retryable error N times
+	// then a finish. ZERO mocks of `@dispatch/*` modules — effects injected.
+
+	/** The canonical backoff schedule (matches the orchestrator's concrete strategy). */
+	const RETRY_SCHEDULE_MS = [5_000, 10_000, 30_000, 60_000, 300_000, 600_000, 900_000, 1_800_000];
+	const RETRY_TAIL_MS = 1_800_000; // 30m
+	const RETRY_BUDGET_MS = 8 * 60 * 60 * 1000; // 8h
+
+	/** Cumulative scheduled sleep through `attempt` (sum of delay[0..attempt]). */
+	function cumulativeSleepMs(attempt: number): number {
+		let sum = 0;
+		for (let i = 0; i <= attempt; i++) {
+			sum += i < RETRY_SCHEDULE_MS.length ? RETRY_SCHEDULE_MS[i] : RETRY_TAIL_MS;
+		}
+		return sum;
+	}
+
+	/** Pure, deterministic delay decision (no I/O, no clock). */
+	function delayFor(attempt: number): number | undefined {
+		const delay = attempt < RETRY_SCHEDULE_MS.length ? RETRY_SCHEDULE_MS[attempt] : RETRY_TAIL_MS;
+		if (cumulativeSleepMs(attempt) > RETRY_BUDGET_MS) return undefined; // over budget → stop
+		return delay;
+	}
+
+	/** The full schedule delayFor would emit (until budget exhausted). */
+	function fullSchedule(): number[] {
+		const result: number[] = [];
+		let attempt = 0;
+		while (true) {
+			const delay = delayFor(attempt);
+			if (delay === undefined) break;
+			result.push(delay);
+			attempt++;
+		}
+		return result;
+	}
+
+	/**
+	 * Fake, controllable `sleep`: records every call's delay, resolves
+	 * instantly (no real waiting), and can abort the controller on a chosen
+	 * 1-based call index to simulate "abort during sleep".
+	 */
+	function createFakeSleep(controller: AbortController): {
+		sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+		calls: number[];
+		abortOnCall: (n: number) => void;
+	} {
+		const calls: number[] = [];
+		let abortAt: number | undefined;
+		const sleep = async (ms: number, _signal: AbortSignal): Promise<void> => {
+			calls.push(ms);
+			if (abortAt !== undefined && calls.length === abortAt) {
+				controller.abort();
+				throw new Error("aborted");
+			}
+			// Otherwise resolve instantly (no real waiting).
+		};
+		return {
+			sleep,
+			calls,
+			abortOnCall: (n: number) => {
+				abortAt = n;
+			},
+		};
+	}
+
+	/** A provider that yields a retryable error `errorCount` times, then success. */
+	function createRetryingProvider(opts: {
+		errorCount: number;
+		error?: { message: string; code?: string; retryable?: boolean };
+		success?: ProviderEvent[];
+	}): { provider: ProviderContract; streamCalls: { value: number } } {
+		const streamCalls = { value: 0 };
+		const error: ProviderEvent = {
+			type: "error",
+			message: opts.error?.message ?? "overloaded",
+			...(opts.error?.code !== undefined ? { code: opts.error.code } : {}),
+			...(opts.error?.retryable !== undefined ? { retryable: opts.error.retryable } : {}),
+		};
+		const success = opts.success ?? [
+			{ type: "text-delta", delta: "hi" },
+			{ type: "finish", reason: "stop" },
+		];
+		const provider: ProviderContract = {
+			id: "fake",
+			stream() {
+				const idx = streamCalls.value++;
+				return (async function* () {
+					if (idx < opts.errorCount) {
+						yield error;
+						return;
+					}
+					for (const event of success) yield event;
+				})();
+			},
+		};
+		return { provider, streamCalls };
+	}
+
+	describe("retry with backoff", () => {
+		it("retries a retryable emitted error on schedule then succeeds", async () => {
+			const { provider } = createRetryingProvider({
+				errorCount: 3,
+				error: { message: "HTTP 429: overloaded", code: "429", retryable: true },
+			});
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			expect(result.finishReason).toBe("stop");
+			// 3 retries: 5s, 10s, 30s.
+			expect(fake.calls).toEqual([5_000, 10_000, 30_000]);
+			// 3 provider-retry events (one per sleep), then the successful text.
+			const retryEvents = events.filter((e) => e.type === "provider-retry");
+			expect(retryEvents).toHaveLength(3);
+			if (retryEvents[0]?.type === "provider-retry") {
+				expect(retryEvents[0].attempt).toBe(0);
+				expect(retryEvents[0].delayMs).toBe(5_000);
+				expect(retryEvents[0].message).toBe("HTTP 429: overloaded");
+				expect(retryEvents[0].code).toBe("429");
+				expect(retryEvents[0].conversationId).toBe("conv-1");
+				expect(retryEvents[0].turnId).toBe("turn-1");
+			}
+			if (retryEvents[1]?.type === "provider-retry") {
+				expect(retryEvents[1].attempt).toBe(1);
+				expect(retryEvents[1].delayMs).toBe(10_000);
+			}
+			if (retryEvents[2]?.type === "provider-retry") {
+				expect(retryEvents[2].attempt).toBe(2);
+				expect(retryEvents[2].delayMs).toBe(30_000);
+			}
+			// The error was suppressed (no error event emitted — retry succeeded).
+			expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+			// The successful content still streams.
+			const deltas = events.filter((e) => e.type === "text-delta");
+			expect(deltas).toHaveLength(1);
+		});
+
+		it("sleep is called with the full schedule [5s,10s,30s,60s,5m,10m,15m,30m,30m…]", async () => {
+			// Provider errors forever → retries until budget exhausted → gives up.
+			const { provider } = createRetryingProvider({
+				errorCount: Number.POSITIVE_INFINITY,
+				error: { message: "overloaded", code: "429", retryable: true },
+			});
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			// Budget exhausted → give up → error.
+			expect(result.finishReason).toBe("error");
+
+			// The sleep schedule matches the pure delayFor output exactly.
+			expect(fake.calls).toEqual(fullSchedule());
+
+			// Head of the schedule (the 8 stepped delays).
+			expect(fake.calls.slice(0, 8)).toEqual([
+				5_000, 10_000, 30_000, 60_000, 300_000, 600_000, 900_000, 1_800_000,
+			]);
+			// Tail repeats 30m.
+			expect(fake.calls[8]).toBe(1_800_000);
+			expect(fake.calls.at(-1)).toBe(1_800_000);
+
+			// 8h cumulative budget cap: head (3705s) + 13×30m = ~7h31m, then stop.
+			// 21 retries (attempts 0..20), then delayFor(21) → undefined → give up.
+			expect(fake.calls).toHaveLength(21);
+			const totalSlept = fake.calls.reduce((a, b) => a + b, 0);
+			expect(totalSlept).toBeLessThanOrEqual(RETRY_BUDGET_MS);
+			expect(totalSlept).toBe(3_705_000 + 13 * 1_800_000); // 27_105_000
+
+			// One provider-retry per sleep, plus a final error (give-up).
+			expect(events.filter((e) => e.type === "provider-retry")).toHaveLength(21);
+			expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+			const errEvt = events.find((e) => e.type === "error");
+			if (errEvt?.type === "error") {
+				expect(errEvt.message).toBe("overloaded");
+				expect(errEvt.code).toBe("429");
+			}
+		});
+
+		it("does NOT retry after content was emitted (safety invariant)", async () => {
+			// Provider yields text (content) THEN a retryable error. Because content
+			// was emitted, retrying is unsafe (would duplicate partial output).
+			let callCount = 0;
+			const provider: ProviderContract = {
+				id: "fake",
+				stream() {
+					callCount++;
+					return (async function* () {
+						yield { type: "text-delta", delta: "partial" } as ProviderEvent;
+						yield {
+							type: "error",
+							message: "overloaded",
+							code: "429",
+							retryable: true,
+						} as ProviderEvent;
+					})();
+				},
+			};
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			// No retries: stream called exactly once.
+			expect(callCount).toBe(1);
+			expect(fake.calls).toHaveLength(0);
+			// The error is emitted (give-up) and partial content preserved.
+			expect(result.finishReason).toBe("error");
+			expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+			expect(events.filter((e) => e.type === "provider-retry")).toHaveLength(0);
+			expect(events.filter((e) => e.type === "text-delta")).toHaveLength(1);
+		});
+
+		it("does NOT retry a non-retryable emitted error (retryable: false)", async () => {
+			const { provider, streamCalls } = createRetryingProvider({
+				errorCount: 1,
+				error: { message: "bad request", code: "400", retryable: false },
+			});
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			expect(streamCalls.value).toBe(1); // no retry
+			expect(fake.calls).toHaveLength(0);
+			expect(result.finishReason).toBe("error");
+			expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+			expect(events.filter((e) => e.type === "provider-retry")).toHaveLength(0);
+		});
+
+		it("does NOT retry a non-retryable emitted error (retryable absent)", async () => {
+			const { provider, streamCalls } = createRetryingProvider({
+				errorCount: 1,
+				error: { message: "bad request", code: "400" }, // no retryable field
+			});
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			expect(streamCalls.value).toBe(1); // no retry
+			expect(fake.calls).toHaveLength(0);
+			expect(result.finishReason).toBe("error");
+			expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+		});
+
+		it("give-up emits the final error when budget is exhausted", async () => {
+			// Custom delayFor that allows exactly 1 retry then stops.
+			const shortDelayFor = (attempt: number): number | undefined =>
+				attempt === 0 ? 100 : undefined;
+			const { provider } = createRetryingProvider({
+				errorCount: Number.POSITIVE_INFINITY,
+				error: { message: "overloaded", code: "429", retryable: true },
+			});
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor: shortDelayFor, sleep: fake.sleep },
+			});
+
+			expect(result.finishReason).toBe("error");
+			expect(fake.calls).toEqual([100]); // one retry, then give up
+			// One provider-retry (attempt 0), then the final error.
+			expect(events.filter((e) => e.type === "provider-retry")).toHaveLength(1);
+			const errs = events.filter((e) => e.type === "error");
+			expect(errs).toHaveLength(1);
+			if (errs[0]?.type === "error") {
+				expect(errs[0].message).toBe("overloaded");
+				expect(errs[0].code).toBe("429");
+			}
+		});
+
+		it("abort during sleep seals the turn aborted", async () => {
+			const { provider } = createRetryingProvider({
+				errorCount: Number.POSITIVE_INFINITY,
+				error: { message: "overloaded", code: "429", retryable: true },
+			});
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+			fake.abortOnCall(2); // abort on the 2nd sleep
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			expect(result.finishReason).toBe("aborted");
+			// Two sleeps attempted; the 2nd aborted.
+			expect(fake.calls).toHaveLength(2);
+			// No terminal error emitted (it was an abort, not a give-up).
+			expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+			// One provider-retry before the aborted sleep (attempt 0).
+			const retries = events.filter((e) => e.type === "provider-retry");
+			expect(retries).toHaveLength(2);
+			// The done event carries reason "aborted".
+			const done = events.find((e) => e.type === "done");
+			if (done?.type === "done") {
+				expect(done.reason).toBe("aborted");
+			}
+		});
+
+		it("omitting retry keeps the pre-retry behavior (backward-compatible)", async () => {
+			// A retryable error with no retry configured → ends the step as today.
+			const { provider, streamCalls } = createRetryingProvider({
+				errorCount: 1,
+				error: { message: "overloaded", code: "429", retryable: true },
+			});
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				// no retry field
+			});
+
+			expect(streamCalls.value).toBe(1); // no retry
+			expect(result.finishReason).toBe("error");
+			expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+			expect(events.filter((e) => e.type === "provider-retry")).toHaveLength(0);
+		});
+
+		it("retries a THROWN error (retryable-by-default when pre-content)", async () => {
+			// A thrown error (no retryable flag) before content is retried.
+			let callCount = 0;
+			const provider: ProviderContract = {
+				id: "fake",
+				stream() {
+					callCount++;
+					return (async function* () {
+						if (callCount <= 2) {
+							throw new Error("network blip");
+						}
+						yield { type: "text-delta", delta: "hi" } as ProviderEvent;
+						yield { type: "finish", reason: "stop" } as ProviderEvent;
+					})();
+				},
+			};
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			expect(callCount).toBe(3); // 2 throws retried, 3rd succeeds
+			expect(fake.calls).toEqual([5_000, 10_000]);
+			expect(result.finishReason).toBe("stop");
+			expect(events.filter((e) => e.type === "provider-retry")).toHaveLength(2);
+			// Thrown errors have no code.
+			if (events[0]?.type === "provider-retry") {
+				expect(events[0].code).toBeUndefined();
+				expect(events[0].message).toBe("network blip");
+			}
+			expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+		});
+
+		it("does NOT retry a thrown error after content was emitted", async () => {
+			let callCount = 0;
+			const provider: ProviderContract = {
+				id: "fake",
+				stream() {
+					callCount++;
+					return (async function* () {
+						yield { type: "text-delta", delta: "partial" } as ProviderEvent;
+						throw new Error("network blip");
+					})();
+				},
+			};
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			const result = await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			expect(callCount).toBe(1);
+			expect(fake.calls).toHaveLength(0);
+			expect(result.finishReason).toBe("error");
+			expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+			expect(events.filter((e) => e.type === "text-delta")).toHaveLength(1);
+		});
+
+		it("provider-retry events interleave correctly: error → retry-event → sleep → retry", async () => {
+			// Verify ordering: each provider-retry event comes BEFORE its sleep,
+			// and the successful content comes only after the last retry.
+			const { provider } = createRetryingProvider({
+				errorCount: 2,
+				error: { message: "overloaded", code: "429", retryable: true },
+				success: [
+					{ type: "text-delta", delta: "ok" },
+					{ type: "finish", reason: "stop" },
+				],
+			});
+			const controller = new AbortController();
+			const fake = createFakeSleep(controller);
+
+			const { events, emit } = createCollectingEmit();
+
+			await runTurn({
+				provider,
+				messages: [userMessage],
+				tools: [],
+				dispatch: { maxConcurrent: 1, eager: false },
+				conversationId: "conv-1",
+				turnId: "turn-1",
+				emit,
+				signal: controller.signal,
+				retry: { delayFor, sleep: fake.sleep },
+			});
+
+			const types = events.map((e) => e.type);
+			// turn-start, provider-retry(0), provider-retry(1), text-delta, step-complete, done
+			expect(types[0]).toBe("turn-start");
+			const firstRetryIdx = types.indexOf("provider-retry");
+			const textIdx = types.indexOf("text-delta");
+			expect(firstRetryIdx).toBeGreaterThan(0);
+			expect(textIdx).toBeGreaterThan(firstRetryIdx);
+			// Both retries precede the text.
+			const retryCount = types.filter((t) => t === "provider-retry").length;
+			expect(retryCount).toBe(2);
+		});
+	});
 });
