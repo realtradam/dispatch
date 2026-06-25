@@ -45,9 +45,14 @@ owner-agents on disjoint packages).
       Provides remoteExecBackendFactoryHandle + computerServiceHandle. +45 tests
       (6 sshd integration tests skipped). tsc -b EXIT 0, biome clean, **1690 vitest**
       (was 1641).
-- [ ] **Wave 5c**: host-bin — register exec-backend + ssh extensions; CR-5
-      transport-http barrel re-export of computerServiceHandle; CR-6
-      usageCount wiring (deferred-ok).
+- [x] **Wave 5c**: host-bin — register exec-backend + ssh extensions in
+      CORE_EXTENSIONS (correct DAG order); transport-http CR-5 barrel re-export of
+      computerServiceHandle. orchestrator added missing @dispatch/exec-backend dep to
+      host-bin + bun install. **LIVE-VERIFIED**: server boots clean ("Dispatch booted",
+      no disabled extensions). tsc -b EXIT 0, biome clean, 1690 vitest (+6 sshd skipped).
+- [ ] **DEFERRED — CR-6 usageCount**: `listComputers()` returns `usageCount: 0` until a
+      conversation-store count-by-alias helper + host-bin wiring is added (non-blocking —
+      discovery/connect/execute all work; only the count badge shows 0). Follow-up.
 - [ ] **DEFERRED — cache-warming**: computerId threading intentionally NOT done
       (user-deferred — cache-warming is not needed right now). Known limitation:
       a warm probe on a remote turn assembles the tool set WITHOUT the remote-drop

@@ -4,6 +4,7 @@ import { extension as authApikeyExt } from "@dispatch/auth-apikey";
 import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
 import { createCredentialStoreExtension } from "@dispatch/credential-store";
+import { createExecBackendExtension } from "@dispatch/exec-backend";
 import { createJournalSink } from "@dispatch/journal-sink";
 import {
 	type ConfigAccess,
@@ -26,6 +27,7 @@ import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
 import { extension as skillsExt } from "@dispatch/skills";
+import { extension as sshExt } from "@dispatch/ssh";
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
 import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
 import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
@@ -76,6 +78,11 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	authApikeyExt,
 	providerOpenaiCompatExt,
 	providerUmansExt,
+	// exec-backend must precede the tool extensions that
+	// `dependsOn: ["exec-backend"]` (tool-edit-file/read/shell/write). It
+	// provides the ExecBackendResolver the tools resolve through; placing it
+	// here keeps the activation DAG honest (it depends only on kernel).
+	createExecBackendExtension(),
 	toolEditFileExt,
 	toolReadFileExt,
 	toolShellExt,
@@ -91,6 +98,13 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	systemPromptExt,
 	cacheWarmingExt,
 	lspExt,
+	// ssh declares `dependsOn: ["exec-backend"]` and PROVIDES the remote
+	// exec-backend factory + the ComputerService the HTTP routes delegate to.
+	// Its lookups are lazy (tool-/request-time), but it is placed after
+	// exec-backend and the tool extensions (alongside the other standard
+	// tool-serving extensions) to keep the DAG honest — and before
+	// transport-http, whose routes consume the ComputerService it provides.
+	sshExt,
 	createTransportHttpExtension(),
 	// Surface extensions — dependency order: surface-registry first, then consumers.
 	createSurfaceRegistryExtension(),
