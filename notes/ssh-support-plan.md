@@ -28,6 +28,40 @@ local or remote. Only the tool *implementation* routes differently per call.
 
 ---
 
+## 0.5 Resolved decisions (user-confirmed 2026-06-25)
+
+These supersede any contrary recommendation elsewhere in this document.
+
+1. **Library:** use the regular **`ssh2`** (mscdex/ssh2) — do **not** use the
+   `bun-ssh2` fork. Caveat: `ssh2` leans on Node's `crypto`, so verifying it
+   runs under **Bun** is the load-bearing first step of Phase 3. If it fails,
+   there is no easy fallback (fork ruled out) — escalate to the user.
+2. **Host-key trust:** **auto-trust-and-pin** on first connect (record the
+   fingerprint, verify on every subsequent connect, surface a mismatch loudly
+   — the `StrictHostKeyChecking=accept-new` analog). A frontend "approve host
+   key" prompt is a **roadmap** item (future), not MVP.
+3. **Auth:** **key-only**, using the keys already installed on the Dispatch host
+   under **`~/.ssh/`**. No keys in gopass/`SecretsAccess`; no password/agent
+   auth in the MVP.
+4. **Computer discovery (key simplification):** the list of available computers
+   is **auto-discovered from the system's `~/.ssh/config`**, not hand-entered
+   into a CRUD store. `computerId` **is** an SSH config `Host` alias (e.g.
+   `"myserver"`). There is therefore **no `Computer` CRUD entity and no
+   `computer-store` package** — only a read-only config reader + the persisted
+   *assignment* (which conversation/workspace uses which alias). `~/.ssh/known_hosts`
+   is the host-key trust store. (See §3 for the revised data model.)
+5. **`computerId` persistence:** persisted **per-conversation** (like `cwd`),
+   not per-`chat.send`. A per-turn override on `chat.send` is supported by the
+   contract but not exposed in the MVP UI.
+6. **LSP/MCP on remote turns:** **silently dropped** (the tools filter removes
+   them; the agent sees nothing, no system-prompt note). This avoids busting
+   the prompt cache. Remote LSP/MCP spawn is a future phase.
+7. **`edit_file` on remote:** keeps working (writes via SFTP) with **no
+   post-edit diagnostics** (the diagnostics hook returns empty — the existing
+   no-LSP degradation path).
+
+---
+
 ## 1. How execution works today (the seam we plug into)
 
 ### 1.1 The cwd → tool pipeline
@@ -271,107 +305,84 @@ a strict subset of `node:fs`.
 
 ---
 
-## 3. Data model: the `Computer` entity
+## 3. Data model: the `Computer` is a view over `~/.ssh/config`
 
-### 3.1 The `Computer` type (wire)
+> **Revised per decision #4.** There is no persisted `Computer` CRUD entity. A
+> "computer" is a `Host` alias in the system's `~/.ssh/config`, discovered
+> read-only. Dispatch stores only the *assignment* (an alias string) per
+> conversation and per workspace — exactly parallel to how `cwd` is a string
+> stored alongside everything else.
 
-Mirrors `Workspace` — a backend-owned, slug-addressed entity. Lives in
-`@dispatch/wire` so the frontend can depend on the wire alone.
+### 3.1 The `Computer` view (wire — read-only)
+
+`listComputers()` parses `~/.ssh/config` and returns one entry per named
+(non-wildcard) `Host` alias, with the connection params resolved from the
+config (first-match-wins for `HostName`/`User`/`Port`/`IdentityFile`):
 
 ```ts
-// packages/wire/src/index.ts  (NEW)
+// packages/wire/src/index.ts  (NEW — read-only view, not an editable entity)
 export interface Computer {
-  /** URL slug (immutable). Lowercase [a-z0-9-], 1–40 chars. */
-  readonly id: string;
-  /** Display title (editable). Defaults to id on creation. */
-  readonly title: string;
-  /** SSH hostname or IP. */
-  readonly host: string;
-  /** SSH port. Default 22. */
+  /** The SSH config `Host` alias — also the computerId users select. */
+  readonly alias: string;
+  /** Resolved HostName/IP from the config (falls back to the alias itself). */
+  readonly hostName: string;
+  /** Resolved port (config `Port`, default 22). */
   readonly port: number;
-  /** SSH username. */
-  readonly username: string;
+  /** Resolved user (config `User`, default current user). */
+  readonly user: string;
+  /** Resolved IdentityFile path (config, or null = default ~/.ssh/id_*). */
+  readonly identityFile: string | null;
   /**
-   * Auth method: "key" (a private key reference) | "password" | "agent".
-   * The secret itself is NEVER stored here — only a reference into the secret
-   * store (see §7). "agent" uses the local ssh-agent (no secret reference).
+   * Whether the host's key is already in ~/.ssh/known_hosts (i.e. previously
+   * connected). Drives the FE "known/new" indicator. Read-only.
    */
-  readonly authMethod: "key" | "password" | "agent";
-  /**
-   * Reference to the credential in the secret store (a gopass-style key),
-   * when authMethod is "key" or "password". Absent for "agent".
-   */
-  readonly secretRef?: string;
-  readonly createdAt: number;
-  readonly lastActivityAt: number;
+  readonly knownHost: boolean;
 }
 
 export interface ComputerEntry extends Computer {
-  /** Number of conversations/workspaces using this computer. */
+  /** Number of conversations/workspaces whose computerId resolves to this alias. */
   readonly usageCount: number;
 }
 ```
 
-### 3.2 Storage — a new `computer-store` extension
+`Computer` is **not editable through the API** — to add a computer, the user
+adds a `Host` block to `~/.ssh/config` (the file they already manage). This is
+the deliberate simplification: the source of truth is the user's existing SSH
+config, so there is nothing to keep in sync.
 
-Following the existing pattern, a `ComputerStore` (parallel to the workspace
-methods already on `ConversationStore`). Two ownership options:
+### 3.2 No `computer-store` package
 
-- **Option A (recommended):** a new `computer-store` extension owning `Computer`
-  CRUD + the `defaultComputerId` on workspaces + per-conversation `computerId`.
-  Keeps `conversation-store` unchanged (one owner per unit). The
-  `getEffectiveComputer` resolution lives here.
-- Option B: extend `conversation-store` with computer methods. Fewer packages
-  but violates one-owner-per-unit and grows an already-large store.
+Because there is no `Computer` entity to CRUD, the dedicated `computer-store`
+package is **eliminated**. What remains:
 
-**Recommendation: Option A.** `computer-store` is the single owner of the
-`Computer` entity and the `getEffectiveComputer` resolution. It depends on
-`conversation-store` only for reading `workspaceId` (via the existing
-`getWorkspaceId`) — or, cleaner, it owns a parallel `Workspace.defaultComputerId`
-field. Since `WorkspaceRow` is owned by `conversation-store`, the cleanest split
-is:
+- A **read-only config reader** (`parseSshConfig()`) — lives inside the `ssh`
+  extension (it owns SSH concern end-to-end). It uses the `ssh-config` package
+  (project-local dep, see §13.Q) to parse `~/.ssh/config` correctly (wildcards,
+  `Include`, first-match-wins) rather than hand-rolling.
+- The **persisted assignment** — `computerId` per-conversation + `defaultComputerId`
+  per workspace — stored as strings alongside `cwd`/`defaultCwd`. This is owned
+  by **`conversation-store`** (it already owns the workspace row + per-conv
+  keys). The `getEffectiveComputer` resolution (§3.3) lives in `conversation-store`
+  too, mirroring `getEffectiveCwd`.
 
-- `conversation-store` gains a `defaultComputerId: string | null` field on
-  `WorkspaceRow`/`Workspace` (it already owns `defaultCwd` — symmetric).
-- `computer-store` owns the `Computer` entity, the per-conversation `computerId`
-  persistence, and `getEffectiveComputer` (which reads
-  `conversation-store.getWorkspaceId` + `getWorkspace` for the default, then
-  its own per-conversation value).
-
-```ts
-// packages/computer-store/src/store.ts  (NEW)
-export interface ComputerStore {
-  readonly getComputer: (id: string) => Promise<Computer | null>;
-  readonly ensureComputer: (id: string, opts?: ComputerCreateOpts) => Promise<Computer>;
-  readonly setComputerTitle: (id: string, title: string) => Promise<Computer>;
-  readonly deleteComputer: (id: string) => Promise<{ closedCount: number }>;
-  readonly listComputers: () => Promise<readonly ComputerEntry[]>;
-
-  // per-conversation
-  readonly getComputerId: (conversationId: string) => Promise<string | null>;
-  readonly setComputerId: (conversationId: string, computerId: string | null) => Promise<void>;
-
-  // resolution — mirrors getEffectiveCwd
-  readonly getEffectiveComputer: (
-    conversationId: string,
-    overrideComputerId?: string,
-  ) => Promise<Computer | null>; // null = local
-}
-```
+So the only new contract surface for storage is on `conversation-store`
+(§3.4) — there is no separate store unit.
 
 ### 3.3 The resolution ladder (`getEffectiveComputer`)
 
 ```
-1. overrideComputerId (per-turn, from chat.send)      → resolve + return
-2. per-conversation computerId (persisted)             → resolve + return
-3. workspace defaultComputerId                         → resolve + return
+1. overrideComputerId (per-turn, from chat.send)      → return alias (or null)
+2. per-conversation computerId (persisted)             → return alias (or null)
+3. workspace defaultComputerId                         → return alias (or null)
 4. none of the above                                   → null  (LOCAL)
 ```
 
 `null` is the deliberate "local" sentinel — no SSH connection, today's behavior.
-This is the key to clean degradation and the workspace-default inheritance:
-a new conversation in a workspace with a `defaultComputerId` inherits it without
-persisting anything itself.
+A new conversation in a workspace with a `defaultComputerId` inherits it without
+persisting anything itself. **Note:** `getEffectiveComputer` returns the alias
+*string* (or null); it does NOT validate the alias exists in `~/.ssh/config`
+(validation happens at connect time — a stale alias yields a clear connect error
+rather than silently falling back to local).
 
 ### 3.4 `Workspace` gains `defaultComputerId` (conversation-store)
 
@@ -381,18 +392,24 @@ export interface Workspace {
   readonly id: string;
   readonly title: string;
   readonly defaultCwd: string | null;
-  /** NEW: default computer for conversations in this workspace. null = local. */
+  /** NEW: default computer (SSH config alias) for conversations in this workspace. null = local. */
   readonly defaultComputerId: string | null;
   readonly createdAt: number;
   readonly lastActivityAt: number;
 }
 ```
 
-`conversation-store` gains `setWorkspaceDefaultComputerId(id, computerId | null)`
-(parallel to `setWorkspaceDefaultCwd`). This is the **one contract gap** this
-plan reports to the `conversation-store` owner: a new field on `WorkspaceRow` +
-`Workspace` + a setter. (Per the constitution, the planner does not edit
-conversation-store; it reports the needed change.)
+`conversation-store` gains, parallel to `cwd`/`defaultCwd`:
+- `getComputerId(convId) / setComputerId(convId, alias | null) / clearComputerId`
+  (per-conversation, mirror `getCwd`/`setCwd`/`clearCwd`)
+- `setWorkspaceDefaultComputerId(wsId, alias | null)` (mirror
+  `setWorkspaceDefaultCwd`)
+- `getEffectiveComputer(convId, overrideAlias?)` (mirror `getEffectiveCwd`)
+
+This is the **one contract gap** this plan reports to the `conversation-store`
+owner: new per-conversation keys + a `WorkspaceRow.defaultComputerId` field + a
+setter + `getEffectiveComputer`. (Per the constitution, the planner does not
+edit conversation-store; it reports the needed change.)
 
 ---
 
@@ -411,27 +428,27 @@ stars, 2k+ dependents. It provides:
 - Auth: `privateKey`, `password`, `agent` (`ssh-agent`), `keyboard-interactive`.
 
 **Bun compatibility:** `ssh2` relies on Node's `crypto`/`Stream` APIs. The
-project runs on **Bun**. Two paths:
+project runs on **Bun**. Per decision #1, we use `ssh2` directly (the fork is
+ruled out). This makes verifying it under Bun the **load-bearing first step of
+Phase 3**: a smoke test that connects + `exec`s a command under Bun. If it
+fails, there is no easy fallback — escalate to the user (the fork was rejected,
+so the only options would be a different SSH approach or a Bun-native client).
 
-- **Primary:** use `ssh2` directly and verify under Bun (Bun implements most
-  Node compat; ssh2's native addon `cpu-features` is optional). Validate with a
-  smoke test early in implementation.
-- **Fallback:** the `bun-ssh2` fork (artokun/bun-ssh2) is a Bun-patched variant.
-  If `ssh2` fails under Bun, swap the import — the API surface is identical.
-
-> **Action for the user (package install):** SSH support needs the `ssh2` (or
-> `bun-ssh2`) dependency added to `packages/ssh/package.json`. Per the package
-> install policy, I will not install system-wide; the implementation agent adds
-> it as a project-local dependency (`bun add ssh2` in the package). No system
-> package is required (ssh2 ships its own crypto; OpenSSH is not needed on the
-> Dispatch host — the library IS the SSH client).
+> **Action for the user (package install):** SSH support needs the `ssh2`
+> dependency added to `packages/ssh/package.json`, plus `ssh-config` for parsing
+> `~/.ssh/config` (see §3.2). Per the package install policy, I will not install
+> system-wide; the implementation agent adds them as project-local dependencies
+> (`bun add ssh2 ssh-config` in the package). No system package is required
+> (ssh2 ships its own crypto; OpenSSH is not needed on the Dispatch host — the
+> library IS the SSH client).
 
 ### 4.2 Connection pooling
 
 A single `ssh2` `Client` connection can run **many** `exec` calls and **one**
-SFTP session concurrently, so we pool **one connection per `Computer`** (keyed by
-computer id, since a computer's connection params are stable). This is the
-`SshConnectionPool`, owned by the `ssh` extension:
+SFTP session concurrently, so we pool **one connection per computer alias** (the
+alias's connection params are resolved once from `~/.ssh/config` and are stable
+for the connection's life). This is the `SshConnectionPool`, owned by the `ssh`
+extension:
 
 ```ts
 // packages/ssh/src/pool.ts  (NEW)
@@ -512,18 +529,33 @@ errors the existing tool pure-logic expects (e.g. `(err as NodeJS.ErrnoException
 === "ENOENT"`), so the tools' existing error branches (`read_file`'s "File not
 found") work unchanged. This mapping lives in the backend, not the tools.
 
-### 4.4 Auth & secrets
+### 4.4 Auth & host-key verification
 
-- `computer.secretRef` is a key into the secret store (the `SecretsAccess` Host
-  API surface; production wired to gopass per the secrets-management skill).
-- The `ssh` extension resolves the secret at connect time (lazily, on first
-  `acquire`): `host.secrets.get(computer.secretRef)` → the private key PEM or
-  password string. The secret never leaves the `ssh` extension and is never
-  persisted in the `Computer` row.
-- `agent` auth forwards to the local `ssh-agent` (ssh2's `agent: process.env.SSH_AUTH_SOCK`)
-  — no secret reference needed.
-- `keyboard-interactive` / `password` auth is supported but discouraged for
-  production; key/agent is the default recommendation.
+Per decisions #2 and #3, auth is **key-only, from `~/.ssh/`** — no
+`SecretsAccess`/gopass, no passwords, no agent in the MVP.
+
+- **Key resolution at connect time:** the `ssh` extension resolves the alias →
+  `IdentityFile` from `~/.ssh/config` (§3.1). If the config specifies one, read
+  that file; otherwise fall back to the default identity files (`~/.ssh/id_rsa`,
+  `~/.ssh/id_ed25519`, etc., first that exists). The key material is read from
+  disk and passed to `ssh2` as `privateKey` (with passphrase support — prompted
+  via the FE roadmap item, or empty for unencrypted keys in the MVP). The key
+  never leaves the `ssh` extension and is never persisted.
+- **No secrets in the API or store.** Because the key lives on disk in
+  `~/.ssh/`, there is no `secretRef` field, no secret store wiring, and no
+  secret transit through env/containers. This is the simplification from
+  decision #3.
+- **Host-key verification (auto-trust-and-pin):** uses `~/.ssh/known_hosts`
+  directly. On connect, the `ssh2` `hostVerifier` callback checks whether the
+  host key is in `known_hosts`: if present, verify it matches (reject on
+  mismatch — surface "HOST KEY CHANGED" loudly, never silently connect); if
+  **absent** (first connect), accept and append the fingerprint to
+  `known_hosts` (the `StrictHostKeyChecking=accept-new` analog). A future FE
+  "approve host key" prompt (roadmap, decision #2) would gate that first
+  accept.
+- **No agent-forwarding** (avoids credential leakage to the remote).
+- Future: `agent`/`password` auth can be added later behind the same connect
+  path if needed; not in scope for the MVP.
 
 ---
 
@@ -664,21 +696,20 @@ remote turns. `todo` is in-memory. These need no changes.
 
 ## 7. Security considerations
 
-1. **Secrets never in the `Computer` row.** Only `secretRef` (a store key) is
-   persisted; the key/password is fetched from `SecretsAccess` at connect time
-   and held only in the `ssh` extension's process memory (on the pooled
-   connection). This mirrors how `credential-store` holds provider keys.
-2. **Secrets transit gopass → env → container** per the secrets-management
-   skill. The `Computer.secretRef` maps to a gopass entry; `host-bin` (or the
-   `ssh` extension) resolves it. The secret is never logged, never returned by
-   any API.
-3. **Host key verification.** ssh2 supports `hostVerifier` / `hostVerifier
-   callback`. The MVP **should** implement host-key pinning: on first connect,
-   the host key fingerprint is recorded (stored on the `Computer` or a separate
-   `known_hosts`-style field); subsequent connects verify it matches. A mismatch
-   → refuse connection + surface "HOST KEY CHANGED" to the user (never silently
-   connect). This prevents MITM. (A config flag `strictHostKey: true` (default)
-   vs `acceptNew` for first-seen is the OpenSSH analog.)
+1. **No secrets managed by Dispatch (decision #3).** SSH private keys live on
+   disk in `~/.ssh/` (the user's existing, file-permission-protected keys).
+   Dispatch reads the key file at connect time and holds it only in the `ssh`
+   extension's process memory (on the pooled connection). It is never
+   persisted, never logged, never returned by any API. File permissions on
+   `~/.ssh/` (typically `0600`) are the protection — Dispatch relies on them.
+2. **No `secretRef`/gopass wiring (removed).** The secrets-management skill is
+   not involved for SSH; keys are filesystem, not gopass.
+3. **Host-key verification (auto-trust-and-pin, decision #2).** ssh2's
+   `hostVerifier` callback checks `~/.ssh/known_hosts`: present → verify match
+   (reject on mismatch, surface "HOST KEY CHANGED" loudly, never silently
+   connect — prevents MITM); absent (first connect) → accept and append the
+   fingerprint to `known_hosts` (the `StrictHostKeyChecking=accept-new` analog).
+   A future FE "approve host key" prompt (roadmap) would gate that first accept.
 4. **No agent-forwarding** by default (avoids credential leakage to the remote).
 5. **No PTY by default** for `exec` (`pty: false`) — commands run non-interactively,
    output captured as today. PTY would risk leaking control chars / interactive
@@ -690,11 +721,11 @@ remote turns. `todo` is in-memory. These need no changes.
   out — use a proper quoting helper, not string concat.
 7. **Port exposure** — SSH is outbound from the Dispatch host; no inbound ports
    opened. No change to the existing TLS/cert posture.
-8. **Auth method policy** — `agent` and `key` are preferred; `password` is
-   allowed but the UI should warn. No `password` stored in plaintext anywhere
-   (always via `secretRef` → gopass).
+8. **Auth method policy (MVP)** — key-only (decision #3). Password/agent are
+   out of scope; if added later, passwords must never be stored in plaintext
+   (would require reintroducing a secret store).
 9. **Auditability** — every remote `exec`/fs op should be logged via the
-   injected `Logger` (the `ssh` extension spans each operation with computerId),
+   injected `Logger` (the `ssh` extension spans each operation with the alias),
    so remote activity is traceable. Existing observability (trace-store) covers
    this if spans are opened.
 
@@ -705,16 +736,16 @@ remote turns. `todo` is in-memory. These need no changes.
 | Case | Handling |
 |---|---|
 | **Connection drop mid-turn** | The pooled connection errors. The in-flight `spawn`/fs call rejects; the tool returns an error result (`isError: true`) with a clear message ("remote computer connection lost: …"). The model sees a normal tool error and can retry. The pool drops the dead connection; next `acquire` reconnects. The turn is NOT aborted (unlike a signal abort) — the model continues. |
-| **Remote machine offline (connect fails)** | First `acquire` rejects with a connect error → tool error result. A `GET /computers/:id/status` (or extend the existing LSP-status-style endpoint) lets the FE show "offline" before the user sends. |
+| **Remote machine offline (connect fails)** | First `acquire` rejects with a connect error → tool error result. A `GET /computers/:alias/status` lets the FE show "offline" before the user sends. |
 | **Timeout** | Each `spawn` carries its own `timeout` (existing tool param, default 120s). The backend enforces it over SSH (close the stream on timeout) — same `timedOut` result as local. Connect itself has a separate (shorter, e.g. 10s) connect timeout so an unreachable host fails fast. |
 | **Auth failure** | Connect rejects with auth error. Surface a specific error ("SSH authentication failed for computer X") via the tool result + the status endpoint. Never retry in a tight loop (avoid account lockout) — fail and let the user fix the secret. |
 | **cwd doesn't exist on remote** | `cd <cwd>` fails on the remote shell → the command exits non-zero with stderr "no such directory". The tool returns an error result; the model can `cd`/`ls` to recover. Same UX as a bad local cwd. |
 | **Path semantics differ (Windows remote)** | MVP assumes POSIX remotes (ssh2 + sh -c). A Windows remote would need `cmd.exe` + path translation — **out of scope**; documented as POSIX-only. |
 | **Long output** | The existing `OUTPUT_CAP` (50k chars) truncation in the shell tool applies identically — the backend streams stdout; the tool caps. No change. |
 | **Concurrent tool calls to same remote** | Default dispatch `maxConcurrent: 1` serializes, so one command at a time. With parallelism enabled, the pooled connection handles concurrent `exec` (ssh2 supports it); SFTP ops are serialized within the single SFTP session or open additional sessions. |
-| **Computer deleted while in use** | `deleteComputer` closes pooled connections + clears `defaultComputerId`/per-conv overrides (mirror `deleteWorkspace` closing conversations). In-flight calls get a dropped-connection error. |
+| **Computer removed from `~/.ssh/config` while in use** | There's no delete API (config is the source of truth). If a user removes the `Host` block, in-flight calls keep running (the pooled connection is already open); the next `acquire` after the pool reaps it fails to resolve the alias → clear "unknown computer alias" error. The persisted `computerId`/`defaultComputerId` assignment still points at the stale alias; the FE should flag it as unresolved. |
 | **Aborted turn** | `ctx.signal` is threaded into the backend (`spawn` params already take `signal`). On abort, the backend closes the remote stream (best-effort `stream.end()`); the promise resolves `aborted`. The pooled connection stays alive for reuse. |
-| **Secret rotated/removed** | Next `acquire` after a drop fetches the current secret. If removed, connect fails with auth error. |
+| **Key rotated/removed on disk** | Next `acquire` after a drop re-reads the key from `~/.ssh/`. If removed or unreadable, connect fails with an auth/read error. |
 
 ---
 
@@ -722,17 +753,21 @@ remote turns. `todo` is in-memory. These need no changes.
 
 All **additive**. Existing endpoints/messages unchanged.
 
-### 9.1 New computer CRUD endpoints
+### 9.1 Computer endpoints (read-only discovery + status)
+
+Per decision #4, computers are **discovered from `~/.ssh/config`**, so there is
+**no create/update/delete** — only read + status + test:
 
 ```
-GET    /computers                          → { computers: ComputerEntry[] }
-PUT    /computers/:id                      → ensure/create (host, port, user, auth, secretRef)
-GET    /computers/:id                      → Computer
-PUT    /computers/:id/title                → rename
-DELETE /computers/:id                      → { computerId, closedCount }
-GET    /computers/:id/status               → { computerId, state: "disconnected"|"connecting"|"connected"|"error", error? }
-POST   /computers/:id/test                 → probe-connect (opens a test connection, reports ok/error)
+GET    /computers                          → { computers: ComputerEntry[] }   (parses ~/.ssh/config)
+GET    /computers/:alias                   → Computer                          (resolved config entry)
+GET    /computers/:alias/status            → { alias, state: "disconnected"|"connecting"|"connected"|"error", error?, knownHost: bool }
+POST   /computers/:alias/test              → probe-connect (opens a test connection, reports ok/error + pins host key)
 ```
+
+`:alias` is the SSH config `Host` alias. To "add" a computer, the user edits
+`~/.ssh/config` (their own file) — there is no `PUT /computers`. `knownHost`
+reflects whether the alias's host is already in `~/.ssh/known_hosts`.
 
 ### 9.2 Per-conversation + workspace-default endpoints (mirror cwd)
 
@@ -758,7 +793,7 @@ export interface ChatRequest {
   readonly cwd?: string;
   readonly reasoningEffort?: ReasoningEffort;
   readonly workspaceId?: string;
-  /** NEW: computer to execute this turn's tools on. Omit = inherit (workspace default → local). */
+  /** NEW: computer (SSH config alias) to execute this turn's tools on. Omit = inherit (workspace default → local). */
   readonly computerId?: string;
 }
 ```
@@ -767,12 +802,12 @@ export interface ChatRequest {
 `POST /conversations/:id/queue` (`QueueRequest`) all gain the optional
 `computerId`, threaded identically to `cwd`/`workspaceId`.
 
-### 9.4 Secret handling on the API
+### 9.4 No secret handling on the API
 
-`PUT /computers/:id` accepts `secretRef` (a string key) but **never** the secret
-value itself. The actual key material is managed out-of-band (gopass). A
-separate admin path (or env) populates the secret store. This keeps secrets out
-of the HTTP API entirely.
+Per decision #3, there are **no secrets in the API at all** — keys live on disk
+in `~/.ssh/` and are read by the `ssh` extension at connect time. There is no
+`secretRef` field anywhere. This entire concern is removed relative to the
+earlier draft.
 
 ---
 
@@ -781,26 +816,33 @@ of the HTTP API entirely.
 The frontend is a Svelte app; cwd is managed in `src/app/store.svelte.ts` and
 `src/features/workspace/`. The changes mirror the cwd UI:
 
-1. **Computer management view** (new feature folder `src/features/computer/`):
-   list/create/edit/delete computers (host, port, user, auth method, secret ref).
-   A "Test connection" button hitting `POST /computers/:id/test`.
+1. **Computer selector from discovered list** (new feature folder
+   `src/features/computer/`): a dropdown populated by `GET /computers` (which
+   parses `~/.ssh/config`), **no create/edit/delete UI** — to add a computer the
+   user edits `~/.ssh/config`. Each entry shows alias + knownHost indicator.
+   A "Test connection" button hits `POST /computers/:alias/test`.
 2. **Per-conversation computer selector** — a `ComputerField.svelte` next to the
-   existing `CwdField.svelte` in the workspace sidebar. A dropdown of computers +
-   "Local (none)". Saves via `PUT /conversations/:id/computer`.
+   existing `CwdField.svelte` in the workspace sidebar. A dropdown of the
+   discovered computers + "Local (none)". Saves via
+   `PUT /conversations/:id/computer`.
 3. **Workspace default computer** — in the workspace settings, a
    `default-computer` selector (mirror the `default-cwd` control). Saves via
    `PUT /workspaces/:id/default-computer`.
 4. **Connection status badge** — near the computer selector, showing the live
-   `state` from `GET /computers/:id/status` (connected/connecting/error/offline).
-   Poll or surface via the existing surface-registry mechanism.
+   `state` from `GET /computers/:alias/status`
+   (connected/connecting/error/offline). Poll or surface via the existing
+   surface-registry mechanism.
 5. **Store** (`store.svelte.ts`) gains `computerId` reactive state +
    `setComputer`/`refetchComputer` (parallel to `cwd`/`setCwd`).
 6. **`chat.send`** — the chat store's `send()` does not currently pass cwd per-
-   send (cwd is persisted, not per-message). `computerId` follows the same model:
-   persisted per-conversation, set via the sidebar, NOT per-message. So `chat.send`
-   needs no change for the MVP (computer is resolved server-side from the
-   persisted value). A per-send `computerId` override is a later option (the
-   contract supports it; the UI need not expose it initially).
+   send (cwd is persisted, not per-message). `computerId` follows the same model
+   (decision #5): persisted per-conversation, set via the sidebar, NOT per-
+   message. So `chat.send` needs no change for the MVP (computer is resolved
+   server-side from the persisted value). A per-send `computerId` override is a
+   later option (the contract supports it; the UI need not expose it initially).
+7. **(Roadmap) Host-key approve prompt** — on first connect to a new host, a
+   FE prompt to approve the host key before it is pinned (decision #2 roadmap).
+   Not in MVP; MVP auto-trusts-and-pins silently.
 
 > **Transparency note for the FE:** the FE shows the computer to the *user* (so
 > they know where commands run), but the *agent* never sees it (not in the system
@@ -814,8 +856,11 @@ The frontend is a Svelte app; cwd is managed in `src/app/store.svelte.ts` and
 | New package | Tier | Owns | Depends on |
 |---|---|---|---|
 | `exec-backend` | core | `ExecBackend` contract, `LocalExecBackend`, `execBackendHandle` service, the resolver wiring | kernel |
-| `computer-store` | core | `Computer` entity CRUD, per-conv `computerId`, `getEffectiveComputer`, `computerStoreHandle` | conversation-store (reads workspaceId/defaultComputerId), wire |
-| `ssh` | standard | `SshConnectionPool`, `SshExecBackend`, ssh2 wiring, secret resolution, host-key verify | exec-backend, computer-store, kernel (SecretsAccess) |
+| `ssh` | standard | `SshConnectionPool`, `SshExecBackend`, `~/.ssh/config` reader (uses `ssh-config`), `known_hosts` host-key verify, key read from `~/.ssh` | exec-backend, conversation-store (reads `getEffectiveComputer`), wire |
+
+> **No `computer-store` package** (decision #4): with no `Computer` entity to
+> CRUD, the config reader lives in `ssh`, and the persisted assignment +
+> `getEffectiveComputer` live in the existing `conversation-store` (§3.4).
 
 Modified units (contract changes, reported to owners — planner does NOT edit
 these directly per one-owner-per-unit):
@@ -824,19 +869,19 @@ these directly per one-owner-per-unit):
 |---|---|
 | `kernel` (contracts) | `+ computerId` on `ToolExecuteContext` + `RunTurnInput` (additive optional) |
 | `kernel` (runtime dispatch) | thread `computerId` through `executeToolCall`/`createStepDispatcher` |
-| `wire` | `+ Computer`, `ComputerEntry`; `+ defaultComputerId` on `Workspace` |
-| `conversation-store` | `+ defaultComputerId` on `WorkspaceRow`/`Workspace`; `+ setWorkspaceDefaultComputerId` |
+| `wire` | `+ Computer`, `ComputerEntry` (read-only view); `+ defaultComputerId` on `Workspace` |
+| `conversation-store` | `+ defaultComputerId` on `WorkspaceRow`/`Workspace` + `setWorkspaceDefaultComputerId`; `+ getComputerId`/`setComputerId`/`getEffectiveComputer` (mirrors cwd) |
 | `tool-shell` | factory takes `resolveBackend`; `execute` uses `backend.spawn` |
 | `tool-read-file` | refactor to `backend.readFile/readdir/stat` |
 | `tool-write-file` | refactor to `backend.access/stat/writeFile` |
 | `tool-edit-file` | refactor to backend fs ops |
 | `session-orchestrator` | `+ computerId` on `StartTurnInput`/`TurnLifecyclePayload`; resolve `effectiveComputer`; thread into `RunTurnInput`; tools-filter drops `lsp`/`mcp` when remote |
-| `transport-contract` | `+ computerId` on `ChatRequest`/`ChatSendMessage`/`QueueRequest`; computer/workspace-computer response types |
-| `transport-http` | computer CRUD + per-conv/workspace-computer endpoints; thread `computerId` in `/chat` |
+| `transport-contract` | `+ computerId` on `ChatRequest`/`ChatSendMessage`/`QueueRequest`; computer (read-only) + workspace-computer response types |
+| `transport-http` | read-only `/computers` (parses config) + status/test; per-conv/workspace-computer endpoints; thread `computerId` in `/chat` |
 | `transport-ws` | thread `computerId` in `handleChatSend`/`handleChatQueue` |
-| `host-bin` | wire `exec-backend` + `computer-store` + `ssh` extensions; inject `resolveBackend` into tool extensions |
+| `host-bin` | wire `exec-backend` + `ssh` extensions; inject `resolveBackend` into tool extensions |
 | `cache-warming` | thread `computerId` into warm tool assembly (cache-safe) |
-| frontend | computer management + selectors + status badge |
+| frontend | discovered-computer selector + per-conv/workspace-default selectors + status badge |
 
 ---
 
@@ -857,53 +902,70 @@ these directly per one-owner-per-unit):
 - **Verify:** full test suite green; tools behave identically (this de-risks
   the refactor before any SSH).
 
-### Phase 2 — Computer store + API (no SSH yet)
-- `computer-store` package: `Computer` CRUD + per-conv `computerId` +
-  `getEffectiveComputer` (returns `null` = local until a computer is set).
-- `conversation-store`: `defaultComputerId` field + setter.
-- transport-http/ws: computer endpoints + `computerId` on chat.
+### Phase 2 — Assignment + API (no SSH yet)
+- `conversation-store`: `defaultComputerId` field + setter +
+  `getComputerId`/`setComputerId`/`getEffectiveComputer` (mirrors cwd).
+- transport-http/ws: read-only `/computers` + per-conv/workspace-computer
+  endpoints + `computerId` on chat.
 - `session-orchestrator`: resolve + thread `computerId`.
-- **Verify:** can configure a computer per-conversation/workspace; with no `ssh`
-  extension loaded, a configured computer yields a clear "no SSH backend"
+- **Verify:** can assign a computer (alias) per-conversation/workspace; with no
+  `ssh` extension loaded, a configured computer yields a clear "no SSH backend"
   error (degraded) — local conversations unchanged.
 
 ### Phase 3 — SSH execution
-- `ssh` package: `SshConnectionPool` + `SshExecBackend` (ssh2), secret
-  resolution, host-key verification, error mapping.
-- `exec-backend` resolver returns `SshExecBackend` for a `computerId`.
-- tools-filter drops `lsp`/`mcp` on remote turns.
+- **First:** verify `ssh2` runs under Bun (load-bearing — decision #1).
+- `ssh` package: `~/.ssh/config` reader (`ssh-config`), `SshConnectionPool`,
+  `SshExecBackend` (ssh2 exec + sftp), key read from `~/.ssh`, host-key
+  auto-trust-and-pin via `~/.ssh/known_hosts`, error mapping.
+- `exec-backend` resolver returns `SshExecBackend` for a `computerId` (alias).
+- tools-filter drops `lsp`/`mcp` on remote turns (silent — decision #6).
 - **Verify:** integration test against a real (or dockerized) sshd — run_shell,
   read_file, write_file, edit_file execute remotely; agent is unaware.
 
 ### Phase 4 — Frontend
-- Computer management view, per-conv + workspace-default selectors, status badge.
-- Wire store + chat flow.
+- Discovered-computer selector (from `GET /computers`), per-conv +
+  workspace-default selectors, status badge.
+- Wire store + chat flow (persisted per-conversation — decision #5).
 
 ### Phase 5 — Hardening
 - Connection drop/offline/timeout edge tests.
-- Host-key-pinning UX (first-connect trust prompt).
 - Idle reaping + keep-alive tuning.
 - Observability spans for remote ops.
+- (Roadmap) FE host-key approve prompt (decision #2).
 - Remote LSP/MCP (future — out of scope for initial feature).
 
 ---
 
 ## 13. Open questions / decisions for the user
 
-1. **ssh2 vs bun-ssh2** — verify `ssh2` runs under Bun early (Phase 3 kickoff).
-   If not, swap to `bun-ssh2` (identical API). (Requires adding the dependency
-   to `packages/ssh/package.json` — a project-local install, not system-wide.)
-2. **Host-key trust model** — on first connect, auto-trust-and-pin (record the
-   fingerprint), or require explicit user approval via the FE? Recommendation:
-   auto-trust-and-pin on first connect (like `StrictHostKeyChecking=accept-new`),
-   then verify on subsequent; surface changes loudly. Confirm with user.
-3. **`Computer` storage location** — confirm `computer-store` as a separate
-   extension (recommended) vs folding into `conversation-store`.
-4. **Remote LSP/MCP scope** — confirm these are out-of-scope for the initial
-   feature (degrade by dropping the tools), to be revisited later.
-5. **Per-send `computerId`** — confirm the MVP persists `computerId` per-
-   conversation (like cwd) rather than sending it on every `chat.send` (the
-   contract supports both; the UI uses persistence).
+### Resolved (2026-06-25) — see §0.5 for full text
+
+1. ~~ssh2 vs bun-ssh2~~ → **`ssh2`** (no fork); verify under Bun at Phase 3 start.
+2. ~~Host-key trust model~~ → **auto-trust-and-pin**; FE approve prompt is
+   roadmap (future), not MVP.
+3. ~~Auth method~~ → **key-only, from `~/.ssh/`** (no secrets/gopass).
+4. ~~`Computer` storage location~~ → **moot**: no CRUD entity; computers are
+   discovered read-only from `~/.ssh/config`. Assignment (alias string) lives in
+   `conversation-store`.
+5. ~~Per-send vs persisted `computerId`~~ → **persisted per-conversation**.
+6. ~~Remote LSP/MCP scope~~ → **silently dropped** on remote turns (MVP); remote
+   spawn is a future phase.
+7. ~~`edit_file` diagnostics on remote~~ → **works, no diagnostics** (existing
+   no-LSP degradation path).
+
+### Still open (one decision)
+
+**Q. `ssh-config` dependency vs hand-rolled parser.** Parsing `~/.ssh/config`
+correctly is non-trivial (wildcard `Host *.example.com`, `Include`, `Match`,
+first-match-wins defaults). A small well-used npm package **`ssh-config`** parses
+it properly; that's a **project-local** dependency in `packages/ssh/package.json`
+(same category as `ssh2`), not system-wide. **Recommendation: use `ssh-config`**
+for correctness. Alternative: hand-roll a minimal parser (named `Host` entries
+only, ignore wildcards/`Match`) to avoid the extra dep — riskier on edge cases.
+*Awaiting user confirmation on `ssh-config`.*
+
+(All other former open questions are resolved; this is the sole remaining
+pre-implementation decision.)
 
 ---
 
@@ -911,7 +973,7 @@ these directly per one-owner-per-unit):
 
 | Term | Meaning | Aliases to avoid |
 |---|---|---|
-| **computer** | A named SSH target (host+port+user+auth) a conversation can execute tools on. Stored as a `Computer` entity; referenced by `computerId`. `null`/absent = local execution (no SSH). | host (when meaning the SSH target — clashes with "host" the runtime), remote, machine |
+| **computer** | A named SSH target, auto-discovered from a `Host` alias in the system's `~/.ssh/config` (read-only — NOT a persisted CRUD entity). Referenced by `computerId` (the alias). `null`/absent = local execution (no SSH). | host (when meaning the SSH target — clashes with "host" the runtime), remote, machine |
 | **ExecBackend** | The transport-agnostic spawn+fs abstraction tools program against. Two implementations: `LocalExecBackend` (node) and `SshExecBackend` (ssh2). Resolved per-call from `ToolExecuteContext.computerId`. | backend, executor |
-| **computerId** | The identifier of the `Computer` a turn's tools execute on. Threaded like `cwd` (per-turn override → persisted per-conversation → workspace `defaultComputerId` → `null`/local). | hostId, machineId, remoteId |
-| **defaultComputerId** | A workspace's default computer, inherited by conversations with no per-conversation `computerId`. The computer analog of `defaultCwd`. | — |
+| **computerId** | The SSH config `Host` alias of the computer a turn's tools execute on. Threaded like `cwd` (per-turn override → persisted per-conversation → workspace `defaultComputerId` → `null`/local). | hostId, machineId, remoteId |
+| **defaultComputerId** | A workspace's default computer (an SSH config alias), inherited by conversations with no per-conversation `computerId`. The computer analog of `defaultCwd`. | — |
