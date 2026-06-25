@@ -2,4 +2,7 @@ export type { DirEntry, ExecBackend, ExecResult, SpawnParams, StatResult } from 
 export { createExecBackendExtension, manifest } from "./extension.js";
 export { createLocalExecBackend, localExecBackend } from "./local.js";
 export type { ExecBackendResolver } from "./service.js";
-export { execBackendHandle } from "./service.js";
+export {
+	execBackendHandle,
+	remoteExecBackendFactoryHandle,
+} from "./service.js";
