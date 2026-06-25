@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import type { ExecBackendResolver } from "@dispatch/exec-backend";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "@dispatch/kernel";
 
 const DEFAULT_TIMEOUT = 120_000;
@@ -14,14 +15,6 @@ export interface SpawnResult {
 	readonly timedOut: boolean;
 	readonly aborted: boolean;
 }
-
-export type SpawnShell = (params: {
-	readonly command: string;
-	readonly cwd: string;
-	readonly signal: AbortSignal;
-	readonly timeout: number;
-	readonly onOutput: (data: string, stream: "stdout" | "stderr") => void;
-}) => Promise<SpawnResult>;
 
 export function validateArgs(args: unknown): ValidatedArgs | { readonly error: string } {
 	if (args === null || args === undefined || typeof args !== "object") {
@@ -88,7 +81,7 @@ export function buildResult(params: {
 
 export function createRunShellTool(deps: {
 	readonly workdir: string;
-	readonly spawn: SpawnShell;
+	readonly resolveBackend: ExecBackendResolver;
 	readonly outputCap?: number;
 }): ToolContract {
 	const workdir = resolve(deps.workdir);
@@ -139,10 +132,12 @@ export function createRunShellTool(deps: {
 				output += data;
 			};
 
+			const backend = deps.resolveBackend(ctx.computerId);
+
 			let spawnResult: SpawnResult;
 
 			try {
-				spawnResult = await deps.spawn({
+				spawnResult = await backend.spawn({
 					command,
 					cwd: effectiveCwd,
 					signal: ctx.signal,

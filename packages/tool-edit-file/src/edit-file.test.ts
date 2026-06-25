@@ -1,9 +1,15 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { localExecBackend } from "@dispatch/exec-backend";
 import { createLogger, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { computeReplacement, createEditFileTool, validateArgs } from "./edit-file.js";
+import {
+	computeReplacement,
+	createEditFileTool,
+	type DiagnosticsHook,
+	validateArgs,
+} from "./edit-file.js";
 
 function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
 	return {
@@ -17,6 +23,30 @@ function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
 		),
 		...overrides,
 	};
+}
+
+/** No-op diagnostics — the post-edit LSP hook returning "no diagnostics". */
+const noopDiagnostics: DiagnosticsHook = async () => ({
+	formatted: "",
+	slow: false,
+	timedOut: false,
+});
+
+/**
+ * Build an edit_file tool wired to the real local ExecBackend (node:fs,
+ * behavior-identical to today's inline calls) and a no-op diagnostics hook.
+ * No `@dispatch/*` mocking — the real fs edge is exercised, matching the
+ * constitution's strict-core rule. Tests that need a real diagnostics hook
+ * build the tool inline.
+ */
+function makeTool(
+	diagnostics: DiagnosticsHook = noopDiagnostics,
+): ReturnType<typeof createEditFileTool> {
+	return createEditFileTool({
+		resolveBackend: () => localExecBackend,
+		workdir,
+		diagnostics,
+	});
 }
 
 let workdir: string;
@@ -145,7 +175,7 @@ describe("createEditFileTool", () => {
 		const filePath = join(workdir, "test.txt");
 		await writeFile(filePath, "hello world\n", "utf8");
 
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		const result = await tool.execute(
 			{ path: "test.txt", oldString: "world", newString: "there" },
 			stubCtx(),
@@ -162,7 +192,7 @@ describe("createEditFileTool", () => {
 		const filePath = join(workdir, "test.txt");
 		await writeFile(filePath, "aaa\n", "utf8");
 
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		const result = await tool.execute(
 			{ path: "test.txt", oldString: "a", newString: "b", replaceAll: true },
 			stubCtx(),
@@ -179,7 +209,7 @@ describe("createEditFileTool", () => {
 		const filePath = join(workdir, "test.txt");
 		await writeFile(filePath, "hello\n", "utf8");
 
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		const result = await tool.execute(
 			{ path: "test.txt", oldString: "xyz", newString: "abc" },
 			stubCtx(),
@@ -193,7 +223,7 @@ describe("createEditFileTool", () => {
 		const filePath = join(workdir, "test.txt");
 		await writeFile(filePath, "abc abc abc\n", "utf8");
 
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		const result = await tool.execute(
 			{ path: "test.txt", oldString: "abc", newString: "xyz" },
 			stubCtx(),
@@ -207,7 +237,7 @@ describe("createEditFileTool", () => {
 		const filePath = join(workdir, "test.txt");
 		await writeFile(filePath, "hello\n", "utf8");
 
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		const result = await tool.execute(
 			{ path: "test.txt", oldString: "hello", newString: "hello" },
 			stubCtx(),
@@ -218,7 +248,7 @@ describe("createEditFileTool", () => {
 	});
 
 	it("errors / not-found for a nonexistent file", async () => {
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		const result = await tool.execute(
 			{ path: "nonexistent.txt", oldString: "a", newString: "b" },
 			stubCtx(),
@@ -234,7 +264,7 @@ describe("createEditFileTool", () => {
 			const filePath = join(ctxDir, "ctx-file.txt");
 			await writeFile(filePath, "hello world", "utf8");
 
-			const tool = createEditFileTool(workdir);
+			const tool = makeTool();
 			const result = await tool.execute(
 				{ path: "ctx-file.txt", oldString: "world", newString: "there" },
 				stubCtx({ cwd: ctxDir }),
@@ -254,7 +284,7 @@ describe("createEditFileTool", () => {
 		const filePath = join(workdir, "baked-file.txt");
 		await writeFile(filePath, "hello world", "utf8");
 
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		const ctx = stubCtx();
 		expect(ctx.cwd).toBeUndefined();
 		const result = await tool.execute(
@@ -267,7 +297,7 @@ describe("createEditFileTool", () => {
 	});
 
 	it("never throws on bad input (always returns ToolResult)", async () => {
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 
 		const inputs = [null, undefined, 42, "string", {}, { path: "" }, { path: 123 }];
 		for (const input of inputs) {
@@ -278,12 +308,12 @@ describe("createEditFileTool", () => {
 	});
 
 	it("concurrencySafe is false", () => {
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		expect(tool.concurrencySafe).toBe(false);
 	});
 
 	it("has correct name and parameters shape", () => {
-		const tool = createEditFileTool(workdir);
+		const tool = makeTool();
 		expect(tool.name).toBe("edit_file");
 		expect(tool.parameters.type).toBe("object");
 		expect(tool.parameters.required).toEqual(["path", "oldString", "newString"]);
@@ -291,5 +321,116 @@ describe("createEditFileTool", () => {
 		expect(tool.parameters.properties?.oldString?.type).toBe("string");
 		expect(tool.parameters.properties?.newString?.type).toBe("string");
 		expect(tool.parameters.properties?.replaceAll?.type).toBe("boolean");
+	});
+
+	it("appends LSP diagnostics to the result when local and errors exist", async () => {
+		const filePath = join(workdir, "diag.txt");
+		await writeFile(filePath, "hello world\n", "utf8");
+
+		let called = false;
+		const diagnostics: DiagnosticsHook = async (opts) => {
+			called = true;
+			expect(opts.text).toBe("hello there\n");
+			return { formatted: "⚠️ 2 errors", slow: false, timedOut: false };
+		};
+		const tool = makeTool(diagnostics);
+
+		const result = await tool.execute(
+			{ path: "diag.txt", oldString: "world", newString: "there" },
+			stubCtx(),
+		);
+
+		expect(called).toBe(true);
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toContain("Replaced 1 occurrence");
+		expect(result.content).toContain("⚠️ 2 errors");
+	});
+
+	it("appends the slow-diagnostics notice when LSP is slow", async () => {
+		const filePath = join(workdir, "slow.txt");
+		await writeFile(filePath, "hello\n", "utf8");
+
+		const diagnostics: DiagnosticsHook = async () => ({
+			formatted: "",
+			slow: true,
+			timedOut: false,
+		});
+		const tool = makeTool(diagnostics);
+
+		const result = await tool.execute(
+			{ path: "slow.txt", oldString: "hello", newString: "hi" },
+			stubCtx(),
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toContain("Replaced 1 occurrence");
+		expect(result.content).toContain("LSP is taking unusually long");
+	});
+
+	it("calls LSP diagnostics when local (computerId undefined)", async () => {
+		const filePath = join(workdir, "local.txt");
+		await writeFile(filePath, "hello\n", "utf8");
+
+		let called = false;
+		const diagnostics: DiagnosticsHook = async () => {
+			called = true;
+			return { formatted: "", slow: false, timedOut: false };
+		};
+		const tool = makeTool(diagnostics);
+
+		const result = await tool.execute(
+			{ path: "local.txt", oldString: "hello", newString: "hi" },
+			stubCtx(), // computerId omitted → undefined → local
+		);
+
+		expect(called).toBe(true);
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toBe('Replaced 1 occurrence in "local.txt".');
+	});
+
+	it("skips LSP diagnostics when computerId is set (remote)", async () => {
+		const filePath = join(workdir, "remote.txt");
+		await writeFile(filePath, "hello\n", "utf8");
+
+		let called = false;
+		const diagnostics: DiagnosticsHook = async () => {
+			called = true;
+			return { formatted: "DIAG-SHOULD-NOT-APPEAR", slow: false, timedOut: false };
+		};
+		const tool = makeTool(diagnostics);
+
+		const result = await tool.execute(
+			{ path: "remote.txt", oldString: "hello", newString: "hi" },
+			stubCtx({ computerId: "remote-host" }),
+		);
+
+		// Remote: the diagnostics hook is never invoked (LSP servers are local
+		// processes that can't see remote files over SFTP).
+		expect(called).toBe(false);
+		expect(result.isError).toBeUndefined();
+		// The edit itself still succeeded against the (local) backend.
+		expect(result.content).toBe('Replaced 1 occurrence in "remote.txt".');
+		expect(result.content).not.toContain("DIAG-SHOULD-NOT-APPEAR");
+
+		const content = await readFile(filePath, "utf8");
+		expect(content).toBe("hi\n");
+	});
+
+	it("swallows a throwing diagnostics hook (edit already succeeded)", async () => {
+		const filePath = join(workdir, "throw.txt");
+		await writeFile(filePath, "hello\n", "utf8");
+
+		const diagnostics: DiagnosticsHook = async () => {
+			throw new Error("LSP exploded");
+		};
+		const tool = makeTool(diagnostics);
+
+		const result = await tool.execute(
+			{ path: "throw.txt", oldString: "hello", newString: "hi" },
+			stubCtx(),
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toBe('Replaced 1 occurrence in "throw.txt".');
 	});
 });

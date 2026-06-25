@@ -1,6 +1,6 @@
+import { execBackendHandle } from "@dispatch/exec-backend";
 import type { Extension } from "@dispatch/kernel";
 import { createRunShellTool } from "./shell.js";
-import { realSpawn } from "./spawn.js";
 
 export const extension: Extension = {
 	manifest: {
@@ -12,8 +12,11 @@ export const extension: Extension = {
 		activation: "eager",
 		capabilities: { shell: true },
 		contributes: { tools: ["run_shell"] },
+		// Host activates exec-backend first → host.getService at activation is safe.
+		dependsOn: ["exec-backend"],
 	},
 	activate(host) {
-		host.defineTool(createRunShellTool({ workdir: process.cwd(), spawn: realSpawn }));
+		const resolveBackend = host.getService(execBackendHandle);
+		host.defineTool(createRunShellTool({ workdir: process.cwd(), resolveBackend }));
 	},
 };

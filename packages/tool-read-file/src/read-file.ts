@@ -1,5 +1,5 @@
-import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { ExecBackend, ExecBackendResolver, StatResult } from "@dispatch/exec-backend";
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
 
 const DEFAULT_LIMIT = 500;
@@ -83,11 +83,21 @@ export function formatDirectoryEntries(entries: readonly DirEntry[], dirPath: st
 }
 
 /**
- * Factory: create a read_file ToolContract bound to a working directory.
- * The working directory is injected so the tool is testable.
+ * Factory: create a read_file ToolContract.
+ *
+ * `resolveBackend` is the injected seam: each `execute` resolves an
+ * `ExecBackend` from `ctx.computerId` (undefined → local `node:fs`; a set
+ * id → a remote SSH backend in a later wave). The tool programs against the
+ * `ExecBackend` surface, never `node:fs` directly, so it is transport-agnostic.
+ *
+ * `workdir` is the fallback base directory when `ctx.cwd` is omitted. It is
+ * injected so the tool is testable; `execute` prefers `ctx.cwd` when present.
  */
-export function createReadFileTool(workingDirectory: string): ToolContract {
-	const workdir = resolve(workingDirectory);
+export function createReadFileTool(deps: {
+	readonly resolveBackend: ExecBackendResolver;
+	readonly workdir?: string;
+}): ToolContract {
+	const workdir = deps.workdir !== undefined ? resolve(deps.workdir) : undefined;
 
 	return {
 		name: "read_file",
@@ -126,12 +136,21 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 			const { path: relPath, offset, limit } = validated;
 
 			const effectiveBase = ctx.cwd ? resolve(ctx.cwd) : workdir;
+			if (effectiveBase === undefined) {
+				return {
+					content:
+						"Error: No working directory (neither ctx.cwd nor a baked workdir was provided).",
+					isError: true,
+				};
+			}
 			const resolvedPath = resolve(effectiveBase, relPath);
 
+			const backend: ExecBackend = deps.resolveBackend(ctx.computerId);
+
 			// Stat to determine if this is a file or directory.
-			let pathStat: import("node:fs").Stats;
+			let pathStat: StatResult;
 			try {
-				pathStat = await stat(resolvedPath);
+				pathStat = await backend.stat(resolvedPath);
 			} catch (err: unknown) {
 				const code = (err as NodeJS.ErrnoException).code;
 				if (code === "ENOENT") {
@@ -143,28 +162,25 @@ export function createReadFileTool(workingDirectory: string): ToolContract {
 				};
 			}
 
-			// Directory listing branch.
-			if (pathStat.isDirectory()) {
-				let rawEntries: import("node:fs").Dirent<string>[];
+			// Directory listing branch. backend.readdir already returns
+			// {name, isDirectory}[] entries, so no per-entry collapse is needed.
+			if (pathStat.isDirectory) {
+				let entries: readonly DirEntry[];
 				try {
-					rawEntries = await readdir(resolvedPath, { encoding: "utf8", withFileTypes: true });
+					entries = await backend.readdir(resolvedPath);
 				} catch (err: unknown) {
 					return {
 						content: `Error reading directory: ${err instanceof Error ? err.message : String(err)}`,
 						isError: true,
 					};
 				}
-				const dirEntries = rawEntries.map((e) => ({
-					name: e.name,
-					isDirectory: e.isDirectory(),
-				}));
-				return { content: formatDirectoryEntries(dirEntries, relPath) };
+				return { content: formatDirectoryEntries(entries, relPath) };
 			}
 
 			// File branch — read the file.
 			let content: string;
 			try {
-				content = await readFile(resolvedPath, "utf8");
+				content = await backend.readFile(resolvedPath);
 			} catch (err: unknown) {
 				const code = (err as NodeJS.ErrnoException).code;
 				if (code === "ENOENT") {

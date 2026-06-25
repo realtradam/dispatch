@@ -1,5 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { ExecBackend, ExecBackendResolver } from "@dispatch/exec-backend";
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
 
 // --- Pure types ---
@@ -123,16 +123,29 @@ export type DiagnosticsHook = (opts: {
 // --- Shell / edge ---
 
 /**
- * Factory: create an edit_file ToolContract bound to a working directory.
- * The working directory is injected so the tool is testable.
- * `diagnostics` is optional — when provided, errors+warnings from LSP servers
- * are appended to successful edit results (only when errors exist).
+ * Factory: create an edit_file ToolContract.
+ *
+ * `resolveBackend` is the injected seam: each `execute` resolves an
+ * `ExecBackend` from `ctx.computerId` (undefined → local `node:fs`; a set
+ * id → a remote SSH backend in a later wave). The tool programs against the
+ * `ExecBackend` surface, never `node:fs` directly, so it is transport-agnostic.
+ *
+ * `workdir` is the fallback base directory when `ctx.cwd` is omitted. It is
+ * injected so the tool is testable; `execute` prefers `ctx.cwd` when present.
+ *
+ * `diagnostics` is the post-edit LSP hook (errors+warnings from LSP servers
+ * are appended to successful edit results, only when errors exist). It is
+ * invoked LAZILY at edit time — the extension defers the LSP service lookup so
+ * it resolves after LSP activates. When `ctx.computerId` is set (REMOTE) the
+ * diagnostics call is skipped: LSP servers are local processes that can't see
+ * remote files over SFTP, so the no-LSP degradation path is used instead.
  */
-export function createEditFileTool(
-	workingDirectory: string,
-	diagnostics?: DiagnosticsHook,
-): ToolContract {
-	const workdir = resolve(workingDirectory);
+export function createEditFileTool(deps: {
+	readonly resolveBackend: ExecBackendResolver;
+	readonly workdir?: string;
+	readonly diagnostics: DiagnosticsHook;
+}): ToolContract {
+	const workdir = deps.workdir !== undefined ? resolve(deps.workdir) : undefined;
 
 	return {
 		name: "edit_file",
@@ -173,12 +186,21 @@ export function createEditFileTool(
 			const { path: relPath, oldString, newString, replaceAll } = validated;
 
 			const effectiveBase = ctx.cwd ? resolve(ctx.cwd) : workdir;
+			if (effectiveBase === undefined) {
+				return {
+					content:
+						"Error: No working directory (neither ctx.cwd nor a baked workdir was provided).",
+					isError: true,
+				};
+			}
 			const resolvedPath = resolve(effectiveBase, relPath);
+
+			const backend: ExecBackend = deps.resolveBackend(ctx.computerId);
 
 			// Read the file.
 			let content: string;
 			try {
-				content = await readFile(resolvedPath, "utf8");
+				content = await backend.readFile(resolvedPath);
 			} catch (err: unknown) {
 				const code = (err as NodeJS.ErrnoException).code;
 				if (code === "ENOENT") {
@@ -215,7 +237,7 @@ export function createEditFileTool(
 
 			// Write the modified content back.
 			try {
-				await writeFile(resolvedPath, result.content, "utf8");
+				await backend.writeFile(resolvedPath, result.content);
 			} catch (err: unknown) {
 				return {
 					content: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,
@@ -228,28 +250,43 @@ export function createEditFileTool(
 
 			// After a successful edit, query LSP diagnostics (if available).
 			// Only append if there are actual errors/warnings (no noise on clean edits).
+			const diagnostics = deps.diagnostics;
 			if (diagnostics) {
-				try {
-					const cwd = ctx.cwd ?? process.cwd();
-					const diag = await diagnostics({
-						filePath: resolvedPath,
-						text: result.content,
-						cwd,
-					});
-					const suffix: string[] = [];
-					if (diag.slow) {
-						suffix.push(
-							"⚠️ LSP is taking unusually long. If this happens more than once, raise it to the user.",
-						);
+				let diag: {
+					readonly formatted: string;
+					readonly slow: boolean;
+					readonly timedOut: boolean;
+				};
+				if (ctx.computerId !== undefined) {
+					// REMOTE: LSP servers are local processes that can't see remote
+					// files over SFTP — skip the diagnostics call (the no-LSP
+					// degradation path). Forward-compatible: computerId is always
+					// undefined this wave, so behavior is byte-identical to today.
+					diag = { formatted: "", slow: false, timedOut: false };
+				} else {
+					try {
+						const cwd = ctx.cwd ?? process.cwd();
+						diag = await diagnostics({
+							filePath: resolvedPath,
+							text: result.content,
+							cwd,
+						});
+					} catch {
+						// LSP diagnostics failure is non-fatal — the edit already succeeded.
+						diag = { formatted: "", slow: false, timedOut: false };
 					}
-					if (diag.formatted) {
-						suffix.push(diag.formatted);
-					}
-					if (suffix.length > 0) {
-						baseContent += `\n\n${suffix.join("\n\n")}`;
-					}
-				} catch {
-					// LSP diagnostics failure is non-fatal — the edit already succeeded.
+				}
+				const suffix: string[] = [];
+				if (diag.slow) {
+					suffix.push(
+						"⚠️ LSP is taking unusually long. If this happens more than once, raise it to the user.",
+					);
+				}
+				if (diag.formatted) {
+					suffix.push(diag.formatted);
+				}
+				if (suffix.length > 0) {
+					baseContent += `\n\n${suffix.join("\n\n")}`;
 				}
 			}
 

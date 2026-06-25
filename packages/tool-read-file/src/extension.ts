@@ -1,3 +1,4 @@
+import { execBackendHandle } from "@dispatch/exec-backend";
 import type { Extension } from "@dispatch/kernel";
 import { createReadFileTool } from "./read-file.js";
 
@@ -11,8 +12,11 @@ export const extension: Extension = {
 		activation: "eager",
 		capabilities: { fs: true },
 		contributes: { tools: ["read_file"] },
+		// Host activates exec-backend first → host.getService at activation is safe.
+		dependsOn: ["exec-backend"],
 	},
 	activate(host) {
-		host.defineTool(createReadFileTool(process.cwd()));
+		const resolveBackend = host.getService(execBackendHandle);
+		host.defineTool(createReadFileTool({ resolveBackend, workdir: process.cwd() }));
 	},
 };

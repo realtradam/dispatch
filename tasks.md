@@ -21,8 +21,10 @@ owner-agents on disjoint packages).
       `conversation-store` (contract fan-out: defaultComputerId + getEffectiveComputer
       + per-conv computerId get/set/clear). `tsc -b` EXIT 0, biome clean, **1592 vitest**
       (was 1549, +43).
-- [ ] **Wave 2** (parallel): refactor `tool-shell`/`read-file`/`write-file`/
-      `edit-file` behind `ExecBackend` (local-only still).
+- [x] **Wave 2** (parallel): refactor `tool-shell`/`read-file`/`write-file`/
+      `edit-file` behind `ExecBackend` (local-only; spawn.ts deleted — logic moved
+      to exec-backend; edit_file gains forward-compatible remote-diagnostics skip).
+      `tsc -b` EXIT 0, biome clean, **1599 vitest** (was 1592).
 - [ ] **Wave 3**: `conversation-store` (defaultComputerId + getEffectiveComputer)
       + `session-orchestrator` (resolve + thread computerId; drop lsp/mcp when
       remote) + `transport-contract` (computerId on ChatRequest + computer types).
