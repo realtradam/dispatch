@@ -1,3 +1,4 @@
+import { execBackendHandle } from "@dispatch/exec-backend";
 import type { Extension } from "@dispatch/kernel";
 import { type LspService, lspServiceHandle } from "@dispatch/lsp";
 import { createEditFileTool, type DiagnosticsHook } from "./edit-file.js";
@@ -12,8 +13,15 @@ export const extension: Extension = {
 		activation: "eager",
 		capabilities: { fs: true },
 		contributes: { tools: ["edit_file"] },
+		// Host activates exec-backend first → host.getService at activation is safe.
+		// LSP stays lazy (looked up at edit time, not activation): the LSP extension
+		// activates AFTER us in the CORE_EXTENSIONS array, so resolving it here would
+		// throw; the diagnostics hook below defers the lookup to execute().
+		dependsOn: ["exec-backend"],
 	},
 	activate(host) {
+		const resolveBackend = host.getService(execBackendHandle);
+
 		// Lazy LSP lookup: the LSP extension activates AFTER us in the
 		// CORE_EXTENSIONS array, so host.getService would throw at activation
 		// time. Instead, defer the lookup to edit time — by then all extensions
@@ -38,6 +46,6 @@ export const extension: Extension = {
 			});
 		};
 
-		host.defineTool(createEditFileTool(process.cwd(), diagnostics));
+		host.defineTool(createEditFileTool({ resolveBackend, workdir: process.cwd(), diagnostics }));
 	},
 };

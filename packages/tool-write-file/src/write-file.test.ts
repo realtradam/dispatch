@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { localExecBackend } from "@dispatch/exec-backend";
 import { createLogger, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createWriteFileTool, decideOverwrite, validateArgs } from "./write-file.js";
@@ -17,6 +18,15 @@ function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
 		),
 		...overrides,
 	};
+}
+
+/**
+ * Build a write_file tool wired to the real local ExecBackend (node:fs,
+ * behavior-identical to today's inline calls). No `@dispatch/*` mocking — the
+ * real fs edge is exercised, matching the constitution's strict-core rule.
+ */
+function makeTool(workdir: string) {
+	return createWriteFileTool({ resolveBackend: () => localExecBackend, workdir });
 }
 
 let workdir: string;
@@ -116,7 +126,7 @@ describe("validateArgs", () => {
 
 describe("createWriteFileTool", () => {
 	it("creates a new file when overwrite is unset and the file is absent", async () => {
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "new-file.txt", content: "hello world" }, stubCtx());
 
 		expect(result.isError).toBeUndefined();
@@ -128,7 +138,7 @@ describe("createWriteFileTool", () => {
 	it("errors when the file exists and overwrite is unset", async () => {
 		await writeFile(join(workdir, "existing.txt"), "old content", "utf8");
 
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "existing.txt", content: "new content" }, stubCtx());
 
 		expect(result.isError).toBe(true);
@@ -141,7 +151,7 @@ describe("createWriteFileTool", () => {
 	it("overwrites an existing file when overwrite is true", async () => {
 		await writeFile(join(workdir, "existing.txt"), "old content", "utf8");
 
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute(
 			{ path: "existing.txt", content: "new content", overwrite: true },
 			stubCtx(),
@@ -154,7 +164,7 @@ describe("createWriteFileTool", () => {
 	});
 
 	it("errors when overwrite is true but the file is absent", async () => {
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute(
 			{ path: "nonexistent.txt", content: "data", overwrite: true },
 			stubCtx(),
@@ -165,7 +175,7 @@ describe("createWriteFileTool", () => {
 	});
 
 	it("errors when the parent directory does not exist", async () => {
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "no/such/dir/file.txt", content: "data" }, stubCtx());
 
 		expect(result.isError).toBe(true);
@@ -173,12 +183,12 @@ describe("createWriteFileTool", () => {
 	});
 
 	it("concurrencySafe is false", () => {
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		expect(tool.concurrencySafe).toBe(false);
 	});
 
 	it("has correct name and parameters shape", () => {
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		expect(tool.name).toBe("write_file");
 		expect(tool.parameters.type).toBe("object");
 		expect(tool.parameters.required).toEqual(["path", "content"]);
@@ -188,7 +198,7 @@ describe("createWriteFileTool", () => {
 	});
 
 	it("never throws on bad input (always returns ToolResult)", async () => {
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		const inputs = [null, undefined, 42, "string", {}, { path: "" }, { path: 123 }];
 		for (const input of inputs) {
 			const result = await tool.execute(input, stubCtx());
@@ -200,7 +210,7 @@ describe("createWriteFileTool", () => {
 	it("respects ctx.cwd over baked workdir", async () => {
 		const ctxDir = await mkdtemp(join(tmpdir(), "ctx-cwd-test-"));
 		try {
-			const tool = createWriteFileTool(workdir);
+			const tool = makeTool(workdir);
 			const result = await tool.execute(
 				{ path: "ctx-file.txt", content: "from ctx" },
 				stubCtx({ cwd: ctxDir }),
@@ -215,7 +225,7 @@ describe("createWriteFileTool", () => {
 	});
 
 	it("writes empty content", async () => {
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "empty.txt", content: "" }, stubCtx());
 
 		expect(result.isError).toBeUndefined();
@@ -225,7 +235,7 @@ describe("createWriteFileTool", () => {
 
 	it("writes content in subdirectory that exists", async () => {
 		await mkdir(join(workdir, "sub"));
-		const tool = createWriteFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "sub/file.txt", content: "nested" }, stubCtx());
 
 		expect(result.isError).toBeUndefined();

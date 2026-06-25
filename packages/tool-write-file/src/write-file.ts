@@ -1,5 +1,5 @@
-import { access, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { ExecBackend, ExecBackendResolver } from "@dispatch/exec-backend";
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
 
 interface ValidatedArgs {
@@ -51,11 +51,21 @@ export function validateArgs(args: unknown): ValidatedArgs | { readonly error: s
 }
 
 /**
- * Factory: create a write_file ToolContract bound to a working directory.
- * The working directory is injected so the tool is testable.
+ * Factory: create a write_file ToolContract.
+ *
+ * `resolveBackend` is the injected seam: each `execute` resolves an
+ * `ExecBackend` from `ctx.computerId` (undefined → local `node:fs`; a set
+ * id → a remote SSH backend in a later wave). The tool programs against the
+ * `ExecBackend` surface, never `node:fs` directly, so it is transport-agnostic.
+ *
+ * `workdir` is the fallback base directory when `ctx.cwd` is omitted. It is
+ * injected so the tool is testable; `execute` prefers `ctx.cwd` when present.
  */
-export function createWriteFileTool(workingDirectory: string): ToolContract {
-	const workdir = resolve(workingDirectory);
+export function createWriteFileTool(deps: {
+	readonly resolveBackend: ExecBackendResolver;
+	readonly workdir?: string;
+}): ToolContract {
+	const workdir = deps.workdir !== undefined ? resolve(deps.workdir) : undefined;
 
 	return {
 		name: "write_file",
@@ -95,22 +105,21 @@ export function createWriteFileTool(workingDirectory: string): ToolContract {
 			const { path: relPath, content, overwrite } = validated;
 
 			const effectiveBase = ctx.cwd ? resolve(ctx.cwd) : workdir;
+			if (effectiveBase === undefined) {
+				return {
+					content:
+						"Error: No working directory (neither ctx.cwd nor a baked workdir was provided).",
+					isError: true,
+				};
+			}
 			const resolvedPath = resolve(effectiveBase, relPath);
 
-			// Check existence.
-			let fileExists = false;
-			try {
-				await access(resolvedPath);
-				fileExists = true;
-			} catch (err: unknown) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					return {
-						content: `Error checking file: ${err instanceof Error ? err.message : String(err)}`,
-						isError: true,
-					};
-				}
-			}
+			const backend: ExecBackend = deps.resolveBackend(ctx.computerId);
+
+			// Check existence. `backend.exists` never throws — it returns false
+			// when the path is missing — so the old try/catch around `access`
+			// collapses to a single boolean read.
+			const fileExists = await backend.exists(resolvedPath);
 
 			// Pure decision.
 			const decision = decideOverwrite(fileExists, overwrite);
@@ -118,10 +127,13 @@ export function createWriteFileTool(workingDirectory: string): ToolContract {
 				return { content: decision.error, isError: true };
 			}
 
-			// Verify it's not a directory.
+			// Verify it's not a directory. `backend.stat` returns a
+			// `{ isFile, isDirectory }` result; only reached when the file
+			// exists, so an ENOENT here is a lost race left to propagate
+			// (same as the prior uncaught `stat` call).
 			if (fileExists) {
-				const pathStat = await stat(resolvedPath);
-				if (pathStat.isDirectory()) {
+				const pathStat = await backend.stat(resolvedPath);
+				if (pathStat.isDirectory) {
 					return {
 						content: `Error: "${relPath}" is a directory, not a file.`,
 						isError: true,
@@ -129,9 +141,11 @@ export function createWriteFileTool(workingDirectory: string): ToolContract {
 				}
 			}
 
-			// Write the file.
+			// Write the file. LocalExecBackend throws node:fs-style errors
+			// carrying a `.code` (e.g. ENOENT when the parent dir is missing);
+			// the catch surfaces the message verbatim.
 			try {
-				await writeFile(resolvedPath, content, "utf8");
+				await backend.writeFile(resolvedPath, content);
 			} catch (err: unknown) {
 				return {
 					content: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,

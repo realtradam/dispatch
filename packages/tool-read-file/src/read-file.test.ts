@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { localExecBackend } from "@dispatch/exec-backend";
 import { createLogger, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -23,6 +24,15 @@ function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
 		),
 		...overrides,
 	};
+}
+
+/**
+ * Build a read_file tool wired to the real local ExecBackend (node:fs,
+ * behavior-identical to today's inline calls). No `@dispatch/*` mocking — the
+ * real fs edge is exercised, matching the constitution's strict-core rule.
+ */
+function makeTool(workdir: string) {
+	return createReadFileTool({ resolveBackend: () => localExecBackend, workdir });
 }
 
 let workdir: string;
@@ -151,7 +161,7 @@ describe("createReadFileTool", () => {
 		const filePath = join(workdir, "hello.txt");
 		await writeFile(filePath, "hello\nworld\n", "utf8");
 
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "hello.txt" }, stubCtx());
 
 		expect(result.isError).toBeUndefined();
@@ -163,7 +173,7 @@ describe("createReadFileTool", () => {
 		const filePath = join(workdir, "lines.txt");
 		await writeFile(filePath, "a\nb\nc\nd\ne\n", "utf8");
 
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "lines.txt", offset: 2, limit: 2 }, stubCtx());
 
 		expect(result.isError).toBeUndefined();
@@ -171,7 +181,7 @@ describe("createReadFileTool", () => {
 	});
 
 	it("returns error for missing file", async () => {
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "nonexistent.txt" }, stubCtx());
 
 		expect(result.isError).toBe(true);
@@ -182,7 +192,7 @@ describe("createReadFileTool", () => {
 		const filePath = join(workdir, "empty.txt");
 		await writeFile(filePath, "", "utf8");
 
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "empty.txt" }, stubCtx());
 
 		expect(result.isError).toBeUndefined();
@@ -194,7 +204,7 @@ describe("createReadFileTool", () => {
 		const filePath = join(workdir, "short.txt");
 		await writeFile(filePath, "one\n", "utf8");
 
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "short.txt", offset: 100 }, stubCtx());
 
 		expect(result.isError).toBe(true);
@@ -202,7 +212,7 @@ describe("createReadFileTool", () => {
 	});
 
 	it("never throws on bad input (always returns ToolResult)", async () => {
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 
 		const inputs = [null, undefined, 42, "string", {}, { path: "" }, { path: 123 }];
 		for (const input of inputs) {
@@ -213,12 +223,12 @@ describe("createReadFileTool", () => {
 	});
 
 	it("concurrencySafe is true", () => {
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		expect(tool.concurrencySafe).toBe(true);
 	});
 
 	it("has correct name and parameters shape", () => {
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		expect(tool.name).toBe("read_file");
 		expect(tool.parameters.type).toBe("object");
 		expect(tool.parameters.required).toEqual(["path"]);
@@ -231,7 +241,7 @@ describe("createReadFileTool", () => {
 			const filePath = join(ctxDir, "ctx-file.txt");
 			await writeFile(filePath, "from ctx cwd", "utf8");
 
-			const tool = createReadFileTool(workdir); // baked workdir is different
+			const tool = makeTool(workdir); // baked workdir is different
 			const result = await tool.execute({ path: "ctx-file.txt" }, stubCtx({ cwd: ctxDir }));
 
 			expect(result.isError).toBeUndefined();
@@ -245,7 +255,7 @@ describe("createReadFileTool", () => {
 		const filePath = join(workdir, "baked-file.txt");
 		await writeFile(filePath, "from baked workdir", "utf8");
 
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const ctx = stubCtx();
 		// Ensure cwd is undefined
 		expect(ctx.cwd).toBeUndefined();
@@ -260,7 +270,7 @@ describe("createReadFileTool", () => {
 		await writeFile(join(workdir, "zebra.txt"), "z", "utf8");
 		await writeFile(join(workdir, "alpha.txt"), "a", "utf8");
 
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "." }, stubCtx());
 
 		expect(result.isError).toBeUndefined();
@@ -270,7 +280,7 @@ describe("createReadFileTool", () => {
 	it("returns empty-directory message for an empty dir", async () => {
 		await mkdir(join(workdir, "empty-dir"));
 
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "empty-dir" }, stubCtx());
 
 		expect(result.isError).toBeUndefined();
@@ -280,7 +290,7 @@ describe("createReadFileTool", () => {
 	it("reads a file unchanged (regression: line numbers + offset/limit)", async () => {
 		await writeFile(join(workdir, "regression.txt"), "a\nb\nc\nd\ne\n", "utf8");
 
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "regression.txt", offset: 2, limit: 3 }, stubCtx());
 
 		expect(result.isError).toBeUndefined();
@@ -288,10 +298,89 @@ describe("createReadFileTool", () => {
 	});
 
 	it("returns not-found for a nonexistent path", async () => {
-		const tool = createReadFileTool(workdir);
+		const tool = makeTool(workdir);
 		const result = await tool.execute({ path: "nonexistent-path" }, stubCtx());
 
 		expect(result.isError).toBe(true);
 		expect(result.content).toContain("not found");
+	});
+
+	it("routes fs calls through resolveBackend(ctx.computerId) (transport seam)", async () => {
+		// A fake backend records what it is asked to do. Proves the tool programs
+		// against the ExecBackend surface (not node:fs) and that the resolver is
+		// invoked with ctx.computerId — the SSH seam. No real fs involved.
+		let statCalls = 0;
+		let readFileCalls = 0;
+		let readdirCalls = 0;
+		let receivedComputerId: string | undefined = "__sentinel__";
+		const fakeBackend = {
+			spawn: async () => ({ exitCode: 0, timedOut: false, aborted: false }),
+			readFile: async (path: string) => {
+				readFileCalls++;
+				expect(path).toContain("seam.txt");
+				return "fake-line-1\nfake-line-2";
+			},
+			writeFile: async () => {},
+			stat: async (path: string) => {
+				statCalls++;
+				expect(path).toContain("seam.txt");
+				return { isFile: true, isDirectory: false };
+			},
+			readdir: async () => {
+				readdirCalls++;
+				return [];
+			},
+			exists: async () => true,
+		} as const;
+
+		const tool = createReadFileTool({
+			resolveBackend: (computerId) => {
+				receivedComputerId = computerId;
+				return fakeBackend;
+			},
+			workdir,
+		});
+		const result = await tool.execute({ path: "seam.txt" }, stubCtx({ computerId: "prod-ssh" }));
+
+		expect(receivedComputerId).toBe("prod-ssh");
+		expect(statCalls).toBe(1);
+		expect(readFileCalls).toBe(1);
+		expect(readdirCalls).toBe(0);
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toBe("1: fake-line-1\n2: fake-line-2");
+	});
+
+	it("resolves the local backend when ctx.computerId is undefined (backward compat)", async () => {
+		// computerId undefined → resolver returns localExecBackend → real fs.
+		const tool = createReadFileTool({ resolveBackend: () => localExecBackend, workdir });
+		const filePath = join(workdir, "compat.txt");
+		await writeFile(filePath, "real fs via backend\n", "utf8");
+
+		const result = await tool.execute({ path: "compat.txt" }, stubCtx());
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toContain("1: real fs via backend");
+	});
+
+	it("preserves ENOENT .code branch through the backend (fake backend throws)", async () => {
+		const enoent = Object.assign(new Error("ENOENT: no such file or directory"), {
+			code: "ENOENT",
+		});
+		const fakeBackend = {
+			spawn: async () => ({ exitCode: 0, timedOut: false, aborted: false }),
+			readFile: async () => "unused",
+			writeFile: async () => {},
+			stat: async () => {
+				throw enoent;
+			},
+			readdir: async () => [],
+			exists: async () => false,
+		} as const;
+
+		const tool = createReadFileTool({ resolveBackend: () => fakeBackend, workdir });
+		const result = await tool.execute({ path: "ghost.txt" }, stubCtx());
+
+		expect(result.isError).toBe(true);
+		expect(result.content).toBe('Error: File "ghost.txt" not found.');
 	});
 });
