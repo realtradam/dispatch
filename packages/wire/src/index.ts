@@ -570,6 +570,14 @@ export interface Workspace {
 	readonly title: string;
 	/** The workspace's default cwd, or `null` (fall through to server default). */
 	readonly defaultCwd: string | null;
+	/**
+	 * The workspace's default computer — an SSH config `Host` alias that
+	 * conversations in this workspace inherit when they set no `computerId` of
+	 * their own. `null` means local (no SSH; today's behavior). The computer
+	 * analog of `defaultCwd`. Resolved per-conversation by `getEffectiveComputer`
+	 * (per-conv `computerId` → this → `null`/local).
+	 */
+	readonly defaultComputerId: string | null;
 	/** Epoch-ms when the workspace was first created. */
 	readonly createdAt: number;
 	/** Epoch-ms of the most recent conversation activity in this workspace. */
@@ -583,4 +591,45 @@ export interface Workspace {
 export interface WorkspaceEntry extends Workspace {
 	/** Number of conversations assigned to this workspace. */
 	readonly conversationCount: number;
+}
+
+// ─── Computers ───────────────────────────────────────────────────────────────
+
+/**
+ * A read-only view of a remote computer discovered from the system's
+ * `~/.ssh/config` — a "computer" is a `Host` alias, NOT an editable entity
+ * (there is no Computer CRUD store). To add a computer, the user adds a `Host`
+ * block to `~/.ssh/config`; Dispatch discovers it on the next `listComputers()`
+ * read. Every field below is resolved from the config (first-match-wins for
+ * `HostName`/`User`/`Port`/`IdentityFile`).
+ *
+ * `alias` is the `computerId` users select — the string persisted per
+ * conversation and per workspace (the computer analog of `cwd`). `knownHost`
+ * drives the frontend "known/new" indicator and is read-only.
+ */
+export interface Computer {
+	/** The SSH config `Host` alias — also the `computerId` users select. */
+	readonly alias: string;
+	/** Resolved `HostName`/IP from the config (falls back to the alias itself). */
+	readonly hostName: string;
+	/** Resolved port (config `Port`, default 22). */
+	readonly port: number;
+	/** Resolved user (config `User`, default the current user). */
+	readonly user: string;
+	/** Resolved `IdentityFile` path (from the config, or `null` = default `~/.ssh/id_*`). */
+	readonly identityFile: string | null;
+	/**
+	 * Whether the host's key is already in `~/.ssh/known_hosts` (i.e. previously
+	 * connected). Drives the frontend "known/new" indicator. Read-only.
+	 */
+	readonly knownHost: boolean;
+}
+
+/**
+ * A computer entry in the list response (`GET /computers`) — a `Computer` plus
+ * a usage count. Parallel to `WorkspaceEntry`.
+ */
+export interface ComputerEntry extends Computer {
+	/** Number of conversations/workspaces whose `computerId` resolves to this alias. */
+	readonly usageCount: number;
 }

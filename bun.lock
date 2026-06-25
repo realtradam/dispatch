@@ -51,6 +51,13 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/exec-backend": {
+      "name": "@dispatch/exec-backend",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/host-bin": {
       "name": "@dispatch/host-bin",
       "version": "0.0.0",
@@ -350,6 +357,8 @@
     "@dispatch/conversation-store": ["@dispatch/conversation-store@workspace:packages/conversation-store"],
 
     "@dispatch/credential-store": ["@dispatch/credential-store@workspace:packages/credential-store"],
+
+    "@dispatch/exec-backend": ["@dispatch/exec-backend@workspace:packages/exec-backend"],
 
     "@dispatch/host-bin": ["@dispatch/host-bin@workspace:packages/host-bin"],
 

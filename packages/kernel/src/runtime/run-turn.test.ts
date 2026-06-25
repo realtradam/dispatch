@@ -835,6 +835,71 @@ describe("runTurn", () => {
 		expect(capturedCwd).toBeUndefined();
 	});
 
+	it("forwards computerId from RunTurnInput to ToolExecuteContext", async () => {
+		let capturedComputerId: string | undefined = "SENTINEL_NOT_SET";
+
+		const tool = createFakeTool("computercheck", async (_input, ctx) => {
+			capturedComputerId = ctx.computerId;
+			return { content: "ok" };
+		});
+
+		const provider = createFakeProvider([
+			[
+				{ type: "tool-call", toolCallId: "tc1", toolName: "computercheck", input: {} },
+				{ type: "finish", reason: "tool-calls" },
+			],
+			[
+				{ type: "text-delta", delta: "done" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		await runTurn({
+			provider,
+			messages: [userMessage],
+			tools: [tool],
+			dispatch: { maxConcurrent: 1, eager: false },
+			conversationId: "tab-test",
+			turnId: "turn-test",
+			emit: () => {},
+			computerId: "ssh-host-alias",
+		});
+
+		expect(capturedComputerId).toBe("ssh-host-alias");
+	});
+
+	it("forwards undefined computerId when RunTurnInput has no computerId", async () => {
+		let capturedComputerId: string | undefined = "SENTINEL_NOT_SET";
+
+		const tool = createFakeTool("computercheck", async (_input, ctx) => {
+			capturedComputerId = ctx.computerId;
+			return { content: "ok" };
+		});
+
+		const provider = createFakeProvider([
+			[
+				{ type: "tool-call", toolCallId: "tc1", toolName: "computercheck", input: {} },
+				{ type: "finish", reason: "tool-calls" },
+			],
+			[
+				{ type: "text-delta", delta: "done" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+
+		await runTurn({
+			provider,
+			messages: [userMessage],
+			tools: [tool],
+			dispatch: { maxConcurrent: 1, eager: false },
+			conversationId: "tab-test",
+			turnId: "turn-test",
+			emit: () => {},
+		});
+
+		expect(capturedComputerId).toBeUndefined();
+	});
+
 	it("aggregates usage across multiple steps", async () => {
 		const provider = createFakeProvider([
 			[

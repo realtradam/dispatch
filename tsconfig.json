@@ -41,6 +41,9 @@
 			"path": "./packages/credential-store"
 		},
 		{
+			"path": "./packages/exec-backend"
+		},
+		{
 			"path": "./packages/conversation-store"
 		},
 		{

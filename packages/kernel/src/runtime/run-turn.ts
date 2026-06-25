@@ -117,6 +117,7 @@ interface StepContext {
 	readonly turnSpan: Span | undefined;
 	readonly toolSpans: Map<string, Span>;
 	readonly cwd: string | undefined;
+	readonly computerId: string | undefined;
 	readonly now: (() => number) | undefined;
 	/** Per-turn provider options (model, systemPrompt, …) threaded to stream(). */
 	readonly providerOpts: ProviderStreamOptions | undefined;
@@ -295,6 +296,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		ctx.turnId,
 		ctx.toolSpans,
 		ctx.cwd,
+		ctx.computerId,
 	);
 
 	const timing: TimingState = {
@@ -522,6 +524,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				turnSpan,
 				toolSpans,
 				cwd: input.cwd,
+				computerId: input.computerId,
 				now,
 				providerOpts: input.providerOpts,
 			});
