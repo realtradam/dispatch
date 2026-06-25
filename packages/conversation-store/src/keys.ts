@@ -50,6 +50,10 @@ export function cwdKey(conversationId: string): string {
 	return `conv:${conversationId}:cwd`;
 }
 
+export function computerKey(conversationId: string): string {
+	return `conv:${conversationId}:computer`;
+}
+
 export function reasoningEffortKey(conversationId: string): string {
 	return `conv:${conversationId}:reasoning-effort`;
 }

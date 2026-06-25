@@ -46,6 +46,7 @@ describe("WorkspaceStore", () => {
 			id: "my-work",
 			title: "my-work",
 			defaultCwd: null,
+			defaultComputerId: null,
 			createdAt: 1000,
 			lastActivityAt: 1000,
 		});
@@ -64,6 +65,7 @@ describe("WorkspaceStore", () => {
 			id: "my-work",
 			title: "my-work",
 			defaultCwd: null,
+			defaultComputerId: null,
 			createdAt: 1000,
 			lastActivityAt: 1000,
 		});
@@ -80,6 +82,7 @@ describe("WorkspaceStore", () => {
 			id: "my-work",
 			title: "Custom",
 			defaultCwd: "/projects/dispatch",
+			defaultComputerId: null,
 			createdAt: 3000,
 			lastActivityAt: 3000,
 		});
@@ -92,6 +95,7 @@ describe("WorkspaceStore", () => {
 			id: "default",
 			title: "default",
 			defaultCwd: null,
+			defaultComputerId: null,
 			createdAt: 0,
 			lastActivityAt: 0,
 		});
@@ -112,6 +116,7 @@ describe("WorkspaceStore", () => {
 			id: "my-work",
 			title: "Renamed",
 			defaultCwd: null,
+			defaultComputerId: null,
 			createdAt: 1000,
 			lastActivityAt: 1000,
 		});
@@ -208,6 +213,7 @@ describe("WorkspaceStore", () => {
 			id: "default",
 			title: "default",
 			defaultCwd: null,
+			defaultComputerId: null,
 			createdAt: 0,
 			lastActivityAt: 0,
 			conversationCount: 0,
@@ -414,6 +420,241 @@ describe("WorkspaceStore", () => {
 		await store.replaceHistory("conv1", [userMessage("replaced")]);
 		const meta = await store.getConversationMeta("conv1");
 		expect(meta?.workspaceId).toBe("my-work");
+	});
+});
+
+describe("ComputerStore", () => {
+	let storage: StorageNamespace;
+	let clock: number;
+
+	beforeEach(() => {
+		storage = createMemoryStorage();
+		clock = 1000;
+	});
+
+	function makeStore() {
+		return createConversationStore(storage, undefined, () => clock);
+	}
+
+	// --- per-conversation computerId (mirror getCwd/setCwd/clearCwd) ---
+
+	it("setComputerId/getComputerId round-trips an alias", async () => {
+		const store = makeStore();
+		expect(await store.getComputerId("conv1")).toBeNull();
+		await store.setComputerId("conv1", "myserver");
+		expect(await store.getComputerId("conv1")).toBe("myserver");
+	});
+
+	it("setComputerId(null) clears (is idempotent local sentinel, like clearComputerId)", async () => {
+		const store = makeStore();
+		await store.setComputerId("conv1", "myserver");
+		expect(await store.getComputerId("conv1")).toBe("myserver");
+		// null is the "local" sentinel: it clears the persisted key so it does
+		// NOT linger to shadow the workspace defaultComputerId.
+		await store.setComputerId("conv1", null);
+		expect(await store.getComputerId("conv1")).toBeNull();
+		// idempotent — clearing an already-absent key is a no-op.
+		await store.setComputerId("conv1", null);
+		expect(await store.getComputerId("conv1")).toBeNull();
+	});
+
+	it("clearComputerId is idempotent and un-shadows the workspace default", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work", { defaultComputerId: "ws-host" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setComputerId("conv1", "per-conv-host");
+		expect(await store.getEffectiveComputer("conv1")).toBe("per-conv-host");
+		// After clear: the workspace defaultComputerId is used (fall-through).
+		await store.clearComputerId("conv1");
+		expect(await store.getComputerId("conv1")).toBeNull();
+		expect(await store.getEffectiveComputer("conv1")).toBe("ws-host");
+		// idempotent — deleting an already-absent key is a no-op.
+		await store.clearComputerId("conv1");
+		expect(await store.getComputerId("conv1")).toBeNull();
+	});
+
+	// --- setWorkspaceDefaultComputerId (mirror setWorkspaceDefaultCwd) ---
+
+	it("setWorkspaceDefaultComputerId sets and clears", async () => {
+		const store = makeStore();
+		clock = 1000;
+		await store.ensureWorkspace("my-work");
+		clock = 2000;
+		const setWs = await store.setWorkspaceDefaultComputerId("my-work", "remote-host");
+		expect(setWs.defaultComputerId).toBe("remote-host");
+		// does not bump lastActivityAt on defaultComputerId change (mirrors defaultCwd).
+		expect(setWs.lastActivityAt).toBe(1000);
+		const cleared = await store.setWorkspaceDefaultComputerId("my-work", null);
+		expect(cleared.defaultComputerId).toBeNull();
+	});
+
+	it("setWorkspaceDefaultComputerId creates the workspace if missing", async () => {
+		const store = makeStore();
+		clock = 5000;
+		const ws = await store.setWorkspaceDefaultComputerId("brand-new", "remote-host");
+		expect(ws).toEqual({
+			id: "brand-new",
+			title: "brand-new",
+			defaultCwd: null,
+			defaultComputerId: "remote-host",
+			createdAt: 5000,
+			lastActivityAt: 5000,
+		});
+	});
+
+	it("setWorkspaceDefaultComputerId preserves defaultCwd on an existing workspace", async () => {
+		const store = makeStore();
+		clock = 1000;
+		await store.ensureWorkspace("my-work", { defaultCwd: "/workspace/root" });
+		clock = 2000;
+		const ws = await store.setWorkspaceDefaultComputerId("my-work", "remote-host");
+		expect(ws.defaultCwd).toBe("/workspace/root");
+		expect(ws.defaultComputerId).toBe("remote-host");
+	});
+
+	it("the synthesized 'default' workspace still returns defaultComputerId: null (local)", async () => {
+		const store = makeStore();
+		const ws = await store.getWorkspace("default");
+		expect(ws).toEqual({
+			id: "default",
+			title: "default",
+			defaultCwd: null,
+			defaultComputerId: null,
+			createdAt: 0,
+			lastActivityAt: 0,
+		});
+		// And it surfaces null in listWorkspaces too.
+		const list = await store.listWorkspaces();
+		const defaultWs = list.find((w) => w.id === "default");
+		expect(defaultWs?.defaultComputerId).toBeNull();
+	});
+
+	// --- getEffectiveComputer resolution ladder (mirror getEffectiveCwd) ---
+
+	it("getEffectiveComputer: per-conversation computerId overrides workspace defaultComputerId", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work", { defaultComputerId: "ws-host" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setComputerId("conv1", "per-conv-host");
+		expect(await store.getEffectiveComputer("conv1")).toBe("per-conv-host");
+	});
+
+	it("getEffectiveComputer: workspace defaultComputerId used when conversation computerId is unset", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work", { defaultComputerId: "ws-host" });
+		await store.setWorkspaceId("conv1", "my-work");
+		expect(await store.getEffectiveComputer("conv1")).toBe("ws-host");
+	});
+
+	it("getEffectiveComputer: null (LOCAL) when both conversation and workspace computerId are unset", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work");
+		await store.setWorkspaceId("conv1", "my-work");
+		expect(await store.getEffectiveComputer("conv1")).toBeNull();
+	});
+
+	it("getEffectiveComputer: default workspace (no defaultComputerId) falls through to null (local)", async () => {
+		const store = makeStore();
+		// No explicit workspace assignment — defaults to "default" workspace
+		// which has defaultComputerId null.
+		expect(await store.getEffectiveComputer("conv1")).toBeNull();
+	});
+
+	it("getEffectiveComputer: clearComputerId falls through to workspace defaultComputerId (un-shadows it)", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work", { defaultComputerId: "ws-host" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setComputerId("conv1", "per-conv-host");
+		// Before clear: the conversation computerId shadows the workspace default.
+		expect(await store.getEffectiveComputer("conv1")).toBe("per-conv-host");
+		// After clear: the workspace defaultComputerId is used (fall-through).
+		await store.clearComputerId("conv1");
+		expect(await store.getEffectiveComputer("conv1")).toBe("ws-host");
+	});
+
+	// --- overrideAlias (per-turn computer override, mirror overrideCwd) ---
+
+	it("getEffectiveComputer: overrideAlias string wins outright, overriding workspace defaultComputerId", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work", { defaultComputerId: "ws-host" });
+		await store.setWorkspaceId("conv1", "my-work");
+		// A string override wins outright, even over a workspace defaultComputerId.
+		expect(await store.getEffectiveComputer("conv1", "override-host")).toBe("override-host");
+	});
+
+	it("getEffectiveComputer: overrideAlias string wins over the persisted per-conversation computerId", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work", { defaultComputerId: "ws-host" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setComputerId("conv1", "persisted-host");
+		// The override must win over the persisted computerId.
+		expect(await store.getEffectiveComputer("conv1", "override-host")).toBe("override-host");
+	});
+
+	it("getEffectiveComputer: overrideAlias null is explicitly local and does NOT fall through", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work", { defaultComputerId: "ws-host" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setComputerId("conv1", "persisted-host");
+		// An explicit null override = "local for this turn": it wins outright and
+		// does NOT fall through to the persisted value or the workspace default.
+		expect(await store.getEffectiveComputer("conv1", null)).toBeNull();
+	});
+
+	it("getEffectiveComputer: overrideAlias omitted behaves as today (uses persisted computerId)", async () => {
+		const store = makeStore();
+		await store.ensureWorkspace("my-work", { defaultComputerId: "ws-host" });
+		await store.setWorkspaceId("conv1", "my-work");
+		await store.setComputerId("conv1", "persisted-host");
+		// No second arg — persisted computerId is used.
+		expect(await store.getEffectiveComputer("conv1")).toBe("persisted-host");
+	});
+
+	// --- round-trip through persistence (parse/toWorkspace) ---
+
+	it("a Workspace with defaultComputerId round-trips through parse/toWorkspace", async () => {
+		const store = makeStore();
+		clock = 1000;
+		// Create with a defaultComputerId via ensureWorkspace, then read it back
+		// (exercises parseWorkspaceRow -> toWorkspace round-trip).
+		const created = await store.ensureWorkspace("remote-work", {
+			title: "Remote",
+			defaultComputerId: "prod-server",
+		});
+		expect(created.defaultComputerId).toBe("prod-server");
+		const roundTripped = await store.getWorkspace("remote-work");
+		expect(roundTripped).toEqual({
+			id: "remote-work",
+			title: "Remote",
+			defaultCwd: null,
+			defaultComputerId: "prod-server",
+			createdAt: 1000,
+			lastActivityAt: 1000,
+		});
+	});
+
+	it("a legacy WorkspaceRow without defaultComputerId reads back as null (local)", async () => {
+		const store = makeStore();
+		// Simulate a legacy row persisted before defaultComputerId existed:
+		// write a raw WorkspaceRow JSON lacking the field, then read it back.
+		await storage.set(
+			"workspace:legacy",
+			JSON.stringify({
+				title: "legacy",
+				defaultCwd: "/legacy/cwd",
+				createdAt: 100,
+				lastActivityAt: 200,
+			}),
+		);
+		const ws = await store.getWorkspace("legacy");
+		expect(ws).toEqual({
+			id: "legacy",
+			title: "legacy",
+			defaultCwd: "/legacy/cwd",
+			defaultComputerId: null,
+			createdAt: 100,
+			lastActivityAt: 200,
+		});
 	});
 });
 

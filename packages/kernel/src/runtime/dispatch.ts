@@ -18,6 +18,7 @@ export async function executeToolCall(
 	turnId: string,
 	toolSpan?: Span,
 	cwd?: string,
+	computerId?: string,
 ): Promise<ToolResult> {
 	if (tool === undefined) {
 		return { content: `Unknown tool: ${call.name}`, isError: true };
@@ -34,6 +35,7 @@ export async function executeToolCall(
 		log: toolSpan?.log ?? createNoopLogger(),
 		conversationId,
 		...(cwd !== undefined ? { cwd } : {}),
+		...(computerId !== undefined ? { computerId } : {}),
 	};
 	// Race the tool's execute promise against the abort signal so a tool
 	// that hangs (ignores ctx.signal, or blocks on something the signal
@@ -74,6 +76,7 @@ export function createStepDispatcher(
 	turnId: string,
 	toolSpans: Map<string, Span>,
 	cwd?: string,
+	computerId?: string,
 ): StepDispatcher {
 	let activeCount = 0;
 	let unsafeRunning = false;
@@ -112,6 +115,7 @@ export function createStepDispatcher(
 			turnId,
 			tcSpan,
 			cwd,
+			computerId,
 		);
 		activeCount--;
 		if (entry.tool?.concurrencySafe === false) unsafeRunning = false;

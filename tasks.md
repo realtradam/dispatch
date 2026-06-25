@@ -5,7 +5,36 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1537 vitest** green.
+`tsc -b` EXIT 0 · biome clean · **1549 vitest** green. (worktree `feature/ssh-support`;
+baseline re-verified after `bun install`.)
+
+## SSH support — transparent remote execution (IN PROGRESS)
+Plan: `notes/ssh-support-plan.md` (decisions locked in §0.5/§13). Orchestrated in
+waves (ORCHESTRATOR.md §2a — pre-author the contract seam, then parallel
+owner-agents on disjoint packages).
+- [x] **Wave 0** (orchestrator): kernel contract seam — `computerId` on
+      `ToolExecuteContext` + `RunTurnInput` (additive optional; backward
+      compatible). `tsc -b` EXIT 0.
+- [x] **Wave 1** (parallel): `wire` (Computer/defaultComputerId types) +
+      `exec-backend` (NEW pkg: ExecBackend contract + LocalExecBackend + handle +
+      resolver) + `kernel` runtime (thread computerId through dispatch/run-turn) +
+      `conversation-store` (contract fan-out: defaultComputerId + getEffectiveComputer
+      + per-conv computerId get/set/clear). `tsc -b` EXIT 0, biome clean, **1592 vitest**
+      (was 1549, +43).
+- [ ] **Wave 2** (parallel): refactor `tool-shell`/`read-file`/`write-file`/
+      `edit-file` behind `ExecBackend` (local-only still).
+- [ ] **Wave 3**: `conversation-store` (defaultComputerId + getEffectiveComputer)
+      + `session-orchestrator` (resolve + thread computerId; drop lsp/mcp when
+      remote) + `transport-contract` (computerId on ChatRequest + computer types).
+- [ ] **Wave 4**: `transport-http` + `transport-ws` (computer endpoints + chat).
+- [ ] **Wave 5**: `host-bin` wiring + `ssh` package (SshConnectionPool,
+      SshExecBackend, ~/.ssh/config reader via ssh-config, known_hosts pinning).
+- [ ] **Wave 6**: `cache-warming` computerId threading + full verify.
+Key decisions: ssh2 + ssh-config (project-local deps); key-only auth from
+`~/.ssh`; auto-trust-and-pin host keys; computers discovered read-only from
+`~/.ssh/config` (no CRUD entity); computerId persisted per-conversation; LSP/MCP
+silently dropped on remote turns; edit_file works w/o diagnostics remotely.
+
 
 ## Per-edit LSP diagnostics auto-append (DONE)
 After a successful `edit_file`, the extension now calls LSP `getDiagnostics` on the

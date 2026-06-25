@@ -18,6 +18,7 @@ import {
 	chunkKey,
 	chunkPrefix,
 	compactThresholdKey,
+	computerKey,
 	cwdKey,
 	metaKey,
 	metricsKey,
@@ -70,6 +71,20 @@ export interface ConversationStore {
 	readonly setCwd: (conversationId: string, cwd: string) => Promise<void>;
 	/** Clear (delete) the persisted working directory for a conversation. */
 	readonly clearCwd: (conversationId: string) => Promise<void>;
+	/**
+	 * The persisted computer (SSH config `Host` alias) for a conversation, or
+	 * `null` if never set (local). The computer analog of `getCwd`.
+	 */
+	readonly getComputerId: (conversationId: string) => Promise<string | null>;
+	/**
+	 * Persist (upsert) the computer for a conversation. Passing `null` clears
+	 * the persisted selection (idempotent) — `null` is the "local" sentinel
+	 * (no SSH), so it must NOT linger to shadow the workspace default. Mirrors
+	 * `setModel`'s clear-on-sentinel pattern (the computer analog of `setCwd`).
+	 */
+	readonly setComputerId: (conversationId: string, alias: string | null) => Promise<void>;
+	/** Clear (delete) the persisted computer for a conversation. */
+	readonly clearComputerId: (conversationId: string) => Promise<void>;
 	/** The persisted reasoning-effort level for a conversation, or null if never set. */
 	readonly getReasoningEffort: (conversationId: string) => Promise<ReasoningEffort | null>;
 	/** Persist (upsert) the reasoning-effort level for a conversation. */
@@ -145,12 +160,25 @@ export interface ConversationStore {
 	 */
 	readonly ensureWorkspace: (
 		id: string,
-		opts?: { readonly title?: string; readonly defaultCwd?: string | null },
+		opts?: {
+			readonly title?: string;
+			readonly defaultCwd?: string | null;
+			readonly defaultComputerId?: string | null;
+		},
 	) => Promise<Workspace>;
 	/** Rename a workspace. Creates the workspace if missing. */
 	readonly setWorkspaceTitle: (id: string, title: string) => Promise<Workspace>;
 	/** Set/clear a workspace's default cwd. Creates the workspace if missing. */
 	readonly setWorkspaceDefaultCwd: (id: string, defaultCwd: string | null) => Promise<Workspace>;
+	/**
+	 * Set/clear a workspace's default computer (SSH alias). Creates the
+	 * workspace if missing. The computer analog of `setWorkspaceDefaultCwd`.
+	 * `null` = local (no SSH).
+	 */
+	readonly setWorkspaceDefaultComputerId: (
+		id: string,
+		defaultComputerId: string | null,
+	) => Promise<Workspace>;
 	/**
 	 * Delete a workspace: (1) find all conversations with `workspaceId === id`,
 	 * (2) set each to `status = "closed"` and reassign `workspaceId = "default"`,
@@ -204,6 +232,34 @@ export interface ConversationStore {
 	readonly getEffectiveCwd: (
 		conversationId: string,
 		overrideCwd?: string,
+	) => Promise<string | null>;
+	/**
+	 * Resolve the effective computer (SSH alias) for a conversation — the
+	 * computer analog of `getEffectiveCwd`. Resolution ladder:
+	 *
+	 * 1. **overrideAlias** — an explicit per-turn alias (from `chat.send`)
+	 *    wins outright, EVEN when `null` (explicitly local for this turn — it
+	 *    does NOT fall through).
+	 * 2. **Persisted per-conversation `computerId`** — `getComputerId`.
+	 * 3. **Workspace `defaultComputerId`** — resolved via `getWorkspaceId`
+	 *    (falling back to `"default"`) + `getWorkspace`.
+	 * 4. **None of the above** — `null` (LOCAL: no SSH, today's behavior).
+	 *
+	 * Returns the alias STRING (or `null`); it does NOT validate the alias
+	 * exists in `~/.ssh/config` (validation happens at connect time — a stale
+	 * alias yields a clear connect error rather than silently falling back to
+	 * local).
+	 *
+	 * @param overrideAlias — an explicit alias to resolve INSTEAD of the
+	 *   persisted `getComputerId` value. When provided (not `undefined`), it
+	 *   is returned as-is (string or `null`), short-circuiting the rest of the
+	 *   ladder. Used by the session-orchestrator for a per-turn computer
+	 *   override (sent by the client on `chat.send`). When omitted, the
+	 *   persisted `getComputerId` is read as today.
+	 */
+	readonly getEffectiveComputer: (
+		conversationId: string,
+		overrideAlias?: string | null,
 	) => Promise<string | null>;
 }
 
@@ -265,6 +321,12 @@ interface ConversationMetaRow {
 interface WorkspaceRow {
 	readonly title: string;
 	readonly defaultCwd: string | null;
+	/**
+	 * The workspace's default computer (SSH config `Host` alias) — the computer
+	 * analog of `defaultCwd`. `null` = local (no SSH). Conversations in this
+	 * workspace inherit it when they set no `computerId` of their own.
+	 */
+	readonly defaultComputerId: string | null;
 	readonly createdAt: number;
 	readonly lastActivityAt: number;
 }
@@ -373,9 +435,14 @@ function parseWorkspaceRow(raw: string): WorkspaceRow | null {
 	const row = parsed as WorkspaceRow;
 	// `defaultCwd` may be null OR a string; treat anything else as null.
 	const defaultCwd = typeof row.defaultCwd === "string" ? row.defaultCwd : null;
+	// `defaultComputerId` may be null OR a string; treat anything else as null
+	// (mirrors `defaultCwd`). Absent on legacy rows → null (local).
+	const defaultComputerId =
+		typeof row.defaultComputerId === "string" ? row.defaultComputerId : null;
 	return {
 		title: row.title,
 		defaultCwd,
+		defaultComputerId,
 		createdAt: row.createdAt,
 		lastActivityAt: row.lastActivityAt,
 	};
@@ -386,6 +453,7 @@ function toWorkspace(id: string, row: WorkspaceRow): Workspace {
 		id,
 		title: row.title,
 		defaultCwd: row.defaultCwd,
+		defaultComputerId: row.defaultComputerId,
 		createdAt: row.createdAt,
 		lastActivityAt: row.lastActivityAt,
 	};
@@ -442,10 +510,17 @@ export function createConversationStore(
 		const existing = await readWorkspaceRow(workspaceId);
 		const row: WorkspaceRow =
 			existing === null
-				? { title: workspaceId, defaultCwd: null, createdAt: ts, lastActivityAt: ts }
+				? {
+						title: workspaceId,
+						defaultCwd: null,
+						defaultComputerId: null,
+						createdAt: ts,
+						lastActivityAt: ts,
+					}
 				: {
 						title: existing.title,
 						defaultCwd: existing.defaultCwd,
+						defaultComputerId: existing.defaultComputerId,
 						createdAt: existing.createdAt,
 						lastActivityAt: ts,
 					};
@@ -662,6 +737,36 @@ export function createConversationStore(
 			}
 		},
 
+		async getComputerId(conversationId) {
+			return await storage.get(computerKey(conversationId));
+		},
+
+		async setComputerId(conversationId, alias) {
+			// `null` is the "local" sentinel: clear the persisted key so it does
+			// NOT linger to shadow the workspace defaultComputerId. Idempotent
+			// (deleting an already-absent key is a no-op). Mirrors `setModel`'s
+			// clear-on-sentinel pattern.
+			if (alias === null) {
+				await storage.delete(computerKey(conversationId));
+				if (logger !== undefined) {
+					logger.debug("computer cleared", { conversationId });
+				}
+				return;
+			}
+			await storage.set(computerKey(conversationId), alias);
+			if (logger !== undefined) {
+				logger.debug("computer set", { conversationId });
+			}
+		},
+
+		async clearComputerId(conversationId) {
+			// Idempotent: deleting an already-absent key is a no-op (no error).
+			await storage.delete(computerKey(conversationId));
+			if (logger !== undefined) {
+				logger.debug("computer cleared", { conversationId });
+			}
+		},
+
 		async getReasoningEffort(conversationId) {
 			return (await storage.get(reasoningEffortKey(conversationId))) as ReasoningEffort | null;
 		},
@@ -874,13 +979,15 @@ export function createConversationStore(
 			}
 			await ensureInIndex(targetId);
 
-			// Copy cwd + reasoning-effort + model (so the archive is self-contained).
+			// Copy cwd + reasoning-effort + model + computer (so the archive is self-contained).
 			const cwd = await storage.get(cwdKey(sourceId));
 			if (cwd !== null) await storage.set(cwdKey(targetId), cwd);
 			const effort = await storage.get(reasoningEffortKey(sourceId));
 			if (effort !== null) await storage.set(reasoningEffortKey(targetId), effort);
 			const model = await storage.get(modelKey(sourceId));
 			if (model !== null) await storage.set(modelKey(targetId), model);
+			const computerId = await storage.get(computerKey(sourceId));
+			if (computerId !== null) await storage.set(computerKey(targetId), computerId);
 		},
 
 		async getCompactPercent(conversationId) {
@@ -917,12 +1024,14 @@ export function createConversationStore(
 			const row = await readWorkspaceRow(id);
 			if (row !== null) return toWorkspace(id, row);
 			// Synthesize the always-present "default" workspace when it was
-			// never persisted (title "default", defaultCwd null, timestamps 0).
+			// never persisted (title "default", defaultCwd null, defaultComputerId
+			// null [local], timestamps 0).
 			if (id === DEFAULT_WORKSPACE_ID) {
 				return {
 					id: DEFAULT_WORKSPACE_ID,
 					title: DEFAULT_WORKSPACE_ID,
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -939,6 +1048,7 @@ export function createConversationStore(
 			const row: WorkspaceRow = {
 				title: opts?.title ?? id,
 				defaultCwd: opts?.defaultCwd ?? null,
+				defaultComputerId: opts?.defaultComputerId ?? null,
 				createdAt: ts,
 				lastActivityAt: ts,
 			};
@@ -954,6 +1064,7 @@ export function createConversationStore(
 					? {
 							title: id,
 							defaultCwd: null as string | null,
+							defaultComputerId: null as string | null,
 							createdAt: ts,
 							lastActivityAt: ts,
 						}
@@ -961,6 +1072,7 @@ export function createConversationStore(
 			const row: WorkspaceRow = {
 				title,
 				defaultCwd: base.defaultCwd,
+				defaultComputerId: base.defaultComputerId,
 				createdAt: base.createdAt,
 				lastActivityAt: base.lastActivityAt,
 			};
@@ -976,6 +1088,7 @@ export function createConversationStore(
 					? {
 							title: id,
 							defaultCwd: null as string | null,
+							defaultComputerId: null as string | null,
 							createdAt: ts,
 							lastActivityAt: ts,
 						}
@@ -983,6 +1096,31 @@ export function createConversationStore(
 			const row: WorkspaceRow = {
 				title: base.title,
 				defaultCwd,
+				defaultComputerId: base.defaultComputerId,
+				createdAt: base.createdAt,
+				lastActivityAt: base.lastActivityAt,
+			};
+			await storage.set(workspaceKey(id), JSON.stringify(row));
+			return toWorkspace(id, row);
+		},
+
+		async setWorkspaceDefaultComputerId(id, defaultComputerId) {
+			const existing = await readWorkspaceRow(id);
+			const ts = now();
+			const base =
+				existing === null
+					? {
+							title: id,
+							defaultCwd: null as string | null,
+							defaultComputerId: null as string | null,
+							createdAt: ts,
+							lastActivityAt: ts,
+						}
+					: existing;
+			const row: WorkspaceRow = {
+				title: base.title,
+				defaultCwd: base.defaultCwd,
+				defaultComputerId,
 				createdAt: base.createdAt,
 				lastActivityAt: base.lastActivityAt,
 			};
@@ -1053,6 +1191,7 @@ export function createConversationStore(
 					id: DEFAULT_WORKSPACE_ID,
 					title: DEFAULT_WORKSPACE_ID,
 					defaultCwd: null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				});
@@ -1154,6 +1293,21 @@ export function createConversationStore(
 				return conversationCwd;
 			}
 			return pathResolve(workspaceCwd ?? serverDefaultCwd, conversationCwd);
+		},
+
+		async getEffectiveComputer(conversationId, overrideAlias) {
+			const workspaceId = await this.getWorkspaceId(conversationId);
+			const workspace = await this.getWorkspace(workspaceId);
+			const workspaceComputerId = workspace?.defaultComputerId ?? null;
+			// When an explicit override is given, it wins outright — even `null`
+			// (explicitly local for this turn) does NOT fall through to the
+			// persisted / workspace values.
+			if (overrideAlias !== undefined) {
+				return overrideAlias;
+			}
+			// Persisted per-conversation computerId → workspace defaultComputerId → null (LOCAL).
+			const computerId = await this.getComputerId(conversationId);
+			return computerId ?? workspaceComputerId;
 		},
 	};
 }
