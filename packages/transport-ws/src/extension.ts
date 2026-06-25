@@ -290,6 +290,7 @@ export function createTransportWsExtension(): Extension {
 										? { reasoningEffort: result.reasoningEffort }
 										: {}),
 									...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
+									...(result.computerId !== undefined ? { computerId: result.computerId } : {}),
 								});
 								if (!startResult.started) {
 									send(ws, {

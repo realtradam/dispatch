@@ -49,6 +49,7 @@ export function filterMcpTools(
 	return {
 		tools: filtered,
 		...(assembly.cwd !== undefined && { cwd: assembly.cwd }),
+		...(assembly.computerId !== undefined && { computerId: assembly.computerId }),
 		conversationId: assembly.conversationId,
 	};
 }

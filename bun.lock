@@ -310,6 +310,7 @@
         "@dispatch/system-prompt": "workspace:*",
         "@dispatch/throughput-store": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
+        "@dispatch/wire": "workspace:*",
         "hono": "^4.0.0",
       },
     },

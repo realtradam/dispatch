@@ -379,6 +379,39 @@ describe("routeClientMessage", () => {
 			expect(result).not.toHaveProperty("workspaceId");
 		});
 
+		it("chat.send threads computerId", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				conversationId: "conv-cid",
+				message: "hello computer",
+				computerId: "dev-box",
+			});
+
+			expect(result.kind).toBe("chat");
+			if (result.kind !== "chat") throw new Error("expected chat");
+			expect(result.computerId).toBe("dev-box");
+		});
+
+		it("chat.send omits computerId (absent/undefined) when not sent — backward compatible", () => {
+			const registry = fakeRegistry([]);
+			const connSubs = new Set<string>();
+
+			const result = routeClientMessage(registry, connSubs, {
+				type: "chat.send",
+				message: "hello no computer",
+			});
+
+			expect(result.kind).toBe("chat");
+			if (result.kind !== "chat") throw new Error("expected chat");
+			// computerId is absent (undefined) — the orchestrator receives no
+			// computerId and resolves the inherited chain (conversation →
+			// workspace defaultComputerId → local). Mirrors workspaceId.
+			expect(result).not.toHaveProperty("computerId");
+		});
+
 		it("rejects a malformed chat.send (empty message)", () => {
 			const registry = fakeRegistry([]);
 			const connSubs = new Set<string>();

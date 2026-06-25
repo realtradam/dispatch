@@ -49,6 +49,28 @@ describe("filterMcpTools (pure)", () => {
 		expect(result.tools).toHaveLength(0);
 		expect(result.conversationId).toBe("c");
 		expect(result.cwd).toBeUndefined();
+		expect(result.computerId).toBeUndefined();
+	});
+
+	it("preserves computerId when set (mirrors cwd/conversationId preservation)", () => {
+		const toolToServer = new Map<string, string>([["a__x", "a"]]);
+		const connected = new Set<string>(["a"]);
+
+		const result = filterMcpTools(
+			{
+				tools: [stubTool("a__x"), stubTool("other")],
+				cwd: "/p",
+				computerId: "ssh-host",
+				conversationId: "c",
+			},
+			toolToServer,
+			connected,
+		);
+
+		expect(result.tools.map((t) => t.name).sort()).toEqual(["a__x", "other"]);
+		expect(result.computerId).toBe("ssh-host");
+		expect(result.cwd).toBe("/p");
+		expect(result.conversationId).toBe("c");
 	});
 });
 

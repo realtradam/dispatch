@@ -4,6 +4,10 @@ import type {
 	CloseConversationResponse,
 	CompactPercentResponse,
 	CompactResponse,
+	ComputerListResponse,
+	ComputerResponse,
+	ComputerStatusResponse,
+	ConversationComputerResponse,
 	ConversationHistoryResponse,
 	ConversationListResponse,
 	ConversationMetricsResponse,
@@ -21,9 +25,12 @@ import type {
 	QueueResponse,
 	ReasoningEffortResponse,
 	SetCompactPercentRequest,
+	SetConversationComputerRequest,
 	SetSystemPromptTemplateRequest,
+	SetWorkspaceDefaultComputerRequest,
 	SystemPromptTemplateResponse,
 	SystemPromptVariablesResponse,
+	TestComputerResponse,
 	ThroughputResponse,
 	TitleResponse,
 	WarmResponse,
@@ -53,6 +60,7 @@ import {
 } from "./logic.js";
 import {
 	type CompactionService,
+	type ComputerService,
 	type ConversationStore,
 	type CredentialStore,
 	conversationOpened,
@@ -78,6 +86,14 @@ export interface CreateServerOptions {
 	readonly mcpService?: McpService;
 	/** Optional — system prompt builder service (GET/PUT template). */
 	readonly systemPromptService?: SystemPromptService;
+	/**
+	 * Optional — computer discovery + live connection service (provided by the
+	 * `ssh` extension). When absent (ssh not loaded), the `/computers*` routes
+	 * degrade: list returns `[]`, status returns "disconnected", test returns
+	 * a not-configured result. The per-conversation / workspace-default computer
+	 * endpoints work regardless (they only touch the conversation store).
+	 */
+	readonly computerService?: ComputerService;
 	/** Optional — defaults to a no-op store (recording disabled, empty reports). */
 	readonly throughputStore?: ThroughputStore;
 	readonly logger?: Logger;
@@ -282,6 +298,77 @@ export function createApp(opts: CreateServerOptions): Hono {
 		}
 	});
 
+	// ─── Computers (discovery + live state) ───────────────────────────────────
+	// Read-only discovery + connection state is delegated to the ComputerService
+	// (provided by the `ssh` extension). When ssh is NOT loaded the routes
+	// degrade: list → empty, status → "disconnected", test → not-configured.
+
+	app.get("/computers", async (c) => {
+		if (opts.computerService === undefined) {
+			// Graceful: no ssh configured → no computers discovered.
+			const body: ComputerListResponse = { computers: [] };
+			return c.json(body, 200);
+		}
+		try {
+			const computers = await opts.computerService.listComputers();
+			log.info("computers: list", { count: computers.length });
+			const body: ComputerListResponse = { computers };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("computers: list failure", { err });
+			return c.json({ error: "Failed to list computers" }, 500);
+		}
+	});
+
+	app.get("/computers/:alias", async (c) => {
+		const alias = c.req.param("alias");
+		if (opts.computerService === undefined) {
+			// No ssh configured → no computer resolves this alias.
+			return c.json({ error: "Computer not found" }, 404);
+		}
+		try {
+			const computer = await opts.computerService.getComputer(alias);
+			if (computer === null) {
+				return c.json({ error: "Computer not found" }, 404);
+			}
+			const body: ComputerResponse = computer;
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("computers: get failure", { err, alias });
+			return c.json({ error: "Failed to read computer" }, 500);
+		}
+	});
+
+	app.get("/computers/:alias/status", async (c) => {
+		const alias = c.req.param("alias");
+		if (opts.computerService === undefined) {
+			const body: ComputerStatusResponse = { alias, state: "disconnected", knownHost: false };
+			return c.json(body, 200);
+		}
+		try {
+			const body = await opts.computerService.getStatus(alias);
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("computers: status failure", { err, alias });
+			return c.json({ error: "Failed to read computer status" }, 500);
+		}
+	});
+
+	app.post("/computers/:alias/test", async (c) => {
+		const alias = c.req.param("alias");
+		if (opts.computerService === undefined) {
+			const body: TestComputerResponse = { alias, ok: false, error: "SSH not configured" };
+			return c.json(body, 200);
+		}
+		try {
+			const body = await opts.computerService.test(alias);
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("computers: test failure", { err, alias });
+			return c.json({ error: "Failed to test computer" }, 500);
+		}
+	});
+
 	app.post("/chat", async (c) => {
 		let body: unknown;
 		try {
@@ -297,11 +384,13 @@ export function createApp(opts: CreateServerOptions): Hono {
 			return c.json({ error: result.error }, 400);
 		}
 
-		const { conversationId, message, model, cwd, reasoningEffort, workspaceId } = result;
+		const { conversationId, message, model, cwd, computerId, reasoningEffort, workspaceId } =
+			result;
 		log.info("chat: request accepted", {
 			conversationId,
 			hasModel: model !== undefined,
 			hasCwd: cwd !== undefined,
+			hasComputerId: computerId !== undefined,
 			hasReasoningEffort: reasoningEffort !== undefined,
 			hasWorkspaceId: workspaceId !== undefined,
 		});
@@ -351,6 +440,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 			},
 			...(model !== undefined ? { modelName: model } : {}),
 			...(cwd !== undefined ? { cwd } : {}),
+			...(computerId !== undefined ? { computerId } : {}),
 			...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
 			...(workspaceId !== undefined ? { workspaceId } : {}),
 		};
@@ -575,6 +665,91 @@ export function createApp(opts: CreateServerOptions): Hono {
 		} catch (err) {
 			log.error("conversations: cwd clear failure", { err });
 			return c.json({ error: "Failed to clear conversation cwd" }, 500);
+		}
+	});
+
+	// ─── Per-conversation computer (mirrors /conversations/:id/cwd) ──────────
+
+	app.get("/conversations/:id/computer", async (c) => {
+		const conversationId = c.req.param("id");
+		try {
+			const computerId = await opts.conversationStore.getComputerId(conversationId);
+			log.info("conversations: computer read", {
+				conversationId,
+				hasComputerId: computerId !== null,
+			});
+			const body: ConversationComputerResponse = { conversationId, computerId };
+			return c.json(body, 200);
+		} catch (err) {
+			log.error("conversations: computer read failure", { err });
+			return c.json({ error: "Failed to read conversation computer" }, 500);
+		}
+	});
+
+	app.put("/conversations/:id/computer", async (c) => {
+		const conversationId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			log.warn("conversations/computer: invalid JSON body");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+
+		if (body === null || typeof body !== "object") {
+			return c.json({ error: "Request body must be a JSON object" }, 400);
+		}
+		const obj = body as Record<string, unknown>;
+		// `computerId` must be a string (the SSH alias) or null (clear → inherit
+		// the workspace defaultComputerId → local). An empty string is rejected
+		// (unlike cwd, an alias is never "empty"); null is the explicit clear.
+		if (
+			obj.computerId !== null &&
+			(typeof obj.computerId !== "string" || obj.computerId.length === 0)
+		) {
+			return c.json(
+				{ error: "Field 'computerId' is required and must be a non-empty string or null" },
+				400,
+			);
+		}
+		const { computerId } = obj as unknown as SetConversationComputerRequest;
+
+		// Mirror PUT /conversations/:id/cwd: when a workspaceId is provided,
+		// assign the conversation to that workspace BEFORE persisting the
+		// computer, so a subsequent effective-computer resolution reads the
+		// workspace's defaultComputerId. Omit for unchanged workspace assignment.
+		if (obj.workspaceId !== undefined) {
+			if (typeof obj.workspaceId !== "string" || !isValidWorkspaceSlug(obj.workspaceId)) {
+				return c.json({ error: "Invalid workspaceId" }, 400);
+			}
+		}
+
+		try {
+			if (typeof obj.workspaceId === "string") {
+				await opts.conversationStore.ensureWorkspace(obj.workspaceId);
+				await opts.conversationStore.setWorkspaceId(conversationId, obj.workspaceId);
+			}
+			// null → clear (inherit/local); string → persist the alias.
+			await opts.conversationStore.setComputerId(conversationId, computerId);
+			log.info("conversations: computer set", { conversationId });
+			const response: ConversationComputerResponse = { conversationId, computerId };
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("conversations: computer set failure", { err });
+			return c.json({ error: "Failed to set conversation computer" }, 500);
+		}
+	});
+
+	app.delete("/conversations/:id/computer", async (c) => {
+		const conversationId = c.req.param("id");
+		try {
+			await opts.conversationStore.clearComputerId(conversationId);
+			log.info("conversations: computer cleared", { conversationId });
+			const response: ConversationComputerResponse = { conversationId, computerId: null };
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("conversations: computer clear failure", { err });
+			return c.json({ error: "Failed to clear conversation computer" }, 500);
 		}
 	});
 
@@ -1116,6 +1291,35 @@ export function createApp(opts: CreateServerOptions): Hono {
 		} catch (err) {
 			log.error("workspaces: default-cwd set failure", { err });
 			return c.json({ error: "Failed to set workspace default cwd" }, 500);
+		}
+	});
+
+	// Mirrors PUT /workspaces/:id/default-cwd exactly (the computer analog).
+	app.put("/workspaces/:id/default-computer", async (c) => {
+		const workspaceId = c.req.param("id");
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			body = {};
+		}
+		const obj = body as Record<string, unknown>;
+		// Mirrors PUT /workspaces/:id/default-cwd: a string → the SSH alias;
+		// anything else (null/absent/non-string) → clear (local).
+		const defaultComputerId: SetWorkspaceDefaultComputerRequest["computerId"] =
+			typeof obj.computerId === "string" ? obj.computerId : null;
+
+		try {
+			const workspace = await opts.conversationStore.setWorkspaceDefaultComputerId(
+				workspaceId,
+				defaultComputerId,
+			);
+			log.info("workspaces: default-computer set", { workspaceId });
+			const response: WorkspaceResponse = workspace;
+			return c.json(response, 200);
+		} catch (err) {
+			log.error("workspaces: default-computer set failure", { err });
+			return c.json({ error: "Failed to set workspace default computer" }, 500);
 		}
 	});
 
