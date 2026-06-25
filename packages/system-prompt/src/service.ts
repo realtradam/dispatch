@@ -28,12 +28,21 @@ The current working directory is [prompt:cwd].
 const TEMPLATE_KEY = "template";
 const resolvedKey = (conversationId: string): string => `resolved:${conversationId}`;
 const resolvedCwdKey = (conversationId: string): string => `resolved-cwd:${conversationId}`;
+const resolvedComputerIdKey = (conversationId: string): string =>
+	`resolved-computer:${conversationId}`;
 
 export interface SystemPromptServiceDeps {
 	/** Namespaced KV (`host.storage("system-prompt")`). */
 	readonly storage: StorageNamespace;
-	/** Injected effects for variable resolution. */
+	/** Injected effects for variable resolution (local). */
 	readonly adapters: ResolverAdapters;
+	/**
+	 * Optional: build remote-backed adapters for a given computerId. When
+	 * `construct` is called with a `computerId`, this is invoked to obtain
+	 * adapters that read/run commands on the REMOTE machine (via the
+	 * ExecBackend/SSH). Absent → falls back to the local `adapters`.
+	 */
+	readonly resolveRemoteAdapters?: (computerId: string, cwd: string) => Promise<ResolverAdapters>;
 }
 
 /**
@@ -52,7 +61,17 @@ export function createSystemPromptService(deps: SystemPromptServiceDeps): System
 				...(context?.model !== undefined ? { model: context.model } : {}),
 				...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
 			};
-			const vars = await resolveVariables(cwd, deps.adapters, {
+
+			// Select adapters: when computerId is set, use remote-backed adapters
+			// (read files / run commands on the REMOTE machine via SSH). Otherwise
+			// use the local adapters.
+			const computerId = context?.computerId;
+			const adapters =
+				computerId !== undefined && deps.resolveRemoteAdapters !== undefined
+					? await deps.resolveRemoteAdapters(computerId, cwd)
+					: deps.adapters;
+
+			const vars = await resolveVariables(cwd, adapters, {
 				context: resolverContext,
 				referencedKeys,
 			});
@@ -60,6 +79,9 @@ export function createSystemPromptService(deps: SystemPromptServiceDeps): System
 
 			await deps.storage.set(resolvedKey(conversationId), result);
 			await deps.storage.set(resolvedCwdKey(conversationId), cwd);
+			// Store the computerId (or empty string for local) so the cache can be
+			// invalidated when the computer changes.
+			await deps.storage.set(resolvedComputerIdKey(conversationId), computerId ?? "");
 			return result;
 		},
 
@@ -68,11 +90,14 @@ export function createSystemPromptService(deps: SystemPromptServiceDeps): System
 		},
 
 		async getWithMeta(conversationId) {
-			const [prompt, cwd] = await Promise.all([
+			const [prompt, cwd, computerIdStored] = await Promise.all([
 				deps.storage.get(resolvedKey(conversationId)),
 				deps.storage.get(resolvedCwdKey(conversationId)),
+				deps.storage.get(resolvedComputerIdKey(conversationId)),
 			]);
-			return { prompt, cwd };
+			// Empty string → null (local, no computerId). Non-empty → the alias.
+			const computerId = computerIdStored === null ? null : computerIdStored || null;
+			return { prompt, cwd, computerId };
 		},
 
 		async getTemplate() {

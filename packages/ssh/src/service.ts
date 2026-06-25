@@ -21,7 +21,7 @@ import type { ComputerStatusResponse, TestComputerResponse } from "@dispatch/tra
 import type { ComputerService } from "@dispatch/transport-http/dist/seam.js";
 import type { Computer, ComputerEntry } from "@dispatch/wire";
 import { createSshExecBackend } from "./backend.js";
-import { resolveComputer, resolveComputers } from "./config.js";
+import { resolveComputer, resolveComputers, type SshConfigResolveEnv } from "./config.js";
 import { createSshConnectionPool, type SshConnectionPool, type SshPoolDeps } from "./pool.js";
 
 /**
@@ -42,6 +42,12 @@ export interface SshServiceDeps extends SshPoolDeps {
 	 * host-bin wires this from conversation-store; absent → every count is 0.
 	 */
 	readonly getUsageCounts?: () => Promise<ReadonlyMap<string, number>>;
+	/**
+	 * Optional: glob patterns to exclude from the computer catalog (e.g.
+	 * `github.com`, `*.ts.net`). Sourced from `dispatch.toml` `[ssh].reject`.
+	 * Absent → no filtering.
+	 */
+	readonly readRejectPatterns?: () => Promise<readonly string[]>;
 }
 
 /** Build the `ComputerService` + the remote-`ExecBackend` factory. */
@@ -53,12 +59,21 @@ export function createSshService(deps: SshServiceDeps): {
 } {
 	const pool = createSshConnectionPool(deps);
 
-	async function readEnv() {
-		const [configText, knownHostsText] = await Promise.all([
+	async function readEnv(): Promise<SshConfigResolveEnv> {
+		const [configText, knownHostsText, rejectPatterns] = await Promise.all([
 			deps.readConfigText().catch(async () => ""),
 			deps.readFileText(deps.knownHostsPath).catch(async () => ""),
+			deps.readRejectPatterns !== undefined
+				? deps.readRejectPatterns().catch(async () => [] as readonly string[])
+				: Promise.resolve([] as readonly string[]),
 		]);
-		return { configText, knownHostsText, defaultUser: deps.defaultUser, homeDir: deps.homeDir };
+		const base: SshConfigResolveEnv = {
+			configText,
+			knownHostsText,
+			defaultUser: deps.defaultUser,
+			homeDir: deps.homeDir,
+		};
+		return rejectPatterns.length > 0 ? { ...base, rejectPatterns } : base;
 	}
 
 	const service: ComputerService = {

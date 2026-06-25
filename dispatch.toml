@@ -5,3 +5,11 @@
 # the `lsp` tool (diagnostics / references / definition) on .ts files directly.
 #
 # Credentials for the rewrite live in .env (gitignored), read by auth-apikey.
+
+# SSH computer discovery — hosts to exclude from the computer catalog.
+# Computers are auto-discovered from ~/.ssh/known_hosts (hosts you've connected
+# to) plus ~/.ssh/config (named Host aliases). These glob patterns filter out
+# non-computer noise (code-hosting services, localhost, etc.) so only real
+# remote machines appear in the selector.
+[ssh]
+reject = ["github.com", "localhost", "[localhost]"]
