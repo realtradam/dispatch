@@ -35,8 +35,19 @@ owner-agents on disjoint packages).
       threading + the `ComputerService` seam the ssh package will provide) +
       `transport-ws` (computerId through chat.send/queue) + `mcp` (CR-1: preserve
       computerId in filter). `tsc -b` EXIT 0, biome clean, **1641 vitest** (was 1620).
-- [ ] **Wave 5**: `host-bin` wiring + `ssh` package (SshConnectionPool,
-      SshExecBackend, ~/.ssh/config reader via ssh-config, known_hosts pinning).
+- [x] **Wave 5a**: `exec-backend` — remote-backend factory handle (lazy lookup;
+      computerId set -> SshExecBackend via factory; absent -> clear error). +24 tests.
+- [x] **Wave 5b**: `ssh` package (NEW) — SshConnectionPool (per-alias ssh2.Client,
+      lazy connect, keep-alive, idle reap), SshExecBackend (ssh2 exec+sftp, node:fs
+      .code error mapping), ~/.ssh/config reader (ssh-config), known_hosts
+      auto-trust-and-pin, key-only auth from ~/.ssh. LOAD-BEARING: ssh2 verified
+      under Bun (connected to local sshd :22, exec OK) — decision #1 confirmed.
+      Provides remoteExecBackendFactoryHandle + computerServiceHandle. +45 tests
+      (6 sshd integration tests skipped). tsc -b EXIT 0, biome clean, **1690 vitest**
+      (was 1641).
+- [ ] **Wave 5c**: host-bin — register exec-backend + ssh extensions; CR-5
+      transport-http barrel re-export of computerServiceHandle; CR-6
+      usageCount wiring (deferred-ok).
 - [ ] **DEFERRED — cache-warming**: computerId threading intentionally NOT done
       (user-deferred — cache-warming is not needed right now). Known limitation:
       a warm probe on a remote turn assembles the tool set WITHOUT the remote-drop
