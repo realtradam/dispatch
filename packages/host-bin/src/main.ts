@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { extension as authApikeyExt } from "@dispatch/auth-apikey";
 import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
+import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
 import { createCredentialStoreExtension } from "@dispatch/credential-store";
 import { createExecBackendExtension } from "@dispatch/exec-backend";
@@ -105,6 +106,10 @@ const CORE_EXTENSIONS: readonly Extension[] = [
 	// tool-serving extensions) to keep the DAG honest — and before
 	// transport-http, whose routes consume the ComputerService it provides.
 	sshExt,
+	// heartbeat PROVIDES the HeartbeatService (per-workspace AI loop) the
+	// HTTP routes delegate to. Placed before transport-http (which depends on
+	// it) — mirrors how ssh precedes transport-http for the same reason.
+	heartbeatExt,
 	createTransportHttpExtension(),
 	// Surface extensions — dependency order: surface-registry first, then consumers.
 	createSurfaceRegistryExtension(),

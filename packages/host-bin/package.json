@@ -11,6 +11,7 @@
 		"@dispatch/cache-warming": "workspace:*",
 		"@dispatch/credential-store": "workspace:*",
 		"@dispatch/exec-backend": "workspace:*",
+		"@dispatch/heartbeat": "workspace:*",
 		"@dispatch/provider-openai-compat": "workspace:*",
 		"@dispatch/provider-umans": "workspace:*",
 		"@dispatch/message-queue": "workspace:*",

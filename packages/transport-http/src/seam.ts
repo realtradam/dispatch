@@ -6,6 +6,8 @@ export type { ConversationStore } from "@dispatch/conversation-store";
 export { conversationStoreHandle, isValidWorkspaceSlug } from "@dispatch/conversation-store";
 export type { CredentialStore } from "@dispatch/credential-store";
 export { credentialStoreHandle } from "@dispatch/credential-store";
+export type { HeartbeatService } from "@dispatch/heartbeat";
+export { heartbeatServiceHandle } from "@dispatch/heartbeat";
 export type { LspServerStatus, LspService } from "@dispatch/lsp";
 export { lspServiceHandle } from "@dispatch/lsp";
 export type { McpServerStatus, McpService } from "@dispatch/mcp";

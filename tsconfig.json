@@ -95,6 +95,9 @@
 			"path": "./packages/lsp"
 		},
 		{
+			"path": "./packages/heartbeat"
+		},
+		{
 			"path": "./packages/system-prompt"
 		},
 		{

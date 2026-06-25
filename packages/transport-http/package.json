@@ -8,6 +8,7 @@
 	"dependencies": {
 		"@dispatch/conversation-store": "workspace:*",
 		"@dispatch/credential-store": "workspace:*",
+		"@dispatch/heartbeat": "workspace:*",
 		"@dispatch/kernel": "workspace:*",
 		"@dispatch/lsp": "workspace:*",
 		"@dispatch/mcp": "workspace:*",

@@ -5,6 +5,7 @@
 	"references": [
 		{ "path": "../conversation-store" },
 		{ "path": "../credential-store" },
+		{ "path": "../heartbeat" },
 		{ "path": "../kernel" },
 		{ "path": "../lsp" },
 		{ "path": "../session-orchestrator" },

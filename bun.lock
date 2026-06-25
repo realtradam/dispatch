@@ -58,6 +58,15 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/heartbeat": {
+      "name": "@dispatch/heartbeat",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
+      },
+    },
     "packages/host-bin": {
       "name": "@dispatch/host-bin",
       "version": "0.0.0",
@@ -67,6 +76,7 @@
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/exec-backend": "workspace:*",
+        "@dispatch/heartbeat": "workspace:*",
         "@dispatch/journal-sink": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/lsp": "workspace:*",
@@ -310,7 +320,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.22.0",
+      "version": "0.23.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
@@ -322,6 +332,7 @@
       "dependencies": {
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
+        "@dispatch/heartbeat": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
@@ -383,6 +394,8 @@
     "@dispatch/credential-store": ["@dispatch/credential-store@workspace:packages/credential-store"],
 
     "@dispatch/exec-backend": ["@dispatch/exec-backend@workspace:packages/exec-backend"],
+
+    "@dispatch/heartbeat": ["@dispatch/heartbeat@workspace:packages/heartbeat"],
 
     "@dispatch/host-bin": ["@dispatch/host-bin@workspace:packages/host-bin"],
 
