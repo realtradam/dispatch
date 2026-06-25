@@ -45,10 +45,16 @@ export interface ResolverAdapters {
 	readonly fs: ResolverFs;
 	/** Override the current time (defaults to `new Date()`). */
 	readonly now?: () => Date;
-	/** Override `process.platform` (defaults to the real platform). */
-	readonly platform?: () => string;
-	/** Override the hostname (defaults to `os.hostname()`). */
-	readonly hostname?: () => string;
+	/**
+	 * Override `process.platform` (defaults to the real platform). Async so a
+	 * remote adapter can run `uname -s` over SSH.
+	 */
+	readonly platform?: () => Promise<string>;
+	/**
+	 * Override the hostname (defaults to `os.hostname()`). Async so a remote
+	 * adapter can run `hostname` over SSH.
+	 */
+	readonly hostname?: () => Promise<string>;
 }
 
 /** Per-construction context forwarded by the session-orchestrator. */
@@ -157,9 +163,9 @@ export async function resolveVariables(
 	// ── system:* ────────────────────────────────────────────────────────────
 	vars.set("system:time", now.toISOString());
 	vars.set("system:date", now.toISOString().slice(0, 10));
-	const platform = adapters.platform?.() ?? process.platform;
+	const platform = (await adapters.platform?.()) ?? process.platform;
 	vars.set("system:os", await resolveOs(platform, adapters.fs));
-	vars.set("system:hostname", adapters.hostname?.() ?? osHostname());
+	vars.set("system:hostname", (await adapters.hostname?.()) ?? osHostname());
 
 	// ── prompt:* ────────────────────────────────────────────────────────────
 	vars.set("prompt:cwd", cwd);

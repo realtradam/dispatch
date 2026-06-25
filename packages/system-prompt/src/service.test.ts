@@ -157,7 +157,7 @@ describe("system-prompt service", () => {
 		});
 
 		const meta = await service.getWithMeta("never-constructed");
-		expect(meta).toEqual({ prompt: null, cwd: null });
+		expect(meta).toEqual({ prompt: null, cwd: null, computerId: null });
 	});
 
 	it("getWithMeta after construct returns the resolved prompt and the exact cwd", async () => {
@@ -217,11 +217,11 @@ describe("system-prompt service", () => {
 
 		const first = await service.construct("conv-second", "/dir-a");
 		const firstMeta = await service.getWithMeta("conv-second");
-		expect(firstMeta).toEqual({ prompt: first, cwd: "/dir-a" });
+		expect(firstMeta).toEqual({ prompt: first, cwd: "/dir-a", computerId: null });
 
 		const second = await service.construct("conv-second", "/dir-b");
 		const secondMeta = await service.getWithMeta("conv-second");
-		expect(secondMeta).toEqual({ prompt: second, cwd: "/dir-b" });
+		expect(secondMeta).toEqual({ prompt: second, cwd: "/dir-b", computerId: null });
 		expect(secondMeta.cwd).not.toBe("/dir-a");
 	});
 });

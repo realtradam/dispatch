@@ -21,7 +21,10 @@ import { remoteExecBackendFactoryHandle } from "@dispatch/exec-backend";
 import type { Extension, HostAPI, Logger, Manifest } from "@dispatch/kernel";
 import { computerServiceHandle } from "@dispatch/transport-http/dist/seam.js";
 import { Client } from "ssh2";
-import { resolveComputer as resolveComputerFromConfig } from "./config.js";
+import {
+	resolveComputer as resolveComputerFromConfig,
+	type SshConfigResolveEnv,
+} from "./config.js";
 import { createSshService, type SshServiceDeps } from "./service.js";
 
 export const manifest: Manifest = {
@@ -67,6 +70,47 @@ export function makeSshExtension(deps: SshServiceDeps): Extension {
 
 // ─── real node:fs + ssh2 adapters (production wiring) ─────────────────────
 
+/** Path candidates for `dispatch.toml` (global + project-local). */
+function dispatchTomlPaths(): readonly string[] {
+	const paths = [
+		join(homedir(), ".config", "dispatch", "dispatch.toml"), // global
+		join(process.cwd(), "dispatch.toml"), // project-local
+	];
+	return paths;
+}
+
+/**
+ * Read `[ssh].reject` glob patterns from `dispatch.toml` (global + project).
+ * Merges both lists (deduped). Returns `[]` when no file or no `[ssh]` section.
+ * Uses `Bun.TOML.parse` (Bun's built-in TOML parser — zero deps).
+ */
+async function readRejectPatternsImpl(): Promise<readonly string[]> {
+	const patterns: string[] = [];
+	const seen = new Set<string>();
+
+	for (const path of dispatchTomlPaths()) {
+		try {
+			const text = await readFile(path, "utf8");
+			const parsed = Bun.TOML.parse(text) as {
+				ssh?: { reject?: readonly string[] };
+			};
+			const list = parsed.ssh?.reject;
+			if (list !== undefined) {
+				for (const p of list) {
+					if (typeof p === "string" && !seen.has(p)) {
+						seen.add(p);
+						patterns.push(p);
+					}
+				}
+			}
+		} catch {
+			// File missing or parse error → skip silently.
+		}
+	}
+
+	return patterns;
+}
+
 /**
  * Resolve the real `SshServiceDeps` against the live filesystem + ssh2. The
  * `resolveComputer` dep is wired from the pure config reader using the same
@@ -82,6 +126,28 @@ export function createSshServiceDeps(hostLogger: Logger): SshServiceDeps {
 	const readFileText = async (path: string): Promise<string> => readFile(path, "utf8");
 	const defaultUser = process.env.USER ?? homedir().split("/").pop() ?? "root";
 
+	/** Read the reject list fresh from `dispatch.toml` on each call. */
+	const readRejectPatterns = async (): Promise<readonly string[]> => readRejectPatternsImpl();
+
+	/**
+	 * Build the resolve env (config + known_hosts + reject patterns) — shared by
+	 * the service methods and the pool's resolveComputer dep.
+	 */
+	async function readEnv(): Promise<SshConfigResolveEnv> {
+		const [configText, knownHostsText, rejectPatterns] = await Promise.all([
+			readConfigText().catch(async () => ""),
+			readFileText(knownHostsPath).catch(async () => ""),
+			readRejectPatterns(),
+		]);
+		const base: SshConfigResolveEnv = {
+			configText,
+			knownHostsText,
+			defaultUser,
+			homeDir: homedir(),
+		};
+		return rejectPatterns.length > 0 ? { ...base, rejectPatterns } : base;
+	}
+
 	return {
 		logger: hostLogger,
 		homeDir: homedir(),
@@ -89,6 +155,7 @@ export function createSshServiceDeps(hostLogger: Logger): SshServiceDeps {
 		knownHostsPath,
 		readConfigText,
 		readFileText,
+		readRejectPatterns,
 		pathExists: async (path: string) =>
 			access(path)
 				.then(() => true)
@@ -96,20 +163,13 @@ export function createSshServiceDeps(hostLogger: Logger): SshServiceDeps {
 		appendKnownHosts: async (path: string, line: string) =>
 			appendFile(path, `${line}\n`, { encoding: "utf8" }),
 		newClient: () => new Client(),
-		// Resolve a computer alias → `Computer` by reading the live config. Reads
-		// fresh on each call (the config is the source of truth; a Host block added
-		// between turns is picked up). Returns null for an unknown/stale alias.
+		// Resolve a computer alias → `Computer` by reading the live config +
+		// known_hosts. Reads fresh on each call (a Host block or known_hosts
+		// entry added between turns is picked up). Does NOT apply the reject
+		// list — the pool needs to connect even to hosts hidden from the catalog.
 		resolveComputer: async (alias: string) => {
-			const [configText, knownHostsText] = await Promise.all([
-				readConfigText().catch(async () => ""),
-				readFileText(knownHostsPath).catch(async () => ""),
-			]);
-			return resolveComputerFromConfig(alias, {
-				configText,
-				knownHostsText,
-				defaultUser,
-				homeDir: homedir(),
-			});
+			const env = await readEnv();
+			return resolveComputerFromConfig(alias, env);
 		},
 	};
 }

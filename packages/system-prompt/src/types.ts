@@ -20,25 +20,35 @@ export interface SystemPromptService {
 	 * result under `resolved:<conversationId>`. Returns the resolved string.
 	 * When no template is stored, the built-in default template is used. An
 	 * empty template yields an empty string.
+	 *
+	 * When `context.computerId` is set, the resolver uses remote-backed adapters
+	 * (reading the remote's `/etc/os-release`, `hostname`, `uname`, `git` via
+	 * the ExecBackend/SSH) so the system prompt reflects the REMOTE machine.
 	 */
 	construct(
 		conversationId: string,
 		cwd: string,
-		context?: { readonly model?: string; readonly workspaceId?: string },
+		context?: {
+			readonly model?: string;
+			readonly workspaceId?: string;
+			readonly computerId?: string;
+		},
 	): Promise<string>;
 
 	/** Read the persisted resolved system prompt, or `null` if never constructed. */
 	get(conversationId: string): Promise<string | null>;
 
 	/**
-	 * Read the persisted resolved system prompt AND the cwd it was built
-	 * against. Returns `{ prompt: null, cwd: null }` if never constructed.
-	 * Consumers use this to detect whether the cached prompt is stale
-	 * relative to the current effective cwd.
+	 * Read the persisted resolved system prompt AND the cwd + computerId it was
+	 * built against. Returns `{ prompt: null, cwd: null, computerId: null }` if
+	 * never constructed. Consumers use this to detect whether the cached prompt
+	 * is stale relative to the current effective cwd or computerId.
 	 */
-	getWithMeta(
-		conversationId: string,
-	): Promise<{ readonly prompt: string | null; readonly cwd: string | null }>;
+	getWithMeta(conversationId: string): Promise<{
+		readonly prompt: string | null;
+		readonly cwd: string | null;
+		readonly computerId: string | null;
+	}>;
 
 	/** Read the global template (or `DEFAULT_TEMPLATE` when none is stored). */
 	getTemplate(): Promise<string>;

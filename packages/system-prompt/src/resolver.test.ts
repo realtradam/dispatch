@@ -37,8 +37,8 @@ describe("resolver", () => {
 				spawn: failSpawn(),
 				fs: fakeFs(new Map()),
 				now: () => fixedNow,
-				platform: () => "linux",
-				hostname: () => "myhost",
+				platform: async () => "linux",
+				hostname: async () => "myhost",
 			});
 
 			expect(map.get("system:time")).toBe("2024-06-15T12:30:00.000Z");
@@ -83,7 +83,7 @@ describe("resolver", () => {
 			const map = await resolveVariables("/proj", {
 				spawn: failSpawn(),
 				fs: fakeFs(files),
-				platform: () => "linux",
+				platform: async () => "linux",
 			});
 			expect(map.get("system:os")).toBe("Ubuntu 22.04 LTS");
 		});
@@ -95,7 +95,7 @@ describe("resolver", () => {
 			const map = await resolveVariables("/proj", {
 				spawn: failSpawn(),
 				fs: fakeFs(files),
-				platform: () => "linux",
+				platform: async () => "linux",
 			});
 			expect(map.get("system:os")).toBe("Debian 12");
 		});
@@ -108,7 +108,7 @@ describe("resolver", () => {
 			const map = await resolveVariables("/proj", {
 				spawn: failSpawn(),
 				fs: fakeFs(files),
-				platform: () => "linux",
+				platform: async () => "linux",
 			});
 			expect(map.get("system:os")).toBe("Ubuntu 22.04 LTS (WSL)");
 		});
@@ -121,7 +121,7 @@ describe("resolver", () => {
 			const map = await resolveVariables("/proj", {
 				spawn: failSpawn(),
 				fs: fakeFs(files),
-				platform: () => "linux",
+				platform: async () => "linux",
 			});
 			expect(map.get("system:os")).toBe("Ubuntu 22.04 LTS (WSL)");
 		});
@@ -131,7 +131,7 @@ describe("resolver", () => {
 			const map = await resolveVariables("/proj", {
 				spawn: failSpawn(),
 				fs: fakeFs(files),
-				platform: () => "linux",
+				platform: async () => "linux",
 			});
 			expect(map.get("system:os")).toBe("Linux (WSL)");
 		});
@@ -140,7 +140,7 @@ describe("resolver", () => {
 			const map = await resolveVariables("/proj", {
 				spawn: failSpawn(),
 				fs: fakeFs(new Map()),
-				platform: () => "linux",
+				platform: async () => "linux",
 			});
 			expect(map.get("system:os")).toBe("linux");
 		});
@@ -149,7 +149,7 @@ describe("resolver", () => {
 			const map = await resolveVariables("/proj", {
 				spawn: failSpawn(),
 				fs: fakeFs(new Map()),
-				platform: () => "darwin",
+				platform: async () => "darwin",
 			});
 			expect(map.get("system:os")).toBe("darwin");
 		});

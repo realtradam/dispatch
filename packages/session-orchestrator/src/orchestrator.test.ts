@@ -3611,12 +3611,13 @@ function createFakeSystemPromptService(
 	constructImpl: (
 		conversationId: string,
 		cwd: string,
-		context?: { readonly model?: string },
+		context?: { readonly model?: string; readonly computerId?: string },
 	) => Promise<string>,
-	getWithMetaImpl: (
-		conversationId: string,
-	) => Promise<{ readonly prompt: string | null; readonly cwd: string | null }> = () =>
-		Promise.resolve({ prompt: null, cwd: null }),
+	getWithMetaImpl: (conversationId: string) => Promise<{
+		readonly prompt: string | null;
+		readonly cwd: string | null;
+		readonly computerId: string | null;
+	}> = () => Promise.resolve({ prompt: null, cwd: null, computerId: null }),
 ): SystemPromptService {
 	return {
 		construct: constructImpl,
@@ -3663,7 +3664,7 @@ describe("system prompt: regular turn flow", () => {
 					},
 					async (conversationId) => {
 						getCalls.push(conversationId);
-						return null;
+						return { prompt: null, cwd: null, computerId: null };
 					},
 				),
 		});
@@ -3714,7 +3715,7 @@ describe("system prompt: regular turn flow", () => {
 					},
 					async (conversationId) => {
 						getWithMetaCalls.push(conversationId);
-						return { prompt: "PERSISTED_PROMPT", cwd: "/work/dir" };
+						return { prompt: "PERSISTED_PROMPT", cwd: "/work/dir", computerId: null };
 					},
 				),
 		});
@@ -3762,7 +3763,7 @@ describe("system prompt: regular turn flow", () => {
 						constructCalls.push({ conversationId, cwd, model: context?.model });
 						return "RECONSTRUCTED_PROMPT";
 					},
-					async () => ({ prompt: null, cwd: null }),
+					async () => ({ prompt: null, cwd: null, computerId: null }),
 				),
 		});
 
@@ -3815,7 +3816,7 @@ describe("system prompt: regular turn flow", () => {
 					async (conversationId) => {
 						getWithMetaCalls.push(conversationId);
 						// Stored prompt was built against an OLD cwd.
-						return { prompt: "STALE_PROMPT", cwd: "/old/dir" };
+						return { prompt: "STALE_PROMPT", cwd: "/old/dir", computerId: null };
 					},
 				),
 		});

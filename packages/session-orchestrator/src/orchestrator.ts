@@ -619,17 +619,26 @@ export function createSessionOrchestrator(
 							{
 								...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
 								...(workspaceId !== undefined ? { workspaceId } : {}),
+								...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
 							},
 						);
 					} else {
 						const meta = await systemPromptService.getWithMeta(conversationId);
 						const currentCwd = effectiveCwd ?? process.cwd();
-						if (meta.prompt !== null && meta.cwd === currentCwd) {
+						const currentComputerId = effectiveComputerId ?? null;
+						// Invalidate when cwd OR computerId changed (switching computers
+						// must rebuild the prompt against the remote OS/hostname).
+						if (
+							meta.prompt !== null &&
+							meta.cwd === currentCwd &&
+							meta.computerId === currentComputerId
+						) {
 							systemPrompt = meta.prompt;
 						} else {
 							systemPrompt = await systemPromptService.construct(conversationId, currentCwd, {
 								...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
 								...(workspaceId !== undefined ? { workspaceId } : {}),
+								...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
 							});
 						}
 					}
@@ -1122,9 +1131,11 @@ export function createCompactionService(
 			if (systemPromptService !== undefined) {
 				const cwd = (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? process.cwd();
 				const workspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
+				const computerId = await deps.conversationStore.getEffectiveComputer(conversationId);
 				const constructed = await systemPromptService.construct(conversationId, cwd, {
 					...(opts?.modelName !== undefined ? { model: opts.modelName } : {}),
 					workspaceId,
+					...(computerId !== null ? { computerId } : {}),
 				});
 				compactionSystemPrompt = `${constructed}\n\n${COMPACTION_SYSTEM_PROMPT}`;
 			} else {
