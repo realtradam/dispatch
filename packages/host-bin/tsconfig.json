@@ -11,6 +11,9 @@
 			"path": "../cache-warming"
 		},
 		{
+			"path": "../exec-backend"
+		},
+		{
 			"path": "../kernel"
 		},
 		{
@@ -21,6 +24,9 @@
 		},
 		{
 			"path": "../skills"
+		},
+		{
+			"path": "../ssh"
 		},
 		{
 			"path": "../storage-sqlite"

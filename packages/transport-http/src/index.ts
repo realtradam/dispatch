@@ -26,6 +26,7 @@ export {
 	serializeEventLine,
 } from "./logic.js";
 export type {
+	ComputerService,
 	ConversationStore,
 	CredentialStore,
 	LspService,
@@ -35,6 +36,7 @@ export type {
 } from "./seam.js";
 export {
 	cacheWarmHandle,
+	computerServiceHandle,
 	conversationStoreHandle,
 	credentialStoreHandle,
 	isValidWorkspaceSlug,
