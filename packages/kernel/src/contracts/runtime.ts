@@ -85,6 +85,17 @@ export interface RunTurnInput {
 	readonly cwd?: string;
 
 	/**
+	 * The computer to execute this turn's tools on (SSH support). Omitted/undefined
+	 * = LOCAL (today's behavior). When set, it is an SSH config alias; the kernel
+	 * does NOT interpret it — it forwards the value verbatim to each
+	 * `ToolExecuteContext.computerId`, exactly like `cwd`. It never enters the
+	 * model prompt, so it does not affect prompt caching. Tools resolve their
+	 * execution backend (local vs. remote) from this; see
+	 * `notes/ssh-support-plan.md`.
+	 */
+	readonly computerId?: string;
+
+	/**
 	 * Optional logger for structured span instrumentation. The runtime opens
 	 * turn/step/tool-call spans using this logger. If omitted, no spans are
 	 * emitted (backward-compatible with callers that don't yet pass a logger).

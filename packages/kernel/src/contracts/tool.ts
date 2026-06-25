@@ -78,6 +78,18 @@ export interface ToolExecuteContext {
 	 * a tool has no conversation scope (e.g. a global tool).
 	 */
 	readonly conversationId?: string;
+
+	/**
+	 * The computer this tool-call executes on (SSH support). When
+	 * omitted/undefined, execution is LOCAL (today's behavior — the tool uses
+	 * the local node fs/child_process). When set, it is an SSH config alias
+	 * (see `notes/ssh-support-plan.md` §3); a tool resolves a remote
+	 * `ExecBackend` for it via its injected resolver. The kernel never
+	 * interprets it — it forwards the value verbatim from
+	 * `RunTurnInput.computerId`, exactly like `cwd`. It never enters the model
+	 * prompt, so it does not affect prompt caching.
+	 */
+	readonly computerId?: string;
 }
 
 /**
