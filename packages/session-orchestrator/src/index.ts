@@ -12,6 +12,7 @@ export {
 	conversationOpened,
 	conversationStatusChanged,
 	createCompactionService,
+	createRetryStrategy,
 	createSessionOrchestrator,
 	createWarmService,
 	type EnqueueInput,
@@ -34,8 +35,13 @@ export {
 } from "./orchestrator.js";
 export {
 	buildUserMessage,
+	cumulativeSleepMs,
 	defaultDispatchPolicy,
+	delayFor,
 	generateTurnId,
+	RETRY_BUDGET_MS,
+	RETRY_SCHEDULE_MS,
+	RETRY_TAIL_MS,
 	resolveReasoningEffort,
 	selectFirstProvider,
 } from "./pure.js";

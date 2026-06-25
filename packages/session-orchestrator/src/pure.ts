@@ -9,6 +9,53 @@ export function buildUserMessage(text: string): ChatMessage {
 	return { role: "user", chunks: [{ type: "text", text }] };
 }
 
+// ── Provider-error retry backoff schedule ───────────────────────────────────
+//
+// Pure, deterministic delay decision (no I/O, no clock) for retrying retryable
+// provider errors (HTTP 429 / 5xx "overloaded"). The concrete `sleep` (I/O)
+// is wired in the orchestrator; this owns only the policy.
+
+/**
+ * Stepped backoff schedule (ms): 5s, 10s, 30s, 60s, 5m, 10m, 15m, 30m.
+ * After the head is exhausted, {@link RETRY_TAIL_MS} (30m) repeats.
+ */
+export const RETRY_SCHEDULE_MS = [
+	5_000, 10_000, 30_000, 60_000, 300_000, 600_000, 900_000, 1_800_000,
+] as const;
+
+/** Tail delay (ms) repeated after the stepped head: 30 minutes. */
+export const RETRY_TAIL_MS = 1_800_000;
+
+/** Cumulative scheduled-sleep budget (ms) after which retrying gives up: 8h. */
+export const RETRY_BUDGET_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * Cumulative scheduled sleep through `attempt` (sum of delay[0..attempt]).
+ * Pure — no I/O, no clock.
+ */
+export function cumulativeSleepMs(attempt: number): number {
+	let sum = 0;
+	for (let i = 0; i <= attempt; i++) {
+		sum += i < RETRY_SCHEDULE_MS.length ? (RETRY_SCHEDULE_MS[i] ?? RETRY_TAIL_MS) : RETRY_TAIL_MS;
+	}
+	return sum;
+}
+
+/**
+ * Pure, deterministic delay decision for the retry strategy: given the
+ * 0-based attempt index, return the delay in ms to sleep before the next
+ * retry, or `undefined` to stop (cumulative budget exhausted). No I/O, no
+ * clock — fully testable. Matches the plan's schedule:
+ * `5s, 10s, 30s, 60s, 5m, 10m, 15m, 30m`, then repeat 30m until 8h of
+ * cumulative scheduled sleep is reached, then give up.
+ */
+export function delayFor(attempt: number): number | undefined {
+	const scheduled = RETRY_SCHEDULE_MS[attempt];
+	const delay = scheduled !== undefined ? scheduled : RETRY_TAIL_MS;
+	if (cumulativeSleepMs(attempt) > RETRY_BUDGET_MS) return undefined; // over budget → stop
+	return delay;
+}
+
 /**
  * Resolve the reasoning-effort level for a turn:
  *   per-turn override → persisted per-conversation value → default `"high"`.

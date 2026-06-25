@@ -11,6 +11,7 @@ export type {
 	TurnDoneEvent,
 	TurnErrorEvent,
 	TurnInputEvent,
+	TurnProviderRetryEvent,
 	TurnReasoningDeltaEvent,
 	TurnSealedEvent,
 	TurnStartEvent,

@@ -6,6 +6,7 @@
 
 import { extname, resolve } from "node:path";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "@dispatch/kernel";
+import { aggregateDiagnostics } from "./aggregate.js";
 import type { LspManager } from "./manager.js";
 
 type Operation = "diagnostics" | "hover" | "definition" | "references" | "documentSymbol";
@@ -157,6 +158,8 @@ export function createLspTool(manager: LspManager): ToolContract {
 
 				switch (operation) {
 					case "diagnostics": {
+						// 10s hard ceiling per server (same policy as the edit path).
+						const DIAGNOSTICS_TIMEOUT_MS = 10_000;
 						// Query ALL connected servers whose extensions match this file.
 						const matching = statuses.filter(
 							(s) => s.state === "connected" && s.extensions.some((ext) => ext === fileExt),
@@ -179,31 +182,27 @@ export function createLspTool(manager: LspManager): ToolContract {
 							if (!client) {
 								return { content: "Language server client not available.", isError: true };
 							}
-							const result = await client.waitForDiagnostics(absolutePath);
+							const result = await client.waitForDiagnostics(absolutePath, {
+								timeoutMs: DIAGNOSTICS_TIMEOUT_MS,
+							});
+							if (result.timedOut) {
+								return {
+									content: `⚠️ [${connected.name}] LSP took too long (>10s), diagnostics skipped — please raise this to the user.`,
+								};
+							}
 							return { content: result.formatted || "No diagnostics found." };
 						}
 
-						// Query each matching server and merge results, tagged by source.
-						const parts: string[] = [];
-						let anyTimedOut = false;
-						for (const s of matching) {
-							const client = manager.getClient(s.id, s.root);
-							if (!client) continue;
-							const result = await client.waitForDiagnostics(absolutePath, { timeoutMs: 60_000 });
-							if (result.timedOut) anyTimedOut = true;
-							if (result.slow) {
-								parts.push(
-									`⚠️ LSP is taking unusually long. If this happens more than once, raise it to the user.`,
-								);
-							}
-							if (result.formatted) {
-								parts.push(`[${s.name}]\n${result.formatted}`);
-							}
-						}
-						if (anyTimedOut && parts.length === 0) {
-							parts.push("Diagnostics timed out (server may still be indexing).");
-						}
-						return { content: parts.length > 0 ? parts.join("\n\n") : "No diagnostics found." };
+						// Query matching servers concurrently, each capped at 10s;
+						// a non-responding server is skipped with a notice.
+						const agg = await aggregateDiagnostics(
+							(id, root) => manager.getClient(id, root),
+							matching,
+							absolutePath,
+							DIAGNOSTICS_TIMEOUT_MS,
+							{},
+						);
+						return { content: agg.formatted || "No diagnostics found." };
 					}
 					case "hover": {
 						const client = await getFirstMatchingClient(manager, statuses, fileExt);

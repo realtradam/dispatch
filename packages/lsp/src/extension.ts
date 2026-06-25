@@ -8,6 +8,7 @@
 import { extname, join } from "node:path";
 import type { Extension, HostAPI, ServiceHandle } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
+import { aggregateDiagnostics } from "./aggregate.js";
 import type { SpawnedProcess } from "./client.js";
 import { LspManager } from "./manager.js";
 import { createLspTool } from "./tool.js";
@@ -43,6 +44,14 @@ function realSpawn(
 		stderr: proc.stderr,
 		pid: proc.pid,
 		kill: () => proc.kill(),
+		// Surface process exit so the client can stop querying a dead server
+		// and self-heal (respawn). Bun's Subprocess.exited resolves with the
+		// exit code (or rejects if killed by signal — treat as code:null).
+		onExit: (handler) => {
+			(proc as { exited: Promise<number | null> }).exited
+				.then((code) => handler({ code }))
+				.catch(() => handler({ code: null }));
+		},
 	};
 }
 
@@ -108,14 +117,20 @@ export const extension: Extension = {
 				return manager.status(cwd);
 			},
 			async getDiagnostics(opts: GetDiagnosticsOpts): Promise<DiagnosticsResult> {
-				const timeoutMs = opts.timeoutMs ?? 60_000;
-				const slowThreshold = 10_000;
+				// 10s hard ceiling per server, regardless of what the caller
+				// passes (the edit hook still passes 60_000 — clamped here, so
+				// no other-unit edit is needed). A server that doesn't respond
+				// in 10s is skipped with a notice instead of waited out.
+				const PER_SERVER_CAP_MS = 10_000;
+				const timeoutMs = Math.min(opts.timeoutMs ?? PER_SERVER_CAP_MS, PER_SERVER_CAP_MS);
 				const fileExt = extname(opts.filePath).toLowerCase();
 				const absolutePath = opts.filePath.startsWith("/")
 					? opts.filePath
 					: join(opts.cwd, opts.filePath);
 
 				// Get all connected servers matching this file's extension.
+				// A dead/corrupted server has state:"error" and is excluded —
+				// no per-edit hang on a corpse.
 				const statuses = await manager.status(opts.cwd);
 				const matching = statuses.filter(
 					(s) => s.state === "connected" && s.extensions.some((ext) => ext === fileExt),
@@ -125,34 +140,15 @@ export const extension: Extension = {
 					return { formatted: "", slow: false, timedOut: false };
 				}
 
-				const parts: string[] = [];
-				let anySlow = false;
-				let anyTimedOut = false;
-				const start = Date.now();
+				const agg = await aggregateDiagnostics(
+					(id, root) => manager.getClient(id, root),
+					matching,
+					absolutePath,
+					timeoutMs,
+					{ text: opts.text, minSeverity: opts.minSeverity },
+				);
 
-				for (const s of matching) {
-					const client = manager.getClient(s.id, s.root);
-					if (!client) continue;
-					const waitOpts: { text?: string; timeoutMs?: number; minSeverity?: number } = {
-						timeoutMs,
-					};
-					if (opts.text !== undefined) waitOpts.text = opts.text;
-					if (opts.minSeverity !== undefined) waitOpts.minSeverity = opts.minSeverity;
-					const result = await client.waitForDiagnostics(absolutePath, waitOpts);
-					if (result.slow) anySlow = true;
-					if (result.timedOut) anyTimedOut = true;
-					if (result.formatted) {
-						parts.push(`[${s.name}]\n${result.formatted}`);
-					}
-				}
-
-				const elapsed = Date.now() - start;
-
-				return {
-					formatted: parts.join("\n\n"),
-					slow: anySlow || elapsed > slowThreshold,
-					timedOut: anyTimedOut,
-				};
+				return { formatted: agg.formatted, slow: false, timedOut: agg.timedOut };
 			},
 		};
 		host.provideService(lspServiceHandle, service);
