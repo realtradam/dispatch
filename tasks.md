@@ -25,13 +25,21 @@ owner-agents on disjoint packages).
       `edit-file` behind `ExecBackend` (local-only; spawn.ts deleted — logic moved
       to exec-backend; edit_file gains forward-compatible remote-diagnostics skip).
       `tsc -b` EXIT 0, biome clean, **1599 vitest** (was 1592).
-- [ ] **Wave 3**: `conversation-store` (defaultComputerId + getEffectiveComputer)
-      + `session-orchestrator` (resolve + thread computerId; drop lsp/mcp when
-      remote) + `transport-contract` (computerId on ChatRequest + computer types).
-- [ ] **Wave 4**: `transport-http` + `transport-ws` (computer endpoints + chat).
+- [x] **Wave 3** (parallel): `session-orchestrator` (thread computerId end-to-end
+      + remote tool-drop filter: drops `lsp` + `__`-namespaced MCP tools when
+      remote) + `transport-contract` (ChatRequest.computerId + computer endpoint
+      API types). `tsc -b` EXIT 0, biome clean, **1620 vitest** (was 1599).
+      CR-1 (non-blocking): MCP filter doesn't preserve `computerId` on
+      ToolAssembly — fix folded into wave 4.
+- [ ] **Wave 4** (parallel): `transport-http` + `transport-ws` (computer
+      endpoints + chat threading) + `mcp` (CR-1: preserve computerId in filter).
 - [ ] **Wave 5**: `host-bin` wiring + `ssh` package (SshConnectionPool,
       SshExecBackend, ~/.ssh/config reader via ssh-config, known_hosts pinning).
-- [ ] **Wave 6**: `cache-warming` computerId threading + full verify.
+- [ ] **DEFERRED — cache-warming**: computerId threading intentionally NOT done
+      (user-deferred — cache-warming is not needed right now). Known limitation:
+      a warm probe on a remote turn assembles the tool set WITHOUT the remote-drop
+      → a potential prompt-cache miss (performance-only, not correctness). Revisit
+      when cache-warming is re-enabled.
 Key decisions: ssh2 + ssh-config (project-local deps); key-only auth from
 `~/.ssh`; auto-trust-and-pin host keys; computers discovered read-only from
 `~/.ssh/config` (no CRUD entity); computerId persisted per-conversation; LSP/MCP

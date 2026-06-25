@@ -13,7 +13,7 @@ import {
 	sessionOrchestratorHandle,
 } from "./orchestrator.js";
 import { selectFirstProvider } from "./pure.js";
-import { toolsFilter } from "./tools-filter.js";
+import { filterRemoteIncompatibleTools, toolsFilter } from "./tools-filter.js";
 
 export const manifest: Manifest = {
 	id: "session-orchestrator",
@@ -96,6 +96,18 @@ export function activate(host: HostAPI): void {
 	});
 
 	host.provideService(sessionOrchestratorHandle, orchestrator);
+
+	// Remote-degradation rule (plan §6): when a turn is REMOTE
+	// (`assembly.computerId !== undefined`), drop tools that spawn local
+	// processes and cannot run over SFTP — the `lsp` tool (local LSP servers)
+	// and MCP-namespaced tools (`<serverId>__<toolName>`, local MCP servers).
+	// When LOCAL (`computerId === undefined`), the filter is a passthrough —
+	// byte-identical to today. Registered at default priority (0) with
+	// activation-order tie-breaking: session-orchestrator activates before
+	// MCP (which dependsOn it), so this runs FIRST in the chain — the drops
+	// happen before MCP's filter connects/registers servers. Mirrors how MCP
+	// adds its own filter via host.addFilter.
+	host.addFilter(toolsFilter, filterRemoteIncompatibleTools);
 
 	const warmService = createWarmService(
 		{

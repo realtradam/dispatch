@@ -22,6 +22,8 @@
 import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
 import type {
 	AgentEvent,
+	Computer,
+	ComputerEntry,
 	ConversationMeta,
 	ConversationStatus,
 	QueuedMessage,
@@ -35,6 +37,8 @@ import type {
 export type {
 	AgentEvent,
 	CompactionResult,
+	Computer,
+	ComputerEntry,
 	ConversationMeta,
 	ConversationStatus,
 	QueuedMessage,
@@ -76,6 +80,16 @@ export interface ChatRequest {
 	 * prompt (so it does not affect prompt caching).
 	 */
 	readonly cwd?: string;
+
+	/**
+	 * The computer to run this turn's tools on — an SSH config `Host` alias
+	 * (one of the `alias` values returned by `GET /computers`). Omit to inherit
+	 * the resolved chain: per-conversation `computerId` → the workspace's
+	 * `defaultComputerId` → `null`/local (today's behavior). Like `cwd`, this is
+	 * a per-turn tool-execution target forwarded to tools and never part of the
+	 * model prompt (so it does not affect prompt caching). Mirrors `cwd`.
+	 */
+	readonly computerId?: string;
 
 	/**
 	 * Reasoning-effort override for THIS turn only (does not persist). When
@@ -816,4 +830,81 @@ export interface DeleteWorkspaceResponse {
 	readonly workspaceId: string;
 	/** Conversations that were closed (status → "closed") by this delete. */
 	readonly closedCount: number;
+}
+
+// ─── Computers ───────────────────────────────────────────────────────────────
+
+/**
+ * Response of `GET /computers` — every remote computer discovered from the
+ * system's `~/.ssh/config`, sorted by `alias`. Parallel to
+ * `WorkspaceListResponse`: each entry is a `ComputerEntry` (a `Computer` plus a
+ * usage count). There is no Computer CRUD — to add one, the user adds a `Host`
+ * block to `~/.ssh/config` and Dispatch discovers it on the next read.
+ */
+export interface ComputerListResponse {
+	readonly computers: readonly ComputerEntry[];
+}
+
+/**
+ * Response of `GET /computers/:alias` — a single computer. Parallel to
+ * `WorkspaceResponse` (the entity itself). `alias` is the `computerId` users
+ * select; the remaining fields are resolved from the SSH config.
+ */
+export interface ComputerResponse extends Computer {}
+
+/**
+ * Response of `GET /computers/:alias/status` — the live connection state of a
+ * computer (whether Dispatch currently holds an open SSH session to it). Drives
+ * the frontend connection indicator. `error` is present only when
+ * `state === "error"`; `knownHost` mirrors the read-only `Computer` field.
+ */
+export interface ComputerStatusResponse {
+	readonly alias: string;
+	readonly state: "disconnected" | "connecting" | "connected" | "error";
+	readonly error?: string;
+	readonly knownHost: boolean;
+}
+
+/**
+ * Body of `PUT /conversations/:id/computer` — set or clear the conversation's
+ * persisted computer selection (the computer analog of `SetCwdRequest`). Pass
+ * `null` to clear → the conversation inherits the workspace's
+ * `defaultComputerId`, then `null`/local. An unknown alias is not validated here
+ * (the connection resolves at turn time; an unreachable host → turn error, not
+ * a 400). Mirrors the cwd/model PUT clear semantics.
+ */
+export interface SetConversationComputerRequest {
+	readonly computerId: string | null;
+}
+
+/**
+ * Response of `GET /conversations/:id/computer`. `computerId` is the persisted
+ * SSH `Host` alias, or `null` when never set (the conversation then inherits
+ * the workspace default → local). Parallel to `CwdResponse`.
+ */
+export interface ConversationComputerResponse {
+	readonly conversationId: string;
+	readonly computerId: string | null;
+}
+
+/**
+ * Body of `PUT /workspaces/:id/default-computer` — set or clear the workspace's
+ * default computer (the computer analog of `SetWorkspaceDefaultCwdRequest`).
+ * `null` means local (no SSH). Conversations in the workspace with no
+ * `computerId` of their own inherit this.
+ */
+export interface SetWorkspaceDefaultComputerRequest {
+	readonly computerId: string | null;
+}
+
+/**
+ * Response of `POST /computers/:alias/test` — the result of a one-shot
+ * connectivity probe (Dispatch opens an SSH connection to the alias, runs a
+ * trivial command, then closes). `ok` is true on success; `error` carries the
+ * failure reason (e.g. auth refused, host unreachable) when `ok` is false.
+ */
+export interface TestComputerResponse {
+	readonly alias: string;
+	readonly ok: boolean;
+	readonly error?: string;
 }
