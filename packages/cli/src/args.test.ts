@@ -254,6 +254,41 @@ describe("parseArgs", () => {
 			});
 		});
 
+		it("parses 'list' with --workspace", () => {
+			expect(parseArgs(["list", "--workspace", "proj"], { defaultServer })).toEqual({
+				kind: "list",
+				server: "http://localhost:24203",
+				workspaceId: "proj",
+				all: false,
+			});
+		});
+
+		it("parses 'list' with -w shorthand", () => {
+			const result = parseArgs(["list", "-w", "ws"], { defaultServer });
+			expect(result.kind).toBe("list");
+			if (result.kind === "list") expect(result.workspaceId).toBe("ws");
+		});
+
+		it("parses 'list' with --workspace, --status, and a prefix together", () => {
+			const result = parseArgs(["list", "abc", "--status", "active", "--workspace", "proj"], {
+				defaultServer,
+			});
+			expect(result).toEqual({
+				kind: "list",
+				server: "http://localhost:24203",
+				query: "abc",
+				status: "active",
+				workspaceId: "proj",
+				all: false,
+			});
+		});
+
+		it("errors when --workspace has no value (list)", () => {
+			const result = parseArgs(["list", "--workspace"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("--workspace requires a value");
+		});
+
 		it("parses 'list' with --all", () => {
 			expect(parseArgs(["list", "--all"], { defaultServer })).toEqual({
 				kind: "list",

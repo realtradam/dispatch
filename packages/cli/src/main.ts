@@ -24,7 +24,7 @@ import { extractLastText, formatConversationList, renderEvent } from "./render.j
 
 const USAGE = `Usage:
   dispatch models [--server <url>]
-  dispatch list [<prefix>] [--status <active|idle|closed>] [--all] [--server <url>]
+  dispatch list [<prefix>] [--status <active|idle|closed>] [--workspace <id>] [--all] [--server <url>]
   dispatch stop <conversationId> [--server <url>]
   dispatch compact <conversationId> [--server <url>]
   dispatch read <conversationId> [--server <url>]
@@ -61,6 +61,7 @@ async function main(): Promise<void> {
 					server: parsed.server,
 					...(parsed.query !== undefined && { query: parsed.query }),
 					...(status !== undefined && { status }),
+					...(parsed.workspaceId !== undefined && { workspaceId: parsed.workspaceId }),
 				},
 			);
 			const table = formatConversationList(result.conversations, Date.now());
