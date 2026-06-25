@@ -7,6 +7,7 @@ import {
 	computerServiceHandle,
 	conversationStoreHandle,
 	credentialStoreHandle,
+	heartbeatServiceHandle,
 	lspServiceHandle,
 	mcpServiceHandle,
 	sessionOrchestratorHandle,
@@ -23,6 +24,7 @@ export const manifest: Manifest = {
 	dependsOn: [
 		"conversation-store",
 		"credential-store",
+		"heartbeat",
 		"lsp",
 		"mcp",
 		"session-orchestrator",
@@ -60,9 +62,12 @@ export const manifest: Manifest = {
 			"/system-prompt/variables",
 			"/workspaces",
 			"/workspaces/:id",
-			"/workspaces/:id/title",
 			"/workspaces/:id/default-cwd",
 			"/workspaces/:id/default-computer",
+			"/workspaces/:id/heartbeat",
+			"/workspaces/:id/heartbeat/runs",
+			"/workspaces/:id/heartbeat/runs/:runId/stop",
+			"/workspaces/:id/title",
 		],
 	},
 	activation: "eager",
@@ -88,6 +93,7 @@ export function createTransportHttpExtension(): Extension & {
 			const lspService = host.getService(lspServiceHandle);
 			const mcpService = host.getService(mcpServiceHandle);
 			const systemPromptService = host.getService(systemPromptHandle);
+		const heartbeatService = host.getService(heartbeatServiceHandle);
 			// Optional: the `ssh` extension provides ComputerService. It is NOT in
 			// dependsOn (ssh may be absent), so resolve defensively — when no
 			// provider registered the handle, the computer routes degrade to
@@ -111,6 +117,7 @@ export function createTransportHttpExtension(): Extension & {
 				lspService,
 				mcpService,
 				systemPromptService,
+				heartbeatService,
 				...(computerService !== undefined ? { computerService } : {}),
 				logger,
 				emit: host.emit.bind(host),

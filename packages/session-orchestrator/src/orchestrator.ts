@@ -55,6 +55,16 @@ export interface StartTurnInput {
 	 * resolve the effective cwd from the workspace's `defaultCwd`.
 	 */
 	readonly workspaceId?: string;
+	/**
+	 * An EXPLICIT system-prompt override. When provided (a string, including the
+	 * empty string), it is sent to the provider AS-IS and the system-prompt
+	 * SERVICE is bypassed entirely (no template construction, no
+	 * persist/reuse). This is how a caller that owns its own prompt (e.g. the
+	 * heartbeat extension) drives a turn without the templated workspace prompt.
+	 * Omitted/`undefined` = the existing behavior (construct/reuse via the
+	 * system-prompt service when loaded).
+	 */
+	readonly systemPrompt?: string;
 }
 
 export type StartTurnResult =
@@ -277,6 +287,8 @@ export interface SessionOrchestrator {
 		computerId?: string;
 		reasoningEffort?: ReasoningEffort;
 		workspaceId?: string;
+		/** Explicit system-prompt override — see {@link StartTurnInput.systemPrompt}. */
+		systemPrompt?: string;
 	}): Promise<void>;
 }
 
@@ -424,6 +436,7 @@ export function createSessionOrchestrator(
 		computerId: string | undefined,
 		reasoningEffortOverride: ReasoningEffort | undefined,
 		workspaceId: string,
+		systemPromptOverride: string | undefined,
 	): void {
 		const turnId = generateTurnId();
 		const controller = new AbortController();
@@ -609,37 +622,47 @@ export function createSessionOrchestrator(
 				// where a cwd change left the prompt stale. When the system-prompt
 				// service isn't loaded, no system prompt is sent (current behavior
 				// preserved).
-				const systemPromptService = deps.resolveSystemPrompt?.();
+				//
+				// EXPLICIT OVERRIDE: when `systemPromptOverride` is provided (a
+				// string, incl. empty), it is sent to the provider AS-IS and the
+				// system-prompt service is bypassed entirely (no construct/reuse).
+				// This lets a caller that owns its own prompt (e.g. the heartbeat
+				// extension) drive a turn without the templated workspace prompt.
 				let systemPrompt: string | undefined;
-				if (systemPromptService !== undefined) {
-					if (isNewConversation) {
-						systemPrompt = await systemPromptService.construct(
-							conversationId,
-							effectiveCwd ?? process.cwd(),
-							{
-								...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
-								...(workspaceId !== undefined ? { workspaceId } : {}),
-								...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
-							},
-						);
-					} else {
-						const meta = await systemPromptService.getWithMeta(conversationId);
-						const currentCwd = effectiveCwd ?? process.cwd();
-						const currentComputerId = effectiveComputerId ?? null;
-						// Invalidate when cwd OR computerId changed (switching computers
-						// must rebuild the prompt against the remote OS/hostname).
-						if (
-							meta.prompt !== null &&
-							meta.cwd === currentCwd &&
-							meta.computerId === currentComputerId
-						) {
-							systemPrompt = meta.prompt;
+				if (systemPromptOverride !== undefined) {
+					systemPrompt = systemPromptOverride;
+				} else {
+					const systemPromptService = deps.resolveSystemPrompt?.();
+					if (systemPromptService !== undefined) {
+						if (isNewConversation) {
+							systemPrompt = await systemPromptService.construct(
+								conversationId,
+								effectiveCwd ?? process.cwd(),
+								{
+									...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
+									...(workspaceId !== undefined ? { workspaceId } : {}),
+									...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
+								},
+							);
 						} else {
-							systemPrompt = await systemPromptService.construct(conversationId, currentCwd, {
-								...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
-								...(workspaceId !== undefined ? { workspaceId } : {}),
-								...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
-							});
+							const meta = await systemPromptService.getWithMeta(conversationId);
+							const currentCwd = effectiveCwd ?? process.cwd();
+							const currentComputerId = effectiveComputerId ?? null;
+							// Invalidate when cwd OR computerId changed (switching computers
+							// must rebuild the prompt against the remote OS/hostname).
+							if (
+								meta.prompt !== null &&
+								meta.cwd === currentCwd &&
+								meta.computerId === currentComputerId
+							) {
+								systemPrompt = meta.prompt;
+							} else {
+								systemPrompt = await systemPromptService.construct(conversationId, currentCwd, {
+									...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
+									...(workspaceId !== undefined ? { workspaceId } : {}),
+									...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
+								});
+							}
 						}
 					}
 				}
@@ -773,7 +796,7 @@ export function createSessionOrchestrator(
 	}
 
 	const orchestrator: SessionOrchestrator = {
-		startTurn({ conversationId, text, modelName, cwd, computerId, reasoningEffort, workspaceId }) {
+		startTurn({ conversationId, text, modelName, cwd, computerId, reasoningEffort, workspaceId, systemPrompt }) {
 			if (activeTurns.has(conversationId)) {
 				return { started: false, reason: "already-active" };
 			}
@@ -785,6 +808,7 @@ export function createSessionOrchestrator(
 				computerId,
 				reasoningEffort,
 				workspaceId ?? "default",
+				systemPrompt,
 			);
 			const turn = activeTurns.get(conversationId);
 			const turnId = turn !== undefined ? turn.turnId : "";
@@ -880,6 +904,7 @@ export function createSessionOrchestrator(
 			computerId,
 			reasoningEffort,
 			workspaceId,
+			systemPrompt,
 		}) {
 			const turnInput: StartTurnInput = {
 				conversationId,
@@ -889,6 +914,7 @@ export function createSessionOrchestrator(
 				...(computerId !== undefined ? { computerId } : {}),
 				...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
 				...(workspaceId !== undefined ? { workspaceId } : {}),
+				...(systemPrompt !== undefined ? { systemPrompt } : {}),
 			};
 			const result = orchestrator.startTurn(turnInput);
 			if (!result.started) {

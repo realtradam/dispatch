@@ -908,3 +908,80 @@ export interface TestComputerResponse {
 	readonly ok: boolean;
 	readonly error?: string;
 }
+
+// ─── Heartbeat ───────────────────────────────────────────────────────────────
+
+/**
+ * The per-workspace Heartbeat config — a single record stored per workspace.
+ *
+ * A heartbeat is an AI that runs on a configurable loop per workspace: when
+ * `enabled`, the backend summons a NEW conversation every `intervalMinutes`
+ * minutes, gives the heartbeat AI `systemPrompt` + sends `taskPrompt` as the
+ * opening user message, and inherits the workspace's computer (SSH) + cwd +
+ * standard tool kit. The main purpose is monitoring (e.g. checking if chats
+ * are stuck).
+ *
+ * `model` is a model name in `<credentialName>/<model>` form (one of the strings
+ * from `GET /models`), or the empty string to use the server default.
+ * `reasoningEffort` is `null` to inherit the workspace default, or an explicit
+ * level. The scheduler resets its timer after each run completes (not a fixed
+ * wall-clock schedule); on backend restart it resumes scheduling for enabled
+ * heartbeats.
+ */
+export interface HeartbeatConfig {
+	/** Whether the heartbeat loop is active for this workspace. */
+	readonly enabled: boolean;
+	/** Custom system prompt for the heartbeat AI (empty = no system prompt). */
+	readonly systemPrompt: string;
+	/** Task prompt sent as the first user message when the heartbeat fires. */
+	readonly taskPrompt: string;
+	/** How often to fire, in minutes (default 30). */
+	readonly intervalMinutes: number;
+	/** Model name (`<credentialName>/<model>`), or empty string = server default. */
+	readonly model: string;
+	/** Reasoning-effort level, or `null` = inherit the workspace default. */
+	readonly reasoningEffort: ReasoningEffort | null;
+}
+
+/**
+ * Body of `PUT /workspaces/:id/heartbeat` — a partial update. All fields are
+ * optional; only the provided fields are applied. `reasoningEffort` accepts
+ * `null` to clear to the workspace default. `intervalMinutes` must be a positive
+ * integer (clamped server-side to a minimum of 1). An unrecognized
+ * `reasoningEffort` → HTTP 400.
+ */
+export interface UpdateHeartbeatRequest {
+	readonly enabled?: boolean;
+	readonly systemPrompt?: string;
+	readonly taskPrompt?: string;
+	readonly intervalMinutes?: number;
+	readonly model?: string;
+	readonly reasoningEffort?: ReasoningEffort | null;
+}
+
+/** The status of a single heartbeat run. */
+export type HeartbeatRunStatus = "running" | "completed" | "stopped";
+
+/**
+ * One heartbeat run — created each time the heartbeat fires. A run tracks the
+ * conversation it spawned and its lifecycle. `triggeredAt` is an ISO-8601
+ * timestamp. `status` is `"running"` while the turn is in flight,
+ * `"completed"` when the turn sealed normally, or `"stopped"` when the user
+ * stopped it via the stop endpoint (the turn is aborted and seals `"stopped"`).
+ */
+export interface HeartbeatRun {
+	readonly id: string;
+	readonly conversationId: string;
+	readonly triggeredAt: string;
+	readonly status: HeartbeatRunStatus;
+}
+
+/** Response of `GET /workspaces/:id/heartbeat/runs` — runs, most-recent first. */
+export interface HeartbeatRunsResponse {
+	readonly runs: readonly HeartbeatRun[];
+}
+
+/** Response of `POST /workspaces/:id/heartbeat/runs/:runId/stop`. */
+export interface StopHeartbeatRunResponse {
+	readonly ok: true;
+}
