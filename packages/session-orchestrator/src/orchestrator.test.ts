@@ -33,6 +33,7 @@ function createInMemoryStore(): ConversationStore & {
 	readonly data: Map<string, ChatMessage[]>;
 	readonly metricsData: Map<string, TurnMetrics[]>;
 	readonly cwdData: Map<string, string>;
+	readonly computerData: Map<string, string>;
 	readonly effortData: Map<string, ReasoningEffort>;
 	readonly modelData: Map<string, string>;
 	readonly workspaceIdData: Map<string, string>;
@@ -40,6 +41,7 @@ function createInMemoryStore(): ConversationStore & {
 	const data = new Map<string, ChatMessage[]>();
 	const metricsData = new Map<string, TurnMetrics[]>();
 	const cwdData = new Map<string, string>();
+	const computerData = new Map<string, string>();
 	const effortData = new Map<string, ReasoningEffort>();
 	const modelData = new Map<string, string>();
 	const workspaceIdData = new Map<string, string>();
@@ -53,6 +55,7 @@ function createInMemoryStore(): ConversationStore & {
 		data,
 		metricsData,
 		cwdData,
+		computerData,
 		effortData,
 		modelData,
 		workspaceIdData,
@@ -90,6 +93,22 @@ function createInMemoryStore(): ConversationStore & {
 		},
 		async setCwd(conversationId, cwd) {
 			cwdData.set(conversationId, cwd);
+		},
+		async clearCwd(conversationId) {
+			cwdData.delete(conversationId);
+		},
+		async getComputerId(conversationId) {
+			return computerData.get(conversationId) ?? null;
+		},
+		async setComputerId(conversationId, alias) {
+			if (alias === null) {
+				computerData.delete(conversationId);
+			} else {
+				computerData.set(conversationId, alias);
+			}
+		},
+		async clearComputerId(conversationId) {
+			computerData.delete(conversationId);
 		},
 		async getReasoningEffort(conversationId) {
 			return effortData.get(conversationId) ?? null;
@@ -149,13 +168,44 @@ function createInMemoryStore(): ConversationStore & {
 			return null;
 		},
 		async ensureWorkspace(id) {
-			return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			return {
+				id,
+				title: id,
+				defaultCwd: null,
+				defaultComputerId: null,
+				createdAt: 0,
+				lastActivityAt: 0,
+			};
 		},
 		async setWorkspaceTitle(id, title) {
-			return { id, title, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			return {
+				id,
+				title,
+				defaultCwd: null,
+				defaultComputerId: null,
+				createdAt: 0,
+				lastActivityAt: 0,
+			};
 		},
 		async setWorkspaceDefaultCwd(id, defaultCwd) {
-			return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+			return {
+				id,
+				title: id,
+				defaultCwd,
+				defaultComputerId: null,
+				createdAt: 0,
+				lastActivityAt: 0,
+			};
+		},
+		async setWorkspaceDefaultComputerId(id, defaultComputerId) {
+			return {
+				id,
+				title: id,
+				defaultCwd: null,
+				defaultComputerId,
+				createdAt: 0,
+				lastActivityAt: 0,
+			};
 		},
 		async deleteWorkspace() {
 			return { closedCount: 0 };
@@ -172,6 +222,9 @@ function createInMemoryStore(): ConversationStore & {
 		},
 		async getEffectiveCwd(conversationId, overrideCwd) {
 			return overrideCwd ?? cwdData.get(conversationId) ?? null;
+		},
+		async getEffectiveComputer(conversationId, overrideAlias) {
+			return overrideAlias ?? computerData.get(conversationId) ?? null;
 		},
 	};
 }
@@ -489,6 +542,114 @@ describe("handleMessage model resolution", () => {
 		expect(captured[1]?.cwd).toBeUndefined();
 	});
 
+	it("computerId is forwarded to RunTurnInput.computerId and absent when not provided", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captured, captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-computer",
+			text: "hi",
+			onEvent: () => {},
+			computerId: "my-ssh-host",
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.computerId).toBe("my-ssh-host");
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-no-computer",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(captured).toHaveLength(2);
+		expect(captured[1]?.computerId).toBeUndefined();
+	});
+
+	it("computerId override persists via setComputerId (mirrors setCwd-on-override)", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-persist-computer",
+			text: "hi",
+			onEvent: () => {},
+			computerId: "persisted-host",
+		});
+
+		expect(store.computerData.get("conv-persist-computer")).toBe("persisted-host");
+	});
+
+	it("computerId not provided → setComputerId NOT called (no override persisted)", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captureRunTurn } = createCapturingRunTurn();
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: identityApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-no-persist",
+			text: "hi",
+			onEvent: () => {},
+		});
+
+		expect(store.computerData.get("conv-no-persist")).toBeUndefined();
+	});
+
+	it("computerId threads into ToolAssembly passed to applyToolsFilter", async () => {
+		const store = createInMemoryStore();
+		const provider: ProviderContract = { id: "p", stream: async function* () {} };
+		const { captureRunTurn } = createCapturingRunTurn();
+
+		const capturedAssemblies: ToolAssembly[] = [];
+		const recordingApplyToolsFilter = (assembly: ToolAssembly): Promise<ToolAssembly> => {
+			capturedAssemblies.push(assembly);
+			return Promise.resolve(assembly);
+		};
+
+		const { orchestrator } = createSessionOrchestrator({
+			conversationStore: store,
+			resolveProvider: () => provider,
+			resolveTools: () => [],
+			applyToolsFilter: recordingApplyToolsFilter,
+			runTurn: captureRunTurn,
+		});
+
+		await orchestrator.handleMessage({
+			conversationId: "conv-assembly",
+			text: "hi",
+			onEvent: () => {},
+			computerId: "remote-host",
+		});
+
+		expect(capturedAssemblies).toHaveLength(1);
+		expect(capturedAssemblies[0]?.computerId).toBe("remote-host");
+	});
+
 	it("forwards an injected now into the RunTurnInput passed to runTurn", async () => {
 		const store = createInMemoryStore();
 		const provider: ProviderContract = { id: "p", stream: async function* () {} };
@@ -643,6 +804,12 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async setCwd() {},
+			async clearCwd() {},
+			async getComputerId() {
+				return null;
+			},
+			async setComputerId() {},
+			async clearComputerId() {},
 			async getReasoningEffort() {
 				return null;
 			},
@@ -673,13 +840,44 @@ describe("turn-sealed event", () => {
 				return null;
 			},
 			async ensureWorkspace(id) {
-				return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title: id,
+					defaultCwd: null,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 			async setWorkspaceTitle(id, title) {
-				return { id, title, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title,
+					defaultCwd: null,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 			async setWorkspaceDefaultCwd(id, defaultCwd) {
-				return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title: id,
+					defaultCwd,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceDefaultComputerId(id, defaultComputerId) {
+				return {
+					id,
+					title: id,
+					defaultCwd: null,
+					defaultComputerId,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 			async deleteWorkspace() {
 				return { closedCount: 0 };
@@ -692,6 +890,9 @@ describe("turn-sealed event", () => {
 			},
 			async setWorkspaceId() {},
 			async getEffectiveCwd() {
+				return null;
+			},
+			async getEffectiveComputer() {
 				return null;
 			},
 		};
@@ -1034,6 +1235,12 @@ describe("turn metrics persistence", () => {
 				return null;
 			},
 			async setCwd() {},
+			async clearCwd() {},
+			async getComputerId() {
+				return null;
+			},
+			async setComputerId() {},
+			async clearComputerId() {},
 			async getReasoningEffort() {
 				return null;
 			},
@@ -1064,13 +1271,44 @@ describe("turn metrics persistence", () => {
 				return null;
 			},
 			async ensureWorkspace(id) {
-				return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title: id,
+					defaultCwd: null,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 			async setWorkspaceTitle(id, title) {
-				return { id, title, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title,
+					defaultCwd: null,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 			async setWorkspaceDefaultCwd(id, defaultCwd) {
-				return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title: id,
+					defaultCwd,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
+			},
+			async setWorkspaceDefaultComputerId(id, defaultComputerId) {
+				return {
+					id,
+					title: id,
+					defaultCwd: null,
+					defaultComputerId,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 			async deleteWorkspace() {
 				return { closedCount: 0 };
@@ -1083,6 +1321,9 @@ describe("turn metrics persistence", () => {
 			},
 			async setWorkspaceId() {},
 			async getEffectiveCwd() {
+				return null;
+			},
+			async getEffectiveComputer() {
 				return null;
 			},
 		};
@@ -2781,7 +3022,14 @@ describe("workspace integration", () => {
 			...base,
 			async ensureWorkspace(id) {
 				ensureWorkspaceCalls.push(id);
-				return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title: id,
+					defaultCwd: null,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 		};
 
@@ -2999,6 +3247,7 @@ describe("workspace integration", () => {
 					id,
 					title: id,
 					defaultCwd: workspaceDefaultCwds.get(id) ?? null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -3012,7 +3261,14 @@ describe("workspace integration", () => {
 			},
 			async getWorkspace(id) {
 				const defaultCwd = workspaceDefaultCwds.get(id) ?? null;
-				return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title: id,
+					defaultCwd,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 			async getEffectiveCwd(conversationId, overrideCwd) {
 				// Real algorithm: relative cwd resolved against workspace defaultCwd.
@@ -3089,6 +3345,7 @@ describe("workspace integration", () => {
 					id,
 					title: id,
 					defaultCwd: workspaceDefaultCwds.get(id) ?? null,
+					defaultComputerId: null,
 					createdAt: 0,
 					lastActivityAt: 0,
 				};
@@ -3101,7 +3358,14 @@ describe("workspace integration", () => {
 			},
 			async getWorkspace(id) {
 				const defaultCwd = workspaceDefaultCwds.get(id) ?? null;
-				return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+				return {
+					id,
+					title: id,
+					defaultCwd,
+					defaultComputerId: null,
+					createdAt: 0,
+					lastActivityAt: 0,
+				};
 			},
 			async getEffectiveCwd(conversationId, overrideCwd) {
 				const wsId = assignedWorkspaceIds.get(conversationId) ?? "default";

@@ -37,6 +37,14 @@ export interface StartTurnInput {
 	readonly text: string;
 	readonly modelName?: string;
 	readonly cwd?: string;
+	/**
+	 * The computer to execute this turn's tools on (SSH config alias). Mirrors
+	 * `cwd`: an explicit per-turn override resolved via `getEffectiveComputer`.
+	 * Omitted/`undefined` = use the persisted per-conversation / workspace
+	 * default (LOCAL when none set). The orchestrator never interprets it — it
+	 * forwards the alias string verbatim (like cwd forwards a path).
+	 */
+	readonly computerId?: string;
 	readonly reasoningEffort?: ReasoningEffort;
 	/**
 	 * The workspace this conversation belongs to. Defaults to `"default"` when
@@ -57,6 +65,12 @@ export interface EnqueueInput {
 	readonly text: string;
 	/** Workspace to stamp on a new conversation. Defaults to `"default"`. */
 	readonly workspaceId?: string;
+	/**
+	 * Per-turn computer override (SSH alias), threaded to `startTurn` when the
+	 * conversation is idle (the message starts a turn). Additive optional —
+	 * mirrors `workspaceId` on this type (enqueue does not carry `cwd`).
+	 */
+	readonly computerId?: string;
 }
 
 /**
@@ -87,6 +101,8 @@ interface ActiveTurn {
 export interface TurnLifecyclePayload {
 	readonly conversationId: string;
 	readonly cwd?: string;
+	/** The computer this turn executes on (SSH alias), mirroring `cwd`. */
+	readonly computerId?: string;
 	readonly modelName?: string;
 }
 
@@ -256,6 +272,7 @@ export interface SessionOrchestrator {
 		onEvent: (event: AgentEvent) => void;
 		modelName?: string;
 		cwd?: string;
+		computerId?: string;
 		reasoningEffort?: ReasoningEffort;
 		workspaceId?: string;
 	}): Promise<void>;
@@ -369,6 +386,7 @@ export function createSessionOrchestrator(
 		text: string,
 		modelName: string | undefined,
 		cwd: string | undefined,
+		computerId: string | undefined,
 		reasoningEffortOverride: ReasoningEffort | undefined,
 		workspaceId: string,
 	): void {
@@ -411,6 +429,19 @@ export function createSessionOrchestrator(
 			deps.conversationStore.getEffectiveCwd(conversationId, cwd).then((c) => c ?? undefined),
 		);
 
+		// Resolve the effective computer the SAME way cwd resolves — pass the
+		// per-turn computerId as the overrideAlias. When computerId is
+		// undefined, getEffectiveComputer reads the persisted per-conversation
+		// computerId → workspace defaultComputerId → null (LOCAL). Chained
+		// after workspaceSetupPromise (same timing invariant as cwd). The
+		// orchestrator never interprets the alias — it forwards the string
+		// verbatim (like cwd forwards a path). Mirrors effectiveCwdPromise.
+		const effectiveComputerIdPromise = workspaceSetupPromise.then(() =>
+			deps.conversationStore
+				.getEffectiveComputer(conversationId, computerId)
+				.then((c) => c ?? undefined),
+		);
+
 		const storedEffortPromise = deps.conversationStore.getReasoningEffort(conversationId);
 		// Resolve the persisted model (if any) in parallel with the other
 		// per-conversation reads. The effective model name is
@@ -420,13 +451,15 @@ export function createSessionOrchestrator(
 
 		const payloadPromise = Promise.all([
 			effectiveCwdPromise,
+			effectiveComputerIdPromise,
 			storedEffortPromise,
 			storedModelPromise,
-		]).then(([effectiveCwd, _storedEffort, storedModel]) => {
+		]).then(([effectiveCwd, effectiveComputerId, _storedEffort, storedModel]) => {
 			const effectiveModelName = resolveModelName(modelName, storedModel);
 			return {
 				conversationId,
 				...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+				...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
 				...(effectiveModelName !== undefined ? { modelName: effectiveModelName } : {}),
 			};
 		});
@@ -448,15 +481,25 @@ export function createSessionOrchestrator(
 		void (async () => {
 			let sealed = false;
 			try {
-				const [effectiveCwd, storedEffort, isNewConversation, storedModel] = await Promise.all([
-					effectiveCwdPromise,
-					storedEffortPromise,
-					workspaceSetupPromise,
-					storedModelPromise,
-				]);
+				const [effectiveCwd, effectiveComputerId, storedEffort, isNewConversation, storedModel] =
+					await Promise.all([
+						effectiveCwdPromise,
+						effectiveComputerIdPromise,
+						storedEffortPromise,
+						workspaceSetupPromise,
+						storedModelPromise,
+					]);
 
 				if (cwd !== undefined) {
 					await deps.conversationStore.setCwd(conversationId, cwd);
+				}
+
+				// Persist the per-turn computer override, mirroring the cwd
+				// persistence above. Only stamped when a computerId was actually
+				// provided — NOT when it resolved to undefined (LOCAL) via the
+				// workspace default. Idempotent when the value is unchanged.
+				if (computerId !== undefined) {
+					await deps.conversationStore.setComputerId(conversationId, computerId);
 				}
 
 				const resolvedEffort = resolveReasoningEffort(reasoningEffortOverride, storedEffort);
@@ -508,6 +551,7 @@ export function createSessionOrchestrator(
 					tools: baseTools,
 					conversationId,
 					...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+					...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
 				});
 				const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
 				const turnLogger = deps.logger?.child({ conversationId, turnId });
@@ -598,6 +642,7 @@ export function createSessionOrchestrator(
 					providerOpts,
 					...(turnLogger !== undefined ? { logger: turnLogger } : {}),
 					...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+					...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
 					...(deps.now !== undefined ? { now: deps.now } : {}),
 					...(drainSteering !== undefined ? { drainSteering } : {}),
 				};
@@ -683,7 +728,7 @@ export function createSessionOrchestrator(
 	}
 
 	const orchestrator: SessionOrchestrator = {
-		startTurn({ conversationId, text, modelName, cwd, reasoningEffort, workspaceId }) {
+		startTurn({ conversationId, text, modelName, cwd, computerId, reasoningEffort, workspaceId }) {
 			if (activeTurns.has(conversationId)) {
 				return { started: false, reason: "already-active" };
 			}
@@ -692,6 +737,7 @@ export function createSessionOrchestrator(
 				text,
 				modelName,
 				cwd,
+				computerId,
 				reasoningEffort,
 				workspaceId ?? "default",
 			);
@@ -700,11 +746,12 @@ export function createSessionOrchestrator(
 			return { started: true, turnId };
 		},
 
-		enqueue({ conversationId, text, workspaceId }) {
+		enqueue({ conversationId, text, workspaceId, computerId }) {
 			const result = orchestrator.startTurn({
 				conversationId,
 				text,
 				...(workspaceId !== undefined ? { workspaceId } : {}),
+				...(computerId !== undefined ? { computerId } : {}),
 			});
 			if (result.started) {
 				return { startedTurn: true, queue: [] };
@@ -785,6 +832,7 @@ export function createSessionOrchestrator(
 			onEvent,
 			modelName,
 			cwd,
+			computerId,
 			reasoningEffort,
 			workspaceId,
 		}) {
@@ -793,6 +841,7 @@ export function createSessionOrchestrator(
 				text,
 				...(modelName !== undefined ? { modelName } : {}),
 				...(cwd !== undefined ? { cwd } : {}),
+				...(computerId !== undefined ? { computerId } : {}),
 				...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
 				...(workspaceId !== undefined ? { workspaceId } : {}),
 			};

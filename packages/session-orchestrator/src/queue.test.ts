@@ -72,6 +72,14 @@ function createInMemoryStore(): ConversationStore & {
 		async setCwd(conversationId, cwd) {
 			cwdData.set(conversationId, cwd);
 		},
+		async clearCwd(conversationId) {
+			cwdData.delete(conversationId);
+		},
+		async getComputerId() {
+			return null;
+		},
+		async setComputerId() {},
+		async clearComputerId() {},
 		async getReasoningEffort(conversationId) {
 			return effortData.get(conversationId) ?? null;
 		},
@@ -110,13 +118,44 @@ function createInMemoryStore(): ConversationStore & {
 			return null;
 		},
 		async ensureWorkspace(id) {
-			return { id, title: id, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			return {
+				id,
+				title: id,
+				defaultCwd: null,
+				defaultComputerId: null,
+				createdAt: 0,
+				lastActivityAt: 0,
+			};
 		},
 		async setWorkspaceTitle(id, title) {
-			return { id, title, defaultCwd: null, createdAt: 0, lastActivityAt: 0 };
+			return {
+				id,
+				title,
+				defaultCwd: null,
+				defaultComputerId: null,
+				createdAt: 0,
+				lastActivityAt: 0,
+			};
 		},
 		async setWorkspaceDefaultCwd(id, defaultCwd) {
-			return { id, title: id, defaultCwd, createdAt: 0, lastActivityAt: 0 };
+			return {
+				id,
+				title: id,
+				defaultCwd,
+				defaultComputerId: null,
+				createdAt: 0,
+				lastActivityAt: 0,
+			};
+		},
+		async setWorkspaceDefaultComputerId(id, defaultComputerId) {
+			return {
+				id,
+				title: id,
+				defaultCwd: null,
+				defaultComputerId,
+				createdAt: 0,
+				lastActivityAt: 0,
+			};
 		},
 		async deleteWorkspace() {
 			return { closedCount: 0 };
@@ -130,6 +169,9 @@ function createInMemoryStore(): ConversationStore & {
 		async setWorkspaceId() {},
 		async getEffectiveCwd(conversationId) {
 			return cwdData.get(conversationId) ?? null;
+		},
+		async getEffectiveComputer() {
+			return null;
 		},
 	};
 }
