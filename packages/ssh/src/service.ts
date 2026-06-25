@@ -124,19 +124,18 @@ export function createSshService(deps: SshServiceDeps): {
 			}
 			// One-shot probe: acquire (connects), run a trivial command, then drop
 			// the connection so a test never holds a pooled socket open (plan §9.1).
+			// Wrapped in a timeout safety net so the endpoint ALWAYS responds —
+			// even if the SSH connect/exec/drop hangs (the probe is non-interactive).
+			const PROBE_TOTAL_TIMEOUT_MS = 30_000;
 			try {
-				const conn = await pool.acquire(alias);
-				const client = await conn.getClient();
-				const ok = await runProbe(client);
-				if (ok) {
-					// Successful connect pins the host key (the accept-new analog);
-					// a fresh known_hosts read reflects the new pin.
-					deps.logger.info("computer test ok", { alias });
-				}
-				await pool.drop(alias);
-				return ok
-					? { alias, ok: true }
-					: { alias, ok: false, error: "remote command returned no exit code" };
+				const result = await Promise.race<TestComputerResponse>([
+					runTestProbe(pool, alias, deps.logger),
+					timeoutAfter<TestComputerResponse>(
+						PROBE_TOTAL_TIMEOUT_MS,
+						`test timed out after ${PROBE_TOTAL_TIMEOUT_MS / 1000}s`,
+					),
+				]);
+				return result;
 			} catch (err: unknown) {
 				await pool.drop(alias).catch(() => undefined);
 				const message = err instanceof Error ? err.message : String(err);
@@ -159,21 +158,77 @@ export function createSshService(deps: SshServiceDeps): {
 	return { service, pool, remoteFactory };
 }
 
-/** Run `true` over SSH as a connectivity probe; resolve ok=true on exit 0. */
+/**
+ * The one-shot test probe: acquire → exec `true` → drop. Extracted so it can
+ * be raced against a timeout. Always drops the connection (even on success).
+ */
+async function runTestProbe(
+	pool: SshConnectionPool,
+	alias: string,
+	logger: Logger,
+): Promise<TestComputerResponse> {
+	const conn = await pool.acquire(alias);
+	const client = await conn.getClient();
+	const ok = await runProbe(client);
+	if (ok) {
+		logger.info("computer test ok", { alias });
+	}
+	await pool.drop(alias);
+	return ok
+		? { alias, ok: true }
+		: { alias, ok: false, error: "remote command returned no exit code" };
+}
+
+/** Reject with `message` after `ms`. Used to race against a hanging probe. */
+function timeoutAfter<T>(ms: number, message: string): Promise<T> {
+	return new Promise<T>((_resolve, reject) => {
+		setTimeout(() => reject(new Error(message)), ms);
+	});
+}
+
+/** Probe timeout — the `true` command exits instantly; 15s is generous. */
+const PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * Run `true` over SSH as a connectivity probe; resolve `true` on exit 0.
+ *
+ * Resolves on the `exit` event (not `close` — some SSH servers don't emit
+ * `close` for short-lived exec channels, causing the promise to hang forever).
+ * A timeout safety net ensures we ALWAYS resolve, even if `exec` callback or
+ * the `exit` event never fires (e.g. the server requires a pty for exec).
+ */
 function runProbe(client: import("ssh2").Client): Promise<boolean> {
 	return new Promise<boolean>((resolve) => {
+		let settled = false;
+		const done = (result: boolean): void => {
+			if (!settled) {
+				settled = true;
+				clearTimeout(timer);
+				resolve(result);
+			}
+		};
+
+		const timer = setTimeout(() => {
+			done(false);
+		}, PROBE_TIMEOUT_MS);
+
 		client.exec("true", { pty: false }, (err, stream) => {
 			if (err !== null && err !== undefined) {
-				resolve(false);
+				done(false);
 				return;
 			}
-			let exitCode: number | null = null;
+			// Resolve on `exit` — the command has finished. Don't wait for
+			// `close` (some servers never emit it for exec channels).
 			stream.on("exit", (code: number | null) => {
-				exitCode = code;
+				done(code === 0);
 			});
+			// Safety net: if `exit` never fires, `close` might.
 			stream.on("close", () => {
-				resolve(exitCode === 0);
+				done(false);
 			});
+			// Drain any output so the stream doesn't deadlock.
+			stream.on("data", () => {});
+			stream.stderr.on("data", () => {});
 		});
 	});
 }
