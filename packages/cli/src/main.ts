@@ -29,7 +29,7 @@ const USAGE = `Usage:
   dispatch compact <conversationId> [--server <url>]
   dispatch read <conversationId> [--server <url>]
   dispatch open <conversationId> [--server <url>]
-  dispatch send <conversationId> --text "..." [--queue] [--open] [--cwd <dir>] [--effort <level>] [--workspace <id>] [--server <url>]
+  dispatch send <conversationId> --text "..." [--file <path>] [--queue] [--open] [--cwd <dir>] [--effort <level>] [--workspace <id>] [--server <url>]
   dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--workspace <id>] [--server <url>] [--show-reasoning] [--open]
   dispatch --help
 
@@ -156,10 +156,20 @@ async function main(): Promise<void> {
 				process.stdout.write(`Signaled frontend to open ${conversationId}\n`);
 			}
 
+			let fileContent: string | undefined;
+			if (parsed.file) {
+				fileContent = await readFile(parsed.file, "utf-8");
+			}
+			const message = composeMessage({
+				...(parsed.text !== undefined && { text: parsed.text }),
+				...(parsed.file !== undefined && { file: parsed.file }),
+				...(fileContent !== undefined && { fileContent }),
+			});
+
 			if (parsed.queue) {
 				const queued = await enqueueMessage(
 					{ fetchImpl: globalThis.fetch },
-					{ server: parsed.server, conversationId, text: parsed.text },
+					{ server: parsed.server, conversationId, text: message },
 				);
 				const line = queued.startedTurn
 					? `Started turn for ${conversationId}`
@@ -168,7 +178,7 @@ async function main(): Promise<void> {
 			} else {
 				const request = {
 					conversationId,
-					message: parsed.text,
+					message,
 					...(parsed.cwd !== undefined && { cwd: parsed.cwd }),
 					...(parsed.reasoningEffort !== undefined && { reasoningEffort: parsed.reasoningEffort }),
 					...(parsed.workspaceId !== undefined && { workspaceId: parsed.workspaceId }),
