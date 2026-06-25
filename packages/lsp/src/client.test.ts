@@ -3,6 +3,7 @@ import {
 	type FileWatcher,
 	type FsAccess,
 	LanguageServerClient,
+	type ProcessExitHandler,
 	type SpawnProcess,
 } from "./client.js";
 import { encode } from "./framing.js";
@@ -287,5 +288,150 @@ describe("client", () => {
 
 		client.shutdown();
 		expect(state.killed).toBe(true);
+	});
+
+	it("onExit marks the client broken (error) so callers stop querying a corpse", async () => {
+		const state = { killed: false };
+		let exitCb: ProcessExitHandler | null = null;
+		const stdoutHolder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+
+		const spawnWithExit: SpawnProcess = () => ({
+			stdin: { write: () => {} },
+			stdout: {
+				on: (_event: string, cb: (data: Uint8Array) => void) => {
+					stdoutHolder.cb = cb;
+				},
+			},
+			pid: 999,
+			kill: () => {
+				state.killed = true;
+			},
+			onExit: (handler) => {
+				exitCb = handler;
+			},
+		});
+
+		const { client } = makeClient({ spawn: spawnWithExit });
+		const startPromise = client.start();
+		await new Promise((r) => setTimeout(r, 50));
+		stdoutHolder.cb?.(
+			encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })),
+		);
+		await startPromise;
+		expect(client.getState()).toBe("connected");
+
+		// Simulate the process dying (user kill / crash).
+		exitCb?.({ code: 1 });
+
+		expect(client.getState()).toBe("error");
+		expect(client.getStateError()).toMatch(/process exited/);
+		// The (still-alive-in-test) process was killed to avoid a zombie.
+		expect(state.killed).toBe(true);
+	});
+
+	it("a dead client is skipped by waitForDiagnostics callers (state !== connected)", async () => {
+		// Build a client, connect, kill via onExit, then assert a diagnostics
+		// query would not block: getState() is "error" so the matching filter
+		// (state === "connected") excludes it. We assert the state guard.
+		const stdoutHolder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+		let exitCb: ProcessExitHandler | null = null;
+		const spawnWithExit: SpawnProcess = () => ({
+			stdin: { write: () => {} },
+			stdout: {
+				on: (_e, cb) => {
+					stdoutHolder.cb = cb;
+				},
+			},
+			pid: 1,
+			kill: () => {},
+			onExit: (handler) => {
+				exitCb = handler;
+			},
+		});
+
+		const { client } = makeClient({ spawn: spawnWithExit });
+		const startPromise = client.start();
+		await new Promise((r) => setTimeout(r, 50));
+		stdoutHolder.cb?.(
+			encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })),
+		);
+		await startPromise;
+
+		exitCb?.({ code: null });
+		expect(client.getState()).toBe("error");
+		// The aggregate / getDiagnostics matching filter requires "connected".
+		expect(client.getState() === "connected").toBe(false);
+	});
+
+	it("corruption detector marks the client broken after repeated identical diagnostics despite text changes", async () => {
+		// A healthy server would change diagnostics as the file changes; a
+		// corrupted one re-emits the SAME non-empty set. Drive 5 edits with
+		// different text but identical diagnostics → client flips to error.
+		const { client, serverResponses } = makeClient();
+		const startPromise = client.start();
+		await new Promise((r) => setTimeout(r, 50));
+		serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
+		await startPromise;
+
+		const phantom = JSON.stringify({
+			jsonrpc: "2.0",
+			method: "textDocument/publishDiagnostics",
+			params: {
+				uri: "file:///project/game.rb",
+				diagnostics: [
+					{
+						range: { start: { line: 0, character: 27 }, end: { line: 0, character: 28 } },
+						severity: 1,
+						message: "SyntaxError: unexpected token",
+					},
+				],
+			},
+		});
+
+		const path = "/project/game.rb";
+		// The first call establishes the baseline snapshot (no increment).
+		// Each subsequent call with identical diagnostics + changed text
+		// increments; the 6th call (5th increment) trips the threshold.
+		for (let i = 1; i <= 5; i++) {
+			const p = client.waitForDiagnostics(path, { text: `buf-v${i}`, timeoutMs: 2000 });
+			// Push the identical phantom diagnostics so the poll resolves.
+			await new Promise((r) => setTimeout(r, 30));
+			serverResponses(phantom);
+			await p;
+			expect(client.getState()).toBe("connected");
+		}
+		// 6th identical-across-changed-text repeat trips the threshold.
+		const p6 = client.waitForDiagnostics(path, { text: "buf-v6", timeoutMs: 2000 });
+		await new Promise((r) => setTimeout(r, 30));
+		serverResponses(phantom);
+		await p6;
+
+		expect(client.getState()).toBe("error");
+		expect(client.getStateError()).toMatch(/repeated stale diagnostics/i);
+	});
+
+	it("corruption detector does NOT trip on a clean file (empty diagnostics stay identical)", async () => {
+		const { client, serverResponses } = makeClient();
+		const startPromise = client.start();
+		await new Promise((r) => setTimeout(r, 50));
+		serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
+		await startPromise;
+
+		const clean = JSON.stringify({
+			jsonrpc: "2.0",
+			method: "textDocument/publishDiagnostics",
+			params: { uri: "file:///project/game.rb", diagnostics: [] },
+		});
+		const path = "/project/game.rb";
+
+		for (let i = 1; i <= 6; i++) {
+			const p = client.waitForDiagnostics(path, { text: `clean-v${i}`, timeoutMs: 2000 });
+			await new Promise((r) => setTimeout(r, 30));
+			serverResponses(clean);
+			await p;
+		}
+		// Empty diagnostics never count as "stale" — a clean file staying clean
+		// is normal, not corruption.
+		expect(client.getState()).toBe("connected");
 	});
 });

@@ -84,3 +84,29 @@ it("handleMessage does not throw on malformed JSON", async () => {
 	await expect(conn.handleMessage("")).resolves.toBeUndefined();
 	await expect(conn.handleMessage("not json at all")).resolves.toBeUndefined();
 });
+
+describe("sendRequest timeout", () => {
+	it("rejects with a timeout error when no response arrives within timeoutMs", async () => {
+		const { conn } = makeConnection();
+		const promise = conn.sendRequest("textDocument/hover", {}, 50);
+		await expect(promise).rejects.toThrow(/LSP request timed out after 50ms: textDocument\/hover/);
+	});
+
+	it("clears the timer on a normal response (no unhandled rejection)", async () => {
+		const { conn } = makeConnection();
+		const promise = conn.sendRequest("textDocument/hover", {}, 5000);
+		conn.handleMessage(frameResponse(1, { ok: true }));
+		await expect(promise).resolves.toEqual({ ok: true });
+		// Give the (now-cleared) timer window ample time to prove it never fires.
+		await new Promise((r) => setTimeout(r, 80));
+	});
+
+	it("does not time out when no timeoutMs is given (initialize handshake path)", async () => {
+		const { conn } = makeConnection();
+		const promise = conn.sendRequest("initialize", {});
+		// A late response well past any plausible default still resolves.
+		await new Promise((r) => setTimeout(r, 60));
+		conn.handleMessage(frameResponse(1, { capabilities: {} }));
+		await expect(promise).resolves.toEqual({ capabilities: {} });
+	});
+});

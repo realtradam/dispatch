@@ -134,6 +134,19 @@ export class LspManager {
 			if (existing) {
 				const state = existing.client.getState();
 				const stateError = existing.client.getStateError();
+				// A client that died or corrupted AFTER connecting flipped its
+				// own state to "error" (client.ts handleExit/markBroken). Spawn
+				// succeeded so there's no broken entry yet — seed one so the
+				// bounded-backoff path above re-spawns it, instead of reporting
+				// error forever (and so getDiagnostics' "connected" filter skips
+				// it, avoiding a per-edit hang on the corpse).
+				if (state === "error" && !this.broken.has(key)) {
+					this.broken.set(key, {
+						configFingerprint: configFingerprint(server),
+						brokenAt: this.now(),
+						error: enrichError(server, stateError ?? "server unavailable"),
+					});
+				}
 				const status: LspServerStatus = {
 					id: server.id,
 					name: server.name,

@@ -361,4 +361,92 @@ describe("manager", () => {
 		expect(s[0]?.error).toContain("[from .dispatch/lsp.json]");
 		expect(s[0]?.error).toContain("spawn failed");
 	});
+
+	it("a client that dies after connecting is skipped + re-spawned after backoff (no storm, no eternal hang)", async () => {
+		// A spawn that completes the initialize handshake AND lets the test
+		// simulate process death via the captured onExit handler.
+		const exitHandlers: Array<(info: { code: number | null; signal?: string }) => void> = [];
+		let spawnCount = 0;
+		const spawn: SpawnProcess = () => {
+			spawnCount++;
+			let messageHandler: ((data: Uint8Array) => void) | null = null;
+			const proc: SpawnedProcess = {
+				stdin: {
+					write: (bytes: Uint8Array) => {
+						const decoded = new TextDecoder().decode(bytes);
+						const headerEnd = decoded.indexOf("\r\n\r\n");
+						if (headerEnd === -1) return;
+						const json = decoded.slice(headerEnd + 4);
+						try {
+							const msg = JSON.parse(json);
+							if (msg.method === "initialize") {
+								setTimeout(() => {
+									const response = JSON.stringify({
+										jsonrpc: "2.0",
+										id: msg.id,
+										result: { capabilities: {} },
+									});
+									messageHandler?.(encode(response));
+								}, 1);
+							}
+						} catch {
+							// ignore
+						}
+					},
+				},
+				stdout: {
+					on: (_event: string, cb: (data: Uint8Array) => void) => {
+						messageHandler = cb;
+					},
+				},
+				pid: 1000 + spawnCount,
+				kill: () => {},
+				onExit: (handler) => {
+					exitHandlers.push(handler);
+				},
+			};
+			return proc;
+		};
+
+		const clock = { now: 0 };
+		const manager = new LspManager({
+			spawn,
+			fileWatcher: noopFileWatcher(),
+			fs: fakeFs({
+				"/project/.dispatch/lsp.json": JSON.stringify({
+					servers: {
+						steep: {
+							command: ["steep", "--stdio"],
+							extensions: [".rb"],
+							rootMarkers: [],
+						},
+					},
+				}),
+			}),
+			now: () => clock.now,
+		});
+
+		// 1) Connects.
+		const s1 = await manager.status("/project");
+		expect(s1[0]?.state).toBe("connected");
+		expect(spawnCount).toBe(1);
+
+		// 2) Simulate the process dying (user kill / crash) via onExit.
+		exitHandlers[0]?.({ code: 1 });
+		const clientAfterDeath = manager.getClient("steep", "/project");
+		expect(clientAfterDeath?.getState()).toBe("error");
+
+		// 3) status() now reports error (and seeds a broken entry for backoff).
+		//    Backoff not elapsed yet (clock frozen at 0) → NOT re-spawned.
+		const s2 = await manager.status("/project");
+		expect(s2[0]?.state).toBe("error");
+		expect(s2[0]?.error).toMatch(/process exited/);
+		expect(spawnCount).toBe(1); // no retry storm before backoff
+
+		// 4) After the backoff elapses, status() re-spawns a fresh server.
+		clock.now = 31_000;
+		const s3 = await manager.status("/project");
+		expect(s3[0]?.state).toBe("connected");
+		expect(spawnCount).toBe(2); // re-spawned exactly once
+	});
 });

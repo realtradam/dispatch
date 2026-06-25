@@ -91,7 +91,7 @@ export class DiagnosticsStore {
 	}
 }
 
-function diagnosticKey(d: Diagnostic): string {
+export function diagnosticKey(d: Diagnostic): string {
 	const r = d.range;
 	return `${r.start.line}:${r.start.character}-${r.end.line}:${r.end.character}:${d.severity ?? 0}:${d.message}`;
 }
