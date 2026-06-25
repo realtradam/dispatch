@@ -5,10 +5,36 @@
 > Keep this lean and current; do not let it re-accrete a step-by-step changelog.
 
 ## Status (current)
-`tsc -b` EXIT 0 · biome clean · **1549 vitest** green. (worktree `feature/ssh-support`;
-baseline re-verified after `bun install`.)
+`tsc -b` EXIT 0 · biome clean · **1730 vitest** pass (+6 sshd-integration skipped). (worktree `feature/ssh-support`;
+merged `dev` — brings retry-with-backoff (`provider-retry` AgentEvent) + the LSP-dead-server fix alongside the
+SSH waves below.)
 
-## SSH support — transparent remote execution (IN PROGRESS)
+## Retry with backoff on retryable provider errors (DONE — from dev)
+When the upstream LLM API returns a retryable error (HTTP 429 / 5xx "overloaded"),
+the kernel now retries `provider.stream()` with a stepped backoff, visibly, until
+the 8h cumulative-sleep budget is exhausted — then emits the final error and
+seals the turn. Retries fire ONLY when no content was emitted yet this step (the
+safety invariant — never duplicate partial output). Plan:
+`notes/retry-with-backoff-plan.md`; report: `reports/retry-with-backoff.md`.
+- **Architecture (kernel hook + shell policy/I/O):** kernel provides the hook
+  (`RetryStrategy` contract + the retry loop in `runTurn`); the shell
+  (session-orchestrator) provides the policy (the schedule) + the I/O (an
+  abortable `setTimeout` sleep). Kernel imports no timer. `retry?` is optional
+  → omit = no retry (backward-compatible).
+- **New transient `AgentEvent` variant** `provider-retry` (`@dispatch/wire`),
+  emitted once per scheduled retry BEFORE the sleep so the UI can show
+  "⚠ retrying in Ns…" immediately; NOT persisted to model history (never
+  pollutes the prompt). Final failure is still a persisted `error` + seal.
+- **Schedule:** `5s,10s,30s,60s,5m,10m,15m,30m`, then repeat 30m until 8h of
+  cumulative scheduled sleep → ~21 retries then give up. Pure `delayFor(attempt)`.
+- **Retry trigger:** emitted `error` with `retryable===true` → retry;
+  `retryable` false/absent → give up; a THROWN error → retryable-by-default
+  ONLY when pre-content. All gated on `!hadContent` (text/reasoning/tool-call/usage).
+- **Frontend handoff (5d3f, separate repo `../dispatch-web`):** render
+  `provider-retry` as a yellow warning system-message bubble showing `message`
+  (+`code`) with the `delayMs` countdown.
+
+## SSH support — transparent remote execution (DONE — waves 0-5c)
 Plan: `notes/ssh-support-plan.md` (decisions locked in §0.5/§13). Orchestrated in
 waves (ORCHESTRATOR.md §2a — pre-author the contract seam, then parallel
 owner-agents on disjoint packages).
@@ -29,8 +55,6 @@ owner-agents on disjoint packages).
       + remote tool-drop filter: drops `lsp` + `__`-namespaced MCP tools when
       remote) + `transport-contract` (ChatRequest.computerId + computer endpoint
       API types). `tsc -b` EXIT 0, biome clean, **1620 vitest** (was 1599).
-      CR-1 (non-blocking): MCP filter doesn't preserve `computerId` on
-      ToolAssembly — fix folded into wave 4.
 - [x] **Wave 4** (parallel): `transport-http` (computer endpoints + `/chat`
       threading + the `ComputerService` seam the ssh package will provide) +
       `transport-ws` (computerId through chat.send/queue) + `mcp` (CR-1: preserve
@@ -50,6 +74,9 @@ owner-agents on disjoint packages).
       computerServiceHandle. orchestrator added missing @dispatch/exec-backend dep to
       host-bin + bun install. **LIVE-VERIFIED**: server boots clean ("Dispatch booted",
       no disabled extensions). tsc -b EXIT 0, biome clean, 1690 vitest (+6 sshd skipped).
+- [x] **Merge dev**: brought retry-with-backoff (`provider-retry` AgentEvent — what
+      the FE consumes) + LSP-dead-server fix into the SSH branch. All code files
+      auto-merged cleanly; only `tasks.md` conflicted (orchestrator-resolved).
 - [ ] **DEFERRED — CR-6 usageCount**: `listComputers()` returns `usageCount: 0` until a
       conversation-store count-by-alias helper + host-bin wiring is added (non-blocking —
       discovery/connect/execute all work; only the count badge shows 0). Follow-up.
@@ -62,7 +89,6 @@ Key decisions: ssh2 + ssh-config (project-local deps); key-only auth from
 `~/.ssh`; auto-trust-and-pin host keys; computers discovered read-only from
 `~/.ssh/config` (no CRUD entity); computerId persisted per-conversation; LSP/MCP
 silently dropped on remote turns; edit_file works w/o diagnostics remotely.
-
 
 ## Per-edit LSP diagnostics auto-append (DONE)
 After a successful `edit_file`, the extension now calls LSP `getDiagnostics` on the

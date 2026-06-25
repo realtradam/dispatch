@@ -254,6 +254,41 @@ describe("parseArgs", () => {
 			});
 		});
 
+		it("parses 'list' with --workspace", () => {
+			expect(parseArgs(["list", "--workspace", "proj"], { defaultServer })).toEqual({
+				kind: "list",
+				server: "http://localhost:24203",
+				workspaceId: "proj",
+				all: false,
+			});
+		});
+
+		it("parses 'list' with -w shorthand", () => {
+			const result = parseArgs(["list", "-w", "ws"], { defaultServer });
+			expect(result.kind).toBe("list");
+			if (result.kind === "list") expect(result.workspaceId).toBe("ws");
+		});
+
+		it("parses 'list' with --workspace, --status, and a prefix together", () => {
+			const result = parseArgs(["list", "abc", "--status", "active", "--workspace", "proj"], {
+				defaultServer,
+			});
+			expect(result).toEqual({
+				kind: "list",
+				server: "http://localhost:24203",
+				query: "abc",
+				status: "active",
+				workspaceId: "proj",
+				all: false,
+			});
+		});
+
+		it("errors when --workspace has no value (list)", () => {
+			const result = parseArgs(["list", "--workspace"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("--workspace requires a value");
+		});
+
 		it("parses 'list' with --all", () => {
 			expect(parseArgs(["list", "--all"], { defaultServer })).toEqual({
 				kind: "list",
@@ -320,9 +355,29 @@ describe("parseArgs", () => {
 				server: "http://localhost:24203",
 				conversationId: "deadbeef",
 				text: "hi",
+				file: undefined,
 				queue: false,
 				open: false,
 			});
+		});
+
+		it("parses 'send' with --file", () => {
+			expect(parseArgs(["send", "deadbeef", "--file", "foo.txt"], { defaultServer })).toEqual({
+				kind: "send",
+				server: "http://localhost:24203",
+				conversationId: "deadbeef",
+				text: undefined,
+				file: "foo.txt",
+				queue: false,
+				open: false,
+			});
+		});
+
+		it("parses 'send' with both --text and --file", () => {
+			const result = parseArgs(["send", "deadbeef", "--text", "hi", "--file", "f.txt"], {
+				defaultServer,
+			});
+			expect(result).toMatchObject({ kind: "send", text: "hi", file: "f.txt" });
 		});
 
 		it("parses 'send' with --queue", () => {
@@ -334,6 +389,7 @@ describe("parseArgs", () => {
 				server: "http://localhost:24203",
 				conversationId: "deadbeef",
 				text: "hi",
+				file: undefined,
 				queue: true,
 				open: false,
 			});
@@ -348,6 +404,7 @@ describe("parseArgs", () => {
 				server: "http://localhost:24203",
 				conversationId: "deadbeef",
 				text: "hi",
+				file: undefined,
 				queue: false,
 				open: true,
 			});
@@ -363,6 +420,7 @@ describe("parseArgs", () => {
 				server: "http://localhost:24203",
 				conversationId: "deadbeef",
 				text: "hi",
+				file: undefined,
 				queue: false,
 				open: false,
 				cwd: "/tmp",
@@ -370,10 +428,10 @@ describe("parseArgs", () => {
 			});
 		});
 
-		it("requires --text", () => {
+		it("errors when --text and --file are both missing", () => {
 			const result = parseArgs(["send", "deadbeef"], { defaultServer });
 			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("--text");
+			if (result.kind === "error") expect(result.message).toContain("--text or --file");
 		});
 
 		it("requires a conversation id", () => {
@@ -385,6 +443,12 @@ describe("parseArgs", () => {
 		it("errors when --text has no value", () => {
 			const result = parseArgs(["send", "deadbeef", "--text"], { defaultServer });
 			expect(result.kind).toBe("error");
+		});
+
+		it("errors when --file has no value", () => {
+			const result = parseArgs(["send", "deadbeef", "--file"], { defaultServer });
+			expect(result.kind).toBe("error");
+			if (result.kind === "error") expect(result.message).toContain("--file requires a value");
 		});
 	});
 

@@ -11,6 +11,7 @@ import type {
 	ProviderEvent,
 	ProviderStreamOptions,
 	ReasoningEffort,
+	RetryStrategy,
 	RunTurnInput,
 	RunTurnResult,
 	ToolContract,
@@ -24,6 +25,7 @@ import { createMetricsAccumulator } from "./metrics.js";
 import {
 	buildUserMessage,
 	defaultDispatchPolicy,
+	delayFor,
 	generateTurnId,
 	resolveModelName,
 	resolveReasoningEffort,
@@ -342,12 +344,45 @@ export interface SessionOrchestratorBundle {
 	readonly activeConversations: ReadonlySet<string>;
 }
 
+/**
+ * The concrete retry strategy wired into every turn's `RunTurnInput.retry`.
+ *
+ * `delayFor` is the pure schedule (`5s, 10s, 30s, 60s, 5m, 10m, 15m, 30m`,
+ * then repeat 30m until 8h cumulative scheduled sleep) — no I/O, no clock.
+ * `sleep` is the abortable I/O effect: a `setTimeout`-based promise that
+ * rejects when the turn's abort signal fires (so a retry in flight seals the
+ * turn `aborted`). The kernel imports no timer; this is the shell-provided I/O.
+ */
+export function createRetryStrategy(): RetryStrategy {
+	const sleep = (ms: number, signal: AbortSignal): Promise<void> => {
+		return new Promise((resolve, reject) => {
+			if (signal.aborted) {
+				reject(new Error("aborted"));
+				return;
+			}
+			const timer = setTimeout(() => {
+				signal.removeEventListener("abort", onAbort);
+				resolve();
+			}, ms);
+			const onAbort = () => {
+				clearTimeout(timer);
+				reject(new Error("aborted"));
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+	};
+	return { delayFor, sleep };
+}
+
 export function createSessionOrchestrator(
 	deps: SessionOrchestratorDeps,
 ): SessionOrchestratorBundle {
 	const activeConversations = new Set<string>();
 	const subscribers = new Map<string, Set<TurnEventListener>>();
 	const activeTurns = new Map<string, ActiveTurn>();
+	// One stateless retry strategy shared by every turn (delayFor is pure; sleep
+	// is a stateless setTimeout closure). Wired into each RunTurnInput.retry.
+	const retryStrategy = createRetryStrategy();
 
 	function emitToHub(conversationId: string, event: AgentEvent): void {
 		const turn = activeTurns.get(conversationId);
@@ -640,6 +675,7 @@ export function createSessionOrchestrator(
 					turnId,
 					signal: controller.signal,
 					providerOpts,
+					retry: retryStrategy,
 					...(turnLogger !== undefined ? { logger: turnLogger } : {}),
 					...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
 					...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),

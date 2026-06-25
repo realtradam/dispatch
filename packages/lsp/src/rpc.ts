@@ -39,11 +39,36 @@ export class JsonRpcConnection {
 		this.write = write;
 	}
 
-	sendRequest(method: string, params?: unknown): Promise<unknown> {
+	/**
+	 * Send a request and await the correlated response. If `timeoutMs` is given,
+	 * the promise rejects with a timeout error after that long — so a dead/slow
+	 * server can't hang the caller forever (hover/definition/references).
+	 * No `timeoutMs` = wait indefinitely (used by the initialize handshake, which
+	 * has its own 45s race).
+	 */
+	sendRequest(method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
 		const id = this.nextId++;
 		const msg: JsonRpcMessage = { jsonrpc: "2.0", id, method, params };
 		return new Promise((resolve, reject) => {
-			this.pending.set(id, { resolve, reject });
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			// Wrap resolve/reject so the timer is cleared on a normal response
+			// (or on dispose) — no dangling timer after completion.
+			const finish = (fn: () => void): void => {
+				if (timer) clearTimeout(timer);
+				fn();
+			};
+			const entry: PendingRequest = {
+				resolve: (value: unknown) => finish(() => resolve(value)),
+				reject: (reason: unknown) => finish(() => reject(reason)),
+			};
+			if (timeoutMs !== undefined) {
+				timer = setTimeout(() => {
+					if (this.pending.delete(id)) {
+						reject(new Error(`LSP request timed out after ${timeoutMs}ms: ${method}`));
+					}
+				}, timeoutMs);
+			}
+			this.pending.set(id, entry);
 			this.sendMessage(msg);
 		});
 	}

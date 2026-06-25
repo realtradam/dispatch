@@ -289,6 +289,36 @@ describe("fetchConversations", () => {
 		expect(calledUrl).toBe("http://localhost:24203/conversations?q=abc+def");
 	});
 
+	it("appends ?workspaceId=<value> when a workspaceId is given", async () => {
+		let calledUrl: string | undefined;
+		const fakeFetch = (async (url: string | URL | Request): Promise<Response> => {
+			calledUrl = String(url);
+			return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		await fetchConversations(
+			{ fetchImpl: fakeFetch },
+			{ server: "http://localhost:24203", workspaceId: "proj" },
+		);
+		expect(calledUrl).toBe("http://localhost:24203/conversations?workspaceId=proj");
+	});
+
+	it("combines ?status= and ?workspaceId= when both are given", async () => {
+		let calledUrl: string | undefined;
+		const fakeFetch = (async (url: string | URL | Request): Promise<Response> => {
+			calledUrl = String(url);
+			return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		await fetchConversations(
+			{ fetchImpl: fakeFetch },
+			{ server: "http://localhost:24203", status: "active,idle", workspaceId: "proj" },
+		);
+		expect(calledUrl).toBe(
+			"http://localhost:24203/conversations?status=active%2Cidle&workspaceId=proj",
+		);
+	});
+
 	it("throws on non-OK status", async () => {
 		const fakeFetch = (async (): Promise<Response> =>
 			new Response("boom", { status: 500 })) as unknown as typeof fetch;

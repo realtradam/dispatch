@@ -40,6 +40,7 @@ export type {
 	TurnDoneEvent,
 	TurnErrorEvent,
 	TurnInputEvent,
+	TurnProviderRetryEvent,
 	TurnReasoningDeltaEvent,
 	TurnSealedEvent,
 	TurnStartEvent,
@@ -109,6 +110,7 @@ export type {
 export type {
 	EventEmitter,
 	FinishReason,
+	RetryStrategy,
 	RunTurnInput,
 	RunTurnResult,
 } from "./runtime.js";

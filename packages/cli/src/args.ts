@@ -33,6 +33,7 @@ export type ParsedCommand =
 			readonly server: string;
 			readonly query?: string;
 			readonly status?: string;
+			readonly workspaceId?: string;
 			readonly all: boolean;
 	  }
 	| { readonly kind: "compact"; readonly server: string; readonly conversationId: string }
@@ -42,7 +43,8 @@ export type ParsedCommand =
 			readonly kind: "send";
 			readonly server: string;
 			readonly conversationId: string;
-			readonly text: string;
+			readonly text?: string | undefined;
+			readonly file?: string | undefined;
 			readonly queue: boolean;
 			readonly open: boolean;
 			readonly cwd?: string;
@@ -84,6 +86,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 		let server = opts.defaultServer;
 		let query: string | undefined;
 		let status: string | undefined;
+		let workspaceId: string | undefined;
 		let all = false;
 		for (let i = 1; i < argv.length; i++) {
 			const arg = argv[i] as string;
@@ -93,6 +96,9 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			} else if (arg === "--status") {
 				if (i + 1 >= argv.length) return { kind: "error", message: "--status requires a value" };
 				status = argv[++i];
+			} else if (arg === "--workspace" || arg === "-w") {
+				if (i + 1 >= argv.length) return { kind: "error", message: "--workspace requires a value" };
+				workspaceId = argv[++i];
 			} else if (arg === "--all") {
 				all = true;
 			} else if (arg.startsWith("--")) {
@@ -108,6 +114,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			server,
 			...(query !== undefined && { query }),
 			...(status !== undefined && { status }),
+			...(workspaceId !== undefined && { workspaceId }),
 			all,
 		};
 	}
@@ -204,6 +211,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 		let server = opts.defaultServer;
 		let conversationId: string | undefined;
 		let text: string | undefined;
+		let file: string | undefined;
 		let queue = false;
 		let open = false;
 		let cwd: string | undefined;
@@ -220,6 +228,10 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 				case "--text":
 					if (i + 1 >= argv.length) return { kind: "error", message: "--text requires a value" };
 					text = argv[++i];
+					break;
+				case "--file":
+					if (i + 1 >= argv.length) return { kind: "error", message: "--file requires a value" };
+					file = argv[++i];
 					break;
 				case "--queue":
 					queue = true;
@@ -263,8 +275,11 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 		if (conversationId === undefined) {
 			return { kind: "error", message: "'send' requires a conversation id" };
 		}
-		if (text === undefined) {
-			return { kind: "error", message: "'send' requires --text" };
+		if (!text && !file) {
+			return {
+				kind: "error",
+				message: "At least one of --text or --file is required for 'send'",
+			};
 		}
 
 		return {
@@ -272,6 +287,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
 			server,
 			conversationId,
 			text,
+			file,
 			queue,
 			open,
 			...(cwd !== undefined && { cwd }),

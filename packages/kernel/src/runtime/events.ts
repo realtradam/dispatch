@@ -164,3 +164,17 @@ export function errorEvent(
 	}
 	return { type: "error", conversationId, turnId, message };
 }
+
+export function providerRetryEvent(
+	conversationId: string,
+	turnId: string,
+	attempt: number,
+	delayMs: number,
+	message: string,
+	code?: string,
+): AgentEvent {
+	if (code !== undefined) {
+		return { type: "provider-retry", conversationId, turnId, attempt, delayMs, message, code };
+	}
+	return { type: "provider-retry", conversationId, turnId, attempt, delayMs, message };
+}

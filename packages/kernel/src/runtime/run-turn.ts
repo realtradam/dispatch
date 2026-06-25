@@ -6,12 +6,18 @@ import type {
 	ProviderStreamOptions,
 	Usage,
 } from "../contracts/provider.js";
-import type { EventEmitter, RunTurnInput, RunTurnResult } from "../contracts/runtime.js";
+import type {
+	EventEmitter,
+	RetryStrategy,
+	RunTurnInput,
+	RunTurnResult,
+} from "../contracts/runtime.js";
 import type { ToolCall, ToolContract } from "../contracts/tool.js";
 import { createStepDispatcher, type StepDispatcher } from "./dispatch.js";
 import {
 	doneEvent,
 	errorEvent,
+	providerRetryEvent,
 	reasoningDeltaEvent,
 	stepCompleteEvent,
 	textDeltaEvent,
@@ -121,6 +127,8 @@ interface StepContext {
 	readonly now: (() => number) | undefined;
 	/** Per-turn provider options (model, systemPrompt, …) threaded to stream(). */
 	readonly providerOpts: ProviderStreamOptions | undefined;
+	/** Optional injected retry strategy (omit = no retry, backward-compatible). */
+	readonly retry: RetryStrategy | undefined;
 }
 
 interface TimingState {
@@ -250,12 +258,10 @@ function processEvent(
 		case "finish":
 			break;
 		case "error":
-			if (event.code !== undefined) {
-				chunks.push({ type: "error", message: event.message, code: event.code });
-			} else {
-				chunks.push({ type: "error", message: event.message });
-			}
-			ctx.emit(errorEvent(ctx.conversationId, ctx.turnId, event.message, event.code));
+			// Handled by the retry loop in executeStep (not here): an error event
+			// is intercepted before processEvent so the step can decide whether to
+			// retry (suppressing the error) or give up (emit it). processEvent
+			// never receives an "error" event.
 			break;
 	}
 }
@@ -316,34 +322,142 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
 		// Swallow — D7.
 	}
 
-	try {
-		const opts: ProviderStreamOptions = {
-			...ctx.providerOpts,
-			...(ctx.turnSpan !== undefined && stepSpan !== undefined ? { logger: stepSpan.log } : {}),
-		};
-		const stream = ctx.provider.stream(ctx.messages, ctx.tools, opts);
-		for await (const event of stream) {
-			if (ctx.signal.aborted) break;
-			processEvent(event, chunks, toolCalls, dispatcher, ctx, stepSpan, timing, toolDispatchTimes);
-			if (event.type === "usage") {
-				stepUsage = addUsage(stepUsage, event.usage);
-			}
-			if (event.type === "finish") {
-				finishReason = event.reason;
-			}
-		}
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		chunks.push({ type: "error", message });
-		ctx.emit(errorEvent(ctx.conversationId, ctx.turnId, message));
-		finishReason = "error";
-		// Close step span with error
+	// Retry loop: wrap provider.stream() consumption. Retries are ONLY
+	// attempted when no content was emitted yet this step (the safety
+	// invariant — never duplicate partial output). On a retryable error —
+	// either an EMITTED `error` ProviderEvent with `retryable === true`, OR a
+	// THROWN error (retryable-by-default when pre-content) — with !hadContent:
+	// ask retry.delayFor(attempt); if it returns a delay → emit a transient
+	// provider-retry AgentEvent, sleep via the injected retry.sleep (abortable),
+	// attempt++, re-call provider.stream(); if it returns undefined (budget
+	// exhausted) → give up. Non-retryable emitted errors (retryable === false or
+	// absent), errors after content, and the no-retry-configured case all fall
+	// through to "give up" — identical to the pre-retry behavior.
+	let hadContent = false;
+	let attempt = 0;
+	while (true) {
+		let errored = false;
+		let wasThrown = false;
+		let errorMessage: string | undefined;
+		let errorCode: string | undefined;
+		let errorRetryable: boolean | undefined;
+		let thrownErr: unknown;
+
 		try {
-			stepSpan?.end({ err });
+			const opts: ProviderStreamOptions = {
+				...ctx.providerOpts,
+				...(ctx.turnSpan !== undefined && stepSpan !== undefined ? { logger: stepSpan.log } : {}),
+			};
+			const stream = ctx.provider.stream(ctx.messages, ctx.tools, opts);
+			for await (const event of stream) {
+				if (ctx.signal.aborted) break;
+				if (event.type === "error") {
+					// Intercept: hold for the retry decision — don't push a chunk
+					// or emit yet (a successful retry would leave a stale error).
+					errored = true;
+					errorMessage = event.message;
+					errorCode = event.code;
+					errorRetryable = event.retryable;
+					break;
+				}
+				if (
+					event.type === "text-delta" ||
+					event.type === "reasoning-delta" ||
+					event.type === "tool-call" ||
+					event.type === "usage"
+				) {
+					hadContent = true;
+				}
+				processEvent(
+					event,
+					chunks,
+					toolCalls,
+					dispatcher,
+					ctx,
+					stepSpan,
+					timing,
+					toolDispatchTimes,
+				);
+				if (event.type === "usage") {
+					stepUsage = addUsage(stepUsage, event.usage);
+				}
+				if (event.type === "finish") {
+					finishReason = event.reason;
+				}
+			}
+		} catch (err) {
+			errored = true;
+			wasThrown = true;
+			errorMessage = err instanceof Error ? err.message : String(err);
+			errorCode = undefined;
+			errorRetryable = undefined;
+			thrownErr = err;
+		}
+
+		// Abort (during stream) → stop; the runTurn loop seals aborted.
+		if (ctx.signal.aborted) {
+			break;
+		}
+
+		// No error → step succeeded.
+		if (!errored) {
+			break;
+		}
+
+		// Retryable? A thrown error is retryable-by-default when pre-content;
+		// an emitted error is retryable ONLY when `retryable === true` (absent
+		// or false → not retried, per the contract).
+		const isRetryable = wasThrown ? true : errorRetryable === true;
+		if (ctx.retry !== undefined && !hadContent && isRetryable) {
+			const delay = ctx.retry.delayFor(attempt);
+			if (delay !== undefined) {
+				// Emit the transient provider-retry event BEFORE the sleep so the
+				// UI shows "⚠ retrying in Ns…" immediately. Not persisted as a
+				// chat message — it never pollutes the prompt.
+				ctx.emit(
+					providerRetryEvent(
+						ctx.conversationId,
+						ctx.turnId,
+						attempt,
+						delay,
+						errorMessage ?? "",
+						errorCode,
+					),
+				);
+				// Abortable sleep. If the signal fires during sleep, the shell's
+				// sleep rejects — we catch it and break so the turn seals aborted.
+				try {
+					await ctx.retry.sleep(delay, ctx.signal);
+				} catch {
+					// Abort during sleep (or unexpected sleep failure).
+				}
+				if (ctx.signal.aborted) {
+					break;
+				}
+				attempt++;
+				continue;
+			}
+			// delayFor returned undefined → budget exhausted → give up.
+		}
+
+		// Give up: emit the suppressed error and end the step. This is the
+		// single emission point for a terminal provider error (non-retryable,
+		// post-content, budget-exhausted, or no-retry-configured).
+		const message = errorMessage ?? "";
+		if (errorCode !== undefined) {
+			chunks.push({ type: "error", message, code: errorCode });
+		} else {
+			chunks.push({ type: "error", message });
+		}
+		ctx.emit(errorEvent(ctx.conversationId, ctx.turnId, message, errorCode));
+		finishReason = "error";
+		try {
+			stepSpan?.end({ err: thrownErr ?? new Error(message) });
 		} catch {
 			// Swallow — D7.
 		}
 		stepSpan = undefined;
+		break;
 	}
 
 	// Close timing spans: if no first token was seen, end ttft with firstToken: false
@@ -527,6 +641,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				computerId: input.computerId,
 				now,
 				providerOpts: input.providerOpts,
+				retry: input.retry,
 			});
 
 			totalUsage = addUsage(totalUsage, stepResult.usage);
