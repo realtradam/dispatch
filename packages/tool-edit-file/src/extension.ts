@@ -33,7 +33,10 @@ export const extension: Extension = {
 				filePath: opts.filePath,
 				text: opts.text,
 				cwd: opts.cwd,
-				timeoutMs: 60_000,
+				// 10s matches the LSP service's per-server cap (see packages/lsp).
+				// The service clamps this anyway; stated explicitly so the call
+				// site is honest about the effective live-diagnostics budget.
+				timeoutMs: 10_000,
 				minSeverity: 2, // errors + warnings only
 			});
 		};
