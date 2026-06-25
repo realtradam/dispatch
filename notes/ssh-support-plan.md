@@ -938,7 +938,7 @@ these directly per one-owner-per-unit):
 
 ## 13. Open questions / decisions for the user
 
-### Resolved (2026-06-25) — see §0.5 for full text
+### Resolved (2026-06-25) — all decisions locked
 
 1. ~~ssh2 vs bun-ssh2~~ → **`ssh2`** (no fork); verify under Bun at Phase 3 start.
 2. ~~Host-key trust model~~ → **auto-trust-and-pin**; FE approve prompt is
@@ -952,20 +952,29 @@ these directly per one-owner-per-unit):
    spawn is a future phase.
 7. ~~`edit_file` diagnostics on remote~~ → **works, no diagnostics** (existing
    no-LSP degradation path).
+8. ~~`ssh-config` dependency vs hand-rolled parser~~ → **take `ssh-config`**
+   (project-local dep in `packages/ssh/package.json`, alongside `ssh2`). Both
+   maintainers are single-author but these are the standard, widely-depended-on
+   packages for their jobs (`ssh2` ~2k dependents; `ssh-config` ~224k weekly
+   downloads). Correct config parsing (wildcards, `Include`, `Match`,
+   first-match-wins) is worth the dep over a hand-rolled parser that would miss
+   edge cases.
 
-### Still open (one decision)
+**No open questions remain.** The plan is decision-complete and ready to hand
+off to implementation.
 
-**Q. `ssh-config` dependency vs hand-rolled parser.** Parsing `~/.ssh/config`
-correctly is non-trivial (wildcard `Host *.example.com`, `Include`, `Match`,
-first-match-wins defaults). A small well-used npm package **`ssh-config`** parses
-it properly; that's a **project-local** dependency in `packages/ssh/package.json`
-(same category as `ssh2`), not system-wide. **Recommendation: use `ssh-config`**
-for correctness. Alternative: hand-roll a minimal parser (named `Host` entries
-only, ignore wildcards/`Match`) to avoid the extra dep — riskier on edge cases.
-*Awaiting user confirmation on `ssh-config`.*
+### Minor defaults adopted (not flagged as decisions — veto if undesired)
 
-(All other former open questions are resolved; this is the sole remaining
-pre-implementation decision.)
+- The `~/.ssh/config` reader lives **inside the `ssh` extension** (it owns the
+  SSH concern end-to-end).
+- A stale alias (removed from `~/.ssh/config` while a conversation still points
+  at it) is surfaced by the FE as **"unresolved"**, never silently falls back
+  to local.
+- Default identity file probing order: `~/.ssh/id_ed25519` → `~/.ssh/id_rsa` →
+  others, first-existing-wins (matches OpenSSH's own probing).
+- Encrypted-key passphrases: assume **unencrypted** for the MVP; passphrase
+  prompting is bundled into the same FE roadmap item as the host-key approve
+  prompt (decision #2).
 
 ---
 
