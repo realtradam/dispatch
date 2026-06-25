@@ -77,6 +77,36 @@ owner-agents on disjoint packages).
 - [x] **Merge dev**: brought retry-with-backoff (`provider-retry` AgentEvent — what
       the FE consumes) + LSP-dead-server fix into the SSH branch. All code files
       auto-merged cleanly; only `tasks.md` conflicted (orchestrator-resolved).
+- [x] **FE handoff #3 (provider-retry merge) — RESOLVED**: FE re-synced both pinned
+      file: deps (`@dispatch/wire` + `@dispatch/transport-contract`) against merged
+      `feature/ssh-support`; both resolve `TurnProviderRetryEvent`. The 11 provider-
+      retry svelte-check errors cleared with ZERO further FE code changes (consumer
+      already complete + tested). FE full suite green: typecheck 0/0, 795/795 tests,
+      biome clean, vite build OK. Earlier SSH handoffs (#1 wire types, #2 computer
+      HTTP API) now also typecheck-clean against the merged wire. Nothing further
+      needed from backend on this.
+- [x] **FE final sync check — GREEN, all three handoffs + cross-cutting verified**:
+      FE confirmed whole-tree green (typecheck 0/0, 795/795 tests, biome clean, build
+      OK, git clean). (1) provider-retry (§2c): TurnProviderRetryEvent resolves;
+      assertAgentEventExhaustive covers it (typecheck-green = exhaustive); ChatView
+      renders yellow alert-warning bubble w/ attemptLabel + delayLabel (delayMs via
+      viewProviderRetry/formatRetryDelay) + code badge, gated {#if providerRetry}.
+      (2) SSH handoff #1: Workspace.defaultComputerId + Computer/ComputerEntry resolve;
+      2 Workspace literals supply defaultComputerId: null; catalog flows through
+      store.computers. (3) SSH handoff #2: full src/features/computer/ (ComputerField
+      w/ per-conv selector + connection-status badge + Test-connection polling;
+      ComputerSelect reusable; store computerId/refreshComputer/setComputer + computers
+      catalog on boot + computerStatus/testComputer; WorkspaceCard default-computer
+      selector via setDefaultComputer) — 20 view-model tests, typecheck-clean, chat.send
+      unchanged. CROSS-CUTTING (key integration question): GREEN, no collision —
+      provider-retry is WS-stream → TranscriptState.providerRetry → ChatView (transcript,
+      keyed activeConversationId); computer is HTTP-ONLY (imports NO AgentEvent/chunks/
+      TranscriptState) → AppStore.computerId (per-conv persisted) → ComputerField (sidebar,
+      keyed currentConversationId). Disjoint state, disjoint channels (WS vs HTTP),
+      disjoint regions (transcript vs sidebar), disjoint mount keys. The conversation-
+      switch lifecycle is the only shared touchpoint and is correct + independent.
+      assertAgentEventExhaustive confirms computer is NOT an AgentEvent (HTTP-only).
+      We're done — nothing further needed from either side.
 - [ ] **DEFERRED — CR-6 usageCount**: `listComputers()` returns `usageCount: 0` until a
       conversation-store count-by-alias helper + host-bin wiring is added (non-blocking —
       discovery/connect/execute all work; only the count badge shows 0). Follow-up.
