@@ -98,6 +98,7 @@ interface FetchConversationsOpts {
 	readonly server: string;
 	readonly query?: string;
 	readonly status?: string;
+	readonly workspaceId?: string;
 }
 
 export async function fetchConversations(
@@ -107,6 +108,7 @@ export async function fetchConversations(
 	const params = new URLSearchParams();
 	if (opts.query !== undefined) params.set("q", opts.query);
 	if (opts.status !== undefined) params.set("status", opts.status);
+	if (opts.workspaceId !== undefined) params.set("workspaceId", opts.workspaceId);
 	const qs = params.toString();
 	const url = qs.length > 0 ? `${opts.server}/conversations?${qs}` : `${opts.server}/conversations`;
 	const res = await deps.fetchImpl(url);
