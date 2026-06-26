@@ -27,7 +27,9 @@ import {
 	usageEvent,
 } from "./events.js";
 
-export const MAX_STEPS = 50;
+/** Max steps per turn. 0 = unlimited (the loop runs until the model stops
+ *  making tool calls or the abort signal fires). */
+export const MAX_STEPS = 0;
 
 function zeroUsage(): Usage {
 	return { inputTokens: 0, outputTokens: 0 };
@@ -615,7 +617,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 	input.emit(turnStartEvent(conversationId, turnId));
 
 	try {
-		for (let step = 0; step < MAX_STEPS; step++) {
+		for (let step = 0; MAX_STEPS === 0 || step < MAX_STEPS; step++) {
 			if (signal.aborted) {
 				finishReason = "aborted";
 				break;
@@ -708,7 +710,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 				break;
 			}
 
-			if (step === MAX_STEPS - 1) {
+			if (MAX_STEPS > 0 && step === MAX_STEPS - 1) {
 				finishReason = "max-steps";
 				// No next step → no tool-result boundary. Leave any pending
 				// steering messages for the caller (it owns the queue).

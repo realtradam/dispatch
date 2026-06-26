@@ -5,7 +5,7 @@ import type { LogDeps, Logger, LogRecord, LogSink } from "../contracts/logging.j
 import type { ProviderContract, ProviderEvent } from "../contracts/provider.js";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "../contracts/tool.js";
 import { createLogger } from "../logging/logger.js";
-import { MAX_STEPS, runTurn } from "./run-turn.js";
+import { runTurn } from "./run-turn.js";
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => {
@@ -2853,12 +2853,22 @@ describe("runTurn", () => {
 			expect(drainCallCount).toBe(2);
 		});
 
-		it("drainSteering NOT called when max-steps ends the turn after a tool-call step (no next step → no drain)", async () => {
+		it("MAX_STEPS=0 (unlimited): turn runs past the old 50-step limit and drains at every tool-result boundary until the model stops naturally", async () => {
 			let drainCallCount = 0;
-			// Every step produces a tool call → the turn runs to MAX_STEPS.
-			const script: ProviderEvent[][] = Array.from({ length: MAX_STEPS }, () => [
-				{ type: "tool-call", toolCallId: "tc", toolName: "echo", input: {} },
-				{ type: "finish", reason: "tool-calls" },
+			// 100 tool-call steps (past the old MAX_STEPS=50) + 1 text-only step
+			// to end the turn naturally.
+			const STEPS_WITH_TOOLS = 100;
+			const script: ProviderEvent[][] = [];
+			for (let i = 0; i < STEPS_WITH_TOOLS; i++) {
+				script.push([
+					{ type: "tool-call", toolCallId: "tc", toolName: "echo", input: {} },
+					{ type: "finish", reason: "tool-calls" },
+				]);
+			}
+			// Final step: text only, no tool calls → natural end.
+			script.push([
+				{ type: "text-delta", delta: "done" },
+				{ type: "finish", reason: "stop" },
 			]);
 			const provider = createFakeProvider(script);
 
@@ -2878,12 +2888,14 @@ describe("runTurn", () => {
 				},
 			});
 
-			expect(result.finishReason).toBe("max-steps");
-			// MAX_STEPS tool-call steps (indices 0..MAX_STEPS-1). Drained on every
-			// step that is followed by a next step (0..MAX_STEPS-2 = MAX_STEPS-1
-			// calls); the final step is the max-steps boundary → no next step →
-			// no drain (queue left intact for the caller).
-			expect(drainCallCount).toBe(MAX_STEPS - 1);
+			// Turn ended naturally, NOT via max-steps.
+			expect(result.finishReason).toBe("stop");
+			// Every tool-call step (0..99) is followed by a next step → each
+			// triggers a drain. The text-only step breaks before draining.
+			expect(drainCallCount).toBe(STEPS_WITH_TOOLS);
+			// All 101 steps produced messages (100 tool steps with assistant +
+			// tool messages, 1 text-only step with an assistant message).
+			expect(result.messages.length).toBe(STEPS_WITH_TOOLS * 2 + 1);
 		});
 	});
 
