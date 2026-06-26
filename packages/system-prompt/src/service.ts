@@ -29,20 +29,20 @@ const TEMPLATE_KEY = "template";
 const resolvedKey = (conversationId: string): string => `resolved:${conversationId}`;
 const resolvedCwdKey = (conversationId: string): string => `resolved-cwd:${conversationId}`;
 const resolvedComputerIdKey = (conversationId: string): string =>
-	`resolved-computer:${conversationId}`;
+  `resolved-computer:${conversationId}`;
 
 export interface SystemPromptServiceDeps {
-	/** Namespaced KV (`host.storage("system-prompt")`). */
-	readonly storage: StorageNamespace;
-	/** Injected effects for variable resolution (local). */
-	readonly adapters: ResolverAdapters;
-	/**
-	 * Optional: build remote-backed adapters for a given computerId. When
-	 * `construct` is called with a `computerId`, this is invoked to obtain
-	 * adapters that read/run commands on the REMOTE machine (via the
-	 * ExecBackend/SSH). Absent → falls back to the local `adapters`.
-	 */
-	readonly resolveRemoteAdapters?: (computerId: string, cwd: string) => Promise<ResolverAdapters>;
+  /** Namespaced KV (`host.storage("system-prompt")`). */
+  readonly storage: StorageNamespace;
+  /** Injected effects for variable resolution (local). */
+  readonly adapters: ResolverAdapters;
+  /**
+   * Optional: build remote-backed adapters for a given computerId. When
+   * `construct` is called with a `computerId`, this is invoked to obtain
+   * adapters that read/run commands on the REMOTE machine (via the
+   * ExecBackend/SSH). Absent → falls back to the local `adapters`.
+   */
+  readonly resolveRemoteAdapters?: (computerId: string, cwd: string) => Promise<ResolverAdapters>;
 }
 
 /**
@@ -54,37 +54,37 @@ export interface SystemPromptServiceDeps {
  * set, mirroring `construct`.
  */
 async function resolveTemplate(
-	deps: SystemPromptServiceDeps,
-	template: string,
-	cwd: string,
-	context?: {
-		readonly model?: string;
-		readonly conversationId?: string;
-		readonly workspaceId?: string;
-		readonly computerId?: string;
-	},
+  deps: SystemPromptServiceDeps,
+  template: string,
+  cwd: string,
+  context?: {
+    readonly model?: string;
+    readonly conversationId?: string;
+    readonly workspaceId?: string;
+    readonly computerId?: string;
+  },
 ): Promise<string> {
-	const referencedKeys = extractVariables(template);
-	const resolverContext: ResolverContext = {
-		...(context?.conversationId !== undefined ? { conversationId: context.conversationId } : {}),
-		...(context?.model !== undefined ? { model: context.model } : {}),
-		...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
-	};
+  const referencedKeys = extractVariables(template);
+  const resolverContext: ResolverContext = {
+    ...(context?.conversationId !== undefined ? { conversationId: context.conversationId } : {}),
+    ...(context?.model !== undefined ? { model: context.model } : {}),
+    ...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
+  };
 
-	// Select adapters: when computerId is set, use remote-backed adapters
-	// (read files / run commands on the REMOTE machine via SSH). Otherwise
-	// use the local adapters.
-	const computerId = context?.computerId;
-	const adapters =
-		computerId !== undefined && deps.resolveRemoteAdapters !== undefined
-			? await deps.resolveRemoteAdapters(computerId, cwd)
-			: deps.adapters;
+  // Select adapters: when computerId is set, use remote-backed adapters
+  // (read files / run commands on the REMOTE machine via SSH). Otherwise
+  // use the local adapters.
+  const computerId = context?.computerId;
+  const adapters =
+    computerId !== undefined && deps.resolveRemoteAdapters !== undefined
+      ? await deps.resolveRemoteAdapters(computerId, cwd)
+      : deps.adapters;
 
-	const vars = await resolveVariables(cwd, adapters, {
-		context: resolverContext,
-		referencedKeys,
-	});
-	return parseTemplate(template, vars);
+  const vars = await resolveVariables(cwd, adapters, {
+    context: resolverContext,
+    referencedKeys,
+  });
+  return parseTemplate(template, vars);
 }
 
 /**
@@ -92,56 +92,56 @@ async function resolveTemplate(
  * State is owned (not ambient): the storage reference lives in this closure.
  */
 export function createSystemPromptService(deps: SystemPromptServiceDeps): SystemPromptService {
-	return {
-		async construct(conversationId, cwd, context) {
-			let template = await deps.storage.get(TEMPLATE_KEY);
-			if (template === null) template = DEFAULT_TEMPLATE;
+  return {
+    async construct(conversationId, cwd, context) {
+      let template = await deps.storage.get(TEMPLATE_KEY);
+      if (template === null) template = DEFAULT_TEMPLATE;
 
-			const result = await resolveTemplate(deps, template, cwd, {
-				conversationId,
-				...(context?.model !== undefined ? { model: context.model } : {}),
-				...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
-				...(context?.computerId !== undefined ? { computerId: context.computerId } : {}),
-			});
+      const result = await resolveTemplate(deps, template, cwd, {
+        conversationId,
+        ...(context?.model !== undefined ? { model: context.model } : {}),
+        ...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
+        ...(context?.computerId !== undefined ? { computerId: context.computerId } : {}),
+      });
 
-			await deps.storage.set(resolvedKey(conversationId), result);
-			await deps.storage.set(resolvedCwdKey(conversationId), cwd);
-			// Store the computerId (or empty string for local) so the cache can be
-			// invalidated when the computer changes.
-			await deps.storage.set(resolvedComputerIdKey(conversationId), context?.computerId ?? "");
-			return result;
-		},
+      await deps.storage.set(resolvedKey(conversationId), result);
+      await deps.storage.set(resolvedCwdKey(conversationId), cwd);
+      // Store the computerId (or empty string for local) so the cache can be
+      // invalidated when the computer changes.
+      await deps.storage.set(resolvedComputerIdKey(conversationId), context?.computerId ?? "");
+      return result;
+    },
 
-		async resolveText(template, cwd, context) {
-			// An empty template has no variables to resolve; short-circuit to
-			// avoid spawning git / reading files for nothing (the heartbeat's
-			// default-empty prompts hit this every run).
-			if (template === "") return "";
-			return resolveTemplate(deps, template, cwd, context);
-		},
+    async resolveText(template, cwd, context) {
+      // An empty template has no variables to resolve; short-circuit to
+      // avoid spawning git / reading files for nothing (the heartbeat's
+      // default-empty prompts hit this every run).
+      if (template === "") return "";
+      return resolveTemplate(deps, template, cwd, context);
+    },
 
-		async get(conversationId) {
-			return deps.storage.get(resolvedKey(conversationId));
-		},
+    async get(conversationId) {
+      return deps.storage.get(resolvedKey(conversationId));
+    },
 
-		async getWithMeta(conversationId) {
-			const [prompt, cwd, computerIdStored] = await Promise.all([
-				deps.storage.get(resolvedKey(conversationId)),
-				deps.storage.get(resolvedCwdKey(conversationId)),
-				deps.storage.get(resolvedComputerIdKey(conversationId)),
-			]);
-			// Empty string → null (local, no computerId). Non-empty → the alias.
-			const computerId = computerIdStored === null ? null : computerIdStored || null;
-			return { prompt, cwd, computerId };
-		},
+    async getWithMeta(conversationId) {
+      const [prompt, cwd, computerIdStored] = await Promise.all([
+        deps.storage.get(resolvedKey(conversationId)),
+        deps.storage.get(resolvedCwdKey(conversationId)),
+        deps.storage.get(resolvedComputerIdKey(conversationId)),
+      ]);
+      // Empty string → null (local, no computerId). Non-empty → the alias.
+      const computerId = computerIdStored === null ? null : computerIdStored || null;
+      return { prompt, cwd, computerId };
+    },
 
-		async getTemplate() {
-			const stored = await deps.storage.get(TEMPLATE_KEY);
-			return stored ?? DEFAULT_TEMPLATE;
-		},
+    async getTemplate() {
+      const stored = await deps.storage.get(TEMPLATE_KEY);
+      return stored ?? DEFAULT_TEMPLATE;
+    },
 
-		async setTemplate(template) {
-			await deps.storage.set(TEMPLATE_KEY, template);
-		},
-	};
+    async setTemplate(template) {
+      await deps.storage.set(TEMPLATE_KEY, template);
+    },
+  };
 }

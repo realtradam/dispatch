@@ -1,22 +1,22 @@
 {
-	"name": "@dispatch/transport-http",
-	"version": "0.0.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/conversation-store": "workspace:*",
-		"@dispatch/credential-store": "workspace:*",
-		"@dispatch/heartbeat": "workspace:*",
-		"@dispatch/kernel": "workspace:*",
-		"@dispatch/lsp": "workspace:*",
-		"@dispatch/mcp": "workspace:*",
-		"@dispatch/session-orchestrator": "workspace:*",
-		"@dispatch/throughput-store": "workspace:*",
-		"@dispatch/transport-contract": "workspace:*",
-		"@dispatch/wire": "workspace:*",
-		"hono": "^4.0.0",
-		"@dispatch/system-prompt": "workspace:*"
-	}
+  "name": "@dispatch/transport-http",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/conversation-store": "workspace:*",
+    "@dispatch/credential-store": "workspace:*",
+    "@dispatch/heartbeat": "workspace:*",
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/lsp": "workspace:*",
+    "@dispatch/mcp": "workspace:*",
+    "@dispatch/session-orchestrator": "workspace:*",
+    "@dispatch/throughput-store": "workspace:*",
+    "@dispatch/transport-contract": "workspace:*",
+    "@dispatch/wire": "workspace:*",
+    "hono": "^4.0.0",
+    "@dispatch/system-prompt": "workspace:*"
+  }
 }

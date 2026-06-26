@@ -1,12 +1,12 @@
 {
-	"extends": "../../tsconfig.base.json",
-	"compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
-	"include": ["src/**/*.ts"],
-	"references": [
-		{ "path": "../kernel" },
-		{ "path": "../transport-contract" },
-		{ "path": "../session-orchestrator" },
-		{ "path": "../system-prompt" },
-		{ "path": "../conversation-store" }
-	]
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../kernel" },
+    { "path": "../transport-contract" },
+    { "path": "../session-orchestrator" },
+    { "path": "../system-prompt" },
+    { "path": "../conversation-store" }
+  ]
 }

@@ -929,18 +929,18 @@ export interface TestComputerResponse {
  * heartbeats.
  */
 export interface HeartbeatConfig {
-	/** Whether the heartbeat loop is active for this workspace. */
-	readonly enabled: boolean;
-	/** Custom system prompt for the heartbeat AI (empty = no system prompt). */
-	readonly systemPrompt: string;
-	/** Task prompt sent as the first user message when the heartbeat fires. */
-	readonly taskPrompt: string;
-	/** How often to fire, in minutes (default 30). */
-	readonly intervalMinutes: number;
-	/** Model name (`<credentialName>/<model>`), or empty string = server default. */
-	readonly model: string;
-	/** Reasoning-effort level, or `null` = inherit the workspace default. */
-	readonly reasoningEffort: ReasoningEffort | null;
+  /** Whether the heartbeat loop is active for this workspace. */
+  readonly enabled: boolean;
+  /** Custom system prompt for the heartbeat AI (empty = no system prompt). */
+  readonly systemPrompt: string;
+  /** Task prompt sent as the first user message when the heartbeat fires. */
+  readonly taskPrompt: string;
+  /** How often to fire, in minutes (default 30). */
+  readonly intervalMinutes: number;
+  /** Model name (`<credentialName>/<model>`), or empty string = server default. */
+  readonly model: string;
+  /** Reasoning-effort level, or `null` = inherit the workspace default. */
+  readonly reasoningEffort: ReasoningEffort | null;
 }
 
 /**
@@ -951,12 +951,12 @@ export interface HeartbeatConfig {
  * `reasoningEffort` → HTTP 400.
  */
 export interface UpdateHeartbeatRequest {
-	readonly enabled?: boolean;
-	readonly systemPrompt?: string;
-	readonly taskPrompt?: string;
-	readonly intervalMinutes?: number;
-	readonly model?: string;
-	readonly reasoningEffort?: ReasoningEffort | null;
+  readonly enabled?: boolean;
+  readonly systemPrompt?: string;
+  readonly taskPrompt?: string;
+  readonly intervalMinutes?: number;
+  readonly model?: string;
+  readonly reasoningEffort?: ReasoningEffort | null;
 }
 
 /** The status of a single heartbeat run. */
@@ -970,18 +970,18 @@ export type HeartbeatRunStatus = "running" | "completed" | "stopped";
  * stopped it via the stop endpoint (the turn is aborted and seals `"stopped"`).
  */
 export interface HeartbeatRun {
-	readonly id: string;
-	readonly conversationId: string;
-	readonly triggeredAt: string;
-	readonly status: HeartbeatRunStatus;
+  readonly id: string;
+  readonly conversationId: string;
+  readonly triggeredAt: string;
+  readonly status: HeartbeatRunStatus;
 }
 
 /** Response of `GET /workspaces/:id/heartbeat/runs` — runs, most-recent first. */
 export interface HeartbeatRunsResponse {
-	readonly runs: readonly HeartbeatRun[];
+  readonly runs: readonly HeartbeatRun[];
 }
 
 /** Response of `POST /workspaces/:id/heartbeat/runs/:runId/stop`. */
 export interface StopHeartbeatRunResponse {
-	readonly ok: true;
+  readonly ok: true;
 }
