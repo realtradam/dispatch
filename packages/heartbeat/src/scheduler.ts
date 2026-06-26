@@ -48,6 +48,14 @@ interface WorkspaceSchedule {
 	running: boolean;
 	/** Scheduling is active (the workspace's heartbeat is enabled). */
 	armed: boolean;
+	/**
+	 * Absolute epoch-ms timestamp of the next scheduled fire, or null when no
+	 * fire is pending — the schedule is disarmed, or a run is in progress
+	 * (the next fire is scheduled only after the run completes). This is the
+	 * server-authoritative next-run time the `/heartbeat/next-run` endpoint
+	 * derives its response from.
+	 */
+	nextFireMs: number | null;
 }
 
 const MINUTE_MS = 60_000;
@@ -90,6 +98,7 @@ export class HeartbeatScheduler {
 				timer: undefined,
 				running: false,
 				armed: true,
+				nextFireMs: null,
 			};
 			this.schedules.set(workspaceId, schedule);
 		} else {
@@ -130,8 +139,21 @@ export class HeartbeatScheduler {
 		return this.schedules.get(workspaceId)?.running ?? false;
 	}
 
+	/**
+	 * The absolute epoch-ms timestamp of the next scheduled fire for a workspace,
+	 * or null when no fire is pending — the heartbeat is disabled/disarmed, or a
+	 * run is in progress (the next fire is scheduled only after the run
+	 * completes). This is the server-authoritative next-run time.
+	 */
+	nextFireAt(workspaceId: string): number | null {
+		return this.schedules.get(workspaceId)?.nextFireMs ?? null;
+	}
+
 	private scheduleNext(workspaceId: string, schedule: WorkspaceSchedule): void {
 		const ms = Math.max(MINUTE_MS, schedule.intervalMinutes * MINUTE_MS);
+		// Record the absolute fire time (now + delay) BEFORE arming the timer
+		// so `nextFireAt` reports it while the timer is pending.
+		schedule.nextFireMs = this.timers.now() + ms;
 		schedule.timer = this.timers.setTimeout(() => {
 			this.onTick(workspaceId);
 		}, ms);
@@ -142,6 +164,9 @@ export class HeartbeatScheduler {
 		// Race: the schedule was disarmed after the timer was queued.
 		if (schedule === undefined || !schedule.armed) return;
 		schedule.timer = undefined;
+		// A fire is now in progress — no next run is queued yet (it's scheduled
+		// only after the run completes), so report no pending fire time.
+		schedule.nextFireMs = null;
 		schedule.running = true;
 		this.fire(workspaceId)
 			.catch(() => {
@@ -163,5 +188,6 @@ export class HeartbeatScheduler {
 			this.timers.clearTimeout(schedule.timer);
 			schedule.timer = undefined;
 		}
+		schedule.nextFireMs = null;
 	}
 }

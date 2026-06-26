@@ -40,6 +40,16 @@ export interface HeartbeatService {
 	/** Heartbeat runs for a workspace, most-recent first. */
 	readonly listRuns: (workspaceId: string) => Promise<readonly HeartbeatRun[]>;
 	/**
+	 * The server-authoritative next-fire time for a workspace's heartbeat, as
+	 * an ISO 8601 string — the moment the scheduler will fire the next run
+	 * (the last run's completion + `intervalMinutes`, or the moment `enabled`
+	 * was toggled on + `intervalMinutes` for the first run). `null` when the
+	 * heartbeat is disabled/disarmed, or when a run is in flight and the next
+	 * hasn't been queued yet (no countdown to show). A cheap read of the
+	 * scheduler's pending fire time.
+	 */
+	readonly nextRunAt: (workspaceId: string) => Promise<string | null>;
+	/**
 	 * Stop an in-flight run (abort its turn). Idempotent for an already-finished
 	 * run. Throws when the run id is unknown (→ HTTP 404).
 	 */
@@ -258,6 +268,11 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 
 		async listRuns(workspaceId) {
 			return runStore.list(workspaceId);
+		},
+
+		async nextRunAt(workspaceId) {
+			const ms = scheduler.nextFireAt(workspaceId);
+			return ms === null ? null : new Date(ms).toISOString();
 		},
 
 		async stopRun(workspaceId, runId) {

@@ -601,4 +601,54 @@ describe("createHeartbeatService", () => {
 		expect(orch.pending).toHaveLength(1);
 		expect(orch.pending[0]?.workspaceId).toBe("heartbeat");
 	});
+
+	// ─── nextRunAt (CR-HB-3: server-authoritative next-run time) ────────────────
+
+	it("nextRunAt returns null when the heartbeat is disabled", async () => {
+		const { svc } = createService({ orch: createFakeOrchestrator() });
+		// Default config → disabled → no schedule armed.
+		expect(await svc.nextRunAt("ws-1")).toBeNull();
+	});
+
+	it("nextRunAt returns the ISO timestamp of the next fire when enabled", async () => {
+		const { svc } = createService({ orch: createFakeOrchestrator() });
+		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+		// now=0, interval=1m → next fire at epoch-ms 60_000 → its ISO form.
+		expect(await svc.nextRunAt("ws-1")).toBe(new Date(60_000).toISOString());
+	});
+
+	it("nextRunAt returns null while a run is in progress, then the next fire after it completes", async () => {
+		const orch = createFakeOrchestrator();
+		const { svc, advance } = createService({ orch });
+		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+		expect(await svc.nextRunAt("ws-1")).toBe(new Date(60_000).toISOString());
+
+		advance(60_000); // fire → run in progress
+		await flush();
+		expect(orch.pending).toHaveLength(1);
+		// In flight → no next run queued yet.
+		expect(await svc.nextRunAt("ws-1")).toBeNull();
+
+		orch.pending[0]?.resolve();
+		await flush();
+		// Re-armed at completion-time (60_000) + interval (60_000) = 120_000.
+		expect(await svc.nextRunAt("ws-1")).toBe(new Date(120_000).toISOString());
+	});
+
+	it("nextRunAt returns null after disabling the heartbeat", async () => {
+		const { svc } = createService({ orch: createFakeOrchestrator() });
+		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+		expect(await svc.nextRunAt("ws-1")).not.toBeNull();
+		await svc.updateConfig("ws-1", { enabled: false });
+		expect(await svc.nextRunAt("ws-1")).toBeNull();
+	});
+
+	it("nextRunAt reflects a changed interval on the next re-arm", async () => {
+		const { svc } = createService({ orch: createFakeOrchestrator() });
+		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+		expect(await svc.nextRunAt("ws-1")).toBe(new Date(60_000).toISOString());
+		// Re-arm with a 5-minute interval (not running) → recomputed fire time.
+		await svc.updateConfig("ws-1", { intervalMinutes: 5 });
+		expect(await svc.nextRunAt("ws-1")).toBe(new Date(5 * 60_000).toISOString());
+	});
 });

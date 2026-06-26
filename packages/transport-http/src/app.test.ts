@@ -1,3 +1,4 @@
+import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
 import type {
 	AgentEvent,
 	ChatMessage,
@@ -29,6 +30,7 @@ import type {
 	ComputerService,
 	ConversationStore,
 	CredentialStore,
+	HeartbeatService,
 	LspService,
 	McpService,
 	SessionOrchestrator,
@@ -513,6 +515,23 @@ function createFakeComputerService(computers: readonly ComputerEntry[] = []): Co
 				? { alias, ok: true }
 				: { alias, ok: false, error: "Computer not found" };
 		},
+	};
+}
+
+/**
+ * A minimal HeartbeatService fake for the next-run route: only `nextRunAt` is
+ * exercised by the route; the rest return inert defaults so the object
+ * satisfies the interface without dragging in real stores/scheduler.
+ */
+function createFakeHeartbeatService(nextRunAt: string | null): HeartbeatService {
+	return {
+		getConfig: async () => DEFAULT_HEARTBEAT_CONFIG,
+		updateConfig: async () => DEFAULT_HEARTBEAT_CONFIG,
+		listRuns: async () => [],
+		stopRun: async () => ({ ok: true }),
+		startAll: async () => {},
+		stopAll: () => {},
+		nextRunAt: async () => nextRunAt,
 	};
 }
 
@@ -4328,5 +4347,48 @@ describe("POST /chat threads computerId", () => {
 		expect(res.status).toBe(200);
 		expect(cap.received).toBeDefined();
 		expect(cap.received?.computerId).toBeUndefined();
+	});
+});
+
+describe("GET /workspaces/:id/heartbeat/next-run", () => {
+	it("returns { nextRunAt: null } when no HeartbeatService is wired (graceful degrade)", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/ws-1/heartbeat/next-run");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { nextRunAt: string | null };
+		expect(body.nextRunAt).toBeNull();
+	});
+
+	it("delegates to the HeartbeatService and returns the next-run ISO timestamp", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			heartbeatService: createFakeHeartbeatService("2026-06-25T14:05:00Z"),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/ws-1/heartbeat/next-run");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { nextRunAt: string | null };
+		expect(body.nextRunAt).toBe("2026-06-25T14:05:00Z");
+	});
+
+	it("returns { nextRunAt: null } when the service reports no scheduled run", async () => {
+		const app = createApp({
+			conversationStore: createFakeConversationStore(),
+			orchestrator: createFakeOrchestrator([]),
+			credentialStore: createFakeCredentialStore([]),
+			heartbeatService: createFakeHeartbeatService(null),
+			logger: noopLogger,
+		});
+		const res = await app.request("/workspaces/ws-1/heartbeat/next-run");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { nextRunAt: string | null };
+		expect(body.nextRunAt).toBeNull();
 	});
 });
