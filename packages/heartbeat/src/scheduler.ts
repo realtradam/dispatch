@@ -72,17 +72,25 @@ export class HeartbeatScheduler {
 	 * run is in progress, the new `intervalMinutes` takes effect on the next
 	 * re-arm (the in-progress run is never cancelled here).
 	 */
-	arm(workspaceId: string, config: {
-		readonly enabled: boolean;
-		readonly intervalMinutes: number;
-	}): void {
+	arm(
+		workspaceId: string,
+		config: {
+			readonly enabled: boolean;
+			readonly intervalMinutes: number;
+		},
+	): void {
 		if (!config.enabled) {
 			this.disarm(workspaceId);
 			return;
 		}
 		let schedule = this.schedules.get(workspaceId);
 		if (schedule === undefined) {
-			schedule = { intervalMinutes: config.intervalMinutes, timer: undefined, running: false, armed: true };
+			schedule = {
+				intervalMinutes: config.intervalMinutes,
+				timer: undefined,
+				running: false,
+				armed: true,
+			};
 			this.schedules.set(workspaceId, schedule);
 		} else {
 			schedule.intervalMinutes = config.intervalMinutes;

@@ -19,10 +19,7 @@ function parseRunId(key: string, workspaceId: string): string {
 
 export interface HeartbeatRunStore {
 	/** Create a new run record (status `"running"`) and persist it. */
-	readonly create: (
-		workspaceId: string,
-		run: HeartbeatRun,
-	) => Promise<HeartbeatRun>;
+	readonly create: (workspaceId: string, run: HeartbeatRun) => Promise<HeartbeatRun>;
 	/** Update the status of an existing run. No-op if the run is unknown. */
 	readonly setStatus: (
 		workspaceId: string,
@@ -35,13 +32,8 @@ export interface HeartbeatRunStore {
 	readonly list: (workspaceId: string) => Promise<readonly HeartbeatRun[]>;
 }
 
-export function createHeartbeatRunStore(
-	storage: StorageNamespace,
-): HeartbeatRunStore {
-	async function readRun(
-		workspaceId: string,
-		runId: string,
-	): Promise<HeartbeatRun | null> {
+export function createHeartbeatRunStore(storage: StorageNamespace): HeartbeatRunStore {
+	async function readRun(workspaceId: string, runId: string): Promise<HeartbeatRun | null> {
 		const raw = await storage.get(runKey(workspaceId, runId));
 		if (raw === null) return null;
 		try {

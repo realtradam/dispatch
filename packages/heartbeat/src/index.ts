@@ -1,16 +1,16 @@
+export {
+	applyConfigUpdate,
+	createHeartbeatConfigStore,
+	DEFAULT_HEARTBEAT_CONFIG,
+	type HeartbeatConfigStore,
+	MIN_INTERVAL_MINUTES,
+} from "./config-store.js";
 export { extension, manifest } from "./extension.js";
 export {
-	heartbeatServiceHandle,
 	createHeartbeatService,
 	type HeartbeatService,
 	type HeartbeatServiceDeps,
+	heartbeatServiceHandle,
 } from "./heartbeat.js";
-export {
-	createHeartbeatConfigStore,
-	applyConfigUpdate,
-	DEFAULT_HEARTBEAT_CONFIG,
-	MIN_INTERVAL_MINUTES,
-	type HeartbeatConfigStore,
-} from "./config-store.js";
 export { createHeartbeatRunStore, type HeartbeatRunStore } from "./run-store.js";
-export { HeartbeatScheduler, realTimers, type Timers, type TimerHandle } from "./scheduler.js";
+export { HeartbeatScheduler, realTimers, type TimerHandle, type Timers } from "./scheduler.js";

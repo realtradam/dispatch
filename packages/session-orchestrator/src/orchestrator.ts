@@ -796,7 +796,16 @@ export function createSessionOrchestrator(
 	}
 
 	const orchestrator: SessionOrchestrator = {
-		startTurn({ conversationId, text, modelName, cwd, computerId, reasoningEffort, workspaceId, systemPrompt }) {
+		startTurn({
+			conversationId,
+			text,
+			modelName,
+			cwd,
+			computerId,
+			reasoningEffort,
+			workspaceId,
+			systemPrompt,
+		}) {
 			if (activeTurns.has(conversationId)) {
 				return { started: false, reason: "already-active" };
 			}

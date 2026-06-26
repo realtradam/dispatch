@@ -1,5 +1,5 @@
-import type { AgentEvent, HostAPI, Logger } from "@dispatch/kernel";
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
+import type { AgentEvent, HostAPI, Logger } from "@dispatch/kernel";
 import { DEFAULT_TEMPLATE, getVariableCatalog } from "@dispatch/system-prompt";
 import type {
 	CloseConversationResponse,
@@ -1445,8 +1445,7 @@ export function createApp(opts: CreateServerOptions): Hono {
 			if (obj.reasoningEffort !== null && !isValidReasoningEffort(obj.reasoningEffort)) {
 				return c.json(
 					{
-						error:
-							"Field 'reasoningEffort' must be one of: low, medium, high, xhigh, max, or null",
+						error: "Field 'reasoningEffort' must be one of: low, medium, high, xhigh, max, or null",
 					},
 					400,
 				);

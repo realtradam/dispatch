@@ -62,8 +62,10 @@
       "name": "@dispatch/heartbeat",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/system-prompt": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
       },
     },

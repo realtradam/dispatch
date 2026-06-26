@@ -93,7 +93,7 @@ export function createTransportHttpExtension(): Extension & {
 			const lspService = host.getService(lspServiceHandle);
 			const mcpService = host.getService(mcpServiceHandle);
 			const systemPromptService = host.getService(systemPromptHandle);
-		const heartbeatService = host.getService(heartbeatServiceHandle);
+			const heartbeatService = host.getService(heartbeatServiceHandle);
 			// Optional: the `ssh` extension provides ComputerService. It is NOT in
 			// dependsOn (ssh may be absent), so resolve defensively — when no
 			// provider registered the handle, the computer routes degrade to

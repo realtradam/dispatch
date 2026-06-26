@@ -7,12 +7,9 @@ import type {
 	StopHeartbeatRunResponse,
 	UpdateHeartbeatRequest,
 } from "@dispatch/transport-contract";
-import {
-	type HeartbeatConfigStore,
-	createHeartbeatConfigStore,
-} from "./config-store.js";
-import { type HeartbeatRunStore, createHeartbeatRunStore } from "./run-store.js";
-import { HeartbeatScheduler, type Timers, realTimers } from "./scheduler.js";
+import { createHeartbeatConfigStore, type HeartbeatConfigStore } from "./config-store.js";
+import { createHeartbeatRunStore, type HeartbeatRunStore } from "./run-store.js";
+import { HeartbeatScheduler, realTimers, type Timers } from "./scheduler.js";
 
 /**
  * The heartbeat service surface — what transport-http consumes and what the
@@ -36,10 +33,7 @@ export interface HeartbeatService {
 	 * Stop an in-flight run (abort its turn). Idempotent for an already-finished
 	 * run. Throws when the run id is unknown (→ HTTP 404).
 	 */
-	readonly stopRun: (
-		workspaceId: string,
-		runId: string,
-	) => Promise<StopHeartbeatRunResponse>;
+	readonly stopRun: (workspaceId: string, runId: string) => Promise<StopHeartbeatRunResponse>;
 	/** Boot: sweep stale runs + arm every enabled workspace's scheduler. */
 	readonly startAll: () => Promise<void>;
 	/** Shutdown: stop every scheduler. */
@@ -60,6 +54,23 @@ export interface HeartbeatServiceDeps {
 	readonly timers?: Timers;
 	/** Injectable id generator (default: crypto.randomUUID). */
 	readonly generateId?: () => string;
+	/**
+	 * Resolve `[type:name]` variable placeholders in a prompt template against
+	 * the current environment — the SAME resolver + variable catalog the global
+	 * system-prompt template uses (system/file/prompt/git groups). Applied once
+	 * per run, when the turn is constructed (mirrors the global template's
+	 * construct-once-per-conversation resolution). When omitted, templates pass
+	 * through UNRESOLVED (raw) — the extension wires the real resolver; tests
+	 * inject a fake.
+	 */
+	readonly resolvePrompt?: (
+		template: string,
+		ctx: {
+			readonly workspaceId: string;
+			readonly conversationId: string;
+			readonly model: string;
+		},
+	) => Promise<string>;
 }
 
 interface ActiveRun {
@@ -75,6 +86,10 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 	const configStore: HeartbeatConfigStore = createHeartbeatConfigStore(deps.storage);
 	const runStore: HeartbeatRunStore = createHeartbeatRunStore(deps.storage);
 	const orchestrator = deps.orchestrator;
+	// Default: pass templates through UNRESOLVED (raw). The extension wires the
+	// real resolver so [type:name] placeholders are substituted like the global
+	// system-prompt template; tests inject a fake.
+	const resolvePrompt = deps.resolvePrompt ?? ((template: string) => Promise.resolve(template));
 
 	// runId → active-run tracking (in-memory; the durable record lives in the
 	// run store). Used to (a) map a stop request to its conversation, and
@@ -106,17 +121,32 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 
 		logger?.info("heartbeat: run started", { workspaceId, runId, conversationId });
 
+		// Resolve [type:name] variables in the system/task prompts ONCE, when
+		// the turn is constructed — the same resolver + variable catalog the
+		// global system-prompt template uses. The orchestrator sends an
+		// explicit systemPrompt override AS-IS (bypassing its own templated
+		// prompt), so resolution must happen HERE, before handleMessage. For
+		// prompts using stable variables (os/cwd/git) this yields a stable,
+		// cache-warm prompt across runs; time-bearing variables refresh per
+		// run (mirroring the global template's per-conversation resolution).
+		const resolveCtx = { workspaceId, conversationId, model: config.model };
+		const [systemPrompt, taskPrompt] = await Promise.all([
+			resolvePrompt(config.systemPrompt, resolveCtx),
+			resolvePrompt(config.taskPrompt, resolveCtx),
+		]);
+
 		try {
 			await orchestrator.handleMessage({
 				conversationId,
-				text: config.taskPrompt,
+				text: taskPrompt,
 				// Fire-and-forget: the heartbeat loop does not consume the
 				// streamed events (it only awaits turn completion to mark the
 				// run done). A no-op onEvent satisfies the required callback.
 				onEvent: () => {},
 				// Always an explicit override (incl. the empty string = no system
-				// prompt) — bypasses the templated workspace prompt.
-				systemPrompt: config.systemPrompt,
+				// prompt) — bypasses the templated workspace prompt. Resolved
+				// above so [type:name] placeholders are substituted, not raw.
+				systemPrompt,
 				...(config.model !== "" ? { modelName: config.model } : {}),
 				...(config.reasoningEffort !== null ? { reasoningEffort: config.reasoningEffort } : {}),
 				workspaceId,

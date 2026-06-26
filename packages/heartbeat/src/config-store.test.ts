@@ -48,15 +48,15 @@ describe("applyConfigUpdate (pure)", () => {
 	});
 
 	it("clamps intervalMinutes to a minimum of 1", () => {
-		expect(applyConfigUpdate(DEFAULT_HEARTBEAT_CONFIG, { intervalMinutes: 0 }).intervalMinutes).toBe(
-			1,
-		);
+		expect(
+			applyConfigUpdate(DEFAULT_HEARTBEAT_CONFIG, { intervalMinutes: 0 }).intervalMinutes,
+		).toBe(1);
 		expect(
 			applyConfigUpdate(DEFAULT_HEARTBEAT_CONFIG, { intervalMinutes: -5 }).intervalMinutes,
 		).toBe(1);
-		expect(applyConfigUpdate(DEFAULT_HEARTBEAT_CONFIG, { intervalMinutes: 7 }).intervalMinutes).toBe(
-			7,
-		);
+		expect(
+			applyConfigUpdate(DEFAULT_HEARTBEAT_CONFIG, { intervalMinutes: 7 }).intervalMinutes,
+		).toBe(7);
 	});
 
 	it("truncates a non-integer interval to an integer", () => {

@@ -3,14 +3,21 @@
  *
  * Wires the heartbeat service against the session-orchestrator + a storage
  * namespace, registers the typed service handle, and arms every enabled
- * workspace's scheduler on boot.
+ * workspace's scheduler on boot. Prompt templates (`systemPrompt` /
+ * `taskPrompt`) are resolved against the SAME variable catalog the global
+ * system-prompt template uses (via the system-prompt service's `resolveText`),
+ * so `[type:name]` placeholders reach the model substituted — not raw.
  */
 
+import type { ConversationStore } from "@dispatch/conversation-store";
+import { conversationStoreHandle } from "@dispatch/conversation-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import {
 	type SessionOrchestrator,
 	sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
+import type { SystemPromptService } from "@dispatch/system-prompt";
+import { systemPromptHandle } from "@dispatch/system-prompt";
 import { createHeartbeatService, heartbeatServiceHandle } from "./heartbeat.js";
 
 export const manifest: Manifest = {
@@ -19,7 +26,12 @@ export const manifest: Manifest = {
 	version: "0.0.0",
 	apiVersion: "^0.1.0",
 	trust: "bundled",
-	dependsOn: ["session-orchestrator"],
+	// system-prompt provides `resolveText` (the variable resolver used to
+	// substitute [type:name] placeholders in heartbeat prompts); conversation-
+	// store resolves the workspace's default cwd (the resolver runs git / reads
+	// files against it, mirroring the global template). Both lookups are lazy
+	// (at fire time, not activation), but declaring them keeps the DAG honest.
+	dependsOn: ["session-orchestrator", "system-prompt", "conversation-store"],
 	activation: "eager",
 	contributes: { services: ["heartbeat"] },
 };
@@ -34,7 +46,38 @@ export const extension: Extension = {
 		const storage = host.storage("heartbeat");
 		const logger = host.logger;
 
-		const service = createHeartbeatService({ storage, orchestrator, logger });
+		// Resolve [type:name] placeholders in heartbeat prompts via the
+		// system-prompt service (same resolver + variables as the global
+		// template). The cwd is the workspace's defaultCwd (resolved the same
+		// way the orchestrator resolves a new conversation's effective cwd);
+		// falling back to process.cwd() when the workspace has none. Both
+		// services are declared `dependsOn` (always activated before heartbeat).
+		const systemPromptService = host.getService<SystemPromptService>(systemPromptHandle);
+		const conversationStore = host.getService<ConversationStore>(conversationStoreHandle);
+
+		const resolvePrompt = async (
+			template: string,
+			ctx: {
+				readonly workspaceId: string;
+				readonly conversationId: string;
+				readonly model: string;
+			},
+		): Promise<string> => {
+			const workspace = await conversationStore.getWorkspace(ctx.workspaceId);
+			const cwd = workspace?.defaultCwd ?? process.cwd();
+			return systemPromptService.resolveText(template, cwd, {
+				...(ctx.conversationId !== "" ? { conversationId: ctx.conversationId } : {}),
+				...(ctx.model !== "" ? { model: ctx.model } : {}),
+				workspaceId: ctx.workspaceId,
+			});
+		};
+
+		const service = createHeartbeatService({
+			storage,
+			orchestrator,
+			logger,
+			resolvePrompt,
+		});
 
 		// Reconcile stale runs + arm enabled workspaces on boot.
 		await service.startAll();

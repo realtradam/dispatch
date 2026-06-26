@@ -63,9 +63,7 @@ export interface HeartbeatConfigStore {
 	readonly listWorkspaceIds: () => Promise<readonly string[]>;
 }
 
-export function createHeartbeatConfigStore(
-	storage: StorageNamespace,
-): HeartbeatConfigStore {
+export function createHeartbeatConfigStore(storage: StorageNamespace): HeartbeatConfigStore {
 	return {
 		async get(workspaceId: string): Promise<HeartbeatConfig> {
 			const raw = await storage.get(configKey(workspaceId));
@@ -88,10 +86,7 @@ export function createHeartbeatConfigStore(
 			}
 		},
 
-		async update(
-			workspaceId: string,
-			update: UpdateHeartbeatRequest,
-		): Promise<HeartbeatConfig> {
+		async update(workspaceId: string, update: UpdateHeartbeatRequest): Promise<HeartbeatConfig> {
 			const current = await this.get(workspaceId);
 			const next = applyConfigUpdate(current, update);
 			await storage.set(configKey(workspaceId), JSON.stringify(next));
