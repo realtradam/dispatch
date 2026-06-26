@@ -17,10 +17,10 @@ export type MessageQueueState = Map<string, QueuedMessage[]>;
 
 /** Injected effectful factories kept out of the pure core. */
 export interface QueueDeps {
-	/** Stable (client-visible) id factory for UI keying + dedup. */
-	readonly id: () => string;
-	/** Clock returning epoch-ms for `queuedAt`. */
-	readonly now: () => number;
+  /** Stable (client-visible) id factory for UI keying + dedup. */
+  readonly id: () => string;
+  /** Clock returning epoch-ms for `queuedAt`. */
+  readonly now: () => number;
 }
 
 /** Surface id this extension contributes (also the manifest + catalog id). */
@@ -34,19 +34,19 @@ export const MESSAGE_QUEUE_RENDERER_ID = "message-queue";
  * live state through the returned value.
  */
 export function enqueue(
-	state: MessageQueueState,
-	conversationId: string,
-	text: string,
-	deps: QueueDeps,
+  state: MessageQueueState,
+  conversationId: string,
+  text: string,
+  deps: QueueDeps,
 ): QueuedMessage[] {
-	const message: QueuedMessage = { id: deps.id(), text, queuedAt: deps.now() };
-	const existing = state.get(conversationId);
-	if (existing === undefined) {
-		state.set(conversationId, [message]);
-	} else {
-		existing.push(message);
-	}
-	return getQueue(state, conversationId);
+  const message: QueuedMessage = { id: deps.id(), text, queuedAt: deps.now() };
+  const existing = state.get(conversationId);
+  if (existing === undefined) {
+    state.set(conversationId, [message]);
+  } else {
+    existing.push(message);
+  }
+  return getQueue(state, conversationId);
 }
 
 /**
@@ -54,9 +54,9 @@ export function enqueue(
  * if the conversation has no queue / is unknown.
  */
 export function getQueue(state: MessageQueueState, conversationId: string): QueuedMessage[] {
-	const existing = state.get(conversationId);
-	if (existing === undefined) return [];
-	return [...existing];
+  const existing = state.get(conversationId);
+  if (existing === undefined) return [];
+  return [...existing];
 }
 
 /**
@@ -67,11 +67,11 @@ export function getQueue(state: MessageQueueState, conversationId: string): Queu
  * ChatMessage.
  */
 export function drain(state: MessageQueueState, conversationId: string): QueuedMessage[] {
-	const existing = state.get(conversationId);
-	if (existing === undefined || existing.length === 0) return [];
-	const drained = [...existing];
-	state.delete(conversationId);
-	return drained;
+  const existing = state.get(conversationId);
+  if (existing === undefined || existing.length === 0) return [];
+  const drained = [...existing];
+  state.delete(conversationId);
+  return drained;
 }
 
 /**
@@ -80,7 +80,7 @@ export function drain(state: MessageQueueState, conversationId: string): QueuedM
  * ChatMessage from this.
  */
 export function combine(messages: readonly QueuedMessage[]): string {
-	return messages.map((m) => m.text).join("\n\n");
+  return messages.map((m) => m.text).join("\n\n");
 }
 
 /**
@@ -90,16 +90,16 @@ export function combine(messages: readonly QueuedMessage[]): string {
  * I/O; the surface-registry re-fetches this on every notify.
  */
 export function buildQueueSpec(messages: readonly QueuedMessage[]): SurfaceSpec {
-	const payload: QueuePayload = { messages };
-	const field: CustomField = {
-		kind: "custom",
-		rendererId: MESSAGE_QUEUE_RENDERER_ID,
-		payload,
-	};
-	return {
-		id: MESSAGE_QUEUE_SURFACE_ID,
-		region: "side",
-		title: "Message Queue",
-		fields: [field],
-	};
+  const payload: QueuePayload = { messages };
+  const field: CustomField = {
+    kind: "custom",
+    rendererId: MESSAGE_QUEUE_RENDERER_ID,
+    payload,
+  };
+  return {
+    id: MESSAGE_QUEUE_SURFACE_ID,
+    region: "side",
+    title: "Message Queue",
+    fields: [field],
+  };
 }

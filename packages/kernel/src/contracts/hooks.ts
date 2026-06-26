@@ -21,9 +21,9 @@
  * (a thrown handler is caught and logged — it never breaks the turn).
  */
 export interface EventHookDescriptor<TPayload> {
-	readonly kind: "event";
-	readonly id: string;
-	readonly _payload?: TPayload;
+  readonly kind: "event";
+  readonly id: string;
+  readonly _payload?: TPayload;
 }
 
 /**
@@ -35,9 +35,9 @@ export interface EventHookDescriptor<TPayload> {
  * the owner may mark a chain fail-closed.
  */
 export interface FilterDescriptor<TValue> {
-	readonly kind: "filter";
-	readonly id: string;
-	readonly _value?: TValue;
+  readonly kind: "filter";
+  readonly id: string;
+  readonly _value?: TValue;
 }
 
 /** Union of hook descriptor kinds the kernel mechanism supports. */
@@ -49,9 +49,9 @@ export type HookDescriptor<TPayload> = EventHookDescriptor<TPayload> | FilterDes
  * "which of N handlers wins?" ambiguity; a service has exactly one provider.
  */
 export interface ServiceHandle<T> {
-	readonly kind: "service";
-	readonly id: string;
-	readonly _type?: T;
+  readonly kind: "service";
+  readonly id: string;
+  readonly _type?: T;
 }
 
 /**
@@ -61,7 +61,7 @@ export interface ServiceHandle<T> {
  * @param id - Namespaced hook id in `owner/name` form (e.g. "kernel/turn.sealed").
  */
 export function defineEventHook<TPayload>(id: string): EventHookDescriptor<TPayload> {
-	return { kind: "event", id };
+  return { kind: "event", id };
 }
 
 /**
@@ -71,7 +71,7 @@ export function defineEventHook<TPayload>(id: string): EventHookDescriptor<TPayl
  * @param id - Namespaced filter id in `owner/name` form.
  */
 export function defineFilter<TValue>(id: string): FilterDescriptor<TValue> {
-	return { kind: "filter", id };
+  return { kind: "filter", id };
 }
 
 /**
@@ -82,7 +82,7 @@ export function defineFilter<TValue>(id: string): FilterDescriptor<TValue> {
  * @param id - Namespaced service id in `owner/name` form.
  */
 export function defineService<T>(id: string): ServiceHandle<T> {
-	return { kind: "service", id };
+  return { kind: "service", id };
 }
 
 /** Handler function for an event hook subscription. */

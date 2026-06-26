@@ -2,24 +2,24 @@ import { defineFilter, type FilterDescriptor, type ToolContract } from "@dispatc
 
 /** Per-turn tool-assembly value threaded through the `tools` filter chain. */
 export interface ToolAssembly {
-	/** The tool set resolved for this turn (the value filters transform). */
-	readonly tools: readonly ToolContract[];
-	/** This turn's working directory (verbatim from the request), for cwd-aware filters. */
-	readonly cwd?: string;
-	/**
-	 * The computer this turn executes on (SSH alias), for computer-aware
-	 * filters. Omitted/`undefined` = LOCAL (today's behavior). When set, the
-	 * turn is REMOTE — {@link filterRemoteIncompatibleTools} drops tools that
-	 * cannot run over SFTP (local-process servers). Mirrors `cwd?`.
-	 */
-	readonly computerId?: string;
-	/** The conversation this turn belongs to. */
-	readonly conversationId: string;
+  /** The tool set resolved for this turn (the value filters transform). */
+  readonly tools: readonly ToolContract[];
+  /** This turn's working directory (verbatim from the request), for cwd-aware filters. */
+  readonly cwd?: string;
+  /**
+   * The computer this turn executes on (SSH alias), for computer-aware
+   * filters. Omitted/`undefined` = LOCAL (today's behavior). When set, the
+   * turn is REMOTE — {@link filterRemoteIncompatibleTools} drops tools that
+   * cannot run over SFTP (local-process servers). Mirrors `cwd?`.
+   */
+  readonly computerId?: string;
+  /** The conversation this turn belongs to. */
+  readonly conversationId: string;
 }
 
 /** Filter chain run once per turn to transform the tool set before it reaches runTurn. */
 export const toolsFilter: FilterDescriptor<ToolAssembly> = defineFilter<ToolAssembly>(
-	"session-orchestrator/tools",
+  "session-orchestrator/tools",
 );
 
 /**
@@ -42,18 +42,18 @@ export const toolsFilter: FilterDescriptor<ToolAssembly> = defineFilter<ToolAsse
  * MCP's `filterMcpTools` extraction pattern.
  */
 export function filterRemoteIncompatibleTools(assembly: ToolAssembly): ToolAssembly {
-	// LOCAL — passthrough, byte-identical to today.
-	if (assembly.computerId === undefined) return assembly;
-	// REMOTE — drop lsp + MCP-namespaced tools (local-process servers).
-	const filtered = assembly.tools.filter((tool) => {
-		if (tool.name === "lsp") return false;
-		if (tool.name.includes("__")) return false;
-		return true;
-	});
-	return {
-		tools: filtered,
-		...(assembly.cwd !== undefined ? { cwd: assembly.cwd } : {}),
-		...(assembly.computerId !== undefined ? { computerId: assembly.computerId } : {}),
-		conversationId: assembly.conversationId,
-	};
+  // LOCAL — passthrough, byte-identical to today.
+  if (assembly.computerId === undefined) return assembly;
+  // REMOTE — drop lsp + MCP-namespaced tools (local-process servers).
+  const filtered = assembly.tools.filter((tool) => {
+    if (tool.name === "lsp") return false;
+    if (tool.name.includes("__")) return false;
+    return true;
+  });
+  return {
+    tools: filtered,
+    ...(assembly.cwd !== undefined ? { cwd: assembly.cwd } : {}),
+    ...(assembly.computerId !== undefined ? { computerId: assembly.computerId } : {}),
+    conversationId: assembly.conversationId,
+  };
 }

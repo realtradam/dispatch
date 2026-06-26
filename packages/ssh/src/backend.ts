@@ -14,11 +14,11 @@
  */
 
 import type {
-	DirEntry,
-	ExecBackend,
-	ExecResult,
-	SpawnParams,
-	StatResult,
+  DirEntry,
+  ExecBackend,
+  ExecResult,
+  SpawnParams,
+  StatResult,
 } from "@dispatch/exec-backend";
 import type { Client, ClientChannel } from "ssh2";
 import { mapSshError } from "./errors.js";
@@ -36,77 +36,77 @@ export type AcquireConnection = (alias: string) => Promise<SshConnection>;
  * from `~/.ssh/config` at connect time, so the backend carries no stale params.
  */
 export function createSshExecBackend(alias: string, acquire: AcquireConnection): ExecBackend {
-	const getConn = (): Promise<SshConnection> => acquire(alias);
+  const getConn = (): Promise<SshConnection> => acquire(alias);
 
-	return {
-		async spawn(params: SpawnParams): Promise<ExecResult> {
-			const conn = await getConn();
-			const client = await conn.getClient();
-			// ssh2 exec has no cwd option → prefix `cd "<cwd>" && <command>`.
-			// Shell-quote the cwd so a path with metachars can't break out (plan §7.6).
-			const wrapped = `cd ${shellQuote(params.cwd)} && ${params.command}`;
+  return {
+    async spawn(params: SpawnParams): Promise<ExecResult> {
+      const conn = await getConn();
+      const client = await conn.getClient();
+      // ssh2 exec has no cwd option → prefix `cd "<cwd>" && <command>`.
+      // Shell-quote the cwd so a path with metachars can't break out (plan §7.6).
+      const wrapped = `cd ${shellQuote(params.cwd)} && ${params.command}`;
 
-			return runExec(client, wrapped, params);
-		},
+      return runExec(client, wrapped, params);
+    },
 
-		async readFile(path: string): Promise<string> {
-			const conn = await getConn();
-			const sftp = await conn.getSftp();
-			return new Promise<string>((resolve, reject) => {
-				sftp.readFile(path, "utf8", (err, data) => {
-					if (err !== null && err !== undefined) reject(mapSshError(err, `readFile ${path}`));
-					else resolve(data.toString("utf8"));
-				});
-			});
-		},
+    async readFile(path: string): Promise<string> {
+      const conn = await getConn();
+      const sftp = await conn.getSftp();
+      return new Promise<string>((resolve, reject) => {
+        sftp.readFile(path, "utf8", (err, data) => {
+          if (err !== null && err !== undefined) reject(mapSshError(err, `readFile ${path}`));
+          else resolve(data.toString("utf8"));
+        });
+      });
+    },
 
-		async writeFile(path: string, content: string): Promise<void> {
-			const conn = await getConn();
-			const sftp = await conn.getSftp();
-			return new Promise<void>((resolve, reject) => {
-				sftp.writeFile(path, content, "utf8", (err) => {
-					if (err !== null && err !== undefined) reject(mapSshError(err, `writeFile ${path}`));
-					else resolve();
-				});
-			});
-		},
+    async writeFile(path: string, content: string): Promise<void> {
+      const conn = await getConn();
+      const sftp = await conn.getSftp();
+      return new Promise<void>((resolve, reject) => {
+        sftp.writeFile(path, content, "utf8", (err) => {
+          if (err !== null && err !== undefined) reject(mapSshError(err, `writeFile ${path}`));
+          else resolve();
+        });
+      });
+    },
 
-		async stat(path: string): Promise<StatResult> {
-			const conn = await getConn();
-			const sftp = await conn.getSftp();
-			return new Promise<StatResult>((resolve, reject) => {
-				sftp.stat(path, (err, stats) => {
-					if (err !== null && err !== undefined) reject(mapSshError(err, `stat ${path}`));
-					else resolve({ isFile: stats.isFile(), isDirectory: stats.isDirectory() });
-				});
-			});
-		},
+    async stat(path: string): Promise<StatResult> {
+      const conn = await getConn();
+      const sftp = await conn.getSftp();
+      return new Promise<StatResult>((resolve, reject) => {
+        sftp.stat(path, (err, stats) => {
+          if (err !== null && err !== undefined) reject(mapSshError(err, `stat ${path}`));
+          else resolve({ isFile: stats.isFile(), isDirectory: stats.isDirectory() });
+        });
+      });
+    },
 
-		async readdir(path: string): Promise<readonly DirEntry[]> {
-			const conn = await getConn();
-			const sftp = await conn.getSftp();
-			return new Promise<readonly DirEntry[]>((resolve, reject) => {
-				sftp.readdir(path, (err, list) => {
-					if (err !== null && err !== undefined) reject(mapSshError(err, `readdir ${path}`));
-					else
-						resolve(
-							list.map((e): DirEntry => ({ name: e.filename, isDirectory: e.attrs.isDirectory() })),
-						);
-				});
-			});
-		},
+    async readdir(path: string): Promise<readonly DirEntry[]> {
+      const conn = await getConn();
+      const sftp = await conn.getSftp();
+      return new Promise<readonly DirEntry[]>((resolve, reject) => {
+        sftp.readdir(path, (err, list) => {
+          if (err !== null && err !== undefined) reject(mapSshError(err, `readdir ${path}`));
+          else
+            resolve(
+              list.map((e): DirEntry => ({ name: e.filename, isDirectory: e.attrs.isDirectory() })),
+            );
+        });
+      });
+    },
 
-		async exists(path: string): Promise<boolean> {
-			const conn = await getConn();
-			const sftp = await conn.getSftp();
-			// ssh2's `sftp.exists` invokes the callback with a boolean that is TRUE
-			// when the path exists and FALSE when missing (verified empirically).
-			// Never throws — a missing path resolves `false`.
-			return new Promise<boolean>((resolve) => {
-				sftp.exists(path, (exists: boolean) => resolve(exists));
-			});
-		},
-	};
+    async exists(path: string): Promise<boolean> {
+      const conn = await getConn();
+      const sftp = await conn.getSftp();
+      // ssh2's `sftp.exists` invokes the callback with a boolean that is TRUE
+      // when the path exists and FALSE when missing (verified empirically).
+      // Never throws — a missing path resolves `false`.
+      return new Promise<boolean>((resolve) => {
+        sftp.exists(path, (exists: boolean) => resolve(exists));
+      });
+    },
+  };
 }
 
 // ─── spawn core ─────────────────────────────────────────────────────────────
@@ -117,75 +117,75 @@ export function createSshExecBackend(alias: string, acquire: AcquireConnection):
  * cleanup semantics so the tool sees the same `ExecResult` shape (plan §4.3/§8).
  */
 function runExec(client: Client, command: string, params: SpawnParams): Promise<ExecResult> {
-	return new Promise<ExecResult>((resolve) => {
-		let settled = false;
-		let timedOut = false;
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		let exitCode: number | null = null;
+  return new Promise<ExecResult>((resolve) => {
+    let settled = false;
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let exitCode: number | null = null;
 
-		const settle = (result: ExecResult): void => {
-			if (settled) return;
-			settled = true;
-			if (timer !== undefined) clearTimeout(timer);
-			params.signal.removeEventListener("abort", onAbort);
-			client.removeListener("error", onClientError);
-			resolve(result);
-		};
+    const settle = (result: ExecResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      params.signal.removeEventListener("abort", onAbort);
+      client.removeListener("error", onClientError);
+      resolve(result);
+    };
 
-		const onAbort = (): void => {
-			if (settled) return;
-			try {
-				stream?.end();
-			} catch {
-				// best-effort — the remote channel may already be gone
-			}
-			settle({ exitCode: null, timedOut: false, aborted: true });
-		};
+    const onAbort = (): void => {
+      if (settled) return;
+      try {
+        stream?.end();
+      } catch {
+        // best-effort — the remote channel may already be gone
+      }
+      settle({ exitCode: null, timedOut: false, aborted: true });
+    };
 
-		// If the client errors mid-exec, surface as a non-zero exit (the turn is
-		// NOT aborted — the model sees a normal tool error and can retry; §8).
-		const onClientError = (): void => {
-			if (!settled) settle({ exitCode: 1, timedOut: false, aborted: false });
-		};
-		client.on("error", onClientError);
+    // If the client errors mid-exec, surface as a non-zero exit (the turn is
+    // NOT aborted — the model sees a normal tool error and can retry; §8).
+    const onClientError = (): void => {
+      if (!settled) settle({ exitCode: 1, timedOut: false, aborted: false });
+    };
+    client.on("error", onClientError);
 
-		let stream: ClientChannel | undefined;
+    let stream: ClientChannel | undefined;
 
-		client.exec(command, { pty: false }, (err, channel) => {
-			if (err !== null && err !== undefined) {
-				// Spawn error → non-zero exit, like localSpawn's error path.
-				settle({ exitCode: 1, timedOut: false, aborted: false });
-				return;
-			}
-			stream = channel;
+    client.exec(command, { pty: false }, (err, channel) => {
+      if (err !== null && err !== undefined) {
+        // Spawn error → non-zero exit, like localSpawn's error path.
+        settle({ exitCode: 1, timedOut: false, aborted: false });
+        return;
+      }
+      stream = channel;
 
-			// stdout: ssh2 channel IS its stdout stream (this.stdin = this.stdout = this).
-			channel.on("data", (data: Buffer) => {
-				params.onOutput(data.toString(), "stdout");
-			});
-			channel.stderr.on("data", (data: Buffer) => {
-				params.onOutput(data.toString(), "stderr");
-			});
-			channel.on("exit", (code: number | null) => {
-				exitCode = code;
-			});
-			channel.on("close", () => {
-				settle({ exitCode, timedOut, aborted: false });
-			});
+      // stdout: ssh2 channel IS its stdout stream (this.stdin = this.stdout = this).
+      channel.on("data", (data: Buffer) => {
+        params.onOutput(data.toString(), "stdout");
+      });
+      channel.stderr.on("data", (data: Buffer) => {
+        params.onOutput(data.toString(), "stderr");
+      });
+      channel.on("exit", (code: number | null) => {
+        exitCode = code;
+      });
+      channel.on("close", () => {
+        settle({ exitCode, timedOut, aborted: false });
+      });
 
-			params.signal.addEventListener("abort", onAbort, { once: true });
-			timer = setTimeout(() => {
-				if (settled) return;
-				timedOut = true;
-				try {
-					channel.end();
-				} catch {
-					// best-effort
-				}
-				settle({ exitCode: null, timedOut: true, aborted: false });
-			}, params.timeout);
-		});
-	});
+      params.signal.addEventListener("abort", onAbort, { once: true });
+      timer = setTimeout(() => {
+        if (settled) return;
+        timedOut = true;
+        try {
+          channel.end();
+        } catch {
+          // best-effort
+        }
+        settle({ exitCode: null, timedOut: true, aborted: false });
+      }, params.timeout);
+    });
+  });
 }
 
 // ─── shell quoting ─────────────────────────────────────────────────────────
@@ -196,5 +196,5 @@ function runExec(client: Client, command: string, params: SpawnParams): Promise<
  * value and any embedded single-quote is escaped (`'\''`).
  */
 export function shellQuote(value: string): string {
-	return `'${value.replace(/'/g, "'\\''")}'`;
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }

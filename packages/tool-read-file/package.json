@@ -1,12 +1,12 @@
 {
-	"name": "@dispatch/tool-read-file",
-	"version": "0.0.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/kernel": "workspace:*",
-		"@dispatch/exec-backend": "workspace:*"
-	}
+  "name": "@dispatch/tool-read-file",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/exec-backend": "workspace:*"
+  }
 }

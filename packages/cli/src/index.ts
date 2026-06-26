@@ -7,20 +7,20 @@
 export { type ParsedCommand, parseArgs } from "./args.js";
 export { formatCatalog } from "./catalog.js";
 export {
-	type ConversationIdResolution,
-	enqueueMessage,
-	fetchConversations,
-	fetchLastMessage,
-	fetchModels,
-	openConversation,
-	resolveConversationId,
-	streamChat,
+  type ConversationIdResolution,
+  enqueueMessage,
+  fetchConversations,
+  fetchLastMessage,
+  fetchModels,
+  openConversation,
+  resolveConversationId,
+  streamChat,
 } from "./http.js";
 export { buildChatRequest, composeMessage } from "./message.js";
 export { type SplitResult, splitNdjsonLines } from "./ndjson.js";
 export {
-	extractLastText,
-	formatConversationList,
-	formatRelativeTime,
-	renderEvent,
+  extractLastText,
+  formatConversationList,
+  formatRelativeTime,
+  renderEvent,
 } from "./render.js";

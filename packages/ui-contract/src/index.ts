@@ -27,13 +27,13 @@ export type Region = string;
  * may unify `command` → `action`; see `notes/restructure-plan.md` §8.)
  */
 export interface ActionRef {
-	readonly actionId: string;
+  readonly actionId: string;
 }
 
 /** One selectable option in a `selector` field. */
 export interface SurfaceOption {
-	readonly value: string;
-	readonly label: string;
+  readonly value: string;
+  readonly label: string;
 }
 
 /**
@@ -42,43 +42,43 @@ export interface SurfaceOption {
  * hints; the contract is the data shape.
  */
 export type SurfaceField =
-	| ToggleField
-	| ProgressField
-	| SelectorField
-	| StatField
-	| NumberField
-	| ButtonField
-	| CustomField;
+  | ToggleField
+  | ProgressField
+  | SelectorField
+  | StatField
+  | NumberField
+  | ButtonField
+  | CustomField;
 
 /** A boolean setting plus the action that flips it. */
 export interface ToggleField {
-	readonly kind: "toggle";
-	readonly label: string;
-	readonly value: boolean;
-	readonly action: ActionRef;
+  readonly kind: "toggle";
+  readonly label: string;
+  readonly value: boolean;
+  readonly action: ActionRef;
 }
 
 /** A bounded ratio in [0, 1] with a label (e.g. a cache-hit rate). Read-only. */
 export interface ProgressField {
-	readonly kind: "progress";
-	readonly label: string;
-	readonly value: number;
+  readonly kind: "progress";
+  readonly label: string;
+  readonly value: number;
 }
 
 /** An enum choice: the current value, the options, and the action that sets it. */
 export interface SelectorField {
-	readonly kind: "selector";
-	readonly label: string;
-	readonly value: string;
-	readonly options: readonly SurfaceOption[];
-	readonly action: ActionRef;
+  readonly kind: "selector";
+  readonly label: string;
+  readonly value: string;
+  readonly options: readonly SurfaceOption[];
+  readonly action: ActionRef;
 }
 
 /** A read-only labelled scalar readout. */
 export interface StatField {
-	readonly kind: "stat";
-	readonly label: string;
-	readonly value: string;
+  readonly kind: "stat";
+  readonly label: string;
+  readonly value: string;
 }
 
 /**
@@ -89,21 +89,21 @@ export interface StatField {
  * payload. Unlike `progress`/`stat` (read-only), this field is interactive.
  */
 export interface NumberField {
-	readonly kind: "number";
-	readonly label: string;
-	readonly value: number;
-	readonly min?: number;
-	readonly max?: number;
-	readonly step?: number;
-	readonly unit?: string;
-	readonly action: ActionRef;
+  readonly kind: "number";
+  readonly label: string;
+  readonly value: number;
+  readonly min?: number;
+  readonly max?: number;
+  readonly step?: number;
+  readonly unit?: string;
+  readonly action: ActionRef;
 }
 
 /** A labelled action trigger. */
 export interface ButtonField {
-	readonly kind: "button";
-	readonly label: string;
-	readonly action: ActionRef;
+  readonly kind: "button";
+  readonly label: string;
+  readonly action: ActionRef;
 }
 
 /**
@@ -114,9 +114,9 @@ export interface ButtonField {
  * (not a blind `unknown`).
  */
 export interface CustomField {
-	readonly kind: "custom";
-	readonly rendererId: string;
-	readonly payload: unknown;
+  readonly kind: "custom";
+  readonly rendererId: string;
+  readonly payload: unknown;
 }
 
 /**
@@ -124,10 +124,10 @@ export interface CustomField {
  * unit a backend extension contributes and a client renders.
  */
 export interface SurfaceSpec {
-	readonly id: string;
-	readonly region: Region;
-	readonly title: string;
-	readonly fields: readonly SurfaceField[];
+  readonly id: string;
+  readonly region: Region;
+  readonly title: string;
+  readonly fields: readonly SurfaceField[];
 }
 
 /**
@@ -136,17 +136,17 @@ export interface SurfaceSpec {
  * `GET /surfaces/:id`.
  */
 export interface SurfaceCatalogEntry {
-	readonly id: string;
-	readonly region: Region;
-	readonly title: string;
-	/**
-	 * Whether the surface's spec/values differ per conversation ("conversation")
-	 * or are app-wide ("global"). A client may skip re-subscribing GLOBAL surfaces
-	 * on a conversation switch (they ignore `conversationId`). Optional + additive:
-	 * when absent, a client should assume conversation-scoped (the conservative
-	 * "always send the focused conversationId" policy still works for both).
-	 */
-	readonly scope?: "global" | "conversation";
+  readonly id: string;
+  readonly region: Region;
+  readonly title: string;
+  /**
+   * Whether the surface's spec/values differ per conversation ("conversation")
+   * or are app-wide ("global"). A client may skip re-subscribing GLOBAL surfaces
+   * on a conversation switch (they ignore `conversationId`). Optional + additive:
+   * when absent, a client should assume conversation-scoped (the conservative
+   * "always send the focused conversationId" policy still works for both).
+   */
+  readonly scope?: "global" | "conversation";
 }
 
 /** The surface catalog: the list of available surfaces a client can choose to show. */
@@ -162,9 +162,9 @@ export type SurfaceCatalog = readonly SurfaceCatalogEntry[];
  * client which conversation this update pertains to. A global surface omits it.
  */
 export interface SurfaceUpdate {
-	readonly surfaceId: string;
-	readonly spec: SurfaceSpec;
-	readonly conversationId?: string;
+  readonly surfaceId: string;
+  readonly spec: SurfaceSpec;
+  readonly conversationId?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,16 +186,16 @@ export type SurfaceClientMessage = SubscribeMessage | UnsubscribeMessage | Invok
  * conversation in focus → the surface decides its default/empty state).
  */
 export interface SubscribeMessage {
-	readonly type: "subscribe";
-	readonly surfaceId: string;
-	readonly conversationId?: string;
+  readonly type: "subscribe";
+  readonly surfaceId: string;
+  readonly conversationId?: string;
 }
 
 /** Stop receiving updates for a surface (and the same `conversationId`, if scoped). */
 export interface UnsubscribeMessage {
-	readonly type: "unsubscribe";
-	readonly surfaceId: string;
-	readonly conversationId?: string;
+  readonly type: "unsubscribe";
+  readonly surfaceId: string;
+  readonly conversationId?: string;
 }
 
 /**
@@ -204,24 +204,24 @@ export interface UnsubscribeMessage {
  * `conversationId` the action targets.
  */
 export interface InvokeMessage {
-	readonly type: "invoke";
-	readonly surfaceId: string;
-	readonly actionId: string;
-	readonly payload?: unknown;
-	readonly conversationId?: string;
+  readonly type: "invoke";
+  readonly surfaceId: string;
+  readonly actionId: string;
+  readonly payload?: unknown;
+  readonly conversationId?: string;
 }
 
 /** A server → client message on the surface channel. */
 export type SurfaceServerMessage =
-	| CatalogMessage
-	| SurfaceMessage
-	| SurfaceUpdateMessage
-	| SurfaceErrorMessage;
+  | CatalogMessage
+  | SurfaceMessage
+  | SurfaceUpdateMessage
+  | SurfaceErrorMessage;
 
 /** The current surface catalog (sent on connect and whenever it changes). */
 export interface CatalogMessage {
-	readonly type: "catalog";
-	readonly catalog: SurfaceCatalog;
+  readonly type: "catalog";
+  readonly catalog: SurfaceCatalog;
 }
 
 /**
@@ -230,20 +230,20 @@ export interface CatalogMessage {
  * surface (so the client routes it), and is absent for a global surface.
  */
 export interface SurfaceMessage {
-	readonly type: "surface";
-	readonly spec: SurfaceSpec;
-	readonly conversationId?: string;
+  readonly type: "surface";
+  readonly spec: SurfaceSpec;
+  readonly conversationId?: string;
 }
 
 /** A live update for a subscribed surface. */
 export interface SurfaceUpdateMessage {
-	readonly type: "update";
-	readonly update: SurfaceUpdate;
+  readonly type: "update";
+  readonly update: SurfaceUpdate;
 }
 
 /** A surface-scoped error (e.g. unknown surface id, invoke failed). */
 export interface SurfaceErrorMessage {
-	readonly type: "error";
-	readonly surfaceId?: string;
-	readonly message: string;
+  readonly type: "error";
+  readonly surfaceId?: string;
+  readonly message: string;
 }

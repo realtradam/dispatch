@@ -16,22 +16,22 @@ import type { Logger } from "./logging.js";
  * Using a structural type (not a library) keeps the kernel dependency-free.
  */
 export interface ToolParameterSchema {
-	readonly type: "object";
-	readonly properties?: Readonly<Record<string, JsonSchemaProperty>>;
-	readonly required?: readonly string[];
-	readonly additionalProperties?: boolean;
-	readonly description?: string;
+  readonly type: "object";
+  readonly properties?: Readonly<Record<string, JsonSchemaProperty>>;
+  readonly required?: readonly string[];
+  readonly additionalProperties?: boolean;
+  readonly description?: string;
 }
 
 /** A single property within a tool's parameter schema. */
 export interface JsonSchemaProperty {
-	readonly type?: string;
-	readonly description?: string;
-	readonly enum?: readonly string[];
-	readonly items?: JsonSchemaProperty;
-	readonly properties?: Readonly<Record<string, JsonSchemaProperty>>;
-	readonly required?: readonly string[];
-	readonly default?: unknown;
+  readonly type?: string;
+  readonly description?: string;
+  readonly enum?: readonly string[];
+  readonly items?: JsonSchemaProperty;
+  readonly properties?: Readonly<Record<string, JsonSchemaProperty>>;
+  readonly required?: readonly string[];
+  readonly default?: unknown;
 }
 
 /**
@@ -40,56 +40,56 @@ export interface JsonSchemaProperty {
  * concurrent tool output is never interleaved ambiguously.
  */
 export interface ToolExecuteContext {
-	/** Unique id of the tool-call this execution serves. */
-	readonly toolCallId: string;
+  /** Unique id of the tool-call this execution serves. */
+  readonly toolCallId: string;
 
-	/**
-	 * Stream output from the tool. The kernel attributes every call to the
-	 * tool-call id, so concurrent shell output from different tools is
-	 * correctly separated.
-	 */
-	readonly onOutput: (data: string, stream: "stdout" | "stderr") => void;
+  /**
+   * Stream output from the tool. The kernel attributes every call to the
+   * tool-call id, so concurrent shell output from different tools is
+   * correctly separated.
+   */
+  readonly onOutput: (data: string, stream: "stdout" | "stderr") => void;
 
-	/**
-	 * Cancellation signal. An aborted turn sets this so in-flight tool work
-	 * can clean up rather than leak.
-	 */
-	readonly signal: AbortSignal;
+  /**
+   * Cancellation signal. An aborted turn sets this so in-flight tool work
+   * can clean up rather than leak.
+   */
+  readonly signal: AbortSignal;
 
-	/**
-	 * Pre-bound Logger scoped to this tool-call span. Tools log correlated
-	 * without a global (P3). The kernel stamps extensionId, conversationId,
-	 * turnId, and spanId automatically.
-	 */
-	readonly log: Logger;
+  /**
+   * Pre-bound Logger scoped to this tool-call span. Tools log correlated
+   * without a global (P3). The kernel stamps extensionId, conversationId,
+   * turnId, and spanId automatically.
+   */
+  readonly log: Logger;
 
-	/**
-	 * Working directory for this turn, forwarded verbatim from `RunTurnInput.cwd`.
-	 * Tools that touch the filesystem resolve and contain paths against it.
-	 * Optional: when omitted, a tool falls back to its own configured/default
-	 * workdir. The kernel never interprets it.
-	 */
-	readonly cwd?: string;
+  /**
+   * Working directory for this turn, forwarded verbatim from `RunTurnInput.cwd`.
+   * Tools that touch the filesystem resolve and contain paths against it.
+   * Optional: when omitted, a tool falls back to its own configured/default
+   * workdir. The kernel never interprets it.
+   */
+  readonly cwd?: string;
 
-	/**
-	 * The conversation this tool-call belongs to. Tools that maintain
-	 * per-conversation state (e.g. a todo list) key on this. Forwarded
-	 * verbatim from `RunTurnInput.conversationId`. Optional: when omitted,
-	 * a tool has no conversation scope (e.g. a global tool).
-	 */
-	readonly conversationId?: string;
+  /**
+   * The conversation this tool-call belongs to. Tools that maintain
+   * per-conversation state (e.g. a todo list) key on this. Forwarded
+   * verbatim from `RunTurnInput.conversationId`. Optional: when omitted,
+   * a tool has no conversation scope (e.g. a global tool).
+   */
+  readonly conversationId?: string;
 
-	/**
-	 * The computer this tool-call executes on (SSH support). When
-	 * omitted/undefined, execution is LOCAL (today's behavior — the tool uses
-	 * the local node fs/child_process). When set, it is an SSH config alias
-	 * (see `notes/ssh-support-plan.md` §3); a tool resolves a remote
-	 * `ExecBackend` for it via its injected resolver. The kernel never
-	 * interprets it — it forwards the value verbatim from
-	 * `RunTurnInput.computerId`, exactly like `cwd`. It never enters the model
-	 * prompt, so it does not affect prompt caching.
-	 */
-	readonly computerId?: string;
+  /**
+   * The computer this tool-call executes on (SSH support). When
+   * omitted/undefined, execution is LOCAL (today's behavior — the tool uses
+   * the local node fs/child_process). When set, it is an SSH config alias
+   * (see `notes/ssh-support-plan.md` §3); a tool resolves a remote
+   * `ExecBackend` for it via its injected resolver. The kernel never
+   * interprets it — it forwards the value verbatim from
+   * `RunTurnInput.computerId`, exactly like `cwd`. It never enters the model
+   * prompt, so it does not affect prompt caching.
+   */
+  readonly computerId?: string;
 }
 
 /**
@@ -98,8 +98,8 @@ export interface ToolExecuteContext {
  * react without the kernel interpreting the content.
  */
 export interface ToolResult {
-	readonly content: string;
-	readonly isError?: boolean;
+  readonly content: string;
+  readonly isError?: boolean;
 }
 
 /**
@@ -108,9 +108,9 @@ export interface ToolResult {
  * to the matched tool's `execute`.
  */
 export interface ToolCall {
-	readonly id: string;
-	readonly name: string;
-	readonly input: unknown;
+  readonly id: string;
+  readonly name: string;
+  readonly input: unknown;
 }
 
 /**
@@ -119,26 +119,26 @@ export interface ToolCall {
  * concrete tools exist.
  */
 export interface ToolContract {
-	/** Unique name the model uses to invoke this tool. */
-	readonly name: string;
+  /** Unique name the model uses to invoke this tool. */
+  readonly name: string;
 
-	/** Human-readable description shown to the model. */
-	readonly description: string;
+  /** Human-readable description shown to the model. */
+  readonly description: string;
 
-	/** JSON-Schema-ish parameter declaration (structural, no library dep). */
-	readonly parameters: ToolParameterSchema;
+  /** JSON-Schema-ish parameter declaration (structural, no library dep). */
+  readonly parameters: ToolParameterSchema;
 
-	/**
-	 * Execute the tool with parsed input. The kernel provides a per-call
-	 * context (cancellation, output streaming, attribution).
-	 */
-	readonly execute: (args: unknown, ctx: ToolExecuteContext) => Promise<ToolResult>;
+  /**
+   * Execute the tool with parsed input. The kernel provides a per-call
+   * context (cancellation, output streaming, attribution).
+   */
+  readonly execute: (args: unknown, ctx: ToolExecuteContext) => Promise<ToolResult>;
 
-	/**
-	 * Whether this tool is safe to run concurrently with other tools.
-	 * When `false`, the kernel serializes this tool's calls even when the
-	 * dispatch policy allows parallelism. Defaults to `true` if omitted.
-	 * This overrides the global setting downward only (never widens parallelism).
-	 */
-	readonly concurrencySafe?: boolean;
+  /**
+   * Whether this tool is safe to run concurrently with other tools.
+   * When `false`, the kernel serializes this tool's calls even when the
+   * dispatch policy allows parallelism. Defaults to `true` if omitted.
+   * This overrides the global setting downward only (never widens parallelism).
+   */
+  readonly concurrencySafe?: boolean;
 }

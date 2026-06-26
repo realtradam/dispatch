@@ -8,17 +8,17 @@
 
 export { extension, manifest } from "./extension.js";
 export {
-	buildTodoSpec,
-	clearTodos,
-	formatTodoResult,
-	getTodos,
-	setTodos,
-	TODO_RENDERER_ID,
-	TODO_SURFACE_ID,
-	type TodoItem,
-	type TodoState,
-	type TodoStatus,
-	type ValidationResult,
-	validateTodos,
+  buildTodoSpec,
+  clearTodos,
+  formatTodoResult,
+  getTodos,
+  setTodos,
+  TODO_RENDERER_ID,
+  TODO_SURFACE_ID,
+  type TodoItem,
+  type TodoState,
+  type TodoStatus,
+  type ValidationResult,
+  validateTodos,
 } from "./pure.js";
 export { createTodoWriteTool, type TodoWriteToolDeps } from "./tool.js";

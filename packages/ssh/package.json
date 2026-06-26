@@ -1,20 +1,20 @@
 {
-	"name": "@dispatch/ssh",
-	"version": "0.0.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/exec-backend": "workspace:*",
-		"@dispatch/kernel": "workspace:*",
-		"@dispatch/transport-contract": "workspace:*",
-		"@dispatch/transport-http": "workspace:*",
-		"@dispatch/wire": "workspace:*",
-		"ssh-config": "^5.1.0",
-		"ssh2": "^1.17.0"
-	},
-	"devDependencies": {
-		"@types/ssh2": "^1.15.5"
-	}
+  "name": "@dispatch/ssh",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/exec-backend": "workspace:*",
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/transport-contract": "workspace:*",
+    "@dispatch/transport-http": "workspace:*",
+    "@dispatch/wire": "workspace:*",
+    "ssh-config": "^5.1.0",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/ssh2": "^1.15.5"
+  }
 }
