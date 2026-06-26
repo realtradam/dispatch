@@ -10,6 +10,7 @@
     "@dispatch/conversation-store": "workspace:*",
     "@dispatch/credential-store": "workspace:*",
     "@dispatch/message-queue": "workspace:*",
+    "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/system-prompt": "workspace:*"
   }
 }

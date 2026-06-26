@@ -7,6 +7,7 @@
     { "path": "../conversation-store" },
     { "path": "../credential-store" },
     { "path": "../message-queue" },
+    { "path": "../provider-concurrency" },
     { "path": "../system-prompt" }
   ]
 }

@@ -23,6 +23,9 @@
       "path": "../message-queue"
     },
     {
+      "path": "../provider-concurrency"
+    },
+    {
       "path": "../skills"
     },
     {
