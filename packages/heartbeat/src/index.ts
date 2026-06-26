@@ -8,6 +8,7 @@ export {
 export { extension, manifest } from "./extension.js";
 export {
 	createHeartbeatService,
+	HEARTBEAT_WORKSPACE_ID,
 	type HeartbeatService,
 	type HeartbeatServiceDeps,
 	heartbeatServiceHandle,

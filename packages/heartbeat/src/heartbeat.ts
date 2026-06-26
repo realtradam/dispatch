@@ -12,6 +12,16 @@ import { createHeartbeatRunStore, type HeartbeatRunStore } from "./run-store.js"
 import { HeartbeatScheduler, realTimers, type Timers } from "./scheduler.js";
 
 /**
+ * The dedicated workspace heartbeat-spawned conversations are filed in (NOT the
+ * configured workspace). The config + run history stay per-workspace (tracked
+ * under the configured workspaceId); only the spawned conversation's PLACEMENT
+ * moves here, so heartbeat conversations don't clog the configured workspace's
+ * tabs. The orchestrator auto-creates this workspace on first fire (via
+ * `ensureWorkspace`), so it appears on the workspaces home page like any other.
+ */
+export const HEARTBEAT_WORKSPACE_ID = "heartbeat";
+
+/**
  * The heartbeat service surface — what transport-http consumes and what the
  * extension wires into the host.
  */
@@ -83,6 +93,19 @@ export interface HeartbeatServiceDeps {
 	 * wires the real getter; tests inject a fake.
 	 */
 	readonly getGlobalSystemPrompt?: () => Promise<string>;
+	/**
+	 * The configured workspace's `defaultCwd` (or `null` when the workspace has
+	 * none). Used to pin the heartbeat turn's cwd to the CONFIGURED workspace's
+	 * directory — NOT the heartbeat workspace's (empty) defaultCwd — so the
+	 * turn's tools run in the same directory the prompt's `[prompt:cwd]`
+	 * variable advertises. Passed to the orchestrator as an explicit `cwd`
+	 * override only when non-null; when `null` no override is sent and the
+	 * orchestrator falls back to the server default cwd (matching the
+	 * pre-heartbeat-workspace behavior for a workspace without a defaultCwd).
+	 * When omitted, `null` (no override) — the extension wires the real getter
+	 * (against `conversationStore.getWorkspace`); tests inject a fake.
+	 */
+	readonly getWorkspaceCwd?: (workspaceId: string) => Promise<string | null>;
 }
 
 interface ActiveRun {
@@ -106,6 +129,10 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 	// extension wires the real getter so empty INHERITS the global system
 	// prompt template (GET /system-prompt); tests inject a fake.
 	const getGlobalSystemPrompt = deps.getGlobalSystemPrompt ?? (() => Promise.resolve(""));
+	// Default: no cwd override (the orchestrator resolves the turn cwd from the
+	// conversation's workspace). The extension wires the real getter so the
+	// turn pins to the CONFIGURED workspace's defaultCwd; tests inject a fake.
+	const getWorkspaceCwd = deps.getWorkspaceCwd ?? (() => Promise.resolve(null));
 
 	// runId → active-run tracking (in-memory; the durable record lives in the
 	// run store). Used to (a) map a stop request to its conversation, and
@@ -156,9 +183,16 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 		const baseSystemPrompt =
 			config.systemPrompt === "" ? await getGlobalSystemPrompt() : config.systemPrompt;
 		const resolveCtx = { workspaceId, conversationId, model: config.model };
-		const [systemPrompt, taskPrompt] = await Promise.all([
+		// resolveCtx uses the CONFIGURED workspaceId — the heartbeat operates
+		// ON BEHALF OF the configured workspace, so `[prompt:workspace_id]` and
+		// `[prompt:cwd]` refer to it (not the heartbeat workspace the spawned
+		// conversation is filed in). The turn's cwd is pinned to the SAME
+		// configured workspace's defaultCwd (below) so tools run where the
+		// prompt's `[prompt:cwd]` advertises.
+		const [systemPrompt, taskPrompt, configuredWorkspaceCwd] = await Promise.all([
 			resolvePrompt(baseSystemPrompt, resolveCtx),
 			resolvePrompt(config.taskPrompt, resolveCtx),
+			getWorkspaceCwd(workspaceId),
 		]);
 
 		try {
@@ -177,7 +211,20 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 				systemPrompt,
 				...(config.model !== "" ? { modelName: config.model } : {}),
 				...(config.reasoningEffort !== null ? { reasoningEffort: config.reasoningEffort } : {}),
-				workspaceId,
+				// Pin the turn cwd to the CONFIGURED workspace's defaultCwd so
+				// the heartbeat's tools run in the same directory its prompt
+				// variables advertise — NOT the heartbeat workspace's (empty)
+				// defaultCwd → process.cwd(). Omitted when the configured
+				// workspace has no defaultCwd (the orchestrator then falls back
+				// to the server default cwd, matching the pre-heartbeat-
+				// workspace behavior for a workspace without one).
+				...(configuredWorkspaceCwd !== null ? { cwd: configuredWorkspaceCwd } : {}),
+				// File the spawned conversation in the DEDICATED heartbeat
+				// workspace (not the configured workspace) so heartbeat
+				// conversations don't clog the configured workspace's tabs. The
+				// orchestrator auto-creates this workspace on first fire
+				// (ensureWorkspace), so it appears on the workspaces home page.
+				workspaceId: HEARTBEAT_WORKSPACE_ID,
 			});
 		} finally {
 			const entry = activeRuns.get(runId);
