@@ -136,7 +136,7 @@ if grep -q 'sk-\.\.\.' /etc/dispatch/env 2>/dev/null; then
 	echo "  3. journalctl -u dispatch -f"
 else
 	echo "[install] starting service…"
-	sudo systemctl start dispatch
+	sudo systemctl restart dispatch
 	echo ""
 	echo "[install] done!"
 	echo "  Status:  systemctl status dispatch"
