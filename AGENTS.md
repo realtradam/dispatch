@@ -7,7 +7,7 @@
 ## What this project is
 A **minimal kernel + extensions** agent runtime. The kernel runs ONE agent turn
 and hosts extensions. Every feature is an extension. Tiers: **kernel → core →
-standard**. The web frontend is a SEPARATE repo (`../dispatch-web`), built to
+standard**. The web frontend is a SEPARATE repo (`../frontend`), built to
 the same methodology and consuming the backend's typed contracts (see
 `notes/frontend-design.md`).
 

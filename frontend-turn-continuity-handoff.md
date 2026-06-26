@@ -1,6 +1,6 @@
 # FE handoff — turn continuity + multi-client live view
 
-Courier to `../dispatch-web` (cross-repo; `lsp references` does not span repos —
+Courier to `../frontend` (cross-repo; `lsp references` does not span repos —
 ORCHESTRATOR §7). Backend is implemented + live-verified against flash. This unblocks
 the "turn keeps running when the browser is backgrounded/reloaded" + "watch the same
 chat from a second device" behavior.

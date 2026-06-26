@@ -1,6 +1,6 @@
 # FE handoff — context size (current context-window usage)
 
-Courier this to `../dispatch-web` (cross-repo contract change; `lsp references` does not
+Courier this to `../frontend` (cross-repo contract change; `lsp references` does not
 span repos — ORCHESTRATOR §7). Backend commit adds an optional `contextSize` field; no
 breaking change.
 
