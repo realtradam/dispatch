@@ -237,4 +237,107 @@ describe("HeartbeatScheduler", () => {
 		fake.advance(60_000);
 		expect(fireCount).toBe(2);
 	});
+
+	// ─── nextFireAt (CR-HB-3: server-authoritative next-run time) ──────────────
+
+	it("nextFireAt returns null for a workspace with no schedule", () => {
+		const fake = createFakeTimers();
+		const scheduler = new HeartbeatScheduler({
+			timers: fake.timers,
+			fire: () => createDeferred().promise,
+		});
+		expect(scheduler.nextFireAt("unknown")).toBeNull();
+	});
+
+	it("nextFireAt returns the absolute fire time when armed (now + intervalMs)", () => {
+		const fake = createFakeTimers();
+		const scheduler = new HeartbeatScheduler({
+			timers: fake.timers,
+			fire: () => createDeferred().promise,
+		});
+		// now=0, interval=1m → next fire at epoch-ms 60_000.
+		scheduler.arm("ws-1", { enabled: true, intervalMinutes: 1 });
+		expect(scheduler.nextFireAt("ws-1")).toBe(60_000);
+	});
+
+	it("nextFireAt reflects a longer interval", () => {
+		const fake = createFakeTimers();
+		const scheduler = new HeartbeatScheduler({
+			timers: fake.timers,
+			fire: () => createDeferred().promise,
+		});
+		scheduler.arm("ws-1", { enabled: true, intervalMinutes: 30 });
+		expect(scheduler.nextFireAt("ws-1")).toBe(30 * 60_000);
+	});
+
+	it("nextFireAt reflects a new interval on re-arm (not running)", () => {
+		const fake = createFakeTimers();
+		const scheduler = new HeartbeatScheduler({
+			timers: fake.timers,
+			fire: () => createDeferred().promise,
+		});
+		scheduler.arm("ws-1", { enabled: true, intervalMinutes: 1 });
+		expect(scheduler.nextFireAt("ws-1")).toBe(60_000);
+		// Re-arm with a 5-minute interval (armed, not running) → recomputed.
+		scheduler.arm("ws-1", { enabled: true, intervalMinutes: 5 });
+		expect(scheduler.nextFireAt("ws-1")).toBe(5 * 60_000);
+	});
+
+	it("nextFireAt returns null when disarmed", () => {
+		const fake = createFakeTimers();
+		const scheduler = new HeartbeatScheduler({
+			timers: fake.timers,
+			fire: () => createDeferred().promise,
+		});
+		scheduler.arm("ws-1", { enabled: true, intervalMinutes: 1 });
+		expect(scheduler.nextFireAt("ws-1")).toBe(60_000);
+		scheduler.disarm("ws-1");
+		expect(scheduler.nextFireAt("ws-1")).toBeNull();
+	});
+
+	it("nextFireAt returns null while a run is in progress, then the next fire after it completes", async () => {
+		const fake = createFakeTimers();
+		const deferreds: Array<{ resolve: () => void }> = [];
+		const scheduler = new HeartbeatScheduler({
+			timers: fake.timers,
+			fire: () => {
+				const d = createDeferred();
+				deferreds.push(d);
+				return d.promise;
+			},
+		});
+		scheduler.arm("ws-1", { enabled: true, intervalMinutes: 1 });
+		expect(scheduler.nextFireAt("ws-1")).toBe(60_000);
+
+		fake.advance(60_000); // fire → run in progress
+		expect(scheduler.isRunning("ws-1")).toBe(true);
+		// In flight → no next run queued yet.
+		expect(scheduler.nextFireAt("ws-1")).toBeNull();
+
+		deferreds[0]?.resolve();
+		await flush();
+		// Re-armed at completion-time (60_000) + interval (60_000) = 120_000.
+		expect(scheduler.nextFireAt("ws-1")).toBe(120_000);
+	});
+
+	it("nextFireAt returns null after disarming mid-run (no re-arm)", async () => {
+		const fake = createFakeTimers();
+		const deferreds: Array<{ resolve: () => void }> = [];
+		const scheduler = new HeartbeatScheduler({
+			timers: fake.timers,
+			fire: () => {
+				const d = createDeferred();
+				deferreds.push(d);
+				return d.promise;
+			},
+		});
+		scheduler.arm("ws-1", { enabled: true, intervalMinutes: 1 });
+		fake.advance(60_000); // fire in progress
+		expect(scheduler.nextFireAt("ws-1")).toBeNull(); // running
+		scheduler.disarm("ws-1"); // disarm mid-run
+		deferreds[0]?.resolve();
+		await flush();
+		// Disarmed → no re-arm, no fire time.
+		expect(scheduler.nextFireAt("ws-1")).toBeNull();
+	});
 });

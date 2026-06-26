@@ -1489,6 +1489,27 @@ export function createApp(opts: CreateServerOptions): Hono {
 		}
 	});
 
+	// The server-authoritative next-fire time for a workspace's heartbeat. A
+	// lightweight read of the scheduler's pending fire time (polled by the FE
+	// alongside the runs list). `nextRunAt` is null when the heartbeat is
+	// disabled/disarmed, or when a run is in flight and the next hasn't been
+	// queued yet — the FE then shows no countdown, not a fabricated one.
+	app.get("/workspaces/:id/heartbeat/next-run", async (c) => {
+		const workspaceId = c.req.param("id");
+		if (opts.heartbeatService === undefined) {
+			// Graceful: no heartbeat configured → no next run scheduled.
+			return c.json({ nextRunAt: null }, 200);
+		}
+		try {
+			const nextRunAt = await opts.heartbeatService.nextRunAt(workspaceId);
+			log.info("heartbeat: next-run read", { workspaceId, nextRunAt });
+			return c.json({ nextRunAt }, 200);
+		} catch (err) {
+			log.error("heartbeat: next-run read failure", { err, workspaceId });
+			return c.json({ error: "Failed to read heartbeat next-run" }, 500);
+		}
+	});
+
 	app.post("/workspaces/:id/heartbeat/runs/:runId/stop", async (c) => {
 		const workspaceId = c.req.param("id");
 		const runId = c.req.param("runId");
