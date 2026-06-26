@@ -294,11 +294,14 @@ export function createApp(opts: CreateServerOptions): Hono {
   app.get("/models", async (c) => {
     try {
       const models = await opts.credentialStore.listCatalog();
-      const modelInfo: Record<string, { contextWindow?: number }> = {};
+      const modelInfo: Record<string, { contextWindow?: number; vision?: boolean }> = {};
       for (const modelName of models) {
         const info = await opts.credentialStore.getModelInfo(modelName);
-        if (info?.contextWindow !== undefined) {
-          modelInfo[modelName] = { contextWindow: info.contextWindow };
+        if (info?.contextWindow !== undefined || info?.vision === true) {
+          const entry: { contextWindow?: number; vision?: boolean } = {};
+          if (info?.contextWindow !== undefined) entry.contextWindow = info.contextWindow;
+          if (info?.vision === true) entry.vision = true;
+          modelInfo[modelName] = entry;
         }
       }
       const body: ModelsResponse = {
@@ -398,8 +401,16 @@ export function createApp(opts: CreateServerOptions): Hono {
       return c.json({ error: result.error }, 400);
     }
 
-    const { conversationId, message, model, cwd, computerId, reasoningEffort, workspaceId } =
-      result;
+    const {
+      conversationId,
+      message,
+      model,
+      cwd,
+      computerId,
+      reasoningEffort,
+      workspaceId,
+      images,
+    } = result;
     log.info("chat: request accepted", {
       conversationId,
       hasModel: model !== undefined,
@@ -407,6 +418,7 @@ export function createApp(opts: CreateServerOptions): Hono {
       hasComputerId: computerId !== undefined,
       hasReasoningEffort: reasoningEffort !== undefined,
       hasWorkspaceId: workspaceId !== undefined,
+      imageCount: images?.length ?? 0,
     });
 
     const events: AgentEvent[] = [];
@@ -457,6 +469,7 @@ export function createApp(opts: CreateServerOptions): Hono {
       ...(computerId !== undefined ? { computerId } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(workspaceId !== undefined ? { workspaceId } : {}),
+      ...(images !== undefined ? { images } : {}),
     };
 
     opts.orchestrator

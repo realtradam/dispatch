@@ -1,12 +1,40 @@
 import type {
   ChatMessage,
+  Chunk,
+  ImageInput,
   ProviderContract,
   ReasoningEffort,
   ToolDispatchPolicy,
 } from "@dispatch/kernel";
 
-export function buildUserMessage(text: string): ChatMessage {
-  return { role: "user", chunks: [{ type: "text", text }] };
+/**
+ * Build the persisted user message for a turn. When `images` are provided, each
+ * is appended as an `image` chunk AFTER the text chunk, so the persisted message
+ * carries both the prompt text and the attached images (the frontend renders
+ * the images; vision-capable providers receive them natively; non-vision
+ * providers have them transcribed by the vision handoff before streaming).
+ *
+ * Pure: inputs → a ChatMessage, no I/O.
+ */
+export function buildUserMessage(text: string, images?: readonly ImageInput[]): ChatMessage {
+  const chunks: Chunk[] = [];
+  if (text.length > 0) {
+    chunks.push({ type: "text", text });
+  }
+  if (images !== undefined) {
+    for (const img of images) {
+      chunks.push({
+        type: "image",
+        url: img.url,
+        ...(img.mimeType !== undefined ? { mimeType: img.mimeType } : {}),
+      });
+    }
+  }
+  // An image-only message (empty text) is valid.
+  if (chunks.length === 0) {
+    chunks.push({ type: "text", text: "" });
+  }
+  return { role: "user", chunks };
 }
 
 // ── Provider-error retry backoff schedule ───────────────────────────────────

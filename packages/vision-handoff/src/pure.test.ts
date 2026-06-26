@@ -1,0 +1,141 @@
+import type { ModelInfo, ProviderEvent } from "@dispatch/kernel";
+import { describe, expect, it } from "vitest";
+import {
+  buildTranscriptionPrompt,
+  collectTextFromStream,
+  findVisionModelName,
+  formatNoVisionPlaceholder,
+  formatTranscriptionText,
+  isVisionCapable,
+} from "./pure.js";
+
+describe("isVisionCapable", () => {
+  it("returns true when ModelInfo.vision is true", () => {
+    expect(isVisionCapable("umans/kimi-k2.7", { id: "kimi-k2.7", vision: true })).toBe(true);
+  });
+
+  it("returns false when ModelInfo.vision is false (overrides name heuristic)", () => {
+    expect(isVisionCapable("umans/kimi-k2.7", { id: "kimi-k2.7", vision: false })).toBe(false);
+  });
+
+  it("falls back to name heuristic when vision is absent (kimi)", () => {
+    expect(isVisionCapable("umans/kimi-k2.7", undefined)).toBe(true);
+    expect(isVisionCapable("umans/Kimi-K2.7", undefined)).toBe(true); // case-insensitive
+  });
+
+  it("falls back to name heuristic when vision is absent (non-kimi)", () => {
+    expect(isVisionCapable("umans/glm-5.2", undefined)).toBe(false);
+    expect(isVisionCapable("umans/deepseek-v4-flash", { id: "deepseek-v4-flash" })).toBe(false);
+  });
+
+  it("returns false for undefined model name", () => {
+    expect(isVisionCapable(undefined, undefined)).toBe(false);
+  });
+});
+
+describe("findVisionModelName", () => {
+  const getInfo = async (name: string): Promise<ModelInfo | undefined> => {
+    const map: Record<string, ModelInfo> = {
+      "umans/kimi-k2.7": { id: "kimi-k2.7", vision: true },
+      "umans/glm-5.2": { id: "glm-5.2" },
+      "umans/llama-vision": { id: "llama-vision", vision: true },
+    };
+    return map[name];
+  };
+
+  it("finds the first kimi-family model via name heuristic (no async lookup needed)", async () => {
+    const name = await findVisionModelName(
+      ["umans/glm-5.2", "umans/kimi-k2.7", "umans/llama-vision"],
+      getInfo,
+    );
+    expect(name).toBe("umans/kimi-k2.7");
+  });
+
+  it("finds a vision model via ModelInfo.vision when name heuristic misses", async () => {
+    const name = await findVisionModelName(["umans/glm-5.2", "umans/llama-vision"], getInfo);
+    expect(name).toBe("umans/llama-vision");
+  });
+
+  it("skips the excluded model", async () => {
+    const name = await findVisionModelName(
+      ["umans/kimi-k2.7", "umans/llama-vision"],
+      getInfo,
+      "umans/kimi-k2.7",
+    );
+    expect(name).toBe("umans/llama-vision");
+  });
+
+  it("returns undefined when no vision model is available", async () => {
+    const name = await findVisionModelName(["umans/glm-5.2"], getInfo);
+    expect(name).toBeUndefined();
+  });
+
+  it("returns undefined for empty catalog", async () => {
+    const name = await findVisionModelName([], getInfo);
+    expect(name).toBeUndefined();
+  });
+});
+
+describe("collectTextFromStream", () => {
+  async function* stream(events: ProviderEvent[]): AsyncIterable<ProviderEvent> {
+    for (const e of events) yield e;
+  }
+
+  it("collects text-delta events into a single string", async () => {
+    const events: ProviderEvent[] = [
+      { type: "text-delta", delta: "Hello " },
+      { type: "text-delta", delta: "world!" },
+    ];
+    const text = await collectTextFromStream(stream(events));
+    expect(text).toBe("Hello world!");
+  });
+
+  it("ignores non-text events (reasoning, usage, tool-call, finish)", async () => {
+    const events: ProviderEvent[] = [
+      { type: "reasoning-delta", delta: "thinking..." },
+      { type: "text-delta", delta: "answer" },
+      { type: "usage", usage: { inputTokens: 5, outputTokens: 1 } },
+      { type: "finish", reason: "stop" },
+    ];
+    const text = await collectTextFromStream(stream(events));
+    expect(text).toBe("answer");
+  });
+
+  it("throws on an error event", async () => {
+    const events: ProviderEvent[] = [
+      { type: "text-delta", delta: "partial" },
+      { type: "error", message: "boom" },
+    ];
+    await expect(collectTextFromStream(stream(events))).rejects.toThrow("boom");
+  });
+
+  it("returns empty string for an empty stream", async () => {
+    const text = await collectTextFromStream(stream([]));
+    expect(text).toBe("");
+  });
+});
+
+describe("prompt + formatting helpers", () => {
+  it("buildTranscriptionPrompt includes focus when a question is given", () => {
+    const prompt = buildTranscriptionPrompt("What error is shown?");
+    expect(prompt).toContain("Describe this image in detail");
+    expect(prompt).toContain('The user asked: "What error is shown?"');
+  });
+
+  it("buildTranscriptionPrompt omits focus when no question", () => {
+    const prompt = buildTranscriptionPrompt(undefined);
+    expect(prompt).toContain("Describe this image in detail");
+    expect(prompt).not.toContain("The user asked");
+  });
+
+  it("formatTranscriptionText names the vision model", () => {
+    expect(formatTranscriptionText("a red car", "umans/kimi-k2.7")).toBe(
+      "[Image analysis (via umans/kimi-k2.7)]: a red car",
+    );
+  });
+
+  it("formatNoVisionPlaceholder explains the limitation", () => {
+    const text = formatNoVisionPlaceholder();
+    expect(text).toContain("no vision-capable model");
+  });
+});

@@ -24,17 +24,39 @@ interface OpenAIModelListResponse {
 }
 
 /**
+ * Whether a model id is vision-capable (can natively accept image input).
+ *
+ * The OpenAI-compatible `/models` endpoint does not reliably report image
+ * capabilities, so this is a hardcoded heuristic by model id: a model whose id
+ * contains "kimi" (e.g. `kimi-k2.7`, `moonshot/kimi-k2.7`) is vision-capable;
+ * all others are treated as non-vision. This is the single source of truth —
+ * the orchestrator's vision handoff and the `read_image` tool both consult the
+ * `ModelInfo.vision` flag this sets, so adding a model here enables vision
+ * everywhere. Pure: id → boolean, no I/O.
+ *
+ * (When an endpoint gains reliable vision reporting, this can be replaced with
+ * a real capability check without changing callers.)
+ */
+export function isVisionModelId(id: string): boolean {
+  const lower = id.toLowerCase();
+  return lower.includes("kimi");
+}
+
+/**
  * Pure mapping: raw OpenAI-compatible model list → ModelInfo[].
- * Extracts `contextWindow` from common field names (providers vary).
- * Extracted for direct unit testing with no I/O.
+ * Extracts `contextWindow` from common field names (providers vary) and
+ * detects vision capability via {@link isVisionModelId}. Extracted for direct
+ * unit testing with no I/O.
  */
 export function parseModelList(data: readonly OpenAIModelEntry[]): readonly ModelInfo[] {
   return data.map((entry) => {
     const contextWindow =
       entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_tokens;
+    const vision = isVisionModelId(entry.id);
     return {
       id: entry.id,
       ...(contextWindow !== undefined ? { contextWindow } : {}),
+      ...(vision ? { vision } : {}),
     };
   });
 }

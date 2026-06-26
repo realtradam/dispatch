@@ -1,0 +1,13 @@
+{
+  "name": "@dispatch/vision-handoff",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/credential-store": "workspace:*",
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/openai-stream": "workspace:*"
+  }
+}
