@@ -84,6 +84,12 @@ export const extension: Extension = {
 			// system prompt template (GET /system-prompt / regular
 			// conversations resolve) before variable resolution runs.
 			getGlobalSystemPrompt: () => systemPromptService.getTemplate(),
+			// Pin the heartbeat turn's cwd to the CONFIGURED workspace's
+			// defaultCwd (not the heartbeat workspace's empty defaultCwd) so
+			// the turn's tools run where the prompt's [prompt:cwd] advertises.
+			// Lazy (resolved at fire time, mirroring resolvePrompt).
+			getWorkspaceCwd: async (wsId) =>
+				(await conversationStore.getWorkspace(wsId))?.defaultCwd ?? null,
 		});
 
 		// Reconcile stale runs + arm enabled workspaces on boot.

@@ -65,6 +65,7 @@ interface PendingTurn {
 	readonly modelName?: string;
 	readonly reasoningEffort?: unknown;
 	readonly workspaceId?: string;
+	readonly cwd?: string;
 	resolve: () => void;
 }
 
@@ -117,6 +118,7 @@ function createFakeOrchestrator(): SessionOrchestrator & {
 						? { reasoningEffort: input.reasoningEffort }
 						: {}),
 					...(input.workspaceId !== undefined ? { workspaceId: input.workspaceId } : {}),
+					...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
 					resolve,
 				};
 				pending.push(entry);
@@ -154,6 +156,7 @@ function createService(opts: {
 		},
 	) => Promise<string>;
 	readonly getGlobalSystemPrompt?: () => Promise<string>;
+	readonly getWorkspaceCwd?: (workspaceId: string) => Promise<string | null>;
 }) {
 	const fake = createFakeTimers();
 	let id = 0;
@@ -167,6 +170,7 @@ function createService(opts: {
 		...(opts.getGlobalSystemPrompt !== undefined
 			? { getGlobalSystemPrompt: opts.getGlobalSystemPrompt }
 			: {}),
+		...(opts.getWorkspaceCwd !== undefined ? { getWorkspaceCwd: opts.getWorkspaceCwd } : {}),
 	});
 	return { svc, advance: fake.advance, storage };
 }
@@ -210,13 +214,97 @@ describe("createHeartbeatService", () => {
 		expect(turn.systemPrompt).toBe("you are a monitor");
 		expect(turn.modelName).toBe("opencode/gpt-4o");
 		expect(turn.reasoningEffort).toBe("high");
-		expect(turn.workspaceId).toBe("ws-1");
+		// Spawned conversations go to the DEDICATED heartbeat workspace (not
+		// the configured workspace), while the run stays tracked under ws-1.
+		expect(turn.workspaceId).toBe("heartbeat");
 
 		expect((await svc.listRuns("ws-1"))[0]?.status).toBe("running");
 
 		turn.resolve();
 		await flush();
 		expect((await svc.listRuns("ws-1"))[0]?.status).toBe("completed");
+	});
+
+	it("heartbeat conversations always go to the dedicated heartbeat workspace, regardless of the configured workspace", async () => {
+		const orch = createFakeOrchestrator();
+		const { svc, advance } = createService({ orch });
+		// Two DIFFERENT workspaces each configure a heartbeat.
+		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+		await svc.updateConfig("ws-2", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+
+		advance(60_000); // both fire (1-minute interval)
+		await flush();
+		expect(orch.pending).toHaveLength(2);
+		// Every spawned conversation is filed in the heartbeat workspace —
+		// NOT ws-1 or ws-2 — so heartbeat runs don't clog either workspace's
+		// tabs. The run history, however, stays tracked per configured workspace.
+		for (const turn of orch.pending) {
+			expect(turn.workspaceId).toBe("heartbeat");
+		}
+		// Run history is still per configured workspace.
+		expect((await svc.listRuns("ws-1"))[0]?.status).toBe("running");
+		expect((await svc.listRuns("ws-2"))[0]?.status).toBe("running");
+		for (const turn of orch.pending) {
+			turn.resolve();
+		}
+		await flush();
+	});
+
+	it("the turn cwd is pinned to the CONFIGURED workspace's defaultCwd (not the heartbeat workspace's empty defaultCwd)", async () => {
+		const orch = createFakeOrchestrator();
+		const { svc, advance } = createService({
+			orch,
+			// The configured workspace has a defaultCwd.
+			getWorkspaceCwd: (wsId) => Promise.resolve(wsId === "ws-1" ? "/home/proj/ws-1" : null),
+		});
+		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+
+		advance(60_000);
+		await flush();
+		const turn = orch.pending[0]!;
+		// The conversation is filed in the heartbeat workspace …
+		expect(turn.workspaceId).toBe("heartbeat");
+		// … but the turn's cwd is the CONFIGURED workspace's defaultCwd, so
+		// tools run where the prompt's [prompt:cwd] advertises (not the
+		// heartbeat workspace's empty defaultCwd → process.cwd()).
+		expect(turn.cwd).toBe("/home/proj/ws-1");
+		turn.resolve();
+		await flush();
+	});
+
+	it("omits the cwd override when the configured workspace has no defaultCwd (orchestrator falls back to the server default)", async () => {
+		const orch = createFakeOrchestrator();
+		const { svc, advance } = createService({
+			orch,
+			// The configured workspace has NO defaultCwd.
+			getWorkspaceCwd: () => Promise.resolve(null),
+		});
+		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+
+		advance(60_000);
+		await flush();
+		const turn = orch.pending[0]!;
+		expect(turn.workspaceId).toBe("heartbeat");
+		// No cwd override sent — the orchestrator resolves the turn cwd from
+		// the heartbeat workspace (no defaultCwd → server default cwd).
+		expect(turn.cwd).toBeUndefined();
+		turn.resolve();
+		await flush();
+	});
+
+	it("omits the cwd override when getWorkspaceCwd is not wired (resolution is optional)", async () => {
+		const orch = createFakeOrchestrator();
+		// No getWorkspaceCwd → no cwd override (the default).
+		const { svc, advance } = createService({ orch });
+		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+
+		advance(60_000);
+		await flush();
+		const turn = orch.pending[0]!;
+		expect(turn.workspaceId).toBe("heartbeat");
+		expect(turn.cwd).toBeUndefined();
+		turn.resolve();
+		await flush();
 	});
 
 	it("omits modelName/reasoningEffort when empty/null (inherit defaults)", async () => {
@@ -508,7 +596,9 @@ describe("createHeartbeatService", () => {
 		await svc2.startAll();
 		fake.advance(60_000);
 		await flush();
-		expect(orch.pending.filter((t) => t.workspaceId === "ws-1")).toHaveLength(1);
-		expect(orch.pending.filter((t) => t.workspaceId === "ws-2")).toHaveLength(0);
+		// ws-1 (enabled) fired → its spawned conversation is filed in the
+		// heartbeat workspace; ws-2 (disabled) never fired.
+		expect(orch.pending).toHaveLength(1);
+		expect(orch.pending[0]?.workspaceId).toBe("heartbeat");
 	});
 });
