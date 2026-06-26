@@ -16,32 +16,32 @@ import type { Extension, Logger } from "@dispatch/kernel";
  * boot (defend faults, not adversaries; never leave the system broken).
  */
 export async function loadExternalExtensions(
-	specifiers: readonly string[],
-	logger: Logger,
+  specifiers: readonly string[],
+  logger: Logger,
 ): Promise<Extension[]> {
-	const loaded: Extension[] = [];
-	for (const spec of specifiers) {
-		try {
-			const mod = (await import(spec)) as Record<string, unknown>;
-			const candidate = mod.extension ?? mod.default ?? mod;
-			if (isExtension(candidate)) {
-				loaded.push(candidate);
-				logger.info(`Loaded external extension "${candidate.manifest.id}" from ${spec}`);
-			} else {
-				logger.warn(`External module "${spec}" has no valid extension export; skipped`);
-			}
-		} catch (err) {
-			logger.error(`Failed to load external extension "${spec}"; skipped`, { err });
-		}
-	}
-	return loaded;
+  const loaded: Extension[] = [];
+  for (const spec of specifiers) {
+    try {
+      const mod = (await import(spec)) as Record<string, unknown>;
+      const candidate = mod.extension ?? mod.default ?? mod;
+      if (isExtension(candidate)) {
+        loaded.push(candidate);
+        logger.info(`Loaded external extension "${candidate.manifest.id}" from ${spec}`);
+      } else {
+        logger.warn(`External module "${spec}" has no valid extension export; skipped`);
+      }
+    } catch (err) {
+      logger.error(`Failed to load external extension "${spec}"; skipped`, { err });
+    }
+  }
+  return loaded;
 }
 
 /** Structural check that a dynamically-imported value is an `Extension`. */
 function isExtension(value: unknown): value is Extension {
-	if (!value || typeof value !== "object") return false;
-	const e = value as { manifest?: unknown; activate?: unknown };
-	if (typeof e.activate !== "function") return false;
-	const m = e.manifest as { id?: unknown } | undefined;
-	return !!m && typeof m.id === "string";
+  if (!value || typeof value !== "object") return false;
+  const e = value as { manifest?: unknown; activate?: unknown };
+  if (typeof e.activate !== "function") return false;
+  const m = e.manifest as { id?: unknown } | undefined;
+  return !!m && typeof m.id === "string";
 }

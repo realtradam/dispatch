@@ -15,67 +15,67 @@ import { buildTodoSpec, getTodos, TODO_SURFACE_ID, type TodoState } from "./pure
 import { createTodoWriteTool } from "./tool.js";
 
 export const manifest: Manifest = {
-	id: "todo",
-	name: "Todo Tool",
-	version: "0.0.0",
-	apiVersion: "^0.1.0",
-	trust: "bundled",
-	activation: "eager",
-	dependsOn: ["surface-registry"],
-	capabilities: {},
-	contributes: {
-		tools: ["todo_write"],
-	},
+  id: "todo",
+  name: "Todo Tool",
+  version: "0.0.0",
+  apiVersion: "^0.1.0",
+  trust: "bundled",
+  activation: "eager",
+  dependsOn: ["surface-registry"],
+  capabilities: {},
+  contributes: {
+    tools: ["todo_write"],
+  },
 };
 
 export function activate(host: HostAPI): void {
-	const registry = host.getService(surfaceRegistryHandle);
+  const registry = host.getService(surfaceRegistryHandle);
 
-	const state: TodoState = new Map();
-	const subscribers = new Set<() => void>();
+  const state: TodoState = new Map();
+  const subscribers = new Set<() => void>();
 
-	function notify(): void {
-		for (const sub of subscribers) {
-			sub();
-		}
-	}
+  function notify(): void {
+    for (const sub of subscribers) {
+      sub();
+    }
+  }
 
-	host.defineTool(createTodoWriteTool({ state, notify }));
+  host.defineTool(createTodoWriteTool({ state, notify }));
 
-	function getSpec(context?: SurfaceContext): SurfaceSpec {
-		const convId = context?.conversationId;
-		const todos = convId === undefined ? [] : getTodos(state, convId);
-		return buildTodoSpec(todos);
-	}
+  function getSpec(context?: SurfaceContext): SurfaceSpec {
+    const convId = context?.conversationId;
+    const todos = convId === undefined ? [] : getTodos(state, convId);
+    return buildTodoSpec(todos);
+  }
 
-	function invoke(_actionId: string, _payload?: unknown, _context?: SurfaceContext): void {
-		// The todo surface is read-only: the model mutates the list via the
-		// `todo_write` tool; no client-facing surface actions.
-	}
+  function invoke(_actionId: string, _payload?: unknown, _context?: SurfaceContext): void {
+    // The todo surface is read-only: the model mutates the list via the
+    // `todo_write` tool; no client-facing surface actions.
+  }
 
-	const provider: SurfaceProvider = {
-		catalogEntry: {
-			id: TODO_SURFACE_ID,
-			region: "side",
-			title: "Tasks",
-			scope: "conversation",
-		},
-		getSpec,
-		invoke,
-		subscribe(onChange) {
-			subscribers.add(onChange);
-			return () => {
-				subscribers.delete(onChange);
-			};
-		},
-	};
+  const provider: SurfaceProvider = {
+    catalogEntry: {
+      id: TODO_SURFACE_ID,
+      region: "side",
+      title: "Tasks",
+      scope: "conversation",
+    },
+    getSpec,
+    invoke,
+    subscribe(onChange) {
+      subscribers.add(onChange);
+      return () => {
+        subscribers.delete(onChange);
+      };
+    },
+  };
 
-	registry.register(provider);
+  registry.register(provider);
 
-	host.logger.info("todo: registered");
+  host.logger.info("todo: registered");
 }
 
 export const extension: Extension = {
-	manifest,
-	activate,
+  manifest,
+  activate,
 };

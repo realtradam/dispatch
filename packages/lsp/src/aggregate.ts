@@ -14,23 +14,23 @@
 import type { LanguageServerClient } from "./client.js";
 
 export interface AggregateServer {
-	readonly id: string;
-	readonly name: string;
-	readonly root: string;
+  readonly id: string;
+  readonly name: string;
+  readonly root: string;
 }
 
 export interface AggregateOpts {
-	/** Post-edit buffer; when omitted the server reads from disk. */
-	readonly text?: string | undefined;
-	/** Only include diagnostics with severity ≤ this (1=Error, 2=Warning). */
-	readonly minSeverity?: number | undefined;
+  /** Post-edit buffer; when omitted the server reads from disk. */
+  readonly text?: string | undefined;
+  /** Only include diagnostics with severity ≤ this (1=Error, 2=Warning). */
+  readonly minSeverity?: number | undefined;
 }
 
 export interface AggregateResult {
-	/** Merged diagnostics tagged by source + a per-skipped-server notice. */
-	readonly formatted: string;
-	/** True if at least one server was skipped for exceeding the cap. */
-	readonly timedOut: boolean;
+  /** Merged diagnostics tagged by source + a per-skipped-server notice. */
+  readonly formatted: string;
+  /** True if at least one server was skipped for exceeding the cap. */
+  readonly timedOut: boolean;
 }
 
 /**
@@ -41,40 +41,40 @@ export interface AggregateResult {
  * contribution for that server.
  */
 export async function aggregateDiagnostics(
-	getClient: (id: string, root: string) => LanguageServerClient | undefined,
-	servers: readonly AggregateServer[],
-	absolutePath: string,
-	timeoutMs: number,
-	opts: AggregateOpts,
+  getClient: (id: string, root: string) => LanguageServerClient | undefined,
+  servers: readonly AggregateServer[],
+  absolutePath: string,
+  timeoutMs: number,
+  opts: AggregateOpts,
 ): Promise<AggregateResult> {
-	const entries = await Promise.all(
-		servers.map(async (server) => {
-			const client = getClient(server.id, server.root);
-			if (!client) return null;
-			const waitOpts: { text?: string; timeoutMs: number; minSeverity?: number } = { timeoutMs };
-			if (opts.text !== undefined) waitOpts.text = opts.text;
-			if (opts.minSeverity !== undefined) waitOpts.minSeverity = opts.minSeverity;
-			const result = await client.waitForDiagnostics(absolutePath, waitOpts);
-			return { server, result };
-		}),
-	);
+  const entries = await Promise.all(
+    servers.map(async (server) => {
+      const client = getClient(server.id, server.root);
+      if (!client) return null;
+      const waitOpts: { text?: string; timeoutMs: number; minSeverity?: number } = { timeoutMs };
+      if (opts.text !== undefined) waitOpts.text = opts.text;
+      if (opts.minSeverity !== undefined) waitOpts.minSeverity = opts.minSeverity;
+      const result = await client.waitForDiagnostics(absolutePath, waitOpts);
+      return { server, result };
+    }),
+  );
 
-	const parts: string[] = [];
-	let timedOut = false;
-	const capSeconds = Math.round(timeoutMs / 1000);
+  const parts: string[] = [];
+  let timedOut = false;
+  const capSeconds = Math.round(timeoutMs / 1000);
 
-	for (const entry of entries) {
-		if (!entry) continue;
-		const { server, result } = entry;
-		if (result.timedOut) {
-			timedOut = true;
-			parts.push(
-				`⚠️ [${server.name}] LSP took too long (>${capSeconds}s), diagnostics skipped — please raise this to the user.`,
-			);
-		} else if (result.formatted) {
-			parts.push(`[${server.name}]\n${result.formatted}`);
-		}
-	}
+  for (const entry of entries) {
+    if (!entry) continue;
+    const { server, result } = entry;
+    if (result.timedOut) {
+      timedOut = true;
+      parts.push(
+        `⚠️ [${server.name}] LSP took too long (>${capSeconds}s), diagnostics skipped — please raise this to the user.`,
+      );
+    } else if (result.formatted) {
+      parts.push(`[${server.name}]\n${result.formatted}`);
+    }
+  }
 
-	return { formatted: parts.join("\n\n"), timedOut };
+  return { formatted: parts.join("\n\n"), timedOut };
 }

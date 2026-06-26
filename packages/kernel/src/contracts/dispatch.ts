@@ -26,6 +26,6 @@
  * (safe for any tool), yet the first tool starts during generation.
  */
 export interface ToolDispatchPolicy {
-	readonly maxConcurrent: number;
-	readonly eager: boolean;
+  readonly maxConcurrent: number;
+  readonly eager: boolean;
 }

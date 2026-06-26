@@ -4,482 +4,482 @@ import { parseArgs } from "./args.js";
 const defaultServer = "http://localhost:24203";
 
 describe("parseArgs", () => {
-	it("returns help for empty argv", () => {
-		expect(parseArgs([], { defaultServer })).toEqual({ kind: "help" });
-	});
+  it("returns help for empty argv", () => {
+    expect(parseArgs([], { defaultServer })).toEqual({ kind: "help" });
+  });
 
-	it("returns help for --help", () => {
-		expect(parseArgs(["--help"], { defaultServer })).toEqual({ kind: "help" });
-	});
+  it("returns help for --help", () => {
+    expect(parseArgs(["--help"], { defaultServer })).toEqual({ kind: "help" });
+  });
 
-	it("returns help for -h", () => {
-		expect(parseArgs(["-h"], { defaultServer })).toEqual({ kind: "help" });
-	});
+  it("returns help for -h", () => {
+    expect(parseArgs(["-h"], { defaultServer })).toEqual({ kind: "help" });
+  });
 
-	describe("models", () => {
-		it("parses 'models' with default server", () => {
-			expect(parseArgs(["models"], { defaultServer })).toEqual({
-				kind: "models",
-				server: "http://localhost:24203",
-			});
-		});
+  describe("models", () => {
+    it("parses 'models' with default server", () => {
+      expect(parseArgs(["models"], { defaultServer })).toEqual({
+        kind: "models",
+        server: "http://localhost:24203",
+      });
+    });
 
-		it("parses 'models --server <url>'", () => {
-			expect(parseArgs(["models", "--server", "http://example.com"], { defaultServer })).toEqual({
-				kind: "models",
-				server: "http://example.com",
-			});
-		});
+    it("parses 'models --server <url>'", () => {
+      expect(parseArgs(["models", "--server", "http://example.com"], { defaultServer })).toEqual({
+        kind: "models",
+        server: "http://example.com",
+      });
+    });
 
-		it("errors on unknown argument for models", () => {
-			const result = parseArgs(["models", "--foo"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("Unknown argument");
-		});
-	});
+    it("errors on unknown argument for models", () => {
+      const result = parseArgs(["models", "--foo"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("Unknown argument");
+    });
+  });
 
-	describe("chat", () => {
-		it("parses a chat with --text", () => {
-			const result = parseArgs(["my-model", "--text", "hello"], { defaultServer });
-			expect(result).toEqual({
-				kind: "chat",
-				server: "http://localhost:24203",
-				modelName: "my-model",
-				text: "hello",
-				file: undefined,
-				cwd: undefined,
-				conversationId: undefined,
-				reasoningEffort: undefined,
-				showReasoning: false,
-				open: false,
-				workspaceId: undefined,
-			});
-		});
+  describe("chat", () => {
+    it("parses a chat with --text", () => {
+      const result = parseArgs(["my-model", "--text", "hello"], { defaultServer });
+      expect(result).toEqual({
+        kind: "chat",
+        server: "http://localhost:24203",
+        modelName: "my-model",
+        text: "hello",
+        file: undefined,
+        cwd: undefined,
+        conversationId: undefined,
+        reasoningEffort: undefined,
+        showReasoning: false,
+        open: false,
+        workspaceId: undefined,
+      });
+    });
 
-		it("parses a chat with --file", () => {
-			const result = parseArgs(["my-model", "--file", "foo.txt"], { defaultServer });
-			expect(result).toEqual({
-				kind: "chat",
-				server: "http://localhost:24203",
-				modelName: "my-model",
-				text: undefined,
-				file: "foo.txt",
-				cwd: undefined,
-				conversationId: undefined,
-				reasoningEffort: undefined,
-				showReasoning: false,
-				open: false,
-				workspaceId: undefined,
-			});
-		});
+    it("parses a chat with --file", () => {
+      const result = parseArgs(["my-model", "--file", "foo.txt"], { defaultServer });
+      expect(result).toEqual({
+        kind: "chat",
+        server: "http://localhost:24203",
+        modelName: "my-model",
+        text: undefined,
+        file: "foo.txt",
+        cwd: undefined,
+        conversationId: undefined,
+        reasoningEffort: undefined,
+        showReasoning: false,
+        open: false,
+        workspaceId: undefined,
+      });
+    });
 
-		it("parses a chat with both --text and --file", () => {
-			const result = parseArgs(["m", "--text", "hi", "--file", "f.txt"], { defaultServer });
-			expect(result).toMatchObject({ kind: "chat", text: "hi", file: "f.txt" });
-		});
+    it("parses a chat with both --text and --file", () => {
+      const result = parseArgs(["m", "--text", "hi", "--file", "f.txt"], { defaultServer });
+      expect(result).toMatchObject({ kind: "chat", text: "hi", file: "f.txt" });
+    });
 
-		it("parses --cwd, --conversation, --server, --show-reasoning", () => {
-			const result = parseArgs(
-				[
-					"m",
-					"--text",
-					"x",
-					"--cwd",
-					"/tmp",
-					"--conversation",
-					"abc",
-					"--server",
-					"http://s",
-					"--show-reasoning",
-				],
-				{ defaultServer },
-			);
-			expect(result).toEqual({
-				kind: "chat",
-				server: "http://s",
-				modelName: "m",
-				text: "x",
-				file: undefined,
-				cwd: "/tmp",
-				conversationId: "abc",
-				reasoningEffort: undefined,
-				showReasoning: true,
-				open: false,
-				workspaceId: undefined,
-			});
-		});
+    it("parses --cwd, --conversation, --server, --show-reasoning", () => {
+      const result = parseArgs(
+        [
+          "m",
+          "--text",
+          "x",
+          "--cwd",
+          "/tmp",
+          "--conversation",
+          "abc",
+          "--server",
+          "http://s",
+          "--show-reasoning",
+        ],
+        { defaultServer },
+      );
+      expect(result).toEqual({
+        kind: "chat",
+        server: "http://s",
+        modelName: "m",
+        text: "x",
+        file: undefined,
+        cwd: "/tmp",
+        conversationId: "abc",
+        reasoningEffort: undefined,
+        showReasoning: true,
+        open: false,
+        workspaceId: undefined,
+      });
+    });
 
-		it("parses --effort high", () => {
-			const result = parseArgs(["m", "--text", "x", "--effort", "high"], { defaultServer });
-			expect(result).toEqual({
-				kind: "chat",
-				server: "http://localhost:24203",
-				modelName: "m",
-				text: "x",
-				file: undefined,
-				cwd: undefined,
-				conversationId: undefined,
-				reasoningEffort: "high",
-				showReasoning: false,
-				open: false,
-				workspaceId: undefined,
-			});
-		});
+    it("parses --effort high", () => {
+      const result = parseArgs(["m", "--text", "x", "--effort", "high"], { defaultServer });
+      expect(result).toEqual({
+        kind: "chat",
+        server: "http://localhost:24203",
+        modelName: "m",
+        text: "x",
+        file: undefined,
+        cwd: undefined,
+        conversationId: undefined,
+        reasoningEffort: "high",
+        showReasoning: false,
+        open: false,
+        workspaceId: undefined,
+      });
+    });
 
-		it.each(["low", "medium", "high", "xhigh", "max"] as const)("accepts --effort %s", (level) => {
-			const result = parseArgs(["m", "--text", "x", "--effort", level], { defaultServer });
-			expect(result.kind).toBe("chat");
-			if (result.kind === "chat") expect(result.reasoningEffort).toBe(level);
-		});
+    it.each(["low", "medium", "high", "xhigh", "max"] as const)("accepts --effort %s", (level) => {
+      const result = parseArgs(["m", "--text", "x", "--effort", level], { defaultServer });
+      expect(result.kind).toBe("chat");
+      if (result.kind === "chat") expect(result.reasoningEffort).toBe(level);
+    });
 
-		it("errors when --effort has no value", () => {
-			const result = parseArgs(["m", "--text", "x", "--effort"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("--effort requires a value");
-		});
+    it("errors when --effort has no value", () => {
+      const result = parseArgs(["m", "--text", "x", "--effort"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("--effort requires a value");
+    });
 
-		it("errors on invalid effort level", () => {
-			const result = parseArgs(["m", "--text", "x", "--effort", "banana"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") {
-				expect(result.message).toContain("banana");
-				expect(result.message).toContain("low");
-				expect(result.message).toContain("medium");
-				expect(result.message).toContain("high");
-				expect(result.message).toContain("xhigh");
-				expect(result.message).toContain("max");
-			}
-		});
+    it("errors on invalid effort level", () => {
+      const result = parseArgs(["m", "--text", "x", "--effort", "banana"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") {
+        expect(result.message).toContain("banana");
+        expect(result.message).toContain("low");
+        expect(result.message).toContain("medium");
+        expect(result.message).toContain("high");
+        expect(result.message).toContain("xhigh");
+        expect(result.message).toContain("max");
+      }
+    });
 
-		it("errors when text and file are both missing", () => {
-			const result = parseArgs(["my-model"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("--text or --file");
-		});
+    it("errors when text and file are both missing", () => {
+      const result = parseArgs(["my-model"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("--text or --file");
+    });
 
-		it("errors on unknown flag", () => {
-			const result = parseArgs(["my-model", "--text", "hi", "--bogus"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("Unknown flag");
-		});
+    it("errors on unknown flag", () => {
+      const result = parseArgs(["my-model", "--text", "hi", "--bogus"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("Unknown flag");
+    });
 
-		it("errors when --text has no value", () => {
-			const result = parseArgs(["m", "--text"], { defaultServer });
-			expect(result.kind).toBe("error");
-		});
+    it("errors when --text has no value", () => {
+      const result = parseArgs(["m", "--text"], { defaultServer });
+      expect(result.kind).toBe("error");
+    });
 
-		it("errors when --file has no value", () => {
-			const result = parseArgs(["m", "--file"], { defaultServer });
-			expect(result.kind).toBe("error");
-		});
+    it("errors when --file has no value", () => {
+      const result = parseArgs(["m", "--file"], { defaultServer });
+      expect(result.kind).toBe("error");
+    });
 
-		it("errors when --server has no value", () => {
-			const result = parseArgs(["models", "--server"], { defaultServer });
-			expect(result.kind).toBe("error");
-		});
+    it("errors when --server has no value", () => {
+      const result = parseArgs(["models", "--server"], { defaultServer });
+      expect(result.kind).toBe("error");
+    });
 
-		it("errors when --cwd has no value", () => {
-			const result = parseArgs(["m", "--text", "x", "--cwd"], { defaultServer });
-			expect(result.kind).toBe("error");
-		});
+    it("errors when --cwd has no value", () => {
+      const result = parseArgs(["m", "--text", "x", "--cwd"], { defaultServer });
+      expect(result.kind).toBe("error");
+    });
 
-		it("errors when --conversation has no value", () => {
-			const result = parseArgs(["m", "--text", "x", "--conversation"], { defaultServer });
-			expect(result.kind).toBe("error");
-		});
+    it("errors when --conversation has no value", () => {
+      const result = parseArgs(["m", "--text", "x", "--conversation"], { defaultServer });
+      expect(result.kind).toBe("error");
+    });
 
-		it("parses --workspace flag", () => {
-			const result = parseArgs(["m", "--text", "x", "--workspace", "my-work"], { defaultServer });
-			expect(result).toEqual({
-				kind: "chat",
-				server: "http://localhost:24203",
-				modelName: "m",
-				text: "x",
-				file: undefined,
-				cwd: undefined,
-				conversationId: undefined,
-				reasoningEffort: undefined,
-				showReasoning: false,
-				open: false,
-				workspaceId: "my-work",
-			});
-		});
+    it("parses --workspace flag", () => {
+      const result = parseArgs(["m", "--text", "x", "--workspace", "my-work"], { defaultServer });
+      expect(result).toEqual({
+        kind: "chat",
+        server: "http://localhost:24203",
+        modelName: "m",
+        text: "x",
+        file: undefined,
+        cwd: undefined,
+        conversationId: undefined,
+        reasoningEffort: undefined,
+        showReasoning: false,
+        open: false,
+        workspaceId: "my-work",
+      });
+    });
 
-		it("parses -w shorthand", () => {
-			const result = parseArgs(["m", "--text", "x", "-w", "ws"], { defaultServer });
-			expect(result.kind).toBe("chat");
-			if (result.kind === "chat") expect(result.workspaceId).toBe("ws");
-		});
+    it("parses -w shorthand", () => {
+      const result = parseArgs(["m", "--text", "x", "-w", "ws"], { defaultServer });
+      expect(result.kind).toBe("chat");
+      if (result.kind === "chat") expect(result.workspaceId).toBe("ws");
+    });
 
-		it("errors when --workspace has no value", () => {
-			const result = parseArgs(["m", "--text", "x", "--workspace"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("--workspace requires a value");
-		});
-	});
+    it("errors when --workspace has no value", () => {
+      const result = parseArgs(["m", "--text", "x", "--workspace"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("--workspace requires a value");
+    });
+  });
 
-	describe("list", () => {
-		it("parses 'list' with no query", () => {
-			expect(parseArgs(["list"], { defaultServer })).toEqual({
-				kind: "list",
-				server: "http://localhost:24203",
-				all: false,
-			});
-		});
+  describe("list", () => {
+    it("parses 'list' with no query", () => {
+      expect(parseArgs(["list"], { defaultServer })).toEqual({
+        kind: "list",
+        server: "http://localhost:24203",
+        all: false,
+      });
+    });
 
-		it("parses 'list' with a query prefix", () => {
-			expect(parseArgs(["list", "abc12345"], { defaultServer })).toEqual({
-				kind: "list",
-				server: "http://localhost:24203",
-				query: "abc12345",
-				all: false,
-			});
-		});
+    it("parses 'list' with a query prefix", () => {
+      expect(parseArgs(["list", "abc12345"], { defaultServer })).toEqual({
+        kind: "list",
+        server: "http://localhost:24203",
+        query: "abc12345",
+        all: false,
+      });
+    });
 
-		it("parses 'list' with --server after the prefix", () => {
-			expect(parseArgs(["list", "abc", "--server", "http://s"], { defaultServer })).toEqual({
-				kind: "list",
-				server: "http://s",
-				query: "abc",
-				all: false,
-			});
-		});
+    it("parses 'list' with --server after the prefix", () => {
+      expect(parseArgs(["list", "abc", "--server", "http://s"], { defaultServer })).toEqual({
+        kind: "list",
+        server: "http://s",
+        query: "abc",
+        all: false,
+      });
+    });
 
-		it("parses 'list' with --status", () => {
-			expect(parseArgs(["list", "--status", "closed"], { defaultServer })).toEqual({
-				kind: "list",
-				server: "http://localhost:24203",
-				status: "closed",
-				all: false,
-			});
-		});
+    it("parses 'list' with --status", () => {
+      expect(parseArgs(["list", "--status", "closed"], { defaultServer })).toEqual({
+        kind: "list",
+        server: "http://localhost:24203",
+        status: "closed",
+        all: false,
+      });
+    });
 
-		it("parses 'list' with --workspace", () => {
-			expect(parseArgs(["list", "--workspace", "proj"], { defaultServer })).toEqual({
-				kind: "list",
-				server: "http://localhost:24203",
-				workspaceId: "proj",
-				all: false,
-			});
-		});
+    it("parses 'list' with --workspace", () => {
+      expect(parseArgs(["list", "--workspace", "proj"], { defaultServer })).toEqual({
+        kind: "list",
+        server: "http://localhost:24203",
+        workspaceId: "proj",
+        all: false,
+      });
+    });
 
-		it("parses 'list' with -w shorthand", () => {
-			const result = parseArgs(["list", "-w", "ws"], { defaultServer });
-			expect(result.kind).toBe("list");
-			if (result.kind === "list") expect(result.workspaceId).toBe("ws");
-		});
+    it("parses 'list' with -w shorthand", () => {
+      const result = parseArgs(["list", "-w", "ws"], { defaultServer });
+      expect(result.kind).toBe("list");
+      if (result.kind === "list") expect(result.workspaceId).toBe("ws");
+    });
 
-		it("parses 'list' with --workspace, --status, and a prefix together", () => {
-			const result = parseArgs(["list", "abc", "--status", "active", "--workspace", "proj"], {
-				defaultServer,
-			});
-			expect(result).toEqual({
-				kind: "list",
-				server: "http://localhost:24203",
-				query: "abc",
-				status: "active",
-				workspaceId: "proj",
-				all: false,
-			});
-		});
+    it("parses 'list' with --workspace, --status, and a prefix together", () => {
+      const result = parseArgs(["list", "abc", "--status", "active", "--workspace", "proj"], {
+        defaultServer,
+      });
+      expect(result).toEqual({
+        kind: "list",
+        server: "http://localhost:24203",
+        query: "abc",
+        status: "active",
+        workspaceId: "proj",
+        all: false,
+      });
+    });
 
-		it("errors when --workspace has no value (list)", () => {
-			const result = parseArgs(["list", "--workspace"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("--workspace requires a value");
-		});
+    it("errors when --workspace has no value (list)", () => {
+      const result = parseArgs(["list", "--workspace"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("--workspace requires a value");
+    });
 
-		it("parses 'list' with --all", () => {
-			expect(parseArgs(["list", "--all"], { defaultServer })).toEqual({
-				kind: "list",
-				server: "http://localhost:24203",
-				all: true,
-			});
-		});
+    it("parses 'list' with --all", () => {
+      expect(parseArgs(["list", "--all"], { defaultServer })).toEqual({
+        kind: "list",
+        server: "http://localhost:24203",
+        all: true,
+      });
+    });
 
-		it("parses 'list' with --status and --all ( --all takes precedence)", () => {
-			const result = parseArgs(["list", "--status", "active", "--all"], { defaultServer });
-			expect(result.kind).toBe("list");
-			if (result.kind === "list") {
-				expect(result.all).toBe(true);
-				expect(result.status).toBe("active");
-			}
-		});
+    it("parses 'list' with --status and --all ( --all takes precedence)", () => {
+      const result = parseArgs(["list", "--status", "active", "--all"], { defaultServer });
+      expect(result.kind).toBe("list");
+      if (result.kind === "list") {
+        expect(result.all).toBe(true);
+        expect(result.status).toBe("active");
+      }
+    });
 
-		it("errors on a second positional argument", () => {
-			const result = parseArgs(["list", "abc", "def"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("Unexpected argument");
-		});
+    it("errors on a second positional argument", () => {
+      const result = parseArgs(["list", "abc", "def"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("Unexpected argument");
+    });
 
-		it("errors on an unknown flag", () => {
-			const result = parseArgs(["list", "--bogus"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("Unknown flag");
-		});
-	});
+    it("errors on an unknown flag", () => {
+      const result = parseArgs(["list", "--bogus"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("Unknown flag");
+    });
+  });
 
-	describe("read", () => {
-		it("parses 'read' with a conversation id", () => {
-			expect(parseArgs(["read", "deadbeef"], { defaultServer })).toEqual({
-				kind: "read",
-				server: "http://localhost:24203",
-				conversationId: "deadbeef",
-			});
-		});
+  describe("read", () => {
+    it("parses 'read' with a conversation id", () => {
+      expect(parseArgs(["read", "deadbeef"], { defaultServer })).toEqual({
+        kind: "read",
+        server: "http://localhost:24203",
+        conversationId: "deadbeef",
+      });
+    });
 
-		it("parses 'read' with --server", () => {
-			expect(parseArgs(["read", "deadbeef", "--server", "http://s"], { defaultServer })).toEqual({
-				kind: "read",
-				server: "http://s",
-				conversationId: "deadbeef",
-			});
-		});
+    it("parses 'read' with --server", () => {
+      expect(parseArgs(["read", "deadbeef", "--server", "http://s"], { defaultServer })).toEqual({
+        kind: "read",
+        server: "http://s",
+        conversationId: "deadbeef",
+      });
+    });
 
-		it("errors when no conversation id is given", () => {
-			const result = parseArgs(["read"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("conversation id");
-		});
+    it("errors when no conversation id is given", () => {
+      const result = parseArgs(["read"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("conversation id");
+    });
 
-		it("errors on a second positional argument", () => {
-			const result = parseArgs(["read", "a", "b"], { defaultServer });
-			expect(result.kind).toBe("error");
-		});
-	});
+    it("errors on a second positional argument", () => {
+      const result = parseArgs(["read", "a", "b"], { defaultServer });
+      expect(result.kind).toBe("error");
+    });
+  });
 
-	describe("send", () => {
-		it("parses 'send' with --text", () => {
-			expect(parseArgs(["send", "deadbeef", "--text", "hi"], { defaultServer })).toEqual({
-				kind: "send",
-				server: "http://localhost:24203",
-				conversationId: "deadbeef",
-				text: "hi",
-				file: undefined,
-				queue: false,
-				open: false,
-			});
-		});
+  describe("send", () => {
+    it("parses 'send' with --text", () => {
+      expect(parseArgs(["send", "deadbeef", "--text", "hi"], { defaultServer })).toEqual({
+        kind: "send",
+        server: "http://localhost:24203",
+        conversationId: "deadbeef",
+        text: "hi",
+        file: undefined,
+        queue: false,
+        open: false,
+      });
+    });
 
-		it("parses 'send' with --file", () => {
-			expect(parseArgs(["send", "deadbeef", "--file", "foo.txt"], { defaultServer })).toEqual({
-				kind: "send",
-				server: "http://localhost:24203",
-				conversationId: "deadbeef",
-				text: undefined,
-				file: "foo.txt",
-				queue: false,
-				open: false,
-			});
-		});
+    it("parses 'send' with --file", () => {
+      expect(parseArgs(["send", "deadbeef", "--file", "foo.txt"], { defaultServer })).toEqual({
+        kind: "send",
+        server: "http://localhost:24203",
+        conversationId: "deadbeef",
+        text: undefined,
+        file: "foo.txt",
+        queue: false,
+        open: false,
+      });
+    });
 
-		it("parses 'send' with both --text and --file", () => {
-			const result = parseArgs(["send", "deadbeef", "--text", "hi", "--file", "f.txt"], {
-				defaultServer,
-			});
-			expect(result).toMatchObject({ kind: "send", text: "hi", file: "f.txt" });
-		});
+    it("parses 'send' with both --text and --file", () => {
+      const result = parseArgs(["send", "deadbeef", "--text", "hi", "--file", "f.txt"], {
+        defaultServer,
+      });
+      expect(result).toMatchObject({ kind: "send", text: "hi", file: "f.txt" });
+    });
 
-		it("parses 'send' with --queue", () => {
-			const result = parseArgs(["send", "deadbeef", "--text", "hi", "--queue"], {
-				defaultServer,
-			});
-			expect(result).toEqual({
-				kind: "send",
-				server: "http://localhost:24203",
-				conversationId: "deadbeef",
-				text: "hi",
-				file: undefined,
-				queue: true,
-				open: false,
-			});
-		});
+    it("parses 'send' with --queue", () => {
+      const result = parseArgs(["send", "deadbeef", "--text", "hi", "--queue"], {
+        defaultServer,
+      });
+      expect(result).toEqual({
+        kind: "send",
+        server: "http://localhost:24203",
+        conversationId: "deadbeef",
+        text: "hi",
+        file: undefined,
+        queue: true,
+        open: false,
+      });
+    });
 
-		it("parses 'send' with --open", () => {
-			const result = parseArgs(["send", "deadbeef", "--text", "hi", "--open"], {
-				defaultServer,
-			});
-			expect(result).toEqual({
-				kind: "send",
-				server: "http://localhost:24203",
-				conversationId: "deadbeef",
-				text: "hi",
-				file: undefined,
-				queue: false,
-				open: true,
-			});
-		});
+    it("parses 'send' with --open", () => {
+      const result = parseArgs(["send", "deadbeef", "--text", "hi", "--open"], {
+        defaultServer,
+      });
+      expect(result).toEqual({
+        kind: "send",
+        server: "http://localhost:24203",
+        conversationId: "deadbeef",
+        text: "hi",
+        file: undefined,
+        queue: false,
+        open: true,
+      });
+    });
 
-		it("parses 'send' with --cwd and --effort", () => {
-			const result = parseArgs(
-				["send", "deadbeef", "--text", "hi", "--cwd", "/tmp", "--effort", "xhigh"],
-				{ defaultServer },
-			);
-			expect(result).toEqual({
-				kind: "send",
-				server: "http://localhost:24203",
-				conversationId: "deadbeef",
-				text: "hi",
-				file: undefined,
-				queue: false,
-				open: false,
-				cwd: "/tmp",
-				reasoningEffort: "xhigh",
-			});
-		});
+    it("parses 'send' with --cwd and --effort", () => {
+      const result = parseArgs(
+        ["send", "deadbeef", "--text", "hi", "--cwd", "/tmp", "--effort", "xhigh"],
+        { defaultServer },
+      );
+      expect(result).toEqual({
+        kind: "send",
+        server: "http://localhost:24203",
+        conversationId: "deadbeef",
+        text: "hi",
+        file: undefined,
+        queue: false,
+        open: false,
+        cwd: "/tmp",
+        reasoningEffort: "xhigh",
+      });
+    });
 
-		it("errors when --text and --file are both missing", () => {
-			const result = parseArgs(["send", "deadbeef"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("--text or --file");
-		});
+    it("errors when --text and --file are both missing", () => {
+      const result = parseArgs(["send", "deadbeef"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("--text or --file");
+    });
 
-		it("requires a conversation id", () => {
-			const result = parseArgs(["send", "--text", "hi"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("conversation id");
-		});
+    it("requires a conversation id", () => {
+      const result = parseArgs(["send", "--text", "hi"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("conversation id");
+    });
 
-		it("errors when --text has no value", () => {
-			const result = parseArgs(["send", "deadbeef", "--text"], { defaultServer });
-			expect(result.kind).toBe("error");
-		});
+    it("errors when --text has no value", () => {
+      const result = parseArgs(["send", "deadbeef", "--text"], { defaultServer });
+      expect(result.kind).toBe("error");
+    });
 
-		it("errors when --file has no value", () => {
-			const result = parseArgs(["send", "deadbeef", "--file"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("--file requires a value");
-		});
-	});
+    it("errors when --file has no value", () => {
+      const result = parseArgs(["send", "deadbeef", "--file"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("--file requires a value");
+    });
+  });
 
-	describe("open", () => {
-		it("parses 'open' with conversation id", () => {
-			expect(parseArgs(["open", "deadbeef"], { defaultServer })).toEqual({
-				kind: "open",
-				server: "http://localhost:24203",
-				conversationId: "deadbeef",
-			});
-		});
+  describe("open", () => {
+    it("parses 'open' with conversation id", () => {
+      expect(parseArgs(["open", "deadbeef"], { defaultServer })).toEqual({
+        kind: "open",
+        server: "http://localhost:24203",
+        conversationId: "deadbeef",
+      });
+    });
 
-		it("parses 'open' with --server", () => {
-			expect(
-				parseArgs(["open", "deadbeef", "--server", "http://example.com"], { defaultServer }),
-			).toEqual({
-				kind: "open",
-				server: "http://example.com",
-				conversationId: "deadbeef",
-			});
-		});
+    it("parses 'open' with --server", () => {
+      expect(
+        parseArgs(["open", "deadbeef", "--server", "http://example.com"], { defaultServer }),
+      ).toEqual({
+        kind: "open",
+        server: "http://example.com",
+        conversationId: "deadbeef",
+      });
+    });
 
-		it("requires a conversation id", () => {
-			const result = parseArgs(["open"], { defaultServer });
-			expect(result.kind).toBe("error");
-			if (result.kind === "error") expect(result.message).toContain("conversation id");
-		});
+    it("requires a conversation id", () => {
+      const result = parseArgs(["open"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("conversation id");
+    });
 
-		it("rejects unknown flags", () => {
-			const result = parseArgs(["open", "deadbeef", "--bogus"], { defaultServer });
-			expect(result.kind).toBe("error");
-		});
-	});
+    it("rejects unknown flags", () => {
+      const result = parseArgs(["open", "deadbeef", "--bogus"], { defaultServer });
+      expect(result.kind).toBe("error");
+    });
+  });
 });
