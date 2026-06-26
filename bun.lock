@@ -84,6 +84,7 @@
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
+        "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
         "@dispatch/provider-umans": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
@@ -161,6 +162,13 @@
         "@dispatch/wire": "workspace:*",
       },
     },
+    "packages/provider-concurrency": {
+      "name": "@dispatch/provider-concurrency",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+      },
+    },
     "packages/provider-openai-compat": {
       "name": "@dispatch/provider-openai-compat",
       "version": "0.0.0",
@@ -186,6 +194,7 @@
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
+        "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/system-prompt": "workspace:*",
       },
     },
@@ -338,6 +347,7 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
+        "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/system-prompt": "workspace:*",
         "@dispatch/throughput-store": "workspace:*",
@@ -414,6 +424,8 @@
     "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
 
     "@dispatch/openai-stream": ["@dispatch/openai-stream@workspace:packages/openai-stream"],
+
+    "@dispatch/provider-concurrency": ["@dispatch/provider-concurrency@workspace:packages/provider-concurrency"],
 
     "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
 

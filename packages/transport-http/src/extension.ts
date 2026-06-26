@@ -2,9 +2,11 @@ import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { createApp } from "./app.js";
 import {
   type ComputerService,
+  type ConcurrencyService,
   cacheWarmHandle,
   compactionHandle,
   computerServiceHandle,
+  concurrencyServiceHandle,
   conversationStoreHandle,
   credentialStoreHandle,
   heartbeatServiceHandle,
@@ -39,6 +41,9 @@ export const manifest: Manifest = {
       "/computers/:alias",
       "/computers/:alias/status",
       "/computers/:alias/test",
+      "/concurrency/limits",
+      "/concurrency/limits/:providerId",
+      "/concurrency/status",
       "/conversations",
       "/conversations/:id",
       "/conversations/:id/close",
@@ -105,6 +110,15 @@ export function createTransportHttpExtension(): Extension & {
       } catch {
         computerService = undefined;
       }
+      // Optional: the `provider-concurrency` extension provides the
+      // concurrency limiter service. NOT in dependsOn (may be absent), so
+      // resolve defensively — when absent the /concurrency/* routes degrade.
+      let concurrencyService: ConcurrencyService | undefined;
+      try {
+        concurrencyService = host.getService(concurrencyServiceHandle);
+      } catch {
+        concurrencyService = undefined;
+      }
       const logger = host.logger;
 
       const app = createApp({
@@ -119,6 +133,7 @@ export function createTransportHttpExtension(): Extension & {
         systemPromptService,
         heartbeatService,
         ...(computerService !== undefined ? { computerService } : {}),
+        ...(concurrencyService !== undefined ? { concurrencyService } : {}),
         logger,
         emit: host.emit.bind(host),
         ...(process.env.DISPATCH_WEB_DIR !== undefined

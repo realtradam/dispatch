@@ -12,6 +12,7 @@
     "@dispatch/kernel": "workspace:*",
     "@dispatch/lsp": "workspace:*",
     "@dispatch/mcp": "workspace:*",
+    "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*",
     "@dispatch/throughput-store": "workspace:*",
     "@dispatch/transport-contract": "workspace:*",

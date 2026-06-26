@@ -24,6 +24,7 @@ import {
 import { extension as lspExt } from "@dispatch/lsp";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
+import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
@@ -79,6 +80,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
   authApikeyExt,
   providerOpenaiCompatExt,
   providerUmansExt,
+  providerConcurrencyExt,
   // exec-backend must precede the tool extensions that
   // `dependsOn: ["exec-backend"]` (tool-edit-file/read/shell/write). It
   // provides the ExecBackendResolver the tools resolve through; placing it

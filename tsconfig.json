@@ -98,6 +98,9 @@
       "path": "./packages/heartbeat"
     },
     {
+      "path": "./packages/provider-concurrency"
+    },
+    {
       "path": "./packages/system-prompt"
     },
     {

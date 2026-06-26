@@ -13,6 +13,7 @@
     "@dispatch/exec-backend": "workspace:*",
     "@dispatch/heartbeat": "workspace:*",
     "@dispatch/provider-openai-compat": "workspace:*",
+    "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/provider-umans": "workspace:*",
     "@dispatch/message-queue": "workspace:*",
     "@dispatch/mcp": "workspace:*",

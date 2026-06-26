@@ -20,6 +20,8 @@ import type {
 } from "@dispatch/kernel";
 import { defineEventHook, defineService, type ServiceHandle } from "@dispatch/kernel";
 import type { MessageQueueService, QueuedMessage } from "@dispatch/message-queue";
+import type { ConcurrencyLimiter } from "@dispatch/provider-concurrency";
+import { wrapProviderWithConcurrency } from "@dispatch/provider-concurrency";
 import type { SystemPromptService } from "@dispatch/system-prompt";
 import { createMetricsAccumulator } from "./metrics.js";
 import {
@@ -335,6 +337,14 @@ export interface SessionOrchestratorDeps {
    * order doesn't matter.
    */
   readonly resolveSystemPrompt?: () => SystemPromptService | undefined;
+  /**
+   * Lazily resolves the concurrency limiter, or `undefined` when the
+   * provider-concurrency extension isn't loaded (no concurrency limiting —
+   * feature degrades off). When present, each resolved provider is wrapped so
+   * that a concurrency slot is acquired before the stream starts and released
+   * when the stream completes. Lazy so activation order doesn't matter.
+   */
+  readonly resolveConcurrencyLimiter?: () => ConcurrencyLimiter | undefined;
   /** Apply the per-turn tools filter chain. Injected for testability. */
   readonly applyToolsFilter: (assembly: ToolAssembly) => Promise<ToolAssembly>;
   /** Base logger (auto-scoped to this extension); childed per turn for span capture. */
@@ -439,6 +449,7 @@ export function createSessionOrchestrator(
     systemPromptOverride: string | undefined,
   ): void {
     const turnId = generateTurnId();
+    const promptStartedAt = deps.now?.() ?? Date.now();
     const controller = new AbortController();
     activeTurns.set(conversationId, { buffer: [], turnId, controller });
     activeConversations.add(conversationId);
@@ -592,6 +603,22 @@ export function createSessionOrchestrator(
           await deps.conversationStore.setModel(conversationId, effectiveModelName);
         } else {
           provider = deps.resolveProvider();
+        }
+
+        // Wrap the resolved provider with concurrency limiting when the
+        // provider-concurrency extension is loaded. The slot is acquired
+        // before the stream starts (before the HTTP request) and released
+        // when the stream completes (after all tokens are generated). The
+        // promptStartedAt (turn start time) is used for oldest-agent-first
+        // scheduling when multiple agents are queued.
+        const limiter = deps.resolveConcurrencyLimiter?.();
+        if (limiter !== undefined) {
+          provider = wrapProviderWithConcurrency(
+            provider,
+            limiter,
+            conversationId,
+            promptStartedAt,
+          );
         }
 
         const baseTools = deps.resolveTools();
@@ -990,6 +1017,17 @@ export function createWarmService(
         provider = deps.resolveProvider();
       }
 
+      // Wrap with concurrency limiting (same as the main turn path).
+      const warmLimiter = deps.resolveConcurrencyLimiter?.();
+      if (warmLimiter !== undefined) {
+        provider = wrapProviderWithConcurrency(
+          provider,
+          warmLimiter,
+          conversationId,
+          deps.now?.() ?? Date.now(),
+        );
+      }
+
       const baseTools = deps.resolveTools();
       // Resolve cwd the SAME way handleMessage does — pass opts.cwd as the overrideCwd
       // The tools filter is cwd-sensitive (e.g. skill discovery rewrites the
@@ -1134,6 +1172,17 @@ export function createCompactionService(
         modelOverride = resolved.model;
       } else {
         provider = deps.resolveProvider();
+      }
+
+      // Wrap with concurrency limiting (same as the main turn path).
+      const compactionLimiter = deps.resolveConcurrencyLimiter?.();
+      if (compactionLimiter !== undefined) {
+        provider = wrapProviderWithConcurrency(
+          provider,
+          compactionLimiter,
+          conversationId,
+          deps.now?.() ?? Date.now(),
+        );
       }
 
       // Build the summarization request: system prompt + conversation text + instruction

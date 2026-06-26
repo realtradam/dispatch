@@ -8,6 +8,8 @@
     { "path": "../heartbeat" },
     { "path": "../kernel" },
     { "path": "../lsp" },
+    { "path": "../mcp" },
+    { "path": "../provider-concurrency" },
     { "path": "../session-orchestrator" },
     { "path": "../system-prompt" },
     { "path": "../throughput-store" },

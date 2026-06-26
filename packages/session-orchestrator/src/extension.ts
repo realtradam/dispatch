@@ -3,6 +3,7 @@ import { credentialStoreHandle } from "@dispatch/credential-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import { messageQueueHandle } from "@dispatch/message-queue";
+import { concurrencyServiceHandle } from "@dispatch/provider-concurrency";
 import { systemPromptHandle } from "@dispatch/system-prompt";
 import {
   cacheWarmHandle,
@@ -89,6 +90,19 @@ export function activate(host: HostAPI): void {
       // doesn't matter; called per-turn / per-compaction, not at activate.
       try {
         return host.getService(systemPromptHandle);
+      } catch {
+        return undefined;
+      }
+    },
+    resolveConcurrencyLimiter: () => {
+      // Lazily resolve the concurrency limiter. Returns undefined when the
+      // provider-concurrency extension isn't loaded (no concurrency limiting —
+      // feature degrades off). Lazy so activation order with
+      // provider-concurrency doesn't matter; called per-turn, not at activate.
+      const loaded = host.getExtensions().some((m) => m.id === "provider-concurrency");
+      if (!loaded) return undefined;
+      try {
+        return host.getService(concurrencyServiceHandle);
       } catch {
         return undefined;
       }
