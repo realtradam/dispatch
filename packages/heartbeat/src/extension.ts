@@ -6,7 +6,10 @@
  * workspace's scheduler on boot. Prompt templates (`systemPrompt` /
  * `taskPrompt`) are resolved against the SAME variable catalog the global
  * system-prompt template uses (via the system-prompt service's `resolveText`),
- * so `[type:name]` placeholders reach the model substituted — not raw.
+ * so `[type:name]` placeholders reach the model substituted — not raw. An empty
+ * heartbeat `systemPrompt` inherits the global system prompt template (via
+ * `getTemplate`) before variable resolution runs — empty = inherit, not "no
+ * system prompt".
  */
 
 import type { ConversationStore } from "@dispatch/conversation-store";
@@ -77,6 +80,10 @@ export const extension: Extension = {
 			orchestrator,
 			logger,
 			resolvePrompt,
+			// CR-HB-2: an empty heartbeat systemPrompt inherits the global
+			// system prompt template (GET /system-prompt / regular
+			// conversations resolve) before variable resolution runs.
+			getGlobalSystemPrompt: () => systemPromptService.getTemplate(),
 		});
 
 		// Reconcile stale runs + arm enabled workspaces on boot.

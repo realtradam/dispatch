@@ -71,6 +71,18 @@ export interface HeartbeatServiceDeps {
 			readonly model: string;
 		},
 	) => Promise<string>;
+	/**
+	 * Resolve an empty heartbeat `systemPrompt` to the GLOBAL system prompt
+	 * template — the same one `GET /system-prompt` returns / that regular
+	 * conversations resolve. Applied ONLY when the heartbeat's persisted
+	 * `systemPrompt` is `""` (inherit), and BEFORE variable resolution
+	 * (`resolvePrompt` / CR-HB-1) runs on the result, so both apply in order:
+	 * empty ⇒ global template, then `[type:name]` placeholders resolved. A
+	 * non-empty `systemPrompt` is an explicit override and bypasses this.
+	 * When omitted, empty stays empty (no system prompt) — the extension
+	 * wires the real getter; tests inject a fake.
+	 */
+	readonly getGlobalSystemPrompt?: () => Promise<string>;
 }
 
 interface ActiveRun {
@@ -90,6 +102,10 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 	// real resolver so [type:name] placeholders are substituted like the global
 	// system-prompt template; tests inject a fake.
 	const resolvePrompt = deps.resolvePrompt ?? ((template: string) => Promise.resolve(template));
+	// Default: an empty systemPrompt stays empty (no system prompt). The
+	// extension wires the real getter so empty INHERITS the global system
+	// prompt template (GET /system-prompt); tests inject a fake.
+	const getGlobalSystemPrompt = deps.getGlobalSystemPrompt ?? (() => Promise.resolve(""));
 
 	// runId → active-run tracking (in-memory; the durable record lives in the
 	// run store). Used to (a) map a stop request to its conversation, and
@@ -121,17 +137,27 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 
 		logger?.info("heartbeat: run started", { workspaceId, runId, conversationId });
 
-		// Resolve [type:name] variables in the system/task prompts ONCE, when
-		// the turn is constructed — the same resolver + variable catalog the
-		// global system-prompt template uses. The orchestrator sends an
-		// explicit systemPrompt override AS-IS (bypassing its own templated
-		// prompt), so resolution must happen HERE, before handleMessage. For
-		// prompts using stable variables (os/cwd/git) this yields a stable,
-		// cache-warm prompt across runs; time-bearing variables refresh per
-		// run (mirroring the global template's per-conversation resolution).
+		// Resolve the heartbeat's prompts ONCE, when the turn is constructed.
+		//
+		// CR-HB-2: an empty `systemPrompt` INHERITS the global system prompt
+		// template (the same one `GET /system-prompt` returns / that regular
+		// conversations resolve) — empty is an override-means-inherit flag, not
+		// "no system prompt". A non-empty `systemPrompt` is an explicit override.
+		// This step runs FIRST.
+		//
+		// CR-HB-1: then `[type:name]` variable placeholders in whichever prompt is
+		// in effect are resolved via the same resolver + variable catalog the
+		// global system-prompt template uses. The orchestrator sends an explicit
+		// systemPrompt override AS-IS (bypassing its own templated prompt), so
+		// resolution must happen HERE, before handleMessage. For prompts using
+		// stable variables (os/cwd/git) this yields a stable, cache-warm prompt
+		// across runs; time-bearing variables refresh per run (mirroring the
+		// global template's per-conversation resolution).
+		const baseSystemPrompt =
+			config.systemPrompt === "" ? await getGlobalSystemPrompt() : config.systemPrompt;
 		const resolveCtx = { workspaceId, conversationId, model: config.model };
 		const [systemPrompt, taskPrompt] = await Promise.all([
-			resolvePrompt(config.systemPrompt, resolveCtx),
+			resolvePrompt(baseSystemPrompt, resolveCtx),
 			resolvePrompt(config.taskPrompt, resolveCtx),
 		]);
 
@@ -143,9 +169,11 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
 				// streamed events (it only awaits turn completion to mark the
 				// run done). A no-op onEvent satisfies the required callback.
 				onEvent: () => {},
-				// Always an explicit override (incl. the empty string = no system
-				// prompt) — bypasses the templated workspace prompt. Resolved
-				// above so [type:name] placeholders are substituted, not raw.
+				// Always passed explicitly — bypasses the orchestrator's templated
+				// workspace prompt. Resolved above: an empty config systemPrompt
+				// inherited the global template (CR-HB-2), then [type:name]
+				// placeholders were substituted (CR-HB-1). Still "" when the global
+				// template itself is empty (no system prompt).
 				systemPrompt,
 				...(config.model !== "" ? { modelName: config.model } : {}),
 				...(config.reasoningEffort !== null ? { reasoningEffort: config.reasoningEffort } : {}),

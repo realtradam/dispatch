@@ -153,6 +153,7 @@ function createService(opts: {
 			readonly model: string;
 		},
 	) => Promise<string>;
+	readonly getGlobalSystemPrompt?: () => Promise<string>;
 }) {
 	const fake = createFakeTimers();
 	let id = 0;
@@ -163,6 +164,9 @@ function createService(opts: {
 		timers: fake.timers,
 		generateId: () => `id-${++id}`,
 		...(opts.resolvePrompt !== undefined ? { resolvePrompt: opts.resolvePrompt } : {}),
+		...(opts.getGlobalSystemPrompt !== undefined
+			? { getGlobalSystemPrompt: opts.getGlobalSystemPrompt }
+			: {}),
 	});
 	return { svc, advance: fake.advance, storage };
 }
@@ -291,6 +295,121 @@ describe("createHeartbeatService", () => {
 		// Unresolved — literals reach the orchestrator verbatim.
 		expect(turn.systemPrompt).toBe("raw [system:os] prompt");
 		expect(turn.text).toBe("raw [system:date] task");
+		turn.resolve();
+		await flush();
+	});
+
+	it("an empty systemPrompt inherits the global system prompt template (CR-HB-2)", async () => {
+		const orch = createFakeOrchestrator();
+		// The global getter returns the workspace's regular system prompt
+		// template (the same one GET /system-prompt returns). No resolver → the
+		// inherited template reaches the orchestrator verbatim (isolates CR-HB-2
+		// from CR-HB-1).
+		const { svc, advance } = createService({
+			orch,
+			getGlobalSystemPrompt: () => Promise.resolve("GLOBAL DEFAULT TEMPLATE"),
+		});
+		await svc.updateConfig("ws-1", {
+			enabled: true,
+			// Empty systemPrompt = inherit the global default, NOT "no prompt".
+			systemPrompt: "",
+			taskPrompt: "go",
+			intervalMinutes: 1,
+		});
+
+		advance(60_000);
+		await flush();
+		expect(orch.pending).toHaveLength(1);
+		const turn = orch.pending[0]!;
+		expect(turn.systemPrompt).toBe("GLOBAL DEFAULT TEMPLATE");
+		turn.resolve();
+		await flush();
+	});
+
+	it("CR-HB-2 composes with CR-HB-1: the inherited global template's [type:name] placeholders are resolved", async () => {
+		const orch = createFakeOrchestrator();
+		const resolvePrompt = async (
+			template: string,
+			ctx: {
+				readonly workspaceId: string;
+				readonly conversationId: string;
+				readonly model: string;
+			},
+		): Promise<string> => {
+			return template
+				.replaceAll("[system:os]", "Linux (WSL)")
+				.replaceAll("[prompt:cwd]", "/repo")
+				.replaceAll("[prompt:workspace_id]", ctx.workspaceId);
+		};
+		// The global template carries [type:name] placeholders (like the real
+		// default template embeds [prompt:cwd] / [file:AGENTS.md]).
+		const { svc, advance } = createService({
+			orch,
+			resolvePrompt,
+			getGlobalSystemPrompt: () =>
+				Promise.resolve("You run on [system:os] in [prompt:cwd] (ws [prompt:workspace_id])."),
+		});
+		await svc.updateConfig("ws-1", {
+			enabled: true,
+			// Empty → inherit the global template, THEN resolve its placeholders.
+			systemPrompt: "",
+			taskPrompt: "go",
+			intervalMinutes: 1,
+		});
+
+		advance(60_000);
+		await flush();
+		expect(orch.pending).toHaveLength(1);
+		const turn = orch.pending[0]!;
+		// The global template was inherited (not empty), then its [type:name]
+		// placeholders were substituted — NOT left literal, NOT empty.
+		expect(turn.systemPrompt).toBe("You run on Linux (WSL) in /repo (ws ws-1).");
+		turn.resolve();
+		await flush();
+	});
+
+	it("a non-empty systemPrompt override bypasses the global template (only CR-HB-1 applies)", async () => {
+		const orch = createFakeOrchestrator();
+		const resolvePrompt = async (template: string): Promise<string> =>
+			template.replaceAll("[system:os]", "Linux (WSL)");
+		const { svc, advance } = createService({
+			orch,
+			resolvePrompt,
+			// A DISTINCT global template — must NOT be used when overriding.
+			getGlobalSystemPrompt: () => Promise.resolve("GLOBAL SHOULD NOT APPEAR [system:os]"),
+		});
+		await svc.updateConfig("ws-1", {
+			enabled: true,
+			systemPrompt: "custom override on [system:os]",
+			taskPrompt: "go",
+			intervalMinutes: 1,
+		});
+
+		advance(60_000);
+		await flush();
+		const turn = orch.pending[0]!;
+		// The override is used (and resolved), not the global template.
+		expect(turn.systemPrompt).toBe("custom override on Linux (WSL)");
+		turn.resolve();
+		await flush();
+	});
+
+	it("an empty systemPrompt stays empty when no global getter is wired (resolution is optional)", async () => {
+		const orch = createFakeOrchestrator();
+		// No getGlobalSystemPrompt → empty stays empty (no system prompt).
+		// Mirrors the no-resolver pass-through default: both deps are optional.
+		const { svc, advance } = createService({ orch });
+		await svc.updateConfig("ws-1", {
+			enabled: true,
+			systemPrompt: "",
+			taskPrompt: "go",
+			intervalMinutes: 1,
+		});
+
+		advance(60_000);
+		await flush();
+		const turn = orch.pending[0]!;
+		expect(turn.systemPrompt).toBe("");
 		turn.resolve();
 		await flush();
 	});
