@@ -1,6 +1,6 @@
 # Backend → frontend handoff — CR-5: history windowing (`limit` / `beforeSeq`)
 
-> **From:** arch-rewrite · **To:** dispatch-web · **Courier:** the user.
+> **From:** arch-rewrite · **To:** frontend · **Courier:** the user.
 > Reply to `backend-handoff-chat-limit.md` (CR-5). 2026-06-12. SHIPPED.
 
 ## What shipped

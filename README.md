@@ -204,9 +204,9 @@ bun run dispatch -- send <id> --text "follow up" --queue --open
 
 ---
 
-## Web frontend (dispatch-web)
+## Web frontend (frontend)
 
-The web UI is a **separate repo** ([github.com/realtradam/dispatch-web](https://github.com/realtradam/dispatch-web),
+The web UI is a **separate repo** ([github.com/realtrad../frontend](https://github.com/realtrad../frontend),
 Svelte 5 + Vite + DaisyUI), built to the same methodology and consuming the backend's typed contracts
 (`@dispatch/wire`, `@dispatch/transport-contract`, `@dispatch/ui-contract`). The browser chat MVP
 is in progress — it streams turns over the chat WebSocket, renders the surface system (loaded
@@ -217,7 +217,7 @@ workspaces, LSP status, and per-conversation settings.
 
 ```sh
 git clone git@github.com:realtradam/dispatch.git
-git clone git@github.com:realtradam/dispatch-web.git
+git clone git@github.com:realtrad../frontend.git
 bin/up      # backend (bun --watch :24203 + WS :24205) + frontend (vite HMR :24204)
 ```
 
@@ -225,7 +225,7 @@ bin/up      # backend (bun --watch :24203 + WS :24205) + frontend (vite HMR :242
 alongside `bin/up` without interference. Both Ctrl-C cleanly (including the collector child).
 
 Then open **http://localhost:24204** (or your Tailscale hostname). See the
-[dispatch-web README](https://github.com/realtradam/dispatch-web#readme) for full setup.
+[dispatch-web README](https://github.com/realtrad../frontend#readme) for full setup.
 
 ---
 
@@ -320,7 +320,7 @@ Clone these repos as siblings:
 ```
 dispatch/                  workspace root (shared bin/ scripts)
 ├── dispatch/              this repo — backend (branch dev)
-├── dispatch-web/          [github.com/realtradam/dispatch-web](https://github.com/realtradam/dispatch-web) — web frontend
+├── frontend/          [github.com/realtrad../frontend](https://github.com/realtrad../frontend) — web frontend
 └── bin/                   shared dev scripts (up, up2)
 ```
 

@@ -1,7 +1,7 @@
 # Turn continuity — detached turns + multi-client live view
 
 > Status: DESIGN (locked) → backend implementation in progress. FE work couriered
-> to `../dispatch-web`. See ORCHESTRATOR §7 (cross-repo).
+> to `../frontend`. See ORCHESTRATOR §7 (cross-repo).
 
 ## Problem (confirmed by code trace)
 

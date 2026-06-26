@@ -93,9 +93,9 @@ per the §3 map; the `--file` ORDER is the assembly order: constitution → brie
 omit `--file .dispatch/extension-agent.md` for non-extension units):
 
 ```bash
-cd /home/tradam/projects/dispatch/dispatch-backend
+cd /home/tradam/projects/dispatch/backend
 dispatch umans/umans-glm-5.2 \
-  --cwd /home/tradam/projects/dispatch/dispatch-backend \
+  --cwd /home/tradam/projects/dispatch/backend \
   --text "You are the single owner-agent for packages/<unit>/. The attached files are your constitution, brief, rules, and task — follow them exactly in the order given. Then IMPLEMENT the task now: edit ONLY files under packages/<unit>/, run tsc -b / vitest / biome for your package, and write your report to reports/<unit>.md. Reply with ONLY a one-line status + the path reports/<unit>.md — no diffs, no logs." \
   --file AGENTS.md \
   --file .dispatch/package-agent.md \
@@ -197,7 +197,7 @@ Keep it scoped (P6): state only the project-specific, non-inferable task — the
   in its OWN code — NO shared redaction helper (design rationale:
   `notes/observability-design.md` §9). Include this on EVERY extension summon (an
   extension that never logs is a coverage gap, not an exemption).
-- **Frontend units** are summoned from the SEPARATE `../dispatch-web` repo using ITS
+- **Frontend units** are summoned from the SEPARATE `../frontend` repo using ITS
   OWN harness (`package-agent.md` + `frontend-*.md` rules) + ITS OWN scoping map — NOT
   these backend rules. See that repo's `ORCHESTRATOR.md`.
 
@@ -230,7 +230,7 @@ fix it. You diagnose from symptoms; the agent reads the code.
 
 After every agent, independently:
 ```bash
-cd /home/tradam/projects/dispatch/dispatch-backend
+cd /home/tradam/projects/dispatch/backend
 bun run typecheck   # tsc -b --pretty — must be clean (EXIT 0)
 bun run test        # vitest — note the pass count
 bun run check       # biome — must be clean
@@ -347,7 +347,7 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
 ## 7. Repo geography
 
 ```
-/home/tradam/projects/dispatch/dispatch-backend   # THE worktree (branch dev)
+/home/tradam/projects/dispatch/backend   # THE worktree (branch dev)
 
   AGENTS.md        the subagent constitution (the summon points each agent at it; you enforce it)
   ORCHESTRATOR.md  the orchestrator's operating manual (this file)
@@ -392,7 +392,7 @@ The genesis commit deleted all prior source; we rebuilt from scratch. The OLD
 project lives at `/home/tradam/projects/dispatch/dispatch-source` (reference only
 — do not edit).
 
-The **web frontend is a SEPARATE repo** at `/home/tradam/projects/dispatch/dispatch-web`
+The **web frontend is a SEPARATE repo** at `/home/tradam/projects/dispatch/frontend`
 (own git, own harness — its own `AGENTS.md`/`ORCHESTRATOR.md`/`GLOSSARY.md`/`.dispatch/`).
 It consumes `packages/ui-contract` + the wire types as a pinned `file:` dependency.
 `lsp references` does NOT span the two repos, so cross-repo contract changes are
@@ -417,7 +417,7 @@ provider silently fails to register: "No providers registered"). `.env` also pin
 `BACKEND_PORT`, which beats `PORT` — so set `BACKEND_PORT` explicitly, and ISOLATE the data
 paths or you'll share SQLite files + spawn a duplicate collector against the dev stack:
 ```bash
-cd /home/tradam/projects/dispatch/dispatch-backend
+cd /home/tradam/projects/dispatch/backend
 BACKEND_PORT=4567 SURFACE_WS_PORT=4569 \
   DISPATCH_DB=/tmp/opencode/probe/dispatch.db \
   DISPATCH_TRACE_DB=/tmp/opencode/probe/traces.db \

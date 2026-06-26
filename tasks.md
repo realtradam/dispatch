@@ -30,7 +30,7 @@ safety invariant — never duplicate partial output). Plan:
 - **Retry trigger:** emitted `error` with `retryable===true` → retry;
   `retryable` false/absent → give up; a THROWN error → retryable-by-default
   ONLY when pre-content. All gated on `!hadContent` (text/reasoning/tool-call/usage).
-- **Frontend handoff (5d3f, separate repo `../dispatch-web`):** render
+- **Frontend handoff (5d3f, separate repo `../frontend`):** render
   `provider-retry` as a yellow warning system-message bubble showing `message`
   (+`code`) with the `delayMs` countdown.
 
@@ -402,7 +402,7 @@ extension through the host):
   provider capture (self-redacted); `trace-replay` record/replay lib + fixtures.
 - **CLI** — one-shot HTTP client (`bun packages/cli/src/main.ts`); `GET /models`,
   `--cwd`, `--conversation`.
-- **web frontend** — SEPARATE repo `../dispatch-web`. Slice 1 (surface system)
+- **web frontend** — SEPARATE repo `../frontend`. Slice 1 (surface system)
   shipped via `ui-contract` + `surface-registry` + `transport-ws` +
   `surface-loaded-extensions`. Slice 2 (browser chat) in progress there.
 
@@ -459,7 +459,7 @@ Enabled by a new env knob **`SURFACE_WS_PORT`** → `surfaceWsPort` config
   per-step `stepId` + ttft/decode/genTotal + durationMs); journal turn/step spans
   carry dotted `usage.*` incl. `usage.cacheReadTokens` (the #2 fix).
 - [x] **FE courier handoff** written: `frontend-metrics-pass2-handoff.md` (in
-  this repo; user couriers to `../dispatch-web`; ORCHESTRATOR §7).
+  this repo; user couriers to `../frontend`; ORCHESTRATOR §7).
 
 ## dedup / storage growth (DONE)
 Design `notes/observability-design.md` §12. User-gated calls: extend existing
@@ -572,7 +572,7 @@ arm-on-settle/cancel-on-start; `pct = round(clamp(cacheRead/input,0,1)*100)`).
   the `number` field kind + send/handle `conversationId` on the surface WS protocol.
 
 ## Cache warming — FE CR-3 (DONE)
-FE asked (dispatch-web `backend-handoff-cache-warming-timer.md`): expose next/last-warm timestamps +
+FE asked (frontend `backend-handoff-cache-warming-timer.md`): expose next/last-warm timestamps +
 make a manual warm reset the timer/refresh the surface. Done via an **inversion** (commit `bfbad3a`):
 session-orchestrator `warm()` (the single chokepoint for manual `/chat/warm` AND the auto timer) emits
 a `warmCompleted` bus event; cache-warming subscribes and does all post-warm handling — so manual
@@ -637,7 +637,7 @@ persisted `TurnMetrics`.
   aggregate); turn 2 (same conversation) → 1286 (grew cumulatively), live == persisted. Both
   carriers agree; "current" = latest turn's value.
 - [x] **FE courier handoff:** `frontend-context-size-handoff.md` (user couriers to
-  `../dispatch-web`).
+  `../frontend`).
 
 ## Turn continuity — detached turns + multi-client live view (DONE)
 Design: `notes/turn-continuity-design.md`. FE courier: `frontend-turn-continuity-handoff.md`.
@@ -687,7 +687,7 @@ outward stream/buffer. FE courier: `frontend-cr3-user-message-handoff.md`.
   orchestrator summons owner-agents and does not write feature code itself.
 
 ## Cache warming — FE CR-4 lifecycle + CR-1 extensions table + CR-2 catalog scope (DONE)
-FE courier in: `../dispatch-web/backend-handoff-cache-warming.md` (+ CR-1/CR-2 from their living
+FE courier in: `../frontend/backend-handoff-cache-warming.md` (+ CR-1/CR-2 from their living
 `backend-handoff.md`). Courier out: `frontend-cache-warming-lifecycle-handoff.md`. Full report:
 `reports/cr4-cache-warming-lifecycle.md`.
 - **CR-4a:** warming defaults OFF (opt-in per conversation) — `parseSettings` + `DEFAULT_STATE`;
@@ -709,7 +709,7 @@ FE courier in: `../dispatch-web/backend-handoff-cache-warming.md` (+ CR-1/CR-2 f
   `done.reason:"aborted"` + warming disabled, catalog scopes + table field present, echo present.
 
 ## History windowing — FE CR-5 (DONE)
-FE courier in: `../dispatch-web/backend-handoff-chat-limit.md` (+ living `backend-handoff.md` §2
+FE courier in: `../frontend/backend-handoff-chat-limit.md` (+ living `backend-handoff.md` §2
 CR-5). Courier out: `frontend-history-windowing-handoff.md`. User-gated call: ask #3 shipped as
 the INVARIANT option (no new field) — seq is contractually **1-based, monotonic, gap-free**; FE
 derives `hasOlder` from `chunks[0].seq > 1`.
@@ -763,7 +763,7 @@ budget_tokens; `../claude` orchestrated DIRECTLY (mode A); CLI `--effort` now.
   Commits: arch-rewrite `35197ed` (contracts) + `020e051` (impl); ../claude `c0835a4`.
 - [x] Live-verified vs claude (thinking deltas streamed at xhigh; persisted PUT honored next turn).
 - [x] FE courier handoff written: `frontend-reasoning-effort-handoff.md` (user couriers to
-  `../dispatch-web`): ChatRequest/chat.send field + GET/PUT endpoints + ladder + default-`high`
+  `../frontend`): ChatRequest/chat.send field + GET/PUT endpoints + ladder + default-`high`
   semantics + cache note.
 
 ## Message queue + steering injection (DONE)
@@ -803,7 +803,7 @@ additive `steering` `AgentEvent`; queue state via the surface (NOT the chat stre
   all agents in-lane. **Boot smoke:** private instance boots clean with `message-queue`
   registered (no activation crash).
 - [x] FE courier handoff written: `frontend-message-queue-handoff.md` (user couriers to
-  `../dispatch-web`): surface (`rendererId:"message-queue"`), `chat.queue` WS op, `steering`
+  `../frontend`): surface (`rendererId:"message-queue"`), `chat.queue` WS op, `steering`
   event, HTTP `POST /queue`, auto-start-when-idle, carry semantics, version bumps.
 
 ## Umans AI Coding Plan provider (DONE)
@@ -913,7 +913,7 @@ conversation tab. Short-ID prefix resolution (4+ chars → full ID via `GET /con
 - [x] Live-verified end-to-end (CLI → real conversation → FE tab open).
 
 ## Workspaces (DONE)
-Cross-repo design ask from `../dispatch-web` (`backend-handoff-workspaces.md`).
+Cross-repo design ask from `../frontend` (`backend-handoff-workspaces.md`).
 Outbound courier: `frontend-workspaces-handoff.md` (final shapes + Q1–Q8).
 - **Boundary decision:** workspaces live inside `conversation-store` (metadata +
   cwd persistence owner); no new extension. Single owner-agent for all workspace
@@ -969,7 +969,7 @@ Outbound courier: `frontend-workspaces-handoff.md` (final shapes + Q1–Q8).
   pattern: separate key space per feature, append/write per conversation).
 
 ## Roadmap
-1. **Web frontend** (in progress, SEPARATE repo `../dispatch-web`; Svelte +
+1. **Web frontend** (in progress, SEPARATE repo `../frontend`; Svelte +
    DaisyUI, same methodology). Slice 2 = browser chat MVP consuming the
    wire/transport-contract + metrics. Cross-repo contract changes are couriered
    via the user (ORCHESTRATOR §7); `lsp references` does not span repos.
