@@ -19,23 +19,23 @@ export type { ReasoningEffort, Usage } from "@dispatch/wire";
  * Discriminated by `type`.
  */
 export type ProviderEvent =
-	| TextDeltaEvent
-	| ReasoningDeltaEvent
-	| ProviderToolCallEvent
-	| UsageEvent
-	| FinishEvent
-	| ProviderErrorEvent;
+  | TextDeltaEvent
+  | ReasoningDeltaEvent
+  | ProviderToolCallEvent
+  | UsageEvent
+  | FinishEvent
+  | ProviderErrorEvent;
 
 /** Incremental text content from the model. */
 export interface TextDeltaEvent {
-	readonly type: "text-delta";
-	readonly delta: string;
+  readonly type: "text-delta";
+  readonly delta: string;
 }
 
 /** Incremental reasoning / thinking content from the model. */
 export interface ReasoningDeltaEvent {
-	readonly type: "reasoning-delta";
-	readonly delta: string;
+  readonly type: "reasoning-delta";
+  readonly delta: string;
 }
 
 /**
@@ -43,16 +43,16 @@ export interface ReasoningDeltaEvent {
  * dispatch to the matching `ToolContract`.
  */
 export interface ProviderToolCallEvent {
-	readonly type: "tool-call";
-	readonly toolCallId: string;
-	readonly toolName: string;
-	readonly input: unknown;
+  readonly type: "tool-call";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly input: unknown;
 }
 
 /** Token usage report, typically emitted at step end. */
 export interface UsageEvent {
-	readonly type: "usage";
-	readonly usage: Usage;
+  readonly type: "usage";
+  readonly usage: Usage;
 }
 
 /**
@@ -60,16 +60,16 @@ export interface UsageEvent {
  * generating (e.g. "stop", "tool-calls", "length", "content-filter").
  */
 export interface FinishEvent {
-	readonly type: "finish";
-	readonly reason: string;
+  readonly type: "finish";
+  readonly reason: string;
 }
 
 /** An error from the provider (network, rate-limit, model error, etc.). */
 export interface ProviderErrorEvent {
-	readonly type: "error";
-	readonly message: string;
-	readonly code?: string;
-	readonly retryable?: boolean;
+  readonly type: "error";
+  readonly message: string;
+  readonly code?: string;
+  readonly retryable?: boolean;
 }
 
 /**
@@ -77,30 +77,30 @@ export interface ProviderErrorEvent {
  * Kept minimal — providers may ignore fields they don't support.
  */
 export interface ProviderStreamOptions {
-	/** Model identifier to use. */
-	readonly model?: string;
-	/** Sampling temperature override. */
-	readonly temperature?: number;
-	/** Maximum output tokens override. */
-	readonly maxTokens?: number;
-	/** System prompt to prepend. */
-	readonly systemPrompt?: string;
-	/**
-	 * Reasoning-effort level for this request (already RESOLVED by the caller —
-	 * the session-orchestrator applies the request → conversation → `"high"`
-	 * default chain, so a provider receiving `undefined` may treat it as "no
-	 * preference"). The provider maps the level to its native thinking knob in
-	 * its own code; providers without such a knob ignore it.
-	 */
-	readonly reasoningEffort?: ReasoningEffort;
-	/**
-	 * Correlated logger for this turn's step (Phase A logging ABI). When present,
-	 * the provider should open a child `provider.request` span and capture the
-	 * verbatim post-transform request + raw response/error there, self-redacting
-	 * secrets in its own code. Optional so non-instrumented callers/tests still
-	 * compile (the provider falls back to no capture).
-	 */
-	readonly logger?: Logger;
+  /** Model identifier to use. */
+  readonly model?: string;
+  /** Sampling temperature override. */
+  readonly temperature?: number;
+  /** Maximum output tokens override. */
+  readonly maxTokens?: number;
+  /** System prompt to prepend. */
+  readonly systemPrompt?: string;
+  /**
+   * Reasoning-effort level for this request (already RESOLVED by the caller —
+   * the session-orchestrator applies the request → conversation → `"high"`
+   * default chain, so a provider receiving `undefined` may treat it as "no
+   * preference"). The provider maps the level to its native thinking knob in
+   * its own code; providers without such a knob ignore it.
+   */
+  readonly reasoningEffort?: ReasoningEffort;
+  /**
+   * Correlated logger for this turn's step (Phase A logging ABI). When present,
+   * the provider should open a child `provider.request` span and capture the
+   * verbatim post-transform request + raw response/error there, self-redacting
+   * secrets in its own code. Optional so non-instrumented callers/tests still
+   * compile (the provider falls back to no capture).
+   */
+  readonly logger?: Logger;
 }
 
 /**
@@ -110,10 +110,10 @@ export interface ProviderStreamOptions {
  * is the wire model identifier; `displayName` is an optional human label.
  */
 export interface ModelInfo {
-	readonly id: string;
-	readonly displayName?: string;
-	/** The model's max context window in tokens (e.g. 200000). Optional — providers that don't report it leave it undefined. */
-	readonly contextWindow?: number;
+  readonly id: string;
+  readonly displayName?: string;
+  /** The model's max context window in tokens (e.g. 200000). Optional — providers that don't report it leave it undefined. */
+  readonly contextWindow?: number;
 }
 
 /**
@@ -122,26 +122,26 @@ export interface ModelInfo {
  * concrete LLM API is behind it.
  */
 export interface ProviderContract {
-	/** Unique identifier for this provider (e.g. "anthropic", "openai-compat"). */
-	readonly id: string;
+  /** Unique identifier for this provider (e.g. "anthropic", "openai-compat"). */
+  readonly id: string;
 
-	/**
-	 * Stream a response for the given messages and available tools.
-	 * The provider yields `ProviderEvent`s incrementally; the kernel drives
-	 * tool dispatch and chunk assembly from them.
-	 */
-	readonly stream: (
-		messages: readonly ChatMessage[],
-		tools: readonly ToolContract[],
-		opts?: ProviderStreamOptions,
-	) => AsyncIterable<ProviderEvent>;
+  /**
+   * Stream a response for the given messages and available tools.
+   * The provider yields `ProviderEvent`s incrementally; the kernel drives
+   * tool dispatch and chunk assembly from them.
+   */
+  readonly stream: (
+    messages: readonly ChatMessage[],
+    tools: readonly ToolContract[],
+    opts?: ProviderStreamOptions,
+  ) => AsyncIterable<ProviderEvent>;
 
-	/**
-	 * Enumerate the models this provider can serve, each in its own way (e.g. an
-	 * OpenAI-compatible provider GETs `/v1/models`). Optional: a provider that
-	 * cannot (or chooses not to) enumerate omits it, and a catalog simply lists
-	 * none for it. A future multi-credential design may pass per-credential
-	 * credentials in; today the provider uses the key it resolved at activate.
-	 */
-	readonly listModels?: () => Promise<readonly ModelInfo[]>;
+  /**
+   * Enumerate the models this provider can serve, each in its own way (e.g. an
+   * OpenAI-compatible provider GETs `/v1/models`). Optional: a provider that
+   * cannot (or chooses not to) enumerate omits it, and a catalog simply lists
+   * none for it. A future multi-credential design may pass per-credential
+   * credentials in; today the provider uses the key it resolved at activate.
+   */
+  readonly listModels?: () => Promise<readonly ModelInfo[]>;
 }

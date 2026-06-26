@@ -21,33 +21,33 @@
 
 import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
 import type {
-	AgentEvent,
-	Computer,
-	ComputerEntry,
-	ConversationMeta,
-	ConversationStatus,
-	QueuedMessage,
-	ReasoningEffort,
-	StoredChunk,
-	TurnMetrics,
-	Workspace,
-	WorkspaceEntry,
+  AgentEvent,
+  Computer,
+  ComputerEntry,
+  ConversationMeta,
+  ConversationStatus,
+  QueuedMessage,
+  ReasoningEffort,
+  StoredChunk,
+  TurnMetrics,
+  Workspace,
+  WorkspaceEntry,
 } from "@dispatch/wire";
 
 export type {
-	AgentEvent,
-	CompactionResult,
-	Computer,
-	ComputerEntry,
-	ConversationMeta,
-	ConversationStatus,
-	QueuedMessage,
-	ReasoningEffort,
-	StepMetrics,
-	StoredChunk,
-	TurnMetrics,
-	Workspace,
-	WorkspaceEntry,
+  AgentEvent,
+  CompactionResult,
+  Computer,
+  ComputerEntry,
+  ConversationMeta,
+  ConversationStatus,
+  QueuedMessage,
+  ReasoningEffort,
+  StepMetrics,
+  StoredChunk,
+  TurnMetrics,
+  Workspace,
+  WorkspaceEntry,
 } from "@dispatch/wire";
 
 /**
@@ -58,53 +58,53 @@ export type {
  * response header (useful when `conversationId` was omitted).
  */
 export interface ChatRequest {
-	/**
-	 * The conversation to continue. Omit to start a fresh conversation — the
-	 * server mints an id and returns it via the `X-Conversation-Id` header.
-	 */
-	readonly conversationId?: string;
+  /**
+   * The conversation to continue. Omit to start a fresh conversation — the
+   * server mints an id and returns it via the `X-Conversation-Id` header.
+   */
+  readonly conversationId?: string;
 
-	/** The user's message text for this turn. */
-	readonly message: string;
+  /** The user's message text for this turn. */
+  readonly message: string;
 
-	/**
-	 * The model to use, as a model name in `<credentialName>/<model>` form — one
-	 * of the exact strings returned by `GET /models`. Omit to use the server's
-	 * default credential + model.
-	 */
-	readonly model?: string;
+  /**
+   * The model to use, as a model name in `<credentialName>/<model>` form — one
+   * of the exact strings returned by `GET /models`. Omit to use the server's
+   * default credential + model.
+   */
+  readonly model?: string;
 
-	/**
-	 * Working directory for this turn's tool execution. Defaults server-side when
-	 * omitted. Forwarded to tools for path resolution; never part of the model
-	 * prompt (so it does not affect prompt caching).
-	 */
-	readonly cwd?: string;
+  /**
+   * Working directory for this turn's tool execution. Defaults server-side when
+   * omitted. Forwarded to tools for path resolution; never part of the model
+   * prompt (so it does not affect prompt caching).
+   */
+  readonly cwd?: string;
 
-	/**
-	 * The computer to run this turn's tools on — an SSH config `Host` alias
-	 * (one of the `alias` values returned by `GET /computers`). Omit to inherit
-	 * the resolved chain: per-conversation `computerId` → the workspace's
-	 * `defaultComputerId` → `null`/local (today's behavior). Like `cwd`, this is
-	 * a per-turn tool-execution target forwarded to tools and never part of the
-	 * model prompt (so it does not affect prompt caching). Mirrors `cwd`.
-	 */
-	readonly computerId?: string;
+  /**
+   * The computer to run this turn's tools on — an SSH config `Host` alias
+   * (one of the `alias` values returned by `GET /computers`). Omit to inherit
+   * the resolved chain: per-conversation `computerId` → the workspace's
+   * `defaultComputerId` → `null`/local (today's behavior). Like `cwd`, this is
+   * a per-turn tool-execution target forwarded to tools and never part of the
+   * model prompt (so it does not affect prompt caching). Mirrors `cwd`.
+   */
+  readonly computerId?: string;
 
-	/**
-	 * Reasoning-effort override for THIS turn only (does not persist). When
-	 * omitted, the server resolves the conversation's persisted value, falling
-	 * back to `"high"`. Must be one of the `ReasoningEffort` levels; an
-	 * unrecognized value → HTTP 400 `{ error }`.
-	 */
-	readonly reasoningEffort?: ReasoningEffort;
+  /**
+   * Reasoning-effort override for THIS turn only (does not persist). When
+   * omitted, the server resolves the conversation's persisted value, falling
+   * back to `"high"`. Must be one of the `ReasoningEffort` levels; an
+   * unrecognized value → HTTP 400 `{ error }`.
+   */
+  readonly reasoningEffort?: ReasoningEffort;
 
-	/**
-	 * The workspace to assign this conversation to. Omit for `"default"`.
-	 * If the workspace doesn't exist yet, it is auto-created (title = id,
-	 * defaultCwd = null).
-	 */
-	readonly workspaceId?: string;
+  /**
+   * The workspace to assign this conversation to. Omit for `"default"`.
+   * If the workspace doesn't exist yet, it is auto-created (title = id,
+   * defaultCwd = null).
+   */
+  readonly workspaceId?: string;
 }
 
 /**
@@ -117,13 +117,13 @@ export interface ChatRequest {
  * read `models` are unaffected.
  */
 export interface ModelsResponse {
-	readonly models: readonly string[];
-	readonly modelInfo?: Readonly<Record<string, ModelMetadata>>;
+  readonly models: readonly string[];
+  readonly modelInfo?: Readonly<Record<string, ModelMetadata>>;
 }
 
 /** Per-model metadata returned alongside the model catalog. */
 export interface ModelMetadata {
-	readonly contextWindow?: number;
+  readonly contextWindow?: number;
 }
 
 /**
@@ -172,8 +172,8 @@ export interface ModelMetadata {
  * the store contract.)
  */
 export interface ConversationHistoryResponse {
-	readonly chunks: readonly StoredChunk[];
-	readonly latestSeq: number;
+  readonly chunks: readonly StoredChunk[];
+  readonly latestSeq: number;
 }
 
 /**
@@ -192,15 +192,15 @@ export interface ConversationHistoryResponse {
  * absent until then.
  */
 export interface ConversationMetricsResponse {
-	readonly turns: readonly TurnMetrics[];
+  readonly turns: readonly TurnMetrics[];
 }
 
 export interface ConversationStatusResponse {
-	readonly conversationId: string;
-	/** True if the orchestrator has an in-memory active turn for this conversation. */
-	readonly isActive: boolean;
-	/** The persisted lifecycle status from the conversation store. */
-	readonly status: ConversationStatus;
+  readonly conversationId: string;
+  /** True if the orchestrator has an in-memory active turn for this conversation. */
+  readonly isActive: boolean;
+  /** The persisted lifecycle status from the conversation store. */
+  readonly status: ConversationStatus;
 }
 
 /** The aggregation window for `GET /metrics/throughput`. */
@@ -214,16 +214,16 @@ export type ThroughputPeriod = "day" | "week" | "month";
  * waits).
  */
 export interface ThroughputModelStat {
-	/** The model name in `<credentialName>/<model>` form (as selected). */
-	readonly model: string;
-	/** Token-weighted average tokens/second over the period. */
-	readonly tokensPerSecond: number;
-	/** Total output tokens generated across the period's turns. */
-	readonly totalOutputTokens: number;
-	/** Total pure generation time across the period's turns, in milliseconds. */
-	readonly totalGenMs: number;
-	/** Number of turns that contributed. */
-	readonly turns: number;
+  /** The model name in `<credentialName>/<model>` form (as selected). */
+  readonly model: string;
+  /** Token-weighted average tokens/second over the period. */
+  readonly tokensPerSecond: number;
+  /** Total output tokens generated across the period's turns. */
+  readonly totalOutputTokens: number;
+  /** Total pure generation time across the period's turns, in milliseconds. */
+  readonly totalGenMs: number;
+  /** Number of turns that contributed. */
+  readonly turns: number;
 }
 
 /**
@@ -237,21 +237,21 @@ export interface ThroughputModelStat {
  * `tokensPerSecond` descending.
  */
 export interface ThroughputResponse {
-	readonly period: ThroughputPeriod;
-	readonly date: string;
-	/** Inclusive start of the window, epoch-ms. */
-	readonly start: number;
-	/** Exclusive end of the window, epoch-ms. */
-	readonly end: number;
-	readonly models: readonly ThroughputModelStat[];
+  readonly period: ThroughputPeriod;
+  readonly date: string;
+  /** Inclusive start of the window, epoch-ms. */
+  readonly start: number;
+  /** Exclusive end of the window, epoch-ms. */
+  readonly end: number;
+  readonly models: readonly ThroughputModelStat[];
 }
 
 // ─── Per-conversation working directory (cwd) ─────────────────────────────────
 
 /** Response of `GET /conversations/:id/cwd`. `cwd` is null when never set. */
 export interface CwdResponse {
-	readonly conversationId: string;
-	readonly cwd: string | null;
+  readonly conversationId: string;
+  readonly cwd: string | null;
 }
 
 /**
@@ -265,8 +265,8 @@ export interface CwdResponse {
  * `"default"` if none).
  */
 export interface SetCwdRequest {
-	readonly cwd: string;
-	readonly workspaceId?: string;
+  readonly cwd: string;
+  readonly workspaceId?: string;
 }
 
 // ─── Per-conversation reasoning effort ────────────────────────────────────────
@@ -277,8 +277,8 @@ export interface SetCwdRequest {
  * `"high"`).
  */
 export interface ReasoningEffortResponse {
-	readonly conversationId: string;
-	readonly reasoningEffort: ReasoningEffort | null;
+  readonly conversationId: string;
+  readonly reasoningEffort: ReasoningEffort | null;
 }
 
 /**
@@ -288,7 +288,7 @@ export interface ReasoningEffortResponse {
  * unrecognized level → HTTP 400 `{ error }`.
  */
 export interface SetReasoningEffortRequest {
-	readonly reasoningEffort: ReasoningEffort;
+  readonly reasoningEffort: ReasoningEffort;
 }
 
 // ─── Per-conversation model ──────────────────────────────────────────────────
@@ -299,8 +299,8 @@ export interface SetReasoningEffortRequest {
  * then resolves turns using the default provider + model).
  */
 export interface ModelResponse {
-	readonly conversationId: string;
-	readonly model: string | null;
+  readonly conversationId: string;
+  readonly model: string | null;
 }
 
 /**
@@ -311,7 +311,7 @@ export interface ModelResponse {
  * at turn time; an unknown model → turn error, not a 400).
  */
 export interface SetModelRequest {
-	readonly model: string | null;
+  readonly model: string | null;
 }
 
 // ─── Conversation close (explicit tab close) ──────────────────────────────────
@@ -331,9 +331,9 @@ export interface SetModelRequest {
  * `abortedTurn: false`.
  */
 export interface CloseConversationResponse {
-	readonly conversationId: string;
-	/** True when an in-flight turn existed and was aborted by this close. */
-	readonly abortedTurn: boolean;
+  readonly conversationId: string;
+  /** True when an in-flight turn existed and was aborted by this close. */
+  readonly abortedTurn: boolean;
 }
 
 // ─── System prompt template ───────────────────────────────────────────────────
@@ -348,8 +348,8 @@ export interface CloseConversationResponse {
  * and reused on all subsequent turns (cache-safe — no per-turn reconstruction).
  */
 export interface SystemPromptTemplateResponse {
-	/** The template text (may be empty — then no system prompt is sent). */
-	readonly template: string;
+  /** The template text (may be empty — then no system prompt is sent). */
+  readonly template: string;
 }
 
 /**
@@ -360,7 +360,7 @@ export interface SystemPromptTemplateResponse {
  * conversations use the new template on their first turn.
  */
 export interface SetSystemPromptTemplateRequest {
-	readonly template: string;
+  readonly template: string;
 }
 
 /**
@@ -369,22 +369,22 @@ export interface SetSystemPromptTemplateRequest {
  * selector buttons.
  */
 export interface SystemPromptVariable {
-	/** The variable type/source: `"system"`, `"file"`, `"prompt"`, `"git"`. */
-	readonly type: string;
-	/** The variable name (e.g. `"time"`, `"date"`, `"os"`). For dynamic types, a description. */
-	readonly name: string;
-	/** Human-readable description of what the variable resolves to. */
-	readonly description: string;
-	/**
-	 * When `true`, any name is valid for this type (e.g. `file:<path>` accepts
-	 * any file path). The frontend should allow free-text input for the name.
-	 */
-	readonly dynamic?: boolean;
+  /** The variable type/source: `"system"`, `"file"`, `"prompt"`, `"git"`. */
+  readonly type: string;
+  /** The variable name (e.g. `"time"`, `"date"`, `"os"`). For dynamic types, a description. */
+  readonly name: string;
+  /** Human-readable description of what the variable resolves to. */
+  readonly description: string;
+  /**
+   * When `true`, any name is valid for this type (e.g. `file:<path>` accepts
+   * any file path). The frontend should allow free-text input for the name.
+   */
+  readonly dynamic?: boolean;
 }
 
 /** Response of `GET /system-prompt/variables`. */
 export interface SystemPromptVariablesResponse {
-	readonly variables: readonly SystemPromptVariable[];
+  readonly variables: readonly SystemPromptVariable[];
 }
 
 // ─── Message queue (steering) ─────────────────────────────────────────────────
@@ -405,12 +405,12 @@ export interface SystemPromptVariablesResponse {
  * `text` must be non-empty (after trim) → HTTP 400 `{ error }` otherwise.
  */
 export interface QueueRequest {
-	readonly text: string;
-	/**
-	 * The workspace to assign the conversation to (if a new conversation is
-	 * started). Omit for `"default"`. Auto-creates if missing.
-	 */
-	readonly workspaceId?: string;
+  readonly text: string;
+  /**
+   * The workspace to assign the conversation to (if a new conversation is
+   * started). Omit for `"default"`. Auto-creates if missing.
+   */
+  readonly workspaceId?: string;
 }
 
 /**
@@ -422,9 +422,9 @@ export interface QueueRequest {
  * the chat channel as usual.
  */
 export interface QueueResponse {
-	readonly conversationId: string;
-	readonly startedTurn: boolean;
-	readonly queue: readonly QueuedMessage[];
+  readonly conversationId: string;
+  readonly startedTurn: boolean;
+  readonly queue: readonly QueuedMessage[];
 }
 
 // ─── Per-conversation LSP status ──────────────────────────────────────────────
@@ -434,39 +434,39 @@ export type LspServerState = "connected" | "starting" | "error" | "not-started";
 
 /** One language server's status as reported to the frontend. */
 export interface LspServerInfo {
-	/** Stable server id, e.g. "typescript", "luau-lsp". */
-	readonly id: string;
-	/** Human-readable display name. */
-	readonly name: string;
-	/** The resolved workspace root the server is (or would be) rooted at (absolute). */
-	readonly root: string;
-	/** File extensions this server handles, e.g. [".ts", ".tsx"] or [".luau"]. */
-	readonly extensions: readonly string[];
-	/** Current connection state. */
-	readonly state: LspServerState;
-	/** Present only when `state === "error"`: a short human-readable reason. */
-	readonly error?: string;
-	/**
-	 * Which config source this server was resolved from: `".dispatch/lsp.json"`,
-	 * `"opencode.json"`, or `"built-in"` (the built-in TypeScript default). Omitted
-	 * when not yet resolved. Surfaces config-shadow debugging to the status caller
-	 * (a broken `.dispatch/lsp.json` silently shadowing `opencode.json`).
-	 */
-	readonly configSource?: string;
+  /** Stable server id, e.g. "typescript", "luau-lsp". */
+  readonly id: string;
+  /** Human-readable display name. */
+  readonly name: string;
+  /** The resolved workspace root the server is (or would be) rooted at (absolute). */
+  readonly root: string;
+  /** File extensions this server handles, e.g. [".ts", ".tsx"] or [".luau"]. */
+  readonly extensions: readonly string[];
+  /** Current connection state. */
+  readonly state: LspServerState;
+  /** Present only when `state === "error"`: a short human-readable reason. */
+  readonly error?: string;
+  /**
+   * Which config source this server was resolved from: `".dispatch/lsp.json"`,
+   * `"opencode.json"`, or `"built-in"` (the built-in TypeScript default). Omitted
+   * when not yet resolved. Surfaces config-shadow debugging to the status caller
+   * (a broken `.dispatch/lsp.json` silently shadowing `opencode.json`).
+   */
+  readonly configSource?: string;
 }
 
 /** Response of `GET /conversations/:id/lsp`. */
 export interface LspStatusResponse {
-	readonly conversationId: string;
-	/**
-	 * The resolved working directory the LSP connects on, or `null` when no
-	 * cwd has been set for the conversation (then `servers` is empty). When
-	 * non-null, this is the effective cwd — a relative persisted cwd resolved
-	 * against the conversation's workspace `defaultCwd`.
-	 */
-	readonly cwd: string | null;
-	/** The language servers configured for `cwd` and their live state. */
-	readonly servers: readonly LspServerInfo[];
+  readonly conversationId: string;
+  /**
+   * The resolved working directory the LSP connects on, or `null` when no
+   * cwd has been set for the conversation (then `servers` is empty). When
+   * non-null, this is the effective cwd — a relative persisted cwd resolved
+   * against the conversation's workspace `defaultCwd`.
+   */
+  readonly cwd: string | null;
+  /** The language servers configured for `cwd` and their live state. */
+  readonly servers: readonly LspServerInfo[];
 }
 
 // ─── MCP status ──────────────────────────────────────────────────────
@@ -475,29 +475,29 @@ export type McpServerState = "connecting" | "connected" | "error" | "disconnecte
 
 /** One MCP server's status as reported to the frontend. */
 export interface McpServerInfo {
-	/** Stable server id (the config key from `.dispatch/mcp.json`), e.g. "freecad". */
-	readonly id: string;
-	/** Current connection state. */
-	readonly state: McpServerState;
-	/** Present only when `state === "error"`: a short human-readable reason. */
-	readonly error?: string;
-	/** Number of tools discovered from this server. */
-	readonly toolCount: number;
-	/** Which config source this server was resolved from. */
-	readonly configSource?: string;
+  /** Stable server id (the config key from `.dispatch/mcp.json`), e.g. "freecad". */
+  readonly id: string;
+  /** Current connection state. */
+  readonly state: McpServerState;
+  /** Present only when `state === "error"`: a short human-readable reason. */
+  readonly error?: string;
+  /** Number of tools discovered from this server. */
+  readonly toolCount: number;
+  /** Which config source this server was resolved from. */
+  readonly configSource?: string;
 }
 
 /** Response of `GET /conversations/:id/mcp`. */
 export interface McpStatusResponse {
-	readonly conversationId: string;
-	/**
-	 * The resolved working directory the MCP servers are configured for, or
-	 * `null` when no cwd has been set for the conversation (then `servers` is
-	 * empty). Mirrors the LSP status endpoint behavior.
-	 */
-	readonly cwd: string | null;
-	/** The MCP servers configured for `cwd` and their live state. */
-	readonly servers: readonly McpServerInfo[];
+  readonly conversationId: string;
+  /**
+   * The resolved working directory the MCP servers are configured for, or
+   * `null` when no cwd has been set for the conversation (then `servers` is
+   * empty). Mirrors the LSP status endpoint behavior.
+   */
+  readonly cwd: string | null;
+  /** The MCP servers configured for `cwd` and their live state. */
+  readonly servers: readonly McpServerInfo[];
 }
 
 /**
@@ -511,17 +511,17 @@ export interface McpStatusResponse {
  * prefix is byte-identical to a real turn (which is what makes the cache hit).
  */
 export interface WarmRequest {
-	/** The conversation whose prompt cache to warm. */
-	readonly conversationId: string;
+  /** The conversation whose prompt cache to warm. */
+  readonly conversationId: string;
 
-	/**
-	 * The model name in `<credentialName>/<model>` form the conversation uses, so
-	 * the warm resolves the same provider + prefix. Omit to use the server default.
-	 */
-	readonly model?: string;
+  /**
+   * The model name in `<credentialName>/<model>` form the conversation uses, so
+   * the warm resolves the same provider + prefix. Omit to use the server default.
+   */
+  readonly model?: string;
 
-	/** Working directory matching the conversation's turns (for cwd-aware tool assembly). */
-	readonly cwd?: string;
+  /** Working directory matching the conversation's turns (for cwd-aware tool assembly). */
+  readonly cwd?: string;
 }
 
 /**
@@ -533,26 +533,26 @@ export interface WarmRequest {
  * server responds `409` with `{ error }` instead of this body.
  */
 export interface WarmResponse {
-	readonly inputTokens: number;
-	readonly outputTokens: number;
-	readonly cacheReadTokens: number;
-	readonly cacheWriteTokens: number;
-	/**
-	 * **Cache rate** — what fraction of THIS request's prompt was served from cache:
-	 * `round(cacheReadTokens / inputTokens * 100)` (0 when `inputTokens <= 0`).
-	 * (`inputTokens` is the TOTAL prompt incl. cached, so this is in [0,100].)
-	 */
-	readonly cachePct: number;
-	/**
-	 * **Expected cache (retention)** — of the cacheable prefix this warm touched, how
-	 * much was still warm and read back vs. had to be (re)written:
-	 * `round(cacheReadTokens / (cacheReadTokens + cacheWriteTokens) * 100)` (0 when the
-	 * sum is 0). For a healthy warm this is ~**100%** (the whole prefix was still
-	 * cached); it drops toward 0 as the cache expires/busts and the warm has to rewrite
-	 * it. This is the warming HEALTH signal — distinct from `cachePct` (which a warm's
-	 * tiny fresh probe makes ~equal, but which on a real turn reflects new content).
-	 */
-	readonly expectedCacheRate: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+  /**
+   * **Cache rate** — what fraction of THIS request's prompt was served from cache:
+   * `round(cacheReadTokens / inputTokens * 100)` (0 when `inputTokens <= 0`).
+   * (`inputTokens` is the TOTAL prompt incl. cached, so this is in [0,100].)
+   */
+  readonly cachePct: number;
+  /**
+   * **Expected cache (retention)** — of the cacheable prefix this warm touched, how
+   * much was still warm and read back vs. had to be (re)written:
+   * `round(cacheReadTokens / (cacheReadTokens + cacheWriteTokens) * 100)` (0 when the
+   * sum is 0). For a healthy warm this is ~**100%** (the whole prefix was still
+   * cached); it drops toward 0 as the cache expires/busts and the warm has to rewrite
+   * it. This is the warming HEALTH signal — distinct from `cachePct` (which a warm's
+   * tiny fresh probe makes ~equal, but which on a real turn reflects new content).
+   */
+  readonly expectedCacheRate: number;
 }
 
 // ─── WebSocket chat ops ───────────────────────────────────────────────────────
@@ -567,7 +567,7 @@ export interface WarmResponse {
  * `AgentEvent`s (each carries `conversationId`).
  */
 export interface ChatSendMessage extends ChatRequest {
-	readonly type: "chat.send";
+  readonly type: "chat.send";
 }
 
 /**
@@ -577,8 +577,8 @@ export interface ChatSendMessage extends ChatRequest {
  * carrier.
  */
 export interface ChatDeltaMessage {
-	readonly type: "chat.delta";
-	readonly event: AgentEvent;
+  readonly type: "chat.delta";
+  readonly event: AgentEvent;
 }
 
 /**
@@ -587,9 +587,9 @@ export interface ChatDeltaMessage {
  * `TurnErrorEvent` inside a `chat.delta`.)
  */
 export interface ChatErrorMessage {
-	readonly type: "chat.error";
-	readonly conversationId?: string;
-	readonly message: string;
+  readonly type: "chat.error";
+  readonly conversationId?: string;
+  readonly message: string;
 }
 
 /**
@@ -609,8 +609,8 @@ export interface ChatErrorMessage {
  * `chat.subscribe` for conversations it is viewing but did not send to.
  */
 export interface ChatSubscribeMessage {
-	readonly type: "chat.subscribe";
-	readonly conversationId: string;
+  readonly type: "chat.subscribe";
+  readonly conversationId: string;
 }
 
 /**
@@ -620,8 +620,8 @@ export interface ChatSubscribeMessage {
  * the socket closes — again WITHOUT aborting any in-flight turn.
  */
 export interface ChatUnsubscribeMessage {
-	readonly type: "chat.unsubscribe";
-	readonly conversationId: string;
+  readonly type: "chat.unsubscribe";
+  readonly conversationId: string;
 }
 
 /**
@@ -636,14 +636,14 @@ export interface ChatUnsubscribeMessage {
  * latter being equivalent to `chat.send`).
  */
 export interface ChatQueueMessage {
-	readonly type: "chat.queue";
-	readonly conversationId: string;
-	readonly text: string;
-	/**
-	 * The workspace to assign the conversation to (if a new conversation is
-	 * started). Omit for `"default"`. Auto-creates if missing.
-	 */
-	readonly workspaceId?: string;
+  readonly type: "chat.queue";
+  readonly conversationId: string;
+  readonly text: string;
+  /**
+   * The workspace to assign the conversation to (if a new conversation is
+   * started). Omit for `"default"`. Auto-creates if missing.
+   */
+  readonly workspaceId?: string;
 }
 
 /**
@@ -651,23 +651,23 @@ export interface ChatQueueMessage {
  * ops. A server discriminates on `type`.
  */
 export type WsClientMessage =
-	| SurfaceClientMessage
-	| ChatSendMessage
-	| ChatSubscribeMessage
-	| ChatUnsubscribeMessage
-	| ChatQueueMessage;
+  | SurfaceClientMessage
+  | ChatSendMessage
+  | ChatSubscribeMessage
+  | ChatUnsubscribeMessage
+  | ChatQueueMessage;
 
 /**
  * Every server → client WS message: surface ops (`@dispatch/ui-contract`) + chat
  * ops. A client discriminates on `type`.
  */
 export type WsServerMessage =
-	| SurfaceServerMessage
-	| ChatDeltaMessage
-	| ChatErrorMessage
-	| ConversationOpenMessage
-	| ConversationStatusChangedMessage
-	| ConversationCompactedMessage;
+  | SurfaceServerMessage
+  | ChatDeltaMessage
+  | ChatErrorMessage
+  | ConversationOpenMessage
+  | ConversationStatusChangedMessage
+  | ConversationCompactedMessage;
 
 // ─── Conversation list + metadata ────────────────────────────────────────────
 
@@ -677,14 +677,14 @@ export type WsServerMessage =
  * — the backend just signals. Additive to `WsServerMessage`.
  */
 export interface ConversationOpenMessage {
-	readonly type: "conversation.open";
-	readonly conversationId: string;
-	/**
-	 * The conversation's actual workspace id, so a frontend can open/focus it
-	 * in the correct workspace instead of stamping it with the viewer's current
-	 * workspace.
-	 */
-	readonly workspaceId: string;
+  readonly type: "conversation.open";
+  readonly conversationId: string;
+  /**
+   * The conversation's actual workspace id, so a frontend can open/focus it
+   * in the correct workspace instead of stamping it with the viewer's current
+   * workspace.
+   */
+  readonly workspaceId: string;
 }
 
 /**
@@ -693,15 +693,15 @@ export interface ConversationOpenMessage {
  * devices in real time.
  */
 export interface ConversationStatusChangedMessage {
-	readonly type: "conversation.statusChanged";
-	readonly conversationId: string;
-	readonly status: ConversationStatus;
-	/**
-	 * The conversation's actual workspace id, so a frontend can open/focus it
-	 * in the correct workspace instead of stamping it with the viewer's current
-	 * workspace.
-	 */
-	readonly workspaceId: string;
+  readonly type: "conversation.statusChanged";
+  readonly conversationId: string;
+  readonly status: ConversationStatus;
+  /**
+   * The conversation's actual workspace id, so a frontend can open/focus it
+   * in the correct workspace instead of stamping it with the viewer's current
+   * workspace.
+   */
+  readonly workspaceId: string;
 }
 
 /**
@@ -710,11 +710,11 @@ export interface ConversationStatusChangedMessage {
  * via `GET /conversations/:id` to reflect the compacted state.
  */
 export interface ConversationCompactedMessage {
-	readonly type: "conversation.compacted";
-	readonly conversationId: string;
-	readonly newConversationId: string;
-	readonly messagesSummarized: number;
-	readonly messagesKept: number;
+  readonly type: "conversation.compacted";
+  readonly conversationId: string;
+  readonly newConversationId: string;
+  readonly messagesSummarized: number;
+  readonly messagesKept: number;
 }
 
 /**
@@ -724,7 +724,7 @@ export interface ConversationCompactedMessage {
  * Optional `?q=` query param filters by id prefix (short-id resolution).
  */
 export interface ConversationListResponse {
-	readonly conversations: readonly ConversationMeta[];
+  readonly conversations: readonly ConversationMeta[];
 }
 
 /**
@@ -734,9 +734,9 @@ export interface ConversationListResponse {
  * `turnId` is the turn that produced the message (absent if no turn ran).
  */
 export interface LastMessageResponse {
-	readonly conversationId: string;
-	readonly content: string;
-	readonly turnId?: string;
+  readonly conversationId: string;
+  readonly content: string;
+  readonly turnId?: string;
 }
 
 /**
@@ -744,22 +744,22 @@ export interface LastMessageResponse {
  * signal was broadcast to connected WS clients.
  */
 export interface OpenConversationResponse {
-	readonly conversationId: string;
+  readonly conversationId: string;
 }
 
 /**
  * Request body for `PUT /conversations/:id/title` — set a human-readable title.
  */
 export interface SetTitleRequest {
-	readonly title: string;
+  readonly title: string;
 }
 
 /**
  * Response for `GET/PUT /conversations/:id/title` — the current title.
  */
 export interface TitleResponse {
-	readonly conversationId: string;
-	readonly title: string;
+  readonly conversationId: string;
+  readonly title: string;
 }
 
 /**
@@ -767,10 +767,10 @@ export interface TitleResponse {
  * history was compacted (old messages summarized, recent messages retained).
  */
 export interface CompactResponse {
-	readonly conversationId: string;
-	readonly newConversationId: string;
-	readonly messagesSummarized: number;
-	readonly messagesKept: number;
+  readonly conversationId: string;
+  readonly newConversationId: string;
+  readonly messagesSummarized: number;
+  readonly messagesKept: number;
 }
 
 /**
@@ -778,15 +778,15 @@ export interface CompactResponse {
  * at which automatic compaction triggers (0 = manual only).
  */
 export interface CompactPercentResponse {
-	readonly conversationId: string;
-	readonly threshold: number;
+  readonly conversationId: string;
+  readonly threshold: number;
 }
 
 /**
  * Request body for `PUT /conversations/:id/compact-percent`.
  */
 export interface SetCompactPercentRequest {
-	readonly threshold: number;
+  readonly threshold: number;
 }
 
 // ─── Workspaces ───────────────────────────────────────────────────────────────
@@ -797,10 +797,10 @@ export interface SetCompactPercentRequest {
  * an existing workspace is returned as-is.
  */
 export interface EnsureWorkspaceRequest {
-	/** Display title. Default: the workspace id. Only used on create. */
-	readonly title?: string;
-	/** Default cwd. Default: null (inherit server default). Only used on create. */
-	readonly defaultCwd?: string | null;
+  /** Display title. Default: the workspace id. Only used on create. */
+  readonly title?: string;
+  /** Default cwd. Default: null (inherit server default). Only used on create. */
+  readonly defaultCwd?: string | null;
 }
 
 /** Response of `GET`/`PUT /workspaces/:id` — the workspace itself. */
@@ -808,17 +808,17 @@ export interface WorkspaceResponse extends Workspace {}
 
 /** Response of `GET /workspaces` — all workspaces sorted by `lastActivityAt` desc. */
 export interface WorkspaceListResponse {
-	readonly workspaces: readonly WorkspaceEntry[];
+  readonly workspaces: readonly WorkspaceEntry[];
 }
 
 /** Body of `PUT /workspaces/:id/title` — rename (display only; id unchanged). */
 export interface SetWorkspaceTitleRequest {
-	readonly title: string;
+  readonly title: string;
 }
 
 /** Body of `PUT /workspaces/:id/default-cwd` — set or clear the default cwd. */
 export interface SetWorkspaceDefaultCwdRequest {
-	readonly defaultCwd: string | null;
+  readonly defaultCwd: string | null;
 }
 
 /**
@@ -827,9 +827,9 @@ export interface SetWorkspaceDefaultCwdRequest {
  * workspace entity is deleted. `"default"` is non-deletable (HTTP 409).
  */
 export interface DeleteWorkspaceResponse {
-	readonly workspaceId: string;
-	/** Conversations that were closed (status → "closed") by this delete. */
-	readonly closedCount: number;
+  readonly workspaceId: string;
+  /** Conversations that were closed (status → "closed") by this delete. */
+  readonly closedCount: number;
 }
 
 // ─── Computers ───────────────────────────────────────────────────────────────
@@ -842,7 +842,7 @@ export interface DeleteWorkspaceResponse {
  * block to `~/.ssh/config` and Dispatch discovers it on the next read.
  */
 export interface ComputerListResponse {
-	readonly computers: readonly ComputerEntry[];
+  readonly computers: readonly ComputerEntry[];
 }
 
 /**
@@ -859,10 +859,10 @@ export interface ComputerResponse extends Computer {}
  * `state === "error"`; `knownHost` mirrors the read-only `Computer` field.
  */
 export interface ComputerStatusResponse {
-	readonly alias: string;
-	readonly state: "disconnected" | "connecting" | "connected" | "error";
-	readonly error?: string;
-	readonly knownHost: boolean;
+  readonly alias: string;
+  readonly state: "disconnected" | "connecting" | "connected" | "error";
+  readonly error?: string;
+  readonly knownHost: boolean;
 }
 
 /**
@@ -874,7 +874,7 @@ export interface ComputerStatusResponse {
  * a 400). Mirrors the cwd/model PUT clear semantics.
  */
 export interface SetConversationComputerRequest {
-	readonly computerId: string | null;
+  readonly computerId: string | null;
 }
 
 /**
@@ -883,8 +883,8 @@ export interface SetConversationComputerRequest {
  * the workspace default → local). Parallel to `CwdResponse`.
  */
 export interface ConversationComputerResponse {
-	readonly conversationId: string;
-	readonly computerId: string | null;
+  readonly conversationId: string;
+  readonly computerId: string | null;
 }
 
 /**
@@ -894,7 +894,7 @@ export interface ConversationComputerResponse {
  * `computerId` of their own inherit this.
  */
 export interface SetWorkspaceDefaultComputerRequest {
-	readonly computerId: string | null;
+  readonly computerId: string | null;
 }
 
 /**
@@ -904,7 +904,7 @@ export interface SetWorkspaceDefaultComputerRequest {
  * failure reason (e.g. auth refused, host unreachable) when `ok` is false.
  */
 export interface TestComputerResponse {
-	readonly alias: string;
-	readonly ok: boolean;
-	readonly error?: string;
+  readonly alias: string;
+  readonly ok: boolean;
+  readonly error?: string;
 }

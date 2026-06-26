@@ -27,12 +27,12 @@ export type Attributes = Readonly<Record<string, string | number | boolean | nul
 
 /** Correlation context carried on every log record and span. */
 export interface LogContext {
-	/** Auto-stamped by host from manifest.id (D6) — never caller-supplied. */
-	readonly extensionId: string;
-	readonly conversationId?: string;
-	readonly turnId?: string;
-	readonly spanId?: string;
-	readonly parentSpanId?: string;
+  /** Auto-stamped by host from manifest.id (D6) — never caller-supplied. */
+  readonly extensionId: string;
+  readonly conversationId?: string;
+  readonly turnId?: string;
+  readonly spanId?: string;
+  readonly parentSpanId?: string;
 }
 
 // --- Span ---
@@ -43,27 +43,27 @@ export interface LogContext {
  * crashed turn is reconstructable from the journal (D3).
  */
 export interface Span {
-	readonly id: string;
-	/** Pre-bound Logger scoped to this span's correlation. */
-	readonly log: Logger;
-	/** Add or overwrite attributes on this span. */
-	readonly setAttributes: (attrs: Attributes) => void;
-	/** Record a causal link to another span (D4 cross-feature causality). */
-	readonly addLink: (
-		target: { readonly spanId: string; readonly turnId?: string },
-		reason?: string,
-	) => void;
-	/** Open a child span nested under this one. */
-	readonly child: (name: string, attrs?: Attributes, body?: string) => Span;
-	/**
-	 * Close this span. Records duration + status. Optionally records an
-	 * error, additional attributes, and/or a body payload.
-	 */
-	readonly end: (outcome?: {
-		readonly err?: unknown;
-		readonly attrs?: Attributes;
-		readonly body?: string;
-	}) => void;
+  readonly id: string;
+  /** Pre-bound Logger scoped to this span's correlation. */
+  readonly log: Logger;
+  /** Add or overwrite attributes on this span. */
+  readonly setAttributes: (attrs: Attributes) => void;
+  /** Record a causal link to another span (D4 cross-feature causality). */
+  readonly addLink: (
+    target: { readonly spanId: string; readonly turnId?: string },
+    reason?: string,
+  ) => void;
+  /** Open a child span nested under this one. */
+  readonly child: (name: string, attrs?: Attributes, body?: string) => Span;
+  /**
+   * Close this span. Records duration + status. Optionally records an
+   * error, additional attributes, and/or a body payload.
+   */
+  readonly end: (outcome?: {
+    readonly err?: unknown;
+    readonly attrs?: Attributes;
+    readonly body?: string;
+  }) => void;
 }
 
 // --- Logger ---
@@ -75,17 +75,17 @@ export interface Span {
  * `info("msg")` must still compile — attrs is optional (backward compat).
  */
 export interface Logger {
-	readonly debug: (msg: string, attrs?: Attributes) => void;
-	readonly info: (msg: string, attrs?: Attributes) => void;
-	readonly warn: (msg: string, attrs?: Attributes) => void;
-	readonly error: (msg: string, attrs?: ErrorAttributes) => void;
-	/**
-	 * Create a child logger with additional correlation context.
-	 * Explicit values passed down (P3 — no ambient state).
-	 */
-	readonly child: (ctx: Partial<LogContext> & { readonly attrs?: Attributes }) => Logger;
-	/** Open a new span. Emits a `span-open` record immediately (D3). */
-	readonly span: (name: string, attrs?: Attributes, body?: string) => Span;
+  readonly debug: (msg: string, attrs?: Attributes) => void;
+  readonly info: (msg: string, attrs?: Attributes) => void;
+  readonly warn: (msg: string, attrs?: Attributes) => void;
+  readonly error: (msg: string, attrs?: ErrorAttributes) => void;
+  /**
+   * Create a child logger with additional correlation context.
+   * Explicit values passed down (P3 — no ambient state).
+   */
+  readonly child: (ctx: Partial<LogContext> & { readonly attrs?: Attributes }) => Logger;
+  /** Open a new span. Emits a `span-open` record immediately (D3). */
+  readonly span: (name: string, attrs?: Attributes, body?: string) => Span;
 }
 
 /**
@@ -94,8 +94,8 @@ export interface Logger {
  * pass `error("msg", { err })` directly.
  */
 export interface ErrorAttributes {
-	readonly err?: unknown;
-	readonly [key: string]: unknown;
+  readonly err?: unknown;
+  readonly [key: string]: unknown;
 }
 
 // --- LogRecord (discriminated union) ---
@@ -109,9 +109,9 @@ export type SpanStatus = "ok" | "error";
  * A link to another span, recorded at a handoff moment (D4).
  */
 export interface SpanLink {
-	readonly spanId: string;
-	readonly turnId?: string;
-	readonly reason?: string;
+  readonly spanId: string;
+  readonly turnId?: string;
+  readonly reason?: string;
 }
 
 /**
@@ -126,50 +126,50 @@ export type LogRecord = LogLineRecord | SpanOpenRecord | SpanCloseRecord;
 
 /** A structured log line (debug/info/warn/error). */
 export interface LogLineRecord {
-	readonly kind: "log";
-	readonly level: Level;
-	readonly msg: string;
-	readonly timestamp: number;
-	readonly extensionId: string;
-	readonly conversationId?: string;
-	readonly turnId?: string;
-	readonly spanId?: string;
-	readonly parentSpanId?: string;
-	readonly attributes?: Attributes;
-	/** Optional large verbatim payload (store-fat, serve-thin). */
-	readonly body?: string;
+  readonly kind: "log";
+  readonly level: Level;
+  readonly msg: string;
+  readonly timestamp: number;
+  readonly extensionId: string;
+  readonly conversationId?: string;
+  readonly turnId?: string;
+  readonly spanId?: string;
+  readonly parentSpanId?: string;
+  readonly attributes?: Attributes;
+  /** Optional large verbatim payload (store-fat, serve-thin). */
+  readonly body?: string;
 }
 
 /** Emitted when a span is opened (at `logger.span(name)`). */
 export interface SpanOpenRecord {
-	readonly kind: "span-open";
-	readonly spanId: string;
-	readonly name: string;
-	readonly timestamp: number;
-	readonly extensionId: string;
-	readonly conversationId?: string;
-	readonly turnId?: string;
-	readonly parentSpanId?: string;
-	readonly attributes?: Attributes;
-	readonly links?: readonly SpanLink[];
-	readonly body?: string;
+  readonly kind: "span-open";
+  readonly spanId: string;
+  readonly name: string;
+  readonly timestamp: number;
+  readonly extensionId: string;
+  readonly conversationId?: string;
+  readonly turnId?: string;
+  readonly parentSpanId?: string;
+  readonly attributes?: Attributes;
+  readonly links?: readonly SpanLink[];
+  readonly body?: string;
 }
 
 /** Emitted when a span is closed (at `span.end()`). Carries duration + status. */
 export interface SpanCloseRecord {
-	readonly kind: "span-close";
-	readonly spanId: string;
-	readonly name: string;
-	readonly timestamp: number;
-	readonly durationMs: number;
-	readonly status: SpanStatus;
-	readonly extensionId: string;
-	readonly conversationId?: string;
-	readonly turnId?: string;
-	readonly parentSpanId?: string;
-	readonly attributes?: Attributes;
-	readonly links?: readonly SpanLink[];
-	readonly body?: string;
+  readonly kind: "span-close";
+  readonly spanId: string;
+  readonly name: string;
+  readonly timestamp: number;
+  readonly durationMs: number;
+  readonly status: SpanStatus;
+  readonly extensionId: string;
+  readonly conversationId?: string;
+  readonly turnId?: string;
+  readonly parentSpanId?: string;
+  readonly attributes?: Attributes;
+  readonly links?: readonly SpanLink[];
+  readonly body?: string;
 }
 
 // --- LogSink ---
@@ -179,13 +179,13 @@ export interface SpanCloseRecord {
  * a concrete implementation. Kernel never lets sink errors escape (D7).
  */
 export interface LogSink {
-	readonly emit: (record: LogRecord) => void;
+  readonly emit: (record: LogRecord) => void;
 }
 
 // --- Deterministic helpers (injected for testability) ---
 
 /** Clock + id generator injected into the logger factory. */
 export interface LogDeps {
-	readonly now: () => number;
-	readonly newId: () => string;
+  readonly now: () => number;
+  readonly newId: () => string;
 }

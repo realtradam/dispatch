@@ -1,13 +1,13 @@
 {
-	"name": "@dispatch/surface-loaded-extensions",
-	"version": "0.0.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/kernel": "workspace:*",
-		"@dispatch/ui-contract": "workspace:*",
-		"@dispatch/surface-registry": "workspace:*"
-	}
+  "name": "@dispatch/surface-loaded-extensions",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/ui-contract": "workspace:*",
+    "@dispatch/surface-registry": "workspace:*"
+  }
 }

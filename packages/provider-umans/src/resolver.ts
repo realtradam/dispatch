@@ -8,9 +8,9 @@ const DEFAULT_MODEL = "umans-coder";
  * and model that `activate` threads into `createOpenAICompatProvider`.
  */
 export interface UmansConfig {
-	readonly apiKey: string;
-	readonly baseURL: string;
-	readonly model: string;
+  readonly apiKey: string;
+  readonly baseURL: string;
+  readonly model: string;
 }
 
 /**
@@ -32,14 +32,14 @@ export type EnvSource = Readonly<Record<string, string | undefined>>;
  * unit testing with zero mocks.
  */
 export function resolveUmansConfig(
-	env: EnvSource,
-	configModel: string | undefined,
+  env: EnvSource,
+  configModel: string | undefined,
 ): UmansConfig | null {
-	const apiKey = env.UMANS_API_KEY;
-	if (!apiKey) return null;
-	const baseURL = env.UMANS_BASE_URL ?? DEFAULT_BASE_URL;
-	const model = configModel ?? env.UMANS_MODEL ?? DEFAULT_MODEL;
-	return { apiKey, baseURL, model };
+  const apiKey = env.UMANS_API_KEY;
+  if (!apiKey) return null;
+  const baseURL = env.UMANS_BASE_URL ?? DEFAULT_BASE_URL;
+  const model = configModel ?? env.UMANS_MODEL ?? DEFAULT_MODEL;
+  return { apiKey, baseURL, model };
 }
 
 /**
@@ -47,5 +47,5 @@ export function resolveUmansConfig(
  * — `baseURL` on the credential so it is overridable per-credential.
  */
 export function toUmansCredentials(cfg: UmansConfig): ApiKeyCredentials {
-	return { type: "api-key", apiKey: cfg.apiKey, baseURL: cfg.baseURL };
+  return { type: "api-key", apiKey: cfg.apiKey, baseURL: cfg.baseURL };
 }

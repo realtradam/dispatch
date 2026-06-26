@@ -14,33 +14,33 @@
 
 /** A single timestamped segment from a completed transcript. */
 export interface TranscriptSegment {
-	readonly text: string;
-	readonly start: number;
-	readonly duration: number;
+  readonly text: string;
+  readonly start: number;
+  readonly duration: number;
 }
 
 /** `status: "completed"` response from the transcriber service. */
 export interface CompletedResponse {
-	readonly status: "completed";
-	readonly video_id: string;
-	readonly full_text: string;
-	readonly segments: readonly TranscriptSegment[];
+  readonly status: "completed";
+  readonly video_id: string;
+  readonly full_text: string;
+  readonly segments: readonly TranscriptSegment[];
 }
 
 /** `status: "queued" | "processing"` response from the transcriber service. */
 export interface QueuedResponse {
-	readonly status: "queued" | "processing";
-	readonly video_id: string;
-	readonly position: number;
-	readonly estimated_seconds: number;
+  readonly status: "queued" | "processing";
+  readonly video_id: string;
+  readonly position: number;
+  readonly estimated_seconds: number;
 }
 
 /** `status: "failed"` response from the transcriber service. */
 export interface FailedResponse {
-	readonly status: "failed";
-	readonly video_id: string;
-	readonly error: string;
-	readonly error_type: string;
+  readonly status: "failed";
+  readonly video_id: string;
+  readonly error: string;
+  readonly error_type: string;
 }
 
 /** Discriminated union of all transcriber response shapes. */
@@ -51,9 +51,9 @@ export type TranscriptResponse = CompletedResponse | QueuedResponse | FailedResp
  * Minutes are not capped — durations over an hour render as `61:40` etc.
  */
 export function formatTimestamp(seconds: number): string {
-	const m = Math.floor(seconds / 60);
-	const s = Math.floor(seconds % 60);
-	return `${m}:${s.toString().padStart(2, "0")}`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 /**
@@ -61,20 +61,20 @@ export function formatTimestamp(seconds: number): string {
  * timestamped segment lines `[m:ss] text`. Mirrors the opencode tool's layout.
  */
 export function formatCompleted(url: string, data: CompletedResponse): string {
-	const lines: string[] = [];
-	lines.push(`## Transcript for ${url}`);
-	lines.push(`**Video ID:** ${data.video_id}`);
-	lines.push("");
-	lines.push("### Full text");
-	lines.push("");
-	lines.push(data.full_text);
-	lines.push("");
-	lines.push("### Timestamped segments");
-	lines.push("");
-	for (const segment of data.segments) {
-		lines.push(`[${formatTimestamp(segment.start)}] ${segment.text}`);
-	}
-	return lines.join("\n");
+  const lines: string[] = [];
+  lines.push(`## Transcript for ${url}`);
+  lines.push(`**Video ID:** ${data.video_id}`);
+  lines.push("");
+  lines.push("### Full text");
+  lines.push("");
+  lines.push(data.full_text);
+  lines.push("");
+  lines.push("### Timestamped segments");
+  lines.push("");
+  for (const segment of data.segments) {
+    lines.push(`[${formatTimestamp(segment.start)}] ${segment.text}`);
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -82,18 +82,18 @@ export function formatCompleted(url: string, data: CompletedResponse): string {
  * estimated available-at time (ISO, derived from the injected `now`).
  */
 export function formatQueued(url: string, data: QueuedResponse, now: () => number): string {
-	const availableAt = new Date(now() + data.estimated_seconds * 1000);
-	const timeStr = availableAt.toISOString();
-	return (
-		`Transcript not yet available (status: ${data.status}, queue position: ${data.position}).\n` +
-		`Estimated available at: ${timeStr} (in ~${Math.ceil(data.estimated_seconds)}s).\n` +
-		`URL: ${url}`
-	);
+  const availableAt = new Date(now() + data.estimated_seconds * 1000);
+  const timeStr = availableAt.toISOString();
+  return (
+    `Transcript not yet available (status: ${data.status}, queue position: ${data.position}).\n` +
+    `Estimated available at: ${timeStr} (in ~${Math.ceil(data.estimated_seconds)}s).\n` +
+    `URL: ${url}`
+  );
 }
 
 /** Format a failed response: error type + details. Mirrors the opencode tool. */
 export function formatFailed(data: FailedResponse): string {
-	return `Transcript fetch failed. Error type: ${data.error_type}. Details: ${data.error}`;
+  return `Transcript fetch failed. Error type: ${data.error_type}. Details: ${data.error}`;
 }
 
 /**
@@ -102,13 +102,13 @@ export function formatFailed(data: FailedResponse): string {
  * Duplication across features is the intended trade (isolation over DRY).
  */
 export function truncateOutput(output: string, cap: number, savePath?: string): string {
-	if (output.length <= cap) {
-		return output;
-	}
-	const truncated = output.slice(0, cap);
-	const notice =
-		savePath !== undefined
-			? `\n\n[Output truncated: exceeded ${cap} characters. Full transcript saved to ${savePath} — use read_file to access it.]`
-			: `\n\n[Output truncated: exceeded ${cap} characters]`;
-	return `${truncated}${notice}`;
+  if (output.length <= cap) {
+    return output;
+  }
+  const truncated = output.slice(0, cap);
+  const notice =
+    savePath !== undefined
+      ? `\n\n[Output truncated: exceeded ${cap} characters. Full transcript saved to ${savePath} — use read_file to access it.]`
+      : `\n\n[Output truncated: exceeded ${cap} characters]`;
+  return `${truncated}${notice}`;
 }

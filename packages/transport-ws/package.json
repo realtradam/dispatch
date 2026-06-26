@@ -1,15 +1,15 @@
 {
-	"name": "@dispatch/transport-ws",
-	"version": "0.0.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/kernel": "workspace:*",
-		"@dispatch/session-orchestrator": "workspace:*",
-		"@dispatch/surface-registry": "workspace:*",
-		"@dispatch/transport-contract": "workspace:*",
-		"@dispatch/ui-contract": "workspace:*"
-	}
+  "name": "@dispatch/transport-ws",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/session-orchestrator": "workspace:*",
+    "@dispatch/surface-registry": "workspace:*",
+    "@dispatch/transport-contract": "workspace:*",
+    "@dispatch/ui-contract": "workspace:*"
+  }
 }

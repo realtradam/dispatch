@@ -1,65 +1,65 @@
 {
-	"extends": "../../tsconfig.base.json",
-	"compilerOptions": {
-		"rootDir": "src",
-		"outDir": "dist",
-		"composite": true
-	},
-	"include": ["src/**/*.ts"],
-	"references": [
-		{
-			"path": "../cache-warming"
-		},
-		{
-			"path": "../exec-backend"
-		},
-		{
-			"path": "../kernel"
-		},
-		{
-			"path": "../lsp"
-		},
-		{
-			"path": "../message-queue"
-		},
-		{
-			"path": "../skills"
-		},
-		{
-			"path": "../ssh"
-		},
-		{
-			"path": "../storage-sqlite"
-		},
-		{
-			"path": "../surface-loaded-extensions"
-		},
-		{
-			"path": "../surface-registry"
-		},
-		{
-			"path": "../system-prompt"
-		},
-		{
-			"path": "../throughput-store"
-		},
-		{
-			"path": "../tool-edit-file"
-		},
-		{
-			"path": "../tool-read-file"
-		},
-		{
-			"path": "../tool-shell"
-		},
-		{
-			"path": "../tool-write-file"
-		},
-		{
-			"path": "../transport-http"
-		},
-		{
-			"path": "../transport-ws"
-		}
-	]
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "composite": true
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    {
+      "path": "../cache-warming"
+    },
+    {
+      "path": "../exec-backend"
+    },
+    {
+      "path": "../kernel"
+    },
+    {
+      "path": "../lsp"
+    },
+    {
+      "path": "../message-queue"
+    },
+    {
+      "path": "../skills"
+    },
+    {
+      "path": "../ssh"
+    },
+    {
+      "path": "../storage-sqlite"
+    },
+    {
+      "path": "../surface-loaded-extensions"
+    },
+    {
+      "path": "../surface-registry"
+    },
+    {
+      "path": "../system-prompt"
+    },
+    {
+      "path": "../throughput-store"
+    },
+    {
+      "path": "../tool-edit-file"
+    },
+    {
+      "path": "../tool-read-file"
+    },
+    {
+      "path": "../tool-shell"
+    },
+    {
+      "path": "../tool-write-file"
+    },
+    {
+      "path": "../transport-http"
+    },
+    {
+      "path": "../transport-ws"
+    }
+  ]
 }

@@ -17,16 +17,16 @@
 
 /** Outcome of a host-key check. The shell acts on `accept` + `append`. */
 export interface HostKeyDecision {
-	/** Accept the connection (true) or reject it loudly (false). */
-	readonly accept: boolean;
-	/**
-	 * When the host is unseen (first connect), the line to append to
-	 * `known_hosts` to pin the key. `undefined` when the host is already known
-	 * (no write needed) or when rejecting (do not pin a mismatched key).
-	 */
-	readonly append: string | undefined;
-	/** Human-readable reason for logging/the rejection error. */
-	readonly reason: string;
+  /** Accept the connection (true) or reject it loudly (false). */
+  readonly accept: boolean;
+  /**
+   * When the host is unseen (first connect), the line to append to
+   * `known_hosts` to pin the key. `undefined` when the host is already known
+   * (no write needed) or when rejecting (do not pin a mismatched key).
+   */
+  readonly append: string | undefined;
+  /** Human-readable reason for logging/the rejection error. */
+  readonly reason: string;
 }
 
 /**
@@ -40,12 +40,12 @@ export interface HostKeyDecision {
  * shared trust store).
  */
 export interface HostKeyFingerprint {
-	/** The OpenSSH `known_hosts` line token, e.g. `[localhost]:2222` or `myhost`. */
-	readonly knownHostToken: string;
-	/** The base64-encoded public key (the 2nd field of a known_hosts line). */
-	readonly keyBase64: string;
-	/** Key type label, e.g. `ssh-ed25519` (the 1st field). */
-	readonly keyType: string;
+  /** The OpenSSH `known_hosts` line token, e.g. `[localhost]:2222` or `myhost`. */
+  readonly knownHostToken: string;
+  /** The base64-encoded public key (the 2nd field of a known_hosts line). */
+  readonly keyBase64: string;
+  /** Key type label, e.g. `ssh-ed25519` (the 1st field). */
+  readonly keyType: string;
 }
 
 /**
@@ -66,76 +66,76 @@ export interface HostKeyFingerprint {
  * Pure: `knownHostsText` + `fingerprint` → `HostKeyDecision`.
  */
 export function decideHostKey(
-	knownHostsText: string,
-	fingerprint: HostKeyFingerprint,
+  knownHostsText: string,
+  fingerprint: HostKeyFingerprint,
 ): HostKeyDecision {
-	const { knownHostToken, keyBase64, keyType } = fingerprint;
-	const expectedLine = `${knownHostToken} ${keyType} ${keyBase64}`;
+  const { knownHostToken, keyBase64, keyType } = fingerprint;
+  const expectedLine = `${knownHostToken} ${keyType} ${keyBase64}`;
 
-	// A line matches THIS host when its first field is the knownHostToken.
-	const existing = findHostLine(knownHostsText, knownHostToken);
+  // A line matches THIS host when its first field is the knownHostToken.
+  const existing = findHostLine(knownHostsText, knownHostToken);
 
-	if (existing === undefined) {
-		// Absent → first connect → accept + pin (the accept-new analog).
-		return {
-			accept: true,
-			append: expectedLine,
-			reason: `first connect to "${knownHostToken}": pinning host key`,
-		};
-	}
+  if (existing === undefined) {
+    // Absent → first connect → accept + pin (the accept-new analog).
+    return {
+      accept: true,
+      append: expectedLine,
+      reason: `first connect to "${knownHostToken}": pinning host key`,
+    };
+  }
 
-	// Present → compare the key material (fields 2+3). Ignore leading/trailing
-	// whitespace differences (OpenSSH tolerates these).
-	const normalizedExisting = normalizeLine(existing);
-	if (normalizedExisting === normalizeLine(expectedLine)) {
-		return { accept: true, append: undefined, reason: `host key for "${knownHostToken}" matches` };
-	}
+  // Present → compare the key material (fields 2+3). Ignore leading/trailing
+  // whitespace differences (OpenSSH tolerates these).
+  const normalizedExisting = normalizeLine(existing);
+  if (normalizedExisting === normalizeLine(expectedLine)) {
+    return { accept: true, append: undefined, reason: `host key for "${knownHostToken}" matches` };
+  }
 
-	// Present but DIFFERENT → reject loudly. Do NOT pin (the key changed →
-	// possible MITM; the user must clear the stale line manually).
-	return {
-		accept: false,
-		append: undefined,
-		reason:
-			`HOST KEY CHANGED for "${knownHostToken}" — refusing to connect ` +
-			`(remove the stale entry from ~/.ssh/known_hosts if this change is expected)`,
-	};
+  // Present but DIFFERENT → reject loudly. Do NOT pin (the key changed →
+  // possible MITM; the user must clear the stale line manually).
+  return {
+    accept: false,
+    append: undefined,
+    reason:
+      `HOST KEY CHANGED for "${knownHostToken}" — refusing to connect ` +
+      `(remove the stale entry from ~/.ssh/known_hosts if this change is expected)`,
+  };
 }
 
 /** Find the first known_hosts line whose first field is `token`. Pure. */
 function findHostLine(text: string, token: string): string | undefined {
-	for (const raw of text.split("\n")) {
-		const line = raw.trim();
-		if (line === "" || line.startsWith("#")) continue;
-		// First whitespace-delimited field is the host token (possibly comma-list).
-		const firstSpace = findFirstSpace(line);
-		const firstField = firstSpace === -1 ? line : line.slice(0, firstSpace);
-		// A token may be a comma-separated host list; accept if any element matches.
-		if (
-			firstField
-				.split(",")
-				.map((h) => h.trim())
-				.includes(token)
-		) {
-			return line;
-		}
-	}
-	return undefined;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    // First whitespace-delimited field is the host token (possibly comma-list).
+    const firstSpace = findFirstSpace(line);
+    const firstField = firstSpace === -1 ? line : line.slice(0, firstSpace);
+    // A token may be a comma-separated host list; accept if any element matches.
+    if (
+      firstField
+        .split(",")
+        .map((h) => h.trim())
+        .includes(token)
+    ) {
+      return line;
+    }
+  }
+  return undefined;
 }
 
 /** Normalize a known_hosts line for key-material comparison (host-independent). */
 function normalizeLine(line: string): string {
-	const parts = line.split(/\s+/).filter((p) => p.length > 0);
-	// Drop the first field (host token); compare key-type + base64 key.
-	return parts.slice(1).join(" ");
+  const parts = line.split(/\s+/).filter((p) => p.length > 0);
+  // Drop the first field (host token); compare key-type + base64 key.
+  return parts.slice(1).join(" ");
 }
 
 function findFirstSpace(line: string): number {
-	for (let i = 0; i < line.length; i++) {
-		const ch = line.charCodeAt(i);
-		if (ch === 32 || ch === 9) return i; // space or tab
-	}
-	return -1;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line.charCodeAt(i);
+    if (ch === 32 || ch === 9) return i; // space or tab
+  }
+  return -1;
 }
 
 /**
@@ -144,5 +144,5 @@ function findFirstSpace(line: string): number {
  * first-field matching as `decideHostKey`.
  */
 export function isKnownHost(knownHostsText: string, token: string): boolean {
-	return findHostLine(knownHostsText, token) !== undefined;
+  return findHostLine(knownHostsText, token) !== undefined;
 }

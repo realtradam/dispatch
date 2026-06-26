@@ -1,1603 +1,1603 @@
 import type {
-	ChatMessage,
-	Logger,
-	Span,
-	StepId,
-	StorageNamespace,
-	TurnMetrics,
+  ChatMessage,
+  Logger,
+  Span,
+  StepId,
+  StorageNamespace,
+  TurnMetrics,
 } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
 import { CONVERSATION_INDEX_KEY, chunkKey, metaKey } from "./keys.js";
 import { createConversationStore, extractTitle } from "./store.js";
 
 interface SpanEvent {
-	readonly kind: "span-open" | "span-close";
-	readonly name: string;
-	readonly attrs?: Record<string, string | number | boolean | null> | undefined;
-	readonly conversationId?: string | undefined;
+  readonly kind: "span-open" | "span-close";
+  readonly name: string;
+  readonly attrs?: Record<string, string | number | boolean | null> | undefined;
+  readonly conversationId?: string | undefined;
 }
 
 function createCapturingLogger(): { logger: Logger; events: SpanEvent[] } {
-	const events: SpanEvent[] = [];
+  const events: SpanEvent[] = [];
 
-	function createSpan(name: string, conversationId?: string | undefined): Span {
-		events.push({ kind: "span-open", name, conversationId });
-		const span: Span = {
-			id: `span_${events.length}`,
-			log: createFakeLogger(conversationId),
-			setAttributes: () => {},
-			addLink: () => {},
-			child: (childName, attrs) => {
-				const child = createSpan(childName, conversationId);
-				if (attrs !== undefined) {
-					const prev = events[events.length - 1];
-					if (prev !== undefined) {
-						events[events.length - 1] = {
-							...prev,
-							attrs: attrs as Record<string, string | number | boolean | null>,
-						};
-					}
-				}
-				return child;
-			},
-			end: (outcome) => {
-				const attrs = outcome?.attrs as
-					| Record<string, string | number | boolean | null>
-					| undefined;
-				events.push({ kind: "span-close", name, attrs, conversationId });
-			},
-		};
-		return span;
-	}
+  function createSpan(name: string, conversationId?: string | undefined): Span {
+    events.push({ kind: "span-open", name, conversationId });
+    const span: Span = {
+      id: `span_${events.length}`,
+      log: createFakeLogger(conversationId),
+      setAttributes: () => {},
+      addLink: () => {},
+      child: (childName, attrs) => {
+        const child = createSpan(childName, conversationId);
+        if (attrs !== undefined) {
+          const prev = events[events.length - 1];
+          if (prev !== undefined) {
+            events[events.length - 1] = {
+              ...prev,
+              attrs: attrs as Record<string, string | number | boolean | null>,
+            };
+          }
+        }
+        return child;
+      },
+      end: (outcome) => {
+        const attrs = outcome?.attrs as
+          | Record<string, string | number | boolean | null>
+          | undefined;
+        events.push({ kind: "span-close", name, attrs, conversationId });
+      },
+    };
+    return span;
+  }
 
-	function createFakeLogger(conversationId?: string | undefined): Logger {
-		return {
-			debug: () => {},
-			info: () => {},
-			warn: () => {},
-			error: () => {},
-			child: (ctx) => createFakeLogger(ctx.conversationId ?? conversationId),
-			span: (name, attrs) => {
-				const span = createSpan(name, conversationId);
-				if (attrs !== undefined) {
-					const prev = events[events.length - 1];
-					if (prev !== undefined) {
-						events[events.length - 1] = {
-							...prev,
-							attrs: attrs as Record<string, string | number | boolean | null>,
-						};
-					}
-				}
-				return span;
-			},
-		};
-	}
+  function createFakeLogger(conversationId?: string | undefined): Logger {
+    return {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      child: (ctx) => createFakeLogger(ctx.conversationId ?? conversationId),
+      span: (name, attrs) => {
+        const span = createSpan(name, conversationId);
+        if (attrs !== undefined) {
+          const prev = events[events.length - 1];
+          if (prev !== undefined) {
+            events[events.length - 1] = {
+              ...prev,
+              attrs: attrs as Record<string, string | number | boolean | null>,
+            };
+          }
+        }
+        return span;
+      },
+    };
+  }
 
-	return { logger: createFakeLogger(), events };
+  return { logger: createFakeLogger(), events };
 }
 
 function createMemoryStorage(): StorageNamespace {
-	const data = new Map<string, string>();
-	return {
-		get: async (key) => data.get(key) ?? null,
-		set: async (key, value) => {
-			data.set(key, value);
-		},
-		delete: async (key) => {
-			data.delete(key);
-		},
-		has: async (key) => data.has(key),
-		keys: async (prefix) => {
-			const all = [...data.keys()];
-			if (!prefix) return all;
-			return all.filter((k) => k.startsWith(prefix));
-		},
-	};
+  const data = new Map<string, string>();
+  return {
+    get: async (key) => data.get(key) ?? null,
+    set: async (key, value) => {
+      data.set(key, value);
+    },
+    delete: async (key) => {
+      data.delete(key);
+    },
+    has: async (key) => data.has(key),
+    keys: async (prefix) => {
+      const all = [...data.keys()];
+      if (!prefix) return all;
+      return all.filter((k) => k.startsWith(prefix));
+    },
+  };
 }
 
 describe("ConversationStore", () => {
-	let storage: StorageNamespace;
+  let storage: StorageNamespace;
 
-	beforeEach(() => {
-		storage = createMemoryStorage();
-	});
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
 
-	it("returns empty array for unknown conversation", async () => {
-		const store = createConversationStore(storage);
-		const result = await store.load("nonexistent");
-		expect(result).toEqual([]);
-	});
+  it("returns empty array for unknown conversation", async () => {
+    const store = createConversationStore(storage);
+    const result = await store.load("nonexistent");
+    expect(result).toEqual([]);
+  });
 
-	it("round-trips a single message", async () => {
-		const store = createConversationStore(storage);
-		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
-		await store.append("conv1", [msg]);
-		const result = await store.load("conv1");
-		expect(result).toEqual([msg]);
-	});
+  it("round-trips a single message", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+    await store.append("conv1", [msg]);
+    const result = await store.load("conv1");
+    expect(result).toEqual([msg]);
+  });
 
-	it("round-trips multiple messages in one append", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "hi" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "hello" }] },
-		];
-		await store.append("conv1", messages);
-		const result = await store.load("conv1");
-		expect(result).toEqual(messages);
-	});
+  it("round-trips multiple messages in one append", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "hi" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "hello" }] },
+    ];
+    await store.append("conv1", messages);
+    const result = await store.load("conv1");
+    expect(result).toEqual(messages);
+  });
 
-	it("accumulates messages across multiple appends", async () => {
-		const store = createConversationStore(storage);
-		const turn1: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "turn 1" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "reply 1" }] },
-		];
-		const turn2: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "turn 2" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "reply 2" }] },
-		];
-		await store.append("conv1", turn1);
-		await store.append("conv1", turn2);
-		const result = await store.load("conv1");
-		expect(result).toEqual([...turn1, ...turn2]);
-	});
+  it("accumulates messages across multiple appends", async () => {
+    const store = createConversationStore(storage);
+    const turn1: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "turn 1" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "reply 1" }] },
+    ];
+    const turn2: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "turn 2" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "reply 2" }] },
+    ];
+    await store.append("conv1", turn1);
+    await store.append("conv1", turn2);
+    const result = await store.load("conv1");
+    expect(result).toEqual([...turn1, ...turn2]);
+  });
 
-	it("preserves message ordering", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [];
-		for (let i = 0; i < 10; i++) {
-			messages.push({ role: "user", chunks: [{ type: "text", text: `msg ${i}` }] });
-		}
-		await store.append("conv1", messages);
-		const result = await store.load("conv1");
-		expect(result).toEqual(messages);
-		for (let i = 0; i < 10; i++) {
-			const chunk = result[i]?.chunks[0];
-			expect(chunk?.type === "text" ? chunk.text : null).toBe(`msg ${i}`);
-		}
-	});
+  it("preserves message ordering", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 10; i++) {
+      messages.push({ role: "user", chunks: [{ type: "text", text: `msg ${i}` }] });
+    }
+    await store.append("conv1", messages);
+    const result = await store.load("conv1");
+    expect(result).toEqual(messages);
+    for (let i = 0; i < 10; i++) {
+      const chunk = result[i]?.chunks[0];
+      expect(chunk?.type === "text" ? chunk.text : null).toBe(`msg ${i}`);
+    }
+  });
 
-	it("isolates conversations by id", async () => {
-		const store = createConversationStore(storage);
-		const msgA: ChatMessage = { role: "user", chunks: [{ type: "text", text: "A" }] };
-		const msgB: ChatMessage = { role: "user", chunks: [{ type: "text", text: "B" }] };
-		await store.append("convA", [msgA]);
-		await store.append("convB", [msgB]);
-		expect(await store.load("convA")).toEqual([msgA]);
-		expect(await store.load("convB")).toEqual([msgB]);
-	});
+  it("isolates conversations by id", async () => {
+    const store = createConversationStore(storage);
+    const msgA: ChatMessage = { role: "user", chunks: [{ type: "text", text: "A" }] };
+    const msgB: ChatMessage = { role: "user", chunks: [{ type: "text", text: "B" }] };
+    await store.append("convA", [msgA]);
+    await store.append("convB", [msgB]);
+    expect(await store.load("convA")).toEqual([msgA]);
+    expect(await store.load("convB")).toEqual([msgB]);
+  });
 
-	it("reconciles orphaned tool-calls on load", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
-			{
-				role: "assistant",
-				chunks: [
-					{
-						type: "tool-call",
-						toolCallId: "call_1",
-						toolName: "someTool",
-						input: {},
-					},
-				],
-			},
-		];
-		await store.append("conv1", messages);
-		const result = await store.load("conv1");
-		expect(result).toHaveLength(3);
-		expect(result[2]?.role).toBe("tool");
-		const chunk = result[2]?.chunks[0];
-		expect(chunk?.type === "tool-result" ? chunk.isError : null).toBe(true);
-	});
+  it("reconciles orphaned tool-calls on load", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "do it" }] },
+      {
+        role: "assistant",
+        chunks: [
+          {
+            type: "tool-call",
+            toolCallId: "call_1",
+            toolName: "someTool",
+            input: {},
+          },
+        ],
+      },
+    ];
+    await store.append("conv1", messages);
+    const result = await store.load("conv1");
+    expect(result).toHaveLength(3);
+    expect(result[2]?.role).toBe("tool");
+    const chunk = result[2]?.chunks[0];
+    expect(chunk?.type === "tool-result" ? chunk.isError : null).toBe(true);
+  });
 
-	it("handles tool-call/tool-result round-trip", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{
-				role: "assistant",
-				chunks: [
-					{
-						type: "tool-call",
-						toolCallId: "call_1",
-						toolName: "readFile",
-						input: { path: "/tmp/x" },
-					},
-				],
-			},
-			{
-				role: "tool",
-				chunks: [
-					{
-						type: "tool-result",
-						toolCallId: "call_1",
-						toolName: "readFile",
-						content: "contents",
-						isError: false,
-					},
-				],
-			},
-		];
-		await store.append("conv1", messages);
-		const result = await store.load("conv1");
-		expect(result).toEqual(messages);
-	});
+  it("handles tool-call/tool-result round-trip", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        chunks: [
+          {
+            type: "tool-call",
+            toolCallId: "call_1",
+            toolName: "readFile",
+            input: { path: "/tmp/x" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        chunks: [
+          {
+            type: "tool-result",
+            toolCallId: "call_1",
+            toolName: "readFile",
+            content: "contents",
+            isError: false,
+          },
+        ],
+      },
+    ];
+    await store.append("conv1", messages);
+    const result = await store.load("conv1");
+    expect(result).toEqual(messages);
+  });
 
-	it("append assigns gap-free 1-based per-chunk seq", async () => {
-		const store = createConversationStore(storage);
-		const msg: ChatMessage = {
-			role: "assistant",
-			chunks: [
-				{ type: "text", text: "first" },
-				{ type: "thinking", text: "hmm" },
-				{ type: "text", text: "second" },
-			],
-		};
-		await store.append("conv1", [msg]);
-		const chunks = await store.loadSince("conv1");
-		expect(chunks).toHaveLength(3);
-		expect(chunks[0]?.seq).toBe(1);
-		expect(chunks[1]?.seq).toBe(2);
-		expect(chunks[2]?.seq).toBe(3);
-	});
+  it("append assigns gap-free 1-based per-chunk seq", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = {
+      role: "assistant",
+      chunks: [
+        { type: "text", text: "first" },
+        { type: "thinking", text: "hmm" },
+        { type: "text", text: "second" },
+      ],
+    };
+    await store.append("conv1", [msg]);
+    const chunks = await store.loadSince("conv1");
+    expect(chunks).toHaveLength(3);
+    expect(chunks[0]?.seq).toBe(1);
+    expect(chunks[1]?.seq).toBe(2);
+    expect(chunks[2]?.seq).toBe(3);
+  });
 
-	it("seq continues monotonically across separate append calls", async () => {
-		const store = createConversationStore(storage);
-		const msg1: ChatMessage = {
-			role: "user",
-			chunks: [
-				{ type: "text", text: "a" },
-				{ type: "text", text: "b" },
-			],
-		};
-		const msg2: ChatMessage = {
-			role: "assistant",
-			chunks: [
-				{ type: "text", text: "c" },
-				{ type: "text", text: "d" },
-				{ type: "text", text: "e" },
-			],
-		};
-		await store.append("conv1", [msg1]);
-		await store.append("conv1", [msg2]);
-		const chunks = await store.loadSince("conv1");
-		expect(chunks).toHaveLength(5);
-		expect(chunks[0]?.seq).toBe(1);
-		expect(chunks[1]?.seq).toBe(2);
-		expect(chunks[2]?.seq).toBe(3);
-		expect(chunks[3]?.seq).toBe(4);
-		expect(chunks[4]?.seq).toBe(5);
-	});
+  it("seq continues monotonically across separate append calls", async () => {
+    const store = createConversationStore(storage);
+    const msg1: ChatMessage = {
+      role: "user",
+      chunks: [
+        { type: "text", text: "a" },
+        { type: "text", text: "b" },
+      ],
+    };
+    const msg2: ChatMessage = {
+      role: "assistant",
+      chunks: [
+        { type: "text", text: "c" },
+        { type: "text", text: "d" },
+        { type: "text", text: "e" },
+      ],
+    };
+    await store.append("conv1", [msg1]);
+    await store.append("conv1", [msg2]);
+    const chunks = await store.loadSince("conv1");
+    expect(chunks).toHaveLength(5);
+    expect(chunks[0]?.seq).toBe(1);
+    expect(chunks[1]?.seq).toBe(2);
+    expect(chunks[2]?.seq).toBe(3);
+    expect(chunks[3]?.seq).toBe(4);
+    expect(chunks[4]?.seq).toBe(5);
+  });
 
-	it("loadSince() returns every StoredChunk ascending by seq, carrying role + chunk", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "world" }] },
-		];
-		await store.append("conv1", messages);
-		const chunks = await store.loadSince("conv1");
-		expect(chunks).toHaveLength(2);
-		expect(chunks[0]?.seq).toBe(1);
-		expect(chunks[0]?.role).toBe("user");
-		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
-		expect(chunks[1]?.seq).toBe(2);
-		expect(chunks[1]?.role).toBe("assistant");
-		expect(chunks[1]?.chunk).toEqual({ type: "text", text: "world" });
-	});
+  it("loadSince() returns every StoredChunk ascending by seq, carrying role + chunk", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "hello" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "world" }] },
+    ];
+    await store.append("conv1", messages);
+    const chunks = await store.loadSince("conv1");
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]?.seq).toBe(1);
+    expect(chunks[0]?.role).toBe("user");
+    expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+    expect(chunks[1]?.seq).toBe(2);
+    expect(chunks[1]?.role).toBe("assistant");
+    expect(chunks[1]?.chunk).toEqual({ type: "text", text: "world" });
+  });
 
-	it("loadSince(sinceSeq=N) returns only chunks with seq > N", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "a" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "b" }] },
-			{ role: "user", chunks: [{ type: "text", text: "c" }] },
-		];
-		await store.append("conv1", messages);
-		const chunks = await store.loadSince("conv1", 2);
-		expect(chunks).toHaveLength(1);
-		expect(chunks[0]?.seq).toBe(3);
-		expect(chunks[0]?.role).toBe("user");
-		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "c" });
-	});
+  it("loadSince(sinceSeq=N) returns only chunks with seq > N", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "a" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "b" }] },
+      { role: "user", chunks: [{ type: "text", text: "c" }] },
+    ];
+    await store.append("conv1", messages);
+    const chunks = await store.loadSince("conv1", 2);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.seq).toBe(3);
+    expect(chunks[0]?.role).toBe("user");
+    expect(chunks[0]?.chunk).toEqual({ type: "text", text: "c" });
+  });
 
-	it("loadSince treats a non-positive / non-integer sinceSeq as 0 (from the start), honoring the contract", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "a" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "b" }] },
-			{ role: "user", chunks: [{ type: "text", text: "c" }] },
-		];
-		await store.append("conv1", messages);
-		const all = [1, 2, 3];
-		// Non-positive integers → from the start (already worked; now codified).
-		expect((await store.loadSince("conv1", 0)).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", -2)).map((c) => c.seq)).toEqual(all);
-		// Non-integer values → from the start (the contract lie this fixes:
-		// a positive non-integer like 2.5 used to filter like sinceSeq=2).
-		expect((await store.loadSince("conv1", 2.5)).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", 2.7)).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", -2.5)).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", Number.POSITIVE_INFINITY)).map((c) => c.seq)).toEqual(
-			all,
-		);
-		expect((await store.loadSince("conv1", Number.NaN)).map((c) => c.seq)).toEqual(all);
-	});
+  it("loadSince treats a non-positive / non-integer sinceSeq as 0 (from the start), honoring the contract", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "a" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "b" }] },
+      { role: "user", chunks: [{ type: "text", text: "c" }] },
+    ];
+    await store.append("conv1", messages);
+    const all = [1, 2, 3];
+    // Non-positive integers → from the start (already worked; now codified).
+    expect((await store.loadSince("conv1", 0)).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", -2)).map((c) => c.seq)).toEqual(all);
+    // Non-integer values → from the start (the contract lie this fixes:
+    // a positive non-integer like 2.5 used to filter like sinceSeq=2).
+    expect((await store.loadSince("conv1", 2.5)).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", 2.7)).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", -2.5)).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", Number.POSITIVE_INFINITY)).map((c) => c.seq)).toEqual(
+      all,
+    );
+    expect((await store.loadSince("conv1", Number.NaN)).map((c) => c.seq)).toEqual(all);
+  });
 
-	it("load() round-trips the exact ChatMessage[] that was appended", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "read file" }] },
-			{
-				role: "assistant",
-				chunks: [
-					{ type: "thinking", text: "let me think" },
-					{ type: "text", text: "I will read it" },
-					{
-						type: "tool-call",
-						toolCallId: "call_rt",
-						toolName: "readFile",
-						input: { path: "/tmp/x" },
-					},
-				],
-			},
-			{
-				role: "tool",
-				chunks: [
-					{
-						type: "tool-result",
-						toolCallId: "call_rt",
-						toolName: "readFile",
-						content: "file contents here",
-						isError: false,
-					},
-				],
-			},
-		];
-		await store.append("conv1", messages);
-		const result = await store.load("conv1");
-		expect(result).toEqual(messages);
-	});
+  it("load() round-trips the exact ChatMessage[] that was appended", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "read file" }] },
+      {
+        role: "assistant",
+        chunks: [
+          { type: "thinking", text: "let me think" },
+          { type: "text", text: "I will read it" },
+          {
+            type: "tool-call",
+            toolCallId: "call_rt",
+            toolName: "readFile",
+            input: { path: "/tmp/x" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        chunks: [
+          {
+            type: "tool-result",
+            toolCallId: "call_rt",
+            toolName: "readFile",
+            content: "file contents here",
+            isError: false,
+          },
+        ],
+      },
+    ];
+    await store.append("conv1", messages);
+    const result = await store.load("conv1");
+    expect(result).toEqual(messages);
+  });
 
-	it("load() does not merge consecutive same-role messages", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "first user msg" }] },
-			{ role: "user", chunks: [{ type: "text", text: "second user msg" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "reply" }] },
-		];
-		await store.append("conv1", messages);
-		const result = await store.load("conv1");
-		expect(result).toHaveLength(3);
-		expect(result).toEqual(messages);
-		expect(result[0]?.chunks[0]?.type === "text" ? result[0]?.chunks[0]?.text : null).toBe(
-			"first user msg",
-		);
-		expect(result[1]?.chunks[0]?.type === "text" ? result[1]?.chunks[0]?.text : null).toBe(
-			"second user msg",
-		);
-	});
+  it("load() does not merge consecutive same-role messages", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "first user msg" }] },
+      { role: "user", chunks: [{ type: "text", text: "second user msg" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "reply" }] },
+    ];
+    await store.append("conv1", messages);
+    const result = await store.load("conv1");
+    expect(result).toHaveLength(3);
+    expect(result).toEqual(messages);
+    expect(result[0]?.chunks[0]?.type === "text" ? result[0]?.chunks[0]?.text : null).toBe(
+      "first user msg",
+    );
+    expect(result[1]?.chunks[0]?.type === "text" ? result[1]?.chunks[0]?.text : null).toBe(
+      "second user msg",
+    );
+  });
 
-	it("reconcile still synthesizes a result for an interrupted tool-call on load", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
-			{
-				role: "assistant",
-				chunks: [
-					{ type: "text", text: "calling tool" },
-					{
-						type: "tool-call",
-						toolCallId: "call_orphan",
-						toolName: "someTool",
-						input: { x: 1 },
-					},
-				],
-			},
-		];
-		await store.append("conv1", messages);
-		const result = await store.load("conv1");
-		expect(result).toHaveLength(3);
-		expect(result[2]?.role).toBe("tool");
-		const chunk = result[2]?.chunks[0];
-		if (chunk === undefined) throw new Error("expected chunk");
-		expect(chunk.type).toBe("tool-result");
-		if (chunk.type === "tool-result") {
-			expect(chunk.toolCallId).toBe("call_orphan");
-			expect(chunk.isError).toBe(true);
-			expect(chunk.content).toBe("interrupted: tool execution did not complete");
-		}
-	});
+  it("reconcile still synthesizes a result for an interrupted tool-call on load", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "do it" }] },
+      {
+        role: "assistant",
+        chunks: [
+          { type: "text", text: "calling tool" },
+          {
+            type: "tool-call",
+            toolCallId: "call_orphan",
+            toolName: "someTool",
+            input: { x: 1 },
+          },
+        ],
+      },
+    ];
+    await store.append("conv1", messages);
+    const result = await store.load("conv1");
+    expect(result).toHaveLength(3);
+    expect(result[2]?.role).toBe("tool");
+    const chunk = result[2]?.chunks[0];
+    if (chunk === undefined) throw new Error("expected chunk");
+    expect(chunk.type).toBe("tool-result");
+    if (chunk.type === "tool-result") {
+      expect(chunk.toolCallId).toBe("call_orphan");
+      expect(chunk.isError).toBe(true);
+      expect(chunk.content).toBe("interrupted: tool execution did not complete");
+    }
+  });
 
-	it("load() skips a corrupt-JSON chunk row and reconciles the rest (no throw)", async () => {
-		// "Never leave the system broken": a single bad row must not brick the
-		// conversation. The corrupt chunk is skipped; the rest loads and reconcile
-		// still runs normally. Fake only the OUTERMOST edge (the injected storage)
-		// — no @dispatch/* mocks.
-		const { logger } = createCapturingLogger();
-		const store = createConversationStore(storage, logger);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
-			{
-				role: "assistant",
-				chunks: [
-					{ type: "text", text: "calling" },
-					{ type: "tool-call", toolCallId: "call_x", toolName: "t", input: {} },
-				],
-			},
-		];
-		await store.append("conv_corrupt", messages);
-		// Corrupt the assistant text chunk (seq 2) directly in storage.
-		await storage.set(chunkKey("conv_corrupt", 2), "{this is not valid json");
+  it("load() skips a corrupt-JSON chunk row and reconciles the rest (no throw)", async () => {
+    // "Never leave the system broken": a single bad row must not brick the
+    // conversation. The corrupt chunk is skipped; the rest loads and reconcile
+    // still runs normally. Fake only the OUTERMOST edge (the injected storage)
+    // — no @dispatch/* mocks.
+    const { logger } = createCapturingLogger();
+    const store = createConversationStore(storage, logger);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "do it" }] },
+      {
+        role: "assistant",
+        chunks: [
+          { type: "text", text: "calling" },
+          { type: "tool-call", toolCallId: "call_x", toolName: "t", input: {} },
+        ],
+      },
+    ];
+    await store.append("conv_corrupt", messages);
+    // Corrupt the assistant text chunk (seq 2) directly in storage.
+    await storage.set(chunkKey("conv_corrupt", 2), "{this is not valid json");
 
-		const result = await store.load("conv_corrupt");
-		// No throw. The user message survives; the assistant message keeps its
-		// tool-call (its text chunk was the corrupt row, skipped); reconcile
-		// synthesizes the missing tool-result for the now-orphaned tool-call.
-		expect(result).toEqual([
-			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
-			{
-				role: "assistant",
-				chunks: [{ type: "tool-call", toolCallId: "call_x", toolName: "t", input: {} }],
-			},
-			{
-				role: "tool",
-				chunks: [
-					{
-						type: "tool-result",
-						toolCallId: "call_x",
-						toolName: "t",
-						content: "interrupted: tool execution did not complete",
-						isError: true,
-					},
-				],
-			},
-		]);
-	});
+    const result = await store.load("conv_corrupt");
+    // No throw. The user message survives; the assistant message keeps its
+    // tool-call (its text chunk was the corrupt row, skipped); reconcile
+    // synthesizes the missing tool-result for the now-orphaned tool-call.
+    expect(result).toEqual([
+      { role: "user", chunks: [{ type: "text", text: "do it" }] },
+      {
+        role: "assistant",
+        chunks: [{ type: "tool-call", toolCallId: "call_x", toolName: "t", input: {} }],
+      },
+      {
+        role: "tool",
+        chunks: [
+          {
+            type: "tool-result",
+            toolCallId: "call_x",
+            toolName: "t",
+            content: "interrupted: tool execution did not complete",
+            isError: true,
+          },
+        ],
+      },
+    ]);
+  });
 
-	it("loadSince returns empty array for unknown conversation", async () => {
-		const store = createConversationStore(storage);
-		const result = await store.loadSince("nonexistent");
-		expect(result).toEqual([]);
-	});
+  it("loadSince returns empty array for unknown conversation", async () => {
+    const store = createConversationStore(storage);
+    const result = await store.loadSince("nonexistent");
+    expect(result).toEqual([]);
+  });
 
-	it("loadSince(0) returns all chunks", async () => {
-		const store = createConversationStore(storage);
-		const msg: ChatMessage = {
-			role: "user",
-			chunks: [
-				{ type: "text", text: "a" },
-				{ type: "text", text: "b" },
-			],
-		};
-		await store.append("conv1", [msg]);
-		const all = await store.loadSince("conv1", 0);
-		expect(all).toHaveLength(2);
-		expect(all[0]?.seq).toBe(1);
-		expect(all[1]?.seq).toBe(2);
-	});
+  it("loadSince(0) returns all chunks", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = {
+      role: "user",
+      chunks: [
+        { type: "text", text: "a" },
+        { type: "text", text: "b" },
+      ],
+    };
+    await store.append("conv1", [msg]);
+    const all = await store.loadSince("conv1", 0);
+    expect(all).toHaveLength(2);
+    expect(all[0]?.seq).toBe(1);
+    expect(all[1]?.seq).toBe(2);
+  });
 
-	it("append → loadSince preserves a tool chunk's stepId", async () => {
-		const store = createConversationStore(storage);
-		const stepId = "step_abc" as StepId;
-		const messages: ChatMessage[] = [
-			{
-				role: "assistant",
-				chunks: [
-					{
-						type: "tool-call",
-						toolCallId: "call_sid",
-						toolName: "myTool",
-						input: {},
-						stepId,
-					},
-				],
-			},
-			{
-				role: "tool",
-				chunks: [
-					{
-						type: "tool-result",
-						toolCallId: "call_sid",
-						toolName: "myTool",
-						content: "ok",
-						isError: false,
-						stepId,
-					},
-				],
-			},
-		];
-		await store.append("conv1", messages);
-		const chunks = await store.loadSince("conv1");
-		expect(chunks).toHaveLength(2);
-		const callChunk = chunks[0]?.chunk;
-		expect(callChunk?.type).toBe("tool-call");
-		if (callChunk?.type === "tool-call") {
-			expect(callChunk.stepId).toBe(stepId);
-		}
-		const resultChunk = chunks[1]?.chunk;
-		expect(resultChunk?.type).toBe("tool-result");
-		if (resultChunk?.type === "tool-result") {
-			expect(resultChunk.stepId).toBe(stepId);
-		}
-	});
+  it("append → loadSince preserves a tool chunk's stepId", async () => {
+    const store = createConversationStore(storage);
+    const stepId = "step_abc" as StepId;
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        chunks: [
+          {
+            type: "tool-call",
+            toolCallId: "call_sid",
+            toolName: "myTool",
+            input: {},
+            stepId,
+          },
+        ],
+      },
+      {
+        role: "tool",
+        chunks: [
+          {
+            type: "tool-result",
+            toolCallId: "call_sid",
+            toolName: "myTool",
+            content: "ok",
+            isError: false,
+            stepId,
+          },
+        ],
+      },
+    ];
+    await store.append("conv1", messages);
+    const chunks = await store.loadSince("conv1");
+    expect(chunks).toHaveLength(2);
+    const callChunk = chunks[0]?.chunk;
+    expect(callChunk?.type).toBe("tool-call");
+    if (callChunk?.type === "tool-call") {
+      expect(callChunk.stepId).toBe(stepId);
+    }
+    const resultChunk = chunks[1]?.chunk;
+    expect(resultChunk?.type).toBe("tool-result");
+    if (resultChunk?.type === "tool-result") {
+      expect(resultChunk.stepId).toBe(stepId);
+    }
+  });
 
-	it("load preserves a tool chunk's stepId", async () => {
-		const store = createConversationStore(storage);
-		const stepId = "step_xyz" as StepId;
-		const messages: ChatMessage[] = [
-			{
-				role: "assistant",
-				chunks: [
-					{
-						type: "tool-call",
-						toolCallId: "call_lid",
-						toolName: "myTool",
-						input: { a: 1 },
-						stepId,
-					},
-				],
-			},
-			{
-				role: "tool",
-				chunks: [
-					{
-						type: "tool-result",
-						toolCallId: "call_lid",
-						toolName: "myTool",
-						content: "done",
-						isError: false,
-						stepId,
-					},
-				],
-			},
-		];
-		await store.append("conv1", messages);
-		const result = await store.load("conv1");
-		expect(result).toHaveLength(2);
-		const callChunk = result[0]?.chunks[0];
-		expect(callChunk?.type).toBe("tool-call");
-		if (callChunk?.type === "tool-call") {
-			expect(callChunk.stepId).toBe(stepId);
-		}
-		const resultChunk = result[1]?.chunks[0];
-		expect(resultChunk?.type).toBe("tool-result");
-		if (resultChunk?.type === "tool-result") {
-			expect(resultChunk.stepId).toBe(stepId);
-		}
-	});
+  it("load preserves a tool chunk's stepId", async () => {
+    const store = createConversationStore(storage);
+    const stepId = "step_xyz" as StepId;
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        chunks: [
+          {
+            type: "tool-call",
+            toolCallId: "call_lid",
+            toolName: "myTool",
+            input: { a: 1 },
+            stepId,
+          },
+        ],
+      },
+      {
+        role: "tool",
+        chunks: [
+          {
+            type: "tool-result",
+            toolCallId: "call_lid",
+            toolName: "myTool",
+            content: "done",
+            isError: false,
+            stepId,
+          },
+        ],
+      },
+    ];
+    await store.append("conv1", messages);
+    const result = await store.load("conv1");
+    expect(result).toHaveLength(2);
+    const callChunk = result[0]?.chunks[0];
+    expect(callChunk?.type).toBe("tool-call");
+    if (callChunk?.type === "tool-call") {
+      expect(callChunk.stepId).toBe(stepId);
+    }
+    const resultChunk = result[1]?.chunks[0];
+    expect(resultChunk?.type).toBe("tool-result");
+    if (resultChunk?.type === "tool-result") {
+      expect(resultChunk.stepId).toBe(stepId);
+    }
+  });
 });
 
 describe("ConversationStore loadSince windowing", () => {
-	let storage: StorageNamespace;
+  let storage: StorageNamespace;
 
-	beforeEach(() => {
-		storage = createMemoryStorage();
-	});
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
 
-	// Append `count` single-chunk user messages so seq runs 1..count, gap-free.
-	async function seed(store: ReturnType<typeof createConversationStore>, count: number) {
-		const messages: ChatMessage[] = [];
-		for (let i = 1; i <= count; i++) {
-			messages.push({ role: "user", chunks: [{ type: "text", text: `m${i}` }] });
-		}
-		await store.append("conv1", messages);
-	}
+  // Append `count` single-chunk user messages so seq runs 1..count, gap-free.
+  async function seed(store: ReturnType<typeof createConversationStore>, count: number) {
+    const messages: ChatMessage[] = [];
+    for (let i = 1; i <= count; i++) {
+      messages.push({ role: "user", chunks: [{ type: "text", text: `m${i}` }] });
+    }
+    await store.append("conv1", messages);
+  }
 
-	it("limit returns the newest N of the selection, ascending by seq", async () => {
-		const store = createConversationStore(storage);
-		await seed(store, 5);
-		const chunks = await store.loadSince("conv1", 0, { limit: 2 });
-		expect(chunks.map((c) => c.seq)).toEqual([4, 5]);
-	});
+  it("limit returns the newest N of the selection, ascending by seq", async () => {
+    const store = createConversationStore(storage);
+    await seed(store, 5);
+    const chunks = await store.loadSince("conv1", 0, { limit: 2 });
+    expect(chunks.map((c) => c.seq)).toEqual([4, 5]);
+  });
 
-	it("limit >= selection size returns the whole selection (exact, not truncated)", async () => {
-		const store = createConversationStore(storage);
-		await seed(store, 3);
-		const exactlyAll = await store.loadSince("conv1", 0, { limit: 3 });
-		expect(exactlyAll.map((c) => c.seq)).toEqual([1, 2, 3]);
-		const overAll = await store.loadSince("conv1", 0, { limit: 99 });
-		expect(overAll.map((c) => c.seq)).toEqual([1, 2, 3]);
-	});
+  it("limit >= selection size returns the whole selection (exact, not truncated)", async () => {
+    const store = createConversationStore(storage);
+    await seed(store, 3);
+    const exactlyAll = await store.loadSince("conv1", 0, { limit: 3 });
+    expect(exactlyAll.map((c) => c.seq)).toEqual([1, 2, 3]);
+    const overAll = await store.loadSince("conv1", 0, { limit: 99 });
+    expect(overAll.map((c) => c.seq)).toEqual([1, 2, 3]);
+  });
 
-	it("beforeSeq bounds the selection exclusively (seq < beforeSeq)", async () => {
-		const store = createConversationStore(storage);
-		await seed(store, 5);
-		const chunks = await store.loadSince("conv1", 0, { beforeSeq: 3 });
-		expect(chunks.map((c) => c.seq)).toEqual([1, 2]);
-	});
+  it("beforeSeq bounds the selection exclusively (seq < beforeSeq)", async () => {
+    const store = createConversationStore(storage);
+    await seed(store, 5);
+    const chunks = await store.loadSince("conv1", 0, { beforeSeq: 3 });
+    expect(chunks.map((c) => c.seq)).toEqual([1, 2]);
+  });
 
-	it("sinceSeq + beforeSeq combine to sinceSeq < seq < beforeSeq", async () => {
-		const store = createConversationStore(storage);
-		await seed(store, 6);
-		const chunks = await store.loadSince("conv1", 2, { beforeSeq: 5 });
-		expect(chunks.map((c) => c.seq)).toEqual([3, 4]);
-	});
+  it("sinceSeq + beforeSeq combine to sinceSeq < seq < beforeSeq", async () => {
+    const store = createConversationStore(storage);
+    await seed(store, 6);
+    const chunks = await store.loadSince("conv1", 2, { beforeSeq: 5 });
+    expect(chunks.map((c) => c.seq)).toEqual([3, 4]);
+  });
 
-	it("beforeSeq + limit: newest N below the bound, ascending (page older history in)", async () => {
-		const store = createConversationStore(storage);
-		await seed(store, 8);
-		const chunks = await store.loadSince("conv1", 0, { beforeSeq: 6, limit: 2 });
-		expect(chunks.map((c) => c.seq)).toEqual([4, 5]);
-	});
+  it("beforeSeq + limit: newest N below the bound, ascending (page older history in)", async () => {
+    const store = createConversationStore(storage);
+    await seed(store, 8);
+    const chunks = await store.loadSince("conv1", 0, { beforeSeq: 6, limit: 2 });
+    expect(chunks.map((c) => c.seq)).toEqual([4, 5]);
+  });
 
-	it("empty selection returns [] (beforeSeq=1, and sinceSeq past the tail)", async () => {
-		const store = createConversationStore(storage);
-		await seed(store, 4);
-		expect(await store.loadSince("conv1", 0, { beforeSeq: 1 })).toEqual([]);
-		expect(await store.loadSince("conv1", 4, { limit: 3 })).toEqual([]);
-	});
+  it("empty selection returns [] (beforeSeq=1, and sinceSeq past the tail)", async () => {
+    const store = createConversationStore(storage);
+    await seed(store, 4);
+    expect(await store.loadSince("conv1", 0, { beforeSeq: 1 })).toEqual([]);
+    expect(await store.loadSince("conv1", 4, { limit: 3 })).toEqual([]);
+  });
 
-	it("non-positive / non-integer limit and beforeSeq are treated as absent", async () => {
-		const store = createConversationStore(storage);
-		await seed(store, 4);
-		const all = [1, 2, 3, 4];
-		expect((await store.loadSince("conv1", 0, { limit: 0 })).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", 0, { limit: -2 })).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", 0, { limit: 1.5 })).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", 0, { beforeSeq: 0 })).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", 0, { beforeSeq: -3 })).map((c) => c.seq)).toEqual(all);
-		expect((await store.loadSince("conv1", 0, { beforeSeq: 2.7 })).map((c) => c.seq)).toEqual(all);
-	});
+  it("non-positive / non-integer limit and beforeSeq are treated as absent", async () => {
+    const store = createConversationStore(storage);
+    await seed(store, 4);
+    const all = [1, 2, 3, 4];
+    expect((await store.loadSince("conv1", 0, { limit: 0 })).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", 0, { limit: -2 })).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", 0, { limit: 1.5 })).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", 0, { beforeSeq: 0 })).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", 0, { beforeSeq: -3 })).map((c) => c.seq)).toEqual(all);
+    expect((await store.loadSince("conv1", 0, { beforeSeq: 2.7 })).map((c) => c.seq)).toEqual(all);
+  });
 
-	it("window omitted is identical to today's behavior (regression guard)", async () => {
-		const store = createConversationStore(storage);
-		await seed(store, 5);
-		const base = await store.loadSince("conv1", 1);
-		const withEmptyWindow = await store.loadSince("conv1", 1, {});
-		// A caller whose window fields happen to be undefined (e.g. unset query
-		// params) — modelled as an optional-field record, not explicit `undefined`
-		// literals (which exactOptionalPropertyTypes rejects on the contract).
-		const undefinedFieldsWindow: { beforeSeq?: number; limit?: number } = {};
-		const withUndefinedFields = await store.loadSince("conv1", 1, undefinedFieldsWindow);
-		expect(base.map((c) => c.seq)).toEqual([2, 3, 4, 5]);
-		expect(withEmptyWindow).toEqual(base);
-		expect(withUndefinedFields).toEqual(base);
-	});
+  it("window omitted is identical to today's behavior (regression guard)", async () => {
+    const store = createConversationStore(storage);
+    await seed(store, 5);
+    const base = await store.loadSince("conv1", 1);
+    const withEmptyWindow = await store.loadSince("conv1", 1, {});
+    // A caller whose window fields happen to be undefined (e.g. unset query
+    // params) — modelled as an optional-field record, not explicit `undefined`
+    // literals (which exactOptionalPropertyTypes rejects on the contract).
+    const undefinedFieldsWindow: { beforeSeq?: number; limit?: number } = {};
+    const withUndefinedFields = await store.loadSince("conv1", 1, undefinedFieldsWindow);
+    expect(base.map((c) => c.seq)).toEqual([2, 3, 4, 5]);
+    expect(withEmptyWindow).toEqual(base);
+    expect(withUndefinedFields).toEqual(base);
+  });
 });
 
 describe("ConversationStore metrics", () => {
-	let storage: StorageNamespace;
+  let storage: StorageNamespace;
 
-	beforeEach(() => {
-		storage = createMemoryStorage();
-	});
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
 
-	it("appendMetrics → loadMetrics round-trips a TurnMetrics (usage + durationMs + steps)", async () => {
-		const store = createConversationStore(storage);
-		const stepId = "step_1" as StepId;
-		const metrics: TurnMetrics = {
-			turnId: "turn_abc",
-			usage: { inputTokens: 100, outputTokens: 50 },
-			durationMs: 1234,
-			steps: [
-				{
-					stepId,
-					usage: { inputTokens: 100, outputTokens: 50 },
-					ttftMs: 200,
-					decodeMs: 800,
-					genTotalMs: 1000,
-				},
-			],
-		};
-		await store.appendMetrics("conv1", metrics);
-		const result = await store.loadMetrics("conv1");
-		expect(result).toHaveLength(1);
-		expect(result[0]).toEqual(metrics);
-	});
+  it("appendMetrics → loadMetrics round-trips a TurnMetrics (usage + durationMs + steps)", async () => {
+    const store = createConversationStore(storage);
+    const stepId = "step_1" as StepId;
+    const metrics: TurnMetrics = {
+      turnId: "turn_abc",
+      usage: { inputTokens: 100, outputTokens: 50 },
+      durationMs: 1234,
+      steps: [
+        {
+          stepId,
+          usage: { inputTokens: 100, outputTokens: 50 },
+          ttftMs: 200,
+          decodeMs: 800,
+          genTotalMs: 1000,
+        },
+      ],
+    };
+    await store.appendMetrics("conv1", metrics);
+    const result = await store.loadMetrics("conv1");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(metrics);
+  });
 
-	it("loadMetrics returns turns in append order", async () => {
-		const store = createConversationStore(storage);
-		const metrics1: TurnMetrics = {
-			turnId: "turn_first",
-			usage: { inputTokens: 10, outputTokens: 5 },
-			steps: [],
-		};
-		const metrics2: TurnMetrics = {
-			turnId: "turn_second",
-			usage: { inputTokens: 20, outputTokens: 10 },
-			steps: [],
-		};
-		const metrics3: TurnMetrics = {
-			turnId: "turn_third",
-			usage: { inputTokens: 30, outputTokens: 15 },
-			steps: [],
-		};
-		await store.appendMetrics("conv1", metrics1);
-		await store.appendMetrics("conv1", metrics2);
-		await store.appendMetrics("conv1", metrics3);
-		const result = await store.loadMetrics("conv1");
-		expect(result).toHaveLength(3);
-		expect(result[0]?.turnId).toBe("turn_first");
-		expect(result[1]?.turnId).toBe("turn_second");
-		expect(result[2]?.turnId).toBe("turn_third");
-	});
+  it("loadMetrics returns turns in append order", async () => {
+    const store = createConversationStore(storage);
+    const metrics1: TurnMetrics = {
+      turnId: "turn_first",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      steps: [],
+    };
+    const metrics2: TurnMetrics = {
+      turnId: "turn_second",
+      usage: { inputTokens: 20, outputTokens: 10 },
+      steps: [],
+    };
+    const metrics3: TurnMetrics = {
+      turnId: "turn_third",
+      usage: { inputTokens: 30, outputTokens: 15 },
+      steps: [],
+    };
+    await store.appendMetrics("conv1", metrics1);
+    await store.appendMetrics("conv1", metrics2);
+    await store.appendMetrics("conv1", metrics3);
+    const result = await store.loadMetrics("conv1");
+    expect(result).toHaveLength(3);
+    expect(result[0]?.turnId).toBe("turn_first");
+    expect(result[1]?.turnId).toBe("turn_second");
+    expect(result[2]?.turnId).toBe("turn_third");
+  });
 
-	it("loadMetrics returns [] for a conversation with no persisted metrics", async () => {
-		const store = createConversationStore(storage);
-		const result = await store.loadMetrics("nonexistent");
-		expect(result).toEqual([]);
-	});
+  it("loadMetrics returns [] for a conversation with no persisted metrics", async () => {
+    const store = createConversationStore(storage);
+    const result = await store.loadMetrics("nonexistent");
+    expect(result).toEqual([]);
+  });
 
-	it("appendMetrics does not affect chunk load / loadSince", async () => {
-		const store = createConversationStore(storage);
-		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
-		await store.append("conv1", [msg]);
+  it("appendMetrics does not affect chunk load / loadSince", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+    await store.append("conv1", [msg]);
 
-		const metrics: TurnMetrics = {
-			turnId: "turn_iso",
-			usage: { inputTokens: 100, outputTokens: 50 },
-			steps: [],
-		};
-		await store.appendMetrics("conv1", metrics);
+    const metrics: TurnMetrics = {
+      turnId: "turn_iso",
+      usage: { inputTokens: 100, outputTokens: 50 },
+      steps: [],
+    };
+    await store.appendMetrics("conv1", metrics);
 
-		const messages = await store.load("conv1");
-		expect(messages).toEqual([msg]);
+    const messages = await store.load("conv1");
+    expect(messages).toEqual([msg]);
 
-		const chunks = await store.loadSince("conv1");
-		expect(chunks).toHaveLength(1);
-		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
-	});
+    const chunks = await store.loadSince("conv1");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+  });
 
-	it("TurnMetrics with cache tokens + per-step ttft/decode/genTotal round-trips losslessly", async () => {
-		const store = createConversationStore(storage);
-		const stepId1 = "step_a" as StepId;
-		const stepId2 = "step_b" as StepId;
-		const metrics: TurnMetrics = {
-			turnId: "turn_cache",
-			usage: {
-				inputTokens: 500,
-				outputTokens: 200,
-				cacheReadTokens: 300,
-				cacheWriteTokens: 100,
-			},
-			durationMs: 5000,
-			steps: [
-				{
-					stepId: stepId1,
-					usage: {
-						inputTokens: 300,
-						outputTokens: 100,
-						cacheReadTokens: 200,
-						cacheWriteTokens: 50,
-					},
-					ttftMs: 150,
-					decodeMs: 600,
-					genTotalMs: 750,
-				},
-				{
-					stepId: stepId2,
-					usage: {
-						inputTokens: 200,
-						outputTokens: 100,
-						cacheReadTokens: 100,
-						cacheWriteTokens: 50,
-					},
-					ttftMs: 100,
-					decodeMs: 400,
-					genTotalMs: 500,
-				},
-			],
-		};
-		await store.appendMetrics("conv1", metrics);
-		const result = await store.loadMetrics("conv1");
-		expect(result).toHaveLength(1);
-		expect(result[0]).toEqual(metrics);
-		expect(result[0]?.usage.cacheReadTokens).toBe(300);
-		expect(result[0]?.usage.cacheWriteTokens).toBe(100);
-		expect(result[0]?.steps[0]?.ttftMs).toBe(150);
-		expect(result[0]?.steps[0]?.decodeMs).toBe(600);
-		expect(result[0]?.steps[0]?.genTotalMs).toBe(750);
-		expect(result[0]?.steps[1]?.ttftMs).toBe(100);
-		expect(result[0]?.steps[1]?.decodeMs).toBe(400);
-		expect(result[0]?.steps[1]?.genTotalMs).toBe(500);
-	});
+  it("TurnMetrics with cache tokens + per-step ttft/decode/genTotal round-trips losslessly", async () => {
+    const store = createConversationStore(storage);
+    const stepId1 = "step_a" as StepId;
+    const stepId2 = "step_b" as StepId;
+    const metrics: TurnMetrics = {
+      turnId: "turn_cache",
+      usage: {
+        inputTokens: 500,
+        outputTokens: 200,
+        cacheReadTokens: 300,
+        cacheWriteTokens: 100,
+      },
+      durationMs: 5000,
+      steps: [
+        {
+          stepId: stepId1,
+          usage: {
+            inputTokens: 300,
+            outputTokens: 100,
+            cacheReadTokens: 200,
+            cacheWriteTokens: 50,
+          },
+          ttftMs: 150,
+          decodeMs: 600,
+          genTotalMs: 750,
+        },
+        {
+          stepId: stepId2,
+          usage: {
+            inputTokens: 200,
+            outputTokens: 100,
+            cacheReadTokens: 100,
+            cacheWriteTokens: 50,
+          },
+          ttftMs: 100,
+          decodeMs: 400,
+          genTotalMs: 500,
+        },
+      ],
+    };
+    await store.appendMetrics("conv1", metrics);
+    const result = await store.loadMetrics("conv1");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(metrics);
+    expect(result[0]?.usage.cacheReadTokens).toBe(300);
+    expect(result[0]?.usage.cacheWriteTokens).toBe(100);
+    expect(result[0]?.steps[0]?.ttftMs).toBe(150);
+    expect(result[0]?.steps[0]?.decodeMs).toBe(600);
+    expect(result[0]?.steps[0]?.genTotalMs).toBe(750);
+    expect(result[0]?.steps[1]?.ttftMs).toBe(100);
+    expect(result[0]?.steps[1]?.decodeMs).toBe(400);
+    expect(result[0]?.steps[1]?.genTotalMs).toBe(500);
+  });
 });
 
 describe("ConversationStore reconcile.repair span", () => {
-	let storage: StorageNamespace;
+  let storage: StorageNamespace;
 
-	beforeEach(() => {
-		storage = createMemoryStorage();
-	});
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
 
-	it("load() emits a reconcile.repair span when a dangling tool-call is repaired", async () => {
-		const { logger, events } = createCapturingLogger();
-		const store = createConversationStore(storage, logger);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
-			{
-				role: "assistant",
-				chunks: [
-					{
-						type: "tool-call",
-						toolCallId: "call_dangle",
-						toolName: "someTool",
-						input: {},
-					},
-				],
-			},
-		];
-		await store.append("conv_span", messages);
-		await store.load("conv_span");
+  it("load() emits a reconcile.repair span when a dangling tool-call is repaired", async () => {
+    const { logger, events } = createCapturingLogger();
+    const store = createConversationStore(storage, logger);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "do it" }] },
+      {
+        role: "assistant",
+        chunks: [
+          {
+            type: "tool-call",
+            toolCallId: "call_dangle",
+            toolName: "someTool",
+            input: {},
+          },
+        ],
+      },
+    ];
+    await store.append("conv_span", messages);
+    await store.load("conv_span");
 
-		const spanOpens = events.filter((e) => e.kind === "span-open" && e.name === "reconcile.repair");
-		const spanCloses = events.filter(
-			(e) => e.kind === "span-close" && e.name === "reconcile.repair",
-		);
-		expect(spanOpens).toHaveLength(1);
-		expect(spanCloses).toHaveLength(1);
-	});
+    const spanOpens = events.filter((e) => e.kind === "span-open" && e.name === "reconcile.repair");
+    const spanCloses = events.filter(
+      (e) => e.kind === "span-close" && e.name === "reconcile.repair",
+    );
+    expect(spanOpens).toHaveLength(1);
+    expect(spanCloses).toHaveLength(1);
+  });
 
-	it("load() emits NO reconcile.repair span when the history is already valid", async () => {
-		const { logger, events } = createCapturingLogger();
-		const store = createConversationStore(storage, logger);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "hello" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "hi" }] },
-		];
-		await store.append("conv_valid", messages);
-		await store.load("conv_valid");
+  it("load() emits NO reconcile.repair span when the history is already valid", async () => {
+    const { logger, events } = createCapturingLogger();
+    const store = createConversationStore(storage, logger);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "hello" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "hi" }] },
+    ];
+    await store.append("conv_valid", messages);
+    await store.load("conv_valid");
 
-		const repairSpans = events.filter((e) => e.name === "reconcile.repair");
-		expect(repairSpans).toHaveLength(0);
-	});
+    const repairSpans = events.filter((e) => e.name === "reconcile.repair");
+    expect(repairSpans).toHaveLength(0);
+  });
 
-	it("the reconcile.repair span carries conversationId + a repair count attribute", async () => {
-		const { logger, events } = createCapturingLogger();
-		const store = createConversationStore(storage, logger);
-		const messages: ChatMessage[] = [
-			{
-				role: "assistant",
-				chunks: [
-					{
-						type: "tool-call",
-						toolCallId: "call_a",
-						toolName: "toolA",
-						input: {},
-					},
-					{
-						type: "tool-call",
-						toolCallId: "call_b",
-						toolName: "toolB",
-						input: {},
-					},
-				],
-			},
-		];
-		await store.append("conv_multi", messages);
-		await store.load("conv_multi");
+  it("the reconcile.repair span carries conversationId + a repair count attribute", async () => {
+    const { logger, events } = createCapturingLogger();
+    const store = createConversationStore(storage, logger);
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        chunks: [
+          {
+            type: "tool-call",
+            toolCallId: "call_a",
+            toolName: "toolA",
+            input: {},
+          },
+          {
+            type: "tool-call",
+            toolCallId: "call_b",
+            toolName: "toolB",
+            input: {},
+          },
+        ],
+      },
+    ];
+    await store.append("conv_multi", messages);
+    await store.load("conv_multi");
 
-		const spanOpen = events.find((e) => e.kind === "span-open" && e.name === "reconcile.repair");
-		expect(spanOpen).toBeDefined();
-		if (spanOpen === undefined) throw new Error("expected spanOpen");
-		expect(spanOpen.conversationId).toBe("conv_multi");
-		expect(spanOpen.attrs).toBeDefined();
-		if (spanOpen.attrs === undefined) throw new Error("expected attrs");
-		expect(spanOpen.attrs.repairedCount).toBe(2);
-		expect(spanOpen.attrs.firstRepairedToolCallId).toBe("call_a");
-	});
+    const spanOpen = events.find((e) => e.kind === "span-open" && e.name === "reconcile.repair");
+    expect(spanOpen).toBeDefined();
+    if (spanOpen === undefined) throw new Error("expected spanOpen");
+    expect(spanOpen.conversationId).toBe("conv_multi");
+    expect(spanOpen.attrs).toBeDefined();
+    if (spanOpen.attrs === undefined) throw new Error("expected attrs");
+    expect(spanOpen.attrs.repairedCount).toBe(2);
+    expect(spanOpen.attrs.firstRepairedToolCallId).toBe("call_a");
+  });
 
-	it("createConversationStore works with the logger omitted (optional)", async () => {
-		const store = createConversationStore(storage);
-		const messages: ChatMessage[] = [
-			{ role: "user", chunks: [{ type: "text", text: "do it" }] },
-			{
-				role: "assistant",
-				chunks: [
-					{
-						type: "tool-call",
-						toolCallId: "call_nolog",
-						toolName: "someTool",
-						input: {},
-					},
-				],
-			},
-		];
-		await store.append("conv_nolog", messages);
-		const result = await store.load("conv_nolog");
-		expect(result).toHaveLength(3);
-		expect(result[2]?.role).toBe("tool");
-		const chunk = result[2]?.chunks[0];
-		if (chunk === undefined) throw new Error("expected chunk");
-		expect(chunk.type).toBe("tool-result");
-		if (chunk.type === "tool-result") {
-			expect(chunk.toolCallId).toBe("call_nolog");
-			expect(chunk.isError).toBe(true);
-		}
-	});
+  it("createConversationStore works with the logger omitted (optional)", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "do it" }] },
+      {
+        role: "assistant",
+        chunks: [
+          {
+            type: "tool-call",
+            toolCallId: "call_nolog",
+            toolName: "someTool",
+            input: {},
+          },
+        ],
+      },
+    ];
+    await store.append("conv_nolog", messages);
+    const result = await store.load("conv_nolog");
+    expect(result).toHaveLength(3);
+    expect(result[2]?.role).toBe("tool");
+    const chunk = result[2]?.chunks[0];
+    if (chunk === undefined) throw new Error("expected chunk");
+    expect(chunk.type).toBe("tool-result");
+    if (chunk.type === "tool-result") {
+      expect(chunk.toolCallId).toBe("call_nolog");
+      expect(chunk.isError).toBe(true);
+    }
+  });
 });
 
 describe("ConversationStore cwd", () => {
-	let storage: StorageNamespace;
+  let storage: StorageNamespace;
 
-	beforeEach(() => {
-		storage = createMemoryStorage();
-	});
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
 
-	it("setCwd then getCwd returns the value", async () => {
-		const store = createConversationStore(storage);
-		await store.setCwd("conv1", "/home/user/project");
-		const result = await store.getCwd("conv1");
-		expect(result).toBe("/home/user/project");
-	});
+  it("setCwd then getCwd returns the value", async () => {
+    const store = createConversationStore(storage);
+    await store.setCwd("conv1", "/home/user/project");
+    const result = await store.getCwd("conv1");
+    expect(result).toBe("/home/user/project");
+  });
 
-	it("getCwd returns null when never set", async () => {
-		const store = createConversationStore(storage);
-		const result = await store.getCwd("conv_unknown");
-		expect(result).toBeNull();
-	});
+  it("getCwd returns null when never set", async () => {
+    const store = createConversationStore(storage);
+    const result = await store.getCwd("conv_unknown");
+    expect(result).toBeNull();
+  });
 
-	it("setCwd is an upsert (second set overwrites)", async () => {
-		const store = createConversationStore(storage);
-		await store.setCwd("conv1", "/first/path");
-		await store.setCwd("conv1", "/second/path");
-		const result = await store.getCwd("conv1");
-		expect(result).toBe("/second/path");
-	});
+  it("setCwd is an upsert (second set overwrites)", async () => {
+    const store = createConversationStore(storage);
+    await store.setCwd("conv1", "/first/path");
+    await store.setCwd("conv1", "/second/path");
+    const result = await store.getCwd("conv1");
+    expect(result).toBe("/second/path");
+  });
 
-	it("cwd persists across a fresh store instance on the same db file", async () => {
-		const store1 = createConversationStore(storage);
-		await store1.setCwd("conv1", "/persisted/path");
+  it("cwd persists across a fresh store instance on the same db file", async () => {
+    const store1 = createConversationStore(storage);
+    await store1.setCwd("conv1", "/persisted/path");
 
-		const store2 = createConversationStore(storage);
-		const result = await store2.getCwd("conv1");
-		expect(result).toBe("/persisted/path");
-	});
+    const store2 = createConversationStore(storage);
+    const result = await store2.getCwd("conv1");
+    expect(result).toBe("/persisted/path");
+  });
 
-	it("cwd of one conversation does not leak into another", async () => {
-		const store = createConversationStore(storage);
-		await store.setCwd("convA", "/path/a");
-		await store.setCwd("convB", "/path/b");
-		expect(await store.getCwd("convA")).toBe("/path/a");
-		expect(await store.getCwd("convB")).toBe("/path/b");
-	});
+  it("cwd of one conversation does not leak into another", async () => {
+    const store = createConversationStore(storage);
+    await store.setCwd("convA", "/path/a");
+    await store.setCwd("convB", "/path/b");
+    expect(await store.getCwd("convA")).toBe("/path/a");
+    expect(await store.getCwd("convB")).toBe("/path/b");
+  });
 
-	it("setCwd then clearCwd → getCwd returns null", async () => {
-		const store = createConversationStore(storage);
-		await store.setCwd("conv1", "/some/path");
-		await store.clearCwd("conv1");
-		expect(await store.getCwd("conv1")).toBeNull();
-	});
+  it("setCwd then clearCwd → getCwd returns null", async () => {
+    const store = createConversationStore(storage);
+    await store.setCwd("conv1", "/some/path");
+    await store.clearCwd("conv1");
+    expect(await store.getCwd("conv1")).toBeNull();
+  });
 
-	it("clearCwd on a conversation that never had a cwd set → no error, getCwd null", async () => {
-		const store = createConversationStore(storage);
-		await expect(store.clearCwd("never-seen")).resolves.toBeUndefined();
-		expect(await store.getCwd("never-seen")).toBeNull();
-	});
+  it("clearCwd on a conversation that never had a cwd set → no error, getCwd null", async () => {
+    const store = createConversationStore(storage);
+    await expect(store.clearCwd("never-seen")).resolves.toBeUndefined();
+    expect(await store.getCwd("never-seen")).toBeNull();
+  });
 
-	it("clearCwd does not affect other conversations' cwds or other key spaces", async () => {
-		const store = createConversationStore(storage);
-		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
-		await store.append("conv1", [msg]);
-		await store.setCwd("conv1", "/path/one");
-		await store.setCwd("conv2", "/path/two");
-		await store.setReasoningEffort("conv1", "high");
-		const metrics: TurnMetrics = {
-			turnId: "turn_iso",
-			usage: { inputTokens: 100, outputTokens: 50 },
-			steps: [],
-		};
-		await store.appendMetrics("conv1", metrics);
+  it("clearCwd does not affect other conversations' cwds or other key spaces", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+    await store.append("conv1", [msg]);
+    await store.setCwd("conv1", "/path/one");
+    await store.setCwd("conv2", "/path/two");
+    await store.setReasoningEffort("conv1", "high");
+    const metrics: TurnMetrics = {
+      turnId: "turn_iso",
+      usage: { inputTokens: 100, outputTokens: 50 },
+      steps: [],
+    };
+    await store.appendMetrics("conv1", metrics);
 
-		// Clear conv1's cwd only.
-		await store.clearCwd("conv1");
+    // Clear conv1's cwd only.
+    await store.clearCwd("conv1");
 
-		// conv1 cwd is gone, but conv2 cwd survives.
-		expect(await store.getCwd("conv1")).toBeNull();
-		expect(await store.getCwd("conv2")).toBe("/path/two");
+    // conv1 cwd is gone, but conv2 cwd survives.
+    expect(await store.getCwd("conv1")).toBeNull();
+    expect(await store.getCwd("conv2")).toBe("/path/two");
 
-		// Other key spaces on conv1 are untouched.
-		expect(await store.getReasoningEffort("conv1")).toBe("high");
-		expect(await store.load("conv1")).toEqual([msg]);
-		const chunks = await store.loadSince("conv1");
-		expect(chunks).toHaveLength(1);
-		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
-		const metricsResult = await store.loadMetrics("conv1");
-		expect(metricsResult).toHaveLength(1);
-		expect(metricsResult[0]).toEqual(metrics);
-	});
+    // Other key spaces on conv1 are untouched.
+    expect(await store.getReasoningEffort("conv1")).toBe("high");
+    expect(await store.load("conv1")).toEqual([msg]);
+    const chunks = await store.loadSince("conv1");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+    const metricsResult = await store.loadMetrics("conv1");
+    expect(metricsResult).toHaveLength(1);
+    expect(metricsResult[0]).toEqual(metrics);
+  });
 
-	it("clearCwd is idempotent (clearing twice is a no-op)", async () => {
-		const store = createConversationStore(storage);
-		await store.setCwd("conv1", "/some/path");
-		await store.clearCwd("conv1");
-		// Second clear on an already-absent key — no error.
-		await expect(store.clearCwd("conv1")).resolves.toBeUndefined();
-		expect(await store.getCwd("conv1")).toBeNull();
-	});
+  it("clearCwd is idempotent (clearing twice is a no-op)", async () => {
+    const store = createConversationStore(storage);
+    await store.setCwd("conv1", "/some/path");
+    await store.clearCwd("conv1");
+    // Second clear on an already-absent key — no error.
+    await expect(store.clearCwd("conv1")).resolves.toBeUndefined();
+    expect(await store.getCwd("conv1")).toBeNull();
+  });
 
-	it("setCwd after clearCwd re-persists the cwd (clear is a true delete, not a tombstone)", async () => {
-		const store = createConversationStore(storage);
-		await store.setCwd("conv1", "/first");
-		await store.clearCwd("conv1");
-		expect(await store.getCwd("conv1")).toBeNull();
-		await store.setCwd("conv1", "/second");
-		expect(await store.getCwd("conv1")).toBe("/second");
-	});
+  it("setCwd after clearCwd re-persists the cwd (clear is a true delete, not a tombstone)", async () => {
+    const store = createConversationStore(storage);
+    await store.setCwd("conv1", "/first");
+    await store.clearCwd("conv1");
+    expect(await store.getCwd("conv1")).toBeNull();
+    await store.setCwd("conv1", "/second");
+    expect(await store.getCwd("conv1")).toBe("/second");
+  });
 });
 
 describe("ConversationStore reasoning effort", () => {
-	let storage: StorageNamespace;
+  let storage: StorageNamespace;
 
-	beforeEach(() => {
-		storage = createMemoryStorage();
-	});
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
 
-	it("setReasoningEffort then getReasoningEffort returns the level", async () => {
-		const store = createConversationStore(storage);
-		await store.setReasoningEffort("conv1", "high");
-		const result = await store.getReasoningEffort("conv1");
-		expect(result).toBe("high");
-	});
+  it("setReasoningEffort then getReasoningEffort returns the level", async () => {
+    const store = createConversationStore(storage);
+    await store.setReasoningEffort("conv1", "high");
+    const result = await store.getReasoningEffort("conv1");
+    expect(result).toBe("high");
+  });
 
-	it("getReasoningEffort returns null when never set", async () => {
-		const store = createConversationStore(storage);
-		const result = await store.getReasoningEffort("conv_unknown");
-		expect(result).toBeNull();
-	});
+  it("getReasoningEffort returns null when never set", async () => {
+    const store = createConversationStore(storage);
+    const result = await store.getReasoningEffort("conv_unknown");
+    expect(result).toBeNull();
+  });
 
-	it("reasoning effort of one conversation does not leak into another", async () => {
-		const store = createConversationStore(storage);
-		await store.setReasoningEffort("convA", "low");
-		await store.setReasoningEffort("convB", "max");
-		expect(await store.getReasoningEffort("convA")).toBe("low");
-		expect(await store.getReasoningEffort("convB")).toBe("max");
-	});
+  it("reasoning effort of one conversation does not leak into another", async () => {
+    const store = createConversationStore(storage);
+    await store.setReasoningEffort("convA", "low");
+    await store.setReasoningEffort("convB", "max");
+    expect(await store.getReasoningEffort("convA")).toBe("low");
+    expect(await store.getReasoningEffort("convB")).toBe("max");
+  });
 
-	it("setReasoningEffort is an upsert (second set overwrites)", async () => {
-		const store = createConversationStore(storage);
-		await store.setReasoningEffort("conv1", "medium");
-		await store.setReasoningEffort("conv1", "xhigh");
-		const result = await store.getReasoningEffort("conv1");
-		expect(result).toBe("xhigh");
-	});
+  it("setReasoningEffort is an upsert (second set overwrites)", async () => {
+    const store = createConversationStore(storage);
+    await store.setReasoningEffort("conv1", "medium");
+    await store.setReasoningEffort("conv1", "xhigh");
+    const result = await store.getReasoningEffort("conv1");
+    expect(result).toBe("xhigh");
+  });
 
-	it("reasoning effort persists across a fresh store instance on the same storage", async () => {
-		const store1 = createConversationStore(storage);
-		await store1.setReasoningEffort("conv1", "max");
+  it("reasoning effort persists across a fresh store instance on the same storage", async () => {
+    const store1 = createConversationStore(storage);
+    await store1.setReasoningEffort("conv1", "max");
 
-		const store2 = createConversationStore(storage);
-		const result = await store2.getReasoningEffort("conv1");
-		expect(result).toBe("max");
-	});
+    const store2 = createConversationStore(storage);
+    const result = await store2.getReasoningEffort("conv1");
+    expect(result).toBe("max");
+  });
 
-	it("reasoning-effort keys do not collide with chunk/cwd/metrics key spaces", async () => {
-		const store = createConversationStore(storage);
-		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
-		await store.append("conv1", [msg]);
-		await store.setCwd("conv1", "/some/path");
-		await store.setReasoningEffort("conv1", "low");
+  it("reasoning-effort keys do not collide with chunk/cwd/metrics key spaces", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+    await store.append("conv1", [msg]);
+    await store.setCwd("conv1", "/some/path");
+    await store.setReasoningEffort("conv1", "low");
 
-		const metrics: TurnMetrics = {
-			turnId: "turn_iso",
-			usage: { inputTokens: 100, outputTokens: 50 },
-			steps: [],
-		};
-		await store.appendMetrics("conv1", metrics);
+    const metrics: TurnMetrics = {
+      turnId: "turn_iso",
+      usage: { inputTokens: 100, outputTokens: 50 },
+      steps: [],
+    };
+    await store.appendMetrics("conv1", metrics);
 
-		const messages = await store.load("conv1");
-		expect(messages).toEqual([msg]);
+    const messages = await store.load("conv1");
+    expect(messages).toEqual([msg]);
 
-		const chunks = await store.loadSince("conv1");
-		expect(chunks).toHaveLength(1);
-		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+    const chunks = await store.loadSince("conv1");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
 
-		expect(await store.getCwd("conv1")).toBe("/some/path");
-		expect(await store.getReasoningEffort("conv1")).toBe("low");
+    expect(await store.getCwd("conv1")).toBe("/some/path");
+    expect(await store.getReasoningEffort("conv1")).toBe("low");
 
-		const metricsResult = await store.loadMetrics("conv1");
-		expect(metricsResult).toHaveLength(1);
-		expect(metricsResult[0]).toEqual(metrics);
-	});
+    const metricsResult = await store.loadMetrics("conv1");
+    expect(metricsResult).toHaveLength(1);
+    expect(metricsResult[0]).toEqual(metrics);
+  });
 });
 
 describe("ConversationStore model", () => {
-	let storage: StorageNamespace;
+  let storage: StorageNamespace;
 
-	beforeEach(() => {
-		storage = createMemoryStorage();
-	});
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
 
-	it("getModel returns null when never set", async () => {
-		const store = createConversationStore(storage);
-		expect(await store.getModel("conv_unknown")).toBeNull();
-	});
+  it("getModel returns null when never set", async () => {
+    const store = createConversationStore(storage);
+    expect(await store.getModel("conv_unknown")).toBeNull();
+  });
 
-	it("setModel then getModel returns the model name", async () => {
-		const store = createConversationStore(storage);
-		await store.setModel("conv1", "umans/umans-glm-5.2");
-		expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
-	});
+  it("setModel then getModel returns the model name", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("conv1", "umans/umans-glm-5.2");
+    expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+  });
 
-	it("setModel is an upsert (second set overwrites with the latest)", async () => {
-		const store = createConversationStore(storage);
-		await store.setModel("conv1", "umans/umans-glm-5.2");
-		await store.setModel("conv1", "openai/gpt-4o");
-		expect(await store.getModel("conv1")).toBe("openai/gpt-4o");
-	});
+  it("setModel is an upsert (second set overwrites with the latest)", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("conv1", "umans/umans-glm-5.2");
+    await store.setModel("conv1", "openai/gpt-4o");
+    expect(await store.getModel("conv1")).toBe("openai/gpt-4o");
+  });
 
-	it("setModel with an empty string clears the key (getModel returns null)", async () => {
-		const store = createConversationStore(storage);
-		await store.setModel("conv1", "umans/umans-glm-5.2");
-		expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
-		// Clear via the empty-string sentinel.
-		await store.setModel("conv1", "");
-		expect(await store.getModel("conv1")).toBeNull();
-	});
+  it("setModel with an empty string clears the key (getModel returns null)", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("conv1", "umans/umans-glm-5.2");
+    expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+    // Clear via the empty-string sentinel.
+    await store.setModel("conv1", "");
+    expect(await store.getModel("conv1")).toBeNull();
+  });
 
-	it("setModel('') on a never-set conversation is a no-op (idempotent clear)", async () => {
-		const store = createConversationStore(storage);
-		await expect(store.setModel("never-seen", "")).resolves.toBeUndefined();
-		expect(await store.getModel("never-seen")).toBeNull();
-	});
+  it("setModel('') on a never-set conversation is a no-op (idempotent clear)", async () => {
+    const store = createConversationStore(storage);
+    await expect(store.setModel("never-seen", "")).resolves.toBeUndefined();
+    expect(await store.getModel("never-seen")).toBeNull();
+  });
 
-	it("setModel after a clear re-persists the model (clear is a true delete, not a tombstone)", async () => {
-		const store = createConversationStore(storage);
-		await store.setModel("conv1", "umans/umans-glm-5.2");
-		await store.setModel("conv1", "");
-		expect(await store.getModel("conv1")).toBeNull();
-		await store.setModel("conv1", "openai/gpt-4o");
-		expect(await store.getModel("conv1")).toBe("openai/gpt-4o");
-	});
+  it("setModel after a clear re-persists the model (clear is a true delete, not a tombstone)", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("conv1", "umans/umans-glm-5.2");
+    await store.setModel("conv1", "");
+    expect(await store.getModel("conv1")).toBeNull();
+    await store.setModel("conv1", "openai/gpt-4o");
+    expect(await store.getModel("conv1")).toBe("openai/gpt-4o");
+  });
 
-	it("model of one conversation does not leak into another", async () => {
-		const store = createConversationStore(storage);
-		await store.setModel("convA", "umans/umans-glm-5.2");
-		await store.setModel("convB", "openai/gpt-4o");
-		expect(await store.getModel("convA")).toBe("umans/umans-glm-5.2");
-		expect(await store.getModel("convB")).toBe("openai/gpt-4o");
-	});
+  it("model of one conversation does not leak into another", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("convA", "umans/umans-glm-5.2");
+    await store.setModel("convB", "openai/gpt-4o");
+    expect(await store.getModel("convA")).toBe("umans/umans-glm-5.2");
+    expect(await store.getModel("convB")).toBe("openai/gpt-4o");
+  });
 
-	it("model persists across a fresh store instance on the same storage", async () => {
-		const store1 = createConversationStore(storage);
-		await store1.setModel("conv1", "umans/umans-glm-5.2");
+  it("model persists across a fresh store instance on the same storage", async () => {
+    const store1 = createConversationStore(storage);
+    await store1.setModel("conv1", "umans/umans-glm-5.2");
 
-		const store2 = createConversationStore(storage);
-		expect(await store2.getModel("conv1")).toBe("umans/umans-glm-5.2");
-	});
+    const store2 = createConversationStore(storage);
+    expect(await store2.getModel("conv1")).toBe("umans/umans-glm-5.2");
+  });
 
-	it("model keys do not collide with chunk/cwd/metrics/reasoning-effort key spaces", async () => {
-		const store = createConversationStore(storage);
-		const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
-		await store.append("conv1", [msg]);
-		await store.setCwd("conv1", "/some/path");
-		await store.setReasoningEffort("conv1", "low");
-		await store.setModel("conv1", "umans/umans-glm-5.2");
-		const metrics: TurnMetrics = {
-			turnId: "turn_iso",
-			usage: { inputTokens: 100, outputTokens: 50 },
-			steps: [],
-		};
-		await store.appendMetrics("conv1", metrics);
+  it("model keys do not collide with chunk/cwd/metrics/reasoning-effort key spaces", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+    await store.append("conv1", [msg]);
+    await store.setCwd("conv1", "/some/path");
+    await store.setReasoningEffort("conv1", "low");
+    await store.setModel("conv1", "umans/umans-glm-5.2");
+    const metrics: TurnMetrics = {
+      turnId: "turn_iso",
+      usage: { inputTokens: 100, outputTokens: 50 },
+      steps: [],
+    };
+    await store.appendMetrics("conv1", metrics);
 
-		expect(await store.load("conv1")).toEqual([msg]);
-		const chunks = await store.loadSince("conv1");
-		expect(chunks).toHaveLength(1);
-		expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
-		expect(await store.getCwd("conv1")).toBe("/some/path");
-		expect(await store.getReasoningEffort("conv1")).toBe("low");
-		expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
-		const metricsResult = await store.loadMetrics("conv1");
-		expect(metricsResult).toHaveLength(1);
-		expect(metricsResult[0]).toEqual(metrics);
-	});
+    expect(await store.load("conv1")).toEqual([msg]);
+    const chunks = await store.loadSince("conv1");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.chunk).toEqual({ type: "text", text: "hello" });
+    expect(await store.getCwd("conv1")).toBe("/some/path");
+    expect(await store.getReasoningEffort("conv1")).toBe("low");
+    expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+    const metricsResult = await store.loadMetrics("conv1");
+    expect(metricsResult).toHaveLength(1);
+    expect(metricsResult[0]).toEqual(metrics);
+  });
 
-	it("forkHistory copies the model to the target", async () => {
-		const store = createConversationStore(storage);
-		await store.append("source", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
-		await store.setModel("source", "umans/umans-glm-5.2");
-		await store.forkHistory("source", "target");
-		expect(await store.getModel("target")).toBe("umans/umans-glm-5.2");
-	});
+  it("forkHistory copies the model to the target", async () => {
+    const store = createConversationStore(storage);
+    await store.append("source", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+    await store.setModel("source", "umans/umans-glm-5.2");
+    await store.forkHistory("source", "target");
+    expect(await store.getModel("target")).toBe("umans/umans-glm-5.2");
+  });
 
-	it("forkHistory copies a cleared (unset) model as absent (target reads null)", async () => {
-		const store = createConversationStore(storage);
-		await store.append("source", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
-		// No model set on source.
-		await store.forkHistory("source", "target");
-		expect(await store.getModel("target")).toBeNull();
-	});
+  it("forkHistory copies a cleared (unset) model as absent (target reads null)", async () => {
+    const store = createConversationStore(storage);
+    await store.append("source", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+    // No model set on source.
+    await store.forkHistory("source", "target");
+    expect(await store.getModel("target")).toBeNull();
+  });
 
-	it("replaceHistory preserves the model", async () => {
-		const store = createConversationStore(storage);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "original" }] }]);
-		await store.setModel("conv1", "umans/umans-glm-5.2");
-		await store.replaceHistory("conv1", [
-			{ role: "user", chunks: [{ type: "text", text: "replaced" }] },
-		]);
-		expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
-		// History was replaced; the model survived the chunk-only sweep.
-		expect(await store.load("conv1")).toEqual([
-			{ role: "user", chunks: [{ type: "text", text: "replaced" }] },
-		]);
-	});
+  it("replaceHistory preserves the model", async () => {
+    const store = createConversationStore(storage);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "original" }] }]);
+    await store.setModel("conv1", "umans/umans-glm-5.2");
+    await store.replaceHistory("conv1", [
+      { role: "user", chunks: [{ type: "text", text: "replaced" }] },
+    ]);
+    expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+    // History was replaced; the model survived the chunk-only sweep.
+    expect(await store.load("conv1")).toEqual([
+      { role: "user", chunks: [{ type: "text", text: "replaced" }] },
+    ]);
+  });
 });
 
 describe("ConversationStore conversation metadata + list + title", () => {
-	let storage: StorageNamespace;
+  let storage: StorageNamespace;
 
-	beforeEach(() => {
-		storage = createMemoryStorage();
-	});
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
 
-	it("listConversations: returns empty array when no conversations exist", async () => {
-		const store = createConversationStore(storage);
-		expect(await store.listConversations()).toEqual([]);
-	});
+  it("listConversations: returns empty array when no conversations exist", async () => {
+    const store = createConversationStore(storage);
+    expect(await store.listConversations()).toEqual([]);
+  });
 
-	it("listConversations: returns conversations sorted by lastActivityAt desc", async () => {
-		let clock = 1000;
-		const store = createConversationStore(storage, undefined, () => clock);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "first" }] }]);
-		clock = 2000;
-		await store.append("conv2", [{ role: "user", chunks: [{ type: "text", text: "second" }] }]);
-		clock = 3000;
-		await store.append("conv3", [{ role: "user", chunks: [{ type: "text", text: "third" }] }]);
-		// Bump conv1 to the most recent activity.
-		clock = 4000;
-		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "reply" }] }]);
+  it("listConversations: returns conversations sorted by lastActivityAt desc", async () => {
+    let clock = 1000;
+    const store = createConversationStore(storage, undefined, () => clock);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "first" }] }]);
+    clock = 2000;
+    await store.append("conv2", [{ role: "user", chunks: [{ type: "text", text: "second" }] }]);
+    clock = 3000;
+    await store.append("conv3", [{ role: "user", chunks: [{ type: "text", text: "third" }] }]);
+    // Bump conv1 to the most recent activity.
+    clock = 4000;
+    await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "reply" }] }]);
 
-		const list = await store.listConversations();
-		expect(list.map((c) => c.id)).toEqual(["conv1", "conv3", "conv2"]);
-	});
+    const list = await store.listConversations();
+    expect(list.map((c) => c.id)).toEqual(["conv1", "conv3", "conv2"]);
+  });
 
-	it("listConversations: includes id + createdAt + lastActivityAt + title", async () => {
-		const store = createConversationStore(storage, undefined, () => 12345);
-		await store.append("convX", [{ role: "user", chunks: [{ type: "text", text: "my title" }] }]);
-		const list = await store.listConversations();
-		expect(list).toHaveLength(1);
-		const first = list[0];
-		if (first === undefined) throw new Error("expected list entry");
-		expect(first).toEqual({
-			id: "convX",
-			createdAt: 12345,
-			lastActivityAt: 12345,
-			title: "my title",
-			status: "idle",
-			workspaceId: "default",
-		});
-	});
+  it("listConversations: includes id + createdAt + lastActivityAt + title", async () => {
+    const store = createConversationStore(storage, undefined, () => 12345);
+    await store.append("convX", [{ role: "user", chunks: [{ type: "text", text: "my title" }] }]);
+    const list = await store.listConversations();
+    expect(list).toHaveLength(1);
+    const first = list[0];
+    if (first === undefined) throw new Error("expected list entry");
+    expect(first).toEqual({
+      id: "convX",
+      createdAt: 12345,
+      lastActivityAt: 12345,
+      title: "my title",
+      status: "idle",
+      workspaceId: "default",
+    });
+  });
 
-	it("getConversationMeta: returns null for unknown conversation", async () => {
-		const store = createConversationStore(storage);
-		expect(await store.getConversationMeta("unknown")).toBeNull();
-	});
+  it("getConversationMeta: returns null for unknown conversation", async () => {
+    const store = createConversationStore(storage);
+    expect(await store.getConversationMeta("unknown")).toBeNull();
+  });
 
-	it("getConversationMeta: returns metadata for known conversation", async () => {
-		const store = createConversationStore(storage, undefined, () => 7777);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
-		expect(await store.getConversationMeta("conv1")).toEqual({
-			id: "conv1",
-			createdAt: 7777,
-			lastActivityAt: 7777,
-			title: "hello",
-			status: "idle",
-			workspaceId: "default",
-		});
-	});
+  it("getConversationMeta: returns metadata for known conversation", async () => {
+    const store = createConversationStore(storage, undefined, () => 7777);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+    expect(await store.getConversationMeta("conv1")).toEqual({
+      id: "conv1",
+      createdAt: 7777,
+      lastActivityAt: 7777,
+      title: "hello",
+      status: "idle",
+      workspaceId: "default",
+    });
+  });
 
-	it("getConversationMeta: returns null on a corrupt meta row", async () => {
-		const store = createConversationStore(storage);
-		// Write a meta row with the wrong shape directly to storage.
-		await storage.set("conv:conv1:meta", "{not json");
-		expect(await store.getConversationMeta("conv1")).toBeNull();
-	});
+  it("getConversationMeta: returns null on a corrupt meta row", async () => {
+    const store = createConversationStore(storage);
+    // Write a meta row with the wrong shape directly to storage.
+    await storage.set("conv:conv1:meta", "{not json");
+    expect(await store.getConversationMeta("conv1")).toBeNull();
+  });
 
-	it("setConversationTitle: updates the title", async () => {
-		const store = createConversationStore(storage, undefined, () => 1000);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "original" }] }]);
-		await store.setConversationTitle("conv1", "custom title");
-		const meta = await store.getConversationMeta("conv1");
-		expect(meta?.title).toBe("custom title");
-		// createdAt + lastActivityAt are preserved (setTitle does not bump them).
-		expect(meta?.createdAt).toBe(1000);
-		expect(meta?.lastActivityAt).toBe(1000);
-	});
+  it("setConversationTitle: updates the title", async () => {
+    const store = createConversationStore(storage, undefined, () => 1000);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "original" }] }]);
+    await store.setConversationTitle("conv1", "custom title");
+    const meta = await store.getConversationMeta("conv1");
+    expect(meta?.title).toBe("custom title");
+    // createdAt + lastActivityAt are preserved (setTitle does not bump them).
+    expect(meta?.createdAt).toBe(1000);
+    expect(meta?.lastActivityAt).toBe(1000);
+  });
 
-	it("setConversationTitle: creates meta if conversation is new", async () => {
-		const store = createConversationStore(storage, undefined, () => 5000);
-		await store.setConversationTitle("convNew", "preset title");
-		expect(await store.getConversationMeta("convNew")).toEqual({
-			id: "convNew",
-			createdAt: 5000,
-			lastActivityAt: 5000,
-			title: "preset title",
-			status: "idle",
-			workspaceId: "default",
-		});
-		// And the new conversation is discoverable in the index.
-		const list = await store.listConversations();
-		expect(list.map((c) => c.id)).toEqual(["convNew"]);
-	});
+  it("setConversationTitle: creates meta if conversation is new", async () => {
+    const store = createConversationStore(storage, undefined, () => 5000);
+    await store.setConversationTitle("convNew", "preset title");
+    expect(await store.getConversationMeta("convNew")).toEqual({
+      id: "convNew",
+      createdAt: 5000,
+      lastActivityAt: 5000,
+      title: "preset title",
+      status: "idle",
+      workspaceId: "default",
+    });
+    // And the new conversation is discoverable in the index.
+    const list = await store.listConversations();
+    expect(list.map((c) => c.id)).toEqual(["convNew"]);
+  });
 
-	it("append: auto-sets title from first user message", async () => {
-		const store = createConversationStore(storage, undefined, () => 1000);
-		await store.append("conv1", [
-			{ role: "system", chunks: [{ type: "text", text: "system prompt" }] },
-			{ role: "user", chunks: [{ type: "text", text: "hello world" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "hi" }] },
-		]);
-		expect((await store.getConversationMeta("conv1"))?.title).toBe("hello world");
-	});
+  it("append: auto-sets title from first user message", async () => {
+    const store = createConversationStore(storage, undefined, () => 1000);
+    await store.append("conv1", [
+      { role: "system", chunks: [{ type: "text", text: "system prompt" }] },
+      { role: "user", chunks: [{ type: "text", text: "hello world" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "hi" }] },
+    ]);
+    expect((await store.getConversationMeta("conv1"))?.title).toBe("hello world");
+  });
 
-	it("append: truncates long titles to 80 chars", async () => {
-		const store = createConversationStore(storage, undefined, () => 1000);
-		const longText = "x".repeat(100);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: longText }] }]);
-		const meta = await store.getConversationMeta("conv1");
-		expect(meta?.title).toBe(`${longText.slice(0, 80)}…`);
-		expect(meta?.title.length).toBe(81);
-	});
+  it("append: truncates long titles to 80 chars", async () => {
+    const store = createConversationStore(storage, undefined, () => 1000);
+    const longText = "x".repeat(100);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: longText }] }]);
+    const meta = await store.getConversationMeta("conv1");
+    expect(meta?.title).toBe(`${longText.slice(0, 80)}…`);
+    expect(meta?.title.length).toBe(81);
+  });
 
-	it("append: sets createdAt on first write, preserves on subsequent", async () => {
-		let clock = 1000;
-		const store = createConversationStore(storage, undefined, () => clock);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "first" }] }]);
-		clock = 5000;
-		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "reply" }] }]);
-		const meta = await store.getConversationMeta("conv1");
-		expect(meta?.createdAt).toBe(1000);
-		expect(meta?.lastActivityAt).toBe(5000);
-	});
+  it("append: sets createdAt on first write, preserves on subsequent", async () => {
+    let clock = 1000;
+    const store = createConversationStore(storage, undefined, () => clock);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "first" }] }]);
+    clock = 5000;
+    await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "reply" }] }]);
+    const meta = await store.getConversationMeta("conv1");
+    expect(meta?.createdAt).toBe(1000);
+    expect(meta?.lastActivityAt).toBe(5000);
+  });
 
-	it("append: updates lastActivityAt on every write", async () => {
-		let clock = 1000;
-		const store = createConversationStore(storage, undefined, () => clock);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
-		expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(1000);
-		clock = 2000;
-		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "b" }] }]);
-		expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(2000);
-		clock = 3000;
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
-		expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(3000);
-	});
+  it("append: updates lastActivityAt on every write", async () => {
+    let clock = 1000;
+    const store = createConversationStore(storage, undefined, () => clock);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
+    expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(1000);
+    clock = 2000;
+    await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "b" }] }]);
+    expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(2000);
+    clock = 3000;
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
+    expect((await store.getConversationMeta("conv1"))?.lastActivityAt).toBe(3000);
+  });
 
-	it('append: title "Untitled" updated when first user message arrives in later append', async () => {
-		const store = createConversationStore(storage, undefined, () => 1000);
-		// First append — assistant only, no user message yet → "Untitled".
-		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "hi" }] }]);
-		expect((await store.getConversationMeta("conv1"))?.title).toBe("Untitled");
-		// Second append — the first user message arrives → title is re-derived.
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "what now" }] }]);
-		expect((await store.getConversationMeta("conv1"))?.title).toBe("what now");
-	});
+  it('append: title "Untitled" updated when first user message arrives in later append', async () => {
+    const store = createConversationStore(storage, undefined, () => 1000);
+    // First append — assistant only, no user message yet → "Untitled".
+    await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "hi" }] }]);
+    expect((await store.getConversationMeta("conv1"))?.title).toBe("Untitled");
+    // Second append — the first user message arrives → title is re-derived.
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "what now" }] }]);
+    expect((await store.getConversationMeta("conv1"))?.title).toBe("what now");
+  });
 
-	it("append: a non-Untitled title is NOT overwritten by a later user message", async () => {
-		const store = createConversationStore(storage, undefined, () => 1000);
-		await store.append("conv1", [
-			{ role: "user", chunks: [{ type: "text", text: "first question" }] },
-		]);
-		await store.append("conv1", [
-			{ role: "user", chunks: [{ type: "text", text: "second question" }] },
-		]);
-		// The title stays as the first user message; later user messages do not clobber.
-		expect((await store.getConversationMeta("conv1"))?.title).toBe("first question");
-	});
+  it("append: a non-Untitled title is NOT overwritten by a later user message", async () => {
+    const store = createConversationStore(storage, undefined, () => 1000);
+    await store.append("conv1", [
+      { role: "user", chunks: [{ type: "text", text: "first question" }] },
+    ]);
+    await store.append("conv1", [
+      { role: "user", chunks: [{ type: "text", text: "second question" }] },
+    ]);
+    // The title stays as the first user message; later user messages do not clobber.
+    expect((await store.getConversationMeta("conv1"))?.title).toBe("first question");
+  });
 
-	it("append: does not add the same conversation to the index twice", async () => {
-		const store = createConversationStore(storage, undefined, () => 1000);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
-		await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "b" }] }]);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
-		const list = await store.listConversations();
-		expect(list).toHaveLength(1);
-		expect(list[0]?.id).toBe("conv1");
-	});
+  it("append: does not add the same conversation to the index twice", async () => {
+    const store = createConversationStore(storage, undefined, () => 1000);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
+    await store.append("conv1", [{ role: "assistant", chunks: [{ type: "text", text: "b" }] }]);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
+    const list = await store.listConversations();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.id).toBe("conv1");
+  });
 
-	it("listConversations: skips index entries whose meta row is missing", async () => {
-		const store = createConversationStore(storage, undefined, () => 1000);
-		await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
-		// Manually corrupt the index by adding an id with no meta row.
-		await storage.set("conv-index", JSON.stringify(["conv1", "ghost"]));
-		const list = await store.listConversations();
-		expect(list.map((c) => c.id)).toEqual(["conv1"]);
-	});
+  it("listConversations: skips index entries whose meta row is missing", async () => {
+    const store = createConversationStore(storage, undefined, () => 1000);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
+    // Manually corrupt the index by adding an id with no meta row.
+    await storage.set("conv-index", JSON.stringify(["conv1", "ghost"]));
+    const list = await store.listConversations();
+    expect(list.map((c) => c.id)).toEqual(["conv1"]);
+  });
 
-	it("metadata persists across a fresh store instance on the same storage", async () => {
-		const clock = 1000;
-		const store1 = createConversationStore(storage, undefined, () => clock);
-		await store1.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "persisted" }] }]);
+  it("metadata persists across a fresh store instance on the same storage", async () => {
+    const clock = 1000;
+    const store1 = createConversationStore(storage, undefined, () => clock);
+    await store1.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "persisted" }] }]);
 
-		const store2 = createConversationStore(storage);
-		const meta = await store2.getConversationMeta("conv1");
-		expect(meta).toEqual({
-			id: "conv1",
-			createdAt: 1000,
-			lastActivityAt: 1000,
-			title: "persisted",
-			status: "idle",
-			workspaceId: "default",
-		});
-		const list = await store2.listConversations();
-		expect(list).toHaveLength(1);
-		expect(list[0]?.id).toBe("conv1");
-	});
+    const store2 = createConversationStore(storage);
+    const meta = await store2.getConversationMeta("conv1");
+    expect(meta).toEqual({
+      id: "conv1",
+      createdAt: 1000,
+      lastActivityAt: 1000,
+      title: "persisted",
+      status: "idle",
+      workspaceId: "default",
+    });
+    const list = await store2.listConversations();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.id).toBe("conv1");
+  });
 
-	describe("ConversationStore conversation status", () => {
-		it("new conversation defaults to idle", async () => {
-			const store = createConversationStore(storage, undefined, () => 1000);
-			await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
-			expect(await store.getConversationStatus("conv1")).toBe("idle");
-			expect((await store.getConversationMeta("conv1"))?.status).toBe("idle");
-		});
+  describe("ConversationStore conversation status", () => {
+    it("new conversation defaults to idle", async () => {
+      const store = createConversationStore(storage, undefined, () => 1000);
+      await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+      expect(await store.getConversationStatus("conv1")).toBe("idle");
+      expect((await store.getConversationMeta("conv1"))?.status).toBe("idle");
+    });
 
-		it("setConversationStatus updates status on existing conversation", async () => {
-			const store = createConversationStore(storage, undefined, () => 1000);
-			await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+    it("setConversationStatus updates status on existing conversation", async () => {
+      const store = createConversationStore(storage, undefined, () => 1000);
+      await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
 
-			await store.setConversationStatus("conv1", "active");
-			expect(await store.getConversationStatus("conv1")).toBe("active");
+      await store.setConversationStatus("conv1", "active");
+      expect(await store.getConversationStatus("conv1")).toBe("active");
 
-			await store.setConversationStatus("conv1", "idle");
-			expect(await store.getConversationStatus("conv1")).toBe("idle");
+      await store.setConversationStatus("conv1", "idle");
+      expect(await store.getConversationStatus("conv1")).toBe("idle");
 
-			await store.setConversationStatus("conv1", "closed");
-			expect(await store.getConversationStatus("conv1")).toBe("closed");
-		});
+      await store.setConversationStatus("conv1", "closed");
+      expect(await store.getConversationStatus("conv1")).toBe("closed");
+    });
 
-		it("setConversationStatus creates minimal row for unknown conversation", async () => {
-			const store = createConversationStore(storage, undefined, () => 2000);
-			await store.setConversationStatus("convNew", "closed");
-			expect(await store.getConversationStatus("convNew")).toBe("closed");
-			const meta = await store.getConversationMeta("convNew");
-			expect(meta?.status).toBe("closed");
-			expect(meta?.title).toBe("Untitled");
-		});
+    it("setConversationStatus creates minimal row for unknown conversation", async () => {
+      const store = createConversationStore(storage, undefined, () => 2000);
+      await store.setConversationStatus("convNew", "closed");
+      expect(await store.getConversationStatus("convNew")).toBe("closed");
+      const meta = await store.getConversationMeta("convNew");
+      expect(meta?.status).toBe("closed");
+      expect(meta?.title).toBe("Untitled");
+    });
 
-		it("setConversationStatus preserves other metadata", async () => {
-			const store = createConversationStore(storage, undefined, () => 1000);
-			await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
-			await store.setConversationTitle("conv1", "custom title");
+    it("setConversationStatus preserves other metadata", async () => {
+      const store = createConversationStore(storage, undefined, () => 1000);
+      await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+      await store.setConversationTitle("conv1", "custom title");
 
-			await store.setConversationStatus("conv1", "active");
+      await store.setConversationStatus("conv1", "active");
 
-			const meta = await store.getConversationMeta("conv1");
-			expect(meta?.title).toBe("custom title");
-			expect(meta?.createdAt).toBe(1000);
-			expect(meta?.status).toBe("active");
-		});
+      const meta = await store.getConversationMeta("conv1");
+      expect(meta?.title).toBe("custom title");
+      expect(meta?.createdAt).toBe(1000);
+      expect(meta?.status).toBe("active");
+    });
 
-		it("listConversations filters by status", async () => {
-			const store = createConversationStore(storage, undefined, () => 1000);
-			await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
-			await store.append("conv2", [{ role: "user", chunks: [{ type: "text", text: "b" }] }]);
-			await store.append("conv3", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
+    it("listConversations filters by status", async () => {
+      const store = createConversationStore(storage, undefined, () => 1000);
+      await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "a" }] }]);
+      await store.append("conv2", [{ role: "user", chunks: [{ type: "text", text: "b" }] }]);
+      await store.append("conv3", [{ role: "user", chunks: [{ type: "text", text: "c" }] }]);
 
-			await store.setConversationStatus("conv1", "active");
-			await store.setConversationStatus("conv2", "closed");
+      await store.setConversationStatus("conv1", "active");
+      await store.setConversationStatus("conv2", "closed");
 
-			const activeOnly = await store.listConversations({ status: ["active"] });
-			expect(activeOnly.map((m) => m.id)).toEqual(["conv1"]);
+      const activeOnly = await store.listConversations({ status: ["active"] });
+      expect(activeOnly.map((m) => m.id)).toEqual(["conv1"]);
 
-			const idleOnly = await store.listConversations({ status: ["idle"] });
-			expect(idleOnly.map((m) => m.id)).toEqual(["conv3"]);
+      const idleOnly = await store.listConversations({ status: ["idle"] });
+      expect(idleOnly.map((m) => m.id)).toEqual(["conv3"]);
 
-			const activeIdle = await store.listConversations({ status: ["active", "idle"] });
-			expect(activeIdle.map((m) => m.id)).toEqual(["conv1", "conv3"]);
+      const activeIdle = await store.listConversations({ status: ["active", "idle"] });
+      expect(activeIdle.map((m) => m.id)).toEqual(["conv1", "conv3"]);
 
-			const all = await store.listConversations();
-			expect(all.map((m) => m.id)).toEqual(["conv1", "conv2", "conv3"]);
-		});
+      const all = await store.listConversations();
+      expect(all.map((m) => m.id)).toEqual(["conv1", "conv2", "conv3"]);
+    });
 
-		it("status persists across a fresh store instance", async () => {
-			const store1 = createConversationStore(storage, undefined, () => 1000);
-			await store1.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
-			await store1.setConversationStatus("conv1", "active");
+    it("status persists across a fresh store instance", async () => {
+      const store1 = createConversationStore(storage, undefined, () => 1000);
+      await store1.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
+      await store1.setConversationStatus("conv1", "active");
 
-			const store2 = createConversationStore(storage);
-			expect(await store2.getConversationStatus("conv1")).toBe("active");
-		});
+      const store2 = createConversationStore(storage);
+      expect(await store2.getConversationStatus("conv1")).toBe("active");
+    });
 
-		it("old meta rows without status default to idle on read", async () => {
-			// Simulate a pre-status meta row written by an older version.
-			await storage.set(
-				metaKey("conv1"),
-				JSON.stringify({
-					createdAt: 1000,
-					lastActivityAt: 1000,
-					title: "old",
-				}),
-			);
-			await storage.set(CONVERSATION_INDEX_KEY, JSON.stringify(["conv1"]));
+    it("old meta rows without status default to idle on read", async () => {
+      // Simulate a pre-status meta row written by an older version.
+      await storage.set(
+        metaKey("conv1"),
+        JSON.stringify({
+          createdAt: 1000,
+          lastActivityAt: 1000,
+          title: "old",
+        }),
+      );
+      await storage.set(CONVERSATION_INDEX_KEY, JSON.stringify(["conv1"]));
 
-			const store = createConversationStore(storage);
-			const meta = await store.getConversationMeta("conv1");
-			expect(meta?.status).toBe("idle");
-		});
-	});
-	it("extractTitle: returns first user text", () => {
-		const messages: ChatMessage[] = [
-			{ role: "system", chunks: [{ type: "text", text: "sys" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "greeting" }] },
-			{ role: "user", chunks: [{ type: "text", text: "my question" }] },
-			{ role: "assistant", chunks: [{ type: "text", text: "answer" }] },
-		];
-		expect(extractTitle(messages)).toBe("my question");
-	});
+      const store = createConversationStore(storage);
+      const meta = await store.getConversationMeta("conv1");
+      expect(meta?.status).toBe("idle");
+    });
+  });
+  it("extractTitle: returns first user text", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", chunks: [{ type: "text", text: "sys" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "greeting" }] },
+      { role: "user", chunks: [{ type: "text", text: "my question" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "answer" }] },
+    ];
+    expect(extractTitle(messages)).toBe("my question");
+  });
 
-	it('extractTitle: returns "Untitled" when no user message', () => {
-		expect(extractTitle([])).toBe("Untitled");
-		expect(
-			extractTitle([
-				{ role: "system", chunks: [{ type: "text", text: "sys" }] },
-				{ role: "assistant", chunks: [{ type: "text", text: "hi" }] },
-			]),
-		).toBe("Untitled");
-		// A user message with no text chunk also yields "Untitled".
-		expect(
-			extractTitle([
-				{
-					role: "user",
-					chunks: [
-						{
-							type: "tool-result",
-							toolCallId: "c",
-							toolName: "t",
-							content: "x",
-							isError: false,
-						},
-					],
-				},
-			]),
-		).toBe("Untitled");
-	});
+  it('extractTitle: returns "Untitled" when no user message', () => {
+    expect(extractTitle([])).toBe("Untitled");
+    expect(
+      extractTitle([
+        { role: "system", chunks: [{ type: "text", text: "sys" }] },
+        { role: "assistant", chunks: [{ type: "text", text: "hi" }] },
+      ]),
+    ).toBe("Untitled");
+    // A user message with no text chunk also yields "Untitled".
+    expect(
+      extractTitle([
+        {
+          role: "user",
+          chunks: [
+            {
+              type: "tool-result",
+              toolCallId: "c",
+              toolName: "t",
+              content: "x",
+              isError: false,
+            },
+          ],
+        },
+      ]),
+    ).toBe("Untitled");
+  });
 
-	it("extractTitle: truncates to 80 chars", () => {
-		const exactly80 = "a".repeat(80);
-		const over80 = "a".repeat(81);
-		const wayOver = "The quick brown fox jumps over the lazy dog. ".repeat(10);
-		expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: exactly80 }] }])).toBe(
-			exactly80,
-		);
-		expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: over80 }] }])).toBe(
-			`${over80.slice(0, 80)}…`,
-		);
-		expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: wayOver }] }])).toBe(
-			`${wayOver.slice(0, 80)}…`,
-		);
-	});
+  it("extractTitle: truncates to 80 chars", () => {
+    const exactly80 = "a".repeat(80);
+    const over80 = "a".repeat(81);
+    const wayOver = "The quick brown fox jumps over the lazy dog. ".repeat(10);
+    expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: exactly80 }] }])).toBe(
+      exactly80,
+    );
+    expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: over80 }] }])).toBe(
+      `${over80.slice(0, 80)}…`,
+    );
+    expect(extractTitle([{ role: "user", chunks: [{ type: "text", text: wayOver }] }])).toBe(
+      `${wayOver.slice(0, 80)}…`,
+    );
+  });
 
-	it("extractTitle: uses the first text chunk of the first user message", () => {
-		expect(
-			extractTitle([
-				{
-					role: "user",
-					chunks: [
-						{ type: "text", text: "first chunk" },
-						{ type: "text", text: "second chunk" },
-					],
-				},
-			]),
-		).toBe("first chunk");
-	});
+  it("extractTitle: uses the first text chunk of the first user message", () => {
+    expect(
+      extractTitle([
+        {
+          role: "user",
+          chunks: [
+            { type: "text", text: "first chunk" },
+            { type: "text", text: "second chunk" },
+          ],
+        },
+      ]),
+    ).toBe("first chunk");
+  });
 
-	it("extractTitle: skips a user message with no text chunk, finds the next", () => {
-		expect(
-			extractTitle([
-				{
-					role: "user",
-					chunks: [
-						{
-							type: "tool-result",
-							toolCallId: "c",
-							toolName: "t",
-							content: "x",
-							isError: false,
-						},
-					],
-				},
-				{ role: "user", chunks: [{ type: "text", text: "real question" }] },
-			]),
-		).toBe("real question");
-	});
+  it("extractTitle: skips a user message with no text chunk, finds the next", () => {
+    expect(
+      extractTitle([
+        {
+          role: "user",
+          chunks: [
+            {
+              type: "tool-result",
+              toolCallId: "c",
+              toolName: "t",
+              content: "x",
+              isError: false,
+            },
+          ],
+        },
+        { role: "user", chunks: [{ type: "text", text: "real question" }] },
+      ]),
+    ).toBe("real question");
+  });
 
-	it("extractTitle: does not mutate the input", () => {
-		const messages: ChatMessage[] = [{ role: "user", chunks: [{ type: "text", text: "hello" }] }];
-		const snapshot = JSON.stringify(messages);
-		extractTitle(messages);
-		expect(JSON.stringify(messages)).toBe(snapshot);
-	});
+  it("extractTitle: does not mutate the input", () => {
+    const messages: ChatMessage[] = [{ role: "user", chunks: [{ type: "text", text: "hello" }] }];
+    const snapshot = JSON.stringify(messages);
+    extractTitle(messages);
+    expect(JSON.stringify(messages)).toBe(snapshot);
+  });
 });

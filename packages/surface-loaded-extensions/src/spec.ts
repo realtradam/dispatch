@@ -7,8 +7,8 @@ import type { CustomField, StatField, SurfaceSpec } from "@dispatch/ui-contract"
  * a blind `unknown`. Each row aligns cell-for-cell to `columns`.
  */
 export interface TablePayload {
-	readonly columns: readonly string[];
-	readonly rows: ReadonlyArray<ReadonlyArray<string | number | boolean>>;
+  readonly columns: readonly string[];
+  readonly rows: ReadonlyArray<ReadonlyArray<string | number | boolean>>;
 }
 
 /** The renderer id clients dispatch on for the extensions table. */
@@ -23,29 +23,29 @@ export const TABLE_RENDERER_ID = "table";
  * "table" renderer gracefully skips the field and still sees the count.
  */
 export function buildLoadedExtensionsSpec(manifests: readonly Manifest[]): SurfaceSpec {
-	const count: StatField = { kind: "stat", label: "Loaded", value: String(manifests.length) };
+  const count: StatField = { kind: "stat", label: "Loaded", value: String(manifests.length) };
 
-	const payload: TablePayload = {
-		columns: ["Name", "Version", "Trust", "Activation"],
-		rows: manifests.map((manifest) => [
-			manifest.name,
-			manifest.version,
-			manifest.trust,
-			// Activation is optional in the manifest; "eager" is the declared default.
-			manifest.activation ?? "eager",
-		]),
-	};
+  const payload: TablePayload = {
+    columns: ["Name", "Version", "Trust", "Activation"],
+    rows: manifests.map((manifest) => [
+      manifest.name,
+      manifest.version,
+      manifest.trust,
+      // Activation is optional in the manifest; "eager" is the declared default.
+      manifest.activation ?? "eager",
+    ]),
+  };
 
-	const table: CustomField = {
-		kind: "custom",
-		rendererId: TABLE_RENDERER_ID,
-		payload,
-	};
+  const table: CustomField = {
+    kind: "custom",
+    rendererId: TABLE_RENDERER_ID,
+    payload,
+  };
 
-	return {
-		id: "loaded-extensions",
-		region: "side",
-		title: "Loaded Extensions",
-		fields: [count, table],
-	};
+  return {
+    id: "loaded-extensions",
+    region: "side",
+    title: "Loaded Extensions",
+    fields: [count, table],
+  };
 }
