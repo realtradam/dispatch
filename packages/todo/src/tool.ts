@@ -15,10 +15,10 @@ import type { ToolContract, ToolExecuteContext, ToolResult } from "@dispatch/ker
 import { formatTodoResult, setTodos, type TodoState, validateTodos } from "./pure.js";
 
 export interface TodoWriteToolDeps {
-	/** Per-conversation todo store (owned by the extension shell). */
-	readonly state: TodoState;
-	/** Fire surface subscribers after a successful write. */
-	readonly notify: () => void;
+  /** Per-conversation todo store (owned by the extension shell). */
+  readonly state: TodoState;
+  /** Fire surface subscribers after a successful write. */
+  readonly notify: () => void;
 }
 
 const TODO_WRITE_DESCRIPTION = `Use this tool to create and manage a structured task list for your current session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
@@ -189,52 +189,52 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
 
 /** Create the `todo_write` tool, closing over the shared state + notifier. */
 export function createTodoWriteTool(deps: TodoWriteToolDeps): ToolContract {
-	const { state, notify } = deps;
-	return {
-		name: "todo_write",
-		description: TODO_WRITE_DESCRIPTION,
-		parameters: {
-			type: "object",
-			properties: {
-				todos: {
-					type: "array",
-					description: "The updated todo list (replaces the existing list).",
-					items: {
-						type: "object",
-						properties: {
-							content: {
-								type: "string",
-								description: "Brief description of the task.",
-							},
-							status: {
-								type: "string",
-								enum: ["pending", "in_progress", "completed", "cancelled"],
-								description: "Current status of the task.",
-							},
-						},
-						required: ["content", "status"],
-					},
-				},
-			},
-			required: ["todos"],
-		},
-		concurrencySafe: false,
-		async execute(args: unknown, ctx: ToolExecuteContext): Promise<ToolResult> {
-			const conversationId = ctx.conversationId;
-			if (conversationId === undefined) {
-				return { content: "Error: no conversation context for todo.", isError: true };
-			}
-			const validated = validateTodos(args);
-			if (!Array.isArray(validated)) {
-				return { content: validated.error, isError: true };
-			}
-			const snapshot = setTodos(state, conversationId, validated);
-			notify();
-			ctx.log.debug("todo_write: replaced list", {
-				conversationId,
-				count: snapshot.length,
-			});
-			return { content: formatTodoResult(snapshot) };
-		},
-	};
+  const { state, notify } = deps;
+  return {
+    name: "todo_write",
+    description: TODO_WRITE_DESCRIPTION,
+    parameters: {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          description: "The updated todo list (replaces the existing list).",
+          items: {
+            type: "object",
+            properties: {
+              content: {
+                type: "string",
+                description: "Brief description of the task.",
+              },
+              status: {
+                type: "string",
+                enum: ["pending", "in_progress", "completed", "cancelled"],
+                description: "Current status of the task.",
+              },
+            },
+            required: ["content", "status"],
+          },
+        },
+      },
+      required: ["todos"],
+    },
+    concurrencySafe: false,
+    async execute(args: unknown, ctx: ToolExecuteContext): Promise<ToolResult> {
+      const conversationId = ctx.conversationId;
+      if (conversationId === undefined) {
+        return { content: "Error: no conversation context for todo.", isError: true };
+      }
+      const validated = validateTodos(args);
+      if (!Array.isArray(validated)) {
+        return { content: validated.error, isError: true };
+      }
+      const snapshot = setTodos(state, conversationId, validated);
+      notify();
+      ctx.log.debug("todo_write: replaced list", {
+        conversationId,
+        count: snapshot.length,
+      });
+      return { content: formatTodoResult(snapshot) };
+    },
+  };
 }

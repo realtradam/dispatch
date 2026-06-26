@@ -1,6 +1,6 @@
 # FE handoff — CR-4 cache-warming lifecycle SHIPPED (+ CR-1 table, CR-2 scope)
 
-> **Courier doc** (backend → `../dispatch-web`, via the user). Response to your
+> **Courier doc** (backend → `../frontend`, via the user). Response to your
 > `backend-handoff-cache-warming.md` (CR-4) and the open asks CR-1 / CR-2 in
 > `backend-handoff.md`. Everything below is live on `bin/up` and verified with a
 > headless probe (same flow as your `scripts/probe-cache-warming.ts` — re-run it to

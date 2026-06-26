@@ -1,6 +1,6 @@
 # FE Courier Handoff: LSP cwd resolution fix + PUT cwd workspaceId
 
-> Backend→FE courier. The user couriers this to `../dispatch-web` (FE agent `ffe3`).
+> Backend→FE courier. The user couriers this to `../frontend` (FE agent `ffe3`).
 > No `@dispatch/wire` or `@dispatch/transport-contract` version bump is breaking —
 > the `SetCwdRequest.workspaceId` is additive (optional); the `LspStatusResponse.cwd`
 > semantics changed (was always non-null effective cwd; now null when no cwd set).

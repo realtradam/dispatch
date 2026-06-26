@@ -14,14 +14,14 @@
 
 /** A node:fs-style error carrying a `.code` errno string. */
 export interface FsError extends Error {
-	readonly code: string;
+  readonly code: string;
 }
 
 /** Build a node:fs-style error with a `.code`. Pure. */
 export function fsError(code: string, message: string): FsError {
-	const err = new Error(message) as FsError;
-	(err as { code: string }).code = code;
-	return err;
+  const err = new Error(message) as FsError;
+  (err as { code: string }).code = code;
+  return err;
 }
 
 /**
@@ -32,15 +32,15 @@ export function fsError(code: string, message: string): FsError {
  * @see https://datatracker.ietf.org/doc/html/rfc4254#section-9.1
  */
 export function sftpStatusToErrno(status: number): string | undefined {
-	// SSH_FX_NO_SUCH_FILE (3) → ENOENT — the common case (missing path).
-	if (status === 3) return "ENOENT";
-	// SSH_FX_PERMISSION_DENIED (4) → EACCES — read/parse this path.
-	if (status === 4) return "EACCES";
-	// SSH_FX_FILE_ALREADY_EXISTS (11) → EEXIST.
-	if (status === 11) return "EEXIST";
-	// SSH_FX_NOT_A_DIRECTORY (20) → ENOTDIR.
-	if (status === 20) return "ENOTDIR";
-	return undefined;
+  // SSH_FX_NO_SUCH_FILE (3) → ENOENT — the common case (missing path).
+  if (status === 3) return "ENOENT";
+  // SSH_FX_PERMISSION_DENIED (4) → EACCES — read/parse this path.
+  if (status === 4) return "EACCES";
+  // SSH_FX_FILE_ALREADY_EXISTS (11) → EEXIST.
+  if (status === 11) return "EEXIST";
+  // SSH_FX_NOT_A_DIRECTORY (20) → ENOTDIR.
+  if (status === 20) return "ENOTDIR";
+  return undefined;
 }
 
 /**
@@ -56,38 +56,38 @@ export function sftpStatusToErrno(status: number): string | undefined {
  * Pure: takes the thrown value, returns an `FsError`. Never throws.
  */
 export function mapSshError(err: unknown, context: string): FsError {
-	const message = err instanceof Error ? err.message : String(err);
+  const message = err instanceof Error ? err.message : String(err);
 
-	// ssh2 SFTP errors often carry a `.code` that is an SSH_FXP_* string.
-	const code = (err as { code?: unknown } | null)?.code;
-	if (typeof code === "string") {
-		const mapped = sshCodeStringToErrno(code);
-		if (mapped !== undefined) return fsError(mapped, `${context}: ${message}`);
-		// ssh2 also surfaces raw numeric SFTP status on `.code`.
-	}
-	if (typeof code === "number") {
-		const mapped = sftpStatusToErrno(code);
-		if (mapped !== undefined) return fsError(mapped, `${context}: ${message}`);
-	}
+  // ssh2 SFTP errors often carry a `.code` that is an SSH_FXP_* string.
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === "string") {
+    const mapped = sshCodeStringToErrno(code);
+    if (mapped !== undefined) return fsError(mapped, `${context}: ${message}`);
+    // ssh2 also surfaces raw numeric SFTP status on `.code`.
+  }
+  if (typeof code === "number") {
+    const mapped = sftpStatusToErrno(code);
+    if (mapped !== undefined) return fsError(mapped, `${context}: ${message}`);
+  }
 
-	// Some ssh2 errors embed the SFTP status code as `.desc`/message text; sniff
-	// the human-readable text for the common markers as a last resort.
-	if (message.includes("No such file") || message.includes("ENOENT")) {
-		return fsError("ENOENT", `${context}: ${message}`);
-	}
-	if (message.includes("Permission denied") || message.includes("EACCES")) {
-		return fsError("EACCES", `${context}: ${message}`);
-	}
-	if (message.includes("not a directory") || message.includes("ENOTDIR")) {
-		return fsError("ENOTDIR", `${context}: ${message}`);
-	}
+  // Some ssh2 errors embed the SFTP status code as `.desc`/message text; sniff
+  // the human-readable text for the common markers as a last resort.
+  if (message.includes("No such file") || message.includes("ENOENT")) {
+    return fsError("ENOENT", `${context}: ${message}`);
+  }
+  if (message.includes("Permission denied") || message.includes("EACCES")) {
+    return fsError("EACCES", `${context}: ${message}`);
+  }
+  if (message.includes("not a directory") || message.includes("ENOTDIR")) {
+    return fsError("ENOTDIR", `${context}: ${message}`);
+  }
 
-	// Host-key / connect failures are surfaced as ECONNREFUSED-ish so the tool's
-	// generic error path still renders them clearly. Default: generic I/O error.
-	if (message.includes("HOST KEY CHANGED") || message.includes("host key")) {
-		return fsError("EHOSTUNREACH", `${context}: ${message}`);
-	}
-	return fsError("EIO", `${context}: ${message}`);
+  // Host-key / connect failures are surfaced as ECONNREFUSED-ish so the tool's
+  // generic error path still renders them clearly. Default: generic I/O error.
+  if (message.includes("HOST KEY CHANGED") || message.includes("host key")) {
+    return fsError("EHOSTUNREACH", `${context}: ${message}`);
+  }
+  return fsError("EIO", `${context}: ${message}`);
 }
 
 /**
@@ -97,15 +97,15 @@ export function mapSshError(err: unknown, context: string): FsError {
  * Returns `undefined` when no analog. Pure.
  */
 function sshCodeStringToErrno(code: string): string | undefined {
-	const c = code.toUpperCase();
-	if (c.includes("NO_SUCH_FILE")) return "ENOENT";
-	if (c.includes("PERMISSION_DENIED")) return "EACCES";
-	if (
-		c.includes("FILE_ALREADY_EXISTS") ||
-		(c.includes("FAILURE") === false && c.includes("EXIST"))
-	) {
-		return "EEXIST";
-	}
-	if (c.includes("NOT_A_DIRECTORY")) return "ENOTDIR";
-	return undefined;
+  const c = code.toUpperCase();
+  if (c.includes("NO_SUCH_FILE")) return "ENOENT";
+  if (c.includes("PERMISSION_DENIED")) return "EACCES";
+  if (
+    c.includes("FILE_ALREADY_EXISTS") ||
+    (c.includes("FAILURE") === false && c.includes("EXIST"))
+  ) {
+    return "EEXIST";
+  }
+  if (c.includes("NOT_A_DIRECTORY")) return "ENOTDIR";
+  return undefined;
 }

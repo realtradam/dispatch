@@ -1,6 +1,6 @@
 # Backend → FE handoff — context window + percentage-based compact
 
-> Courier to `../dispatch-web`. Response to the context-window ask in
+> Courier to `../frontend`. Response to the context-window ask in
 > `backend-handoff.md` §3 + compacting rework.
 
 ## What shipped

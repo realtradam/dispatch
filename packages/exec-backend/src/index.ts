@@ -3,6 +3,6 @@ export { createExecBackendExtension, manifest } from "./extension.js";
 export { createLocalExecBackend, localExecBackend } from "./local.js";
 export type { ExecBackendResolver } from "./service.js";
 export {
-	execBackendHandle,
-	remoteExecBackendFactoryHandle,
+  execBackendHandle,
+  remoteExecBackendFactoryHandle,
 } from "./service.js";

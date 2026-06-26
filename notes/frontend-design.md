@@ -86,7 +86,7 @@ chosen set. Skip the backend's 3-tier ceremony.
 ## 3. Repo structure (Vite + Svelte 5 SPA — SETTLED; not SvelteKit)
 
 ```
-dispatch-web/                  (../dispatch-web — NEW repo, own git)
+dispatch-web/                  (../frontend — NEW repo, own git)
   AGENTS.md  ORCHESTRATOR.md  GLOSSARY.md
   .dispatch/{package-agent.md, rules/frontend-*.md}
   src/
@@ -416,7 +416,7 @@ slice); DaisyUI styling (F4 follow-up). The slice-1 input decisions were:
    Or pick a different first surface.
 2. **WS-transport boundary:** a NEW `transport-ws` extension vs. augment the existing
    `transport-http`. (Boundary call.)
-3. **Repo scaffold go-ahead:** create `../dispatch-web` (git init + Vite/Svelte/biome/vitest +
+3. **Repo scaffold go-ahead:** create `../frontend` (git init + Vite/Svelte/biome/vitest +
    the §8 harness). Orchestrator can scaffold config + harness; feature code = summoned agents.
 
 ### Slice-1 findings + open items (for the next, clean-context agent)

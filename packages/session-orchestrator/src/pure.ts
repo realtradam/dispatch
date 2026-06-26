@@ -1,12 +1,12 @@
 import type {
-	ChatMessage,
-	ProviderContract,
-	ReasoningEffort,
-	ToolDispatchPolicy,
+  ChatMessage,
+  ProviderContract,
+  ReasoningEffort,
+  ToolDispatchPolicy,
 } from "@dispatch/kernel";
 
 export function buildUserMessage(text: string): ChatMessage {
-	return { role: "user", chunks: [{ type: "text", text }] };
+  return { role: "user", chunks: [{ type: "text", text }] };
 }
 
 // ── Provider-error retry backoff schedule ───────────────────────────────────
@@ -20,7 +20,7 @@ export function buildUserMessage(text: string): ChatMessage {
  * After the head is exhausted, {@link RETRY_TAIL_MS} (30m) repeats.
  */
 export const RETRY_SCHEDULE_MS = [
-	5_000, 10_000, 30_000, 60_000, 300_000, 600_000, 900_000, 1_800_000,
+  5_000, 10_000, 30_000, 60_000, 300_000, 600_000, 900_000, 1_800_000,
 ] as const;
 
 /** Tail delay (ms) repeated after the stepped head: 30 minutes. */
@@ -34,11 +34,11 @@ export const RETRY_BUDGET_MS = 8 * 60 * 60 * 1000;
  * Pure — no I/O, no clock.
  */
 export function cumulativeSleepMs(attempt: number): number {
-	let sum = 0;
-	for (let i = 0; i <= attempt; i++) {
-		sum += i < RETRY_SCHEDULE_MS.length ? (RETRY_SCHEDULE_MS[i] ?? RETRY_TAIL_MS) : RETRY_TAIL_MS;
-	}
-	return sum;
+  let sum = 0;
+  for (let i = 0; i <= attempt; i++) {
+    sum += i < RETRY_SCHEDULE_MS.length ? (RETRY_SCHEDULE_MS[i] ?? RETRY_TAIL_MS) : RETRY_TAIL_MS;
+  }
+  return sum;
 }
 
 /**
@@ -50,10 +50,10 @@ export function cumulativeSleepMs(attempt: number): number {
  * cumulative scheduled sleep is reached, then give up.
  */
 export function delayFor(attempt: number): number | undefined {
-	const scheduled = RETRY_SCHEDULE_MS[attempt];
-	const delay = scheduled !== undefined ? scheduled : RETRY_TAIL_MS;
-	if (cumulativeSleepMs(attempt) > RETRY_BUDGET_MS) return undefined; // over budget → stop
-	return delay;
+  const scheduled = RETRY_SCHEDULE_MS[attempt];
+  const delay = scheduled !== undefined ? scheduled : RETRY_TAIL_MS;
+  if (cumulativeSleepMs(attempt) > RETRY_BUDGET_MS) return undefined; // over budget → stop
+  return delay;
 }
 
 /**
@@ -62,10 +62,10 @@ export function delayFor(attempt: number): number | undefined {
  * Pure — no I/O, no ambient state.
  */
 export function resolveReasoningEffort(
-	override: ReasoningEffort | undefined,
-	stored: ReasoningEffort | null,
+  override: ReasoningEffort | undefined,
+  stored: ReasoningEffort | null,
 ): ReasoningEffort {
-	return override ?? stored ?? "high";
+  return override ?? stored ?? "high";
 }
 
 /**
@@ -79,30 +79,30 @@ export function resolveReasoningEffort(
  * "no model override" code path untouched. Pure — no I/O, no ambient state.
  */
 export function resolveModelName(
-	override: string | undefined,
-	stored: string | null,
+  override: string | undefined,
+  stored: string | null,
 ): string | undefined {
-	return override ?? stored ?? undefined;
+  return override ?? stored ?? undefined;
 }
 
 export function selectFirstProvider(
-	providers: ReadonlyMap<string, ProviderContract>,
+  providers: ReadonlyMap<string, ProviderContract>,
 ): ProviderContract {
-	const first = providers.values().next();
-	if (first.done === true || first.value === undefined) {
-		throw new Error("No providers registered — at least one provider is required to run a turn.");
-	}
-	return first.value;
+  const first = providers.values().next();
+  if (first.done === true || first.value === undefined) {
+    throw new Error("No providers registered — at least one provider is required to run a turn.");
+  }
+  return first.value;
 }
 
 export function resolveTools(tools: ReadonlyMap<string, unknown>): readonly unknown[] {
-	return [...tools.values()];
+  return [...tools.values()];
 }
 
 export function defaultDispatchPolicy(): ToolDispatchPolicy {
-	return { maxConcurrent: 1, eager: true };
+  return { maxConcurrent: 1, eager: true };
 }
 
 export function generateTurnId(): string {
-	return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }

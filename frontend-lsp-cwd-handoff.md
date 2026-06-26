@@ -1,7 +1,7 @@
 # Frontend handoff — LSP status + per-conversation CWD
 
 > Backend milestone complete (this repo). The web frontend is a SEPARATE repo
-> (`../dispatch-web`); this document is couriered to it by the user (ORCHESTRATOR
+> (`../frontend`); this document is couriered to it by the user (ORCHESTRATOR
 > §7 — `lsp references` does not span repos). All types below are exported from
 > `@dispatch/transport-contract` (bumped to **0.5.0**).
 

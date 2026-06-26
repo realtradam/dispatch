@@ -1,15 +1,15 @@
 {
-	"name": "@dispatch/session-orchestrator",
-	"version": "0.0.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/kernel": "workspace:*",
-		"@dispatch/conversation-store": "workspace:*",
-		"@dispatch/credential-store": "workspace:*",
-		"@dispatch/message-queue": "workspace:*",
-		"@dispatch/system-prompt": "workspace:*"
-	}
+  "name": "@dispatch/session-orchestrator",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/conversation-store": "workspace:*",
+    "@dispatch/credential-store": "workspace:*",
+    "@dispatch/message-queue": "workspace:*",
+    "@dispatch/system-prompt": "workspace:*"
+  }
 }

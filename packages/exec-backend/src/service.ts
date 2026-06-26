@@ -42,5 +42,5 @@ export const execBackendHandle = defineService<ExecBackendResolver>("exec-backen
  * rather than crashing activation.
  */
 export const remoteExecBackendFactoryHandle = defineService<(computerId: string) => ExecBackend>(
-	"exec-backend/remote-factory",
+  "exec-backend/remote-factory",
 );

@@ -1,6 +1,6 @@
 # FE handoff — CR-3 fixed: user prompt is now on the turn's event stream
 
-Courier to `../dispatch-web`. This resolves CR-3 from `backend-handoff.md` ("a watcher can't see
+Courier to `../frontend`. This resolves CR-3 from `backend-handoff.md` ("a watcher can't see
 the turn's USER prompt until seal"). **Option B implemented + live-verified.** Your staged-but-inert
 consumption can now be turned on.
 

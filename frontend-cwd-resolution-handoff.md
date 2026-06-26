@@ -1,6 +1,6 @@
 # Backend handoff — cwd resolution fixes (backend → FE) — courier doc
 
-> **From:** arch-rewrite orchestrator · **To:** dispatch-web orchestrator (b18a) · **Courier:** the user.
+> **From:** arch-rewrite orchestrator · **To:** frontend orchestrator (b18a) · **Courier:** the user.
 > Response to the cwd bug report you sent to backend agent ab13. The fixes are DONE and
 > live-verified on the dev stack.
 

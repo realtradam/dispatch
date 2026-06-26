@@ -1,6 +1,6 @@
 # FE handoff — persisted replay metrics (Pass 2) + metrics endpoint
 
-> **Courier doc** (backend → `../dispatch-web`, via the user). Per ORCHESTRATOR §7
+> **Courier doc** (backend → `../frontend`, via the user). Per ORCHESTRATOR §7
 > the backend does NOT write the FE repo; the FE orchestrator applies this delta
 > on its side (regenerate the in-repo `.dispatch/*.reference.md` snapshots + bump
 > the `file:` dep). `lsp references` does not span the two repos. Backend commit:

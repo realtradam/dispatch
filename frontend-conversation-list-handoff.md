@@ -1,6 +1,6 @@
 # FE handoff — conversation list, title, and open tab
 
-Courier this to `../dispatch-web`. All changes are ADDITIVE — nothing existing breaks.
+Courier this to `../frontend`. All changes are ADDITIVE — nothing existing breaks.
 
 ## What shipped (backend)
 

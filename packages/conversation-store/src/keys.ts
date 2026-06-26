@@ -1,77 +1,77 @@
 const SEQ_PAD = 10;
 
 export function seqKey(conversationId: string): string {
-	return `conv:${conversationId}:seq`;
+  return `conv:${conversationId}:seq`;
 }
 
 export function chunkKey(conversationId: string, seq: number): string {
-	return `conv:${conversationId}:chunk:${String(seq).padStart(SEQ_PAD, "0")}`;
+  return `conv:${conversationId}:chunk:${String(seq).padStart(SEQ_PAD, "0")}`;
 }
 
 export function chunkPrefix(conversationId: string): string {
-	return `conv:${conversationId}:chunk:`;
+  return `conv:${conversationId}:chunk:`;
 }
 
 export function parseSeq(raw: string | null): number {
-	if (raw === null) return 0;
-	const n = Number.parseInt(raw, 10);
-	return Number.isNaN(n) ? 0 : n;
+  if (raw === null) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isNaN(n) ? 0 : n;
 }
 
 export function parseChunkSeq(key: string): number {
-	const parts = key.split(":");
-	const last = parts[parts.length - 1];
-	if (last === undefined) return -1;
-	const n = Number.parseInt(last, 10);
-	return Number.isNaN(n) ? -1 : n;
+  const parts = key.split(":");
+  const last = parts[parts.length - 1];
+  if (last === undefined) return -1;
+  const n = Number.parseInt(last, 10);
+  return Number.isNaN(n) ? -1 : n;
 }
 
 export function metricsSeqKey(conversationId: string): string {
-	return `conv:${conversationId}:metrics-seq`;
+  return `conv:${conversationId}:metrics-seq`;
 }
 
 export function metricsKey(conversationId: string, ordinal: number): string {
-	return `conv:${conversationId}:metrics:${String(ordinal).padStart(SEQ_PAD, "0")}`;
+  return `conv:${conversationId}:metrics:${String(ordinal).padStart(SEQ_PAD, "0")}`;
 }
 
 export function metricsPrefix(conversationId: string): string {
-	return `conv:${conversationId}:metrics:`;
+  return `conv:${conversationId}:metrics:`;
 }
 
 export function parseMetricsOrdinal(key: string): number {
-	const parts = key.split(":");
-	const last = parts[parts.length - 1];
-	if (last === undefined) return -1;
-	const n = Number.parseInt(last, 10);
-	return Number.isNaN(n) ? -1 : n;
+  const parts = key.split(":");
+  const last = parts[parts.length - 1];
+  if (last === undefined) return -1;
+  const n = Number.parseInt(last, 10);
+  return Number.isNaN(n) ? -1 : n;
 }
 
 export function cwdKey(conversationId: string): string {
-	return `conv:${conversationId}:cwd`;
+  return `conv:${conversationId}:cwd`;
 }
 
 export function computerKey(conversationId: string): string {
-	return `conv:${conversationId}:computer`;
+  return `conv:${conversationId}:computer`;
 }
 
 export function reasoningEffortKey(conversationId: string): string {
-	return `conv:${conversationId}:reasoning-effort`;
+  return `conv:${conversationId}:reasoning-effort`;
 }
 
 export function modelKey(conversationId: string): string {
-	return `conv:${conversationId}:model`;
+  return `conv:${conversationId}:model`;
 }
 
 export function compactThresholdKey(conversationId: string): string {
-	return `conv:${conversationId}:compact-percent`;
+  return `conv:${conversationId}:compact-percent`;
 }
 
 export function metaKey(conversationId: string): string {
-	return `conv:${conversationId}:meta`;
+  return `conv:${conversationId}:meta`;
 }
 
 export function workspaceKey(workspaceId: string): string {
-	return `workspace:${workspaceId}`;
+  return `workspace:${workspaceId}`;
 }
 
 export const CONVERSATION_INDEX_KEY = "conv-index";
