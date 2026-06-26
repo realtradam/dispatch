@@ -1,16 +1,16 @@
 {
-	"extends": "../../tsconfig.base.json",
-	"compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
-	"include": ["src/**/*.ts"],
-	"references": [
-		{ "path": "../conversation-store" },
-		{ "path": "../credential-store" },
-		{ "path": "../heartbeat" },
-		{ "path": "../kernel" },
-		{ "path": "../lsp" },
-		{ "path": "../session-orchestrator" },
-		{ "path": "../system-prompt" },
-		{ "path": "../throughput-store" },
-		{ "path": "../transport-contract" }
-	]
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../conversation-store" },
+    { "path": "../credential-store" },
+    { "path": "../heartbeat" },
+    { "path": "../kernel" },
+    { "path": "../lsp" },
+    { "path": "../session-orchestrator" },
+    { "path": "../system-prompt" },
+    { "path": "../throughput-store" },
+    { "path": "../transport-contract" }
+  ]
 }
