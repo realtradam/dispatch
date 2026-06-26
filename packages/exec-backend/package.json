@@ -1,11 +1,11 @@
 {
-	"name": "@dispatch/exec-backend",
-	"version": "0.0.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/kernel": "workspace:*"
-	}
+  "name": "@dispatch/exec-backend",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*"
+  }
 }

@@ -7,5 +7,5 @@
 import type { ModelsResponse } from "@dispatch/transport-contract";
 
 export function formatCatalog(r: ModelsResponse): string {
-	return r.models.join("\n");
+  return r.models.join("\n");
 }

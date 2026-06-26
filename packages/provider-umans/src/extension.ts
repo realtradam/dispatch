@@ -4,14 +4,14 @@ import { transformBody } from "./reasoning.js";
 import { type EnvSource, resolveUmansConfig } from "./resolver.js";
 
 export const manifest: Manifest = {
-	id: "provider-umans",
-	name: "Umans AI Coding Plan",
-	version: "0.0.0",
-	apiVersion: "^0.1.0",
-	trust: "bundled",
-	activation: "eager",
-	capabilities: { network: true },
-	contributes: { providers: ["umans"] },
+  id: "provider-umans",
+  name: "Umans AI Coding Plan",
+  version: "0.0.0",
+  apiVersion: "^0.1.0",
+  trust: "bundled",
+  activation: "eager",
+  capabilities: { network: true },
+  contributes: { providers: ["umans"] },
 };
 
 /**
@@ -26,30 +26,30 @@ export const manifest: Manifest = {
  * No `UMANS_API_KEY` is a config state, not an error — warn + skip registration.
  */
 export async function activate(host: HostAPI, env: EnvSource = process.env): Promise<void> {
-	const configModel = host.config.get<string>("provider.umans.model");
-	const cfg = resolveUmansConfig(env, configModel);
-	if (!cfg) {
-		host.logger.warn("provider-umans: no UMANS_API_KEY. Provider not registered.");
-		return;
-	}
+  const configModel = host.config.get<string>("provider.umans.model");
+  const cfg = resolveUmansConfig(env, configModel);
+  if (!cfg) {
+    host.logger.warn("provider-umans: no UMANS_API_KEY. Provider not registered.");
+    return;
+  }
 
-	const credentials: ApiKeyCredentials = {
-		type: "api-key",
-		apiKey: cfg.apiKey,
-		baseURL: cfg.baseURL,
-	};
+  const credentials: ApiKeyCredentials = {
+    type: "api-key",
+    apiKey: cfg.apiKey,
+    baseURL: cfg.baseURL,
+  };
 
-	const provider = createOpenAICompatProvider({
-		credentials,
-		model: cfg.model,
-		id: "umans",
-		transformBody,
-	});
-	host.defineProvider(provider);
-	host.logger.info(`provider-umans: registered (model=${cfg.model})`);
+  const provider = createOpenAICompatProvider({
+    credentials,
+    model: cfg.model,
+    id: "umans",
+    transformBody,
+  });
+  host.defineProvider(provider);
+  host.logger.info(`provider-umans: registered (model=${cfg.model})`);
 }
 
 export const extension: Extension = {
-	manifest,
-	activate,
+  manifest,
+  activate,
 };

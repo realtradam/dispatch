@@ -15,16 +15,16 @@ export type ValidationError = { readonly error: string };
  * input — the tool surfaces the message verbatim.
  */
 export function validateUrl(args: unknown): string | ValidationError {
-	if (args === null || args === undefined || typeof args !== "object") {
-		return { error: "Error: Arguments must be an object with a 'url' string." };
-	}
-	const obj = args as Record<string, unknown>;
-	const raw = obj.url;
-	if (typeof raw !== "string") {
-		return { error: "Error: 'url' is required and must be a string." };
-	}
-	if (raw.trim().length === 0) {
-		return { error: "Error: 'url' must not be empty." };
-	}
-	return raw;
+  if (args === null || args === undefined || typeof args !== "object") {
+    return { error: "Error: Arguments must be an object with a 'url' string." };
+  }
+  const obj = args as Record<string, unknown>;
+  const raw = obj.url;
+  if (typeof raw !== "string") {
+    return { error: "Error: 'url' is required and must be a string." };
+  }
+  if (raw.trim().length === 0) {
+    return { error: "Error: 'url' must not be empty." };
+  }
+  return raw;
 }

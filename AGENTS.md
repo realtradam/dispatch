@@ -13,7 +13,7 @@ the same methodology and consuming the backend's typed contracts (see
 
 ## Stack
 Bun + TypeScript (strict, project references via `tsc -b`). Biome for
-lint/format (tabs, double quotes, semicolons, width 100). Vitest for tests.
+lint/format (2-space indent, double quotes, semicolons, width 100). Vitest for tests.
 SQLite via `bun:sqlite`. AI SDK (`ai` + `@ai-sdk/*`) for providers.
 
 ## The non-negotiable architecture rules

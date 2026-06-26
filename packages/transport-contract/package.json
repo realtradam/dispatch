@@ -1,12 +1,12 @@
 {
-	"name": "@dispatch/transport-contract",
-	"version": "0.22.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/ui-contract": "workspace:*",
-		"@dispatch/wire": "workspace:*"
-	}
+  "name": "@dispatch/transport-contract",
+  "version": "0.22.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/ui-contract": "workspace:*",
+    "@dispatch/wire": "workspace:*"
+  }
 }

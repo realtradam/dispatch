@@ -11,15 +11,15 @@ export { lspServiceHandle } from "@dispatch/lsp";
 export type { McpServerStatus, McpService } from "@dispatch/mcp";
 export { mcpServiceHandle } from "@dispatch/mcp";
 export type {
-	CompactionService,
-	SessionOrchestrator,
-	WarmService,
+  CompactionService,
+  SessionOrchestrator,
+  WarmService,
 } from "@dispatch/session-orchestrator";
 export {
-	cacheWarmHandle,
-	compactionHandle,
-	conversationOpened,
-	sessionOrchestratorHandle,
+  cacheWarmHandle,
+  compactionHandle,
+  conversationOpened,
+  sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
 export type { SystemPromptService } from "@dispatch/system-prompt";
 export { systemPromptHandle } from "@dispatch/system-prompt";
@@ -45,14 +45,14 @@ export { ThroughputQueryError, throughputStoreHandle } from "@dispatch/throughpu
  * — an ABSENT service (ssh extension not loaded) is the graceful-degrade path.
  */
 export interface ComputerService {
-	/** Every computer discovered from `~/.ssh/config`, sorted by `alias`. */
-	readonly listComputers: () => Promise<readonly ComputerEntry[]>;
-	/** One computer by alias, or `null` when the alias isn't in the config. */
-	readonly getComputer: (alias: string) => Promise<Computer | null>;
-	/** Live connection state for a computer alias. */
-	readonly getStatus: (alias: string) => Promise<ComputerStatusResponse>;
-	/** One-shot connectivity probe (open, run a trivial command, close). */
-	readonly test: (alias: string) => Promise<TestComputerResponse>;
+  /** Every computer discovered from `~/.ssh/config`, sorted by `alias`. */
+  readonly listComputers: () => Promise<readonly ComputerEntry[]>;
+  /** One computer by alias, or `null` when the alias isn't in the config. */
+  readonly getComputer: (alias: string) => Promise<Computer | null>;
+  /** Live connection state for a computer alias. */
+  readonly getStatus: (alias: string) => Promise<ComputerStatusResponse>;
+  /** One-shot connectivity probe (open, run a trivial command, close). */
+  readonly test: (alias: string) => Promise<TestComputerResponse>;
 }
 
 /**
@@ -60,4 +60,4 @@ export interface ComputerService {
  * consume. Mirrors `lspServiceHandle` / `mcpServiceHandle`.
  */
 export const computerServiceHandle: ServiceHandle<ComputerService> =
-	defineService<ComputerService>("ssh");
+  defineService<ComputerService>("ssh");
