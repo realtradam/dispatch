@@ -35,6 +35,28 @@ export interface SystemPromptService {
 		},
 	): Promise<string>;
 
+	/**
+	 * Resolve an ARBITRARY template string against the current environment,
+	 * using the SAME variable resolver + adapter set as `construct` (so a
+	 * caller that owns its own prompt — e.g. the heartbeat extension — gets
+	 * `[type:name]` placeholders substituted identically to the global
+	 * template). Pure resolution: nothing is persisted (the result is the
+	 * caller's to use). An empty template yields an empty string.
+	 *
+	 * Like `construct`, when `context.computerId` is set the resolver uses
+	 * remote-backed adapters (reading the remote's OS/hostname/git via SSH).
+	 */
+	resolveText(
+		template: string,
+		cwd: string,
+		context?: {
+			readonly model?: string;
+			readonly conversationId?: string;
+			readonly workspaceId?: string;
+			readonly computerId?: string;
+		},
+	): Promise<string>;
+
 	/** Read the persisted resolved system prompt, or `null` if never constructed. */
 	get(conversationId: string): Promise<string | null>;
 

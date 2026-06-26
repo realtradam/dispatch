@@ -2,10 +2,10 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { extension as authApikeyExt } from "@dispatch/auth-apikey";
 import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
-import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
 import { createCredentialStoreExtension } from "@dispatch/credential-store";
 import { createExecBackendExtension } from "@dispatch/exec-backend";
+import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import { createJournalSink } from "@dispatch/journal-sink";
 import {
 	type ConfigAccess,

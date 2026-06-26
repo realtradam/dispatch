@@ -145,6 +145,14 @@ const flush = async (): Promise<void> => {
 function createService(opts: {
 	readonly orch: ReturnType<typeof createFakeOrchestrator>;
 	readonly storage?: StorageNamespace;
+	readonly resolvePrompt?: (
+		template: string,
+		ctx: {
+			readonly workspaceId: string;
+			readonly conversationId: string;
+			readonly model: string;
+		},
+	) => Promise<string>;
 }) {
 	const fake = createFakeTimers();
 	let id = 0;
@@ -154,6 +162,7 @@ function createService(opts: {
 		orchestrator: opts.orch,
 		timers: fake.timers,
 		generateId: () => `id-${++id}`,
+		...(opts.resolvePrompt !== undefined ? { resolvePrompt: opts.resolvePrompt } : {}),
 	});
 	return { svc, advance: fake.advance, storage };
 }
@@ -225,14 +234,75 @@ describe("createHeartbeatService", () => {
 		await flush();
 	});
 
+	it("resolves [type:name] variables in both systemPrompt and taskPrompt before sending", async () => {
+		const orch = createFakeOrchestrator();
+		// A fake resolver that mirrors the real resolver's contract: substitute
+		// known [type:name] placeholders, leave unknown text verbatim.
+		const resolvePrompt = async (
+			template: string,
+			ctx: {
+				readonly workspaceId: string;
+				readonly conversationId: string;
+				readonly model: string;
+			},
+		): Promise<string> => {
+			return template
+				.replaceAll("[system:os]", "Linux (WSL)")
+				.replaceAll("[prompt:cwd]", "/repo")
+				.replaceAll("[prompt:workspace_id]", ctx.workspaceId)
+				.replaceAll("[prompt:conversation_id]", ctx.conversationId)
+				.replaceAll("[prompt:model]", ctx.model);
+		};
+		const { svc, advance } = createService({ orch, resolvePrompt });
+		await svc.updateConfig("ws-1", {
+			enabled: true,
+			systemPrompt: "You run on [system:os] in [prompt:cwd] (ws [prompt:workspace_id]).",
+			taskPrompt: "Check chats for [prompt:conversation_id] on [system:os].",
+			model: "opencode/gpt-4o",
+			intervalMinutes: 1,
+		});
+
+		advance(60_000);
+		await flush();
+		expect(orch.pending).toHaveLength(1);
+		const turn = orch.pending[0]!;
+		// Variables substituted — NOT left as literal [type:name] text.
+		expect(turn.systemPrompt).toBe("You run on Linux (WSL) in /repo (ws ws-1).");
+		expect(turn.text).toBe(`Check chats for ${turn.conversationId} on Linux (WSL).`);
+		expect(turn.modelName).toBe("opencode/gpt-4o");
+		turn.resolve();
+		await flush();
+	});
+
+	it("passes prompts through raw when no resolver is wired (resolution is optional)", async () => {
+		const orch = createFakeOrchestrator();
+		// No resolvePrompt → raw pass-through (the default).
+		const { svc, advance } = createService({ orch });
+		await svc.updateConfig("ws-1", {
+			enabled: true,
+			systemPrompt: "raw [system:os] prompt",
+			taskPrompt: "raw [system:date] task",
+			intervalMinutes: 1,
+		});
+
+		advance(60_000);
+		await flush();
+		const turn = orch.pending[0]!;
+		// Unresolved — literals reach the orchestrator verbatim.
+		expect(turn.systemPrompt).toBe("raw [system:os] prompt");
+		expect(turn.text).toBe("raw [system:date] task");
+		turn.resolve();
+		await flush();
+	});
+
 	it("stopRun aborts the turn and marks the run stopped (not overwritten on completion)", async () => {
 		const orch = createFakeOrchestrator();
 		const { svc, advance } = createService({ orch });
 		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
 		advance(60_000);
 		await flush();
-		const conversationId = orch.pending[0]!.conversationId;
-		const runId = (await svc.listRuns("ws-1"))[0]!.id;
+		const conversationId = orch.pending[0]?.conversationId;
+		const runId = (await svc.listRuns("ws-1"))[0]?.id;
 
 		const res = await svc.stopRun("ws-1", runId);
 		expect(res).toEqual({ ok: true });
@@ -248,10 +318,10 @@ describe("createHeartbeatService", () => {
 		await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
 		advance(60_000);
 		await flush();
-		orch.pending[0]!.resolve();
+		orch.pending[0]?.resolve();
 		await flush();
 
-		const runId = (await svc.listRuns("ws-1"))[0]!.id;
+		const runId = (await svc.listRuns("ws-1"))[0]?.id;
 		const res = await svc.stopRun("ws-1", runId);
 		expect(res).toEqual({ ok: true });
 		expect(orch.stopped).toEqual([]); // no abort on a completed run
@@ -284,7 +354,14 @@ describe("createHeartbeatService", () => {
 		);
 		await storage.set(
 			"config:ws-1",
-			JSON.stringify({ enabled: false, systemPrompt: "", taskPrompt: "", intervalMinutes: 30, model: "", reasoningEffort: null }),
+			JSON.stringify({
+				enabled: false,
+				systemPrompt: "",
+				taskPrompt: "",
+				intervalMinutes: 30,
+				model: "",
+				reasoningEffort: null,
+			}),
 		);
 
 		const { svc } = createService({ orch: createFakeOrchestrator(), storage });

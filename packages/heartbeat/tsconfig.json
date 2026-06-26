@@ -5,6 +5,8 @@
 	"references": [
 		{ "path": "../kernel" },
 		{ "path": "../transport-contract" },
-		{ "path": "../session-orchestrator" }
+		{ "path": "../session-orchestrator" },
+		{ "path": "../system-prompt" },
+		{ "path": "../conversation-store" }
 	]
 }

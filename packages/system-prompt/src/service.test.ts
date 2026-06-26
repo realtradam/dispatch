@@ -224,4 +224,104 @@ describe("system-prompt service", () => {
 		expect(secondMeta).toEqual({ prompt: second, cwd: "/dir-b", computerId: null });
 		expect(secondMeta.cwd).not.toBe("/dir-a");
 	});
+
+	// ── resolveText: resolve an arbitrary template (no persistence) ────────────
+
+	it("resolveText substitutes [type:name] variables in an arbitrary template", async () => {
+		const service = createSystemPromptService({
+			storage: memoryStorage(),
+			adapters: adapters(new Map()),
+		});
+
+		const result = await service.resolveText(
+			"os=[system:os] cwd=[prompt:cwd] ws=[prompt:workspace_id] conv=[prompt:conversation_id] model=[prompt:model]",
+			"/work",
+			{ model: "gpt-4", conversationId: "c1", workspaceId: "ws-1" },
+		);
+
+		expect(result).toBe("os=linux cwd=/work ws=ws-1 conv=c1 model=gpt-4");
+	});
+
+	it("resolveText uses the SAME resolution as construct (same resolver + variables)", async () => {
+		// A template resolved via resolveText must equal the same template
+		// resolved via construct (both go through the shared resolveTemplate).
+		const storage = memoryStorage();
+		const template = "os=[system:os] cwd=[prompt:cwd] date=[system:date]";
+		await storage.set("template", template);
+		const service = createSystemPromptService({
+			storage,
+			adapters: adapters(new Map()),
+		});
+
+		const viaConstruct = await service.construct("conv-rt", "/work");
+		const viaResolveText = await service.resolveText(template, "/work");
+		expect(viaResolveText).toBe(viaConstruct);
+	});
+
+	it("resolveText does NOT persist (unlike construct)", async () => {
+		const storage = memoryStorage();
+		const service = createSystemPromptService({
+			storage,
+			adapters: adapters(new Map()),
+		});
+
+		await service.resolveText("[prompt:cwd]", "/work", { conversationId: "no-persist" });
+
+		// No resolved:* / resolved-cwd:* / resolved-computer:* keys written.
+		expect(await storage.get("resolved:no-persist")).toBeNull();
+		expect(await storage.get("resolved-cwd:no-persist")).toBeNull();
+		expect(await storage.get("resolved-computer:no-persist")).toBeNull();
+	});
+
+	it("resolveText resolves dynamic file:<path> variables referenced by the template", async () => {
+		const service = createSystemPromptService({
+			storage: memoryStorage(),
+			adapters: adapters(new Map([["/work/AGENTS.md", "RULES"]])),
+		});
+
+		const result = await service.resolveText("[file:AGENTS.md]", "/work");
+		expect(result).toBe("RULES");
+	});
+
+	it("resolveText handles conditional blocks ([if]/[else]/[endif])", async () => {
+		const service = createSystemPromptService({
+			storage: memoryStorage(),
+			adapters: adapters(new Map()),
+		});
+
+		// [prompt:model] exists (string) → then-branch renders.
+		const withModel = await service.resolveText(
+			"[if prompt:model]has model[else]no model[endif]",
+			"/work",
+			{ model: "gpt-4" },
+		);
+		expect(withModel).toBe("has model");
+
+		// model absent → else-branch renders.
+		const noModel = await service.resolveText(
+			"[if prompt:model]has model[else]no model[endif]",
+			"/work",
+		);
+		expect(noModel).toBe("no model");
+	});
+
+	it("resolveText leaves unknown [type:name] tags substituted as empty (mirrors parser)", async () => {
+		const service = createSystemPromptService({
+			storage: memoryStorage(),
+			adapters: adapters(new Map()),
+		});
+
+		// An unknown variable (not in the catalog) → empty string, matching
+		// parseTemplate's "key absent from the map → empty string" rule.
+		const result = await service.resolveText("x=[unknown:thing]", "/work");
+		expect(result).toBe("x=");
+	});
+
+	it("resolveText on an empty template returns an empty string", async () => {
+		const service = createSystemPromptService({
+			storage: memoryStorage(),
+			adapters: adapters(new Map()),
+		});
+		expect(await service.resolveText("", "/work")).toBe("");
+	});
 });
