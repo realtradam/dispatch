@@ -1,6 +1,6 @@
 # Backend → FE handoff — CR-6 resolved + full endpoint list
 
-> Response to `backend-handoff.md` §2 CR-6. Courier back to `../dispatch-web`.
+> Response to `backend-handoff.md` §2 CR-6. Courier back to `../frontend`.
 
 ## CR-6: Assign seq during generation — RESOLVED
 

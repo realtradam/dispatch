@@ -4,449 +4,449 @@ import { encode } from "./framing.js";
 import { LspManager } from "./manager.js";
 
 function makeAutoHandshakeSpawn(): SpawnProcess {
-	return () => {
-		let messageHandler: ((data: Uint8Array) => void) | null = null;
+  return () => {
+    let messageHandler: ((data: Uint8Array) => void) | null = null;
 
-		const proc: SpawnedProcess = {
-			stdin: {
-				write: (bytes: Uint8Array) => {
-					// Parse the message to handle initialize handshake
-					const decoded = new TextDecoder().decode(bytes);
-					const headerEnd = decoded.indexOf("\r\n\r\n");
-					if (headerEnd === -1) return;
-					const json = decoded.slice(headerEnd + 4);
-					try {
-						const msg = JSON.parse(json);
-						if (msg.method === "initialize") {
-							// Send back initialize response
-							setTimeout(() => {
-								const response = JSON.stringify({
-									jsonrpc: "2.0",
-									id: msg.id,
-									result: { capabilities: {} },
-								});
-								messageHandler?.(encode(response));
-							}, 5);
-						}
-						// Ignore other messages
-					} catch {
-						// ignore parse errors
-					}
-				},
-			},
-			stdout: {
-				on: (_event: string, cb: (data: Uint8Array) => void) => {
-					messageHandler = cb;
-				},
-			},
-			pid: 12345,
-			kill: () => {},
-		};
-		return proc;
-	};
+    const proc: SpawnedProcess = {
+      stdin: {
+        write: (bytes: Uint8Array) => {
+          // Parse the message to handle initialize handshake
+          const decoded = new TextDecoder().decode(bytes);
+          const headerEnd = decoded.indexOf("\r\n\r\n");
+          if (headerEnd === -1) return;
+          const json = decoded.slice(headerEnd + 4);
+          try {
+            const msg = JSON.parse(json);
+            if (msg.method === "initialize") {
+              // Send back initialize response
+              setTimeout(() => {
+                const response = JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: msg.id,
+                  result: { capabilities: {} },
+                });
+                messageHandler?.(encode(response));
+              }, 5);
+            }
+            // Ignore other messages
+          } catch {
+            // ignore parse errors
+          }
+        },
+      },
+      stdout: {
+        on: (_event: string, cb: (data: Uint8Array) => void) => {
+          messageHandler = cb;
+        },
+      },
+      pid: 12345,
+      kill: () => {},
+    };
+    return proc;
+  };
 }
 
 function noopFileWatcher(): FileWatcher {
-	return () => ({ close: () => {} });
+  return () => ({ close: () => {} });
 }
 
 function fakeFs(files: Record<string, string> = {}): FsAccess {
-	return {
-		readText: async (path) => files[path] ?? "",
-		exists: async (path) => path in files,
-	};
+  return {
+    readText: async (path) => files[path] ?? "",
+    exists: async (path) => path in files,
+  };
 }
 
 describe("manager", () => {
-	it("status(cwd) lazy-spawns matching servers and reports connected", async () => {
-		const manager = new LspManager({
-			spawn: makeAutoHandshakeSpawn(),
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/project/tsconfig.json": "{}",
-				"/project/.dispatch/lsp.json": JSON.stringify({
-					servers: {
-						test: {
-							command: ["test-lsp", "--stdio"],
-							extensions: [".ts"],
-							rootMarkers: ["tsconfig.json"],
-						},
-					},
-				}),
-			}),
-		});
+  it("status(cwd) lazy-spawns matching servers and reports connected", async () => {
+    const manager = new LspManager({
+      spawn: makeAutoHandshakeSpawn(),
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/project/tsconfig.json": "{}",
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: {
+            test: {
+              command: ["test-lsp", "--stdio"],
+              extensions: [".ts"],
+              rootMarkers: ["tsconfig.json"],
+            },
+          },
+        }),
+      }),
+    });
 
-		const statuses = await manager.status("/project");
-		expect(statuses).toHaveLength(1);
-		expect(statuses[0]?.id).toBe("test");
-		expect(statuses[0]?.state).toBe("connected");
-		expect(statuses[0]?.root).toBe("/project");
-	}, 10000);
+    const statuses = await manager.status("/project");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]?.id).toBe("test");
+    expect(statuses[0]?.state).toBe("connected");
+    expect(statuses[0]?.root).toBe("/project");
+  }, 10000);
 
-	it("concurrent status for the same root spawns one process", async () => {
-		let spawnCount = 0;
-		const countingSpawn: SpawnProcess = () => {
-			spawnCount++;
-			return makeAutoHandshakeSpawn()([], { cwd: "/project" });
-		};
+  it("concurrent status for the same root spawns one process", async () => {
+    let spawnCount = 0;
+    const countingSpawn: SpawnProcess = () => {
+      spawnCount++;
+      return makeAutoHandshakeSpawn()([], { cwd: "/project" });
+    };
 
-		const manager = new LspManager({
-			spawn: countingSpawn,
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/project/tsconfig.json": "{}",
-				"/project/.dispatch/lsp.json": JSON.stringify({
-					servers: {
-						test: {
-							command: ["test-lsp"],
-							extensions: [".ts"],
-							rootMarkers: ["tsconfig.json"],
-						},
-					},
-				}),
-			}),
-		});
+    const manager = new LspManager({
+      spawn: countingSpawn,
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/project/tsconfig.json": "{}",
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: {
+            test: {
+              command: ["test-lsp"],
+              extensions: [".ts"],
+              rootMarkers: ["tsconfig.json"],
+            },
+          },
+        }),
+      }),
+    });
 
-		const [s1, s2] = await Promise.all([manager.status("/project"), manager.status("/project")]);
+    const [s1, s2] = await Promise.all([manager.status("/project"), manager.status("/project")]);
 
-		expect(s1).toHaveLength(1);
-		expect(s2).toHaveLength(1);
-		expect(spawnCount).toBe(1);
-	}, 10000);
+    expect(s1).toHaveLength(1);
+    expect(s2).toHaveLength(1);
+    expect(spawnCount).toBe(1);
+  }, 10000);
 
-	it("a failing spawn reports state:error and is not retried", async () => {
-		let spawnCount = 0;
-		const failingSpawn: SpawnProcess = () => {
-			spawnCount++;
-			throw new Error("spawn failed");
-		};
+  it("a failing spawn reports state:error and is not retried", async () => {
+    let spawnCount = 0;
+    const failingSpawn: SpawnProcess = () => {
+      spawnCount++;
+      throw new Error("spawn failed");
+    };
 
-		const manager = new LspManager({
-			spawn: failingSpawn,
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/project/tsconfig.json": "{}",
-				"/project/.dispatch/lsp.json": JSON.stringify({
-					servers: {
-						test: {
-							command: ["test-lsp"],
-							extensions: [".ts"],
-							rootMarkers: ["tsconfig.json"],
-						},
-					},
-				}),
-			}),
-		});
+    const manager = new LspManager({
+      spawn: failingSpawn,
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/project/tsconfig.json": "{}",
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: {
+            test: {
+              command: ["test-lsp"],
+              extensions: [".ts"],
+              rootMarkers: ["tsconfig.json"],
+            },
+          },
+        }),
+      }),
+    });
 
-		const s1 = await manager.status("/project");
-		expect(s1[0]?.state).toBe("error");
-		expect(spawnCount).toBe(1);
+    const s1 = await manager.status("/project");
+    expect(s1[0]?.state).toBe("error");
+    expect(spawnCount).toBe(1);
 
-		// Second call should not retry
-		const s2 = await manager.status("/project");
-		expect(s2[0]?.state).toBe("error");
-		expect(spawnCount).toBe(1);
-	});
+    // Second call should not retry
+    const s2 = await manager.status("/project");
+    expect(s2[0]?.state).toBe("error");
+    expect(spawnCount).toBe(1);
+  });
 
-	it("shutdownAll kills all spawned processes (incl. sidecars)", async () => {
-		let killed = false;
-		const trackableSpawn: SpawnProcess = () => {
-			const proc = makeAutoHandshakeSpawn()([], { cwd: "/project" });
-			return {
-				...proc,
-				kill: () => {
-					killed = true;
-				},
-			};
-		};
+  it("shutdownAll kills all spawned processes (incl. sidecars)", async () => {
+    let killed = false;
+    const trackableSpawn: SpawnProcess = () => {
+      const proc = makeAutoHandshakeSpawn()([], { cwd: "/project" });
+      return {
+        ...proc,
+        kill: () => {
+          killed = true;
+        },
+      };
+    };
 
-		const manager = new LspManager({
-			spawn: trackableSpawn,
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/project/tsconfig.json": "{}",
-				"/project/.dispatch/lsp.json": JSON.stringify({
-					servers: {
-						test: {
-							command: ["test-lsp"],
-							extensions: [".ts"],
-							rootMarkers: ["tsconfig.json"],
-						},
-					},
-				}),
-			}),
-		});
+    const manager = new LspManager({
+      spawn: trackableSpawn,
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/project/tsconfig.json": "{}",
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: {
+            test: {
+              command: ["test-lsp"],
+              extensions: [".ts"],
+              rootMarkers: ["tsconfig.json"],
+            },
+          },
+        }),
+      }),
+    });
 
-		await manager.status("/project");
-		manager.shutdownAll();
-		expect(killed).toBe(true);
-	}, 10000);
+    await manager.status("/project");
+    manager.shutdownAll();
+    expect(killed).toBe(true);
+  }, 10000);
 
-	it("resolves config per cwd (distinct cwds, opencode.json fallback)", async () => {
-		const manager = new LspManager({
-			spawn: makeAutoHandshakeSpawn(),
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/proj-a/.dispatch/lsp.json": JSON.stringify({
-					servers: { a: { command: ["a-lsp"], extensions: [".a"], rootMarkers: [] } },
-				}),
-				"/proj-b/opencode.json": JSON.stringify({
-					lsp: { b: { command: ["b-lsp"], extensions: [".b"] } },
-				}),
-			}),
-		});
+  it("resolves config per cwd (distinct cwds, opencode.json fallback)", async () => {
+    const manager = new LspManager({
+      spawn: makeAutoHandshakeSpawn(),
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/proj-a/.dispatch/lsp.json": JSON.stringify({
+          servers: { a: { command: ["a-lsp"], extensions: [".a"], rootMarkers: [] } },
+        }),
+        "/proj-b/opencode.json": JSON.stringify({
+          lsp: { b: { command: ["b-lsp"], extensions: [".b"] } },
+        }),
+      }),
+    });
 
-		const a = await manager.status("/proj-a");
-		const b = await manager.status("/proj-b");
-		expect(a.map((s) => s.id)).toEqual(["a"]);
-		expect(b.map((s) => s.id)).toEqual(["b"]);
-	}, 10000);
+    const a = await manager.status("/proj-a");
+    const b = await manager.status("/proj-b");
+    expect(a.map((s) => s.id)).toEqual(["a"]);
+    expect(b.map((s) => s.id)).toEqual(["b"]);
+  }, 10000);
 
-	it("manager: broken server recovers after config is fixed (no shutdownAll)", async () => {
-		const files: Record<string, string> = {
-			"/project/tsconfig.json": "{}",
-			"/project/.dispatch/lsp.json": JSON.stringify({
-				servers: {
-					test: {
-						command: ["bad-lsp"],
-						extensions: [".ts"],
-						rootMarkers: ["tsconfig.json"],
-					},
-				},
-			}),
-		};
+  it("manager: broken server recovers after config is fixed (no shutdownAll)", async () => {
+    const files: Record<string, string> = {
+      "/project/tsconfig.json": "{}",
+      "/project/.dispatch/lsp.json": JSON.stringify({
+        servers: {
+          test: {
+            command: ["bad-lsp"],
+            extensions: [".ts"],
+            rootMarkers: ["tsconfig.json"],
+          },
+        },
+      }),
+    };
 
-		const spawn: SpawnProcess = (command, opts) => {
-			if (command[0] === "bad-lsp") throw new Error("spawn failed");
-			return makeAutoHandshakeSpawn()(command, opts);
-		};
+    const spawn: SpawnProcess = (command, opts) => {
+      if (command[0] === "bad-lsp") throw new Error("spawn failed");
+      return makeAutoHandshakeSpawn()(command, opts);
+    };
 
-		const manager = new LspManager({
-			spawn,
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs(files),
-			now: () => 0,
-		});
+    const manager = new LspManager({
+      spawn,
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs(files),
+      now: () => 0,
+    });
 
-		// Bad config → spawn fails → broken.
-		const s1 = await manager.status("/project");
-		expect(s1[0]?.state).toBe("error");
+    // Bad config → spawn fails → broken.
+    const s1 = await manager.status("/project");
+    expect(s1[0]?.state).toBe("error");
 
-		// Fix the config: switch the command to a working one. NO shutdownAll.
-		files["/project/.dispatch/lsp.json"] = JSON.stringify({
-			servers: {
-				test: {
-					command: ["good-lsp"],
-					extensions: [".ts"],
-					rootMarkers: ["tsconfig.json"],
-				},
-			},
-		});
+    // Fix the config: switch the command to a working one. NO shutdownAll.
+    files["/project/.dispatch/lsp.json"] = JSON.stringify({
+      servers: {
+        test: {
+          command: ["good-lsp"],
+          extensions: [".ts"],
+          rootMarkers: ["tsconfig.json"],
+        },
+      },
+    });
 
-		// Next status() re-reads config, detects the change, and re-spawns.
-		const s2 = await manager.status("/project");
-		expect(s2[0]?.state).toBe("connected");
-	}, 10000);
+    // Next status() re-reads config, detects the change, and re-spawns.
+    const s2 = await manager.status("/project");
+    expect(s2[0]?.state).toBe("connected");
+  }, 10000);
 
-	it("manager: no retry storm — repeated status() with no config change does not re-spawn a broken server in a loop", async () => {
-		let spawnCount = 0;
-		const failingSpawn: SpawnProcess = () => {
-			spawnCount++;
-			throw new Error("spawn failed");
-		};
+  it("manager: no retry storm — repeated status() with no config change does not re-spawn a broken server in a loop", async () => {
+    let spawnCount = 0;
+    const failingSpawn: SpawnProcess = () => {
+      spawnCount++;
+      throw new Error("spawn failed");
+    };
 
-		const manager = new LspManager({
-			spawn: failingSpawn,
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/project/.dispatch/lsp.json": JSON.stringify({
-					servers: { test: { command: ["test-lsp"], extensions: [".ts"] } },
-				}),
-			}),
-			// Frozen clock: the bounded backoff never elapses, so a config-unchanged
-			// broken server is never retried in a loop.
-			now: () => 0,
-		});
+    const manager = new LspManager({
+      spawn: failingSpawn,
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: { test: { command: ["test-lsp"], extensions: [".ts"] } },
+        }),
+      }),
+      // Frozen clock: the bounded backoff never elapses, so a config-unchanged
+      // broken server is never retried in a loop.
+      now: () => 0,
+    });
 
-		await manager.status("/project");
-		await manager.status("/project");
-		await manager.status("/project");
-		await manager.status("/project");
+    await manager.status("/project");
+    await manager.status("/project");
+    await manager.status("/project");
+    await manager.status("/project");
 
-		expect(spawnCount).toBe(1);
-	});
+    expect(spawnCount).toBe(1);
+  });
 
-	it("manager: configSource reaches status()", async () => {
-		const manager = new LspManager({
-			spawn: makeAutoHandshakeSpawn(),
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/d/.dispatch/lsp.json": JSON.stringify({
-					servers: { d: { command: ["d-lsp"], extensions: [".d"], rootMarkers: [] } },
-				}),
-				"/o/opencode.json": JSON.stringify({
-					lsp: { o: { command: ["o-lsp"], extensions: [".o"] } },
-				}),
-				"/b/tsconfig.json": "{}",
-			}),
-			now: () => 0,
-		});
+  it("manager: configSource reaches status()", async () => {
+    const manager = new LspManager({
+      spawn: makeAutoHandshakeSpawn(),
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/d/.dispatch/lsp.json": JSON.stringify({
+          servers: { d: { command: ["d-lsp"], extensions: [".d"], rootMarkers: [] } },
+        }),
+        "/o/opencode.json": JSON.stringify({
+          lsp: { o: { command: ["o-lsp"], extensions: [".o"] } },
+        }),
+        "/b/tsconfig.json": "{}",
+      }),
+      now: () => 0,
+    });
 
-		const d = await manager.status("/d");
-		expect(d[0]?.configSource).toBe(".dispatch/lsp.json");
+    const d = await manager.status("/d");
+    expect(d[0]?.configSource).toBe(".dispatch/lsp.json");
 
-		const o = await manager.status("/o");
-		expect(o[0]?.configSource).toBe("opencode.json");
+    const o = await manager.status("/o");
+    expect(o[0]?.configSource).toBe("opencode.json");
 
-		const b = await manager.status("/b");
-		expect(b[0]?.configSource).toBe("built-in");
-	}, 10000);
+    const b = await manager.status("/b");
+    expect(b[0]?.configSource).toBe("built-in");
+  }, 10000);
 
-	it("config: shadow warning logged when .dispatch/lsp.json present and opencode.json also has lsp", async () => {
-		const warns: Array<{
-			msg: string;
-			attrs?: Record<string, string | number | boolean | null>;
-		}> = [];
+  it("config: shadow warning logged when .dispatch/lsp.json present and opencode.json also has lsp", async () => {
+    const warns: Array<{
+      msg: string;
+      attrs?: Record<string, string | number | boolean | null>;
+    }> = [];
 
-		const manager = new LspManager({
-			spawn: makeAutoHandshakeSpawn(),
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/project/.dispatch/lsp.json": JSON.stringify({
-					servers: { d: { command: ["d-lsp"], extensions: [".d"] } },
-				}),
-				"/project/opencode.json": JSON.stringify({
-					lsp: { o: { command: ["o-lsp"], extensions: [".o"] } },
-				}),
-			}),
-			logger: {
-				info: () => {},
-				warn: (msg, attrs) => warns.push({ msg, attrs }),
-				error: () => {},
-			},
-			now: () => 0,
-		});
+    const manager = new LspManager({
+      spawn: makeAutoHandshakeSpawn(),
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: { d: { command: ["d-lsp"], extensions: [".d"] } },
+        }),
+        "/project/opencode.json": JSON.stringify({
+          lsp: { o: { command: ["o-lsp"], extensions: [".o"] } },
+        }),
+      }),
+      logger: {
+        info: () => {},
+        warn: (msg, attrs) => warns.push({ msg, attrs }),
+        error: () => {},
+      },
+      now: () => 0,
+    });
 
-		await manager.status("/project");
+    await manager.status("/project");
 
-		const shadow = warns.find((w) => w.msg.includes("shadowing"));
-		expect(shadow).toBeDefined();
-		expect(shadow?.attrs?.cwd).toBe("/project");
+    const shadow = warns.find((w) => w.msg.includes("shadowing"));
+    expect(shadow).toBeDefined();
+    expect(shadow?.attrs?.cwd).toBe("/project");
 
-		// A second status() over the SAME (still-shadowed) cwd does not re-warn.
-		const before = warns.length;
-		await manager.status("/project");
-		expect(warns.length).toBe(before);
-	}, 10000);
+    // A second status() over the SAME (still-shadowed) cwd does not re-warn.
+    const before = warns.length;
+    await manager.status("/project");
+    expect(warns.length).toBe(before);
+  }, 10000);
 
-	it("status: error string includes config source on spawn failure", async () => {
-		const failingSpawn: SpawnProcess = () => {
-			throw new Error("spawn failed");
-		};
+  it("status: error string includes config source on spawn failure", async () => {
+    const failingSpawn: SpawnProcess = () => {
+      throw new Error("spawn failed");
+    };
 
-		const manager = new LspManager({
-			spawn: failingSpawn,
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/project/.dispatch/lsp.json": JSON.stringify({
-					servers: { test: { command: ["test-lsp"], extensions: [".ts"] } },
-				}),
-			}),
-			now: () => 0,
-		});
+    const manager = new LspManager({
+      spawn: failingSpawn,
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: { test: { command: ["test-lsp"], extensions: [".ts"] } },
+        }),
+      }),
+      now: () => 0,
+    });
 
-		const s = await manager.status("/project");
-		expect(s[0]?.state).toBe("error");
-		expect(s[0]?.configSource).toBe(".dispatch/lsp.json");
-		expect(s[0]?.error).toContain("[from .dispatch/lsp.json]");
-		expect(s[0]?.error).toContain("spawn failed");
-	});
+    const s = await manager.status("/project");
+    expect(s[0]?.state).toBe("error");
+    expect(s[0]?.configSource).toBe(".dispatch/lsp.json");
+    expect(s[0]?.error).toContain("[from .dispatch/lsp.json]");
+    expect(s[0]?.error).toContain("spawn failed");
+  });
 
-	it("a client that dies after connecting is skipped + re-spawned after backoff (no storm, no eternal hang)", async () => {
-		// A spawn that completes the initialize handshake AND lets the test
-		// simulate process death via the captured onExit handler.
-		const exitHandlers: Array<(info: { code: number | null; signal?: string }) => void> = [];
-		let spawnCount = 0;
-		const spawn: SpawnProcess = () => {
-			spawnCount++;
-			let messageHandler: ((data: Uint8Array) => void) | null = null;
-			const proc: SpawnedProcess = {
-				stdin: {
-					write: (bytes: Uint8Array) => {
-						const decoded = new TextDecoder().decode(bytes);
-						const headerEnd = decoded.indexOf("\r\n\r\n");
-						if (headerEnd === -1) return;
-						const json = decoded.slice(headerEnd + 4);
-						try {
-							const msg = JSON.parse(json);
-							if (msg.method === "initialize") {
-								setTimeout(() => {
-									const response = JSON.stringify({
-										jsonrpc: "2.0",
-										id: msg.id,
-										result: { capabilities: {} },
-									});
-									messageHandler?.(encode(response));
-								}, 1);
-							}
-						} catch {
-							// ignore
-						}
-					},
-				},
-				stdout: {
-					on: (_event: string, cb: (data: Uint8Array) => void) => {
-						messageHandler = cb;
-					},
-				},
-				pid: 1000 + spawnCount,
-				kill: () => {},
-				onExit: (handler) => {
-					exitHandlers.push(handler);
-				},
-			};
-			return proc;
-		};
+  it("a client that dies after connecting is skipped + re-spawned after backoff (no storm, no eternal hang)", async () => {
+    // A spawn that completes the initialize handshake AND lets the test
+    // simulate process death via the captured onExit handler.
+    const exitHandlers: Array<(info: { code: number | null; signal?: string }) => void> = [];
+    let spawnCount = 0;
+    const spawn: SpawnProcess = () => {
+      spawnCount++;
+      let messageHandler: ((data: Uint8Array) => void) | null = null;
+      const proc: SpawnedProcess = {
+        stdin: {
+          write: (bytes: Uint8Array) => {
+            const decoded = new TextDecoder().decode(bytes);
+            const headerEnd = decoded.indexOf("\r\n\r\n");
+            if (headerEnd === -1) return;
+            const json = decoded.slice(headerEnd + 4);
+            try {
+              const msg = JSON.parse(json);
+              if (msg.method === "initialize") {
+                setTimeout(() => {
+                  const response = JSON.stringify({
+                    jsonrpc: "2.0",
+                    id: msg.id,
+                    result: { capabilities: {} },
+                  });
+                  messageHandler?.(encode(response));
+                }, 1);
+              }
+            } catch {
+              // ignore
+            }
+          },
+        },
+        stdout: {
+          on: (_event: string, cb: (data: Uint8Array) => void) => {
+            messageHandler = cb;
+          },
+        },
+        pid: 1000 + spawnCount,
+        kill: () => {},
+        onExit: (handler) => {
+          exitHandlers.push(handler);
+        },
+      };
+      return proc;
+    };
 
-		const clock = { now: 0 };
-		const manager = new LspManager({
-			spawn,
-			fileWatcher: noopFileWatcher(),
-			fs: fakeFs({
-				"/project/.dispatch/lsp.json": JSON.stringify({
-					servers: {
-						steep: {
-							command: ["steep", "--stdio"],
-							extensions: [".rb"],
-							rootMarkers: [],
-						},
-					},
-				}),
-			}),
-			now: () => clock.now,
-		});
+    const clock = { now: 0 };
+    const manager = new LspManager({
+      spawn,
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: {
+            steep: {
+              command: ["steep", "--stdio"],
+              extensions: [".rb"],
+              rootMarkers: [],
+            },
+          },
+        }),
+      }),
+      now: () => clock.now,
+    });
 
-		// 1) Connects.
-		const s1 = await manager.status("/project");
-		expect(s1[0]?.state).toBe("connected");
-		expect(spawnCount).toBe(1);
+    // 1) Connects.
+    const s1 = await manager.status("/project");
+    expect(s1[0]?.state).toBe("connected");
+    expect(spawnCount).toBe(1);
 
-		// 2) Simulate the process dying (user kill / crash) via onExit.
-		exitHandlers[0]?.({ code: 1 });
-		const clientAfterDeath = manager.getClient("steep", "/project");
-		expect(clientAfterDeath?.getState()).toBe("error");
+    // 2) Simulate the process dying (user kill / crash) via onExit.
+    exitHandlers[0]?.({ code: 1 });
+    const clientAfterDeath = manager.getClient("steep", "/project");
+    expect(clientAfterDeath?.getState()).toBe("error");
 
-		// 3) status() now reports error (and seeds a broken entry for backoff).
-		//    Backoff not elapsed yet (clock frozen at 0) → NOT re-spawned.
-		const s2 = await manager.status("/project");
-		expect(s2[0]?.state).toBe("error");
-		expect(s2[0]?.error).toMatch(/process exited/);
-		expect(spawnCount).toBe(1); // no retry storm before backoff
+    // 3) status() now reports error (and seeds a broken entry for backoff).
+    //    Backoff not elapsed yet (clock frozen at 0) → NOT re-spawned.
+    const s2 = await manager.status("/project");
+    expect(s2[0]?.state).toBe("error");
+    expect(s2[0]?.error).toMatch(/process exited/);
+    expect(spawnCount).toBe(1); // no retry storm before backoff
 
-		// 4) After the backoff elapses, status() re-spawns a fresh server.
-		clock.now = 31_000;
-		const s3 = await manager.status("/project");
-		expect(s3[0]?.state).toBe("connected");
-		expect(spawnCount).toBe(2); // re-spawned exactly once
-	});
+    // 4) After the backoff elapses, status() re-spawns a fresh server.
+    clock.now = 31_000;
+    const s3 = await manager.status("/project");
+    expect(s3[0]?.state).toBe("connected");
+    expect(spawnCount).toBe(2); // re-spawned exactly once
+  });
 });

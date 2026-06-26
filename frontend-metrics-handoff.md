@@ -1,6 +1,6 @@
 # Frontend handoff — live turn metrics (tokens + timing)
 
-> From: arch-rewrite (backend) orchestrator · For: the dispatch-web FE team.
+> From: arch-rewrite (backend) orchestrator · For: the frontend FE team.
 > Status: **LIVE on the stream now** (backend committed + live-verified). Consume via the pinned
 > contracts `@dispatch/wire@0.3.0` + `@dispatch/transport-contract@0.3.0` (reference snapshots
 > regenerated in `dispatch-web/.dispatch/{wire,transport-contract}.reference.md`).
@@ -109,7 +109,7 @@ latency removed). If you want end-to-end rate including the wait, use `ttftMs + 
 - TPS is not sent pre-computed (derive it, §4). No per-token timing (metrics are per-step/per-turn).
 
 ## 7. Integration checklist
-1. Refresh deps: `bun run typecheck` in dispatch-web (picks up `wire@0.3.0` / `transport-contract@0.3.0`).
+1. Refresh deps: `bun run typecheck` in frontend (picks up `wire@0.3.0` / `transport-contract@0.3.0`).
 2. Extend your `chat.delta` event handler: add a `case "step-complete"` and read the new optional
    fields on `usage`/`tool-result`/`done`. (No exhaustive-switch break — these are additive.)
 3. Keep a per-turn (and per-step, keyed by `stepId`) telemetry accumulator alongside the transcript

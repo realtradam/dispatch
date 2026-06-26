@@ -24,8 +24,8 @@ export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
  * pattern — the model passes the FULL list each call, so position is identity.
  */
 export interface TodoItem {
-	readonly content: string;
-	readonly status: TodoStatus;
+  readonly content: string;
+  readonly status: TodoStatus;
 }
 
 /** The todo store: a per-conversation map of todo lists. */
@@ -37,10 +37,10 @@ export const TODO_SURFACE_ID = "todo";
 export const TODO_RENDERER_ID = "todo";
 
 const VALID_STATUSES: ReadonlySet<string> = new Set([
-	"pending",
-	"in_progress",
-	"completed",
-	"cancelled",
+  "pending",
+  "in_progress",
+  "completed",
+  "cancelled",
 ]);
 
 /** Result of `validateTodos`: the validated list, or an error message. */
@@ -52,37 +52,37 @@ export type ValidationResult = TodoItem[] | { readonly error: string };
  * an empty array (the model clears the list). Pure: no I/O, no ambient state.
  */
 export function validateTodos(args: unknown): ValidationResult {
-	if (args === null || typeof args !== "object" || Array.isArray(args)) {
-		return { error: "Error: todo_write args must be an object with a `todos` array." };
-	}
-	const todos = (args as { todos?: unknown }).todos;
-	if (!Array.isArray(todos)) {
-		return { error: "Error: `todos` must be an array." };
-	}
-	const validated: TodoItem[] = [];
-	for (let i = 0; i < todos.length; i++) {
-		const item = todos[i];
-		if (item === null || typeof item !== "object" || Array.isArray(item)) {
-			return { error: `Error: todos[${i}] must be an object.` };
-		}
-		const { content, status } = item as {
-			content?: unknown;
-			status?: unknown;
-		};
-		if (typeof content !== "string" || content.trim().length === 0) {
-			return { error: `Error: todos[${i}].content must be a non-empty string.` };
-		}
-		if (typeof status !== "string" || !VALID_STATUSES.has(status)) {
-			return {
-				error: `Error: todos[${i}].status must be one of pending|in_progress|completed|cancelled.`,
-			};
-		}
-		validated.push({
-			content,
-			status: status as TodoStatus,
-		});
-	}
-	return validated;
+  if (args === null || typeof args !== "object" || Array.isArray(args)) {
+    return { error: "Error: todo_write args must be an object with a `todos` array." };
+  }
+  const todos = (args as { todos?: unknown }).todos;
+  if (!Array.isArray(todos)) {
+    return { error: "Error: `todos` must be an array." };
+  }
+  const validated: TodoItem[] = [];
+  for (let i = 0; i < todos.length; i++) {
+    const item = todos[i];
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      return { error: `Error: todos[${i}] must be an object.` };
+    }
+    const { content, status } = item as {
+      content?: unknown;
+      status?: unknown;
+    };
+    if (typeof content !== "string" || content.trim().length === 0) {
+      return { error: `Error: todos[${i}].content must be a non-empty string.` };
+    }
+    if (typeof status !== "string" || !VALID_STATUSES.has(status)) {
+      return {
+        error: `Error: todos[${i}].status must be one of pending|in_progress|completed|cancelled.`,
+      };
+    }
+    validated.push({
+      content,
+      status: status as TodoStatus,
+    });
+  }
+  return validated;
 }
 
 /**
@@ -91,9 +91,9 @@ export function validateTodos(args: unknown): ValidationResult {
  * array does not affect live state (items are readonly).
  */
 export function getTodos(state: TodoState, conversationId: string): TodoItem[] {
-	const existing = state.get(conversationId);
-	if (existing === undefined) return [];
-	return [...existing];
+  const existing = state.get(conversationId);
+  if (existing === undefined) return [];
+  return [...existing];
 }
 
 /**
@@ -103,17 +103,17 @@ export function getTodos(state: TodoState, conversationId: string): TodoItem[] {
  * mutate live state through the returned value.
  */
 export function setTodos(
-	state: TodoState,
-	conversationId: string,
-	todos: readonly TodoItem[],
+  state: TodoState,
+  conversationId: string,
+  todos: readonly TodoItem[],
 ): TodoItem[] {
-	state.set(conversationId, [...todos]);
-	return getTodos(state, conversationId);
+  state.set(conversationId, [...todos]);
+  return getTodos(state, conversationId);
 }
 
 /** Delete a conversation's todo list. No-op if the conversation has none. */
 export function clearTodos(state: TodoState, conversationId: string): void {
-	state.delete(conversationId);
+  state.delete(conversationId);
 }
 
 /**
@@ -123,18 +123,18 @@ export function clearTodos(state: TodoState, conversationId: string): void {
  * surface-registry re-fetches this on every notify. Mirrors `buildQueueSpec`.
  */
 export function buildTodoSpec(todos: readonly TodoItem[]): SurfaceSpec {
-	const payload: { todos: readonly TodoItem[] } = { todos };
-	const field: CustomField = {
-		kind: "custom",
-		rendererId: TODO_RENDERER_ID,
-		payload,
-	};
-	return {
-		id: TODO_SURFACE_ID,
-		region: "side",
-		title: "Tasks",
-		fields: [field],
-	};
+  const payload: { todos: readonly TodoItem[] } = { todos };
+  const field: CustomField = {
+    kind: "custom",
+    rendererId: TODO_RENDERER_ID,
+    payload,
+  };
+  return {
+    id: TODO_SURFACE_ID,
+    region: "side",
+    title: "Tasks",
+    fields: [field],
+  };
 }
 
 /**
@@ -144,5 +144,5 @@ export function buildTodoSpec(todos: readonly TodoItem[]): SurfaceSpec {
  * conversation history, so it needs no separate read tool.
  */
 export function formatTodoResult(todos: readonly TodoItem[]): string {
-	return JSON.stringify(todos, null, 2);
+  return JSON.stringify(todos, null, 2);
 }

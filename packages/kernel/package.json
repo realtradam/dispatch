@@ -1,11 +1,11 @@
 {
-	"name": "@dispatch/kernel",
-	"version": "0.0.0",
-	"type": "module",
-	"private": true,
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"dependencies": {
-		"@dispatch/wire": "workspace:*"
-	}
+  "name": "@dispatch/kernel",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/wire": "workspace:*"
+  }
 }

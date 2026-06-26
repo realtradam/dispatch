@@ -1,6 +1,6 @@
 # FE handoff — conversation.open (CLI --open flag)
 
-Courier this to `../dispatch-web`. All changes are ADDITIVE.
+Courier this to `../frontend`. All changes are ADDITIVE.
 
 ## What shipped (backend)
 

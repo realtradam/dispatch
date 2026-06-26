@@ -1,6 +1,6 @@
 # FE handoff — message queue + steering injection
 
-Courier this to `../dispatch-web` (cross-repo contract change; `lsp references` does
+Courier this to `../frontend` (cross-repo contract change; `lsp references` does
 not span repos — ORCHESTRATOR §7). All changes are ADDITIVE — nothing existing breaks.
 
 ## What shipped (backend)

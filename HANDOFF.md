@@ -13,11 +13,11 @@ cache warming, turn continuity (detached turns + multi-client), skills, message
 queue + steering, metrics (live + persisted), per-conversation model/cwd/reasoning
 persistence, and broken-chat self-repair are all DONE and live-verified.
 **`tsc -b` EXIT 0 · biome clean · 1468 vitest green.** The web frontend is a
-separate repo (`../dispatch-web`); contract changes are couriered via the user.
+separate repo (`../frontend`); contract changes are couriered via the user.
 
 ## How to boot & smoke-test
 ```bash
-cd /home/tradam/projects/dispatch/dispatch-backend
+cd /home/tradam/projects/dispat../backend
 # .env auto-loads DISPATCH_API_KEY + BACKEND_PORT (24203).
 # Dev stack (live-reload): bin/up  (ports 24203/24205/24204)
 # Stable second stack:    ../bin/up2  (ports 25203/25205/25204, isolated data)

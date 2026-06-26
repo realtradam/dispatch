@@ -13,20 +13,20 @@ import { createFirecrawlClient, DEFAULT_BASE_URL } from "./client.js";
 import { createWebSearchTool } from "./tool.js";
 
 export const manifest: Manifest = {
-	id: "tool-web-search",
-	name: "Web Search Tool",
-	version: "0.0.0",
-	apiVersion: "^0.1.0",
-	trust: "bundled",
-	activation: "eager",
-	capabilities: { network: true },
-	contributes: { tools: ["web_search"] },
+  id: "tool-web-search",
+  name: "Web Search Tool",
+  version: "0.0.0",
+  apiVersion: "^0.1.0",
+  trust: "bundled",
+  activation: "eager",
+  capabilities: { network: true },
+  contributes: { tools: ["web_search"] },
 };
 
 export function activate(host: HostAPI): void {
-	const baseUrl = process.env.FIRECRAWL_BASE_URL ?? DEFAULT_BASE_URL;
-	const client = createFirecrawlClient({ baseUrl, fetchFn: globalThis.fetch });
-	host.defineTool(createWebSearchTool({ client }));
+  const baseUrl = process.env.FIRECRAWL_BASE_URL ?? DEFAULT_BASE_URL;
+  const client = createFirecrawlClient({ baseUrl, fetchFn: globalThis.fetch });
+  host.defineTool(createWebSearchTool({ client }));
 }
 
 export const extension: Extension = { manifest, activate };

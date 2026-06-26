@@ -4,35 +4,35 @@
  */
 
 import type {
-	CustomField,
-	NumberField,
-	StatField,
-	SurfaceSpec,
-	ToggleField,
+  CustomField,
+  NumberField,
+  StatField,
+  SurfaceSpec,
+  ToggleField,
 } from "@dispatch/ui-contract";
 
 // --- Types ---
 
 /** Persisted per-conversation settings (storage-facing). */
 export interface ConversationSettings {
-	readonly enabled: boolean;
-	readonly intervalMs: number;
+  readonly enabled: boolean;
+  readonly intervalMs: number;
 }
 
 /** Full per-conversation runtime state (in-memory, not persisted). */
 export interface ConversationState extends ConversationSettings {
-	readonly active: boolean;
-	readonly lastPct: number | null;
-	readonly lastExpectedPct: number | null;
-	readonly lastWarmAt: number | null;
-	readonly nextWarmAt: number | null;
-	readonly token: number;
+  readonly active: boolean;
+  readonly lastPct: number | null;
+  readonly lastExpectedPct: number | null;
+  readonly lastWarmAt: number | null;
+  readonly nextWarmAt: number | null;
+  readonly token: number;
 }
 
 /** Context stored per-conversation from the latest lifecycle event. */
 export interface ConversationContext {
-	readonly cwd?: string;
-	readonly modelName?: string;
+  readonly cwd?: string;
+  readonly modelName?: string;
 }
 
 export const DEFAULT_INTERVAL_MS = 240_000;
@@ -45,10 +45,10 @@ export const MIN_INTERVAL_MS = 1000;
  * Returns an integer in [0, 100]. inputTokens ≤ 0 → 0.
  */
 export function computeCachePct(inputTokens: number, cacheReadTokens: number): number {
-	if (inputTokens <= 0) return 0;
-	const ratio = cacheReadTokens / inputTokens;
-	const clamped = Math.max(0, Math.min(1, ratio));
-	return Math.round(clamped * 100);
+  if (inputTokens <= 0) return 0;
+  const ratio = cacheReadTokens / inputTokens;
+  const clamped = Math.max(0, Math.min(1, ratio));
+  return Math.round(clamped * 100);
 }
 
 /**
@@ -58,12 +58,12 @@ export function computeCachePct(inputTokens: number, cacheReadTokens: number): n
  * Returns an integer in [0, 100]. cacheRead + cacheWrite ≤ 0 → 0.
  */
 export function computeExpectedCacheRate(
-	cacheReadTokens: number,
-	cacheWriteTokens: number,
+  cacheReadTokens: number,
+  cacheWriteTokens: number,
 ): number {
-	const total = cacheReadTokens + cacheWriteTokens;
-	if (total <= 0) return 0;
-	return Math.round((cacheReadTokens / total) * 100);
+  const total = cacheReadTokens + cacheWriteTokens;
+  if (total <= 0) return 0;
+  return Math.round((cacheReadTokens / total) * 100);
 }
 
 /**
@@ -71,14 +71,14 @@ export function computeExpectedCacheRate(
  * Requires: enabled, idle (not active), and the token is current (not superseded).
  */
 export function shouldWarm(state: ConversationState, currentToken: number): boolean {
-	return state.enabled && !state.active && state.token === currentToken;
+  return state.enabled && !state.active && state.token === currentToken;
 }
 
 /**
  * Check whether a token is still current (not superseded by a newer cancel/fire).
  */
 export function isTokenCurrent(current: number, expected: number): boolean {
-	return current === expected;
+  return current === expected;
 }
 
 const SETTINGS_KEY = "settings";
@@ -91,43 +91,43 @@ const SETTINGS_KEY = "settings";
  * until the user explicitly opts in via the toggle.
  */
 export function parseSettings(raw: string | null): ConversationSettings {
-	if (raw === null) return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
-	try {
-		const parsed: unknown = JSON.parse(raw);
-		if (typeof parsed !== "object" || parsed === null) {
-			return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
-		}
-		const obj = parsed as Record<string, unknown>;
-		const enabled = typeof obj.enabled === "boolean" ? obj.enabled : false;
-		const rawInterval = obj.intervalMs;
-		let intervalMs = DEFAULT_INTERVAL_MS;
-		if (typeof rawInterval === "number" && Number.isFinite(rawInterval)) {
-			intervalMs =
-				rawInterval <= 0 ? MIN_INTERVAL_MS : Math.max(MIN_INTERVAL_MS, Math.round(rawInterval));
-		}
-		return { enabled, intervalMs };
-	} catch {
-		return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
-	}
+  if (raw === null) return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) {
+      return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
+    }
+    const obj = parsed as Record<string, unknown>;
+    const enabled = typeof obj.enabled === "boolean" ? obj.enabled : false;
+    const rawInterval = obj.intervalMs;
+    let intervalMs = DEFAULT_INTERVAL_MS;
+    if (typeof rawInterval === "number" && Number.isFinite(rawInterval)) {
+      intervalMs =
+        rawInterval <= 0 ? MIN_INTERVAL_MS : Math.max(MIN_INTERVAL_MS, Math.round(rawInterval));
+    }
+    return { enabled, intervalMs };
+  } catch {
+    return { enabled: false, intervalMs: DEFAULT_INTERVAL_MS };
+  }
 }
 
 /**
  * Serialize settings for storage.
  */
 export function serializeSettings(settings: ConversationSettings): string {
-	return JSON.stringify(settings);
+  return JSON.stringify(settings);
 }
 
 /** The storage key for a conversation's settings. */
 export function settingsKey(conversationId: string): string {
-	return `${SETTINGS_KEY}:${conversationId}`;
+  return `${SETTINGS_KEY}:${conversationId}`;
 }
 
 // --- Surface spec builders (pure) ---
 
 /** Convert intervalMs to display seconds (rounded). */
 export function msToSeconds(intervalMs: number): number {
-	return Math.round(intervalMs / 1000);
+  return Math.round(intervalMs / 1000);
 }
 
 /**
@@ -135,8 +135,8 @@ export function msToSeconds(intervalMs: number): number {
  * Returns null for NaN / non-positive (caller should ignore).
  */
 export function secondsToMs(seconds: number): number | null {
-	if (!Number.isFinite(seconds) || seconds <= 0) return null;
-	return Math.max(MIN_INTERVAL_MS, Math.round(seconds * 1000));
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.max(MIN_INTERVAL_MS, Math.round(seconds * 1000));
 }
 
 /**
@@ -144,51 +144,51 @@ export function secondsToMs(seconds: number): number | null {
  * Pure — no I/O.
  */
 export function buildConversationSpec(
-	enabled: boolean,
-	intervalMs: number,
-	lastPct: number | null,
-	lastExpectedPct: number | null,
-	nextWarmAt: number | null,
-	lastWarmAt: number | null,
+  enabled: boolean,
+  intervalMs: number,
+  lastPct: number | null,
+  lastExpectedPct: number | null,
+  nextWarmAt: number | null,
+  lastWarmAt: number | null,
 ): SurfaceSpec {
-	const pctDisplay = lastPct === null ? "—" : `${lastPct}%`;
-	const retentionDisplay = lastExpectedPct === null ? "—" : `${lastExpectedPct}%`;
-	const toggle: ToggleField = {
-		kind: "toggle",
-		label: "Enabled",
-		value: enabled,
-		action: { actionId: "cache-warming/toggle" },
-	};
-	const interval: NumberField = {
-		kind: "number",
-		label: "Refresh Interval",
-		value: msToSeconds(intervalMs),
-		min: 1,
-		step: 1,
-		unit: "s",
-		action: { actionId: "cache-warming/set-interval" },
-	};
-	const stat: StatField = {
-		kind: "stat",
-		label: "Last Cache %",
-		value: pctDisplay,
-	};
-	const retentionStat: StatField = {
-		kind: "stat",
-		label: "Cache retention",
-		value: retentionDisplay,
-	};
-	const timer: CustomField = {
-		kind: "custom",
-		rendererId: "cache-warming-timer",
-		payload: { nextWarmAt, lastWarmAt },
-	};
-	return {
-		id: "cache-warming",
-		region: "side",
-		title: "Cache Warming",
-		fields: [toggle, interval, stat, retentionStat, timer],
-	};
+  const pctDisplay = lastPct === null ? "—" : `${lastPct}%`;
+  const retentionDisplay = lastExpectedPct === null ? "—" : `${lastExpectedPct}%`;
+  const toggle: ToggleField = {
+    kind: "toggle",
+    label: "Enabled",
+    value: enabled,
+    action: { actionId: "cache-warming/toggle" },
+  };
+  const interval: NumberField = {
+    kind: "number",
+    label: "Refresh Interval",
+    value: msToSeconds(intervalMs),
+    min: 1,
+    step: 1,
+    unit: "s",
+    action: { actionId: "cache-warming/set-interval" },
+  };
+  const stat: StatField = {
+    kind: "stat",
+    label: "Last Cache %",
+    value: pctDisplay,
+  };
+  const retentionStat: StatField = {
+    kind: "stat",
+    label: "Cache retention",
+    value: retentionDisplay,
+  };
+  const timer: CustomField = {
+    kind: "custom",
+    rendererId: "cache-warming-timer",
+    payload: { nextWarmAt, lastWarmAt },
+  };
+  return {
+    id: "cache-warming",
+    region: "side",
+    title: "Cache Warming",
+    fields: [toggle, interval, stat, retentionStat, timer],
+  };
 }
 
 /**
@@ -196,18 +196,18 @@ export function buildConversationSpec(
  * Pure — no I/O.
  */
 export function buildDefaultSpec(): SurfaceSpec {
-	return {
-		id: "cache-warming",
-		region: "side",
-		title: "Cache Warming",
-		fields: [
-			{
-				kind: "stat",
-				label: "Status",
-				value: "No conversation focused",
-			},
-		],
-	};
+  return {
+    id: "cache-warming",
+    region: "side",
+    title: "Cache Warming",
+    fields: [
+      {
+        kind: "stat",
+        label: "Status",
+        value: "No conversation focused",
+      },
+    ],
+  };
 }
 
 /**
@@ -216,17 +216,17 @@ export function buildDefaultSpec(): SurfaceSpec {
  * null if the payload is invalid (NaN / non-positive / wrong shape).
  */
 export function parseIntervalPayload(payload: unknown): number | null {
-	if (typeof payload === "number" && Number.isFinite(payload) && payload > 0) {
-		return payload;
-	}
-	if (
-		typeof payload === "object" &&
-		payload !== null &&
-		"value" in payload &&
-		typeof (payload as Record<string, unknown>).value === "number"
-	) {
-		const v = (payload as Record<string, unknown>).value as number;
-		if (Number.isFinite(v) && v > 0) return v;
-	}
-	return null;
+  if (typeof payload === "number" && Number.isFinite(payload) && payload > 0) {
+    return payload;
+  }
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    "value" in payload &&
+    typeof (payload as Record<string, unknown>).value === "number"
+  ) {
+    const v = (payload as Record<string, unknown>).value as number;
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  return null;
 }

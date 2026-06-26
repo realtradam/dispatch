@@ -9,19 +9,19 @@
 export type { QueuedMessage, QueuePayload } from "@dispatch/wire";
 export { extension, manifest } from "./extension.js";
 export {
-	buildQueueSpec,
-	combine,
-	drain,
-	enqueue,
-	getQueue,
-	MESSAGE_QUEUE_RENDERER_ID,
-	MESSAGE_QUEUE_SURFACE_ID,
-	type MessageQueueState,
-	type QueueDeps,
+  buildQueueSpec,
+  combine,
+  drain,
+  enqueue,
+  getQueue,
+  MESSAGE_QUEUE_RENDERER_ID,
+  MESSAGE_QUEUE_SURFACE_ID,
+  type MessageQueueState,
+  type QueueDeps,
 } from "./pure.js";
 export {
-	createMessageQueueService,
-	type MessageQueueDeps,
-	type MessageQueueService,
-	messageQueueHandle,
+  createMessageQueueService,
+  type MessageQueueDeps,
+  type MessageQueueService,
+  messageQueueHandle,
 } from "./service.js";

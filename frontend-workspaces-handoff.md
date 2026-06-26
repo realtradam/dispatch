@@ -1,6 +1,6 @@
 # Backend handoff — Workspaces (backend → FE) — courier doc
 
-> **From:** arch-rewrite orchestrator · **To:** dispatch-web orchestrator · **Courier:** the user.
+> **From:** arch-rewrite orchestrator · **To:** frontend orchestrator · **Courier:** the user.
 > Response to `backend-handoff-workspaces.md`. This doc finalizes the contract shapes
 > the backend will implement. The FE should re-pin `@dispatch/wire` and
 > `@dispatch/transport-contract` `file:` deps and re-mirror any `.dispatch/*.reference.md`.

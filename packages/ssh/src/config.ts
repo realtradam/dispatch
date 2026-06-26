@@ -34,20 +34,20 @@ import { isKnownHost } from "./hostkey.js";
 
 /** Injected environment for the pure resolver (no ambient process access). */
 export interface SshConfigResolveEnv {
-	/** The raw `~/.ssh/config` text (may be empty — no file). */
-	readonly configText: string;
-	/** The raw `~/.ssh/known_hosts` text (drives `knownHost` + discovery). */
-	readonly knownHostsText: string;
-	/** Fallback user when the config sets none (the current OS user). */
-	readonly defaultUser: string;
-	/** Home dir, for resolving `~` in `IdentityFile` (already-expanded by caller). */
-	readonly homeDir: string;
-	/**
-	 * Glob patterns (e.g. `github.com`, `*.ts.net`) to exclude from the
-	 * computer catalog. Sourced from `dispatch.toml` `[ssh].reject`. Absent
-	 * or empty → no filtering.
-	 */
-	readonly rejectPatterns?: readonly string[];
+  /** The raw `~/.ssh/config` text (may be empty — no file). */
+  readonly configText: string;
+  /** The raw `~/.ssh/known_hosts` text (drives `knownHost` + discovery). */
+  readonly knownHostsText: string;
+  /** Fallback user when the config sets none (the current OS user). */
+  readonly defaultUser: string;
+  /** Home dir, for resolving `~` in `IdentityFile` (already-expanded by caller). */
+  readonly homeDir: string;
+  /**
+   * Glob patterns (e.g. `github.com`, `*.ts.net`) to exclude from the
+   * computer catalog. Sourced from `dispatch.toml` `[ssh].reject`. Absent
+   * or empty → no filtering.
+   */
+  readonly rejectPatterns?: readonly string[];
 }
 
 /**
@@ -70,50 +70,50 @@ export interface SshConfigResolveEnv {
  * Pure: `SshConfigResolveEnv` → `readonly Computer[]`.
  */
 export function resolveComputers(env: SshConfigResolveEnv): readonly Computer[] {
-	const config = SSHConfig.parse(env.configText);
-	const computers: Computer[] = [];
+  const config = SSHConfig.parse(env.configText);
+  const computers: Computer[] = [];
 
-	// Source 1: ~/.ssh/config — full-param aliases.
-	for (const line of config) {
-		// Only `Host` sections define aliases; `Match`/standalone directives aren't
-		// selectable computers.
-		if (!isHostSection(line)) continue;
-		const aliases = readAliasValues(line);
-		for (const alias of aliases) {
-			if (isWildcardAlias(alias)) continue; // patterns, not targets
-			const computer = resolveOne(config, alias, env);
-			if (computer !== null) computers.push(computer);
-		}
-	}
+  // Source 1: ~/.ssh/config — full-param aliases.
+  for (const line of config) {
+    // Only `Host` sections define aliases; `Match`/standalone directives aren't
+    // selectable computers.
+    if (!isHostSection(line)) continue;
+    const aliases = readAliasValues(line);
+    for (const alias of aliases) {
+      if (isWildcardAlias(alias)) continue; // patterns, not targets
+      const computer = resolveOne(config, alias, env);
+      if (computer !== null) computers.push(computer);
+    }
+  }
 
-	const configAliases = new Set(computers.map((c) => c.alias));
+  const configAliases = new Set(computers.map((c) => c.alias));
 
-	// Source 2: ~/.ssh/known_hosts — discovered hostnames not already in config.
-	for (const { hostname, port } of parseKnownHosts(env.knownHostsText)) {
-		if (configAliases.has(hostname)) continue; // config takes precedence
-		computers.push({
-			alias: hostname,
-			hostName: hostname,
-			port,
-			user: env.defaultUser,
-			identityFile: null, // pool probes default keys (~/.ssh/id_ed25519, etc.)
-			knownHost: true, // it's in known_hosts by definition
-		});
-	}
+  // Source 2: ~/.ssh/known_hosts — discovered hostnames not already in config.
+  for (const { hostname, port } of parseKnownHosts(env.knownHostsText)) {
+    if (configAliases.has(hostname)) continue; // config takes precedence
+    computers.push({
+      alias: hostname,
+      hostName: hostname,
+      port,
+      user: env.defaultUser,
+      identityFile: null, // pool probes default keys (~/.ssh/id_ed25519, etc.)
+      knownHost: true, // it's in known_hosts by definition
+    });
+  }
 
-	// De-dup by alias (a host may be listed in multiple `Host` lines or appear
-	// in both config + known_hosts; first wins), then sort for stable FE ordering.
-	const seen = new Set<string>();
-	const unique = computers.filter((c) => {
-		if (seen.has(c.alias)) return false;
-		seen.add(c.alias);
-		return true;
-	});
+  // De-dup by alias (a host may be listed in multiple `Host` lines or appear
+  // in both config + known_hosts; first wins), then sort for stable FE ordering.
+  const seen = new Set<string>();
+  const unique = computers.filter((c) => {
+    if (seen.has(c.alias)) return false;
+    seen.add(c.alias);
+    return true;
+  });
 
-	// Filter out rejected hostnames (glob patterns from dispatch.toml).
-	const filtered = unique.filter((c) => !isRejected(c.alias, env.rejectPatterns));
-	filtered.sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
-	return filtered;
+  // Filter out rejected hostnames (glob patterns from dispatch.toml).
+  const filtered = unique.filter((c) => !isRejected(c.alias, env.rejectPatterns));
+  filtered.sort((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
+  return filtered;
 }
 
 /**
@@ -125,103 +125,103 @@ export function resolveComputers(env: SshConfigResolveEnv): readonly Computer[] 
  * Pure. `compute()` applies OpenSSH first-match-wins + wildcards.
  */
 export function resolveComputer(alias: string, env: SshConfigResolveEnv): Computer | null {
-	// Source 1: ~/.ssh/config.
-	const config = SSHConfig.parse(env.configText);
-	if (aliasExistsAsNamedHost(config, alias)) {
-		return resolveOne(config, alias, env);
-	}
+  // Source 1: ~/.ssh/config.
+  const config = SSHConfig.parse(env.configText);
+  if (aliasExistsAsNamedHost(config, alias)) {
+    return resolveOne(config, alias, env);
+  }
 
-	// Source 2: ~/.ssh/known_hosts (defaulted params).
-	const knownHosts = parseKnownHosts(env.knownHostsText);
-	const entry = knownHosts.find((h) => h.hostname === alias);
-	if (entry !== undefined) {
-		return {
-			alias: entry.hostname,
-			hostName: entry.hostname,
-			port: entry.port,
-			user: env.defaultUser,
-			identityFile: null,
-			knownHost: true,
-		};
-	}
+  // Source 2: ~/.ssh/known_hosts (defaulted params).
+  const knownHosts = parseKnownHosts(env.knownHostsText);
+  const entry = knownHosts.find((h) => h.hostname === alias);
+  if (entry !== undefined) {
+    return {
+      alias: entry.hostname,
+      hostName: entry.hostname,
+      port: entry.port,
+      user: env.defaultUser,
+      identityFile: null,
+      knownHost: true,
+    };
+  }
 
-	return null;
+  return null;
 }
 
 /** Resolve one alias using a parsed config. Pure. */
 function resolveOne(config: SSHConfig, alias: string, env: SshConfigResolveEnv): Computer | null {
-	const computed = config.compute(alias);
-	const hostName = stringValue(computed.HostName) ?? alias; // falls back to alias
-	const port = numberValue(computed.Port) ?? 22;
-	const user = stringValue(computed.User) ?? env.defaultUser;
-	const identityFile = identityFileValue(computed.IdentityFile, env);
+  const computed = config.compute(alias);
+  const hostName = stringValue(computed.HostName) ?? alias; // falls back to alias
+  const port = numberValue(computed.Port) ?? 22;
+  const user = stringValue(computed.User) ?? env.defaultUser;
+  const identityFile = identityFileValue(computed.IdentityFile, env);
 
-	// `knownHost` is keyed by the HostName (the actual connect target) — that is
-	// what ssh2 connects to and what OpenSSH records in known_hosts.
-	const knownHost = isKnownHost(env.knownHostsText, knownHostToken(hostName, port));
+  // `knownHost` is keyed by the HostName (the actual connect target) — that is
+  // what ssh2 connects to and what OpenSSH records in known_hosts.
+  const knownHost = isKnownHost(env.knownHostsText, knownHostToken(hostName, port));
 
-	return { alias, hostName, port, user, identityFile, knownHost };
+  return { alias, hostName, port, user, identityFile, knownHost };
 }
 
 // ─── ssh-config line helpers ──────────────────────────────────────────────
 
 function isHostSection(line: SSHConfig[number]): line is Section {
-	return "param" in line && (line as Directive).param.toLowerCase() === "host";
+  return "param" in line && (line as Directive).param.toLowerCase() === "host";
 }
 
 /** The alias values declared on a `Host` line (space-separated, may be quoted). */
 function readAliasValues(section: Section): string[] {
-	const value = section.value;
-	if (typeof value === "string") return value.split(/\s+/).filter((s) => s.length > 0);
-	// Quoted/structured value: array of { val } objects.
-	if (Array.isArray(value)) {
-		return value.map((v) => (typeof v === "string" ? v : v.val)).filter((s) => s.length > 0);
-	}
-	return [];
+  const value = section.value;
+  if (typeof value === "string") return value.split(/\s+/).filter((s) => s.length > 0);
+  // Quoted/structured value: array of { val } objects.
+  if (Array.isArray(value)) {
+    return value.map((v) => (typeof v === "string" ? v : v.val)).filter((s) => s.length > 0);
+  }
+  return [];
 }
 
 /** A `Host` alias is a selectable computer only if it contains no wildcard chars. */
 function isWildcardAlias(alias: string): boolean {
-	return alias.includes("*") || alias.includes("?");
+  return alias.includes("*") || alias.includes("?");
 }
 
 function aliasExistsAsNamedHost(config: SSHConfig, alias: string): boolean {
-	for (const line of config) {
-		if (!isHostSection(line)) continue;
-		const aliases = readAliasValues(line);
-		if (aliases.includes(alias) && !aliases.some(isWildcardAlias)) return true;
-	}
-	return false;
+  for (const line of config) {
+    if (!isHostSection(line)) continue;
+    const aliases = readAliasValues(line);
+    if (aliases.includes(alias) && !aliases.some(isWildcardAlias)) return true;
+  }
+  return false;
 }
 
 // ─── value coercion (ssh-config returns string | string[]) ────────────────
 
 function stringValue(v: string | string[] | undefined): string | undefined {
-	if (v === undefined) return undefined;
-	return Array.isArray(v) ? v[0] : v;
+  if (v === undefined) return undefined;
+  return Array.isArray(v) ? v[0] : v;
 }
 
 function numberValue(v: string | string[] | undefined): number | undefined {
-	const s = stringValue(v);
-	if (s === undefined) return undefined;
-	const n = Number.parseInt(s, 10);
-	return Number.isNaN(n) ? undefined : n;
+  const s = stringValue(v);
+  if (s === undefined) return undefined;
+  const n = Number.parseInt(s, 10);
+  return Number.isNaN(n) ? undefined : n;
 }
 
 function identityFileValue(
-	v: string | string[] | undefined,
-	env: SshConfigResolveEnv,
+  v: string | string[] | undefined,
+  env: SshConfigResolveEnv,
 ): string | null {
-	const raw = stringValue(v);
-	if (raw === undefined) return null; // caller falls back to default probing
-	return expandPath(raw, env.homeDir);
+  const raw = stringValue(v);
+  if (raw === undefined) return null; // caller falls back to default probing
+  return expandPath(raw, env.homeDir);
 }
 
 /** Expand a leading `~` to the home dir. (Other $VARs left to the shell.) */
 function expandPath(p: string, homeDir: string): string {
-	if (p === "~") return homeDir;
-	if (p.startsWith("~/")) return `${homeDir}/${p.slice(2)}`;
-	return p;
+  if (p === "~") return homeDir;
+  if (p.startsWith("~/")) return `${homeDir}/${p.slice(2)}`;
+  return p;
 }
 
 /**
@@ -230,25 +230,25 @@ function expandPath(p: string, homeDir: string): string {
  * `host`. Used both for the `knownHost` view and by the pool's host-verifier.
  */
 export function knownHostToken(hostName: string, port: number): string {
-	if (port === 22) return hostName;
-	return `[${hostName}]:${port}`;
+  if (port === 22) return hostName;
+  return `[${hostName}]:${port}`;
 }
 
 // ─── known_hosts discovery ─────────────────────────────────────────────────
 
 /** Find the index of the first space or tab, or -1 if none. */
 function findSpace(line: string): number {
-	for (let i = 0; i < line.length; i++) {
-		const ch = line.charCodeAt(i);
-		if (ch === 32 || ch === 9) return i; // space or tab
-	}
-	return -1;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line.charCodeAt(i);
+    if (ch === 32 || ch === 9) return i; // space or tab
+  }
+  return -1;
 }
 
 /** A hostname + port extracted from a `~/.ssh/known_hosts` line. */
 export interface KnownHostEntry {
-	readonly hostname: string;
-	readonly port: number;
+  readonly hostname: string;
+  readonly port: number;
 }
 
 /**
@@ -267,47 +267,47 @@ export interface KnownHostEntry {
  * Pure: `knownHostsText` → `readonly KnownHostEntry[]`.
  */
 export function parseKnownHosts(knownHostsText: string): readonly KnownHostEntry[] {
-	const entries: KnownHostEntry[] = [];
-	const seen = new Set<string>();
+  const entries: KnownHostEntry[] = [];
+  const seen = new Set<string>();
 
-	for (const raw of knownHostsText.split("\n")) {
-		const line = raw.trim();
-		if (line === "" || line.startsWith("#")) continue;
+  for (const raw of knownHostsText.split("\n")) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
 
-		// First whitespace-delimited field is the host markers (comma-list).
-		const firstSpace = findSpace(line);
-		const firstField = firstSpace === -1 ? line : line.slice(0, firstSpace);
+    // First whitespace-delimited field is the host markers (comma-list).
+    const firstSpace = findSpace(line);
+    const firstField = firstSpace === -1 ? line : line.slice(0, firstSpace);
 
-		for (const marker of firstField.split(",")) {
-			const trimmed = marker.trim();
-			if (trimmed === "" || trimmed.startsWith("|")) continue; // skip hashed
+    for (const marker of firstField.split(",")) {
+      const trimmed = marker.trim();
+      if (trimmed === "" || trimmed.startsWith("|")) continue; // skip hashed
 
-			let hostname: string;
-			let port = 22;
+      let hostname: string;
+      let port = 22;
 
-			if (trimmed.startsWith("[")) {
-				// [hostname]:port  or  [hostname]
-				const bracketEnd = trimmed.indexOf("]");
-				if (bracketEnd === -1) continue; // malformed
-				hostname = trimmed.slice(1, bracketEnd);
-				const afterBracket = trimmed.slice(bracketEnd + 1);
-				if (afterBracket.startsWith(":")) {
-					const n = Number.parseInt(afterBracket.slice(1), 10);
-					if (Number.isFinite(n) && n > 0) port = n;
-				}
-			} else {
-				hostname = trimmed;
-			}
+      if (trimmed.startsWith("[")) {
+        // [hostname]:port  or  [hostname]
+        const bracketEnd = trimmed.indexOf("]");
+        if (bracketEnd === -1) continue; // malformed
+        hostname = trimmed.slice(1, bracketEnd);
+        const afterBracket = trimmed.slice(bracketEnd + 1);
+        if (afterBracket.startsWith(":")) {
+          const n = Number.parseInt(afterBracket.slice(1), 10);
+          if (Number.isFinite(n) && n > 0) port = n;
+        }
+      } else {
+        hostname = trimmed;
+      }
 
-			// Dedup by hostname — first port wins (a host with entries on
-			// multiple ports gets one computer; use config for a specific port).
-			if (seen.has(hostname)) continue;
-			seen.add(hostname);
-			entries.push({ hostname, port });
-		}
-	}
+      // Dedup by hostname — first port wins (a host with entries on
+      // multiple ports gets one computer; use config for a specific port).
+      if (seen.has(hostname)) continue;
+      seen.add(hostname);
+      entries.push({ hostname, port });
+    }
+  }
 
-	return entries;
+  return entries;
 }
 
 // ─── reject-list glob matching ─────────────────────────────────────────────
@@ -320,8 +320,8 @@ export function parseKnownHosts(knownHostsText: string): readonly KnownHostEntry
  * Pure: `alias` + `patterns` → `boolean`.
  */
 export function isRejected(alias: string, patterns?: readonly string[]): boolean {
-	if (patterns === undefined || patterns.length === 0) return false;
-	return patterns.some((p) => globMatch(p, alias));
+  if (patterns === undefined || patterns.length === 0) return false;
+  return patterns.some((p) => globMatch(p, alias));
 }
 
 /**
@@ -330,35 +330,35 @@ export function isRejected(alias: string, patterns?: readonly string[]): boolean
  * characters match literally.
  */
 function globMatch(pattern: string, input: string): boolean {
-	const p = pattern.toLowerCase();
-	const s = input.toLowerCase();
-	return globMatchImpl(p, 0, s, 0);
+  const p = pattern.toLowerCase();
+  const s = input.toLowerCase();
+  return globMatchImpl(p, 0, s, 0);
 }
 
 function globMatchImpl(p: string, pi: number, s: string, si: number): boolean {
-	while (pi < p.length) {
-		const pc = p[pi];
-		if (pc === "*") {
-			// Skip consecutive * (they're equivalent to one).
-			while (pi + 1 < p.length && p[pi + 1] === "*") pi++;
-			// If * is the last char, match everything remaining.
-			if (pi + 1 === p.length) return true;
-			// Try to match the rest of the pattern at every position in s.
-			for (let i = si; i <= s.length; i++) {
-				if (globMatchImpl(p, pi + 1, s, i)) return true;
-			}
-			return false;
-		}
-		if (pc === "?") {
-			if (si >= s.length) return false;
-			pi++;
-			si++;
-			continue;
-		}
-		// Literal char.
-		if (si >= s.length || p[pi] !== s[si]) return false;
-		pi++;
-		si++;
-	}
-	return si === s.length;
+  while (pi < p.length) {
+    const pc = p[pi];
+    if (pc === "*") {
+      // Skip consecutive * (they're equivalent to one).
+      while (pi + 1 < p.length && p[pi + 1] === "*") pi++;
+      // If * is the last char, match everything remaining.
+      if (pi + 1 === p.length) return true;
+      // Try to match the rest of the pattern at every position in s.
+      for (let i = si; i <= s.length; i++) {
+        if (globMatchImpl(p, pi + 1, s, i)) return true;
+      }
+      return false;
+    }
+    if (pc === "?") {
+      if (si >= s.length) return false;
+      pi++;
+      si++;
+      continue;
+    }
+    // Literal char.
+    if (si >= s.length || p[pi] !== s[si]) return false;
+    pi++;
+    si++;
+  }
+  return si === s.length;
 }

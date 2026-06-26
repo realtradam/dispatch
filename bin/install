@@ -2,9 +2,13 @@
 # bin/install — build + install Dispatch as a systemd service on Arch Linux.
 #
 # Usage:
-#   sudo bin/install              # build + install + enable + start
-#   sudo bin/install --no-build   # install only (skip the build step)
-#   sudo bin/install --uninstall  # stop + disable + remove files
+#   bin/install              # build + install + enable + start
+#   bin/install --no-build   # install only (skip the build step)
+#   bin/install --uninstall  # stop + disable + remove files
+#
+# No sudo prefix needed — the script uses sudo internally on the specific
+# lines that require root (writing to /usr/bin, /etc, systemctl). The build
+# step runs as the normal user so dist/ files are user-owned.
 #
 # What it installs:
 #   /usr/bin/dispatch-server      — backend binary
@@ -24,10 +28,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 
-if [[ "$(id -u)" -ne 0 ]]; then
-	echo "install: must run as root (use sudo)" >&2
-	exit 1
-fi
+# Detect the real user (works whether or not the script is run with sudo)
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_GROUP=$(id -gn "$REAL_USER" 2>/dev/null || echo "$REAL_USER")
 
 ACTION="install"
 NO_BUILD=0
@@ -42,13 +45,13 @@ done
 # ─── Uninstall ───────────────────────────────────────────────────────────────
 if [[ "$ACTION" == "uninstall" ]]; then
 	echo "[uninstall] stopping service…"
-	systemctl stop dispatch 2>/dev/null || true
-	systemctl disable dispatch 2>/dev/null || true
-	rm -f /etc/systemd/system/dispatch.service
-	systemctl daemon-reload
+	sudo systemctl stop dispatch 2>/dev/null || true
+	sudo systemctl disable dispatch 2>/dev/null || true
+	sudo rm -f /etc/systemd/system/dispatch.service
+	sudo systemctl daemon-reload
 	echo "[uninstall] removing files…"
-	rm -f /usr/bin/dispatch-server /usr/bin/dispatch
-	rm -rf /usr/share/dispatch/web
+	sudo rm -f /usr/bin/dispatch-server /usr/bin/dispatch
+	sudo rm -rf /usr/share/dispatch/web
 	# Keep config + data (user might want them)
 	echo "[uninstall] done."
 	echo "  Kept: /etc/dispatch/env, /var/lib/dispatch/, /var/log/dispatch/"
@@ -70,27 +73,24 @@ fi
 
 # ─── Install binaries ────────────────────────────────────────────────────────
 echo "[install] binaries → /usr/bin/"
-install -Dm755 "$ROOT/dist/dispatch-server" /usr/bin/dispatch-server
-install -Dm755 "$ROOT/dist/dispatch" /usr/bin/dispatch
+sudo install -Dm755 "$ROOT/dist/dispatch-server" /usr/bin/dispatch-server
+sudo install -Dm755 "$ROOT/dist/dispatch" /usr/bin/dispatch
 
 # ─── Install frontend ────────────────────────────────────────────────────────
 if [[ -d "$ROOT/dist/web" ]]; then
 	echo "[install] frontend → /usr/share/dispatch/web/"
-	mkdir -p /usr/share/dispatch/web
-	cp -r "$ROOT/dist/web/"* /usr/share/dispatch/web/
+	sudo mkdir -p /usr/share/dispatch/web
+	sudo cp -r "$ROOT/dist/web/"* /usr/share/dispatch/web/
 fi
 
 # ─── Install systemd service ─────────────────────────────────────────────────
 echo "[install] systemd service → /etc/systemd/system/"
-# Detect the real user to run the service as (not root)
-REAL_USER="${SUDO_USER:-$USER}"
-REAL_GROUP=$(id -gn "$REAL_USER" 2>/dev/null || echo "$REAL_USER")
 
 # Unmask if previously masked
-rm -f /etc/systemd/system/dispatch.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/dispatch.service 2>/dev/null || true
 
 # Write the service file directly with the user patched in
-cat > /etc/systemd/system/dispatch.service << EOF
+cat << EOF | sudo tee /etc/systemd/system/dispatch.service > /dev/null
 [Unit]
 Description=Dispatch AI Agent Server
 After=network.target
@@ -110,33 +110,33 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
-chmod 644 /etc/systemd/system/dispatch.service
+sudo chmod 644 /etc/systemd/system/dispatch.service
 
 # ─── Config (don't overwrite if it exists) ───────────────────────────────────
 if [[ ! -f /etc/dispatch/env ]]; then
 	echo "[install] config → /etc/dispatch/env (run sudo bin/setup-env to populate)"
-	install -Dm600 "$ROOT/systemd/dispatch.env" /etc/dispatch/env
+	sudo install -Dm600 "$ROOT/systemd/dispatch.env" /etc/dispatch/env
 else
 	echo "[install] config /etc/dispatch/env already exists — keeping"
 fi
 
 # ─── Data + log directories ──────────────────────────────────────────────────
-mkdir -p /var/lib/dispatch /var/log/dispatch
-chown -R "$REAL_USER:$REAL_GROUP" /var/lib/dispatch /var/log/dispatch
+sudo mkdir -p /var/lib/dispatch /var/log/dispatch
+sudo chown -R "$REAL_USER:$REAL_GROUP" /var/lib/dispatch /var/log/dispatch
 
 # ─── Enable + start ──────────────────────────────────────────────────────────
-systemctl daemon-reload
-systemctl enable dispatch
+sudo systemctl daemon-reload
+sudo systemctl enable dispatch
 
 if grep -q 'sk-\.\.\.' /etc/dispatch/env 2>/dev/null; then
 	echo ""
 	echo "[install] done — but DISPATCH_API_KEY is still the placeholder."
 	echo "  1. Edit /etc/dispatch/env and set your API key"
-	echo "  2. systemctl start dispatch"
+	echo "  2. sudo systemctl start dispatch"
 	echo "  3. journalctl -u dispatch -f"
 else
 	echo "[install] starting service…"
-	systemctl start dispatch
+	sudo systemctl restart dispatch
 	echo ""
 	echo "[install] done!"
 	echo "  Status:  systemctl status dispatch"

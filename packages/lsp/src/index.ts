@@ -1,25 +1,25 @@
 export type {
-	ClientDeps,
-	FileWatcher,
-	FileWatcherHandle,
-	FsAccess,
-	SpawnedProcess,
-	SpawnProcess,
+  ClientDeps,
+  FileWatcher,
+  FileWatcherHandle,
+  FsAccess,
+  SpawnedProcess,
+  SpawnProcess,
 } from "./client.js";
 export { LanguageServerClient } from "./client.js";
 export type {
-	ConfigSource,
-	LspJsonConfig,
-	OpencodeJsonConfig,
-	ResolvedServer,
-	ResolveResult,
-	ServerConfig,
+  ConfigSource,
+  LspJsonConfig,
+  OpencodeJsonConfig,
+  ResolvedServer,
+  ResolveResult,
+  ServerConfig,
 } from "./config.js";
 export { configFingerprint, resolveServers } from "./config.js";
 export type {
-	Diagnostic,
-	DocumentDiagnosticReport,
-	PublishDiagnosticsParams,
+  Diagnostic,
+  DocumentDiagnosticReport,
+  PublishDiagnosticsParams,
 } from "./diagnostics.js";
 export { DiagnosticsStore } from "./diagnostics.js";
 export { extension, lspServiceHandle } from "./extension.js";

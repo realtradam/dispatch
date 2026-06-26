@@ -4,8 +4,8 @@ export type { ReconcileReport, ReconcileResult } from "./reconcile.js";
 export { reconcile, reconcileWithReport } from "./reconcile.js";
 export type { ConversationStore } from "./store.js";
 export {
-	conversationStoreHandle,
-	createConversationStore,
-	extractTitle,
-	isValidWorkspaceSlug,
+  conversationStoreHandle,
+  createConversationStore,
+  extractTitle,
+  isValidWorkspaceSlug,
 } from "./store.js";

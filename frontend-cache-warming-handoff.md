@@ -1,6 +1,6 @@
 # FE handoff — cache warming: cache-rate fix + "expected cache" metric
 
-> **Courier doc** (backend → `../dispatch-web`, via the user). Per ORCHESTRATOR §7 the backend does
+> **Courier doc** (backend → `../frontend`, via the user). Per ORCHESTRATOR §7 the backend does
 > NOT write the FE repo. `lsp references` does not span the two repos.
 > Backend commits: `7ffb6b2` (arch-rewrite), `0e9d118` (`../claude/provider-anthropic`).
 

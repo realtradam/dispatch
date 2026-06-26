@@ -7,13 +7,13 @@
 ## What this project is
 A **minimal kernel + extensions** agent runtime. The kernel runs ONE agent turn
 and hosts extensions. Every feature is an extension. Tiers: **kernel → core →
-standard**. The web frontend is a SEPARATE repo (`../dispatch-web`), built to
+standard**. The web frontend is a SEPARATE repo (`../frontend`), built to
 the same methodology and consuming the backend's typed contracts (see
 `notes/frontend-design.md`).
 
 ## Stack
 Bun + TypeScript (strict, project references via `tsc -b`). Biome for
-lint/format (tabs, double quotes, semicolons, width 100). Vitest for tests.
+lint/format (2-space indent, double quotes, semicolons, width 100). Vitest for tests.
 SQLite via `bun:sqlite`. AI SDK (`ai` + `@ai-sdk/*`) for providers.
 
 ## The non-negotiable architecture rules

@@ -1,6 +1,6 @@
 # FE handoff — cache hit/miss + percentage (calculation guide)
 
-> **Courier doc** (backend → `../dispatch-web`, via the user). Per ORCHESTRATOR §7
+> **Courier doc** (backend → `../frontend`, via the user). Per ORCHESTRATOR §7
 > the backend does not write the FE repo. This describes ONLY how to compute cache
 > hit/miss + percentages from data the backend ALREADY exposes — **no UI design here**
 > (the look is specified separately) and **no backend change is required**.

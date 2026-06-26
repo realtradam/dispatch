@@ -24,6 +24,14 @@ if [[ "${1:-}" == "--no-frontend" ]]; then
 	BUILD_FRONTEND=0
 fi
 
+# Recompile all TypeScript packages (composite project references) so the
+# dist/*.js files are up to date with the .ts source. The packages' package.json
+# `main` fields point to dist/index.js, so bun build --compile reads the compiled
+# JavaScript — without this step, source edits are silently lost in the binary.
+echo "[build] tsc --build (recompile packages from source)"
+cd "$BACKEND"
+bunx tsc --build 2>&1 | tail -5
+
 echo "[build] backend binary → dist/dispatch-server"
 mkdir -p "$ROOT/dist"
 bun build --compile "$BACKEND/packages/host-bin/src/main.ts" \
