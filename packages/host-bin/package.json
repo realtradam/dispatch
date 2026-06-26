@@ -33,6 +33,7 @@
     "@dispatch/surface-loaded-extensions": "workspace:*",
     "@dispatch/surface-registry": "workspace:*",
     "@dispatch/transport-ws": "workspace:*",
-    "@dispatch/system-prompt": "workspace:*"
+    "@dispatch/system-prompt": "workspace:*",
+    "@dispatch/vision-handoff": "workspace:*"
   }
 }

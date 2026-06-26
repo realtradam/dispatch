@@ -1,7 +1,7 @@
 import type { ApiKeyCredentials, ModelInfo, ProviderContract } from "@dispatch/kernel";
 import type { FetchLike } from "@dispatch/trace-replay";
 import { describe, expect, it, vi } from "vitest";
-import { parseModelList } from "./listModels.js";
+import { isVisionModelId, parseModelList } from "./listModels.js";
 import { createOpenAICompatProvider } from "./provider.js";
 
 function makeProvider(fetchFn: FetchLike, apiKey = "sk-test-1234567890abcdef"): ProviderContract {
@@ -34,6 +34,48 @@ describe("listModels — pure mapping (parseModelList)", () => {
   it("returns empty array for empty input", () => {
     const result = parseModelList([]);
     expect(result).toEqual([]);
+  });
+
+  it("extracts contextWindow from common field names", () => {
+    const result = parseModelList([
+      { id: "m1", context_length: 128000 },
+      { id: "m2", context_window: 200000 },
+      { id: "m3", max_context_length: 64000 },
+      { id: "m4", max_tokens: 8000 },
+    ]);
+    expect(result).toEqual([
+      { id: "m1", contextWindow: 128000 },
+      { id: "m2", contextWindow: 200000 },
+      { id: "m3", contextWindow: 64000 },
+      { id: "m4", contextWindow: 8000 },
+    ]);
+  });
+});
+
+describe("listModels — vision capability detection", () => {
+  it("isVisionModelId returns true for kimi-family model ids", () => {
+    expect(isVisionModelId("kimi-k2.7")).toBe(true);
+    expect(isVisionModelId("Kimi-K2.7")).toBe(true); // case-insensitive
+    expect(isVisionModelId("moonshot/kimi-k2-thinking")).toBe(true);
+  });
+
+  it("isVisionModelId returns false for non-kimi model ids", () => {
+    expect(isVisionModelId("glm-5.2")).toBe(false);
+    expect(isVisionModelId("deepseek-v4-flash")).toBe(false);
+    expect(isVisionModelId("umans-coder")).toBe(false);
+  });
+
+  it("parseModelList sets vision: true on kimi-family models", () => {
+    const result = parseModelList([
+      { id: "kimi-k2.7", context_length: 200000 },
+      { id: "glm-5.2", context_length: 128000 },
+      { id: "deepseek-v4-flash" },
+    ]);
+    expect(result).toEqual([
+      { id: "kimi-k2.7", contextWindow: 200000, vision: true },
+      { id: "glm-5.2", contextWindow: 128000 },
+      { id: "deepseek-v4-flash" },
+    ]);
   });
 });
 

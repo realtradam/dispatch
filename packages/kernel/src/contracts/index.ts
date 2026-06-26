@@ -19,6 +19,8 @@ export type {
   ConversationMeta,
   ConversationStatus,
   ErrorChunk,
+  ImageChunk,
+  ImageInput,
   Role,
   StepId,
   StepMetrics,

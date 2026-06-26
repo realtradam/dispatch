@@ -291,6 +291,7 @@ export function createTransportWsExtension(): Extension {
                     : {}),
                   ...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
                   ...(result.computerId !== undefined ? { computerId: result.computerId } : {}),
+                  ...(result.images !== undefined ? { images: result.images } : {}),
                 });
                 if (!startResult.started) {
                   send(ws, {

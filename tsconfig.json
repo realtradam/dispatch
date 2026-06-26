@@ -41,6 +41,9 @@
       "path": "./packages/credential-store"
     },
     {
+      "path": "./packages/vision-handoff"
+    },
+    {
       "path": "./packages/exec-backend"
     },
     {

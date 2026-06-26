@@ -26,6 +26,7 @@ import type {
   ComputerEntry,
   ConversationMeta,
   ConversationStatus,
+  ImageInput,
   QueuedMessage,
   ReasoningEffort,
   StoredChunk,
@@ -41,6 +42,8 @@ export type {
   ComputerEntry,
   ConversationMeta,
   ConversationStatus,
+  ImageChunk,
+  ImageInput,
   QueuedMessage,
   ReasoningEffort,
   StepMetrics,
@@ -66,6 +69,19 @@ export interface ChatRequest {
 
   /** The user's message text for this turn. */
   readonly message: string;
+
+  /**
+   * Images attached to this turn (e.g. a user-pasted screenshot). Each entry's
+   * `url` is a base64 data URL (`data:image/…;base64,…`) or an `http(s)://`
+   * URL. The server converts these to `image` chunks on the persisted user
+   * message. For a VISION-capable model (e.g. kimi), the images are passed
+   * through to the provider natively. For a NON-vision model (e.g. glm-5.2),
+   * the server's vision handoff transcribes each image to a text description
+   * (via a vision-capable model) and feeds that text instead — so a text-only
+   * model can still reason about the image's contents. Optional — omit for a
+   * text-only turn (backward compatible).
+   */
+  readonly images?: readonly ImageInput[];
 
   /**
    * The model to use, as a model name in `<credentialName>/<model>` form — one
@@ -124,6 +140,14 @@ export interface ModelsResponse {
 /** Per-model metadata returned alongside the model catalog. */
 export interface ModelMetadata {
   readonly contextWindow?: number;
+  /**
+   * Whether this model can natively accept image input (vision/multimodal).
+   * When `true`, image chunks in a user message are passed through to the
+   * provider. When `false`/absent, the server's vision handoff transcribes
+   * images to text before the model sees them. A client may use this to show a
+   * vision badge in the model picker. Optional — absent when unknown.
+   */
+  readonly vision?: boolean;
 }
 
 /**
