@@ -43,16 +43,20 @@ import type { ToolAssembly } from "./tools-filter.js";
  * off cleanly when the extension isn't loaded (images pass through unchanged,
  * which is correct for vision-capable models and a no-op for text-only turns).
  *
- * `transcribeForProvider` transforms a message list for the provider: if the
+ * `prepareForProvider` transforms a message list for the provider: if the
  * active model is vision-capable, messages pass through unchanged; otherwise
- * image chunks are replaced with text descriptions (transcribed via a
- * vision-capable model). Never throws — degrades to placeholders.
+ * image chunks are replaced with numbered placeholders (telling the model to
+ * call `consult_vision`) and the images are registered for tool access.
  */
 export interface VisionHandoffService {
-  readonly transcribeForProvider: (
+  readonly prepareForProvider: (
     messages: readonly ChatMessage[],
     currentModelName: string | undefined,
-    opts?: { readonly signal?: AbortSignal; readonly logger?: Logger },
+    opts?: {
+      readonly conversationId?: string;
+      readonly signal?: AbortSignal;
+      readonly logger?: Logger;
+    },
   ) => Promise<readonly ChatMessage[]>;
 }
 
@@ -772,10 +776,11 @@ export function createSessionOrchestrator(
         const visionHandoff = deps.resolveVisionHandoff?.();
         let providerMessages: readonly ChatMessage[] = [...history, userMsg];
         if (visionHandoff !== undefined) {
-          providerMessages = await visionHandoff.transcribeForProvider(
+          providerMessages = await visionHandoff.prepareForProvider(
             providerMessages,
             effectiveModelName,
             {
+              conversationId,
               signal: controller.signal,
               ...(turnLogger !== undefined ? { logger: turnLogger } : {}),
             },
