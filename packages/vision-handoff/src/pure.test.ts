@@ -11,21 +11,21 @@ import {
 
 describe("isVisionCapable", () => {
   it("returns true when ModelInfo.vision is true", () => {
-    expect(isVisionCapable("umans/kimi-k2.7", { id: "kimi-k2.7", vision: true })).toBe(true);
+    expect(isVisionCapable("umans/umans-kimi-k2.7", { id: "umans-kimi-k2.7", vision: true })).toBe(true);
   });
 
   it("returns false when ModelInfo.vision is false (overrides name heuristic)", () => {
-    expect(isVisionCapable("umans/kimi-k2.7", { id: "kimi-k2.7", vision: false })).toBe(false);
+    expect(isVisionCapable("umans/umans-kimi-k2.7", { id: "umans-kimi-k2.7", vision: false })).toBe(false);
   });
 
-  it("falls back to name heuristic when vision is absent (kimi)", () => {
-    expect(isVisionCapable("umans/kimi-k2.7", undefined)).toBe(true);
-    expect(isVisionCapable("umans/Kimi-K2.7", undefined)).toBe(true); // case-insensitive
+  it("falls back to name heuristic when vision is absent (umans kimi + qwen)", () => {
+    expect(isVisionCapable("umans/umans-kimi-k2.7", undefined)).toBe(true);
+    expect(isVisionCapable("umans/umans-qwen3.6-35b-a3b", undefined)).toBe(true);
   });
 
-  it("falls back to name heuristic when vision is absent (non-kimi)", () => {
-    expect(isVisionCapable("umans/glm-5.2", undefined)).toBe(false);
-    expect(isVisionCapable("umans/deepseek-v4-flash", { id: "deepseek-v4-flash" })).toBe(false);
+  it("falls back to name heuristic when vision is absent (non-vision)", () => {
+    expect(isVisionCapable("umans/umans-glm-5.2", undefined)).toBe(false);
+    expect(isVisionCapable("umans/umans-coder", { id: "umans-coder" })).toBe(false);
   });
 
   it("returns false for undefined model name", () => {
@@ -36,37 +36,41 @@ describe("isVisionCapable", () => {
 describe("findVisionModelName", () => {
   const getInfo = async (name: string): Promise<ModelInfo | undefined> => {
     const map: Record<string, ModelInfo> = {
-      "umans/kimi-k2.7": { id: "kimi-k2.7", vision: true },
-      "umans/glm-5.2": { id: "glm-5.2" },
+      "umans/umans-kimi-k2.7": { id: "umans-kimi-k2.7", vision: true },
+      "umans/umans-qwen3.6-35b-a3b": { id: "umans-qwen3.6-35b-a3b", vision: true },
+      "umans/umans-glm-5.2": { id: "umans-glm-5.2" },
       "umans/llama-vision": { id: "llama-vision", vision: true },
     };
     return map[name];
   };
 
-  it("finds the first kimi-family model via name heuristic", async () => {
+  it("finds the first umans kimi model via name heuristic", async () => {
     const name = await findVisionModelName(
-      ["umans/glm-5.2", "umans/kimi-k2.7", "umans/llama-vision"],
+      ["umans/umans-glm-5.2", "umans/umans-kimi-k2.7", "umans/llama-vision"],
       getInfo,
     );
-    expect(name).toBe("umans/kimi-k2.7");
+    expect(name).toBe("umans/umans-kimi-k2.7");
   });
 
   it("finds a vision model via ModelInfo.vision when name heuristic misses", async () => {
-    const name = await findVisionModelName(["umans/glm-5.2", "umans/llama-vision"], getInfo);
-    expect(name).toBe("umans/llama-vision");
-  });
-
-  it("skips the excluded model", async () => {
     const name = await findVisionModelName(
-      ["umans/kimi-k2.7", "umans/llama-vision"],
+      ["umans/umans-glm-5.2", "umans/llama-vision"],
       getInfo,
-      "umans/kimi-k2.7",
     );
     expect(name).toBe("umans/llama-vision");
   });
 
+  it("skips the excluded model and finds the next vision model", async () => {
+    const name = await findVisionModelName(
+      ["umans/umans-kimi-k2.7", "umans/umans-qwen3.6-35b-a3b"],
+      getInfo,
+      "umans/umans-kimi-k2.7",
+    );
+    expect(name).toBe("umans/umans-qwen3.6-35b-a3b");
+  });
+
   it("returns undefined when no vision model is available", async () => {
-    const name = await findVisionModelName(["umans/glm-5.2"], getInfo);
+    const name = await findVisionModelName(["umans/umans-glm-5.2"], getInfo);
     expect(name).toBeUndefined();
   });
 

@@ -53,28 +53,33 @@ describe("listModels — pure mapping (parseModelList)", () => {
 });
 
 describe("listModels — vision capability detection", () => {
-  it("isVisionModelId returns true for kimi-family model ids", () => {
-    expect(isVisionModelId("kimi-k2.7")).toBe(true);
-    expect(isVisionModelId("Kimi-K2.7")).toBe(true); // case-insensitive
-    expect(isVisionModelId("moonshot/kimi-k2-thinking")).toBe(true);
+  it("isVisionModelId returns true for umans kimi and qwen model ids", () => {
+    expect(isVisionModelId("umans-kimi-k2.7")).toBe(true);
+    expect(isVisionModelId("Umans-Kimi-K2.7")).toBe(true); // case-insensitive
+    expect(isVisionModelId("umans-qwen3.6-35b-a3b")).toBe(true);
   });
 
-  it("isVisionModelId returns false for non-kimi model ids", () => {
-    expect(isVisionModelId("glm-5.2")).toBe(false);
-    expect(isVisionModelId("deepseek-v4-flash")).toBe(false);
+  it("isVisionModelId returns false for non-vision model ids", () => {
+    expect(isVisionModelId("umans-glm-5.2")).toBe(false);
     expect(isVisionModelId("umans-coder")).toBe(false);
+    expect(isVisionModelId("umans-flash")).toBe(false);
+    expect(isVisionModelId("kimi-k2.7-code")).toBe(false); // opencode kimi, not umans
+    expect(isVisionModelId("qwen3.7-max")).toBe(false); // opencode qwen, not umans
+    expect(isVisionModelId("deepseek-v4-flash")).toBe(false);
   });
 
-  it("parseModelList sets vision: true on kimi-family models", () => {
+  it("parseModelList sets vision: true on umans kimi and qwen models only", () => {
     const result = parseModelList([
-      { id: "kimi-k2.7", context_length: 200000 },
-      { id: "glm-5.2", context_length: 128000 },
-      { id: "deepseek-v4-flash" },
+      { id: "umans-kimi-k2.7", context_length: 262144 },
+      { id: "umans-qwen3.6-35b-a3b", context_length: 262144 },
+      { id: "umans-glm-5.2", context_length: 405504 },
+      { id: "umans-coder" },
     ]);
     expect(result).toEqual([
-      { id: "kimi-k2.7", contextWindow: 200000, vision: true },
-      { id: "glm-5.2", contextWindow: 128000 },
-      { id: "deepseek-v4-flash" },
+      { id: "umans-kimi-k2.7", contextWindow: 262144, vision: true },
+      { id: "umans-qwen3.6-35b-a3b", contextWindow: 262144, vision: true },
+      { id: "umans-glm-5.2", contextWindow: 405504 },
+      { id: "umans-coder" },
     ]);
   });
 });
