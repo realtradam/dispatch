@@ -35,10 +35,44 @@ export class DiagnosticsStore {
   private pushDiagnostics = new Map<string, readonly Diagnostic[]>();
   private pullDiagnostics = new Map<string, readonly Diagnostic[]>();
   private pushReceived = new Set<string>();
+  /**
+   * Bounded push-diagnostics set: once more than this many URIs have cached
+   * push diagnostics, the least-recently-pushed is evicted (just deleted —
+   * no didClose, since these are often background-scanned files the agent
+   * never opened). Language servers (tsserver, rust-analyzer, …) scan the
+   * workspace and emit textDocument/publishDiagnostics for files the client
+   * never touched; those never enter the client's openDocuments LRU, so
+   * without this cap the map grew without bound over a long session.
+   */
+  private static readonly MAX_PUSH_DIAGNOSTICS = 100;
 
   setPushDiagnostics(params: PublishDiagnosticsParams): void {
+    // Delete-then-set to refresh LRU recency: a URI re-pushed (e.g. an
+    // actively edited file) moves to the tail (most-recently-used), so
+    // background-scanned files pushed once drift to the head and are evicted
+    // first. Mirrors the openDocuments LRU in client.ts. (A plain `set` on
+    // an existing key updates the value but leaves its insertion position —
+    // and thus its eviction priority — unchanged.)
+    this.pushDiagnostics.delete(params.uri);
     this.pushDiagnostics.set(params.uri, params.diagnostics);
     this.pushReceived.add(params.uri);
+    this.evictPushIfOverCap();
+  }
+
+  /**
+   * If the push-diagnostics set exceeds MAX_PUSH_DIAGNOSTICS, drop the
+   * least-recently-pushed entry (the first key in insertion order) from
+   * both `pushDiagnostics` and `pushReceived`. No didClose is sent: these
+   * entries are frequently for files the agent never opened, and even for
+   * an opened file the next push re-caches it.
+   */
+  private evictPushIfOverCap(): void {
+    while (this.pushDiagnostics.size > DiagnosticsStore.MAX_PUSH_DIAGNOSTICS) {
+      const oldest = this.pushDiagnostics.keys().next().value;
+      if (oldest === undefined) break;
+      this.pushDiagnostics.delete(oldest);
+      this.pushReceived.delete(oldest);
+    }
   }
 
   setPullDiagnostics(uri: string, report: DocumentDiagnosticReport): void {
