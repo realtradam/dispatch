@@ -23,8 +23,8 @@ import {
   memorySampleAttributes,
 } from "@dispatch/session-orchestrator";
 
-/** Default periodic sample interval: every 60s. */
-export const DEFAULT_MEMORY_SAMPLE_INTERVAL_MS = 60_000;
+/** Default periodic sample interval: every 15s. */
+export const DEFAULT_MEMORY_SAMPLE_INTERVAL_MS = 15_000;
 
 /** Default GC interval: every 5 min (longer than the sample interval). */
 export const DEFAULT_GC_INTERVAL_MS = 5 * 60_000;
@@ -52,7 +52,7 @@ export interface MemoryTelemetryDeps {
    * baseline.
    */
   readonly getActiveConversationCount: () => number;
-  /** Periodic sample interval (ms). Defaults to 60s. */
+  /** Periodic sample interval (ms). Defaults to 15s. */
   readonly sampleIntervalMs?: number;
   /** GC interval (ms). Defaults to 5 min. */
   readonly gcIntervalMs?: number;
@@ -77,7 +77,7 @@ export interface MemoryTelemetryHandle {
 
 /**
  * Start periodic memory telemetry. Logs process.memoryUsage() every
- * `sampleIntervalMs` (default 60s) tagged with the active-conversation count,
+ * `sampleIntervalMs` (default 15s) tagged with the active-conversation count,
  * and every `gcIntervalMs` (default 5 min) runs `gc()` and logs RSS
  * before/after to distinguish live retained objects from GC fragmentation.
  *
@@ -97,7 +97,7 @@ export function startMemoryTelemetry(deps: MemoryTelemetryDeps): MemoryTelemetry
   let gcHandle: MemoryTimerHandle | undefined;
 
   // Periodic sample: log rss/heap/external/arrayBuffers + active-conversation
-  // count every 60s. Correlates RSS growth with active turns so the leak can
+  // count every 15s. Correlates RSS growth with active turns so the leak can
   // be attributed to the streaming path vs an idle baseline.
   const sampleHandle: MemoryTimerHandle | undefined = setIntervalFn(() => {
     const sample = deps.sampleMemory();
