@@ -27,7 +27,11 @@ import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
-import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
+import {
+  type MemorySample,
+  extension as sessionOrchestratorExt,
+  sessionOrchestratorHandle,
+} from "@dispatch/session-orchestrator";
 import { extension as skillsExt } from "@dispatch/skills";
 import { extension as sshExt } from "@dispatch/ssh";
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
@@ -49,6 +53,7 @@ import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
 import { loadExternalExtensions } from "./load-external.js";
+import { startMemoryTelemetry } from "./mem-telemetry.js";
 
 function createEmptySecrets(): SecretsAccess {
   return {
@@ -227,10 +232,43 @@ async function boot(): Promise<void> {
     }
   }
 
+  // Periodic memory telemetry — leak-localization edge effect (AGENTS.md:
+  // timers are edge effects owned by host-bin, the composition root, NOT the
+  // kernel). Logs process.memoryUsage() every 60s tagged with the active-
+  // conversation count, and every 5 min runs Bun.gc(true) + logs RSS
+  // before/after to distinguish live retained objects from GC fragmentation.
+  // The per-turn before/after sampling lives in session-orchestrator; this
+  // owns the PERIODIC baseline. All effects are injected (no ambient state);
+  // stop() is cleared on shutdown so timers never leak across a restart.
+  let memoryTelemetry: { stop: () => void } | undefined;
+  try {
+    const orchestrator = host.getHostAPI().getService(sessionOrchestratorHandle);
+    memoryTelemetry = startMemoryTelemetry({
+      logger: logger.child({ extensionId: "mem-telemetry" }),
+      sampleMemory: (): MemorySample => {
+        const m = process.memoryUsage();
+        return {
+          rss: m.rss,
+          heapUsed: m.heapUsed,
+          heapTotal: m.heapTotal,
+          external: m.external,
+          arrayBuffers: m.arrayBuffers,
+        };
+      },
+      gc: () => Bun.gc(true),
+      getActiveConversationCount: () => orchestrator.getActiveConversationCount(),
+    });
+  } catch (err) {
+    logger.error("Memory telemetry not started (session-orchestrator unavailable)", {
+      err,
+    });
+  }
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    memoryTelemetry?.stop();
     logger.info("Shutting down — deactivating extensions");
     await host.deactivate();
     logger.info("Draining collector");
