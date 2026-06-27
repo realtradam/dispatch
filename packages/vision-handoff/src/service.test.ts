@@ -59,6 +59,7 @@ function makeDeps(overrides: Partial<VisionHandoffDeps> = {}): VisionHandoffDeps
         : undefined,
     ),
     readFileAsDataUrl: vi.fn(async (path: string) => `data:image/png;base64,FILE(${path})`),
+    setConversationTitle: vi.fn(async (_conversationId: string, _title: string) => {}),
     ...overrides,
   };
 }
@@ -255,6 +256,51 @@ describe("VisionHandoffService.consultVision", () => {
     expect(call.modelName).toBe("umans/umans-kimi-k2.7");
     expect(call.images).toHaveLength(1);
     expect(call.images?.[0]?.url).toBe("data:image/png;base64,img1");
+  });
+
+  it("labels the consultation tab with an 'IMAGE - ' prefixed title", async () => {
+    const deps = makeDeps();
+    const { orchestrator } = makeOrchestratorDouble("The error is on line 12.");
+    deps.resolveOrchestrator = () => orchestrator;
+    const svc = createVisionHandoffService(deps);
+
+    // Register an image first (as prepareForProvider would).
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "image", url: "data:image/png;base64,img1" }] },
+    ];
+    await svc.prepareForProvider(messages, "umans/umans-glm-5.2", { conversationId: "conv-1" });
+
+    const result = await svc.consultVision("What error is shown?", {
+      conversationId: "conv-1",
+      imageIds: [1],
+    });
+
+    expect("error" in result).toBe(false);
+    // The title was set with the IMAGE - prefix + the question.
+    expect(deps.setConversationTitle).toHaveBeenCalledOnce();
+    const [titleConvId, title] = (deps.setConversationTitle as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(titleConvId).toBe((result as { conversationId: string }).conversationId);
+    expect(title).toBe("IMAGE - What error is shown?");
+  });
+
+  it("does not call setConversationTitle when it is not provided", async () => {
+    const deps = makeDeps({ setConversationTitle: undefined });
+    const { orchestrator } = makeOrchestratorDouble("response");
+    deps.resolveOrchestrator = () => orchestrator;
+    const svc = createVisionHandoffService(deps);
+
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "image", url: "data:image/png;base64,img1" }] },
+    ];
+    await svc.prepareForProvider(messages, "umans/umans-glm-5.2", { conversationId: "conv-1" });
+
+    // Should NOT throw — setConversationTitle is optional.
+    const result = await svc.consultVision("What?", {
+      conversationId: "conv-1",
+      imageIds: [1],
+    });
+    expect("error" in result).toBe(false);
   });
 
   it("opens a consultation with a file path image", async () => {

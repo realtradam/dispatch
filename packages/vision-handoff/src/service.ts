@@ -34,6 +34,7 @@ import { defineService, type ServiceHandle } from "@dispatch/kernel";
 import {
   collectTextFromStream,
   findVisionModelName,
+  formatConsultationTitle,
   formatConsultResult,
   formatImagePlaceholder,
   formatNoVisionPlaceholder,
@@ -146,6 +147,14 @@ export interface VisionHandoffDeps {
    * Best-effort.
    */
   readonly deleteConversationImages?: (conversationId: string) => Promise<void>;
+  /**
+   * Set the human-readable title of a conversation. Used to label vision
+   * consultation tabs with an `"IMAGE - "` prefix so they're visually
+   * distinguishable from normal conversation tabs. Backed by the conversation
+   * store's `setConversationTitle`. Optional — when absent, consultation tabs
+   * keep their default (question-derived) title.
+   */
+  readonly setConversationTitle?: (conversationId: string, title: string) => Promise<void>;
   /** Generate a new conversation ID for a consultation. Defaults to crypto.randomUUID. */
   readonly generateId?: () => string;
   readonly logger?: Logger;
@@ -621,6 +630,22 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         imageCount: images.length,
         fromConversation: opts.conversationId,
       });
+
+      // Label the consultation tab with an "IMAGE - " prefix so it's visually
+      // distinguishable from normal conversation tabs. Set BEFORE the turn
+      // starts so the tab shows the correct title from the first moment (the
+      // store keeps a non-"Untitled" title on first message append).
+      if (deps.setConversationTitle !== undefined) {
+        try {
+          await deps.setConversationTitle(consultationId, formatConsultationTitle(question));
+        } catch (err) {
+          // Best-effort — don't let a title-write failure break the consultation.
+          log?.warn("vision-handoff: failed to set consultation title", {
+            consultationId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
 
       let responseText = "";
       let errorMessage = "";
