@@ -167,8 +167,11 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
     };
     const providerOpts: ProviderStreamOptions = {
       model: vision.model,
-      // Low temperature for faithful transcription.
-      temperature: 0,
+      // NOTE: temperature is deliberately OMITTED. Different vision providers
+      // have different constraints (e.g. Moonshot/Kimi only allows temperature:
+      // 1; others allow 0–2). Hardcoding any value risks an HTTP 400 from a
+      // provider that rejects it. Omitting lets each provider use its own
+      // default — the truly universal, provider-agnostic choice.
       // A short system prompt keeps the vision model focused on describing.
       systemPrompt:
         "You are a vision assistant. Describe images faithfully and thoroughly for a developer who cannot see them.",
