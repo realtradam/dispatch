@@ -201,6 +201,37 @@ export function createApp(opts: CreateServerOptions): Hono {
 
   app.get("/health", (c) => c.json({ ok: true }));
 
+  // ── Tmp image serving (vision handoff) ──────────────────────────────────────
+  app.get("/images/:conversationId/:imageId", async (c) => {
+    const conversationId = c.req.param("conversationId");
+    const imageId = c.req.param("imageId");
+    if (imageId.includes("/") || imageId.includes("..")) {
+      return c.json({ error: "Invalid image ID" }, 400);
+    }
+    const imageDir = process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images";
+    const { join } = await import("node:path");
+    const { readFile: fsReadFile } = await import("node:fs/promises");
+    const filePath = join(imageDir, conversationId, imageId);
+    try {
+      const buf = await fsReadFile(filePath);
+      const ext = imageId.toLowerCase();
+      const mime = ext.endsWith(".png")
+        ? "image/png"
+        : ext.endsWith(".jpg") || ext.endsWith(".jpeg")
+          ? "image/jpeg"
+          : ext.endsWith(".webp")
+            ? "image/webp"
+            : ext.endsWith(".gif")
+              ? "image/gif"
+              : ext.endsWith(".bmp")
+                ? "image/bmp"
+                : "application/octet-stream";
+      return new Response(buf, { headers: { "Content-Type": mime, "Cache-Control": "no-cache" } });
+    } catch {
+      return c.json({ error: "Image not found" }, 404);
+    }
+  });
+
   app.get("/conversations/:id/metrics", async (c) => {
     const conversationId = c.req.param("id");
 

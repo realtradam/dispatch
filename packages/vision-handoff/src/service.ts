@@ -115,6 +115,37 @@ export interface VisionHandoffDeps {
     imageUrl: string,
     transcription: string,
   ) => Promise<void>;
+  /**
+   * Save an image data URL to a tmp file and return a compact URL
+   * (`/images/<conversationId>/<imageId>.<ext>`) that can be persisted in the
+   * conversation store instead of the full data URL (which would be megabytes).
+   * The frontend serves the image via `GET /images/...`; the provider resolves
+   * it back to a data URL via {@link resolveImageUrl} at runtime. When `undefined`,
+   * data URLs pass through unchanged (images persist in SQLite — the large-DB
+   * path, for environments without tmp file support).
+   */
+  readonly saveImageToTmp?: (
+    conversationId: string,
+    dataUrl: string,
+    mimeType?: string,
+  ) => Promise<string>;
+  /**
+   * Resolve a compact URL (`/images/...`) back to a data URL by reading the tmp
+   * file. Data URLs and HTTP URLs pass through unchanged. Paired with
+   * {@link saveImageToTmp}.
+   */
+  readonly resolveImageUrl?: (url: string) => Promise<string>;
+  /**
+   * Delete a tmp image file (after it has been compacted to text — the
+   * transcription is cached, the raw image is no longer needed). Best-effort:
+   * errors are logged, not thrown.
+   */
+  readonly deleteTmpImage?: (compactUrl: string) => Promise<void>;
+  /**
+   * Delete all tmp images for a conversation (on conversation close).
+   * Best-effort.
+   */
+  readonly deleteConversationImages?: (conversationId: string) => Promise<void>;
   /** Generate a new conversation ID for a consultation. Defaults to crypto.randomUUID. */
   readonly generateId?: () => string;
   readonly logger?: Logger;
@@ -126,6 +157,24 @@ export interface VisionHandoffService {
    * credential store's ModelInfo + the name heuristic.
    */
   readonly isVisionCapable: (modelName: string | undefined) => Promise<boolean>;
+
+  /**
+   * Store images to tmp files and return compact URLs. Each input image's data
+   * URL is saved to `/tmp/dispatch/images/<conversationId>/<uuid>.<ext>` and
+   * replaced with a compact HTTP path (`/images/<conversationId>/<uuid>.<ext>`)
+   * so the persisted conversation store holds a tiny string, not megabytes of
+   * base64. When `saveImageToTmp` is not configured, data URLs pass through
+   * unchanged (backward compatible).
+   */
+  readonly storeImages: (
+    conversationId: string,
+    images: readonly ImageInput[],
+  ) => Promise<readonly ImageInput[]>;
+
+  /**
+   * Delete all tmp images for a conversation (on close). Best-effort.
+   */
+  readonly purgeConversationImages: (conversationId: string) => Promise<void>;
 
   /**
    * Resolve a vision-capable model from the catalog (any provider). Returns
@@ -306,6 +355,15 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         if (convId !== undefined && deps.setImageTranscription !== undefined) {
           await deps.setImageTranscription(convId, entry.url, text);
         }
+        // The image has been transcribed to text — delete the tmp file
+        // (the transcription is cached, the raw image is no longer needed).
+        if (deps.deleteTmpImage !== undefined) {
+          try {
+            await deps.deleteTmpImage(entry.url);
+          } catch {
+            // Best-effort — don't let cleanup failure break the turn.
+          }
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log?.warn("vision-handoff: image compaction transcription failed", { error: msg });
@@ -340,11 +398,79 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
     return result;
   }
 
+  async function resolveImageUrlsInMessages(
+    messages: readonly ChatMessage[],
+  ): Promise<readonly ChatMessage[]> {
+    if (deps.resolveImageUrl === undefined) return messages;
+    let hasCompact = false;
+    for (const msg of messages) {
+      if (msg.chunks.some((c) => c.type === "image")) {
+        hasCompact = true;
+        break;
+      }
+    }
+    if (!hasCompact) return messages;
+    const result: ChatMessage[] = [];
+    for (const msg of messages) {
+      if (!msg.chunks.some((c) => c.type === "image")) {
+        result.push(msg);
+        continue;
+      }
+      const newChunks: Chunk[] = [];
+      for (const chunk of msg.chunks) {
+        if (chunk.type === "image") {
+          const dataUrl = await deps.resolveImageUrl!(chunk.url);
+          newChunks.push({
+            type: "image",
+            url: dataUrl,
+            ...(chunk.mimeType !== undefined ? { mimeType: chunk.mimeType } : {}),
+          });
+        } else {
+          newChunks.push(chunk);
+        }
+      }
+      result.push({ role: msg.role, chunks: newChunks });
+    }
+    return result;
+  }
+
   const service: VisionHandoffService = {
     async isVisionCapable(modelName: string | undefined): Promise<boolean> {
       if (modelName === undefined) return false;
       const info = await getInfo(modelName);
       return isVisionCapable(modelName, info);
+    },
+
+    async storeImages(
+      conversationId: string,
+      images: readonly ImageInput[],
+    ): Promise<readonly ImageInput[]> {
+      if (deps.saveImageToTmp === undefined) return images;
+      const result: ImageInput[] = [];
+      for (const img of images) {
+        if (img.url.startsWith("data:")) {
+          const compactUrl = await deps.saveImageToTmp(conversationId, img.url, img.mimeType);
+          result.push({
+            url: compactUrl,
+            ...(img.mimeType !== undefined ? { mimeType: img.mimeType } : {}),
+          });
+        } else {
+          result.push(img);
+        }
+      }
+      return result;
+    },
+
+    async purgeConversationImages(conversationId: string): Promise<void> {
+      if (deps.deleteConversationImages === undefined) return;
+      try {
+        await deps.deleteConversationImages(conversationId);
+      } catch (err) {
+        log?.warn("vision-handoff: failed to purge conversation images", {
+          conversationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     },
 
     resolveVisionModel,
@@ -362,6 +488,11 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       // Fast path: no images anywhere → nothing to do.
       if (!hasImageChunks(messages)) return messages;
 
+      // Resolve compact URLs (/images/...) → data URLs for the provider.
+      // The persisted chunks store compact URLs (tiny strings); the provider
+      // needs data URLs (read from tmp files at runtime).
+      const resolved = await resolveImageUrlsInMessages(messages);
+
       const isCapable =
         currentModelName !== undefined &&
         (await isVisionCapable(currentModelName, await getInfo(currentModelName)));
@@ -371,7 +502,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       // are transcribed to text (one-time, cached) and stripped from the
       // provider messages. Recent images (within the limit) stay native.
       if (isCapable) {
-        return compactImagesForVisionModel(messages, opts, currentModelName);
+        return compactImagesForVisionModel(resolved, opts, currentModelName);
       }
 
       // ── Non-vision model: placeholders + consult_vision ──────────────────
@@ -388,7 +519,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       // per-conversation registry so the consult_vision tool can look it up.
       let seqId = 0;
       const result: ChatMessage[] = [];
-      for (const msg of messages) {
+      for (const msg of resolved) {
         if (!msg.chunks.some((c) => c.type === "image")) {
           result.push(msg);
           continue;
