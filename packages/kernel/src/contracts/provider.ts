@@ -114,6 +114,16 @@ export interface ModelInfo {
   readonly displayName?: string;
   /** The model's max context window in tokens (e.g. 200000). Optional — providers that don't report it leave it undefined. */
   readonly contextWindow?: number;
+  /**
+   * Whether this model can natively accept image input (vision/multimodal).
+   * When `true`, image chunks in a user message are passed through to the
+   * provider serialized to its image-content format. When `false`/absent, the
+   * orchestrator's vision handoff transcribes images to text (via a
+   * vision-capable model) before the model sees them. Optional — providers
+   * that cannot detect it leave it undefined (treated as non-vision); a
+   * provider that knows a model is vision-capable sets it `true`.
+   */
+  readonly vision?: boolean;
 }
 
 /**

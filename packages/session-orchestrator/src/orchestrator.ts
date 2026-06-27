@@ -5,6 +5,7 @@ import type {
   CompactionResult,
   ConversationStatus,
   EventHookDescriptor,
+  ImageInput,
   Logger,
   ModelInfo,
   ProviderContract,
@@ -34,11 +35,71 @@ import {
 } from "./pure.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
+// --- Vision handoff (lazy, optional) ---
+
+/**
+ * Minimal contract the vision-handoff service satisfies. Defined here (not
+ * imported from the vision-handoff package) so the orchestrator has NO
+ * compile-time dependency on it — the service is resolved lazily at runtime
+ * (like the message-queue / system-prompt services), and the feature degrades
+ * off cleanly when the extension isn't loaded (images pass through unchanged,
+ * which is correct for vision-capable models and a no-op for text-only turns).
+ *
+ * `prepareForProvider` transforms a message list for the provider: if the
+ * active model is vision-capable, messages pass through unchanged; otherwise
+ * image chunks are replaced with numbered placeholders (telling the model to
+ * call `consult_vision`) and the images are registered for tool access.
+ */
+export interface VisionHandoffService {
+  /**
+   * Store images to tmp files and return compact URLs. Each input image's data
+   * URL is saved to a tmp file and replaced with a compact HTTP path so the
+   * persisted conversation store holds a tiny string, not megabytes of base64.
+   * When `saveImageToTmp` is not configured, data URLs pass through unchanged.
+   */
+  readonly storeImages: (
+    conversationId: string,
+    images: readonly ImageInput[],
+  ) => Promise<readonly ImageInput[]>;
+
+  /** Delete all tmp images for a conversation (on close). Best-effort. */
+  readonly purgeConversationImages: (conversationId: string) => Promise<void>;
+
+  readonly prepareForProvider: (
+    messages: readonly ChatMessage[],
+    currentModelName: string | undefined,
+    opts?: {
+      readonly conversationId?: string;
+      readonly imageLimit?: number;
+      readonly signal?: AbortSignal;
+      readonly logger?: Logger;
+    },
+  ) => Promise<readonly ChatMessage[]>;
+}
+
+/**
+ * Local handle for the vision-handoff service, keyed by the same ID the
+ * vision-handoff extension registers under (`"vision-handoff/service"`). Defined
+ * locally (not imported) so the orchestrator has no compile-time dependency on
+ * the vision-handoff package — the service is resolved lazily at runtime, and
+ * the feature degrades off cleanly when the extension isn't loaded.
+ */
+export const visionHandoffLocalHandle: ServiceHandle<VisionHandoffService> =
+  defineService<VisionHandoffService>("vision-handoff/service");
+
 // --- Broadcast hub types ---
 
 export interface StartTurnInput {
   readonly conversationId: string;
   readonly text: string;
+  /**
+   * Images attached to this turn (e.g. user-pasted screenshots). Each is
+   * appended as an `image` chunk on the persisted user message. For a
+   * vision-capable model the images pass through to the provider natively; for
+   * a non-vision model the vision handoff transcribes them to text first.
+   * Optional — omit for a text-only turn.
+   */
+  readonly images?: readonly ImageInput[];
   readonly modelName?: string;
   readonly cwd?: string;
   /**
@@ -77,6 +138,12 @@ export type StartTurnResult =
 export interface EnqueueInput {
   readonly conversationId: string;
   readonly text: string;
+  /**
+   * Images attached (the steering / opening message analog of
+   * `StartTurnInput.images`). Threaded to `startTurn` when the conversation is
+   * idle (the message starts a turn). Additive optional.
+   */
+  readonly images?: readonly ImageInput[];
   /** Workspace to stamp on a new conversation. Defaults to `"default"`. */
   readonly workspaceId?: string;
   /**
@@ -291,6 +358,8 @@ export interface SessionOrchestrator {
     workspaceId?: string;
     /** Explicit system-prompt override — see {@link StartTurnInput.systemPrompt}. */
     systemPrompt?: string;
+    /** Images attached to this turn — see {@link StartTurnInput.images}. */
+    images?: readonly ImageInput[];
   }): Promise<void>;
 }
 
@@ -345,6 +414,17 @@ export interface SessionOrchestratorDeps {
    * when the stream completes. Lazy so activation order doesn't matter.
    */
   readonly resolveConcurrencyLimiter?: () => ConcurrencyLimiter | undefined;
+  /**
+   * Lazily resolves the vision-handoff service, or `undefined` when the
+   * vision-handoff extension isn't loaded. Used to transcribe image chunks to
+   * text for non-vision models before they reach the provider (so a text-only
+   * model can still reason about pasted/code images). When `undefined`, images
+   * pass through unchanged (correct for vision-capable models; a text-only model
+   * would then receive image content its API may reject — the feature degrades
+   * off cleanly for text-only turns since there are no images). Lazy so
+   * activation order doesn't matter; called per-turn.
+   */
+  readonly resolveVisionHandoff?: () => VisionHandoffService | undefined;
   /** Apply the per-turn tools filter chain. Injected for testability. */
   readonly applyToolsFilter: (assembly: ToolAssembly) => Promise<ToolAssembly>;
   /** Base logger (auto-scoped to this extension); childed per turn for span capture. */
@@ -447,6 +527,7 @@ export function createSessionOrchestrator(
     reasoningEffortOverride: ReasoningEffort | undefined,
     workspaceId: string,
     systemPromptOverride: string | undefined,
+    images: readonly ImageInput[] | undefined,
   ): void {
     const turnId = generateTurnId();
     const promptStartedAt = deps.now?.() ?? Date.now();
@@ -569,7 +650,18 @@ export function createSessionOrchestrator(
         const effectiveModelName = resolveModelName(modelName, storedModel);
 
         const history = await deps.conversationStore.load(conversationId);
-        const userMsg = buildUserMessage(text);
+
+        // Store images to tmp files (compact URLs) BEFORE building the user
+        // message so the persisted chunks hold tiny URL references, not
+        // megabytes of base64 data URLs. When the vision-handoff service isn't
+        // loaded, images pass through unchanged (backward compatible).
+        const visionHandoffForStore = deps.resolveVisionHandoff?.();
+        const storedImages =
+          visionHandoffForStore !== undefined && images !== undefined
+            ? await visionHandoffForStore.storeImages(conversationId, images)
+            : images;
+
+        const userMsg = buildUserMessage(text, storedImages);
 
         // Workspace assignment for new conversations happens BEFORE
         // effective-cwd resolution (see workspaceSetupPromise above) so
@@ -744,9 +836,35 @@ export function createSessionOrchestrator(
                 return [{ role: "user", chunks: [{ type: "text", text: steerText }] }];
               };
 
+        // Vision handoff: transform the message list for the provider. When the
+        // active model is vision-capable, images pass through natively (no-op).
+        // When it is NOT vision-capable, image chunks are transcribed to text
+        // descriptions via a vision-capable model — so a text-only model can
+        // still reason about images. The PERSISTED user message keeps the
+        // original image chunks (appended below); only the provider's view is
+        // transcribed. When the vision-handoff service isn't loaded, images pass
+        // through unchanged (correct for vision models; text-only models would
+        // then receive image content their API may reject — degrades off cleanly
+        // for text-only turns with no images).
+        const visionHandoff = deps.resolveVisionHandoff?.();
+        let providerMessages: readonly ChatMessage[] = [...history, userMsg];
+        if (visionHandoff !== undefined) {
+          const visionSettings = await deps.conversationStore.getVisionSettings();
+          providerMessages = await visionHandoff.prepareForProvider(
+            providerMessages,
+            effectiveModelName,
+            {
+              conversationId,
+              imageLimit: visionSettings.imageLimit,
+              signal: controller.signal,
+              ...(turnLogger !== undefined ? { logger: turnLogger } : {}),
+            },
+          );
+        }
+
         const opts: RunTurnInput = {
           provider,
-          messages: [...history, userMsg],
+          messages: providerMessages,
           tools: assembled.tools,
           dispatch,
           emit: emitAndAccumulate,
@@ -852,6 +970,7 @@ export function createSessionOrchestrator(
       reasoningEffort,
       workspaceId,
       systemPrompt,
+      images,
     }) {
       if (activeTurns.has(conversationId)) {
         return { started: false, reason: "already-active" };
@@ -865,18 +984,20 @@ export function createSessionOrchestrator(
         reasoningEffort,
         workspaceId ?? "default",
         systemPrompt,
+        images,
       );
       const turn = activeTurns.get(conversationId);
       const turnId = turn !== undefined ? turn.turnId : "";
       return { started: true, turnId };
     },
 
-    enqueue({ conversationId, text, workspaceId, computerId }) {
+    enqueue({ conversationId, text, workspaceId, computerId, images }) {
       const result = orchestrator.startTurn({
         conversationId,
         text,
         ...(workspaceId !== undefined ? { workspaceId } : {}),
         ...(computerId !== undefined ? { computerId } : {}),
+        ...(images !== undefined ? { images } : {}),
       });
       if (result.started) {
         return { startedTurn: true, queue: [] };
@@ -939,6 +1060,9 @@ export function createSessionOrchestrator(
         });
       });
       void deps.conversationStore.setConversationStatus(conversationId, "closed");
+      // Purge tmp images for this conversation (best-effort, fire-and-forget).
+      const vh = deps.resolveVisionHandoff?.();
+      if (vh !== undefined) void vh.purgeConversationImages(conversationId);
       return { abortedTurn };
     },
 
@@ -961,6 +1085,7 @@ export function createSessionOrchestrator(
       reasoningEffort,
       workspaceId,
       systemPrompt,
+      images,
     }) {
       const turnInput: StartTurnInput = {
         conversationId,
@@ -971,6 +1096,7 @@ export function createSessionOrchestrator(
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
         ...(workspaceId !== undefined ? { workspaceId } : {}),
         ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+        ...(images !== undefined ? { images } : {}),
       };
       const result = orchestrator.startTurn(turnInput);
       if (!result.started) {

@@ -55,6 +55,13 @@ export interface ChatCommand {
   readonly computerId?: string;
   readonly reasoningEffort?: ReasoningEffort;
   readonly workspaceId?: string;
+  /**
+   * Images attached to this turn (data URLs or http URLs). Parsed from the
+   * `ChatRequest.images` field; forwarded to the orchestrator which converts
+   * them to `image` chunks on the user message. Each entry must have a non-empty
+   * string `url`; `mimeType` is optional.
+   */
+  readonly images?: readonly { readonly url: string; readonly mimeType?: string }[];
 }
 
 export interface ParseError {
@@ -119,6 +126,33 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
       return { error: "Field 'workspaceId' must be a string" };
     }
     (result as { workspaceId?: string }).workspaceId = obj.workspaceId;
+  }
+
+  if (obj.images !== undefined) {
+    if (!Array.isArray(obj.images)) {
+      return { error: "Field 'images' must be an array" };
+    }
+    const images: { url: string; mimeType?: string }[] = [];
+    for (const entry of obj.images) {
+      if (entry === null || typeof entry !== "object") {
+        return { error: "Each image must be an object with a 'url' string" };
+      }
+      const img = entry as { url?: unknown; mimeType?: unknown };
+      if (typeof img.url !== "string" || img.url.length === 0) {
+        return { error: "Each image must have a non-empty string 'url'" };
+      }
+      const parsed: { url: string; mimeType?: string } = { url: img.url };
+      if (img.mimeType !== undefined) {
+        if (typeof img.mimeType !== "string") {
+          return { error: "Field 'mimeType' on an image must be a string" };
+        }
+        parsed.mimeType = img.mimeType;
+      }
+      images.push(parsed);
+    }
+    if (images.length > 0) {
+      (result as { images?: readonly { url: string; mimeType?: string }[] }).images = images;
+    }
   }
 
   return result;

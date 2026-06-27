@@ -58,6 +58,12 @@ export interface ChatRouteResult {
    * conversation → workspace → local chain).
    */
   readonly computerId?: string;
+  /**
+   * Images attached to this turn (data URLs or http URLs), forwarded verbatim to
+   * the orchestrator. Absent when the client omits it. Each entry must have a
+   * non-empty string `url`; `mimeType` is optional.
+   */
+  readonly images?: readonly { readonly url: string; readonly mimeType?: string }[];
 }
 
 /** A malformed chat.send that should yield a chat.error reply. */
@@ -174,6 +180,36 @@ function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError 
       errorMessage: `chat.send: invalid reasoningEffort "${msg.reasoningEffort}" — must be one of: low, medium, high, xhigh, max`,
     };
   }
+  // Validate images (if present): each must be an object with a non-empty url.
+  let images: readonly { url: string; mimeType?: string }[] | undefined;
+  if (msg.images !== undefined) {
+    if (!Array.isArray(msg.images)) {
+      return {
+        kind: "chat-error",
+        conversationId: msg.conversationId,
+        errorMessage: "chat.send: 'images' must be an array",
+      };
+    }
+    const parsed: { url: string; mimeType?: string }[] = [];
+    for (const entry of msg.images) {
+      if (
+        entry === null ||
+        typeof entry !== "object" ||
+        typeof entry.url !== "string" ||
+        entry.url.length === 0
+      ) {
+        return {
+          kind: "chat-error",
+          conversationId: msg.conversationId,
+          errorMessage: "chat.send: each image must have a non-empty string 'url'",
+        };
+      }
+      const p: { url: string; mimeType?: string } = { url: entry.url };
+      if (entry.mimeType !== undefined) p.mimeType = entry.mimeType;
+      parsed.push(p);
+    }
+    if (parsed.length > 0) images = parsed;
+  }
   return {
     kind: "chat",
     conversationId: msg.conversationId,
@@ -183,6 +219,7 @@ function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError 
     ...(msg.reasoningEffort !== undefined ? { reasoningEffort: msg.reasoningEffort } : {}),
     ...(msg.workspaceId !== undefined ? { workspaceId: msg.workspaceId } : {}),
     ...(msg.computerId !== undefined ? { computerId: msg.computerId } : {}),
+    ...(images !== undefined ? { images } : {}),
   };
 }
 

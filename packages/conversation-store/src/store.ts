@@ -20,6 +20,7 @@ import {
   compactThresholdKey,
   computerKey,
   cwdKey,
+  imageTranscriptionsKey,
   metaKey,
   metricsKey,
   metricsPrefix,
@@ -28,6 +29,7 @@ import {
   parseSeq,
   reasoningEffortKey,
   seqKey,
+  VISION_SETTINGS_KEY,
   workspaceKey,
 } from "./keys.js";
 import { reconcileWithReport } from "./reconcile.js";
@@ -140,6 +142,35 @@ export interface ConversationStore {
   readonly getCompactPercent: (conversationId: string) => Promise<number | null>;
   /** Set the compact percent (0-100, 0 = manual only). */
   readonly setCompactPercent: (conversationId: string, percent: number) => Promise<void>;
+  /**
+   * Get the per-conversation image transcription cache: a map of image URL →
+   * transcription text. Used by the vision handoff to avoid re-transcribing
+   * old images that were compacted to text on a previous turn. Returns an
+   * empty map when none are cached.
+   */
+  readonly getImageTranscriptions: (conversationId: string) => Promise<ReadonlyMap<string, string>>;
+  /**
+   * Upsert a single image transcription into the per-conversation cache.
+   * Merges with any existing transcriptions (does NOT replace the whole map).
+   */
+  readonly setImageTranscription: (
+    conversationId: string,
+    imageUrl: string,
+    transcription: string,
+  ) => Promise<void>;
+  /**
+   * Get the global vision settings (image compaction limit + compaction model).
+   * The limit defaults to 10 when never set; the compaction model defaults to
+   * null (auto-select). Shared across ALL conversations and vision models.
+   */
+  readonly getVisionSettings: () => Promise<{
+    readonly imageLimit: number;
+    readonly compactionModel: string | null;
+  }>;
+  /** Set the global vision image compaction limit (0 = disabled). */
+  readonly setVisionImageLimit: (limit: number) => Promise<void>;
+  /** Set the global vision compaction model (null = auto-select). */
+  readonly setVisionCompactionModel: (model: string | null) => Promise<void>;
   /**
    * Set the `compactedFrom` field on a conversation's metadata, pointing to
    * the archive conversation that holds the pre-compaction history.
@@ -1002,6 +1033,52 @@ export function createConversationStore(
       if (logger !== undefined) {
         logger.debug("compact-percent set", { conversationId, percent });
       }
+    },
+
+    async getImageTranscriptions(conversationId) {
+      const raw = await storage.get(imageTranscriptionsKey(conversationId));
+      if (raw === null) return new Map();
+      try {
+        const obj = JSON.parse(raw) as Record<string, string>;
+        return new Map(Object.entries(obj));
+      } catch {
+        return new Map();
+      }
+    },
+
+    async setImageTranscription(conversationId, imageUrl, transcription) {
+      const existing = await this.getImageTranscriptions(conversationId);
+      const merged = new Map(existing);
+      merged.set(imageUrl, transcription);
+      const obj: Record<string, string> = {};
+      for (const [k, v] of merged) obj[k] = v;
+      await storage.set(imageTranscriptionsKey(conversationId), JSON.stringify(obj));
+    },
+
+    async getVisionSettings() {
+      const raw = await storage.get(VISION_SETTINGS_KEY);
+      if (raw === null) return { imageLimit: 10, compactionModel: null };
+      try {
+        const obj = JSON.parse(raw) as { imageLimit?: number; compactionModel?: string | null };
+        return {
+          imageLimit: typeof obj.imageLimit === "number" ? obj.imageLimit : 10,
+          compactionModel: obj.compactionModel ?? null,
+        };
+      } catch {
+        return { imageLimit: 10, compactionModel: null };
+      }
+    },
+
+    async setVisionImageLimit(limit) {
+      const current = await this.getVisionSettings();
+      const obj = { imageLimit: limit, compactionModel: current.compactionModel };
+      await storage.set(VISION_SETTINGS_KEY, JSON.stringify(obj));
+    },
+
+    async setVisionCompactionModel(model) {
+      const current = await this.getVisionSettings();
+      const obj = { imageLimit: current.imageLimit, compactionModel: model };
+      await storage.set(VISION_SETTINGS_KEY, JSON.stringify(obj));
     },
 
     async setCompactedFrom(conversationId, newConversationId) {

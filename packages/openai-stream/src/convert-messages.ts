@@ -1,8 +1,28 @@
 import type { ChatMessage, Chunk } from "@dispatch/kernel";
 
+/** A text part within a multimodal OpenAI content array. */
+export interface OpenAITextPart {
+  readonly type: "text";
+  readonly text: string;
+}
+
+/** An image part within a multimodal OpenAI content array (OpenAI vision format). */
+export interface OpenAIImagePart {
+  readonly type: "image_url";
+  readonly image_url: { readonly url: string };
+}
+
+/**
+ * A part of a multimodal message content array. When a message has mixed text
+ * and image chunks, the content is serialized as an array of these parts
+ * (OpenAI's vision format). Plain-text messages keep a string `content` for
+ * byte-stability with providers that only accept strings.
+ */
+export type OpenAIContentPart = OpenAITextPart | OpenAIImagePart;
+
 export interface OpenAIMessage {
   readonly role: "system" | "user" | "assistant" | "tool";
-  readonly content: string | null;
+  readonly content: string | null | readonly OpenAIContentPart[];
   readonly tool_calls?: readonly OpenAIToolCall[];
   readonly tool_call_id?: string;
 }
@@ -49,6 +69,29 @@ function convertSystemMessage(msg: ChatMessage): OpenAIMessage {
 }
 
 function convertUserMessage(msg: ChatMessage): OpenAIMessage {
+  // If the message has image chunks, serialize as a multimodal content array
+  // (OpenAI vision format): text parts + image_url parts in chunk order.
+  // Plain text-only messages keep a string `content` for byte-stability with
+  // providers that only accept a string (and to keep prompt-cache prefixes
+  // unchanged for the common no-image case).
+  const hasImage = msg.chunks.some((c) => c.type === "image");
+  if (hasImage) {
+    const parts: OpenAIContentPart[] = [];
+    for (const chunk of msg.chunks) {
+      if (chunk.type === "text") {
+        if (chunk.text.length > 0) {
+          parts.push({ type: "text", text: chunk.text });
+        }
+      } else if (chunk.type === "image") {
+        parts.push({ type: "image_url", image_url: { url: chunk.url } });
+      }
+      // Non-text/non-image chunks (tool-call, thinking, etc.) are not part of a
+      // user message's provider content and are skipped here.
+    }
+    // An image-only message (no text) still needs at least the image part.
+    return { role: "user", content: parts.length > 0 ? parts : "" };
+  }
+
   const text = msg.chunks
     .filter((c): c is Extract<Chunk, { type: "text" }> => c.type === "text")
     .map((c) => c.text)

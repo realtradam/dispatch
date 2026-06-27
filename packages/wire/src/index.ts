@@ -36,7 +36,8 @@ export type Chunk =
   | ToolCallChunk
   | ToolResultChunk
   | ErrorChunk
-  | SystemChunk;
+  | SystemChunk
+  | ImageChunk;
 
 /** A piece of plain text content from the assistant or user. */
 export interface TextChunk {
@@ -110,6 +111,46 @@ export interface ErrorChunk {
 export interface SystemChunk {
   readonly type: "system";
   readonly text: string;
+}
+
+/**
+ * An image attached to a message (e.g. a user-pasted screenshot or pasted
+ * photo). Carries a `url` that is EITHER a base64 data URL
+ * (`data:image/png;base64,…`) OR an `http(s)://` URL. Vision-capable models
+ * receive it natively (the provider serializes it to its image-content
+ * format); non-vision models never see it directly — the orchestrator's
+ * **vision handoff** transcribes it to a text description (via a
+ * vision-capable model) and feeds that text instead, so a text-only model can
+ * still reason about the image's contents.
+ *
+ * When a transcription was performed, it is persisted as a separate `text`
+ * chunk alongside the `image` chunk in the SAME user message, so the
+ * description is reused on every later turn (no re-transcription) and a
+ * client renders both the original image and its textual analysis.
+ */
+export interface ImageChunk {
+  readonly type: "image";
+  /** Image source: a base64 data URL (`data:image/…;base64,…`) or an `http(s)://` URL. */
+  readonly url: string;
+  /**
+   * Optional MIME type of the image (e.g. `"image/png"`). Inferred from the
+   * data URL when absent; present so a client can render an icon/label without
+   * parsing the URL. Optional — callers that only have a URL omit it.
+   */
+  readonly mimeType?: string;
+}
+
+/**
+ * An image a client attaches to a chat message (`ChatRequest.images`). The
+ * transport-facing input shape; the orchestrator converts each `ImageInput`
+ * into an `ImageChunk` on the persisted user message. Carries the same `url`
+ * semantics as `ImageChunk.url`.
+ */
+export interface ImageInput {
+  /** Image source: a base64 data URL (`data:image/…;base64,…`) or an `http(s)://` URL. */
+  readonly url: string;
+  /** Optional MIME type (e.g. `"image/png"`). Optional — inferred from the data URL when absent. */
+  readonly mimeType?: string;
 }
 
 /**

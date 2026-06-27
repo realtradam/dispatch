@@ -35,6 +35,100 @@ describe("convertMessages", () => {
     expect(result).toEqual([{ role: "user", content: "Hello, world!" }]);
   });
 
+  it("converts a user message with a text + image chunk to a multimodal content array", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        chunks: [
+          { type: "text", text: "What is in this image?" },
+          { type: "image", url: "data:image/png;base64,iVBORw0KGgo=" },
+        ],
+      },
+    ];
+
+    const result = convertMessages(messages);
+    expect(result).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this image?" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+        ],
+      },
+    ]);
+  });
+
+  it("converts an image-only user message (no text) to a content array with just the image", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        chunks: [{ type: "image", url: "https://example.com/cat.png" }],
+      },
+    ];
+
+    const result = convertMessages(messages);
+    expect(result).toEqual([
+      {
+        role: "user",
+        content: [{ type: "image_url", image_url: { url: "https://example.com/cat.png" } }],
+      },
+    ]);
+  });
+
+  it("converts a user message with multiple images interspersed with text", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        chunks: [
+          { type: "text", text: "Compare these:" },
+          { type: "image", url: "data:image/png;base64,aaa" },
+          { type: "text", text: "and" },
+          { type: "image", url: "data:image/jpeg;base64,bbb" },
+        ],
+      },
+    ];
+
+    const result = convertMessages(messages);
+    expect(result).toHaveLength(1);
+    const content = result[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+    if (Array.isArray(content)) {
+      expect(content).toHaveLength(4);
+      expect(content[0]).toEqual({ type: "text", text: "Compare these:" });
+      expect(content[1]).toEqual({
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,aaa" },
+      });
+      expect(content[2]).toEqual({ type: "text", text: "and" });
+      expect(content[3]).toEqual({
+        type: "image_url",
+        image_url: { url: "data:image/jpeg;base64,bbb" },
+      });
+    }
+  });
+
+  it("skips empty text parts in a multimodal message but keeps images", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        chunks: [
+          { type: "text", text: "" },
+          { type: "image", url: "data:image/png;base64,x" },
+        ],
+      },
+    ];
+
+    const result = convertMessages(messages);
+    const content = result[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+    if (Array.isArray(content)) {
+      // Empty text part is dropped; only the image remains.
+      expect(content).toEqual([
+        { type: "image_url", image_url: { url: "data:image/png;base64,x" } },
+      ]);
+    }
+  });
+
   it("converts an assistant message with text only", () => {
     const messages: ChatMessage[] = [
       {

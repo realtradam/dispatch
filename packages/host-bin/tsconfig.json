@@ -63,6 +63,9 @@
     },
     {
       "path": "../transport-ws"
+    },
+    {
+      "path": "../vision-handoff"
     }
   ]
 }

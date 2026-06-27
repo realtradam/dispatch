@@ -12,6 +12,7 @@ import {
   createSessionOrchestrator,
   createWarmService,
   sessionOrchestratorHandle,
+  visionHandoffLocalHandle,
 } from "./orchestrator.js";
 import { selectFirstProvider } from "./pure.js";
 import { filterRemoteIncompatibleTools, toolsFilter } from "./tools-filter.js";
@@ -103,6 +104,20 @@ export function activate(host: HostAPI): void {
       if (!loaded) return undefined;
       try {
         return host.getService(concurrencyServiceHandle);
+      } catch {
+        return undefined;
+      }
+    },
+    resolveVisionHandoff: () => {
+      // Lazily resolve the vision-handoff service. Returns undefined when the
+      // vision-handoff extension isn't loaded (images pass through unchanged —
+      // correct for vision-capable models; the feature degrades off cleanly for
+      // text-only turns). Lazy so activation order doesn't matter; the
+      // activated-manifests guard avoids a getService throw when absent.
+      const loaded = host.getExtensions().some((m) => m.id === "vision-handoff");
+      if (!loaded) return undefined;
+      try {
+        return host.getService(visionHandoffLocalHandle);
       } catch {
         return undefined;
       }
