@@ -57,6 +57,19 @@ export class DiagnosticsStore {
     this.pushReceived.delete(uri);
   }
 
+  /**
+   * Drop ALL state for a URI — push diagnostics, pull diagnostics, and the
+   * received flag. Called when a document is closed (textDocument/didClose)
+   * so the store stops retaining the file's diagnostics forever. Without
+   * this, the maps grow unboundedly as an agent touches thousands of files
+   * (the 9.5 GB leak).
+   */
+  purge(uri: string): void {
+    this.pushDiagnostics.delete(uri);
+    this.pullDiagnostics.delete(uri);
+    this.pushReceived.delete(uri);
+  }
+
   getMerged(uri: string): readonly Diagnostic[] {
     const push = this.pushDiagnostics.get(uri) ?? [];
     const pull = this.pullDiagnostics.get(uri) ?? [];

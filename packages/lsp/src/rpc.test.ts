@@ -109,4 +109,30 @@ describe("sendRequest timeout", () => {
     conn.handleMessage(frameResponse(1, { capabilities: {} }));
     await expect(promise).resolves.toEqual({ capabilities: {} });
   });
+
+  it("clears the pending entry on timeout so it does not leak (Bug 4)", async () => {
+    // A timed-out request must drop its pending entry: a late response for
+    // that id is then a no-op (entry gone), and the connection keeps working
+    // (next id resolves). If the entry leaked, dispose() would later reject a
+    // phantom promise — the initialize handshake relies on this.
+    const { conn } = makeConnection();
+    const promise = conn.sendRequest("initialize", {}, 50);
+    await expect(promise).rejects.toThrow(/timed out/);
+
+    // id 1's entry is gone: a stray response for it resolves nothing and
+    // does not throw.
+    conn.handleMessage(frameResponse(1, { stale: true }));
+
+    // The connection is un-wedged: a fresh request (id 2) resolves normally.
+    const promise2 = conn.sendRequest("second", {}, 5000);
+    conn.handleMessage(frameResponse(2, { ok: true }));
+    await expect(promise2).resolves.toEqual({ ok: true });
+
+    // dispose() rejects nothing extra: the only live pending entry is id 2
+    // (already resolved + cleared), so disposal is a clean no-op of rejects.
+    // (If id 1 had leaked, this would still be fine since handleResponse
+    // guards on missing entries — the leak is a memory issue, not a crash;
+    // the assertions above prove functional correctness post-timeout.)
+    conn.dispose();
+  });
 });

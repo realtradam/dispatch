@@ -99,6 +99,13 @@ export interface ClientDeps {
   readonly root: string;
   readonly initialization?: Readonly<Record<string, unknown>> | undefined;
   readonly serverId: string;
+  /**
+   * Timeout for the initialize handshake, in ms (default 45_000). Passed
+   * straight into `rpc.sendRequest` so a no-show server's pending entry is
+   * cleared on expiry (no Promise.race leak). Exposed mainly so tests can
+   * drive the timeout path quickly.
+   */
+  readonly initializeTimeoutMs?: number | undefined;
 }
 
 export type ClientState = "starting" | "connected" | "error" | "not-started";
@@ -115,6 +122,13 @@ export class LanguageServerClient {
   private state: ClientState = "not-started";
   private stateError: string | undefined;
   private deps: ClientDeps;
+  /**
+   * Open documents keyed by filePath. Insertion order = LRU recency order:
+   * the first entry is the least-recently-used (eviction candidate). Access
+   * (`change`) re-inserts to move a key to the tail (most-recently-used);
+   * `closeDocument` removes it. Capped at MAX_OPEN_DOCUMENTS — overflow
+   * evicts the LRU entry via a textDocument/didClose + purge.
+   */
   private openDocuments = new Map<string, { version: number; text: string }>();
   /** Sync mode captured from the server's initialize capabilities: 1=Full, 2=Incremental. */
   private textDocumentChange: 1 | 2 = 1;
@@ -130,6 +144,13 @@ export class LanguageServerClient {
   private static readonly STALE_REPEAT_THRESHOLD = 5;
   /** Default timeout for outbound requests (hover/definition/references). */
   private static readonly REQUEST_TIMEOUT_MS = 10_000;
+  /**
+   * Bounded open-document set: once more than this many files are open, the
+   * least-recently-used is closed (textDocument/didClose) and evicted. The
+   * maps were previously append-only — an agent scanning a large monorepo
+   * held every file's text + diagnostics forever (9.5 GB over 12h).
+   */
+  private static readonly MAX_OPEN_DOCUMENTS = 50;
 
   constructor(deps: ClientDeps) {
     this.deps = deps;
@@ -236,6 +257,11 @@ export class LanguageServerClient {
     this.process = null;
     this.rpc?.dispose();
     this.rpc = null;
+    // Release cached document text + diagnostics — the server is dead, so
+    // the contents are stale anyway. Keeps a repeatedly-crashed client from
+    // accumulating memory across re-spawn cycles.
+    this.openDocuments.clear();
+    this.lastDiagSnapshot.clear();
   }
 
   /**
@@ -275,7 +301,13 @@ export class LanguageServerClient {
       // message never becomes an unhandled rejection that crashes
       // the server. (handleMessage also has its own try/catch around
       // JSON.parse, but this is the defence-in-depth boundary.)
-      void this.rpc?.handleMessage(msg).catch(() => {});
+      // NOTE the second `?.` before `.catch`: when the server process
+      // dies, `markBroken` sets `this.rpc = null`. If stdout then
+      // flushes a final chunk, `this.rpc?.handleMessage(msg)` short-
+      // circuits to `undefined`, and a plain `.catch()` on `undefined`
+      // throws a synchronous TypeError that crashes the process. The
+      // extra `?.` makes it `undefined?.catch()` → `undefined`.
+      void this.rpc?.handleMessage(msg)?.catch(() => {});
     }
   }
 
@@ -353,20 +385,23 @@ export class LanguageServerClient {
   }
 
   private async initialize(rpc: JsonRpcConnection): Promise<void> {
-    const timeout = 45_000;
+    const timeout = this.deps.initializeTimeoutMs ?? 45_000;
 
-    const initPromise = rpc.sendRequest("initialize", {
-      processId: this.process?.pid ?? null,
-      rootUri: `file://${this.root}`,
-      workspaceFolders: [{ uri: `file://${this.root}`, name: this.root }],
-      capabilities: CLIENT_CAPABILITIES,
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("Initialize timeout")), timeout);
-    });
-
-    const result = (await Promise.race([initPromise, timeoutPromise])) as {
+    // Pass the timeout straight into sendRequest (rather than wrapping in a
+    // Promise.race) so that, on expiry, rpc.ts's own timeout handler deletes
+    // the pending entry from its `pending` Map. The old Promise.race path
+    // rejected the caller but left the original promise (and its closure)
+    // lodged in `pending` forever — a slow leak across re-spawns.
+    const result = (await rpc.sendRequest(
+      "initialize",
+      {
+        processId: this.process?.pid ?? null,
+        rootUri: `file://${this.root}`,
+        workspaceFolders: [{ uri: `file://${this.root}`, name: this.root }],
+        capabilities: CLIENT_CAPABILITIES,
+      },
+      timeout,
+    )) as {
       readonly capabilities?: {
         readonly textDocumentSync?:
           | number
@@ -449,6 +484,50 @@ export class LanguageServerClient {
         text,
       },
     });
+
+    // Bound the open-document set: evict the least-recently-used (the head
+    // of the insertion-ordered Map) when the cap is exceeded. Eviction
+    // closes the document on the server and purges its cached text +
+    // diagnostics so the maps can't grow without bound.
+    this.evictIfOverCap();
+  }
+
+  /**
+   * If the open-document set exceeds MAX_OPEN_DOCUMENTS, close + purge the
+   * least-recently-used entry (the first key in insertion order). No-op
+   * while at or below the cap.
+   */
+  private evictIfOverCap(): void {
+    while (this.openDocuments.size > LanguageServerClient.MAX_OPEN_DOCUMENTS) {
+      const oldest = this.openDocuments.keys().next().value;
+      if (oldest === undefined) break;
+      this.closeDocument(oldest);
+    }
+  }
+
+  /**
+   * Close an open document: send textDocument/didClose to the server and
+   * release every cached reference to it (openDocuments, lastDiagSnapshot,
+   * and the diagnostics store). Idempotent — a no-op for a path that isn't
+   * open. This is the lifecycle hook that keeps memory bounded: without it
+   * the maps retained every file an agent ever touched (9.5 GB over 12h).
+   * Safe to call on a broken/disconnected client (sends nothing, still frees
+   * local state).
+   */
+  closeDocument(filePath: string): void {
+    const wasOpen = this.openDocuments.has(filePath);
+    this.openDocuments.delete(filePath);
+    this.lastDiagSnapshot.delete(filePath);
+    const uri = `file://${filePath}`;
+    this.diagnostics.purge(uri);
+
+    if (!wasOpen) return;
+    const rpc = this.rpc;
+    if (rpc && this.state === "connected") {
+      rpc.sendNotification("textDocument/didClose", {
+        textDocument: { uri },
+      });
+    }
   }
 
   async change(filePath: string, newText: string): Promise<void> {
@@ -463,6 +542,11 @@ export class LanguageServerClient {
     }
 
     const version = existing.version + 1;
+    // Re-insert (delete + set) to move this key to the tail of the insertion-
+    // ordered Map = most-recently-used. A plain `set` on an existing key
+    // updates the value but leaves its LRU position unchanged, so a hot file
+    // opened early could still be evicted first. Deleting first reorders it.
+    this.openDocuments.delete(filePath);
     this.openDocuments.set(filePath, { version, text: newText });
 
     if (this.textDocumentChange === 2) {
@@ -564,6 +648,11 @@ export class LanguageServerClient {
     this.process = null;
     this.rpc?.dispose();
     this.rpc = null;
+    // Drop all cached document text + diagnostics so a shut-down client
+    // releases its memory immediately (no lingering references until GC).
+    // We don't send didClose here — the server process is being killed.
+    this.openDocuments.clear();
+    this.lastDiagSnapshot.clear();
     this.state = "not-started";
   }
 }
