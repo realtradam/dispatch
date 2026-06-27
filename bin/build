@@ -17,7 +17,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 BACKEND="$ROOT"
-FRONTEND="$(cd "$ROOT/.." && pwd)/dispatch-web"
+FRONTEND="$(cd "$ROOT/.." && pwd)/frontend"
 
 BUILD_FRONTEND=1
 if [[ "${1:-}" == "--no-frontend" ]]; then
