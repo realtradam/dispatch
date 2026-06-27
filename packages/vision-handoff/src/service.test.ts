@@ -47,7 +47,8 @@ function makeDeps(overrides: Partial<VisionHandoffDeps> = {}): VisionHandoffDeps
       listCatalog: vi.fn(async () => catalog),
       getModelInfo: vi.fn(async (name: string) => infoMap[name]),
       resolve: vi.fn((name: string) => {
-        if (name === "umans/umans-kimi-k2.7") return { providerId: "umans", model: "umans-kimi-k2.7" };
+        if (name === "umans/umans-kimi-k2.7")
+          return { providerId: "umans", model: "umans-kimi-k2.7" };
         if (name === "umans/umans-glm-5.2") return { providerId: "umans", model: "umans-glm-5.2" };
         return undefined;
       }),

@@ -16,6 +16,7 @@
 
 import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, resolve as pathResolve } from "node:path";
+import { conversationStoreHandle } from "@dispatch/conversation-store";
 import type { CredentialStore } from "@dispatch/credential-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
@@ -81,10 +82,6 @@ export async function activate(host: HostAPI): Promise<void> {
     credentialStore,
     resolveModel,
     readFileAsDataUrl,
-    // Lazily resolve the session-orchestrator (for starting vision consultation
-    // turns). By the time consult_vision is called at runtime, all extensions
-    // have activated. The activated-manifests guard avoids a getService throw
-    // when the orchestrator isn't loaded.
     resolveOrchestrator: () => {
       const loaded = host.getExtensions().some((m) => m.id === "session-orchestrator");
       if (!loaded) return undefined;
@@ -93,6 +90,14 @@ export async function activate(host: HostAPI): Promise<void> {
       } catch {
         return undefined;
       }
+    },
+    getImageTranscriptions: async (conversationId: string) => {
+      const store = host.getService(conversationStoreHandle);
+      return store.getImageTranscriptions(conversationId);
+    },
+    setImageTranscription: async (conversationId: string, url: string, text: string) => {
+      const store = host.getService(conversationStoreHandle);
+      await store.setImageTranscription(conversationId, url, text);
     },
     logger: host.logger.child({ extensionId: "vision-handoff" }),
   });

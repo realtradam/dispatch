@@ -54,6 +54,7 @@ export interface VisionHandoffService {
     currentModelName: string | undefined,
     opts?: {
       readonly conversationId?: string;
+      readonly imageLimit?: number;
       readonly signal?: AbortSignal;
       readonly logger?: Logger;
     },
@@ -776,11 +777,13 @@ export function createSessionOrchestrator(
         const visionHandoff = deps.resolveVisionHandoff?.();
         let providerMessages: readonly ChatMessage[] = [...history, userMsg];
         if (visionHandoff !== undefined) {
+          const visionSettings = await deps.conversationStore.getVisionSettings();
           providerMessages = await visionHandoff.prepareForProvider(
             providerMessages,
             effectiveModelName,
             {
               conversationId,
+              imageLimit: visionSettings.imageLimit,
               signal: controller.signal,
               ...(turnLogger !== undefined ? { logger: turnLogger } : {}),
             },

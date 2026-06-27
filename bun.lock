@@ -366,6 +366,7 @@
       "name": "@dispatch/vision-handoff",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/openai-stream": "workspace:*",

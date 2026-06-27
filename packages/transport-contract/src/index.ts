@@ -411,6 +411,23 @@ export interface SystemPromptVariablesResponse {
   readonly variables: readonly SystemPromptVariable[];
 }
 
+// ─── Vision settings (global) ──────────────────────────────────────────────────
+
+/**
+ * Response of `GET /settings/vision` — the global vision configuration shared
+ * across all conversations and vision models.
+ */
+export interface VisionSettingsResponse {
+  readonly imageLimit: number;
+  readonly compactionModel: string | null;
+}
+
+/** Body of `PUT /settings/vision` — a partial update. */
+export interface SetVisionSettingsRequest {
+  readonly imageLimit?: number;
+  readonly compactionModel?: string | null;
+}
+
 // ─── Message queue (steering) ─────────────────────────────────────────────────
 
 /**

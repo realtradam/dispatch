@@ -97,6 +97,24 @@ export interface VisionHandoffDeps {
    * with an error. Lazy so activation order doesn't matter.
    */
   readonly resolveOrchestrator?: () => OrchestratorForVision | undefined;
+  /**
+   * Get the per-conversation cached image transcriptions (imageUrl → text).
+   * Used to avoid re-transcribing old images that were compacted to text on a
+   * previous turn. Optional — when absent, compaction still works but
+   * re-transcribes every turn (no caching).
+   */
+  readonly getImageTranscriptions?: (
+    conversationId: string,
+  ) => Promise<ReadonlyMap<string, string>>;
+  /**
+   * Upsert a single image transcription into the per-conversation cache.
+   * Optional — paired with getImageTranscriptions.
+   */
+  readonly setImageTranscription?: (
+    conversationId: string,
+    imageUrl: string,
+    transcription: string,
+  ) => Promise<void>;
   /** Generate a new conversation ID for a consultation. Defaults to crypto.randomUUID. */
   readonly generateId?: () => string;
   readonly logger?: Logger;
@@ -128,6 +146,7 @@ export interface VisionHandoffService {
     currentModelName: string | undefined,
     opts?: {
       readonly conversationId?: string;
+      readonly imageLimit?: number;
       readonly signal?: AbortSignal;
       readonly logger?: Logger;
     },
@@ -198,6 +217,129 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
     return { provider: resolved.provider, model: resolved.model, modelName: name };
   }
 
+  /**
+   * Compact images for a vision-capable model: when the conversation has more
+   * image chunks than the limit, the oldest images are transcribed to text
+   * (one-time, cached in the conversation store) and stripped from the
+   * provider messages. Recent images (within the limit) stay native.
+   *
+   * The persisted history is NOT modified — only the provider's view.
+   * Transcriptions are cached so they're reused on subsequent turns (no
+   * re-transcription). When no caching deps are available, it still works but
+   * re-transcribes every turn.
+   */
+  async function compactImagesForVisionModel(
+    messages: readonly ChatMessage[],
+    opts:
+      | {
+          readonly conversationId?: string;
+          readonly imageLimit?: number;
+          readonly signal?: AbortSignal;
+          readonly logger?: Logger;
+        }
+      | undefined,
+    currentModelName: string | undefined,
+  ): Promise<readonly ChatMessage[]> {
+    void currentModelName; // reserved for future model-specific compaction logic
+    const limit = opts?.imageLimit;
+    // No limit or limit <= 0 → pass all images through (compaction disabled).
+    if (limit === undefined || limit <= 0) return messages;
+
+    // Collect all image chunks in order (oldest first, across all messages).
+    const imageEntries: { msgIdx: number; chunkIdx: number; url: string }[] = [];
+    for (const [mi, msg] of messages.entries()) {
+      for (const [ci, chunk] of msg.chunks.entries()) {
+        if (chunk.type === "image") {
+          imageEntries.push({ msgIdx: mi, chunkIdx: ci, url: chunk.url });
+        }
+      }
+    }
+
+    // If within the limit, pass everything through natively.
+    if (imageEntries.length <= limit) return messages;
+
+    // The oldest (imageEntries.length - limit) images need transcription.
+    const toTranscribeCount = imageEntries.length - limit;
+    const toTranscribe = imageEntries.slice(0, toTranscribeCount);
+
+    // Load cached transcriptions.
+    const convId = opts?.conversationId;
+    const cache =
+      convId !== undefined && deps.getImageTranscriptions !== undefined
+        ? await deps.getImageTranscriptions(convId)
+        : new Map<string, string>();
+
+    // Transcribe any that aren't cached yet (via the vision model).
+    const transcriptions = new Map<string, string>(cache);
+    const vision = await resolveVisionModel();
+    for (const entry of toTranscribe) {
+      if (transcriptions.has(entry.url)) continue;
+      if (vision === undefined) {
+        // No vision model available for transcription — use a placeholder.
+        transcriptions.set(
+          entry.url,
+          "[Image was compacted — no vision model available to transcribe it.]",
+        );
+        continue;
+      }
+      try {
+        const prompt =
+          "Describe this image in detail. Include visible text (transcribe verbatim), " +
+          "key objects, layout, and notable details. This description will replace " +
+          "the image in a conversation history, so be thorough.";
+        const userMessage: ChatMessage = {
+          role: "user",
+          chunks: [
+            { type: "text", text: prompt },
+            { type: "image", url: entry.url },
+          ],
+        };
+        const stream = vision.provider.stream([userMessage], [], {
+          model: vision.model,
+          systemPrompt: "You are a vision assistant. Describe images faithfully and thoroughly.",
+        });
+        const description = (await collectTextFromStream(stream)).trim();
+        const text =
+          description.length > 0 ? description : "[Image transcription produced no output.]";
+        transcriptions.set(entry.url, text);
+        // Cache it in the conversation store (if available).
+        if (convId !== undefined && deps.setImageTranscription !== undefined) {
+          await deps.setImageTranscription(convId, entry.url, text);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log?.warn("vision-handoff: image compaction transcription failed", { error: msg });
+        transcriptions.set(entry.url, `[Image transcription failed: ${msg}]`);
+      }
+    }
+
+    // Build the provider messages: replace transcribed images with text,
+    // keep recent images (within the limit) native.
+    const transcribedUrls = new Set(toTranscribe.map((e) => e.url));
+    const result: ChatMessage[] = [];
+    for (const msg of messages) {
+      if (!msg.chunks.some((c) => c.type === "image")) {
+        result.push(msg);
+        continue;
+      }
+      const newChunks: Chunk[] = [];
+      for (const chunk of msg.chunks) {
+        if (chunk.type === "image" && transcribedUrls.has(chunk.url)) {
+          const transcription = transcriptions.get(chunk.url);
+          if (transcription !== undefined) {
+            newChunks.push({ type: "text", text: `[Compacted image]: ${transcription}` });
+          } else {
+            newChunks.push(chunk); // fallback: keep the image
+          }
+        } else {
+          newChunks.push(chunk);
+        }
+      }
+      result.push({ role: msg.role, chunks: newChunks });
+    }
+    return result;
+  }
+
   const service: VisionHandoffService = {
     async isVisionCapable(modelName: string | undefined): Promise<boolean> {
       if (modelName === undefined) return false;
@@ -212,6 +354,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       currentModelName: string | undefined,
       opts?: {
         readonly conversationId?: string;
+        readonly imageLimit?: number;
         readonly signal?: AbortSignal;
         readonly logger?: Logger;
       },
@@ -219,13 +362,19 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       // Fast path: no images anywhere → nothing to do.
       if (!hasImageChunks(messages)) return messages;
 
-      // If the active model IS vision-capable, pass images through natively.
-      if (currentModelName !== undefined) {
-        const capable = await isVisionCapable(currentModelName, await getInfo(currentModelName));
-        if (capable) return messages;
+      const isCapable =
+        currentModelName !== undefined &&
+        (await isVisionCapable(currentModelName, await getInfo(currentModelName)));
+
+      // ── Vision-capable model: image compaction ──────────────────────────
+      // When the conversation has more images than the limit, the oldest images
+      // are transcribed to text (one-time, cached) and stripped from the
+      // provider messages. Recent images (within the limit) stay native.
+      if (isCapable) {
+        return compactImagesForVisionModel(messages, opts, currentModelName);
       }
 
-      // Non-vision model: check if a vision model is available at all.
+      // ── Non-vision model: placeholders + consult_vision ──────────────────
       const vision = await resolveVisionModel();
       const convId = opts?.conversationId;
 

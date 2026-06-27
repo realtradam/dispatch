@@ -5,6 +5,7 @@
   "references": [
     { "path": "../kernel" },
     { "path": "../wire" },
+    { "path": "../conversation-store" },
     { "path": "../credential-store" },
     { "path": "../openai-stream" }
   ]
