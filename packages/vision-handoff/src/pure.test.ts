@@ -11,11 +11,15 @@ import {
 
 describe("isVisionCapable", () => {
   it("returns true when ModelInfo.vision is true", () => {
-    expect(isVisionCapable("umans/umans-kimi-k2.7", { id: "umans-kimi-k2.7", vision: true })).toBe(true);
+    expect(isVisionCapable("umans/umans-kimi-k2.7", { id: "umans-kimi-k2.7", vision: true })).toBe(
+      true,
+    );
   });
 
   it("returns false when ModelInfo.vision is false (overrides name heuristic)", () => {
-    expect(isVisionCapable("umans/umans-kimi-k2.7", { id: "umans-kimi-k2.7", vision: false })).toBe(false);
+    expect(isVisionCapable("umans/umans-kimi-k2.7", { id: "umans-kimi-k2.7", vision: false })).toBe(
+      false,
+    );
   });
 
   it("falls back to name heuristic when vision is absent (umans kimi + qwen)", () => {
@@ -53,10 +57,7 @@ describe("findVisionModelName", () => {
   });
 
   it("finds a vision model via ModelInfo.vision when name heuristic misses", async () => {
-    const name = await findVisionModelName(
-      ["umans/umans-glm-5.2", "umans/llama-vision"],
-      getInfo,
-    );
+    const name = await findVisionModelName(["umans/umans-glm-5.2", "umans/llama-vision"], getInfo);
     expect(name).toBe("umans/llama-vision");
   });
 

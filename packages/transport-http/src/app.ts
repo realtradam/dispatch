@@ -38,6 +38,7 @@ import type {
   ThroughputResponse,
   TitleResponse,
   UpdateHeartbeatRequest,
+  VisionSettingsResponse,
   WarmResponse,
   WorkspaceListResponse,
   WorkspaceResponse,
@@ -1591,6 +1592,43 @@ export function createApp(opts: CreateServerOptions): Hono {
     await opts.systemPromptService.setTemplate(template);
     log.info("system-prompt: template set");
     const response: SystemPromptTemplateResponse = { template };
+    return c.json(response, 200);
+  });
+
+  app.get("/settings/vision", async (c) => {
+    const settings = await opts.conversationStore.getVisionSettings();
+    const body: VisionSettingsResponse = settings;
+    return c.json(body, 200);
+  });
+
+  app.put("/settings/vision", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const obj = body as { imageLimit?: unknown; compactionModel?: unknown };
+    if (obj.imageLimit !== undefined) {
+      if (
+        typeof obj.imageLimit !== "number" ||
+        !Number.isInteger(obj.imageLimit) ||
+        obj.imageLimit < 0
+      ) {
+        return c.json({ error: "imageLimit must be a non-negative integer" }, 400);
+      }
+      await opts.conversationStore.setVisionImageLimit(obj.imageLimit);
+      log.info("vision: image limit set", { imageLimit: obj.imageLimit });
+    }
+    if (obj.compactionModel !== undefined) {
+      if (obj.compactionModel !== null && typeof obj.compactionModel !== "string") {
+        return c.json({ error: "compactionModel must be a string or null" }, 400);
+      }
+      await opts.conversationStore.setVisionCompactionModel(obj.compactionModel);
+      log.info("vision: compaction model set", { compactionModel: obj.compactionModel });
+    }
+    const settings = await opts.conversationStore.getVisionSettings();
+    const response: VisionSettingsResponse = settings;
     return c.json(response, 200);
   });
 

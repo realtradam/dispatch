@@ -66,6 +66,14 @@ export function compactThresholdKey(conversationId: string): string {
   return `conv:${conversationId}:compact-percent`;
 }
 
+/** Per-conversation image transcription cache (JSON map of imageUrl → transcription). */
+export function imageTranscriptionsKey(conversationId: string): string {
+  return `conv:${conversationId}:image-transcriptions`;
+}
+
+/** Global vision settings (image compaction limit + compaction model). */
+export const VISION_SETTINGS_KEY = "vision-settings";
+
 export function metaKey(conversationId: string): string {
   return `conv:${conversationId}:meta`;
 }
