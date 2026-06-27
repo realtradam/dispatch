@@ -1,19 +1,21 @@
 export { extension, manifest } from "./extension.js";
 export {
-  buildTranscriptionPrompt,
   collectTextFromStream,
   findVisionModelName,
+  formatConsultResult,
+  formatImagePlaceholder,
   formatNoVisionPlaceholder,
-  formatTranscriptionText,
   isVisionCapable,
 } from "./pure.js";
 export type {
+  OrchestratorForVision,
   ResolvedVisionModel,
   VisionHandoffDeps,
   VisionHandoffService,
 } from "./service.js";
 export {
   createVisionHandoffService,
+  orchestratorLocalHandle,
   visionHandoffHandle,
 } from "./service.js";
-export { createReadImageTool } from "./tool.js";
+export { createConsultVisionTool } from "./tool.js";

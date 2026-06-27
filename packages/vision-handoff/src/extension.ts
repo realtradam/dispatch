@@ -1,15 +1,17 @@
 /**
  * vision-handoff extension — registers the universal vision handoff service +
- * the `read_image` tool.
+ * the `consult_vision` tool.
  *
- * The service performs provider-agnostic vision handoff: it resolves a
- * vision-capable model from the catalog (any provider), streams an image to it
- * via the standard `ProviderContract.stream` interface, and folds the textual
- * description back — so a non-vision model (e.g. glm-5.2) can still reason about
- * images, and any model can analyze image FILES referenced in code.
+ * The service performs provider-agnostic vision handoff: when a non-vision model
+ * (e.g. glm-5.2) receives an image, it replaces the image with a numbered
+ * placeholder and registers it for tool access. The `consult_vision` tool opens
+ * a NEW conversation tab with a vision-capable model (e.g. Kimi), attaches the
+ * image + the model's specific question, and returns the conversation ID + the
+ * vision model's answer. Follow-ups go through the dispatch CLI.
  *
- * Effects (filesystem, fetch) live here in the shell, injected into the service.
- * The pure decisions live in `pure.ts`. No `console.*`; logging via `host.logger`.
+ * Effects (filesystem, orchestrator) live here in the shell, injected into the
+ * service. The pure decisions live in `pure.ts`. No `console.*`; logging via
+ * `host.logger`.
  */
 
 import { readFile } from "node:fs/promises";
@@ -17,8 +19,12 @@ import { extname, isAbsolute, resolve as pathResolve } from "node:path";
 import type { CredentialStore } from "@dispatch/credential-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
-import { createVisionHandoffService, visionHandoffHandle } from "./service.js";
-import { createReadImageTool } from "./tool.js";
+import {
+  createVisionHandoffService,
+  orchestratorLocalHandle,
+  visionHandoffHandle,
+} from "./service.js";
+import { createConsultVisionTool } from "./tool.js";
 
 export const manifest: Manifest = {
   id: "vision-handoff",
@@ -28,7 +34,7 @@ export const manifest: Manifest = {
   trust: "bundled",
   activation: "eager",
   capabilities: { network: true },
-  contributes: { services: ["vision-handoff/service"], tools: ["read_image"] },
+  contributes: { services: ["vision-handoff/service"], tools: ["consult_vision"] },
 };
 
 /** MIME types for recognized image extensions. */
@@ -54,30 +60,11 @@ async function readFileAsDataUrl(path: string, cwd?: string): Promise<string> {
   return `data:${mime};base64,${buf.toString("base64")}`;
 }
 
-/**
- * Fetch an HTTP(S) image URL and convert it to a base64 data URL (so it can be
- * sent to the vision model inline, regardless of whether the provider can fetch
- * remote URLs). The shell edge — real `globalThis.fetch`.
- */
-async function fetchUrlAsDataUrl(url: string): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch image: HTTP ${res.status}`);
-  }
-  const buf = new Uint8Array(await res.arrayBuffer());
-  const mime = res.headers.get("content-type") ?? "image/png";
-  // Buffer/base64 in Bun + Node. Convert byte-by-byte without non-null asserts.
-  let binary = "";
-  for (const byte of buf) binary += String.fromCharCode(byte);
-  const base64 = btoa(binary);
-  return `data:${mime};base64,${base64}`;
-}
-
 export async function activate(host: HostAPI): Promise<void> {
   const credentialStore = host.getService(credentialStoreHandle) as CredentialStore | undefined;
   if (credentialStore === undefined) {
     host.logger.warn(
-      "vision-handoff: credential-store service not available. The read_image tool and image transcription are disabled.",
+      "vision-handoff: credential-store service not available. The consult_vision tool and image handoff are disabled.",
     );
     return;
   }
@@ -94,13 +81,25 @@ export async function activate(host: HostAPI): Promise<void> {
     credentialStore,
     resolveModel,
     readFileAsDataUrl,
-    fetchUrlAsDataUrl,
+    // Lazily resolve the session-orchestrator (for starting vision consultation
+    // turns). By the time consult_vision is called at runtime, all extensions
+    // have activated. The activated-manifests guard avoids a getService throw
+    // when the orchestrator isn't loaded.
+    resolveOrchestrator: () => {
+      const loaded = host.getExtensions().some((m) => m.id === "session-orchestrator");
+      if (!loaded) return undefined;
+      try {
+        return host.getService(orchestratorLocalHandle);
+      } catch {
+        return undefined;
+      }
+    },
     logger: host.logger.child({ extensionId: "vision-handoff" }),
   });
 
   host.provideService(visionHandoffHandle, service);
-  host.defineTool(createReadImageTool(service));
-  host.logger.info("vision-handoff: registered (read_image tool + transcription service)");
+  host.defineTool(createConsultVisionTool(service));
+  host.logger.info("vision-handoff: registered (consult_vision tool + handoff service)");
 }
 
 export const extension: Extension = { manifest, activate };

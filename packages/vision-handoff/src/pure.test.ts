@@ -1,11 +1,11 @@
 import type { ModelInfo, ProviderEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
-  buildTranscriptionPrompt,
   collectTextFromStream,
   findVisionModelName,
+  formatConsultResult,
+  formatImagePlaceholder,
   formatNoVisionPlaceholder,
-  formatTranscriptionText,
   isVisionCapable,
 } from "./pure.js";
 
@@ -43,7 +43,7 @@ describe("findVisionModelName", () => {
     return map[name];
   };
 
-  it("finds the first kimi-family model via name heuristic (no async lookup needed)", async () => {
+  it("finds the first kimi-family model via name heuristic", async () => {
     const name = await findVisionModelName(
       ["umans/glm-5.2", "umans/kimi-k2.7", "umans/llama-vision"],
       getInfo,
@@ -90,7 +90,7 @@ describe("collectTextFromStream", () => {
     expect(text).toBe("Hello world!");
   });
 
-  it("ignores non-text events (reasoning, usage, tool-call, finish)", async () => {
+  it("ignores non-text events", async () => {
     const events: ProviderEvent[] = [
       { type: "reasoning-delta", delta: "thinking..." },
       { type: "text-delta", delta: "answer" },
@@ -115,27 +115,38 @@ describe("collectTextFromStream", () => {
   });
 });
 
-describe("prompt + formatting helpers", () => {
-  it("buildTranscriptionPrompt includes focus when a question is given", () => {
-    const prompt = buildTranscriptionPrompt("What error is shown?");
-    expect(prompt).toContain("Describe this image in detail");
-    expect(prompt).toContain('The user asked: "What error is shown?"');
+describe("formatImagePlaceholder", () => {
+  it("includes the image ID and mentions consult_vision", () => {
+    const text = formatImagePlaceholder(1);
+    expect(text).toContain("Image 1");
+    expect(text).toContain("consult_vision");
+    expect(text).toContain("imageIds=[1]");
   });
 
-  it("buildTranscriptionPrompt omits focus when no question", () => {
-    const prompt = buildTranscriptionPrompt(undefined);
-    expect(prompt).toContain("Describe this image in detail");
-    expect(prompt).not.toContain("The user asked");
+  it("increments the ID for each image", () => {
+    expect(formatImagePlaceholder(2)).toContain("Image 2");
+    expect(formatImagePlaceholder(2)).toContain("imageIds=[2]");
   });
+});
 
-  it("formatTranscriptionText names the vision model", () => {
-    expect(formatTranscriptionText("a red car", "umans/kimi-k2.7")).toBe(
-      "[Image analysis (via umans/kimi-k2.7)]: a red car",
-    );
-  });
-
-  it("formatNoVisionPlaceholder explains the limitation", () => {
+describe("formatNoVisionPlaceholder", () => {
+  it("explains the limitation", () => {
     const text = formatNoVisionPlaceholder();
     expect(text).toContain("no vision-capable model");
+  });
+});
+
+describe("formatConsultResult", () => {
+  it("includes the conversation ID, the response, and the dispatch CLI hint", () => {
+    const result = formatConsultResult("abc-123", "The error is on line 12.");
+    expect(result).toContain("abc-123");
+    expect(result).toContain("The error is on line 12.");
+    expect(result).toContain("dispatch CLI");
+  });
+
+  it("trims the response", () => {
+    const result = formatConsultResult("c1", "  spaced  ");
+    expect(result).toContain("spaced");
+    expect(result).not.toContain("spaced  ");
   });
 });

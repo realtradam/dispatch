@@ -3,38 +3,64 @@
  * provider-agnostic vision handoff.
  *
  * Two capabilities:
- * 1. **Transcription for non-vision models** (`transcribeForProvider`): when a
- *    user message carries images but the active model cannot see them, this
- *    calls a vision-capable model (resolved from the catalog — any provider) to
- *    describe each image, then replaces the image chunks with text. Universal:
- *    it uses the standard `ProviderContract.stream` interface, never a
- *    provider-specific vision endpoint.
- * 2. **`read_image` tool** (`readImageFile`): reads an image FILE from disk and
- *    transcribes it via a vision-capable model, returning the text description
- *    — so any model (vision or not) can analyze an image referenced in code.
+ * 1. **prepareForProvider** (`prepareForProvider`): when a user message carries
+ *    images but the active model cannot see them, this replaces each image chunk
+ *    with a numbered placeholder (telling the model to call `consult_vision`)
+ *    and registers the image data in a per-conversation registry for tool
+ *    access. Vision-capable models pass through unchanged (images flow natively).
+ * 2. **consult_vision tool** (`consultVision`): opens a NEW conversation tab with
+ *    a vision-capable model (resolved from the catalog — any provider), attaches
+ *    the image(s) + the model's specific question, waits for the response, and
+ *    returns the conversation ID + the vision model's answer. The model (e.g.
+ *    GLM 5.2) directs the analysis — asking exactly what it needs — instead of
+ *    receiving a pre-emptive generic dump. Follow-up questions go through the
+ *    dispatch CLI (the conversation ID is the bridge), not another tool call.
  *
- * Effects (credential store, provider streaming, filesystem, fetch) are
- * injected. The pure decisions live in `pure.ts`. This shell wires them.
+ * Effects (credential store, orchestrator, filesystem) are injected. The pure
+ * decisions live in `pure.ts`. This shell wires them.
  */
 
 import type { CredentialStore } from "@dispatch/credential-store";
 import type {
+  AgentEvent,
   ChatMessage,
   Chunk,
+  ImageInput,
   Logger,
   ModelInfo,
   ProviderContract,
-  ProviderStreamOptions,
 } from "@dispatch/kernel";
 import { defineService, type ServiceHandle } from "@dispatch/kernel";
 import {
-  buildTranscriptionPrompt,
   collectTextFromStream,
   findVisionModelName,
+  formatConsultResult,
+  formatImagePlaceholder,
   formatNoVisionPlaceholder,
-  formatTranscriptionText,
   isVisionCapable,
 } from "./pure.js";
+
+/**
+ * Minimal orchestrator interface the service needs to start vision consultation
+ * turns. Defined locally (not imported from session-orchestrator) to avoid a
+ * compile-time dependency — resolved lazily at runtime via a local handle keyed
+ * to the same service ID.
+ */
+export interface OrchestratorForVision {
+  readonly handleMessage: (input: {
+    readonly conversationId: string;
+    readonly text: string;
+    readonly onEvent: (event: AgentEvent) => void;
+    readonly modelName?: string;
+    readonly cwd?: string;
+    readonly images?: readonly ImageInput[];
+    readonly systemPrompt?: string;
+  }) => Promise<void>;
+}
+
+/** Local handle for the session-orchestrator service (same ID, no import dep). */
+export const orchestratorLocalHandle: ServiceHandle<OrchestratorForVision> =
+  defineService<OrchestratorForVision>("session-orchestrator/orchestrator");
 
 /**
  * Resolved vision model — a provider + its model id, ready to stream from.
@@ -43,6 +69,12 @@ export interface ResolvedVisionModel {
   readonly provider: ProviderContract;
   readonly model: string;
   readonly modelName: string;
+}
+
+/** A registered image (looked up by the consult_vision tool via imageId). */
+interface RegisteredImage {
+  readonly url: string;
+  readonly mimeType?: string;
 }
 
 /**
@@ -56,24 +88,24 @@ export interface VisionHandoffDeps {
   ) => { provider: ProviderContract; model: string } | undefined;
   /**
    * Read a file from disk as a base64 data URL. Injected so the shell controls
-   * the filesystem edge (and tests inject a fake). Returns the data URL, or
-   * throws on error (the caller surfaces it as a tool error).
+   * the filesystem edge. Returns the data URL, or throws on error.
    */
   readonly readFileAsDataUrl: (path: string, cwd?: string) => Promise<string>;
   /**
-   * Fetch an HTTP(S) URL to a data URL (for http image sources). Injected so
-   * tests inject a fake. Optional — when absent, HTTP image URLs are passed to
-   * the vision provider as-is (it fetches them).
+   * Lazily resolve the session-orchestrator (for starting vision consultation
+   * turns). Returns `undefined` when not available — `consult_vision` degrades
+   * with an error. Lazy so activation order doesn't matter.
    */
-  readonly fetchUrlAsDataUrl?: (url: string) => Promise<string>;
+  readonly resolveOrchestrator?: () => OrchestratorForVision | undefined;
+  /** Generate a new conversation ID for a consultation. Defaults to crypto.randomUUID. */
+  readonly generateId?: () => string;
   readonly logger?: Logger;
 }
 
 export interface VisionHandoffService {
   /**
    * Whether a given model (by catalog name) is vision-capable. Uses the
-   * credential store's ModelInfo + the name heuristic. Async because ModelInfo
-   * may require a listModels round-trip (cached by the credential store).
+   * credential store's ModelInfo + the name heuristic.
    */
   readonly isVisionCapable: (modelName: string | undefined) => Promise<boolean>;
 
@@ -84,43 +116,54 @@ export interface VisionHandoffService {
   readonly resolveVisionModel: (excludeName?: string) => Promise<ResolvedVisionModel | undefined>;
 
   /**
-   * Transcribe a single image URL to a text description via a vision-capable
-   * model. Returns the description, or a placeholder string when no vision
-   * model is available (does NOT throw — callers want graceful degradation).
-   */
-  readonly transcribeImage: (
-    imageUrl: string,
-    userQuestion: string | undefined,
-    opts?: { readonly signal?: AbortSignal; readonly logger?: Logger },
-  ) => Promise<string>;
-
-  /**
    * Transform a message list for the provider: if the active model is
    * vision-capable, return messages unchanged (images pass through natively).
-   * If NOT vision-capable, replace every `image` chunk with a text
-   * description (transcribed via a vision model — once per unique image URL,
-   * cached within the call) so a text-only model can still reason about the
-   * images. Never throws — on failure an image becomes a placeholder note.
-   *
-   * The PERSISTED history is NOT modified by this (the caller persists the
-   * original messages with images); this only transforms what the provider sees.
+   * If NOT vision-capable, replace every `image` chunk with a numbered
+   * placeholder (telling the model to call `consult_vision`) and register the
+   * image data in the per-conversation registry for tool access. The PERSISTED
+   * history is NOT modified — only what the provider sees. Never throws.
    */
-  readonly transcribeForProvider: (
+  readonly prepareForProvider: (
     messages: readonly ChatMessage[],
     currentModelName: string | undefined,
-    opts?: { readonly signal?: AbortSignal; readonly logger?: Logger },
+    opts?: {
+      readonly conversationId?: string;
+      readonly signal?: AbortSignal;
+      readonly logger?: Logger;
+    },
   ) => Promise<readonly ChatMessage[]>;
 
   /**
-   * Read an image FILE from disk and transcribe it (the `read_image` tool's
-   * core). Returns the description text. Throws on filesystem error (the tool
-   * surfaces it as a tool-error result).
+   * Look up a registered image by conversation ID + image ID. Returns
+   * `undefined` when the image isn't registered (e.g. after a server restart).
    */
-  readonly readImageFile: (
-    path: string,
-    cwd: string | undefined,
-    opts?: { readonly signal?: AbortSignal; readonly logger?: Logger },
-  ) => Promise<string>;
+  readonly getRegisteredImage: (
+    conversationId: string,
+    imageId: number,
+  ) => RegisteredImage | undefined;
+
+  /**
+   * Open a NEW vision consultation conversation: attach image(s) + the model's
+   * question to a vision-capable model, wait for the response, and return the
+   * conversation ID + the vision model's answer. The model drives the analysis
+   * — it asks exactly what it needs. Follow-ups go through the dispatch CLI.
+   *
+   * @returns The conversation ID + the vision model's response text, or an
+   *   error string (never throws — the tool surfaces it).
+   */
+  readonly consultVision: (
+    question: string,
+    opts: {
+      readonly conversationId: string;
+      readonly imageIds?: readonly number[];
+      readonly path?: string;
+      readonly cwd?: string;
+      readonly signal?: AbortSignal;
+      readonly logger?: Logger;
+    },
+  ) => Promise<
+    { readonly conversationId: string; readonly response: string } | { readonly error: string }
+  >;
 }
 
 export const visionHandoffHandle: ServiceHandle<VisionHandoffService> =
@@ -133,6 +176,12 @@ function hasImageChunks(messages: readonly ChatMessage[]): boolean {
 
 export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHandoffService {
   const log = deps.logger;
+  const generateId = deps.generateId ?? (() => crypto.randomUUID());
+
+  // Per-conversation image registry: conversationId → (imageId → image data).
+  // Populated by prepareForProvider; consulted by the consult_vision tool.
+  // In-memory only (cleared on restart — the user re-pastes if needed).
+  const imageRegistry = new Map<string, Map<number, RegisteredImage>>();
 
   async function getInfo(modelName: string): Promise<ModelInfo | undefined> {
     return deps.credentialStore.getModelInfo(modelName);
@@ -149,41 +198,6 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
     return { provider: resolved.provider, model: resolved.model, modelName: name };
   }
 
-  async function streamVisionText(
-    vision: ResolvedVisionModel,
-    imageUrl: string,
-    prompt: string,
-    opts?: { readonly signal?: AbortSignal; readonly logger?: Logger },
-  ): Promise<string> {
-    // Build a single-turn user message: [text prompt, image]. The vision model
-    // receives the image natively via the OpenAI-compatible content array
-    // (convertMessages serializes the image chunk to image_url).
-    const userMessage: ChatMessage = {
-      role: "user",
-      chunks: [
-        { type: "text", text: prompt },
-        { type: "image", url: imageUrl },
-      ],
-    };
-    const providerOpts: ProviderStreamOptions = {
-      model: vision.model,
-      // NOTE: temperature is deliberately OMITTED. Different vision providers
-      // have different constraints (e.g. Moonshot/Kimi only allows temperature:
-      // 1; others allow 0–2). Hardcoding any value risks an HTTP 400 from a
-      // provider that rejects it. Omitting lets each provider use its own
-      // default — the truly universal, provider-agnostic choice.
-      // A short system prompt keeps the vision model focused on describing.
-      systemPrompt:
-        "You are a vision assistant. Describe images faithfully and thoroughly for a developer who cannot see them.",
-    };
-    const streamOpts: Parameters<ProviderContract["stream"]>[2] = {
-      ...providerOpts,
-      ...(opts?.logger !== undefined ? { logger: opts.logger } : {}),
-    };
-    const stream = vision.provider.stream([userMessage], [], streamOpts);
-    return collectTextFromStream(stream);
-  }
-
   const service: VisionHandoffService = {
     async isVisionCapable(modelName: string | undefined): Promise<boolean> {
       if (modelName === undefined) return false;
@@ -193,35 +207,14 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
 
     resolveVisionModel,
 
-    async transcribeImage(
-      imageUrl: string,
-      userQuestion: string | undefined,
-      opts?: { readonly signal?: AbortSignal; readonly logger?: Logger },
-    ): Promise<string> {
-      const vision = await resolveVisionModel();
-      if (vision === undefined) {
-        log?.warn("vision-handoff: no vision-capable model available for transcription");
-        return formatNoVisionPlaceholder();
-      }
-      const prompt = buildTranscriptionPrompt(userQuestion);
-      try {
-        const description = await streamVisionText(vision, imageUrl, prompt, opts);
-        const trimmed = description.trim();
-        if (trimmed.length === 0) {
-          return "[Image analysis produced no output.]";
-        }
-        return formatTranscriptionText(trimmed, vision.modelName);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log?.warn("vision-handoff: transcription failed", { error: msg });
-        return `[Image analysis failed: ${msg}]`;
-      }
-    },
-
-    async transcribeForProvider(
+    async prepareForProvider(
       messages: readonly ChatMessage[],
       currentModelName: string | undefined,
-      opts?: { readonly signal?: AbortSignal; readonly logger?: Logger },
+      opts?: {
+        readonly conversationId?: string;
+        readonly signal?: AbortSignal;
+        readonly logger?: Logger;
+      },
     ): Promise<readonly ChatMessage[]> {
       // Fast path: no images anywhere → nothing to do.
       if (!hasImageChunks(messages)) return messages;
@@ -232,35 +225,41 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         if (capable) return messages;
       }
 
-      // Non-vision model: transcribe each unique image URL once (cached).
-      const cache = new Map<string, string>();
-      const userText = messages
-        .filter((m) => m.role === "user")
-        .flatMap((m) => m.chunks)
-        .filter((c): c is { type: "text"; text: string } => c.type === "text")
-        .map((c) => c.text)
-        .join(" ");
+      // Non-vision model: check if a vision model is available at all.
+      const vision = await resolveVisionModel();
+      const convId = opts?.conversationId;
 
-      async function transcribeCached(url: string): Promise<string> {
-        const cached = cache.get(url);
-        if (cached !== undefined) return cached;
-        const description = await service.transcribeImage(url, userText, opts);
-        cache.set(url, description);
-        return description;
-      }
+      const placeholderFn =
+        vision !== undefined && convId !== undefined
+          ? (id: number) => formatImagePlaceholder(id)
+          : () => formatNoVisionPlaceholder();
 
+      // Replace each image chunk with a numbered placeholder. Assign sequential
+      // 1-based IDs across all messages and register each image in the
+      // per-conversation registry so the consult_vision tool can look it up.
+      let seqId = 0;
       const result: ChatMessage[] = [];
       for (const msg of messages) {
         if (!msg.chunks.some((c) => c.type === "image")) {
           result.push(msg);
           continue;
         }
-        // Replace image chunks with transcribed text chunks; keep all else.
         const newChunks: Chunk[] = [];
         for (const chunk of msg.chunks) {
           if (chunk.type === "image") {
-            const description = await transcribeCached(chunk.url);
-            newChunks.push({ type: "text", text: description });
+            seqId++;
+            if (convId !== undefined && vision !== undefined) {
+              let convImages = imageRegistry.get(convId);
+              if (convImages === undefined) {
+                convImages = new Map();
+                imageRegistry.set(convId, convImages);
+              }
+              convImages.set(seqId, {
+                url: chunk.url,
+                ...(chunk.mimeType !== undefined ? { mimeType: chunk.mimeType } : {}),
+              });
+            }
+            newChunks.push({ type: "text", text: placeholderFn(seqId) });
           } else {
             newChunks.push(chunk);
           }
@@ -270,13 +269,109 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       return result;
     },
 
-    async readImageFile(
-      path: string,
-      cwd: string | undefined,
-      opts?: { readonly signal?: AbortSignal; readonly logger?: Logger },
-    ): Promise<string> {
-      const dataUrl = await deps.readFileAsDataUrl(path, cwd);
-      return service.transcribeImage(dataUrl, undefined, opts);
+    getRegisteredImage(conversationId: string, imageId: number): RegisteredImage | undefined {
+      return imageRegistry.get(conversationId)?.get(imageId);
+    },
+
+    async consultVision(
+      question: string,
+      opts: {
+        readonly conversationId: string;
+        readonly imageIds?: readonly number[];
+        readonly path?: string;
+        readonly cwd?: string;
+        readonly signal?: AbortSignal;
+        readonly logger?: Logger;
+      },
+    ): Promise<
+      { readonly conversationId: string; readonly response: string } | { readonly error: string }
+    > {
+      const orchestrator = deps.resolveOrchestrator?.();
+      if (orchestrator === undefined) {
+        return {
+          error: "The session orchestrator is not available — cannot start a vision consultation.",
+        };
+      }
+
+      const vision = await resolveVisionModel();
+      if (vision === undefined) {
+        return {
+          error:
+            "No vision-capable model is available in the catalog. Install or configure one (e.g. kimi) to enable image analysis.",
+        };
+      }
+
+      // Collect image data URLs to attach.
+      const images: ImageInput[] = [];
+      if (opts.imageIds !== undefined) {
+        for (const id of opts.imageIds) {
+          const img = service.getRegisteredImage(opts.conversationId, id);
+          if (img === undefined) {
+            return {
+              error: `Image ${id} is not registered. It may have been lost after a server restart — ask the user to re-paste the image.`,
+            };
+          }
+          images.push({
+            url: img.url,
+            ...(img.mimeType !== undefined ? { mimeType: img.mimeType } : {}),
+          });
+        }
+      }
+      if (opts.path !== undefined) {
+        try {
+          const dataUrl = await deps.readFileAsDataUrl(opts.path, opts.cwd);
+          images.push({ url: dataUrl });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { error: `Failed to read image file "${opts.path}": ${msg}` };
+        }
+      }
+      if (images.length === 0) {
+        return {
+          error:
+            "No image to consult about. Provide imageIds (for pasted images) or path (for a file).",
+        };
+      }
+
+      // Start a NEW conversation with the vision model.
+      const consultationId = generateId();
+      log?.info("vision-handoff: starting consultation", {
+        consultationId,
+        visionModel: vision.modelName,
+        imageCount: images.length,
+        fromConversation: opts.conversationId,
+      });
+
+      let responseText = "";
+      let errorMessage = "";
+      try {
+        await orchestrator.handleMessage({
+          conversationId: consultationId,
+          text: question,
+          images,
+          modelName: vision.modelName,
+          ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+          systemPrompt:
+            "You are a vision assistant. A developer who cannot see images is asking you specific questions about an image they attached. Answer their question precisely and thoroughly.",
+          onEvent: (event: AgentEvent) => {
+            if (event.type === "text-delta") {
+              responseText += event.delta;
+            } else if (event.type === "error") {
+              errorMessage = event.message;
+            }
+          },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `Vision consultation failed: ${msg}` };
+      }
+
+      if (errorMessage.length > 0 && responseText.trim().length === 0) {
+        return { error: `Vision consultation failed: ${errorMessage}` };
+      }
+
+      const response = formatConsultResult(consultationId, responseText);
+      return { conversationId: consultationId, response };
     },
   };
 
