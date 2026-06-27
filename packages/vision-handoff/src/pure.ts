@@ -109,6 +109,32 @@ export function formatNoVisionPlaceholder(): string {
 }
 
 /**
+ * Maximum length of the consultation title body (matching the conversation
+ * store's `TITLE_MAX`). The question is truncated to this before the
+ * `"IMAGE - "` prefix is applied so the consultation tab's title stays in line
+ * with the store's own title-derivation limit.
+ */
+const CONSULTATION_TITLE_MAX = 80;
+
+/**
+ * Format the title for a vision consultation conversation tab. The title is
+ * `"IMAGE - "` prefixed to the (truncated) question so the tab is visually
+ * distinguishable from normal conversation tabs. The question is truncated to
+ * match the conversation store's title-derivation limit (`TITLE_MAX = 80`).
+ *
+ * Pure.
+ *
+ * @param question  The question the model asked the vision model.
+ */
+export function formatConsultationTitle(question: string): string {
+  const body =
+    question.length > CONSULTATION_TITLE_MAX
+      ? `${question.slice(0, CONSULTATION_TITLE_MAX)}…`
+      : question;
+  return `IMAGE - ${body}`;
+}
+
+/**
  * Format the `consult_vision` tool's result string. Returns the conversation ID
  * (so the model / user can continue the vision consultation), the vision model's
  * response, and a note that follow-up questions use the dispatch CLI (the model

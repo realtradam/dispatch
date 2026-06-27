@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectTextFromStream,
   findVisionModelName,
+  formatConsultationTitle,
   formatConsultResult,
   formatImagePlaceholder,
   formatNoVisionPlaceholder,
@@ -153,5 +154,27 @@ describe("formatConsultResult", () => {
     const result = formatConsultResult("c1", "  spaced  ");
     expect(result).toContain("spaced");
     expect(result).not.toContain("spaced  ");
+  });
+});
+
+describe("formatConsultationTitle", () => {
+  it("prefixes the question with 'IMAGE - '", () => {
+    expect(formatConsultationTitle("What error is shown?")).toBe("IMAGE - What error is shown?");
+  });
+
+  it("truncates long questions to 80 chars with an ellipsis (matching the store's TITLE_MAX)", () => {
+    const long = "x".repeat(100);
+    const title = formatConsultationTitle(long);
+    expect(title).toBe(`IMAGE - ${"x".repeat(80)}…`);
+    expect(title.length).toBe("IMAGE - ".length + 80 + 1); // prefix + 80 + ellipsis
+  });
+
+  it("does not truncate questions at or under 80 chars", () => {
+    expect(formatConsultationTitle("x".repeat(80))).toBe(`IMAGE - ${"x".repeat(80)}`);
+    expect(formatConsultationTitle("x".repeat(79))).toBe(`IMAGE - ${"x".repeat(79)}`);
+  });
+
+  it("handles an empty question", () => {
+    expect(formatConsultationTitle("")).toBe("IMAGE - ");
   });
 });
