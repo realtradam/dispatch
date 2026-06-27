@@ -27,19 +27,19 @@ interface OpenAIModelListResponse {
  * Whether a model id is vision-capable (can natively accept image input).
  *
  * The OpenAI-compatible `/models` endpoint does not reliably report image
- * capabilities, so this is a hardcoded heuristic by model id: a model whose id
- * contains "kimi" (e.g. `kimi-k2.7`, `moonshot/kimi-k2.7`) is vision-capable;
- * all others are treated as non-vision. This is the single source of truth —
- * the orchestrator's vision handoff and the `read_image` tool both consult the
- * `ModelInfo.vision` flag this sets, so adding a model here enables vision
- * everywhere. Pure: id → boolean, no I/O.
+ * capabilities, so this is a hardcoded heuristic by model id: the Umans Kimi
+ * (`umans-kimi-k2.7`) and Umans Qwen (`umans-qwen3.6-35b-a3b`) models are
+ * vision-capable; all others are treated as non-vision. This is the single
+ * source of truth — the orchestrator's vision handoff and the `consult_vision`
+ * tool both consult the `ModelInfo.vision` flag this sets, so adding a model
+ * here enables vision everywhere. Pure: id → boolean, no I/O.
  *
  * (When an endpoint gains reliable vision reporting, this can be replaced with
  * a real capability check without changing callers.)
  */
 export function isVisionModelId(id: string): boolean {
   const lower = id.toLowerCase();
-  return lower.includes("kimi");
+  return lower.includes("umans-kimi") || lower.includes("umans-qwen");
 }
 
 /**

@@ -37,23 +37,23 @@ function makeVisionProvider(
 
 function makeDeps(overrides: Partial<VisionHandoffDeps> = {}): VisionHandoffDeps {
   const visionProvider = makeVisionProvider((url) => `DESCRIPTION of ${url}`);
-  const catalog = ["umans/kimi-k2.7", "umans/glm-5.2"];
+  const catalog = ["umans/umans-kimi-k2.7", "umans/umans-glm-5.2"];
   const infoMap: Record<string, ModelInfo> = {
-    "umans/kimi-k2.7": { id: "kimi-k2.7", vision: true },
-    "umans/glm-5.2": { id: "glm-5.2" },
+    "umans/umans-kimi-k2.7": { id: "umans-kimi-k2.7", vision: true },
+    "umans/umans-glm-5.2": { id: "umans-glm-5.2" },
   };
   return {
     credentialStore: {
       listCatalog: vi.fn(async () => catalog),
       getModelInfo: vi.fn(async (name: string) => infoMap[name]),
       resolve: vi.fn((name: string) => {
-        if (name === "umans/kimi-k2.7") return { providerId: "umans", model: "kimi-k2.7" };
-        if (name === "umans/glm-5.2") return { providerId: "umans", model: "glm-5.2" };
+        if (name === "umans/umans-kimi-k2.7") return { providerId: "umans", model: "umans-kimi-k2.7" };
+        if (name === "umans/umans-glm-5.2") return { providerId: "umans", model: "umans-glm-5.2" };
         return undefined;
       }),
     },
     resolveModel: vi.fn((name: string) =>
-      name === "umans/kimi-k2.7" || name === "umans/glm-5.2"
+      name === "umans/umans-kimi-k2.7" || name === "umans/umans-glm-5.2"
         ? { provider: visionProvider, model: name.split("/")[1] }
         : undefined,
     ),
@@ -65,12 +65,12 @@ function makeDeps(overrides: Partial<VisionHandoffDeps> = {}): VisionHandoffDeps
 describe("VisionHandoffService.isVisionCapable", () => {
   it("returns true for kimi (via ModelInfo)", async () => {
     const svc = createVisionHandoffService(makeDeps());
-    expect(await svc.isVisionCapable("umans/kimi-k2.7")).toBe(true);
+    expect(await svc.isVisionCapable("umans/umans-kimi-k2.7")).toBe(true);
   });
 
   it("returns false for glm-5.2", async () => {
     const svc = createVisionHandoffService(makeDeps());
-    expect(await svc.isVisionCapable("umans/glm-5.2")).toBe(false);
+    expect(await svc.isVisionCapable("umans/umans-glm-5.2")).toBe(false);
   });
 
   it("returns false for undefined model name", async () => {
@@ -83,13 +83,13 @@ describe("VisionHandoffService.resolveVisionModel", () => {
   it("resolves the kimi model from the catalog", async () => {
     const svc = createVisionHandoffService(makeDeps());
     const vision = await svc.resolveVisionModel();
-    expect(vision?.modelName).toBe("umans/kimi-k2.7");
-    expect(vision?.model).toBe("kimi-k2.7");
+    expect(vision?.modelName).toBe("umans/umans-kimi-k2.7");
+    expect(vision?.model).toBe("umans-kimi-k2.7");
   });
 
   it("excludes the given model", async () => {
     const svc = createVisionHandoffService(makeDeps());
-    const vision = await svc.resolveVisionModel("umans/kimi-k2.7");
+    const vision = await svc.resolveVisionModel("umans/umans-kimi-k2.7");
     expect(vision).toBeUndefined();
   });
 });
@@ -107,7 +107,7 @@ describe("VisionHandoffService.prepareForProvider", () => {
         ],
       },
     ];
-    const result = await svc.prepareForProvider(messages, "umans/kimi-k2.7");
+    const result = await svc.prepareForProvider(messages, "umans/umans-kimi-k2.7");
     expect(result).toBe(messages); // same reference — no copy, no change
   });
 
@@ -115,7 +115,7 @@ describe("VisionHandoffService.prepareForProvider", () => {
     const deps = makeDeps();
     const svc = createVisionHandoffService(deps);
     const messages: ChatMessage[] = [{ role: "user", chunks: [{ type: "text", text: "hi" }] }];
-    const result = await svc.prepareForProvider(messages, "umans/glm-5.2");
+    const result = await svc.prepareForProvider(messages, "umans/umans-glm-5.2");
     expect(result).toBe(messages);
   });
 
@@ -131,7 +131,7 @@ describe("VisionHandoffService.prepareForProvider", () => {
         ],
       },
     ];
-    const result = await svc.prepareForProvider(messages, "umans/glm-5.2", {
+    const result = await svc.prepareForProvider(messages, "umans/umans-glm-5.2", {
       conversationId: "conv-1",
     });
     expect(result).toHaveLength(1);
@@ -154,7 +154,7 @@ describe("VisionHandoffService.prepareForProvider", () => {
       { role: "assistant", chunks: [{ type: "text", text: "ok" }] },
       { role: "user", chunks: [{ type: "image", url: "data:image/png;base64,b" }] },
     ];
-    const result = await svc.prepareForProvider(messages, "umans/glm-5.2", {
+    const result = await svc.prepareForProvider(messages, "umans/umans-glm-5.2", {
       conversationId: "conv-1",
     });
     // First image → Image 1, second → Image 2.
@@ -173,7 +173,7 @@ describe("VisionHandoffService.prepareForProvider", () => {
         chunks: [{ type: "image", url: "data:image/png;base64,registered" }],
       },
     ];
-    await svc.prepareForProvider(messages, "umans/glm-5.2", { conversationId: "conv-42" });
+    await svc.prepareForProvider(messages, "umans/umans-glm-5.2", { conversationId: "conv-42" });
     const img = svc.getRegisteredImage("conv-42", 1);
     expect(img?.url).toBe("data:image/png;base64,registered");
   });
@@ -185,7 +185,7 @@ describe("VisionHandoffService.prepareForProvider", () => {
     const messages: ChatMessage[] = [
       { role: "user", chunks: [{ type: "image", url: "data:image/png;base64,abc" }] },
     ];
-    const result = await svc.prepareForProvider(messages, "umans/glm-5.2", {
+    const result = await svc.prepareForProvider(messages, "umans/umans-glm-5.2", {
       conversationId: "conv-1",
     });
     const text = (result[0]?.chunks[0] as { text: string }).text;
@@ -234,7 +234,7 @@ describe("VisionHandoffService.consultVision", () => {
     const messages: ChatMessage[] = [
       { role: "user", chunks: [{ type: "image", url: "data:image/png;base64,img1" }] },
     ];
-    await svc.prepareForProvider(messages, "umans/glm-5.2", { conversationId: "conv-1" });
+    await svc.prepareForProvider(messages, "umans/umans-glm-5.2", { conversationId: "conv-1" });
 
     const result = await svc.consultVision("What error is shown?", {
       conversationId: "conv-1",
@@ -251,7 +251,7 @@ describe("VisionHandoffService.consultVision", () => {
     // The orchestrator was called with the vision model + the image.
     expect(handleMessage).toHaveBeenCalledOnce();
     const call = handleMessage.mock.calls[0]?.[0];
-    expect(call.modelName).toBe("umans/kimi-k2.7");
+    expect(call.modelName).toBe("umans/umans-kimi-k2.7");
     expect(call.images).toHaveLength(1);
     expect(call.images?.[0]?.url).toBe("data:image/png;base64,img1");
   });
