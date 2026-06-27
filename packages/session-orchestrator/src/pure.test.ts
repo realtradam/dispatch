@@ -26,6 +26,39 @@ describe("buildUserMessage", () => {
     expect(msg.role).toBe("user");
     expect(msg.chunks[0]).toEqual({ type: "text", text: "" });
   });
+
+  it("appends image chunks after the text chunk when images are given", () => {
+    const msg = buildUserMessage("look at this", [
+      { url: "data:image/png;base64,aaa" },
+      { url: "data:image/jpeg;base64,bbb", mimeType: "image/jpeg" },
+    ]);
+    expect(msg.chunks).toHaveLength(3);
+    expect(msg.chunks[0]).toEqual({ type: "text", text: "look at this" });
+    expect(msg.chunks[1]).toEqual({ type: "image", url: "data:image/png;base64,aaa" });
+    expect(msg.chunks[2]).toEqual({
+      type: "image",
+      url: "data:image/jpeg;base64,bbb",
+      mimeType: "image/jpeg",
+    });
+  });
+
+  it("builds an image-only message when text is empty", () => {
+    const msg = buildUserMessage("", [{ url: "data:image/png;base64,zzz" }]);
+    expect(msg.chunks).toHaveLength(1);
+    expect(msg.chunks[0]).toEqual({ type: "image", url: "data:image/png;base64,zzz" });
+  });
+
+  it("includes mimeType when provided", () => {
+    const msg = buildUserMessage("hi", [
+      { url: "data:image/webp;base64,x", mimeType: "image/webp" },
+    ]);
+    expect((msg.chunks[1] as { mimeType?: string }).mimeType).toBe("image/webp");
+  });
+
+  it("omits mimeType when not provided", () => {
+    const msg = buildUserMessage("hi", [{ url: "https://example.com/x.png" }]);
+    expect((msg.chunks[1] as { mimeType?: string }).mimeType).toBeUndefined();
+  });
 });
 
 describe("selectFirstProvider", () => {

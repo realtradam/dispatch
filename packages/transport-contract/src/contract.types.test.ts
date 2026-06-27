@@ -20,6 +20,7 @@ import type {
   LspServerState,
   LspStatusResponse,
   McpStatusResponse,
+  ModelsResponse,
   SetConversationComputerRequest,
   SetCwdRequest,
   SetWorkspaceDefaultComputerRequest,
@@ -53,6 +54,18 @@ const _chatWithComputer: ChatRequest = {
 
 const _chatWithoutComputer: ChatRequest = {
   message: "hello",
+};
+
+// ─── ChatRequest.images (additive optional) ──────────────────────────────────
+
+const _chatWithImages: ChatRequest = {
+  message: "What's in this screenshot?",
+  images: [{ url: "data:image/png;base64,iVBORw0KGgo=", mimeType: "image/png" }],
+};
+
+const _chatWithHttpImage: ChatRequest = {
+  message: "analyze this",
+  images: [{ url: "https://example.com/diagram.png" }],
 };
 
 // ─── Computer list / single response ─────────────────────────────────────────
@@ -253,6 +266,35 @@ describe("transport-contract types compile and are exported", () => {
 
   it("ChatRequest: carries computerId when set", () => {
     expect(_chatWithComputer.computerId).toBe("prod-box");
+  });
+
+  // ─── ChatRequest.images (additive optional) ──────────────────────────────
+
+  it("ChatRequest: images is additive optional (omittable)", () => {
+    expect(_chatWithoutComputer.images).toBeUndefined();
+  });
+
+  it("ChatRequest: carries images (data URL) when set", () => {
+    expect(_chatWithImages.images).toHaveLength(1);
+    expect(_chatWithImages.images?.[0]?.url).toContain("base64");
+    expect(_chatWithImages.images?.[0]?.mimeType).toBe("image/png");
+  });
+
+  it("ChatRequest: carries images (http URL, mimeType optional)", () => {
+    expect(_chatWithHttpImage.images?.[0]?.url).toBe("https://example.com/diagram.png");
+    expect(_chatWithHttpImage.images?.[0]?.mimeType).toBeUndefined();
+  });
+
+  it("ModelsResponse: ModelMetadata carries optional vision flag", () => {
+    const resp: ModelsResponse = {
+      models: ["umans/kimi-k2.7", "umans/glm-5.2"],
+      modelInfo: {
+        "umans/kimi-k2.7": { contextWindow: 200000, vision: true },
+        "umans/glm-5.2": { contextWindow: 128000 },
+      },
+    };
+    expect(resp.modelInfo?.["umans/kimi-k2.7"]?.vision).toBe(true);
+    expect(resp.modelInfo?.["umans/glm-5.2"]?.vision).toBeUndefined();
   });
 
   // ─── Computers ───────────────────────────────────────────────────────────

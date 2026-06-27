@@ -44,6 +44,7 @@ import { extension as toolWriteFileExt } from "@dispatch/tool-write-file";
 import { extension as toolYoutubeTranscriptExt } from "@dispatch/tool-youtube-transcript";
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
+import { extension as visionHandoffExt } from "@dispatch/vision-handoff";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
@@ -206,6 +207,13 @@ async function boot(): Promise<void> {
   const extensions: Extension[] = [
     ...CORE_EXTENSIONS,
     createCredentialStoreExtension({ credentials }),
+    // vision-handoff activates AFTER credential-store (it resolves the
+    // credential-store service at activate time to find vision-capable models).
+    // Placed here, not in CORE_EXTENSIONS, so the service is available when it
+    // activates. The session-orchestrator resolves its service LAZILY
+    // (per-turn), so activation order between it and session-orchestrator
+    // doesn't matter.
+    visionHandoffExt,
     ...externalExtensions,
   ];
 

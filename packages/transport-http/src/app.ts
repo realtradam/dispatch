@@ -42,6 +42,7 @@ import type {
   ThroughputResponse,
   TitleResponse,
   UpdateHeartbeatRequest,
+  VisionSettingsResponse,
   WarmResponse,
   WorkspaceListResponse,
   WorkspaceResponse,
@@ -212,6 +213,37 @@ export function createApp(opts: CreateServerOptions): Hono {
 
   app.get("/health", (c) => c.json({ ok: true }));
 
+  // ── Tmp image serving (vision handoff) ──────────────────────────────────────
+  app.get("/images/:conversationId/:imageId", async (c) => {
+    const conversationId = c.req.param("conversationId");
+    const imageId = c.req.param("imageId");
+    if (imageId.includes("/") || imageId.includes("..")) {
+      return c.json({ error: "Invalid image ID" }, 400);
+    }
+    const imageDir = process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images";
+    const { join } = await import("node:path");
+    const { readFile: fsReadFile } = await import("node:fs/promises");
+    const filePath = join(imageDir, conversationId, imageId);
+    try {
+      const buf = await fsReadFile(filePath);
+      const ext = imageId.toLowerCase();
+      const mime = ext.endsWith(".png")
+        ? "image/png"
+        : ext.endsWith(".jpg") || ext.endsWith(".jpeg")
+          ? "image/jpeg"
+          : ext.endsWith(".webp")
+            ? "image/webp"
+            : ext.endsWith(".gif")
+              ? "image/gif"
+              : ext.endsWith(".bmp")
+                ? "image/bmp"
+                : "application/octet-stream";
+      return new Response(buf, { headers: { "Content-Type": mime, "Cache-Control": "no-cache" } });
+    } catch {
+      return c.json({ error: "Image not found" }, 404);
+    }
+  });
+
   app.get("/conversations/:id/metrics", async (c) => {
     const conversationId = c.req.param("id");
 
@@ -306,11 +338,14 @@ export function createApp(opts: CreateServerOptions): Hono {
   app.get("/models", async (c) => {
     try {
       const models = await opts.credentialStore.listCatalog();
-      const modelInfo: Record<string, { contextWindow?: number }> = {};
+      const modelInfo: Record<string, { contextWindow?: number; vision?: boolean }> = {};
       for (const modelName of models) {
         const info = await opts.credentialStore.getModelInfo(modelName);
-        if (info?.contextWindow !== undefined) {
-          modelInfo[modelName] = { contextWindow: info.contextWindow };
+        if (info?.contextWindow !== undefined || info?.vision === true) {
+          const entry: { contextWindow?: number; vision?: boolean } = {};
+          if (info?.contextWindow !== undefined) entry.contextWindow = info.contextWindow;
+          if (info?.vision === true) entry.vision = true;
+          modelInfo[modelName] = entry;
         }
       }
       const body: ModelsResponse = {
@@ -410,8 +445,16 @@ export function createApp(opts: CreateServerOptions): Hono {
       return c.json({ error: result.error }, 400);
     }
 
-    const { conversationId, message, model, cwd, computerId, reasoningEffort, workspaceId } =
-      result;
+    const {
+      conversationId,
+      message,
+      model,
+      cwd,
+      computerId,
+      reasoningEffort,
+      workspaceId,
+      images,
+    } = result;
     log.info("chat: request accepted", {
       conversationId,
       hasModel: model !== undefined,
@@ -419,6 +462,7 @@ export function createApp(opts: CreateServerOptions): Hono {
       hasComputerId: computerId !== undefined,
       hasReasoningEffort: reasoningEffort !== undefined,
       hasWorkspaceId: workspaceId !== undefined,
+      imageCount: images?.length ?? 0,
     });
 
     const events: AgentEvent[] = [];
@@ -469,6 +513,7 @@ export function createApp(opts: CreateServerOptions): Hono {
       ...(computerId !== undefined ? { computerId } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(workspaceId !== undefined ? { workspaceId } : {}),
+      ...(images !== undefined ? { images } : {}),
     };
 
     opts.orchestrator
@@ -1668,6 +1713,43 @@ export function createApp(opts: CreateServerOptions): Hono {
     await opts.systemPromptService.setTemplate(template);
     log.info("system-prompt: template set");
     const response: SystemPromptTemplateResponse = { template };
+    return c.json(response, 200);
+  });
+
+  app.get("/settings/vision", async (c) => {
+    const settings = await opts.conversationStore.getVisionSettings();
+    const body: VisionSettingsResponse = settings;
+    return c.json(body, 200);
+  });
+
+  app.put("/settings/vision", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const obj = body as { imageLimit?: unknown; compactionModel?: unknown };
+    if (obj.imageLimit !== undefined) {
+      if (
+        typeof obj.imageLimit !== "number" ||
+        !Number.isInteger(obj.imageLimit) ||
+        obj.imageLimit < 0
+      ) {
+        return c.json({ error: "imageLimit must be a non-negative integer" }, 400);
+      }
+      await opts.conversationStore.setVisionImageLimit(obj.imageLimit);
+      log.info("vision: image limit set", { imageLimit: obj.imageLimit });
+    }
+    if (obj.compactionModel !== undefined) {
+      if (obj.compactionModel !== null && typeof obj.compactionModel !== "string") {
+        return c.json({ error: "compactionModel must be a string or null" }, 400);
+      }
+      await opts.conversationStore.setVisionCompactionModel(obj.compactionModel);
+      log.info("vision: compaction model set", { compactionModel: obj.compactionModel });
+    }
+    const settings = await opts.conversationStore.getVisionSettings();
+    const response: VisionSettingsResponse = settings;
     return c.json(response, 200);
   });
 

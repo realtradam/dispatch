@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Computer, ComputerEntry, Workspace } from "./index.js";
+import type { Chunk, Computer, ComputerEntry, ImageChunk, ImageInput, Workspace } from "./index.js";
 
 describe("@dispatch/wire — Computer / Workspace shapes", () => {
   it("a Computer literal satisfies the Computer type", () => {
@@ -55,5 +55,34 @@ describe("@dispatch/wire — Computer / Workspace shapes", () => {
 
     const local: Workspace = { ...remote, defaultComputerId: null };
     expect(local.defaultComputerId).toBeNull();
+  });
+});
+
+describe("@dispatch/wire — ImageChunk / ImageInput shapes", () => {
+  it("an ImageChunk carries a data URL and optional mimeType", () => {
+    const c: ImageChunk = {
+      type: "image",
+      url: "data:image/png;base64,iVBORw0KGgo=",
+      mimeType: "image/png",
+    };
+    expect(c.type).toBe("image");
+    expect(c.url).toContain("base64");
+    expect(c.mimeType).toBe("image/png");
+  });
+
+  it("an ImageChunk with only a url is valid (mimeType optional)", () => {
+    const c: ImageChunk = { type: "image", url: "https://example.com/cat.png" };
+    expect(c.mimeType).toBeUndefined();
+  });
+
+  it("ImageInput mirrors ImageChunk's url semantics", () => {
+    const input: ImageInput = { url: "data:image/jpeg;base64,/9j/4AAQ" };
+    expect(input.url).toContain("jpeg");
+  });
+
+  it("ImageChunk is a member of the Chunk union (assignable)", () => {
+    const chunk: Chunk = { type: "image", url: "data:image/png;base64,x" };
+    // Compile-time proof: an ImageChunk satisfies the Chunk union.
+    expect(chunk.type).toBe("image");
   });
 });

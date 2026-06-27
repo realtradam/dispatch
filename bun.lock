@@ -104,6 +104,7 @@
         "@dispatch/tool-youtube-transcript": "workspace:*",
         "@dispatch/transport-http": "workspace:*",
         "@dispatch/transport-ws": "workspace:*",
+        "@dispatch/vision-handoff": "workspace:*",
       },
     },
     "packages/journal-sink": {
@@ -371,6 +372,16 @@
       "name": "@dispatch/ui-contract",
       "version": "0.2.0",
     },
+    "packages/vision-handoff": {
+      "name": "@dispatch/vision-handoff",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
+        "@dispatch/credential-store": "workspace:*",
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/openai-stream": "workspace:*",
+      },
+    },
     "packages/wire": {
       "name": "@dispatch/wire",
       "version": "0.12.0",
@@ -472,6 +483,8 @@
     "@dispatch/transport-ws": ["@dispatch/transport-ws@workspace:packages/transport-ws"],
 
     "@dispatch/ui-contract": ["@dispatch/ui-contract@workspace:packages/ui-contract"],
+
+    "@dispatch/vision-handoff": ["@dispatch/vision-handoff@workspace:packages/vision-handoff"],
 
     "@dispatch/wire": ["@dispatch/wire@workspace:packages/wire"],
 

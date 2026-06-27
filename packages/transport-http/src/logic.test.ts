@@ -182,6 +182,69 @@ describe("parseChatBody", () => {
       expect(result.reasoningEffort).toBeUndefined();
     }
   });
+
+  // ── images ──────────────────────────────────────────────────────────────
+
+  it("parses images array with data URLs", () => {
+    const result = parseChatBody(
+      {
+        message: "what is this?",
+        images: [
+          { url: "data:image/png;base64,aaa" },
+          { url: "data:image/jpeg;base64,bbb", mimeType: "image/jpeg" },
+        ],
+      },
+      fakeId,
+    );
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.images).toHaveLength(2);
+      expect(result.images?.[0]?.url).toBe("data:image/png;base64,aaa");
+      expect(result.images?.[1]?.mimeType).toBe("image/jpeg");
+    }
+  });
+
+  it("parses images with http URLs", () => {
+    const result = parseChatBody(
+      { message: "hi", images: [{ url: "https://example.com/x.png" }] },
+      fakeId,
+    );
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.images?.[0]?.url).toBe("https://example.com/x.png");
+    }
+  });
+
+  it("returns error when images is not an array", () => {
+    const result = parseChatBody({ message: "hi", images: "not-an-array" }, fakeId);
+    expect(isParseError(result)).toBe(true);
+  });
+
+  it("returns error when an image lacks a url", () => {
+    const result = parseChatBody({ message: "hi", images: [{ mimeType: "image/png" }] }, fakeId);
+    expect(isParseError(result)).toBe(true);
+  });
+
+  it("returns error when an image url is empty", () => {
+    const result = parseChatBody({ message: "hi", images: [{ url: "" }] }, fakeId);
+    expect(isParseError(result)).toBe(true);
+  });
+
+  it("omits images when absent (backward compatible)", () => {
+    const result = parseChatBody({ message: "hi" }, fakeId);
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.images).toBeUndefined();
+    }
+  });
+
+  it("omits images when the array is empty", () => {
+    const result = parseChatBody({ message: "hi", images: [] }, fakeId);
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.images).toBeUndefined();
+    }
+  });
 });
 
 describe("parseSinceSeq", () => {
