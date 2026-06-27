@@ -21,7 +21,9 @@ import {
   type SecretsAccess,
   type StorageNamespace,
 } from "@dispatch/kernel";
-import { extension as lspExt } from "@dispatch/lsp";
+// LSP temporarily disabled — crashes (unhandled JSON parse, ENOENT on
+// transient .old_modules dirs) and a memory leak. Re-enable after fix.
+// import { extension as lspExt } from "@dispatch/lsp";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
@@ -106,7 +108,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
   skillsExt,
   systemPromptExt,
   cacheWarmingExt,
-  lspExt,
+  // lspExt,  // LSP temporarily disabled — see import above
   // ssh declares `dependsOn: ["exec-backend"]` and PROVIDES the remote
   // exec-backend factory + the ComputerService the HTTP routes delegate to.
   // Its lookups are lazy (tool-/request-time), but it is placed after
