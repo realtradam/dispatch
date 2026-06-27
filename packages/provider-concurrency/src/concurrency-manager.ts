@@ -45,12 +45,24 @@ export interface ConcurrencyLimiter {
    * stream completes (in a `finally` block). For providers with no configured
    * limit, resolves instantly with a no-op release.
    *
+   * If `onQueued` is provided and the request cannot be granted immediately
+   * (at limit or paused), it is called synchronously BEFORE the Promise is
+   * created. This lets the caller emit a "queued" status signal. If the slot
+   * is granted immediately, `onQueued` is NOT called.
+   *
    * @param providerId   The provider to limit (e.g. "umans", "openai-compat").
    * @param conversationId The agent requesting the slot.
    * @param promptStartedAt When the agent's current prompt (turn) started
    *                        (epoch-ms). Used for oldest-agent-first scheduling.
+   * @param onQueued       Called synchronously when the request is enqueued
+   *                       (not granted immediately). Optional.
    */
-  acquire(providerId: string, conversationId: string, promptStartedAt: number): Promise<() => void>;
+  acquire(
+    providerId: string,
+    conversationId: string,
+    promptStartedAt: number,
+    onQueued?: () => void,
+  ): Promise<() => void>;
 
   /**
    * Report a 429 from a provider. Pauses the queue for that provider for
@@ -222,7 +234,7 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
   // ── Public API ─────────────────────────────────────────────────────────────
 
   const manager: ConcurrencyService = {
-    acquire(providerId, conversationId, promptStartedAt) {
+    acquire(providerId, conversationId, promptStartedAt, onQueued) {
       const state = states.get(providerId);
       if (state === undefined) {
         // No limit configured → unlimited.
@@ -232,6 +244,11 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
       if (!state.paused && state.inFlight < state.limit) {
         return Promise.resolve(grantSlot(state, providerId, conversationId));
       }
+
+      // Cannot grant immediately — the request will be queued.
+      // Notify the caller BEFORE creating the Promise so they can emit a
+      // "queued" status signal while we're still synchronous.
+      onQueued?.();
 
       // Queue (oldest-agent-first by promptStartedAt).
       return new Promise<() => void>((resolve) => {
