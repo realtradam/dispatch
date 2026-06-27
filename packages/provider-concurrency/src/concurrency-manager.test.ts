@@ -59,7 +59,7 @@ function createFakeTimers() {
   };
 }
 
-function createManager(): {
+function createManager(opts?: { releaseCooldownMs?: number }): {
   manager: ConcurrencyService;
   timers: ReturnType<typeof createFakeTimers>;
 } {
@@ -69,6 +69,7 @@ function createManager(): {
     slotTimeoutMs: 5000,
     watchdogIntervalMs: 1000,
     defaultPauseMs: 30000,
+    ...(opts?.releaseCooldownMs !== undefined ? { releaseCooldownMs: opts.releaseCooldownMs } : {}),
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     setInterval: timers.setInterval,
@@ -382,5 +383,68 @@ describe("createConcurrencyManager", () => {
       release();
     }
     expect(manager.getStatus("umans")?.inFlight).toBe(0);
+  });
+
+  it("release cooldown delays slot recycling (inFlight stays incremented during cooldown)", async () => {
+    const { manager, timers } = createManager({ releaseCooldownMs: 200 });
+    manager.setLimit("umans", 1);
+
+    const release1 = await manager.acquire("umans", "conv1", 0);
+    expect(manager.getStatus("umans")?.inFlight).toBe(1);
+
+    // Queue a waiter.
+    let resolved = false;
+    const promise2 = manager.acquire("umans", "conv2", 100).then((r) => {
+      resolved = true;
+      return r;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    expect(manager.getStatus("umans")?.queued).toBe(1);
+
+    // Release the slot — inFlight should stay 1 (cooldown active).
+    release1();
+    expect(manager.getStatus("umans")?.inFlight).toBe(1);
+    expect(resolved).toBe(false); // waiter NOT granted yet
+
+    // Advance past the cooldown.
+    timers.advance(200);
+
+    // Now the slot is recycled and the waiter is granted.
+    const release2 = await promise2;
+    expect(resolved).toBe(true);
+    expect(manager.getStatus("umans")?.inFlight).toBe(1);
+    expect(manager.getStatus("umans")?.queued).toBe(0);
+    release2();
+  });
+
+  it("release cooldown is idempotent (double-release only schedules one cooldown)", async () => {
+    const { manager, timers } = createManager({ releaseCooldownMs: 200 });
+    manager.setLimit("umans", 2);
+
+    const release = await manager.acquire("umans", "conv1", 0);
+    expect(manager.getStatus("umans")?.inFlight).toBe(1);
+
+    release();
+    expect(manager.getStatus("umans")?.inFlight).toBe(1); // still 1 (cooldown)
+
+    // Double-release should not schedule a second cooldown.
+    release();
+
+    // After cooldown, inFlight should drop by exactly 1 (to 0), not 2.
+    timers.advance(200);
+    expect(manager.getStatus("umans")?.inFlight).toBe(0);
+  });
+
+  it("destroy clears cooldown timers without error", () => {
+    const { manager } = createManager({ releaseCooldownMs: 200 });
+    manager.setLimit("umans", 1);
+    // Acquire + release to schedule a cooldown timer.
+    manager.acquire("umans", "conv1", 0).then((release) => {
+      release();
+      // Now there's a pending cooldown timer — destroy should clean it up.
+      expect(() => manager.destroy()).not.toThrow();
+    });
   });
 });

@@ -114,6 +114,15 @@ export interface ConcurrencyManagerOpts {
   readonly watchdogIntervalMs: number;
   /** Default pause duration when a 429 arrives without Retry-After (ms). */
   readonly defaultPauseMs: number;
+  /**
+   * Delay after a slot is released before the slot is recycled (ms). During
+   * this window `inFlight` stays incremented — a new `acquire` sees the slot
+   * as still held and queues. This covers the upstream provider's accounting
+   * lag: the provider's `concurrent_sessions` counter may not decrement the
+   * instant our stream completes, so re-admitting immediately risks an N+1
+   * overshoot. 0 = instant re-admission (no cooldown). Default: 0.
+   */
+  readonly releaseCooldownMs?: number;
   /** Injected timers (default: global). Override in tests for deterministic time. */
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
@@ -132,12 +141,14 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
   const now = opts.now;
   const slotTimeoutMs = opts.slotTimeoutMs;
   const defaultPauseMs = opts.defaultPauseMs;
+  const releaseCooldownMs = opts.releaseCooldownMs ?? 0;
   const setTimeout = opts.setTimeout ?? globalThis.setTimeout.bind(globalThis);
   const clearTimeout = opts.clearTimeout ?? globalThis.clearTimeout.bind(globalThis);
   const setInterval = opts.setInterval ?? globalThis.setInterval.bind(globalThis);
   const clearInterval = opts.clearInterval ?? globalThis.clearInterval.bind(globalThis);
 
   const states = new Map<string, ProviderState>();
+  const cooldownTimers = new Set<ReturnType<typeof setTimeout>>();
   let slotIdCounter = 0;
 
   // ── Slot granting ──────────────────────────────────────────────────────────
@@ -149,8 +160,25 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
       if (released) return;
       released = true;
       state.slots.delete(id);
-      state.inFlight--;
-      tryGrantNext(providerId);
+
+      // Recycle the slot: decrement inFlight + grant the next waiter.
+      // With a release cooldown > 0, defer this by the cooldown duration so
+      // the upstream provider has time to decrement its concurrent_sessions
+      // counter — preventing an N+1 overshoot from accounting lag. During the
+      // cooldown, inFlight stays incremented, so new acquires queue.
+      const recycle = () => {
+        state.inFlight--;
+        tryGrantNext(providerId);
+      };
+      if (releaseCooldownMs > 0) {
+        const timer = setTimeout(() => {
+          cooldownTimers.delete(timer);
+          recycle();
+        }, releaseCooldownMs);
+        cooldownTimers.add(timer);
+      } else {
+        recycle();
+      }
     };
     state.slots.set(id, {
       conversationId,
@@ -314,6 +342,10 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
 
     destroy() {
       clearInterval(watchdogTimer);
+      for (const timer of cooldownTimers) {
+        clearTimeout(timer);
+      }
+      cooldownTimers.clear();
       for (const state of states.values()) {
         if (state.pauseTimer !== undefined) {
           clearTimeout(state.pauseTimer);
