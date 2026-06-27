@@ -1,5 +1,6 @@
-import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
-import { type ConcurrencyService, createConcurrencyManager } from "./concurrency-manager.js";
+import type { Extension, HostAPI, Logger, Manifest, StorageNamespace } from "@dispatch/kernel";
+import type { ConcurrencyManagerOpts, ConcurrencyService } from "./concurrency-manager.js";
+import { createConcurrencyManager } from "./concurrency-manager.js";
 import { concurrencyServiceHandle } from "./service.js";
 
 export const manifest: Manifest = {
@@ -9,6 +10,7 @@ export const manifest: Manifest = {
   apiVersion: "^0.1.0",
   trust: "bundled",
   activation: "eager",
+  capabilities: { db: true },
   contributes: { services: ["provider-concurrency/service"] },
 };
 
@@ -35,10 +37,72 @@ const WATCHDOG_INTERVAL_MS = 30 * 1000;
 const DEFAULT_PAUSE_MS = 30 * 1000;
 const RELEASE_COOLDOWN_MS = 200;
 
-export function activate(host: HostAPI): void {
-  const logger = host.logger;
+/**
+ * Wrap a `ConcurrencyService` so `setLimit`/`removeLimit` persist to the
+ * given `StorageNamespace`. All other methods delegate directly to the inner
+ * service. Persistence is fire-and-forget — a storage write failure logs a
+ * warning but does NOT fail the API call (the in-memory limit is already set).
+ */
+function createPersistedService(
+  inner: ConcurrencyService,
+  storage: StorageNamespace,
+  logger: Logger,
+): ConcurrencyService {
+  return {
+    acquire: inner.acquire.bind(inner),
+    reportRateLimit: inner.reportRateLimit.bind(inner),
+    setLimit(providerId, limit) {
+      inner.setLimit(providerId, limit);
+      storage.set(providerId, String(limit)).catch((err) =>
+        logger.warn("provider-concurrency: failed to persist limit", {
+          providerId,
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+    removeLimit(providerId) {
+      inner.removeLimit(providerId);
+      storage.delete(providerId).catch((err) =>
+        logger.warn("provider-concurrency: failed to delete persisted limit", {
+          providerId,
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+    getLimit: inner.getLimit.bind(inner),
+    getLimits: inner.getLimits.bind(inner),
+    getStatus: inner.getStatus.bind(inner),
+    getStatusAll: inner.getStatusAll.bind(inner),
+    destroy: inner.destroy.bind(inner),
+  };
+}
 
-  const manager: ConcurrencyService = createConcurrencyManager({
+/**
+ * Load saved limits from storage and apply them to the manager.
+ * Called during activate, before the service is registered.
+ */
+async function loadLimits(
+  storage: StorageNamespace,
+  manager: ConcurrencyService,
+  logger: Logger,
+): Promise<void> {
+  const keys = await storage.keys();
+  for (const providerId of keys) {
+    const raw = await storage.get(providerId);
+    if (raw === null) continue;
+    const limit = Number.parseInt(raw, 10);
+    if (!Number.isNaN(limit) && limit > 0) {
+      manager.setLimit(providerId, limit);
+      logger.info(`provider-concurrency: restored limit ${limit} for "${providerId}"`);
+    }
+  }
+}
+
+export async function activate(host: HostAPI): Promise<void> {
+  const logger = host.logger;
+  const storage = host.storage("provider-concurrency");
+
+  const managerOpts: ConcurrencyManagerOpts = {
     now: () => Date.now(),
     slotTimeoutMs: SLOT_TIMEOUT_MS,
     watchdogIntervalMs: WATCHDOG_INTERVAL_MS,
@@ -57,9 +121,16 @@ export function activate(host: HostAPI): void {
         durationMs,
       });
     },
-  });
+  };
 
-  host.provideService(concurrencyServiceHandle, manager);
+  const inner = createConcurrencyManager(managerOpts);
+
+  // Restore persisted limits before registering the service so the first
+  // request sees the correct configuration.
+  await loadLimits(storage, inner, logger);
+
+  const service = createPersistedService(inner, storage, logger);
+  host.provideService(concurrencyServiceHandle, service);
   logger.info("provider-concurrency: registered");
 }
 
