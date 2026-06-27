@@ -527,12 +527,18 @@ export interface TurnSteeringEvent {
 
 /**
  * The lifecycle status of a conversation, used for tab persistence across
- * devices. `active` = an agent is currently generating; `idle` = exists but not
+ * devices. `active` = an agent is currently generating; `queued` = the
+ * request is waiting in the per-provider concurrency queue for a slot (not yet
+ * generating — the FE shows a loading ring, not dots); `idle` = exists but not
  * generating; `closed` = user dismissed the tab (hidden from the tab bar, not
  * deleted). New conversations start as `idle`; transitions to `active` on
  * turn-start, back to `idle` on turn done/error, and to `closed` on user close.
+ * When the concurrency extension is loaded and a request blocks on
+ * `acquire()`, `queued` is broadcast (persisted status stays `active`); when
+ * the slot is granted, `active` is re-broadcast. A request that gets a slot
+ * immediately never emits `queued`.
  */
-export type ConversationStatus = "active" | "idle" | "closed";
+export type ConversationStatus = "active" | "queued" | "idle" | "closed";
 
 /**
  * Metadata for a conversation, returned by `GET /conversations` (the list

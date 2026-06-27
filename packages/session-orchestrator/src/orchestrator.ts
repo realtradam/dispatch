@@ -611,13 +611,33 @@ export function createSessionOrchestrator(
         // when the stream completes (after all tokens are generated). The
         // promptStartedAt (turn start time) is used for oldest-agent-first
         // scheduling when multiple agents are queued.
+        //
+        // Status lifecycle with concurrency: "active" is emitted early (in
+        // payloadPromise.then, before this code runs). If acquire() blocks,
+        // onQueued emits "queued" (broadcast-only — persisted status stays
+        // "active"). When the slot is granted, onAcquired emits "active"
+        // again, transitioning "queued" → "active" so the FE switches from
+        // the loading ring back to dots. A request that gets a slot
+        // immediately never emits "queued" — onAcquired fires right after
+        // the early "active", which is a harmless no-op re-broadcast.
         const limiter = deps.resolveConcurrencyLimiter?.();
         if (limiter !== undefined) {
+          const emitStatus = (status: "queued" | "active"): void => {
+            void deps.conversationStore.getWorkspaceId(conversationId).then((workspaceId) => {
+              deps.emit?.(conversationStatusChanged, {
+                conversationId,
+                status,
+                workspaceId,
+              });
+            });
+          };
           provider = wrapProviderWithConcurrency(
             provider,
             limiter,
             conversationId,
             promptStartedAt,
+            () => emitStatus("queued"),
+            () => emitStatus("active"),
           );
         }
 

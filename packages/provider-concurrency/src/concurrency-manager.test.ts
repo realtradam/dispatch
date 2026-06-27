@@ -447,4 +447,41 @@ describe("createConcurrencyManager", () => {
       expect(() => manager.destroy()).not.toThrow();
     });
   });
+
+  it("onQueued is called when the request is enqueued (not granted immediately)", async () => {
+    const { manager } = createManager();
+    manager.setLimit("umans", 1);
+
+    // Hold the single slot.
+    const release1 = await manager.acquire("umans", "conv1", 0);
+
+    // Second request should trigger onQueued.
+    let queuedCalled = false;
+    const promise = manager.acquire("umans", "conv2", 100, () => {
+      queuedCalled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queuedCalled).toBe(true);
+    expect(manager.getStatus("umans")?.queued).toBe(1);
+
+    // Release the slot — the queued request should be granted.
+    release1();
+    const release2 = await promise;
+    release2();
+  });
+
+  it("onQueued is NOT called when the slot is granted immediately", async () => {
+    const { manager } = createManager();
+    manager.setLimit("umans", 2);
+
+    let queuedCalled = false;
+    const release = await manager.acquire("umans", "conv1", 0, () => {
+      queuedCalled = true;
+    });
+
+    expect(queuedCalled).toBe(false);
+    release();
+  });
 });

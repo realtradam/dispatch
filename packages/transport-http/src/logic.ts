@@ -13,7 +13,7 @@ const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
   "max",
 ];
 
-const VALID_STATUSES: readonly ConversationStatus[] = ["active", "idle", "closed"];
+const VALID_STATUSES: readonly ConversationStatus[] = ["active", "queued", "idle", "closed"];
 
 /**
  * Pure: parse a `?status=` query value into a list of valid ConversationStatus

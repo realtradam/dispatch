@@ -139,6 +139,79 @@ describe("wrapProviderWithConcurrency", () => {
     expect(models).toEqual([{ id: "model-1" }]);
   });
 
+  it("calls onQueued when the request blocks and onAcquired when the slot is granted", async () => {
+    let queuedCalled = false;
+    let acquiredCalled = false;
+
+    const blockingLimiter: ConcurrencyLimiter = {
+      acquire(_providerId, _convId, _promptAt, onQueued) {
+        // Simulate a queued request: call onQueued, then resolve on next tick.
+        onQueued?.();
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            resolve(() => {});
+          }, 0);
+        });
+      },
+      reportRateLimit() {},
+    };
+
+    const provider = fakeProvider([{ type: "finish", reason: "stop" }]);
+    const wrapped = wrapProviderWithConcurrency(
+      provider,
+      blockingLimiter,
+      "conv1",
+      0,
+      () => {
+        queuedCalled = true;
+      },
+      () => {
+        acquiredCalled = true;
+      },
+    );
+
+    for await (const _e of wrapped.stream([], [])) {
+      // consume
+    }
+
+    expect(queuedCalled).toBe(true);
+    expect(acquiredCalled).toBe(true);
+  });
+
+  it("does NOT call onQueued when the slot is granted immediately", async () => {
+    let queuedCalled = false;
+    let acquiredCalled = false;
+
+    const immediateLimiter: ConcurrencyLimiter = {
+      acquire(_providerId, _convId, _promptAt, _onQueued) {
+        // Grant immediately — do NOT call onQueued.
+        return Promise.resolve(() => {});
+      },
+      reportRateLimit() {},
+    };
+
+    const provider = fakeProvider([{ type: "finish", reason: "stop" }]);
+    const wrapped = wrapProviderWithConcurrency(
+      provider,
+      immediateLimiter,
+      "conv1",
+      0,
+      () => {
+        queuedCalled = true;
+      },
+      () => {
+        acquiredCalled = true;
+      },
+    );
+
+    for await (const _e of wrapped.stream([], [])) {
+      // consume
+    }
+
+    expect(queuedCalled).toBe(false);
+    expect(acquiredCalled).toBe(true);
+  });
+
   it("passes through messages, tools, and opts to the inner stream", async () => {
     let receivedArgs:
       | {

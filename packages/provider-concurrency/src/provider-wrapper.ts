@@ -25,12 +25,20 @@ import type { ConcurrencyLimiter } from "./concurrency-manager.js";
  * @param conversationId   The agent requesting the stream (for slot attribution).
  * @param promptStartedAt  When the agent's current prompt (turn) started
  *                         (epoch-ms, for oldest-agent-first scheduling).
+ * @param onQueued          Called synchronously when `acquire()` decides to
+ *                         queue the request (cannot grant immediately).
+ *                         Lets the caller emit a "queued" status signal.
+ * @param onAcquired       Called when `acquire()` resolves (slot granted,
+ *                         whether immediately or after queueing). Lets the
+ *                         caller emit an "active" status signal.
  */
 export function wrapProviderWithConcurrency(
   provider: ProviderContract,
   limiter: ConcurrencyLimiter,
   conversationId: string,
   promptStartedAt: number,
+  onQueued?: () => void,
+  onAcquired?: () => void,
 ): ProviderContract {
   const innerStream = provider.stream;
   const providerId = provider.id;
@@ -42,7 +50,8 @@ export function wrapProviderWithConcurrency(
       tools: readonly ToolContract[],
       opts?: ProviderStreamOptions,
     ): AsyncIterable<ProviderEvent> {
-      const release = await limiter.acquire(providerId, conversationId, promptStartedAt);
+      const release = await limiter.acquire(providerId, conversationId, promptStartedAt, onQueued);
+      onAcquired?.();
       try {
         for await (const event of innerStream(messages, tools, opts)) {
           if (event.type === "error" && event.code === "429") {
