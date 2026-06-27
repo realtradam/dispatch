@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DiagnosticsStore } from "./diagnostics.js";
+import { type Diagnostic, DiagnosticsStore } from "./diagnostics.js";
 
 describe("diagnostics", () => {
   it("formats diagnostics with severity, location, and message", () => {
@@ -83,5 +83,76 @@ describe("diagnostics", () => {
 
     // Other URIs are untouched.
     expect(store.format("file:///project/b.ts")).toBe("");
+  });
+
+  it("bounds pushDiagnostics — oldest background file is evicted past the cap (Bug 3 remainder)", () => {
+    // Language servers scan the workspace and push diagnostics for files the
+    // agent never opened. These never enter the client's openDocuments LRU,
+    // so without an independent cap the pushDiagnostics map grows forever.
+    const store = new DiagnosticsStore();
+    const CAP = 100;
+
+    const diag = (uri: string): readonly Diagnostic[] => [
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        severity: 1,
+        message: `err in ${uri}`,
+      },
+    ];
+
+    // Push `CAP` distinct background files (at the cap — none evicted yet).
+    for (let i = 0; i < CAP; i++) {
+      store.setPushDiagnostics({ uri: `file:///bg/file${i}.ts`, diagnostics: diag(`file${i}`) });
+    }
+    expect(store.hasReceivedPush("file:///bg/file0.ts")).toBe(true);
+    expect(store.format("file:///bg/file0.ts")).toContain("err in file0");
+
+    // One past the cap → the least-recently-pushed (file0) is evicted.
+    store.setPushDiagnostics({
+      uri: "file:///bg/file100.ts",
+      diagnostics: diag("file100"),
+    });
+
+    // file0 (oldest) is gone — no didClose, no retained diagnostics, no flag.
+    expect(store.hasReceivedPush("file:///bg/file0.ts")).toBe(false);
+    expect(store.format("file:///bg/file0.ts")).toBe("");
+    expect(store.getMerged("file:///bg/file0.ts")).toHaveLength(0);
+
+    // The newest (file100) and a middle entry are retained.
+    expect(store.hasReceivedPush("file:///bg/file100.ts")).toBe(true);
+    expect(store.format("file:///bg/file100.ts")).toContain("err in file100");
+    expect(store.format("file:///bg/file50.ts")).toContain("err in file50");
+  });
+
+  it("re-pushing a URI refreshes its LRU position so it is not evicted", () => {
+    const store = new DiagnosticsStore();
+    const CAP = 100;
+
+    const diag = (uri: string): readonly Diagnostic[] => [
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        severity: 1,
+        message: uri,
+      },
+    ];
+
+    for (let i = 0; i < CAP; i++) {
+      store.setPushDiagnostics({ uri: `file:///bg/file${i}.ts`, diagnostics: diag(`file${i}`) });
+    }
+
+    // Re-push file0 (an actively-edited file gets re-pushed on each change):
+    // this should move it to the tail (most-recently-used), NOT leave it at
+    // the head where it would be the first eviction candidate.
+    store.setPushDiagnostics({ uri: "file:///bg/file0.ts", diagnostics: diag("file0-updated") });
+
+    // Now push one past the cap. file1 (now the oldest untouched) should be
+    // evicted; file0 (refreshed) must survive.
+    store.setPushDiagnostics({ uri: "file:///bg/file100.ts", diagnostics: diag("file100") });
+
+    expect(store.hasReceivedPush("file:///bg/file0.ts")).toBe(true);
+    expect(store.format("file:///bg/file0.ts")).toContain("file0-updated");
+
+    expect(store.hasReceivedPush("file:///bg/file1.ts")).toBe(false);
+    expect(store.format("file:///bg/file1.ts")).toBe("");
   });
 });
