@@ -9,13 +9,18 @@
  * image + the model's specific question, and returns the conversation ID + the
  * vision model's answer. Follow-ups go through the dispatch CLI.
  *
+ * Images are saved to a tmp directory (`/tmp/dispatch/images/<convId>/`) so the
+ * conversation store (SQLite) only holds a compact URL reference — not
+ * megabytes of base64. Tmp files are purged on reboot (ephemeral dir), after
+ * compaction (the transcription replaces the image), and on conversation close.
+ *
  * Effects (filesystem, orchestrator) live here in the shell, injected into the
  * service. The pure decisions live in `pure.ts`. No `console.*`; logging via
  * `host.logger`.
  */
 
-import { readFile } from "node:fs/promises";
-import { extname, isAbsolute, resolve as pathResolve } from "node:path";
+import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { extname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { conversationStoreHandle } from "@dispatch/conversation-store";
 import type { CredentialStore } from "@dispatch/credential-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
@@ -38,6 +43,8 @@ export const manifest: Manifest = {
   contributes: { services: ["vision-handoff/service"], tools: ["consult_vision"] },
 };
 
+const IMAGE_DIR = process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images";
+
 /** MIME types for recognized image extensions. */
 const MIME_BY_EXT: Readonly<Record<string, string>> = {
   ".png": "image/png",
@@ -46,6 +53,15 @@ const MIME_BY_EXT: Readonly<Record<string, string>> = {
   ".webp": "image/webp",
   ".gif": "image/gif",
   ".bmp": "image/bmp",
+};
+
+/** Reverse: MIME → extension. */
+const EXT_BY_MIME: Readonly<Record<string, string>> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
 };
 
 /**
@@ -59,6 +75,70 @@ async function readFileAsDataUrl(path: string, cwd?: string): Promise<string> {
   const ext = extname(abs).toLowerCase();
   const mime = MIME_BY_EXT[ext] ?? "image/png";
   return `data:${mime};base64,${buf.toString("base64")}`;
+}
+
+/**
+ * Save a data URL image to a tmp file and return a compact HTTP path.
+ * The compact URL (`/images/<conversationId>/<uuid>.<ext>`) is what gets
+ * persisted in the conversation store — a tiny string, not megabytes of base64.
+ */
+async function saveImageToTmp(
+  conversationId: string,
+  dataUrl: string,
+  mimeType?: string,
+): Promise<string> {
+  const mime = mimeType ?? "image/png";
+  const ext = EXT_BY_MIME[mime] ?? ".png";
+  const imageId = `${crypto.randomUUID()}${ext}`;
+  const dir = join(IMAGE_DIR, conversationId);
+  await mkdir(dir, { recursive: true });
+  const filePath = join(dir, imageId);
+  const base64 = dataUrl.split(",")[1] ?? "";
+  await writeFile(filePath, Buffer.from(base64, "base64"));
+  return `/images/${conversationId}/${imageId}`;
+}
+
+/**
+ * Resolve a compact URL (`/images/<convId>/<imageId>`) back to a data URL by
+ * reading the tmp file. Data URLs and HTTP URLs pass through unchanged.
+ */
+async function resolveImageUrl(url: string): Promise<string> {
+  if (url.startsWith("data:") || url.startsWith("http")) return url;
+  if (!url.startsWith("/images/")) return url;
+  const parts = url.split("/"); // ["", "images", convId, imageId]
+  const convId = parts[2];
+  const imageId = parts[3];
+  if (convId === undefined || imageId === undefined) return url;
+  const filePath = join(IMAGE_DIR, convId, imageId);
+  const buf = await readFile(filePath);
+  const ext = extname(imageId).toLowerCase();
+  const mime = MIME_BY_EXT[ext] ?? "image/png";
+  return `data:${mime};base64,${buf.toString("base64")}`;
+}
+
+/** Delete a single tmp image file (after compaction — best-effort). */
+async function deleteTmpImage(compactUrl: string): Promise<void> {
+  if (!compactUrl.startsWith("/images/")) return;
+  const parts = compactUrl.split("/");
+  const convId = parts[2];
+  const imageId = parts[3];
+  if (convId === undefined || imageId === undefined) return;
+  const filePath = join(IMAGE_DIR, convId, imageId);
+  try {
+    await unlink(filePath);
+  } catch {
+    // Best-effort — file may already be deleted.
+  }
+}
+
+/** Delete all tmp images for a conversation (on close — best-effort). */
+async function deleteConversationImages(conversationId: string): Promise<void> {
+  const dir = join(IMAGE_DIR, conversationId);
+  try {
+    await rm(dir, { recursive: true, force: true });
+  } catch {
+    // Best-effort.
+  }
 }
 
 export async function activate(host: HostAPI): Promise<void> {
@@ -82,6 +162,10 @@ export async function activate(host: HostAPI): Promise<void> {
     credentialStore,
     resolveModel,
     readFileAsDataUrl,
+    saveImageToTmp,
+    resolveImageUrl,
+    deleteTmpImage,
+    deleteConversationImages,
     resolveOrchestrator: () => {
       const loaded = host.getExtensions().some((m) => m.id === "session-orchestrator");
       if (!loaded) return undefined;

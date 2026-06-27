@@ -49,6 +49,20 @@ import type { ToolAssembly } from "./tools-filter.js";
  * call `consult_vision`) and the images are registered for tool access.
  */
 export interface VisionHandoffService {
+  /**
+   * Store images to tmp files and return compact URLs. Each input image's data
+   * URL is saved to a tmp file and replaced with a compact HTTP path so the
+   * persisted conversation store holds a tiny string, not megabytes of base64.
+   * When `saveImageToTmp` is not configured, data URLs pass through unchanged.
+   */
+  readonly storeImages: (
+    conversationId: string,
+    images: readonly ImageInput[],
+  ) => Promise<readonly ImageInput[]>;
+
+  /** Delete all tmp images for a conversation (on close). Best-effort. */
+  readonly purgeConversationImages: (conversationId: string) => Promise<void>;
+
   readonly prepareForProvider: (
     messages: readonly ChatMessage[],
     currentModelName: string | undefined,
@@ -625,7 +639,18 @@ export function createSessionOrchestrator(
         const effectiveModelName = resolveModelName(modelName, storedModel);
 
         const history = await deps.conversationStore.load(conversationId);
-        const userMsg = buildUserMessage(text, images);
+
+        // Store images to tmp files (compact URLs) BEFORE building the user
+        // message so the persisted chunks hold tiny URL references, not
+        // megabytes of base64 data URLs. When the vision-handoff service isn't
+        // loaded, images pass through unchanged (backward compatible).
+        const visionHandoffForStore = deps.resolveVisionHandoff?.();
+        const storedImages =
+          visionHandoffForStore !== undefined && images !== undefined
+            ? await visionHandoffForStore.storeImages(conversationId, images)
+            : images;
+
+        const userMsg = buildUserMessage(text, storedImages);
 
         // Workspace assignment for new conversations happens BEFORE
         // effective-cwd resolution (see workspaceSetupPromise above) so
@@ -988,6 +1013,9 @@ export function createSessionOrchestrator(
         });
       });
       void deps.conversationStore.setConversationStatus(conversationId, "closed");
+      // Purge tmp images for this conversation (best-effort, fire-and-forget).
+      const vh = deps.resolveVisionHandoff?.();
+      if (vh !== undefined) void vh.purgeConversationImages(conversationId);
       return { abortedTurn };
     },
 
