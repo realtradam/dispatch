@@ -3,19 +3,19 @@
 # Ctrl-C stops BOTH cleanly (including the backend's spawned observability collector).
 #
 #   backend  (this repo)        bun --watch  → HTTP :24203 + surface WS :24205  (FULL restart on change)
-#   frontend (../dispatch-web)   vite         → http://localhost:24204           (HMR, in-place)
+#   frontend (../frontend)   vite         → http://localhost:24204           (HMR, in-place)
 #
-# Assumes dispatch-web is a sibling of this repo. Run:  bin/up   (or:  bun run dev:all)
+# Assumes frontend is a sibling of this repo. Run:  bin/up   (or:  bun run dev:all)
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .../arch-rewrite/bin
 BACKEND="$(cd "$HERE/.." && pwd)"                       # backend repo root
-FRONTEND="$(cd "$HERE/../.." && pwd)/dispatch-web"      # sibling repo
+FRONTEND="$(cd "$HERE/../.." && pwd)/frontend"      # sibling repo
 
 if [ ! -d "$FRONTEND" ]; then
 	echo "up: frontend repo not found at $FRONTEND" >&2
-	echo "up: check out 'dispatch-web' beside this repo and retry." >&2
+	echo "up: check out 'frontend' beside this repo and retry." >&2
 	exit 1
 fi
 
