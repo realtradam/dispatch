@@ -13,6 +13,7 @@ function makeClient(overrides?: {
   readonly fileWatcher?: FileWatcher;
   readonly fs?: FsAccess;
   readonly initialization?: Record<string, unknown>;
+  readonly initializeTimeoutMs?: number;
 }): {
   client: LanguageServerClient;
   stdinChunks: Uint8Array[];
@@ -52,6 +53,9 @@ function makeClient(overrides?: {
     root: "/project",
     serverId: "test",
     ...(overrides?.initialization ? { initialization: overrides.initialization } : {}),
+    ...(overrides?.initializeTimeoutMs !== undefined
+      ? { initializeTimeoutMs: overrides.initializeTimeoutMs }
+      : {}),
   });
 
   return {
@@ -433,5 +437,169 @@ describe("client", () => {
     // Empty diagnostics never count as "stale" — a clean file staying clean
     // is normal, not corruption.
     expect(client.getState()).toBe("connected");
+  });
+
+  it("handleBytes does not crash when the server dies and rpc is null (Bug 1)", async () => {
+    // When the process dies, markBroken() sets this.rpc = null. If stdout
+    // then flushes a final chunk, the old code `this.rpc?.handleMessage(msg).catch()`
+    // threw a synchronous TypeError: Cannot read properties of undefined
+    // (reading 'catch') — undefined.catch. The fix adds a second `?.`.
+    const stdoutHolder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitCb: ProcessExitHandler | null = null;
+    const spawnWithExit: SpawnProcess = () => ({
+      stdin: { write: () => {} },
+      stdout: {
+        on: (_e, cb) => {
+          stdoutHolder.cb = cb;
+        },
+      },
+      pid: 1,
+      kill: () => {},
+      onExit: (handler) => {
+        exitCb = handler;
+      },
+    });
+
+    const { client } = makeClient({ spawn: spawnWithExit });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 50));
+    stdoutHolder.cb?.(
+      encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })),
+    );
+    await startPromise;
+    expect(client.getState()).toBe("connected");
+
+    // Kill the server — rpc is now null.
+    exitCb?.({ code: 1 });
+    expect(client.getState()).toBe("error");
+
+    // A final stdout chunk must NOT throw (the regression crashed here).
+    expect(() => {
+      stdoutHolder.cb?.(encode(JSON.stringify({ jsonrpc: "2.0", method: "foo", params: {} })));
+    }).not.toThrow();
+  });
+
+  it("closeDocument sends textDocument/didClose and purges cached text + diagnostics (Bug 3)", async () => {
+    const { client, stdinChunks, serverResponses } = makeClient();
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 50));
+    serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
+    await startPromise;
+
+    // Open a doc + receive some diagnostics.
+    await client.openWithText("/project/a.ts", "const x = 1;\n");
+    serverResponses(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: {
+          uri: "file:///project/a.ts",
+          diagnostics: [
+            {
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+              severity: 1,
+              message: "unused",
+            },
+          ],
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    const store = client.getDiagnosticsStore();
+    expect(store.format("file:///project/a.ts")).toContain("unused");
+
+    client.closeDocument("/project/a.ts");
+
+    // didClose was sent.
+    const sent = stdinChunks.map((chunk) => {
+      const decoded = new TextDecoder().decode(chunk);
+      const headerEnd = decoded.indexOf("\r\n\r\n");
+      return JSON.parse(decoded.slice(headerEnd + 4));
+    });
+    const didClose = sent.find((m: { method?: string }) => m.method === "textDocument/didClose");
+    expect(didClose).toBeDefined();
+    expect(didClose.params.textDocument.uri).toBe("file:///project/a.ts");
+
+    // Cached text + diagnostics are gone.
+    expect(store.format("file:///project/a.ts")).toBe("");
+    expect(store.hasReceivedPush("file:///project/a.ts")).toBe(false);
+  });
+
+  it("opening more than the LRU cap evicts the least-recently-used document (Bug 3)", async () => {
+    const { client, stdinChunks, serverResponses } = makeClient();
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 50));
+    serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
+    await startPromise;
+
+    const CAP = 50;
+    // Open `CAP` documents (the first is the LRU eviction candidate).
+    for (let i = 0; i < CAP; i++) {
+      await client.openWithText(`/project/file${i}.ts`, `content ${i}`);
+    }
+
+    const sentBefore = stdinChunks.length;
+
+    // Touching an early doc (file1) promotes it: it should NOT be evicted
+    // when we then open one more (file50) past the cap. Instead file0 (the
+    // oldest untouched) is evicted.
+    await client.change("/project/file1.ts", "content 1 updated");
+
+    // Open one beyond the cap → eviction.
+    await client.openWithText("/project/file50.ts", "content 50");
+
+    const sentAfter = stdinChunks.slice(sentBefore).map((chunk) => {
+      const decoded = new TextDecoder().decode(chunk);
+      const headerEnd = decoded.indexOf("\r\n\r\n");
+      return JSON.parse(decoded.slice(headerEnd + 4));
+    });
+
+    // file0 was evicted (didClose sent); file1 was NOT evicted.
+    const didCloses = sentAfter.filter(
+      (m: { method?: string }) => m.method === "textDocument/didClose",
+    );
+    const closedUris = didCloses.map(
+      (m: { params: { textDocument: { uri: string } } }) => m.params.textDocument.uri,
+    );
+    expect(closedUris).toContain("file:///project/file0.ts");
+    expect(closedUris).not.toContain("file:///project/file1.ts");
+    // Exactly one eviction for one overflow open.
+    expect(didCloses.length).toBe(1);
+  });
+
+  it("initialize timeout clears the pending rpc entry and errors the client (Bug 4)", async () => {
+    // A short, injectable initialize timeout lets us drive the timeout path
+    // fast. The fix passes the timeout into rpc.sendRequest (not Promise.race),
+    // so the pending entry is cleared on expiry — no leak.
+    const stdoutHolder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    const spawnNoInit: SpawnProcess = () => ({
+      stdin: { write: () => {} },
+      stdout: {
+        on: (_e, cb) => {
+          stdoutHolder.cb = cb;
+        },
+      },
+      pid: 7,
+      kill: () => {},
+    });
+
+    const { client } = makeClient({ spawn: spawnNoInit, initializeTimeoutMs: 80 });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Never answer initialize. The client should time out → error.
+    await expect(startPromise).resolves.toBeUndefined();
+    expect(client.getState()).toBe("error");
+    expect(client.getStateError()).toMatch(/timed out/i);
+
+    // A LATE initialize response must not resolve/dangle anything (the
+    // pending entry was cleared on timeout). Feeding it is a safe no-op.
+    expect(() => {
+      stdoutHolder.cb?.(
+        encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })),
+      );
+    }).not.toThrow();
+    // State stays errored; the stale response didn't flip it to connected.
+    expect(client.getState()).toBe("error");
   });
 });

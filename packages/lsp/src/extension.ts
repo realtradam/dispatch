@@ -55,16 +55,50 @@ function realSpawn(
   };
 }
 
+/**
+ * The minimal slice of `node:fs.watch`'s return we depend on — narrow enough
+ * that a test can supply an EventEmitter stand-in. `on('error', …)` is the
+ * crucial bit: without a listener, Node/Bun escalates a watcher 'error'
+ * event (e.g. from `bun install` deleting transient `.old_modules-*` dirs)
+ * into an uncaught exception that kills the process.
+ */
+export interface FsWatcherHandle {
+  readonly on: (event: string, cb: (err: Error) => void) => FsWatcherHandle;
+  readonly close: () => void;
+}
+
+export type WatchFn = (
+  root: string,
+  opts: { readonly recursive: boolean },
+  cb: (eventType: string, filename: string | null) => void,
+) => FsWatcherHandle;
+
+function defaultWatch(): WatchFn {
+  // Loaded lazily so the kernel-style import graph never statically pulls
+  // `node:fs` (the extension imports it at call time, matching the prior
+  // `require` form).
+  const { watch } = require("node:fs") as {
+    watch: WatchFn;
+  };
+  return watch;
+}
+
 function realFileWatcher(
   root: string,
   onEvent: (e: { readonly type: "create" | "change" | "delete"; readonly path: string }) => void,
+  watch: WatchFn = defaultWatch(),
 ): { readonly close: () => void } {
-  const { watch } = require("node:fs");
   const watcher = watch(root, { recursive: true }, (eventType: string, filename: string | null) => {
     if (!filename) return;
     const fullPath = root.endsWith("/") ? `${root}${filename}` : `${root}/${filename}`;
     const type = eventType === "rename" ? "create" : "change";
     onEvent({ type, path: fullPath });
+  });
+  // Attach a no-op 'error' listener so a transient FS error (e.g. a watched
+  // directory vanishing mid-`bun install`) is swallowed instead of being
+  // escalated to an uncaught exception that crashes the server.
+  watcher.on("error", () => {
+    // Gracefully ignore transient FS errors — the watcher is best-effort.
   });
   return { close: () => watcher.close() };
 }
@@ -167,3 +201,11 @@ export const extension: Extension = {
 
 // Module-scoped store for deactivate
 const lspManagerStore: { manager: LspManager | null } = { manager: null };
+
+/**
+ * Test-only re-export of the production `realFileWatcher` adapter, so the
+ * fs.watch error-listener behavior (Bug 2) can be exercised with an injected
+ * fake watcher without poking module internals. NOT part of the public
+ * extension surface — the `__test__` prefix signals test-only use.
+ */
+export const __test__realFileWatcher = realFileWatcher;
