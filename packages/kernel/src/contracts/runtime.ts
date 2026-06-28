@@ -142,6 +142,33 @@ export interface RunTurnInput {
   readonly onStepComplete?: (messages: readonly ChatMessage[]) => Promise<void> | void;
 
   /**
+   * Optional. Called by the runtime at each tool-result boundary — after a
+   * step that produced tool calls has been finalized (`onStepComplete` has run
+   * and any `drainSteering` messages have been appended), before the next step
+   * begins — giving the caller a chance to REPLACE the running message
+   * history. The caller returns a new message list which the runtime adopts
+   * as its working history for all subsequent steps, or `undefined`/an empty
+   * array to keep the history unchanged.
+   *
+   * The runtime receives the step's token `usage` (so the caller can check a
+   * threshold against the model's context window) and the current `messages`
+   * (the full prompt the next step would otherwise see). Generic and
+   * feature-agnostic: the runtime calls it and adopts whatever message list it
+   * returns — it names no feature, owns no threshold policy, and performs no
+   * I/O, mirroring `drainSteering`. The shell uses this to compact the history
+   * in-flight when the context window nears capacity, so a long-running turn
+   * (e.g. left overnight) does not run out of context mid-turn: it summarizes
+   * the old history and continues with the summary + recent messages. Only
+   * invoked when a step PRODUCED tool calls (there is a "next step" to compact
+   * before); a step that ends without tool calls ends the turn, so there is no
+   * boundary to compact at. Injected (not ambient) so the kernel stays pure.
+   */
+  readonly onStepBoundary?: (ctx: {
+    readonly stepUsage: Usage;
+    readonly messages: readonly ChatMessage[];
+  }) => Promise<readonly ChatMessage[] | undefined> | (readonly ChatMessage[] | undefined);
+
+  /**
    * Optional injected retry strategy for retryable provider errors (e.g. HTTP
    * 429 / 5xx "overloaded"). When omitted, a retryable error ends the step
    * exactly as before (backward-compatible). When provided, the runtime wraps
