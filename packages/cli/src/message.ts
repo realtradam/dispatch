@@ -39,6 +39,7 @@ interface ChatCmd {
   readonly conversationId?: string | undefined;
   readonly reasoningEffort?: ReasoningEffort | undefined;
   readonly workspaceId?: string | undefined;
+  readonly title?: string | undefined;
   readonly showReasoning: boolean;
 }
 
@@ -55,5 +56,6 @@ export function buildChatRequest(cmd: ChatCmd, ctx: BuildCtx): ChatRequest {
     ...(cmd.cwd !== undefined ? { cwd: cmd.cwd } : { cwd: ctx.cwd }),
     ...(cmd.reasoningEffort !== undefined && { reasoningEffort: cmd.reasoningEffort }),
     ...(cmd.workspaceId !== undefined && { workspaceId: cmd.workspaceId }),
+    ...(cmd.title !== undefined && { title: cmd.title }),
   };
 }

@@ -216,6 +216,49 @@ describe("parseArgs", () => {
       expect(result.kind).toBe("error");
       if (result.kind === "error") expect(result.message).toContain("--workspace requires a value");
     });
+
+    it("parses --title flag", () => {
+      const result = parseArgs(["m", "--text", "x", "--title", "My Task"], { defaultServer });
+      expect(result).toEqual({
+        kind: "chat",
+        server: "http://localhost:24203",
+        modelName: "m",
+        text: "x",
+        file: undefined,
+        cwd: undefined,
+        conversationId: undefined,
+        reasoningEffort: undefined,
+        showReasoning: false,
+        open: false,
+        title: "My Task",
+      });
+    });
+
+    it("parses --title with --workspace together", () => {
+      const result = parseArgs(["m", "--text", "x", "--workspace", "ws", "--title", "T"], {
+        defaultServer,
+      });
+      expect(result.kind).toBe("chat");
+      if (result.kind === "chat") {
+        expect(result.workspaceId).toBe("ws");
+        expect(result.title).toBe("T");
+      }
+    });
+
+    it("omits title when --title is not given", () => {
+      const result = parseArgs(["m", "--text", "x"], { defaultServer });
+      expect(result.kind).toBe("chat");
+      if (result.kind === "chat") {
+        expect(result.title).toBeUndefined();
+        expect(result).not.toHaveProperty("title");
+      }
+    });
+
+    it("errors when --title has no value", () => {
+      const result = parseArgs(["m", "--text", "x", "--title"], { defaultServer });
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") expect(result.message).toContain("--title requires a value");
+    });
   });
 
   describe("list", () => {

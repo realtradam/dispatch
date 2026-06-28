@@ -111,6 +111,22 @@ describe("buildChatRequest", () => {
     );
     expect(req).not.toHaveProperty("workspaceId");
   });
+
+  it("includes title when provided", () => {
+    const req = buildChatRequest(
+      { modelName: "m", text: "x", title: "My Task", showReasoning: false },
+      { cwd: "/work", message: "x" },
+    );
+    expect(req.title).toBe("My Task");
+  });
+
+  it("omits title when not provided", () => {
+    const req = buildChatRequest(
+      { modelName: "m", text: "x", showReasoning: false },
+      { cwd: "/work", message: "x" },
+    );
+    expect(req).not.toHaveProperty("title");
+  });
 });
 
 describe("workspace flag → ChatRequest", () => {
@@ -143,5 +159,28 @@ describe("workspace flag → ChatRequest", () => {
     if (parsed.kind !== "chat") return;
     const req = buildChatRequest(parsed, { cwd: "/work", message: "hi" });
     expect(req.workspaceId).toBe("shorthand");
+  });
+});
+
+describe("title flag → ChatRequest", () => {
+  const defaultServer = "http://localhost:24203";
+
+  it("--title flag sets title on request", () => {
+    const parsed = parseArgs(["my-model", "--text", "hi", "--title", "My Task"], {
+      defaultServer,
+    });
+    expect(parsed.kind).toBe("chat");
+    if (parsed.kind !== "chat") return;
+    const req = buildChatRequest(parsed, { cwd: "/work", message: "hi" });
+    expect(req.title).toBe("My Task");
+  });
+
+  it("--title flag omitted sends no title", () => {
+    const parsed = parseArgs(["my-model", "--text", "hi"], { defaultServer });
+    expect(parsed.kind).toBe("chat");
+    if (parsed.kind !== "chat") return;
+    const req = buildChatRequest(parsed, { cwd: "/work", message: "hi" });
+    expect(req.title).toBeUndefined();
+    expect(req).not.toHaveProperty("title");
   });
 });

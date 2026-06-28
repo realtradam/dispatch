@@ -456,6 +456,7 @@ export function createApp(opts: CreateServerOptions): Hono {
       reasoningEffort,
       workspaceId,
       images,
+      title,
     } = result;
     log.info("chat: request accepted", {
       conversationId,
@@ -466,6 +467,22 @@ export function createApp(opts: CreateServerOptions): Hono {
       hasWorkspaceId: workspaceId !== undefined,
       imageCount: images?.length ?? 0,
     });
+
+    // Persist an explicit title BEFORE the turn starts so the tab shows it
+    // immediately (and before `--open` signals the frontend to open it). The
+    // store creates the conversation meta if none exists yet; a subsequent
+    // append preserves a non-"Untitled" title. A title-set failure is logged
+    // but never blocks the turn — the title is a nicety, the answer is not.
+    if (title !== undefined) {
+      try {
+        await opts.conversationStore.setConversationTitle(conversationId, title);
+        log.info("chat: title set", { conversationId });
+      } catch (err) {
+        log.warn("chat: title set failure", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     const events: AgentEvent[] = [];
     let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;

@@ -68,6 +68,17 @@ const _chatWithHttpImage: ChatRequest = {
   images: [{ url: "https://example.com/diagram.png" }],
 };
 
+// ─── ChatRequest.title (additive optional) ───────────────────────────────────
+
+const _chatWithTitle: ChatRequest = {
+  message: "implement the feature",
+  title: "Summon: add --title flag",
+};
+
+const _chatWithoutTitle: ChatRequest = {
+  message: "hello",
+};
+
 // ─── Computer list / single response ─────────────────────────────────────────
 
 const _computer: Computer = {
@@ -283,6 +294,16 @@ describe("transport-contract types compile and are exported", () => {
   it("ChatRequest: carries images (http URL, mimeType optional)", () => {
     expect(_chatWithHttpImage.images?.[0]?.url).toBe("https://example.com/diagram.png");
     expect(_chatWithHttpImage.images?.[0]?.mimeType).toBeUndefined();
+  });
+
+  // ─── ChatRequest.title (additive optional) ────────────────────────────────
+
+  it("ChatRequest: title is additive optional (omittable)", () => {
+    expect(_chatWithoutTitle.title).toBeUndefined();
+  });
+
+  it("ChatRequest: carries title when set", () => {
+    expect(_chatWithTitle.title).toBe("Summon: add --title flag");
   });
 
   it("ModelsResponse: ModelMetadata carries optional vision flag", () => {
