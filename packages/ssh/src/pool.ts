@@ -112,6 +112,24 @@ export function createSshConnectionPool(deps: SshPoolDeps): SshConnectionPool {
     let sftp: import("ssh2").SFTPWrapper | null = null;
     let connectPromise: Promise<void> | null = null;
 
+    // Permanent error listener — without it, a post-connect ssh2 'error'
+    // (re-key/keepalive timeout) escapes uncaught → process crash. cleanup()
+    // in doConnect only removes the connect-time onReady/onError; this persists.
+    client.on("error", (err: unknown) => {
+      const from = state.value;
+      state.value = "error";
+      state.error = err instanceof Error ? err.message : String(err);
+      connectPromise = null;
+      deps.logger.error("ssh: pooled client error", {
+        err,
+        alias,
+        message: state.error,
+        level: (err as { level?: string } | null)?.level,
+        from,
+        to: "error",
+      });
+    });
+
     const touch = (): void => {
       const e = entries.get(alias);
       if (e !== undefined) e.lastUsedAt = Date.now();
