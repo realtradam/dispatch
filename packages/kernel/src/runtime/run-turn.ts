@@ -725,6 +725,27 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         for (const msg of steering) {
           messages.push(msg);
         }
+
+        // In-flight history replacement boundary: give the caller a chance
+        // to swap the running message history before the next step (e.g. to
+        // compact it when the context window nears capacity). The kernel names
+        // no feature and performs no I/O — it calls the callback and adopts
+        // whatever message list it returns, mirroring `drainSteering`. When the
+        // caller returns a list, the runtime replaces its working history with
+        // it (in place); `undefined`/empty leaves it unchanged. Only reached
+        // when there IS a next step (tool calls were produced).
+        if (input.onStepBoundary !== undefined) {
+          const replacement = await input.onStepBoundary({
+            stepUsage: stepResult.usage,
+            messages,
+          });
+          if (replacement !== undefined && replacement.length > 0) {
+            messages.length = 0;
+            for (const msg of replacement) {
+              messages.push(msg);
+            }
+          }
+        }
       }
     }
   } finally {

@@ -899,6 +899,79 @@ export function createSessionOrchestrator(
           ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
           ...(deps.now !== undefined ? { now: deps.now } : {}),
           ...(drainSteering !== undefined ? { drainSteering } : {}),
+          // In-flight compaction: at every tool-result boundary the kernel
+          // calls this with the step's usage + the running messages. When the
+          // context size exceeds the compact-percent threshold (percent of the
+          // model's context window), the old history is summarized and
+          // replaced with [summary, ...recent] — mid-turn, without stopping —
+          // so a long-running turn (e.g. left overnight) does not run out of
+          // context. This is DISTINCT from the post-seal auto-compact below:
+          // that one runs AFTER the turn ends (preparing the next turn) and
+          // refuses while the conversation is active; this one runs DURING the
+          // turn (saving the running turn) and uses the live step usage (not
+          // persisted metrics, which are only written at turn end). When the
+          // threshold is not exceeded, compaction is disabled (percent 0), or
+          // the model's context window is unknown, it returns void and the
+          // kernel keeps its history unchanged (a strict no-op).
+          onStepBoundary: async ({ stepUsage, messages }) => {
+            const stored = await deps.conversationStore.getCompactPercent(conversationId);
+            const percent = stored ?? DEFAULT_COMPACT_PERCENT;
+            if (percent <= 0) return; // auto-compact disabled
+            // contextSize mirrors the persisted definition: this step's
+            // inputTokens + outputTokens (the prompt the NEXT step would
+            // inherit, grown by this step's output).
+            const contextSize = stepUsage.inputTokens + stepUsage.outputTokens;
+            if (effectiveModelName === undefined || deps.resolveModelInfo === undefined) return;
+            const info = await deps.resolveModelInfo(effectiveModelName);
+            if (info?.contextWindow === undefined) return;
+            const threshold = Math.floor(info.contextWindow * (percent / 100));
+            if (contextSize < threshold) return; // threshold not exceeded
+
+            const keepLastN = DEFAULT_KEEP_LAST_N;
+            turnLogger?.info("compaction:in-flight", {
+              conversationId,
+              turnId,
+              contextSize,
+              threshold,
+              percent,
+            });
+            const outcome = await performCompaction(
+              {
+                conversationStore: deps.conversationStore,
+                resolveProvider: deps.resolveProvider,
+                ...(deps.resolveModel !== undefined ? { resolveModel: deps.resolveModel } : {}),
+                ...(deps.resolveSystemPrompt !== undefined
+                  ? { resolveSystemPrompt: deps.resolveSystemPrompt }
+                  : {}),
+                ...(deps.resolveConcurrencyLimiter !== undefined
+                  ? { resolveConcurrencyLimiter: deps.resolveConcurrencyLimiter }
+                  : {}),
+                ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+                ...(deps.now !== undefined ? { now: deps.now } : {}),
+                // emit is required by performCompaction; fall back to a no-op
+                // when the orchestrator was constructed without one (tests).
+                emit: deps.emit ?? noopEmit,
+              },
+              conversationId,
+              { keepLastN, modelName: effectiveModelName },
+            );
+            if ("error" in outcome) {
+              turnLogger?.warn("compaction:in-flight:skipped", {
+                conversationId,
+                turnId,
+                error: outcome.error,
+              });
+              return; // too short / empty summary / unknown model → no replacement
+            }
+            // Replace the kernel's running history with the summary + the
+            // kernel's OWN most-recent N messages. Using the kernel's messages
+            // (not the store's) preserves mid-turn steering messages and the
+            // vision-transformed provider view the kernel already holds — no
+            // re-transcription needed. The STORE was updated by performCompaction
+            // with the canonical (un-transformed) recent messages.
+            const recent = messages.slice(messages.length - keepLastN);
+            return [outcome.summaryMessage, ...recent];
+          },
         };
 
         // Persist the user message at turn start so it has a seq
@@ -1296,6 +1369,16 @@ export function createWarmService(
 const DEFAULT_KEEP_LAST_N = 10;
 const DEFAULT_COMPACT_PERCENT = 85;
 
+/**
+ * No-op emit used as a fallback when the orchestrator is constructed without an
+ * `emit` (some tests). `performCompaction` requires a non-optional `emit` (it
+ * emits `conversationCompacted`); the in-flight path degrades to emitting
+ * nothing rather than skipping compaction entirely. Generic-typed so it
+ * satisfies `PerformCompactionDeps["emit"]` for any hook payload type.
+ */
+const noopEmit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void =
+  () => {};
+
 const COMPACTION_SYSTEM_PROMPT =
   "You are a conversation summarizer. Summarize the following conversation concord concisely but comprehensively. " +
   "Focus on key decisions, context, file paths, and any unresolved questions. " +
@@ -1317,6 +1400,192 @@ function formatMessagesForSummary(messages: readonly ChatMessage[]): string {
     .join("\n\n");
 }
 
+/**
+ * Deps for {@link performCompaction} — the subset of `SessionOrchestratorDeps`
+ * needed to summarize old history, fork it to an archive, and replace it with
+ * a summary + recent messages. Structural so both the compaction SERVICE
+ * (`compact`, manual + post-seal auto) and the IN-FLIGHT compaction path (the
+ * turn loop's `onStepBoundary`) can call the same shared core without duplicating
+ * the summarization/fork/replace/emit logic. The active-conversation guard and
+ * the threshold check are the CALLERS' policy (they differ between the two
+ * paths) and are NOT performed here.
+ */
+interface PerformCompactionDeps {
+  readonly conversationStore: ConversationStore;
+  readonly resolveProvider: () => ProviderContract;
+  readonly resolveModel?: (
+    modelName: string,
+  ) => { provider: ProviderContract; model: string } | undefined;
+  readonly resolveSystemPrompt?: () => SystemPromptService | undefined;
+  readonly resolveConcurrencyLimiter?: () => ConcurrencyLimiter | undefined;
+  readonly logger?: Logger;
+  readonly now?: () => number;
+  readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
+}
+
+/** Result of a successful {@link performCompaction}. */
+interface PerformCompactionResult {
+  readonly summary: string;
+  readonly newConversationId: string;
+  readonly messagesSummarized: number;
+  readonly messagesKept: number;
+  /**
+   * The system-role summary message that heads the compacted history
+   * (`[summaryMessage, ...recentKept]`). Returned so the in-flight caller can
+   * build the kernel's replacement history with the SAME summary object.
+   */
+  readonly summaryMessage: ChatMessage;
+}
+
+/**
+ * The shared compaction core: load the conversation history from the store,
+ * summarize the oldest `history.length - keepLastN` messages via a provider
+ * stream, fork the full pre-compaction history to an archive (non-destructive),
+ * and replace the live history with `[summaryMessage, ...recentKept]`. Emits
+ * `conversationCompacted`. Returns the result (incl. the `summaryMessage`) or an
+ * error object.
+ *
+ * Performs NO active-conversation guard and NO threshold check — those are the
+ * callers' policy. No-ops (returns an error) when the conversation is too
+ * short to compact (≤ keepLastN messages) or the summary is empty.
+ */
+async function performCompaction(
+  deps: PerformCompactionDeps,
+  conversationId: string,
+  opts: { readonly keepLastN?: number; readonly modelName?: string },
+): Promise<PerformCompactionResult | { readonly error: string }> {
+  const history = await deps.conversationStore.load(conversationId);
+  const keepLastN = opts?.keepLastN ?? DEFAULT_KEEP_LAST_N;
+
+  if (history.length <= keepLastN) {
+    return { error: "conversation too short to compact" };
+  }
+
+  // Split: old messages to summarize + recent messages to keep.
+  const toSummarize = history.slice(0, history.length - keepLastN);
+  const toKeep = history.slice(history.length - keepLastN);
+
+  // Resolve provider
+  let provider: ProviderContract;
+  let modelOverride: string | undefined;
+  if (opts?.modelName !== undefined && deps.resolveModel !== undefined) {
+    const resolved = deps.resolveModel(opts.modelName);
+    if (resolved === undefined) return { error: `unknown model: ${opts.modelName}` };
+    provider = resolved.provider;
+    modelOverride = resolved.model;
+  } else {
+    provider = deps.resolveProvider();
+  }
+
+  // Wrap with concurrency limiting (same as the main turn path).
+  const compactionLimiter = deps.resolveConcurrencyLimiter?.();
+  if (compactionLimiter !== undefined) {
+    const compactionWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
+    provider = wrapProviderWithConcurrency(
+      provider,
+      compactionLimiter,
+      conversationId,
+      compactionWorkspaceId,
+      deps.now?.() ?? Date.now(),
+    );
+  }
+
+  // Build the summarization request: system prompt + conversation text + instruction
+  const conversationText = formatMessagesForSummary(toSummarize);
+  const summaryRequest: ChatMessage = {
+    role: "user",
+    chunks: [
+      {
+        type: "text",
+        text: `Please summarize the following conversation:\n\n${conversationText}`,
+      },
+    ],
+  };
+
+  const providerOpts: ProviderStreamOptions = {
+    maxTokens: 2000,
+    ...(modelOverride !== undefined ? { model: modelOverride } : {}),
+    ...(deps.logger !== undefined
+      ? { logger: deps.logger.child({ conversationId, attrs: { compaction: true } }) }
+      : {}),
+  };
+
+  // Reconstruct the system prompt on compaction (fresh variable
+  // resolution — files/cwd/time may have changed since construction).
+  // The construct call also persists the result for future turns. When
+  // the system-prompt service is unavailable, fall back to the
+  // compaction-only system prompt (current behavior, no regression).
+  const systemPromptService = deps.resolveSystemPrompt?.();
+  let compactionSystemPrompt: string;
+  if (systemPromptService !== undefined) {
+    const cwd = (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? process.cwd();
+    const workspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
+    const computerId = await deps.conversationStore.getEffectiveComputer(conversationId);
+    const constructed = await systemPromptService.construct(conversationId, cwd, {
+      ...(opts?.modelName !== undefined ? { model: opts.modelName } : {}),
+      workspaceId,
+      ...(computerId !== null ? { computerId } : {}),
+    });
+    compactionSystemPrompt = `${constructed}\n\n${COMPACTION_SYSTEM_PROMPT}`;
+  } else {
+    compactionSystemPrompt = COMPACTION_SYSTEM_PROMPT;
+  }
+
+  // Call the provider and accumulate the summary
+  let summary = "";
+  for await (const event of provider.stream([summaryRequest], [], {
+    ...providerOpts,
+    systemPrompt: compactionSystemPrompt,
+  })) {
+    if ((event as ProviderEvent).type === "text-delta") {
+      summary += (event as { delta: string }).delta;
+    } else if ((event as ProviderEvent).type === "error") {
+      return { error: (event as { message: string }).message };
+    }
+  }
+
+  if (summary.trim().length === 0) {
+    return { error: "model produced empty summary" };
+  }
+
+  // Non-destructive: fork the full pre-compaction history to a new
+  // archive conversation. The original conversation keeps its ID
+  // (so messaging between agents still works) and gets the compacted
+  // content. The archive inherits the original's compactedFrom,
+  // creating a chain: A → Y → X → ...
+  const archiveId = crypto.randomUUID();
+  await deps.conversationStore.forkHistory(conversationId, archiveId);
+
+  // Replace history: [system: summary] + recent messages
+  const summaryMessage: ChatMessage = {
+    role: "system",
+    chunks: [
+      {
+        type: "text",
+        text: `The following is a summary of the previous conversation:\n\n${summary}`,
+      },
+    ],
+  };
+
+  await deps.conversationStore.replaceHistory(conversationId, [summaryMessage, ...toKeep]);
+  await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
+
+  deps.emit(conversationCompacted, {
+    conversationId,
+    newConversationId: archiveId,
+    messagesSummarized: toSummarize.length,
+    messagesKept: toKeep.length,
+  });
+
+  return {
+    summary,
+    newConversationId: archiveId,
+    messagesSummarized: toSummarize.length,
+    messagesKept: toKeep.length,
+    summaryMessage,
+  };
+}
+
 export function createCompactionService(
   deps: SessionOrchestratorDeps & {
     readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
@@ -1329,14 +1598,9 @@ export function createCompactionService(
         return { error: "conversation is generating" };
       }
 
-      const history = await deps.conversationStore.load(conversationId);
-      const keepLastN = opts?.keepLastN ?? DEFAULT_KEEP_LAST_N;
-
-      if (history.length <= keepLastN) {
-        return { error: "conversation too short to compact" };
-      }
-
       // Auto mode: check if contextSize exceeds percent of contextWindow.
+      // The threshold check is the caller's policy (uses persisted turn
+      // metrics) and is NOT performed by the shared `performCompaction` core.
       if (opts?.auto === true) {
         const stored = await deps.conversationStore.getCompactPercent(conversationId);
         const percent = stored ?? DEFAULT_COMPACT_PERCENT;
@@ -1360,129 +1624,22 @@ export function createCompactionService(
         if (contextSize < threshold) return { error: "threshold not exceeded" };
       }
 
-      // Split: old messages to summarize + recent messages to keep.
-      const toSummarize = history.slice(0, history.length - keepLastN);
-      const toKeep = history.slice(history.length - keepLastN);
+      // Shared summarize + fork + replace + emit core (no active guard, no
+      // threshold — those are this caller's policy above). The length check
+      // ("conversation too short to compact") lives inside the core.
+      const outcome = await performCompaction(deps, conversationId, {
+        ...(opts?.keepLastN !== undefined ? { keepLastN: opts.keepLastN } : {}),
+        ...(opts?.modelName !== undefined ? { modelName: opts.modelName } : {}),
+      });
+      if ("error" in outcome) return { error: outcome.error };
 
-      // Resolve provider
-      let provider: ProviderContract;
-      let modelOverride: string | undefined;
-      if (opts?.modelName !== undefined && deps.resolveModel !== undefined) {
-        const resolved = deps.resolveModel(opts.modelName);
-        if (resolved === undefined) return { error: `unknown model: ${opts.modelName}` };
-        provider = resolved.provider;
-        modelOverride = resolved.model;
-      } else {
-        provider = deps.resolveProvider();
-      }
-
-      // Wrap with concurrency limiting (same as the main turn path).
-      const compactionLimiter = deps.resolveConcurrencyLimiter?.();
-      if (compactionLimiter !== undefined) {
-        const compactionWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
-        provider = wrapProviderWithConcurrency(
-          provider,
-          compactionLimiter,
-          conversationId,
-          compactionWorkspaceId,
-          deps.now?.() ?? Date.now(),
-        );
-      }
-
-      // Build the summarization request: system prompt + conversation text + instruction
-      const conversationText = formatMessagesForSummary(toSummarize);
-      const summaryRequest: ChatMessage = {
-        role: "user",
-        chunks: [
-          {
-            type: "text",
-            text: `Please summarize the following conversation:\n\n${conversationText}`,
-          },
-        ],
-      };
-
-      const providerOpts: ProviderStreamOptions = {
-        maxTokens: 2000,
-        ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-        ...(deps.logger !== undefined
-          ? { logger: deps.logger.child({ conversationId, attrs: { compaction: true } }) }
-          : {}),
-      };
-
-      // Reconstruct the system prompt on compaction (fresh variable
-      // resolution — files/cwd/time may have changed since construction).
-      // The construct call also persists the result for future turns. When
-      // the system-prompt service is unavailable, fall back to the
-      // compaction-only system prompt (current behavior, no regression).
-      const systemPromptService = deps.resolveSystemPrompt?.();
-      let compactionSystemPrompt: string;
-      if (systemPromptService !== undefined) {
-        const cwd = (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? process.cwd();
-        const workspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
-        const computerId = await deps.conversationStore.getEffectiveComputer(conversationId);
-        const constructed = await systemPromptService.construct(conversationId, cwd, {
-          ...(opts?.modelName !== undefined ? { model: opts.modelName } : {}),
-          workspaceId,
-          ...(computerId !== null ? { computerId } : {}),
-        });
-        compactionSystemPrompt = `${constructed}\n\n${COMPACTION_SYSTEM_PROMPT}`;
-      } else {
-        compactionSystemPrompt = COMPACTION_SYSTEM_PROMPT;
-      }
-
-      // Call the provider and accumulate the summary
-      let summary = "";
-      for await (const event of provider.stream([summaryRequest], [], {
-        ...providerOpts,
-        systemPrompt: compactionSystemPrompt,
-      })) {
-        if ((event as ProviderEvent).type === "text-delta") {
-          summary += (event as { delta: string }).delta;
-        } else if ((event as ProviderEvent).type === "error") {
-          return { error: (event as { message: string }).message };
-        }
-      }
-
-      if (summary.trim().length === 0) {
-        return { error: "model produced empty summary" };
-      }
-
-      // Non-destructive: fork the full pre-compaction history to a new
-      // archive conversation. The original conversation keeps its ID
-      // (so messaging between agents still works) and gets the compacted
-      // content. The archive inherits the original's compactedFrom,
-      // creating a chain: A → Y → X → ...
-      const archiveId = crypto.randomUUID();
-      await deps.conversationStore.forkHistory(conversationId, archiveId);
-
-      // Replace history: [system: summary] + recent messages
-      const summaryMessage: ChatMessage = {
-        role: "system",
-        chunks: [
-          {
-            type: "text",
-            text: `The following is a summary of the previous conversation:\n\n${summary}`,
-          },
-        ],
-      };
-
-      await deps.conversationStore.replaceHistory(conversationId, [summaryMessage, ...toKeep]);
-      await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
-
+      const { summary, newConversationId, messagesSummarized, messagesKept } = outcome;
       const result: CompactionResult = {
         summary,
-        newConversationId: archiveId,
-        messagesSummarized: toSummarize.length,
-        messagesKept: toKeep.length,
+        newConversationId,
+        messagesSummarized,
+        messagesKept,
       };
-
-      deps.emit(conversationCompacted, {
-        conversationId,
-        newConversationId: archiveId,
-        messagesSummarized: toSummarize.length,
-        messagesKept: toKeep.length,
-      });
-
       return result;
     },
   };
