@@ -10,6 +10,7 @@ import {
   conversationStoreHandle,
   credentialStoreHandle,
   heartbeatServiceHandle,
+  type LspService,
   lspServiceHandle,
   mcpServiceHandle,
   sessionOrchestratorHandle,
@@ -27,7 +28,6 @@ export const manifest: Manifest = {
     "conversation-store",
     "credential-store",
     "heartbeat",
-    "lsp",
     "mcp",
     "session-orchestrator",
     "throughput-store",
@@ -95,7 +95,14 @@ export function createTransportHttpExtension(): Extension & {
       const throughputStore = host.getService(throughputStoreHandle);
       const warmService = host.getService(cacheWarmHandle);
       const compactionService = host.getService(compactionHandle);
-      const lspService = host.getService(lspServiceHandle);
+      // Optional: the `lsp` extension may be disabled (hot-fix). Wrapped because
+      // getService throws for an unregistered handle — degrades to no diagnostics.
+      let lspService: LspService | undefined;
+      try {
+        lspService = host.getService(lspServiceHandle);
+      } catch {
+        lspService = undefined;
+      }
       const mcpService = host.getService(mcpServiceHandle);
       const systemPromptService = host.getService(systemPromptHandle);
       const heartbeatService = host.getService(heartbeatServiceHandle);
@@ -128,7 +135,7 @@ export function createTransportHttpExtension(): Extension & {
         throughputStore,
         warmService,
         compactionService,
-        lspService,
+        ...(lspService !== undefined ? { lspService } : {}),
         mcpService,
         systemPromptService,
         heartbeatService,

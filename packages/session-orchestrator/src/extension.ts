@@ -65,6 +65,19 @@ export function activate(host: HostAPI): void {
     logger: host.logger,
     now: () => Date.now(),
     emit: (hook, payload) => host.emit(hook, payload),
+    // Injected process.memoryUsage() sampler — the production edge. Tests
+    // inject a fake to assert per-turn before/after telemetry. Wired in the
+    // shell (like `now: () => Date.now()`); pure decision logic is untouched.
+    sampleMemory: () => {
+      const m = process.memoryUsage();
+      return {
+        rss: m.rss,
+        heapUsed: m.heapUsed,
+        heapTotal: m.heapTotal,
+        external: m.external,
+        arrayBuffers: m.arrayBuffers,
+      };
+    },
     resolveQueue: () => {
       // Lazily resolve the message-queue service. Returns undefined when the
       // extension isn't loaded (feature degrades off) — checked via the
