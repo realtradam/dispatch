@@ -593,3 +593,183 @@ describe("enqueue", () => {
     await sealed;
   });
 });
+
+// --- cancelQueuedMessage facade (remove a single queued message by id) ---
+
+describe("cancelQueuedMessage", () => {
+  it("removes a queued message by id → cancelled:true + post-cancel snapshot", () => {
+    const store = createInMemoryStore();
+    const queue = createTestQueue();
+    queue.enqueue("conv-cancel", "a");
+    queue.enqueue("conv-cancel", "b");
+    const second = queue.getQueue("conv-cancel")[1];
+    if (second === undefined) throw new Error("expected a second enqueued message");
+    const secondId = second.id;
+    expect(queue.getQueue("conv-cancel")).toHaveLength(2);
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => simpleProvider(),
+      resolveTools: noTools,
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      resolveQueue: () => queue,
+    });
+
+    const result = orchestrator.cancelQueuedMessage({
+      conversationId: "conv-cancel",
+      messageId: secondId,
+    });
+    expect(result.cancelled).toBe(true);
+    expect(result.queue.map((m) => m.id)).not.toContain(secondId);
+    expect(result.queue).toHaveLength(1);
+    expect(queue.getQueue("conv-cancel").map((m) => m.id)).not.toContain(secondId);
+  });
+
+  it("cancel of the only message empties the queue (cancelled:true)", () => {
+    const store = createInMemoryStore();
+    const queue = createTestQueue();
+    queue.enqueue("conv-only", "solo");
+    const onlyId = queue.getQueue("conv-only")[0]?.id;
+    if (onlyId === undefined) throw new Error("expected an enqueued message");
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => simpleProvider(),
+      resolveTools: noTools,
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      resolveQueue: () => queue,
+    });
+
+    const result = orchestrator.cancelQueuedMessage({
+      conversationId: "conv-only",
+      messageId: onlyId,
+    });
+    expect(result.cancelled).toBe(true);
+    expect(result.queue).toEqual([]);
+    expect(queue.getQueue("conv-only")).toEqual([]);
+  });
+
+  it("cancel of a missing id → cancelled:false, queue unchanged (idempotent)", () => {
+    const store = createInMemoryStore();
+    const queue = createTestQueue();
+    queue.enqueue("conv-miss", "a");
+    queue.enqueue("conv-miss", "b");
+    const before = queue.getQueue("conv-miss");
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => simpleProvider(),
+      resolveTools: noTools,
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      resolveQueue: () => queue,
+    });
+
+    const result = orchestrator.cancelQueuedMessage({
+      conversationId: "conv-miss",
+      messageId: "does-not-exist",
+    });
+    expect(result.cancelled).toBe(false);
+    expect(result.queue.map((m) => m.id)).toEqual(before.map((m) => m.id));
+    // live state unchanged
+    expect(queue.getQueue("conv-miss").map((m) => m.id)).toEqual(before.map((m) => m.id));
+  });
+
+  it("cancel on an unknown conversation → cancelled:false, empty queue", () => {
+    const store = createInMemoryStore();
+    const queue = createTestQueue();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => simpleProvider(),
+      resolveTools: noTools,
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      resolveQueue: () => queue,
+    });
+
+    const result = orchestrator.cancelQueuedMessage({
+      conversationId: "never-existed",
+      messageId: "anything",
+    });
+    expect(result.cancelled).toBe(false);
+    expect(result.queue).toEqual([]);
+  });
+
+  it("no queue ext (resolveQueue undefined) → cancelled:false, empty queue (degraded)", () => {
+    const store = createInMemoryStore();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => simpleProvider(),
+      resolveTools: noTools,
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      // resolveQueue intentionally omitted — feature degrades off
+    });
+
+    const result = orchestrator.cancelQueuedMessage({
+      conversationId: "conv-noqueue",
+      messageId: "whatever",
+    });
+    expect(result.cancelled).toBe(false);
+    expect(result.queue).toEqual([]);
+  });
+
+  it("cancelled message is NOT delivered as steering (never runs)", async () => {
+    const store = createInMemoryStore();
+    const queue = createTestQueue();
+    queue.enqueue("conv-steer", "keep-me");
+    const cancelId = queue.enqueue("conv-steer", "cancel-me")[1]?.id;
+    if (cancelId === undefined) throw new Error("expected a second enqueued message");
+    // the first message id (kept)
+    const keepId = queue.getQueue("conv-steer")[0]?.id;
+    if (keepId === undefined) throw new Error("expected a kept message");
+
+    const { captured, drainedMessages, runTurn: captureRunTurn } = createDrainingCaptureRunTurn();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+      resolveTools: noTools,
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+      resolveQueue: () => queue,
+    });
+
+    // Cancel the second message BEFORE the turn drains.
+    const cancelResult = orchestrator.cancelQueuedMessage({
+      conversationId: "conv-steer",
+      messageId: cancelId,
+    });
+    expect(cancelResult.cancelled).toBe(true);
+    expect(cancelResult.queue.map((m) => m.id)).toEqual([keepId]);
+
+    const events: AgentEvent[] = [];
+    const unsub = orchestrator.subscribe("conv-steer", (e) => events.push(e));
+
+    orchestrator.startTurn({ conversationId: "conv-steer", text: "go" });
+    await waitForSealed(orchestrator, "conv-steer");
+    unsub();
+
+    // The steering drain combined ONLY the kept message — the cancelled one
+    // is absent from the drained text.
+    expect(drainedMessages).toHaveLength(1);
+    const steerMsg = drainedMessages[0];
+    if (steerMsg === undefined) throw new Error("expected a drained message");
+    const chunk = steerMsg.chunks[0];
+    if (chunk === undefined || chunk.type !== "text") throw new Error("expected text chunk");
+    expect(chunk.text).toBe("keep-me");
+    expect(chunk.text).not.toContain("cancel-me");
+
+    // drainSteering was wired + the queue is now empty (the kept one drained).
+    expect(captured[0]?.drainSteering).toBeDefined();
+    expect(queue.getQueue("conv-steer")).toHaveLength(0);
+
+    // The steering event carries only the kept text.
+    const steering = events.find(isSteering);
+    expect(steering?.text).toBe("keep-me");
+  });
+});

@@ -604,6 +604,59 @@ describe("routeClientMessage", () => {
     });
   });
 
+  describe("chat.queue.cancel", () => {
+    it("routes a valid chat.queue.cancel → { kind: 'chat-queue-cancel', conversationId, messageId }", () => {
+      const registry = fakeRegistry([]);
+      const connSubs = new Set<string>();
+
+      const result = routeClientMessage(registry, connSubs, {
+        type: "chat.queue.cancel",
+        conversationId: "conv-1",
+        messageId: "q-42",
+      });
+
+      expect(result).toEqual({
+        kind: "chat-queue-cancel",
+        conversationId: "conv-1",
+        messageId: "q-42",
+      });
+    });
+
+    it("rejects empty conversationId → chat-error (no cancel signal)", () => {
+      const registry = fakeRegistry([]);
+      const connSubs = new Set<string>();
+
+      const result = routeClientMessage(registry, connSubs, {
+        type: "chat.queue.cancel",
+        conversationId: "",
+        messageId: "q-42",
+      });
+
+      expect(result.kind).toBe("chat-error");
+      if (result.kind !== "chat-error") throw new Error("expected chat-error");
+      expect(result.errorMessage).toContain("non-empty string");
+      expect(result.errorMessage).toContain("conversationId");
+    });
+
+    it("rejects empty messageId → chat-error (no cancel signal)", () => {
+      const registry = fakeRegistry([]);
+      const connSubs = new Set<string>();
+
+      for (const messageId of ["", undefined as unknown as string]) {
+        const result = routeClientMessage(registry, connSubs, {
+          type: "chat.queue.cancel",
+          conversationId: "conv-1",
+          messageId,
+        });
+
+        expect(result.kind).toBe("chat-error");
+        if (result.kind !== "chat-error") throw new Error("expected chat-error");
+        expect(result.errorMessage).toContain("non-empty string");
+        expect(result.errorMessage).toContain("messageId");
+      }
+    });
+  });
+
   describe("exhaustive switch (regression guard for Wave-0 fan-out)", () => {
     // Every WsClientMessage variant must route to a defined result with a
     // known kind — no fall-through / undefined return. If the union is
@@ -622,6 +675,7 @@ describe("routeClientMessage", () => {
         { type: "chat.subscribe", conversationId: "c1" },
         { type: "chat.unsubscribe", conversationId: "c1" },
         { type: "chat.queue", conversationId: "c1", text: "steer" },
+        { type: "chat.queue.cancel", conversationId: "c1", messageId: "m1" },
       ];
 
       const validKinds = new Set<RouteResult["kind"]>([
@@ -631,6 +685,7 @@ describe("routeClientMessage", () => {
         "chat-subscribe",
         "chat-unsubscribe",
         "chat-queue",
+        "chat-queue-cancel",
       ]);
 
       for (const msg of samples) {
