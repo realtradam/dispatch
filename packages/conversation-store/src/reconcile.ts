@@ -46,7 +46,7 @@ export function reconcileWithReport(messages: readonly ChatMessage[]): Reconcile
   for (const msg of stripped) {
     if (msg.role === "assistant") {
       const hasContent = msg.chunks.some(
-        (chunk) => chunk.type === "text" || chunk.type === "tool-call",
+        (chunk) => chunk.type === "text" || chunk.type === "tool-call" || chunk.type === "thinking",
       );
       if (!hasContent) {
         droppedEmptyMessages++;

@@ -143,6 +143,68 @@ describe("ConversationStore", () => {
     expect(result).toEqual([...turn1, ...turn2]);
   });
 
+  it("preserves message boundaries across single-message appends (orchestrator pattern)", async () => {
+    // Regression: the orchestrator persists messages one at a time —
+    // append([user]) at turn start, then append([assistant]) or
+    // append([assistant, ...toolResults]) via onStepComplete. Since each
+    // append() call assigns msgIdx starting at 0, single-message appends all
+    // share msgIdx=0. load() must split on role changes too, not just msgIdx,
+    // or messages from different turns collapse into one.
+    const store = createConversationStore(storage);
+    const user1: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+    const asst1: ChatMessage = {
+      role: "assistant",
+      chunks: [
+        { type: "thinking", text: "greeting" },
+        { type: "text", text: "Hi!" },
+      ],
+    };
+    const user2: ChatMessage = { role: "user", chunks: [{ type: "text", text: "read a file" }] };
+    const asst2: ChatMessage = {
+      role: "assistant",
+      chunks: [{ type: "text", text: "Sure." }],
+    };
+    const user3: ChatMessage = { role: "user", chunks: [{ type: "text", text: "thanks" }] };
+
+    // Each message appended individually — the real orchestrator pattern.
+    await store.append("conv1", [user1]);
+    await store.append("conv1", [asst1]);
+    await store.append("conv1", [user2]);
+    await store.append("conv1", [asst2]);
+    await store.append("conv1", [user3]);
+
+    const result = await store.load("conv1");
+    expect(result).toEqual([user1, asst1, user2, asst2, user3]);
+  });
+
+  it("preserves message boundaries with single-message appends + multi-message step (tool calls)", async () => {
+    // Regression: the full orchestrator pattern including tool calls.
+    // Turn: append([user]) → step: append([assistant{thinking,text,tool-call}, toolResult])
+    // All single-message appends get msgIdx=0; the multi-message step gets 0,1.
+    const store = createConversationStore(storage);
+    const user: ChatMessage = { role: "user", chunks: [{ type: "text", text: "do it" }] };
+    const asst: ChatMessage = {
+      role: "assistant",
+      chunks: [
+        { type: "thinking", text: "calling a tool" },
+        { type: "text", text: "ok" },
+        { type: "tool-call", toolCallId: "c1", toolName: "t", input: {} },
+      ],
+    };
+    const toolResult: ChatMessage = {
+      role: "tool",
+      chunks: [
+        { type: "tool-result", toolCallId: "c1", toolName: "t", content: "done", isError: false },
+      ],
+    };
+
+    await store.append("conv1", [user]);
+    await store.append("conv1", [asst, toolResult]);
+
+    const result = await store.load("conv1");
+    expect(result).toEqual([user, asst, toolResult]);
+  });
+
   it("preserves message ordering", async () => {
     const store = createConversationStore(storage);
     const messages: ChatMessage[] = [];

@@ -417,4 +417,18 @@ describe("reconcile", () => {
     expect(report.repairedCount).toBe(1);
     expect(report.repairedToolCallIds).toEqual(["call_orph"]);
   });
+
+  it("reconcile preserves a thinking-only assistant message", () => {
+    // Regression: an assistant message with only a thinking chunk (no text,
+    // no tool-call) was being dropped by the hasContent check. Thinking IS
+    // valid content — the model's reasoning must survive a load/reconcile
+    // cycle so it appears in the conversation history.
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "hello" }] },
+      { role: "assistant", chunks: [{ type: "thinking", text: "just thinking..." }] },
+    ];
+    const { messages: result, report } = reconcileWithReport(messages);
+    expect(result).toEqual(messages);
+    expect(report.droppedEmptyMessages).toBe(0);
+  });
 });
