@@ -90,6 +90,19 @@ export const extension: Extension = {
       // Lazy (resolved at fire time, mirroring resolvePrompt).
       getWorkspaceCwd: async (wsId) =>
         (await conversationStore.getWorkspace(wsId))?.defaultCwd ?? null,
+      // inactiveOnly: the configured workspace is "busy" while any of its
+      // conversations are driving or queued for a turn. The orchestrator
+      // sets persisted status "active" on turn start and "idle" on settle,
+      // so a single store read (filtered to the configured workspaceId) is
+      // the live active-agent check. The heartbeat's own spawned conversation
+      // lives in the DEDICATED heartbeat workspace, so it never self-blocks.
+      hasActiveAgents: async (wsId) => {
+        const active = await conversationStore.listConversations({
+          workspaceId: wsId,
+          status: ["active", "queued"],
+        });
+        return active.length > 0;
+      },
     });
 
     // Reconcile stale runs + arm enabled workspaces on boot.

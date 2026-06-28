@@ -157,6 +157,7 @@ function createService(opts: {
   ) => Promise<string>;
   readonly getGlobalSystemPrompt?: () => Promise<string>;
   readonly getWorkspaceCwd?: (workspaceId: string) => Promise<string | null>;
+  readonly hasActiveAgents?: (workspaceId: string) => Promise<boolean>;
 }) {
   const fake = createFakeTimers();
   let id = 0;
@@ -171,6 +172,7 @@ function createService(opts: {
       ? { getGlobalSystemPrompt: opts.getGlobalSystemPrompt }
       : {}),
     ...(opts.getWorkspaceCwd !== undefined ? { getWorkspaceCwd: opts.getWorkspaceCwd } : {}),
+    ...(opts.hasActiveAgents !== undefined ? { hasActiveAgents: opts.hasActiveAgents } : {}),
   });
   return { svc, advance: fake.advance, storage };
 }
@@ -181,6 +183,131 @@ describe("createHeartbeatService", () => {
     const cfg = await svc.getConfig("ws-1");
     expect(cfg.enabled).toBe(false);
     expect(cfg.intervalMinutes).toBe(30);
+    // inactiveOnly defaults ON (the heartbeat is quiet by default while the
+    // workspace is busy).
+    expect(cfg.inactiveOnly).toBe(true);
+  });
+
+  describe("inactiveOnly (skip fire while the workspace has active agents)", () => {
+    it("skips the fire (records no run) when inactiveOnly is true and the workspace has active agents", async () => {
+      const orch = createFakeOrchestrator();
+      const { svc, advance } = createService({
+        orch,
+        hasActiveAgents: () => Promise.resolve(true),
+      });
+      await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+
+      advance(60_000); // interval elapses → fire
+      await flush(); // let the async fire() reach the active-agent check + return
+
+      expect(orch.pending).toHaveLength(0); // no turn started
+      expect(await svc.listRuns("ws-1")).toHaveLength(0); // no run recorded
+    });
+
+    it("still fires when inactiveOnly is true but the workspace has NO active agents", async () => {
+      const orch = createFakeOrchestrator();
+      const { svc, advance } = createService({
+        orch,
+        hasActiveAgents: () => Promise.resolve(false),
+      });
+      await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+
+      advance(60_000);
+      await flush();
+      expect(orch.pending).toHaveLength(1);
+      expect((await svc.listRuns("ws-1"))[0]?.status).toBe("running");
+      orch.pending[0]!.resolve();
+      await flush();
+    });
+
+    it("fires unconditionally when inactiveOnly is false, even with active agents", async () => {
+      const orch = createFakeOrchestrator();
+      const { svc, advance } = createService({
+        orch,
+        // Active agents reported, but the setting is OFF → must not block.
+        hasActiveAgents: () => Promise.resolve(true),
+      });
+      await svc.updateConfig("ws-1", {
+        enabled: true,
+        inactiveOnly: false,
+        taskPrompt: "go",
+        intervalMinutes: 1,
+      });
+
+      advance(60_000);
+      await flush();
+      expect(orch.pending).toHaveLength(1);
+      expect((await svc.listRuns("ws-1"))[0]?.status).toBe("running");
+      orch.pending[0]!.resolve();
+      await flush();
+    });
+
+    it("re-arms and fires on the next interval after a skipped fire (the scheduler keeps ticking)", async () => {
+      const orch = createFakeOrchestrator();
+      let busy = true; // workspace busy on the first fire, free on the next
+      const { svc, advance } = createService({
+        orch,
+        hasActiveAgents: () => Promise.resolve(busy),
+      });
+      await svc.updateConfig("ws-1", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+
+      advance(60_000); // first fire — skipped (busy)
+      await flush();
+      expect(orch.pending).toHaveLength(0);
+
+      busy = false; // workspace goes idle
+      advance(60_000); // next interval → fire again
+      await flush();
+      expect(orch.pending).toHaveLength(1); // now it fires
+      orch.pending[0]!.resolve();
+      await flush();
+    });
+
+    it("does not consult hasActiveAgents when inactiveOnly is false (degrades off cleanly)", async () => {
+      const orch = createFakeOrchestrator();
+      let consulted = false;
+      const { svc, advance } = createService({
+        orch,
+        hasActiveAgents: () => {
+          consulted = true;
+          return Promise.resolve(true);
+        },
+      });
+      await svc.updateConfig("ws-1", {
+        enabled: true,
+        inactiveOnly: false,
+        taskPrompt: "go",
+        intervalMinutes: 1,
+      });
+
+      advance(60_000);
+      await flush();
+      expect(consulted).toBe(false); // never asked — setting is off
+      expect(orch.pending).toHaveLength(1);
+      orch.pending[0]!.resolve();
+      await flush();
+    });
+
+    it("checks active agents per configured workspace (only the configured workspace is consulted)", async () => {
+      const orch = createFakeOrchestrator();
+      const busyWorkspaces = new Set<string>(["ws-busy"]);
+      const { svc, advance } = createService({
+        orch,
+        hasActiveAgents: (wsId) => Promise.resolve(busyWorkspaces.has(wsId)),
+      });
+      // ws-free is idle, ws-busy has active agents.
+      await svc.updateConfig("ws-free", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+      await svc.updateConfig("ws-busy", { enabled: true, taskPrompt: "go", intervalMinutes: 1 });
+
+      advance(60_000); // both fire
+      await flush();
+      // ws-free fired (idle), ws-busy skipped (busy).
+      expect(orch.pending).toHaveLength(1);
+      expect((await svc.listRuns("ws-free"))[0]?.status).toBe("running");
+      expect(await svc.listRuns("ws-busy")).toHaveLength(0);
+      orch.pending[0]!.resolve();
+      await flush();
+    });
   });
 
   it("arming an enabled config does not fire immediately (waits for the interval)", () => {
