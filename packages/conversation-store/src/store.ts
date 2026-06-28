@@ -681,7 +681,15 @@ export function createConversationStore(
           continue;
         }
 
-        if (entry.msgIdx !== currentMsgIdx) {
+        // A message boundary is detected when EITHER the msgIdx changes OR the
+        // role changes. The msgIdx alone is insufficient because append() assigns
+        // it as a LOCAL index (reset to 0 for each call) — so consecutive
+        // single-message appends (e.g. the orchestrator's per-step persistence:
+        // append([user]) then append([assistant]) then append([user])...) all
+        // share msgIdx=0 and would collapse into one message without the role
+        // check. The role check restores correct boundaries for the common
+        // alternating user/assistant/tool pattern.
+        if (entry.msgIdx !== currentMsgIdx || entry.role !== currentRole) {
           if (currentMsgIdx >= 0 && currentRole !== undefined) {
             messages.push({ role: currentRole, chunks: currentChunks });
           }
