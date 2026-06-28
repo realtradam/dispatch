@@ -31,6 +31,7 @@ import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import {
   type MemorySample,
+  memorySampleAttributes,
   extension as sessionOrchestratorExt,
   sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
@@ -243,8 +244,10 @@ async function boot(): Promise<void> {
   // owns the PERIODIC baseline. All effects are injected (no ambient state);
   // stop() is cleared on shutdown so timers never leak across a restart.
   let memoryTelemetry: { stop: () => void } | undefined;
+  let activeConvCountFn: (() => number) | undefined;
   try {
     const orchestrator = host.getHostAPI().getService(sessionOrchestratorHandle);
+    activeConvCountFn = () => orchestrator.getActiveConversationCount();
     memoryTelemetry = startMemoryTelemetry({
       logger: logger.child({ extensionId: "mem-telemetry" }),
       sampleMemory: (): MemorySample => {
@@ -279,6 +282,38 @@ async function boot(): Promise<void> {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  const memorySnapshot = () => {
+    const m = process.memoryUsage();
+    return memorySampleAttributes({
+      rss: m.rss,
+      heapUsed: m.heapUsed,
+      heapTotal: m.heapTotal,
+      external: m.external,
+      arrayBuffers: m.arrayBuffers,
+    });
+  };
+
+  process.on("unhandledRejection", (reason) => {
+    logger.error("unhandledRejection", {
+      err: reason,
+      handler: "unhandledRejection",
+      activeConversations: activeConvCountFn?.() ?? "unavailable",
+      timestamp: new Date().toISOString(),
+      ...memorySnapshot(),
+    });
+  });
+
+  process.on("uncaughtException", (err) => {
+    logger.error("uncaughtException", {
+      err,
+      handler: "uncaughtException",
+      activeConversations: activeConvCountFn?.() ?? "unavailable",
+      timestamp: new Date().toISOString(),
+      ...memorySnapshot(),
+    });
+    void shutdown();
+  });
 
   logger.info("Dispatch booted");
   console.info("Dispatch booted");
