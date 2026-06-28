@@ -27,6 +27,7 @@ export type ParsedCommand =
       readonly showReasoning: boolean;
       readonly open: boolean;
       readonly workspaceId?: string | undefined;
+      readonly title?: string | undefined;
     }
   | {
       readonly kind: "list";
@@ -307,6 +308,7 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
   let open = false;
   let server = opts.defaultServer;
   let workspaceId: string | undefined;
+  let title: string | undefined;
 
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i] as string;
@@ -337,6 +339,10 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
         break;
       case "--open":
         open = true;
+        break;
+      case "--title":
+        if (i + 1 >= argv.length) return { kind: "error", message: "--title requires a value" };
+        title = argv[++i];
         break;
       case "--effort":
         if (i + 1 >= argv.length)
@@ -383,5 +389,6 @@ export function parseArgs(argv: readonly string[], opts: ParseOpts): ParsedComma
     showReasoning,
     open,
     ...(workspaceId !== undefined && { workspaceId }),
+    ...(title !== undefined && { title }),
   };
 }

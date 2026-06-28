@@ -56,6 +56,14 @@ export interface ChatCommand {
   readonly reasoningEffort?: ReasoningEffort;
   readonly workspaceId?: string;
   /**
+   * A human-readable title for the conversation tab, set at creation time.
+   * Parsed from the `ChatRequest.title` field; trimmed server-side. A
+   * whitespace-only value is treated as absent (omitted) so the auto-derived
+   * title applies. Forwarded to the `/chat` route which persists it via the
+   * conversation store's `setConversationTitle` before the turn starts.
+   */
+  readonly title?: string;
+  /**
    * Images attached to this turn (data URLs or http URLs). Parsed from the
    * `ChatRequest.images` field; forwarded to the orchestrator which converts
    * them to `image` chunks on the user message. Each entry must have a non-empty
@@ -126,6 +134,18 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
       return { error: "Field 'workspaceId' must be a string" };
     }
     (result as { workspaceId?: string }).workspaceId = obj.workspaceId;
+  }
+
+  if (obj.title !== undefined) {
+    if (typeof obj.title !== "string") {
+      return { error: "Field 'title' must be a string" };
+    }
+    const title = obj.title.trim();
+    // A whitespace-only title is treated as absent so the auto-derived title
+    // applies (mirrors omitting the field) — never persist an empty title.
+    if (title.length > 0) {
+      (result as { title?: string }).title = title;
+    }
   }
 
   if (obj.images !== undefined) {

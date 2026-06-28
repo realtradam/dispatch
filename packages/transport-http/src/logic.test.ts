@@ -183,6 +183,56 @@ describe("parseChatBody", () => {
     }
   });
 
+  // ── title ────────────────────────────────────────────────────────────────
+
+  it("extracts title when present", () => {
+    const result = parseChatBody({ message: "hi", title: "My Task" }, fakeId);
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.title).toBe("My Task");
+    }
+  });
+
+  it("trims title whitespace", () => {
+    const result = parseChatBody({ message: "hi", title: "  spaced title  " }, fakeId);
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.title).toBe("spaced title");
+    }
+  });
+
+  it("omits title when absent (backward compatible)", () => {
+    const result = parseChatBody({ message: "hi" }, fakeId);
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.title).toBeUndefined();
+    }
+  });
+
+  it("omits title when whitespace-only (treated as absent)", () => {
+    const result = parseChatBody({ message: "hi", title: "    " }, fakeId);
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.title).toBeUndefined();
+    }
+  });
+
+  it("omits title when empty string (treated as absent)", () => {
+    const result = parseChatBody({ message: "hi", title: "" }, fakeId);
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.title).toBeUndefined();
+    }
+  });
+
+  it("returns error when title is not a string", () => {
+    const result = parseChatBody({ message: "hi", title: 42 }, fakeId);
+    expect(isParseError(result)).toBe(true);
+    if (isParseError(result)) {
+      expect(result.error).toContain("title");
+    }
+  });
+
   // ── images ──────────────────────────────────────────────────────────────
 
   it("parses images array with data URLs", () => {
