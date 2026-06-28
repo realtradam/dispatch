@@ -3,8 +3,15 @@
  *
  * Manages a single MCP server connection: initialize handshake,
  * tool discovery, tool invocation, and list_changed notifications.
+ *
+ * Every awaited handshake/list operation is bounded by `withTimeout` (a default
+ * timeout) and an optional `AbortSignal`, so a misbehaving or framing-
+ * incompatible server can never hang the caller (the per-turn tools filter)
+ * indefinitely. `callTool` was already abort-aware; `initialize`/`listTools`
+ * now are too.
  */
 
+import { MCP_DEFAULT_TIMEOUT_MS, withTimeout } from "./timeout.js";
 import type { Connection } from "./transport.js";
 import type {
   McpCallResult,
@@ -47,14 +54,27 @@ export class McpClient {
     this.toolsChangedHandler = handler;
   }
 
-  async initialize(): Promise<McpInitializeResult> {
+  /**
+   * Perform the MCP `initialize` handshake. Bounded by `timeoutMs` (default
+   * {@link MCP_DEFAULT_TIMEOUT_MS}) and the optional `signal` (the turn's abort
+   * signal) so a server that never responds cannot hang the caller forever.
+   */
+  async initialize(
+    signal?: AbortSignal,
+    timeoutMs: number = MCP_DEFAULT_TIMEOUT_MS,
+  ): Promise<McpInitializeResult> {
     this.state = "connecting";
     try {
-      const result = (await this.connection.send("initialize", {
-        protocolVersion: "2025-11-25",
-        capabilities: {},
-        clientInfo: { name: "dispatch", version: "0.0.0" },
-      })) as McpInitializeResult;
+      const result = (await withTimeout(
+        this.connection.send("initialize", {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "dispatch", version: "0.0.0" },
+        }),
+        "initialize",
+        timeoutMs,
+        signal,
+      )) as McpInitializeResult;
 
       this.capabilities = result.capabilities;
       this.connection.notify("notifications/initialized", {});
@@ -73,11 +93,23 @@ export class McpClient {
     }
   }
 
-  async listTools(): Promise<readonly McpToolInfo[]> {
+  /**
+   * List the server's tools. Bounded by `timeoutMs` (default
+   * {@link MCP_DEFAULT_TIMEOUT_MS}) and the optional `signal`.
+   */
+  async listTools(
+    signal?: AbortSignal,
+    timeoutMs: number = MCP_DEFAULT_TIMEOUT_MS,
+  ): Promise<readonly McpToolInfo[]> {
     if (this.state !== "connected") {
       throw new Error("Client not connected");
     }
-    const result = (await this.connection.send("tools/list")) as McpListToolsResult;
+    const result = (await withTimeout(
+      this.connection.send("tools/list"),
+      "tools/list",
+      timeoutMs,
+      signal,
+    )) as McpListToolsResult;
     this.tools = result.tools;
     return this.tools;
   }
