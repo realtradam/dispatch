@@ -1,3 +1,4 @@
+import { conversationStoreHandle } from "@dispatch/conversation-store";
 import type { Extension, HostAPI, Logger, Manifest, StorageNamespace } from "@dispatch/kernel";
 import type { ConcurrencyManagerOpts, ConcurrencyService } from "./concurrency-manager.js";
 import { createConcurrencyManager } from "./concurrency-manager.js";
@@ -11,6 +12,7 @@ export const manifest: Manifest = {
   trust: "bundled",
   activation: "eager",
   capabilities: { db: true },
+  dependsOn: ["conversation-store"],
   contributes: { services: ["provider-concurrency/service"] },
 };
 
@@ -73,6 +75,7 @@ function createPersistedService(
     getLimits: inner.getLimits.bind(inner),
     getStatus: inner.getStatus.bind(inner),
     getStatusAll: inner.getStatusAll.bind(inner),
+    notifyWorkspaceStarred: inner.notifyWorkspaceStarred.bind(inner),
     destroy: inner.destroy.bind(inner),
   };
 }
@@ -102,6 +105,16 @@ export async function activate(host: HostAPI): Promise<void> {
   const logger = host.logger;
   const storage = host.storage("provider-concurrency");
 
+  // Resolve the conversation store to seed the in-memory starred-workspace
+  // cache. The `isWorkspaceStarred` callback reads this cache synchronously
+  // (the queue sort comparator is sync), so we must populate it before the
+  // manager handles its first acquire. `dependsOn: ["conversation-store"]`
+  // in the manifest guarantees the store is registered before we activate.
+  const conversationStore = host.getService(conversationStoreHandle);
+
+  // The manager owns the in-memory `starredWorkspaces` set internally (the
+  // default `isWorkspaceStarred` callback checks it). We seed it by calling
+  // `notifyWorkspaceStarred` for each starred workspace found in the store.
   const managerOpts: ConcurrencyManagerOpts = {
     now: () => Date.now(),
     slotTimeoutMs: SLOT_TIMEOUT_MS,
@@ -128,6 +141,27 @@ export async function activate(host: HostAPI): Promise<void> {
   // Restore persisted limits before registering the service so the first
   // request sees the correct configuration.
   await loadLimits(storage, inner, logger);
+
+  // Seed the in-memory starred cache from the conversation store so the
+  // priority scheduling is correct on a fresh server start (previously-starred
+  // workspaces are respected without requiring the user to re-star them).
+  try {
+    const workspaces = await conversationStore.listWorkspaces();
+    for (const ws of workspaces) {
+      if (ws.starred) {
+        inner.notifyWorkspaceStarred(ws.id, true);
+      }
+    }
+    if (workspaces.some((w) => w.starred)) {
+      logger.info("provider-concurrency: restored starred workspaces", {
+        count: workspaces.filter((w) => w.starred).length,
+      });
+    }
+  } catch (err) {
+    logger.warn("provider-concurrency: failed to load starred workspaces", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   const service = createPersistedService(inner, storage, logger);
   host.provideService(concurrencyServiceHandle, service);

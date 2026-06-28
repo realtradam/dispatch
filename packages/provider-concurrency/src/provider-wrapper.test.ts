@@ -17,12 +17,21 @@ function fakeProvider(events: ProviderEvent[]): ProviderContract {
 
 /** A fake limiter that records acquire/release calls. */
 function recordingLimiter(): ConcurrencyLimiter & {
-  acquireCalls: { providerId: string; conversationId: string; promptStartedAt: number }[];
+  acquireCalls: {
+    providerId: string;
+    conversationId: string;
+    workspaceId: string;
+    promptStartedAt: number;
+  }[];
   releaseCalls: number;
   rateLimitReports: string[];
 } {
-  const acquireCalls: { providerId: string; conversationId: string; promptStartedAt: number }[] =
-    [];
+  const acquireCalls: {
+    providerId: string;
+    conversationId: string;
+    workspaceId: string;
+    promptStartedAt: number;
+  }[] = [];
   const releaseCalls: { count: number } = { count: 0 };
   const rateLimitReports: string[] = [];
 
@@ -32,8 +41,8 @@ function recordingLimiter(): ConcurrencyLimiter & {
       return releaseCalls.count;
     },
     rateLimitReports,
-    acquire(providerId, conversationId, promptStartedAt) {
-      acquireCalls.push({ providerId, conversationId, promptStartedAt });
+    acquire(providerId, conversationId, workspaceId, promptStartedAt) {
+      acquireCalls.push({ providerId, conversationId, workspaceId, promptStartedAt });
       return Promise.resolve(() => {
         releaseCalls.count++;
       });
@@ -52,7 +61,7 @@ describe("wrapProviderWithConcurrency", () => {
     ]);
     const limiter = recordingLimiter();
 
-    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", 12345);
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 12345);
 
     const events: ProviderEvent[] = [];
     for await (const e of wrapped.stream([], [])) {
@@ -61,7 +70,12 @@ describe("wrapProviderWithConcurrency", () => {
 
     // Slot acquired before stream, released after.
     expect(limiter.acquireCalls).toEqual([
-      { providerId: "test-provider", conversationId: "conv1", promptStartedAt: 12345 },
+      {
+        providerId: "test-provider",
+        conversationId: "conv1",
+        workspaceId: "default",
+        promptStartedAt: 12345,
+      },
     ]);
     expect(limiter.releaseCalls).toBe(1);
     expect(events).toEqual([
@@ -79,7 +93,7 @@ describe("wrapProviderWithConcurrency", () => {
       },
     };
     const limiter = recordingLimiter();
-    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", 0);
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
 
     await expect(async () => {
       for await (const _e of wrapped.stream([], [])) {
@@ -95,7 +109,7 @@ describe("wrapProviderWithConcurrency", () => {
       { type: "error", message: "Too many requests", code: "429", retryable: true },
     ]);
     const limiter = recordingLimiter();
-    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", 0);
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
 
     const events: ProviderEvent[] = [];
     for await (const e of wrapped.stream([], [])) {
@@ -113,7 +127,7 @@ describe("wrapProviderWithConcurrency", () => {
       { type: "error", message: "Internal error", code: "500", retryable: true },
     ]);
     const limiter = recordingLimiter();
-    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", 0);
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
 
     for await (const _e of wrapped.stream([], [])) {
       // consume
@@ -131,7 +145,7 @@ describe("wrapProviderWithConcurrency", () => {
       listModels: async () => [{ id: "model-1" }],
     };
     const limiter = recordingLimiter();
-    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", 0);
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
 
     expect(wrapped.id).toBe("my-provider");
     expect(wrapped.listModels).toBeDefined();
@@ -144,7 +158,7 @@ describe("wrapProviderWithConcurrency", () => {
     let acquiredCalled = false;
 
     const blockingLimiter: ConcurrencyLimiter = {
-      acquire(_providerId, _convId, _promptAt, onQueued) {
+      acquire(_providerId, _convId, _wsId, _promptAt, onQueued) {
         // Simulate a queued request: call onQueued, then resolve on next tick.
         onQueued?.();
         return new Promise((resolve) => {
@@ -161,6 +175,7 @@ describe("wrapProviderWithConcurrency", () => {
       provider,
       blockingLimiter,
       "conv1",
+      "default",
       0,
       () => {
         queuedCalled = true;
@@ -183,7 +198,7 @@ describe("wrapProviderWithConcurrency", () => {
     let acquiredCalled = false;
 
     const immediateLimiter: ConcurrencyLimiter = {
-      acquire(_providerId, _convId, _promptAt, _onQueued) {
+      acquire(_providerId, _convId, _wsId, _promptAt, _onQueued) {
         // Grant immediately — do NOT call onQueued.
         return Promise.resolve(() => {});
       },
@@ -195,6 +210,7 @@ describe("wrapProviderWithConcurrency", () => {
       provider,
       immediateLimiter,
       "conv1",
+      "default",
       0,
       () => {
         queuedCalled = true;
@@ -229,7 +245,7 @@ describe("wrapProviderWithConcurrency", () => {
       },
     };
     const limiter = recordingLimiter();
-    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", 0);
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
 
     const messages = [{ role: "user" as const, chunks: [{ type: "text" as const, text: "hi" }] }];
     const tools = [{ name: "test_tool", description: "test", parameters: {} }];
