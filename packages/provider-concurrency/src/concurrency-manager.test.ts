@@ -504,7 +504,7 @@ describe("createConcurrencyManager", () => {
     const { manager, timers } = createManager({ releaseCooldownMs: 200 });
     manager.setLimit("umans", 1);
 
-    const release1 = await manager.acquire("umans", "conv1", 0);
+    const release1 = await manager.acquire("umans", "conv1", "default", 0);
     expect(manager.getStatus("umans")?.cooldownMs).toBe(200);
 
     // Bump the cooldown to 500ms.
@@ -513,7 +513,7 @@ describe("createConcurrencyManager", () => {
 
     // Queue a waiter.
     let resolved = false;
-    const promise2 = manager.acquire("umans", "conv2", 100).then((r) => {
+    const promise2 = manager.acquire("umans", "conv2", "default", 100).then((r) => {
       resolved = true;
       return r;
     });
@@ -549,7 +549,7 @@ describe("createConcurrencyManager", () => {
     manager.setCooldown("umans", 500);
     expect(manager.getCooldown("umans")).toBe(500);
     // No limit → acquire must be unlimited (no state with a limit imposed).
-    const release = await manager.acquire("umans", "conv1", 0);
+    const release = await manager.acquire("umans", "conv1", "default", 0);
     expect(typeof release).toBe("function");
     release();
     expect(manager.getStatus("umans")).toBeUndefined(); // no limit state created
@@ -634,16 +634,16 @@ describe("createConcurrencyManager", () => {
 
     // Fill all 4 slots (fast-path, no gate).
     const releases = await Promise.all([
-      manager.acquire("umans", "c1", 0),
-      manager.acquire("umans", "c2", 0),
-      manager.acquire("umans", "c3", 0),
-      manager.acquire("umans", "c4", 0),
+      manager.acquire("umans", "c1", "default", 0),
+      manager.acquire("umans", "c2", "default", 0),
+      manager.acquire("umans", "c3", "default", 0),
+      manager.acquire("umans", "c4", "default", 0),
     ]);
     expect(manager.getStatus("umans")?.inFlight).toBe(4);
 
     // 5th agent queues.
     let resolved = false;
-    const promise5 = manager.acquire("umans", "c5", 10).then((r) => {
+    const promise5 = manager.acquire("umans", "c5", "default", 10).then((r) => {
       resolved = true;
       return r;
     });
@@ -680,14 +680,14 @@ describe("createConcurrencyManager", () => {
     manager.setCooldown("umans", 0);
 
     const releases = await Promise.all([
-      manager.acquire("umans", "c1", 0),
-      manager.acquire("umans", "c2", 0),
-      manager.acquire("umans", "c3", 0),
-      manager.acquire("umans", "c4", 0),
+      manager.acquire("umans", "c1", "default", 0),
+      manager.acquire("umans", "c2", "default", 0),
+      manager.acquire("umans", "c3", "default", 0),
+      manager.acquire("umans", "c4", "default", 0),
     ]);
 
     let resolved = false;
-    const promise5 = manager.acquire("umans", "c5", 10).then((r) => {
+    const promise5 = manager.acquire("umans", "c5", "default", 10).then((r) => {
       resolved = true;
       return r;
     });
@@ -714,9 +714,9 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 1);
     manager.setCooldown("umans", 0);
 
-    const release1 = await manager.acquire("umans", "c1", 0);
+    const release1 = await manager.acquire("umans", "c1", "default", 0);
     let resolved = false;
-    const promise2 = manager.acquire("umans", "c2", 10).then((r) => {
+    const promise2 = manager.acquire("umans", "c2", "default", 10).then((r) => {
       resolved = true;
       return r;
     });
@@ -740,20 +740,20 @@ describe("createConcurrencyManager", () => {
     manager.setCooldown("umans", 0);
 
     const releases = await Promise.all([
-      manager.acquire("umans", "c1", 0),
-      manager.acquire("umans", "c2", 0),
-      manager.acquire("umans", "c3", 0),
-      manager.acquire("umans", "c4", 0),
+      manager.acquire("umans", "c1", "default", 0),
+      manager.acquire("umans", "c2", "default", 0),
+      manager.acquire("umans", "c3", "default", 0),
+      manager.acquire("umans", "c4", "default", 0),
     ]);
 
     // Queue two waiters.
     let r5 = false;
     let r6 = false;
-    const p5 = manager.acquire("umans", "c5", 10).then((r) => {
+    const p5 = manager.acquire("umans", "c5", "default", 10).then((r) => {
       r5 = true;
       return r;
     });
-    const p6 = manager.acquire("umans", "c6", 20).then((r) => {
+    const p6 = manager.acquire("umans", "c6", "default", 20).then((r) => {
       r6 = true;
       return r;
     });
@@ -784,9 +784,9 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 1);
     manager.setCooldown("umans", 0);
 
-    return manager.acquire("umans", "c1", 0).then(async (release1) => {
+    return manager.acquire("umans", "c1", "default", 0).then(async (release1) => {
       // Queue a waiter (arms the 1s fallback timer).
-      const p2 = manager.acquire("umans", "c2", 10);
+      const p2 = manager.acquire("umans", "c2", "default", 10);
       await Promise.resolve();
       await Promise.resolve();
 
@@ -818,12 +818,12 @@ describe("createConcurrencyManager", () => {
     manager.setCooldown("umans", 0);
 
     // Hold the single slot.
-    const release1 = await manager.acquire("umans", "c1", 0);
+    const release1 = await manager.acquire("umans", "c1", "default", 0);
     expect(manager.getStatus("umans")?.inFlight).toBe(1);
 
     // Queue a waiter (c2). Cooldown is 0, but the gate defers admission until a poll.
     let c2Granted = false;
-    const p2 = manager.acquire("umans", "c2", 10).then((r) => {
+    const p2 = manager.acquire("umans", "c2", "default", 10).then((r) => {
       c2Granted = true;
       return r;
     });
@@ -842,7 +842,7 @@ describe("createConcurrencyManager", () => {
     // not fast-path. Even if it saw inFlight < limit, gatePolling would route it
     // through the queue. Either way it must NOT be granted yet.
     let c3Granted = false;
-    const p3 = manager.acquire("umans", "c3", 20).then((r) => {
+    const p3 = manager.acquire("umans", "c3", "default", 20).then((r) => {
       c3Granted = true;
       return r;
     });
@@ -870,7 +870,7 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 4);
 
     // Nowhere near the limit, no recycle in progress → fast-path, no poll.
-    const release = await manager.acquire("umans", "c1", 0);
+    const release = await manager.acquire("umans", "c1", "default", 0);
     expect(manager.getStatus("umans")?.inFlight).toBe(1);
     release();
   });
@@ -890,9 +890,9 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 1);
     manager.setCooldown("umans", 0);
 
-    const release1 = await manager.acquire("umans", "c1", 0);
+    const release1 = await manager.acquire("umans", "c1", "default", 0);
     // Queue a waiter; release → recycle → poll THROWS.
-    const p2 = manager.acquire("umans", "c2", 10);
+    const p2 = manager.acquire("umans", "c2", "default", 10);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -918,8 +918,8 @@ describe("createConcurrencyManager", () => {
       manager.setLimit("umans", 1);
       manager.setCooldown("umans", 0);
 
-      const release1 = await manager.acquire("umans", "c1", 0);
-      manager.acquire("umans", "c2", 10).then((r) => r()); // queue + auto-release
+      const release1 = await manager.acquire("umans", "c1", "default", 0);
+      manager.acquire("umans", "c2", "default", 10).then((r) => r()); // queue + auto-release
       await Promise.resolve();
       await Promise.resolve();
       release1();

@@ -376,12 +376,6 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
   }
 
   /**
-   * Grant queued waiters WITHOUT the usage gate (the fast path used when no
-   * `fetchUsage` is configured, or as the cooldown-only fallback when a poll
-   * returns no usage info). Grants while there is internal room
-   * (`inFlight < limit`). Synchronous.
-   */
-  function grantLoop(state: ProviderState, providerId: string): void {
    * Priority comparator for queued waiters: starred-workspace agents first,
    * then oldest-agent-first (ascending `promptStartedAt`) within each group.
    * Called at sort time (both on insert and before granting) so a workspace
@@ -394,10 +388,15 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
     return a.promptStartedAt - b.promptStartedAt; // oldest first within group
   }
 
-  function tryGrantNext(providerId: string): void {
-    const state = states.get(providerId);
-    if (state === undefined) return;
-    if (state.paused) return;
+  /**
+   * Grant queued waiters WITHOUT the usage gate (the fast path used when no
+   * `fetchUsage` is configured, or as the cooldown-only fallback when a poll
+   * returns no usage info). Grants while there is internal room
+   * (`inFlight < limit`). Synchronous. Re-sorts with {@link compareWaiters}
+   * (starred-workspace-first, then oldest-agent-first) before granting so a
+   * workspace starred AFTER an agent queued is re-evaluated.
+   */
+  function grantLoop(state: ProviderState, providerId: string): void {
     // Re-sort before granting: a workspace may have been starred/unstarred
     // since the waiters were enqueued, so priority may have changed.
     state.queue.sort(compareWaiters);
@@ -425,6 +424,10 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
   function grantOne(state: ProviderState, providerId: string): void {
     if (state.queue.length === 0) return;
     if (state.inFlight >= state.limit) return;
+    // Re-sort before picking the front: starred-workspace agents must be
+    // admitted first, even on the usage-gated path (a workspace may have been
+    // starred since the waiters were enqueued).
+    state.queue.sort(compareWaiters);
     const waiter = state.queue[0];
     if (waiter === undefined) return;
     state.queue.shift();
@@ -621,19 +624,16 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
 
       // Queue (starred-workspace-first, then oldest-agent-first).
       return new Promise<() => void>((resolve) => {
-        state.queue.push({ conversationId, promptStartedAt, resolve });
-        // Keep sorted ascending by promptStartedAt (oldest first).
-        state.queue.sort((a, b) => a.promptStartedAt - b.promptStartedAt);
+        state.queue.push({ conversationId, workspaceId, promptStartedAt, resolve });
+        // Keep sorted by priority (starred first, then oldest-agent-first).
+        // The queue is typically tiny (<20), so a simple sort is fine.
+        state.queue.sort(compareWaiters);
         // If the usage gate is active, ensure the fallback repoll timer is
         // armed (a release may not come for a while; the 1s timer covers an
         // upstream count that drops on its own).
         if (fetchUsage !== undefined) {
           armGateRepoll(providerId, state);
         }
-        state.queue.push({ conversationId, workspaceId, promptStartedAt, resolve });
-        // Keep sorted by priority (starred first, then oldest-agent-first).
-        // The queue is typically tiny (<20), so a simple sort is fine.
-        state.queue.sort(compareWaiters);
       });
     },
 
