@@ -30,7 +30,7 @@ const USAGE = `Usage:
   dispatch read <conversationId> [--server <url>]
   dispatch open <conversationId> [--server <url>]
   dispatch send <conversationId> --text "..." [--file <path>] [--queue] [--open] [--cwd <dir>] [--effort <level>] [--workspace <id>] [--server <url>]
-  dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--workspace <id>] [--server <url>] [--show-reasoning] [--open]
+  dispatch <modelName> --text "..." [--file <path>] [--cwd <dir>] [--conversation <id>] [--effort <level>] [--workspace <id>] [--title <title>] [--server <url>] [--show-reasoning] [--open]
   dispatch --help
 
 Effort levels: low, medium, high (default), xhigh, max`;

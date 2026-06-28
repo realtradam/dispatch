@@ -121,6 +121,23 @@ export interface ChatRequest {
    * defaultCwd = null).
    */
   readonly workspaceId?: string;
+
+  /**
+   * A human-readable title for the conversation tab — set at creation time
+   * (before the turn starts) via the conversation store's
+   * `setConversationTitle`, so the tab shows it immediately instead of the
+   * default derived from the first message (`"Untitled"` until the first
+   * append). Omit to keep the auto-derived title. When present, the value is
+   * trimmed server-side; a whitespace-only value is treated as absent
+   * (auto-derive). A non-string value → HTTP 400 `{ error }`.
+   *
+   * Backward compatible — clients that omit it are unaffected. Mirrors the
+   * dedicated `PUT /conversations/:id/title` endpoint but is atomic with
+   * conversation creation (no second round-trip), so the title is persisted
+   * before the turn's first message is appended (and thus before the tab is
+   * opened with `--open`).
+   */
+  readonly title?: string;
 }
 
 /**
