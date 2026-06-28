@@ -15,6 +15,7 @@ import { DEFAULT_TEMPLATE } from "@dispatch/system-prompt";
 import { createThroughputStore, dayKeyOf } from "@dispatch/throughput-store";
 import type {
   DeleteWorkspaceResponse,
+  QueueCancelResponse,
   QueuedMessage,
   QueueResponse,
   SystemPromptVariable,
@@ -273,6 +274,9 @@ function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
     enqueue() {
       return { startedTurn: false, queue: [] };
     },
+    cancelQueuedMessage() {
+      return { cancelled: false, queue: [] };
+    },
     closeConversation() {
       return { abortedTurn: false };
     },
@@ -309,6 +313,9 @@ function createCapturingOrchestrator(): SessionOrchestrator & {
     enqueue() {
       return { startedTurn: false, queue: [] };
     },
+    cancelQueuedMessage() {
+      return { cancelled: false, queue: [] };
+    },
     closeConversation() {
       return { abortedTurn: false };
     },
@@ -334,6 +341,9 @@ function createThrowingOrchestrator(error: Error): SessionOrchestrator {
     },
     enqueue() {
       return { startedTurn: false, queue: [] };
+    },
+    cancelQueuedMessage() {
+      return { cancelled: false, queue: [] };
     },
     closeConversation() {
       return { abortedTurn: false };
@@ -2066,6 +2076,142 @@ describe("POST /conversations/:id/queue", () => {
     const warnLogs = logger.records.filter((r) => r.level === "warn");
     expect(warnLogs.length).toBeGreaterThanOrEqual(1);
     expect(warnLogs[0]?.msg).toBe("conversations/queue: validation failed");
+  });
+});
+
+describe("DELETE /conversations/:id/queue/:messageId", () => {
+  it("when a message is cancelled → 200 + QueueCancelResponse (cancelled:true + post-cancel queue)", async () => {
+    const remaining: readonly QueuedMessage[] = [
+      { id: "q1", text: "kept", queuedAt: 1700000000000 },
+    ];
+    let received: { conversationId: string; messageId: string } | undefined;
+    const orchestrator: SessionOrchestrator = {
+      ...createFakeOrchestrator([]),
+      cancelQueuedMessage(input) {
+        received = input;
+        return { cancelled: true, queue: remaining };
+      },
+    };
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator,
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+
+    const res = await app.request("/conversations/conv1/queue/q2", {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as QueueCancelResponse;
+    expect(body.conversationId).toBe("conv1");
+    expect(body.cancelled).toBe(true);
+    expect(body.queue).toEqual(remaining);
+    // forwards the path conversationId + messageId
+    expect(received?.conversationId).toBe("conv1");
+    expect(received?.messageId).toBe("q2");
+  });
+
+  it("when the message is not in the queue → 200 cancelled:false (idempotent, not an error)", async () => {
+    const queue: readonly QueuedMessage[] = [
+      { id: "q1", text: "still-queued", queuedAt: 1700000000000 },
+    ];
+    const orchestrator: SessionOrchestrator = {
+      ...createFakeOrchestrator([]),
+      cancelQueuedMessage() {
+        return { cancelled: false, queue };
+      },
+    };
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator,
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+
+    const res = await app.request("/conversations/conv1/queue/missing", {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as QueueCancelResponse;
+    expect(body.cancelled).toBe(false);
+    expect(body.queue).toEqual(queue);
+  });
+
+  it("when the queue ext is not loaded → 200 cancelled:false, empty queue (degraded)", async () => {
+    const orchestrator: SessionOrchestrator = {
+      ...createFakeOrchestrator([]),
+      cancelQueuedMessage() {
+        return { cancelled: false, queue: [] };
+      },
+    };
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator,
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+
+    const res = await app.request("/conversations/conv1/queue/whatever", {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as QueueCancelResponse;
+    expect(body.cancelled).toBe(false);
+    expect(body.queue).toEqual([]);
+  });
+
+  it("delegates the cancel to the orchestrator (never reads the body)", async () => {
+    let calls = 0;
+    const orchestrator: SessionOrchestrator = {
+      ...createFakeOrchestrator([]),
+      cancelQueuedMessage() {
+        calls += 1;
+        return { cancelled: true, queue: [] };
+      },
+    };
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator,
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+
+    // No Content-Type / body — the endpoint takes the messageId from the path.
+    const res = await app.request("/conversations/conv-x/queue/m1", {
+      method: "DELETE",
+    });
+
+    expect(res.status).toBe(200);
+    expect(calls).toBe(1);
+  });
+
+  it("logs an info line on success and never logs the message text", async () => {
+    const logger = createFakeLogger();
+    const orchestrator: SessionOrchestrator = {
+      ...createFakeOrchestrator([]),
+      cancelQueuedMessage() {
+        return { cancelled: true, queue: [] };
+      },
+    };
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator,
+      credentialStore: createFakeCredentialStore([]),
+      logger,
+    });
+
+    await app.request("/conversations/conv1/queue/q-secret", { method: "DELETE" });
+
+    const infoLogs = logger.records.filter((r) => r.level === "info");
+    expect(infoLogs).toHaveLength(1);
+    expect(infoLogs[0]?.msg).toBe("conversations: cancelled queued message");
+    expect(infoLogs[0]?.attrs?.conversationId).toBe("conv1");
+    expect(infoLogs[0]?.attrs?.messageId).toBe("q-secret");
+    expect(infoLogs[0]?.attrs?.cancelled).toBe(true);
   });
 });
 

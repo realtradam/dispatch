@@ -75,6 +75,42 @@ export function drain(state: MessageQueueState, conversationId: string): QueuedM
 }
 
 /**
+ * Cancel: remove a SINGLE queued message by id from a conversation's queue so
+ * it never runs (never delivered as steering, never carried into a new turn).
+ * Returns the post-cancel queue snapshot (a fresh array copy). Idempotent — if
+ * no message with `messageId` exists in the conversation's queue (already
+ * drained/delivered, never existed, unknown conversation) the queue is
+ * unchanged and the returned snapshot simply does not contain it; the caller
+ * distinguishes "removed" from "not found" via the `cancelWithFlag` helper
+ * (this returns the snapshot only, like the other pure ops).
+ *
+ * The cancelled message is dropped entirely — it is NOT returned (the caller
+ * does not need it; the surface re-renders from the snapshot). Mutates `state`
+ * in place (splices the message out of the conversation's array).
+ */
+export function cancel(
+  state: MessageQueueState,
+  conversationId: string,
+  messageId: string,
+): QueuedMessage[] {
+  const existing = state.get(conversationId);
+  if (existing === undefined || existing.length === 0) {
+    return getQueue(state, conversationId);
+  }
+  const idx = existing.findIndex((m) => m.id === messageId);
+  if (idx === -1) {
+    return getQueue(state, conversationId);
+  }
+  existing.splice(idx, 1);
+  // If the queue is now empty, drop the key so `getQueue` stays a clean empty
+  // array (mirrors `drain` deleting the key on empty).
+  if (existing.length === 0) {
+    state.delete(conversationId);
+  }
+  return getQueue(state, conversationId);
+}
+
+/**
  * Combine drained messages' texts into a single steering string, joined by a
  * blank line (`\n\n`). Pure — the session-orchestrator builds the final
  * ChatMessage from this.
