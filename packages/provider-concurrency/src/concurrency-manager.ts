@@ -117,6 +117,15 @@ export interface ConcurrencyLimiter {
 export interface ConcurrencyService extends ConcurrencyLimiter {
   /** Set the concurrency limit for a provider (MANUAL — clears the auto-reduce notice). Creates the state if new. */
   setLimit(providerId: string, limit: number): void;
+  /**
+   * Restore a persisted limit on startup WITHOUT clearing the auto-reduce
+   * notice (Bug 3). Unlike {@link setLimit} (a manual user action that signals
+   * "the user took control"), this seeds state from disk: it applies the limit
+   * and, when `autoReducedFrom` is provided, re-marks the state as auto-reduced
+   * so the frontend banner survives a restart. Used by the extension's
+   * `loadLimits`/`loadAutoReduce` on activate.
+   */
+  restoreLimit(providerId: string, limit: number, autoReducedFrom?: number): void;
   /** Get the configured limit, or `undefined` when none. */
   getLimit(providerId: string): number | undefined;
   /** Remove the limit for a provider (makes it unlimited). */
@@ -216,6 +225,13 @@ export interface ConcurrencyManagerOpts {
   readonly onPause?: (providerId: string, durationMs: number) => void;
   /** Fired when a 429 adaptively reduces a provider's limit (for persistence + logging). */
   readonly onLimitReduced?: (providerId: string, newLimit: number, oldLimit: number) => void;
+  /**
+   * Fired when the injected `fetchUsage` throws (network/parse failure beyond the
+   * graceful-undefined path). The manager treats a thrown poll as "no usage info"
+   * (cooldown-only fallback) — this callback is for WARN-level logging only. The
+   * poll never becomes an unhandled rejection.
+   */
+  readonly onUsagePollError?: (providerId: string, err: unknown) => void;
 }
 
 /** Min interval between usage-gate fallback repolls (ms). The release trigger is immediate. */
@@ -277,14 +293,29 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
       released = true;
       state.slots.delete(id);
 
-      // Recycle the slot: decrement inFlight + attempt to grant the next waiter.
-      // With a release cooldown > 0, defer this by the cooldown duration so
-      // the upstream provider has time to decrement its concurrent_sessions
+      // Recycle the slot: free its inFlight count + attempt to grant the next
+      // waiter. With a release cooldown > 0, defer this by the cooldown duration
+      // so the upstream provider has time to decrement its concurrent_sessions
       // counter — preventing an N+1 overshoot from accounting lag. During the
       // cooldown, inFlight stays incremented, so new acquires queue.
       const recycle = () => {
-        state.inFlight--;
-        void tryGrantNext(providerId);
+        if (fetchUsage === undefined || state.queue.length === 0) {
+          // No usage gate, OR no one waiting (the lag window is irrelevant when
+          // there is no waiter to admit) → free the slot immediately. With no
+          // gate, also drain the queue (grant all that fit).
+          state.inFlight--;
+          if (fetchUsage === undefined) grantLoop(state, providerId);
+          return;
+        }
+        // Usage gate configured + a waiter exists → hold inFlight inflated
+        // DURING the poll window (gatePolling is set synchronously inside
+        // pollAndGrant, the inFlight decrement is deferred until the poll
+        // resolves). This closes the overshoot gap: a concurrent acquire arriving
+        // between the cooldown firing and the poll resolving sees the slot as
+        // still occupied (inFlight >= limit) and queues instead of fast-pathing.
+        // pollAndGrant(decrementOnPoll=true) decrements inFlight after observing
+        // the post-release upstream state, then admits one waiter if there is room.
+        void pollAndGrant(providerId, state, true);
       };
       if (state.cooldownMs > 0) {
         const timer = setTimeout(() => {
@@ -307,8 +338,9 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
 
   /**
    * Grant queued waiters WITHOUT the usage gate (the fast path used when no
-   * `fetchUsage` is configured, or after a poll confirmed upstream has room).
-   * Grants while there is internal room (`inFlight < limit`). Synchronous.
+   * `fetchUsage` is configured, or as the cooldown-only fallback when a poll
+   * returns no usage info). Grants while there is internal room
+   * (`inFlight < limit`). Synchronous.
    */
   function grantLoop(state: ProviderState, providerId: string): void {
     while (state.queue.length > 0 && state.inFlight < state.limit) {
@@ -326,15 +358,56 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
   }
 
   /**
+   * Admit exactly ONE queued waiter (the front of the queue), if there is
+   * internal room. Used by the usage-gated path so each admission is confirmed
+   * by a FRESH upstream poll — admitting multiple from a single (possibly stale)
+   * poll risks an N+1 overshoot when the upstream count lags. Additional waiters
+   * are admitted on subsequent repolls.
+   */
+  function grantOne(state: ProviderState, providerId: string): void {
+    if (state.queue.length === 0) return;
+    if (state.inFlight >= state.limit) return;
+    const waiter = state.queue[0];
+    if (waiter === undefined) return;
+    state.queue.shift();
+    const releaseFn = grantSlot(state, providerId, waiter.conversationId);
+    waiter.resolve(releaseFn);
+    // If the queue drained, disarm the fallback timer.
+    if (state.queue.length === 0 && state.gateRepollTimer !== undefined) {
+      clearTimeout(state.gateRepollTimer);
+      state.gateRepollTimer = undefined;
+    }
+  }
+
+  /**
+   * Invoke the injected `fetchUsage`, treating ANY thrown error as "no usage
+   * info available" (cooldown-only fallback) — so a throwing `getUsage()` never
+   * becomes an unhandled rejection. The `onUsagePollError` opt is fired for
+   * WARN-level logging. Returns `undefined` on throw (Bug 2 fix).
+   */
+  async function safeFetchUsage(providerId: string): Promise<ProviderUsage | undefined> {
+    if (fetchUsage === undefined) return undefined;
+    try {
+      return await fetchUsage(providerId);
+    } catch (err) {
+      opts.onUsagePollError?.(providerId, err);
+      return undefined;
+    }
+  }
+
+  /**
    * Drain the queue, gated on the upstream usage poll when `fetchUsage` is
-   * configured. Called from release (post-cooldown), setLimit, pause-expiry,
-   * and the repoll timer. Async because the usage poll is an injected I/O
+   * configured. Called from setLimit, pause-expiry, and the repoll timer (NOT
+   * from release — that goes through {@link recycleGated}, which holds inFlight
+   * inflated during the poll). Async because the usage poll is an injected I/O
    * effect; callers fire-and-forget the returned promise.
    *
-   * Only QUEUED agents are gated. The fast-path immediate grant in `acquire`
-   * (when `inFlight < limit`) is NOT gated — it fires only when there is
-   * clearly internal room, and the cooldown keeps `inFlight` inflated during
-   * the accounting-lag window so the fast-path does not fire then.
+   * The fast-path immediate grant in `acquire` (when `inFlight < limit`) is
+   * disabled while `gatePolling` is true — `acquire` queues instead, so a
+   * concurrent caller cannot sneak through the accounting-lag / poll window
+   * (anti-overshoot). When no poll is in flight the fast-path is safe: the
+   * cooldown keeps `inFlight` inflated during the lag window, and a recycle
+   * sets `gatePolling` synchronously before decrementing.
    *
    * Each successful poll admits at most ONE queued waiter (each admission pushes
    * the upstream count back toward the limit); additional waiters are admitted
@@ -364,28 +437,41 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
     await pollAndGrant(providerId, state);
   }
 
-  /** Poll upstream usage, then grant if there is headroom. */
-  async function pollAndGrant(providerId: string, state: ProviderState): Promise<void> {
+  /**
+   * Shared poll-then-admit. `decrementOnPoll` is true for the recycle path
+   * (the released slot's inFlight decrement is deferred until the poll resolves,
+   * holding inFlight inflated so concurrent acquires queue — anti-overshoot) and
+   * false for the drain path (setLimit/pause-expiry/repoll — no slot to account).
+   * Admits at most ONE waiter on a successful poll.
+   */
+  async function pollAndGrant(
+    providerId: string,
+    state: ProviderState,
+    decrementOnPoll = false,
+  ): Promise<void> {
     state.gatePolling = true;
     try {
-      const snapshot = await fetchUsage?.(providerId);
+      const snapshot = await safeFetchUsage(providerId);
+
+      // For the recycle path, the released slot is now truly freed (the poll
+      // has observed the post-release upstream state).
+      if (decrementOnPoll) {
+        state.inFlight--;
+      }
 
       // Conditions may have changed during the async poll — re-check.
       if (state.paused) return;
       if (state.queue.length === 0) return;
-      if (state.inFlight >= state.limit) return;
 
       if (snapshot === undefined) {
-        // No usage info available → fall back to cooldown-only (grant).
-        grantLoop(state, providerId);
+        // No usage info available → fall back to cooldown-only (grant one).
+        grantOne(state, providerId);
         return;
       }
 
       if (snapshot.concurrentSessions < state.limit) {
-        // Upstream has room — admit exactly ONE queued waiter (grantLoop will
-        // stop after one because granting increments inFlight toward limit, and
-        // each admission pushes upstream back toward the limit).
-        grantLoop(state, providerId);
+        // Upstream has room — admit exactly ONE queued waiter.
+        grantOne(state, providerId);
       }
       // else: upstream at/over limit → keep queued; repoll timer handles retry.
     } finally {
@@ -455,7 +541,19 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
       }
 
       if (!state.paused && state.inFlight < state.limit) {
-        return Promise.resolve(grantSlot(state, providerId, conversationId));
+        // Usage-gate anti-overshoot: while a recycle-poll is in flight, the
+        // inFlight count is momentarily unreliable (a released slot's decrement
+        // is deferred until the poll resolves — see pollAndGrant). A concurrent
+        // caller that fast-pathed now could overshoot the upstream limit before
+        // the poll confirms room. So route it through the queue instead; the
+        // in-flight poll will re-check (gateRepollRequested) and admit it once
+        // upstream confirms room. When no poll is in flight the fast-path is
+        // safe (the cooldown keeps inFlight inflated through the lag window).
+        if (fetchUsage !== undefined && state.gatePolling) {
+          // falls through to the queue path below
+        } else {
+          return Promise.resolve(grantSlot(state, providerId, conversationId));
+        }
       }
 
       // Cannot grant immediately — the request will be queued.
@@ -523,6 +621,29 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
         state.limit = limit;
         // A MANUAL limit set clears the auto-reduce notice (the user took control).
         clearAutoReduce(state);
+      }
+      // A higher limit may let queued requests through.
+      void tryGrantNext(providerId);
+    },
+
+    restoreLimit(providerId, limit, autoReducedFrom) {
+      // Startup restoration (Bug 3): seed state from disk WITHOUT the manual
+      // "user took control" semantics, so a persisted auto-reduced limit keeps
+      // its notice/banner across a restart. When autoReducedFrom is provided,
+      // re-mark the state as auto-reduced (rebuild the notice).
+      let state = states.get(providerId);
+      if (state === undefined) {
+        state = makeState(limit, seedCooldown(providerId));
+        states.set(providerId, state);
+      } else {
+        state.limit = limit;
+      }
+      if (autoReducedFrom !== undefined && autoReducedFrom > limit) {
+        state.autoReduced = true;
+        state.autoReducedFrom = autoReducedFrom;
+        state.notice =
+          `Concurrency limit auto-reduced to ${limit} after a 429 — ` +
+          "restore manually when ready.";
       }
       // A higher limit may let queued requests through.
       void tryGrantNext(providerId);
