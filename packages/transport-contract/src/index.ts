@@ -968,10 +968,26 @@ export interface TestComputerResponse {
  * level. The scheduler resets its timer after each run completes (not a fixed
  * wall-clock schedule); on backend restart it resumes scheduling for enabled
  * heartbeats.
+ *
+ * `inactiveOnly` (default `true`) gates each fire on the configured workspace
+ * having NO active agents (no conversation with status `"active"` or `"queued"`):
+ * the heartbeat stays quiet while the user is actively working, and only fires
+ * when the workspace is idle. Set `false` to fire unconditionally.
  */
 export interface HeartbeatConfig {
   /** Whether the heartbeat loop is active for this workspace. */
   readonly enabled: boolean;
+  /**
+   * When `true` (the default), the heartbeat SKIPS a fire when the configured
+   * workspace has any active agents — conversations whose persisted status is
+   * `"active"` (driving a turn) or `"queued"` (waiting on the message queue).
+   * The fire is silently skipped (no run is recorded); the scheduler re-arms
+   * and tries again at the next interval. When `false`, the heartbeat fires
+   * unconditionally regardless of workspace activity. The spawned heartbeat
+   * conversation lives in the DEDICATED heartbeat workspace, so it never
+   * counts as an "active agent" of the configured workspace (no self-block).
+   */
+  readonly inactiveOnly: boolean;
   /** Custom system prompt for the heartbeat AI (empty = no system prompt). */
   readonly systemPrompt: string;
   /** Task prompt sent as the first user message when the heartbeat fires. */
@@ -993,6 +1009,7 @@ export interface HeartbeatConfig {
  */
 export interface UpdateHeartbeatRequest {
   readonly enabled?: boolean;
+  readonly inactiveOnly?: boolean;
   readonly systemPrompt?: string;
   readonly taskPrompt?: string;
   readonly intervalMinutes?: number;

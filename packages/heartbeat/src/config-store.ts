@@ -7,6 +7,7 @@ import type { HeartbeatConfig, UpdateHeartbeatRequest } from "@dispatch/transpor
  */
 export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
   enabled: false,
+  inactiveOnly: true,
   systemPrompt: "",
   taskPrompt: "",
   intervalMinutes: 30,
@@ -38,6 +39,7 @@ export function applyConfigUpdate(
 ): HeartbeatConfig {
   const next: HeartbeatConfig = {
     enabled: update.enabled !== undefined ? update.enabled : current.enabled,
+    inactiveOnly: update.inactiveOnly !== undefined ? update.inactiveOnly : current.inactiveOnly,
     systemPrompt: update.systemPrompt !== undefined ? update.systemPrompt : current.systemPrompt,
     taskPrompt: update.taskPrompt !== undefined ? update.taskPrompt : current.taskPrompt,
     intervalMinutes:
@@ -72,6 +74,7 @@ export function createHeartbeatConfigStore(storage: StorageNamespace): Heartbeat
         const parsed = JSON.parse(raw) as Partial<HeartbeatConfig>;
         return {
           enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : false,
+          inactiveOnly: typeof parsed.inactiveOnly === "boolean" ? parsed.inactiveOnly : true,
           systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : "",
           taskPrompt: typeof parsed.taskPrompt === "string" ? parsed.taskPrompt : "",
           intervalMinutes:

@@ -116,6 +116,19 @@ export interface HeartbeatServiceDeps {
    * (against `conversationStore.getWorkspace`); tests inject a fake.
    */
   readonly getWorkspaceCwd?: (workspaceId: string) => Promise<string | null>;
+  /**
+   * Whether the configured workspace currently has any ACTIVE agents —
+   * conversations driving (or queued for) a turn. When `config.inactiveOnly`
+   * is `true`, the heartbeat SKIPS a fire while this returns `true` (the
+   * workspace is busy). The extension wires the real check against
+   * `conversationStore.listConversations({ workspaceId, status: ["active",
+   * "queued"] })` (the configured workspace's persisted statuses — the
+   * orchestrator sets `"active"` on turn start, `"idle"` on settle); tests
+   * inject a fake. When omitted, `false` (no active agents → never skip) so
+   * the inactive-only feature degrades off cleanly — the heartbeat fires
+   * unconditionally, matching the pre-inactive-only behavior.
+   */
+  readonly hasActiveAgents?: (workspaceId: string) => Promise<boolean>;
 }
 
 interface ActiveRun {
@@ -143,6 +156,10 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
   // conversation's workspace). The extension wires the real getter so the
   // turn pins to the CONFIGURED workspace's defaultCwd; tests inject a fake.
   const getWorkspaceCwd = deps.getWorkspaceCwd ?? (() => Promise.resolve(null));
+  // Default: no active agents (never skip) — the inactive-only feature degrades
+  // off cleanly. The extension wires the real check (against the conversation
+  // store's persisted statuses); tests inject a fake.
+  const hasActiveAgents = deps.hasActiveAgents ?? (() => Promise.resolve(false));
 
   // runId → active-run tracking (in-memory; the durable record lives in the
   // run store). Used to (a) map a stop request to its conversation, and
@@ -159,6 +176,18 @@ export function createHeartbeatService(deps: HeartbeatServiceDeps): HeartbeatSer
     const config = await configStore.get(workspaceId);
     // Race: disabled/disarmed between the timer firing and now.
     if (!config.enabled) return;
+
+    // inactiveOnly: skip this fire when the configured workspace has active
+    // agents (a conversation driving or queued for a turn). The fire is
+    // silently skipped — no run is recorded — and the scheduler re-arms to
+    // try again at the next interval. The spawned heartbeat conversation lives
+    // in the DEDICATED heartbeat workspace, so it never self-blocks (a prior
+    // in-flight heartbeat run is NOT an active agent of the configured
+    // workspace). Disabled (inactiveOnly === false) fires unconditionally.
+    if (config.inactiveOnly && (await hasActiveAgents(workspaceId))) {
+      logger?.info("heartbeat: fire skipped — workspace has active agents", { workspaceId });
+      return;
+    }
 
     const conversationId = generateId();
     const runId = generateId();

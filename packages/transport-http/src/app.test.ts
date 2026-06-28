@@ -539,6 +539,35 @@ function createFakeHeartbeatService(nextRunAt: string | null): HeartbeatService 
   };
 }
 
+/**
+ * A HeartbeatService fake that CAPTURES the updateConfig call (workspaceId +
+ * partial update) and returns a config echoing the captured update on top of
+ * the defaults — for asserting the PUT /workspaces/:id/heartbeat route forwards
+ * validated fields to the service.
+ */
+function createCapturingHeartbeatService(): HeartbeatService & {
+  readonly captured: { workspaceId: string; update: Record<string, unknown> }[];
+} {
+  const captured: { workspaceId: string; update: Record<string, unknown> }[] = [];
+  const svc: HeartbeatService = {
+    getConfig: async () => DEFAULT_HEARTBEAT_CONFIG,
+    async updateConfig(workspaceId, update) {
+      captured.push({ workspaceId, update: update as Record<string, unknown> });
+      return { ...DEFAULT_HEARTBEAT_CONFIG, ...update };
+    },
+    listRuns: async () => [],
+    stopRun: async () => ({ ok: true }),
+    startAll: async () => {},
+    stopAll: () => {},
+    nextRunAt: async () => null,
+  };
+  return Object.assign(svc, {
+    get captured() {
+      return captured;
+    },
+  });
+}
+
 const noopLogger = createFakeLogger();
 
 describe("GET /health", () => {
@@ -4539,5 +4568,66 @@ describe("GET /workspaces/:id/heartbeat/next-run", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { nextRunAt: string | null };
     expect(body.nextRunAt).toBeNull();
+  });
+});
+
+describe("PUT /workspaces/:id/heartbeat", () => {
+  it("forwards inactiveOnly to the service and echoes it in the response", async () => {
+    const hb = createCapturingHeartbeatService();
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      heartbeatService: hb,
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/ws-1/heartbeat", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inactiveOnly: false }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { inactiveOnly: boolean };
+    expect(body.inactiveOnly).toBe(false);
+    expect(hb.captured).toHaveLength(1);
+    expect(hb.captured[0]?.workspaceId).toBe("ws-1");
+    expect(hb.captured[0]?.update.inactiveOnly).toBe(false);
+  });
+
+  it("rejects a non-boolean inactiveOnly with 400", async () => {
+    const hb = createCapturingHeartbeatService();
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      heartbeatService: hb,
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/ws-1/heartbeat", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inactiveOnly: "yes" }),
+    });
+    expect(res.status).toBe(400);
+    // The service was NOT called (validation happened first).
+    expect(hb.captured).toHaveLength(0);
+  });
+
+  it("omits inactiveOnly from the forwarded update when absent (leaves it unchanged)", async () => {
+    const hb = createCapturingHeartbeatService();
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      heartbeatService: hb,
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/ws-1/heartbeat", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(hb.captured[0]?.update.inactiveOnly).toBeUndefined();
   });
 });

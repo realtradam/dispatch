@@ -1673,6 +1673,16 @@ export function createApp(opts: CreateServerOptions): Hono {
       update.enabled = obj.enabled;
     }
 
+    // inactiveOnly: when true (the default), the heartbeat skips a fire while
+    // the configured workspace has active agents. A boolean; absent leaves it
+    // unchanged.
+    if (obj.inactiveOnly !== undefined) {
+      if (typeof obj.inactiveOnly !== "boolean") {
+        return c.json({ error: "Field 'inactiveOnly' must be a boolean" }, 400);
+      }
+      update.inactiveOnly = obj.inactiveOnly;
+    }
+
     if (obj.systemPrompt !== undefined) {
       if (typeof obj.systemPrompt !== "string") {
         return c.json({ error: "Field 'systemPrompt' must be a string" }, 400);
