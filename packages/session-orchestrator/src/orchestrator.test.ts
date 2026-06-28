@@ -3873,6 +3873,194 @@ describe("system prompt: regular turn flow", () => {
   });
 });
 
+describe("title (summon-title): deferred until after workspace initialization", () => {
+  // Regression: an earlier implementation set the title in the HTTP /chat
+  // route BEFORE the turn started, which pre-created the conversation meta
+  // and made the orchestrator's `meta === null` newness check falsely report
+  // an EXISTING conversation — so ensureWorkspace / setWorkspaceId / the
+  // first-turn system-prompt construct were ALL skipped. The fix defers the
+  // title set into workspaceSetupPromise, AFTER the newness check + workspace
+  // assignment, so a titled new conversation is still initialized correctly.
+
+  /** Wrap the in-memory store to record the ORDER of init-relevant calls. */
+  function createCallRecordingStore() {
+    const base = createInMemoryStore();
+    const calls: string[] = [];
+    const titleCalls: { conversationId: string; title: string }[] = [];
+    return {
+      store: {
+        ...base,
+        async getConversationMeta(conversationId: string) {
+          calls.push(`getMeta:${conversationId}`);
+          return base.getConversationMeta(conversationId);
+        },
+        async ensureWorkspace(id: string) {
+          calls.push(`ensureWorkspace:${id}`);
+          return base.ensureWorkspace(id);
+        },
+        async setWorkspaceId(conversationId: string, workspaceId: string) {
+          calls.push(`setWorkspaceId:${workspaceId}`);
+          await base.setWorkspaceId(conversationId, workspaceId);
+        },
+        async setConversationTitle(conversationId: string, title: string) {
+          calls.push(`setTitle:${title}`);
+          titleCalls.push({ conversationId, title });
+          await base.setConversationTitle(conversationId, title);
+        },
+      } as ConversationStore,
+      calls,
+      titleCalls,
+    };
+  }
+
+  it("titled new conversation: workspace assigned, system prompt constructed, title set", async () => {
+    const { store, calls, titleCalls } = createCallRecordingStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captureRunTurn } = createCapturingRunTurn();
+    const constructCalls: string[] = [];
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+      resolveSystemPrompt: () =>
+        createFakeSystemPromptService(async (conversationId) => {
+          constructCalls.push(conversationId);
+          return "CONSTRUCTED_PROMPT";
+        }),
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-title-new",
+      text: "hi",
+      onEvent: () => {},
+      title: "My Task",
+      workspaceId: "my-workspace",
+    });
+
+    // The bug: workspace init was skipped. It must NOT be.
+    expect(calls).toContain("ensureWorkspace:my-workspace");
+    expect(calls).toContain("setWorkspaceId:my-workspace");
+    // First-turn system prompt construct runs (proves isNewConversation was
+    // true — the newness check was not fooled by a pre-created meta).
+    expect(constructCalls).toEqual(["conv-title-new"]);
+    // The title is persisted.
+    expect(titleCalls).toEqual([{ conversationId: "conv-title-new", title: "My Task" }]);
+  });
+
+  it("title is set AFTER the newness check + workspace assignment (order)", async () => {
+    const { store, calls } = createCallRecordingStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captureRunTurn } = createCapturingRunTurn();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-title-order",
+      text: "hi",
+      onEvent: () => {},
+      title: "Ordered",
+    });
+
+    const getMetaIdx = calls.findIndex((c) => c.startsWith("getMeta:"));
+    const ensureIdx = calls.findIndex((c) => c.startsWith("ensureWorkspace:"));
+    const setWsIdx = calls.findIndex((c) => c.startsWith("setWorkspaceId:"));
+    const setTitleIdx = calls.findIndex((c) => c.startsWith("setTitle:"));
+    expect(getMetaIdx).toBeGreaterThanOrEqual(0);
+    expect(ensureIdx).toBeGreaterThan(getMetaIdx);
+    expect(setWsIdx).toBeGreaterThan(ensureIdx);
+    expect(setTitleIdx).toBeGreaterThan(setWsIdx);
+  });
+
+  it("no title: setConversationTitle is not called", async () => {
+    const { store, calls } = createCallRecordingStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captureRunTurn } = createCapturingRunTurn();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-no-title",
+      text: "hi",
+      onEvent: () => {},
+    });
+
+    expect(calls.some((c) => c.startsWith("setTitle:"))).toBe(false);
+  });
+
+  it("existing conversation with a title: workspace NOT re-assigned, title still set", async () => {
+    const { store, calls, titleCalls } = createCallRecordingStore();
+    // Seed an existing conversation (meta non-null, workspace already set).
+    await store.setWorkspaceId("conv-title-existing", "prior-workspace");
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captureRunTurn } = createCapturingRunTurn();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-title-existing",
+      text: "hi",
+      onEvent: () => {},
+      title: "Renamed",
+    });
+
+    // Existing conversation: workspace init must not run again.
+    expect(calls.some((c) => c.startsWith("ensureWorkspace:"))).toBe(false);
+    // But the title is still applied (rename on an existing conversation).
+    expect(titleCalls).toEqual([{ conversationId: "conv-title-existing", title: "Renamed" }]);
+  });
+
+  it("turn still completes if setConversationTitle throws", async () => {
+    const base = createInMemoryStore();
+    const store: ConversationStore = {
+      ...base,
+      async setConversationTitle() {
+        throw new Error("title store unavailable");
+      },
+    };
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-title-throws",
+      text: "hi",
+      onEvent: () => {},
+      title: "Resilient",
+    });
+
+    // The turn ran despite the title-set failure.
+    expect(captured).toHaveLength(1);
+  });
+});
+
 describe("system prompt: compaction flow", () => {
   function seedHistory(
     store: ReturnType<typeof createInMemoryStore>,

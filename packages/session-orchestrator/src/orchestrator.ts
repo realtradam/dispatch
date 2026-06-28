@@ -131,6 +131,16 @@ export interface StartTurnInput {
    * system-prompt service when loaded).
    */
   readonly systemPrompt?: string;
+  /**
+   * A human-readable title for the conversation tab. When provided, it is
+   * persisted via `setConversationTitle` AFTER the new-conversation workspace
+   * setup resolves (so the `meta === null` newness detection still fires and
+   * `ensureWorkspace` / `setWorkspaceId` / first-turn system-prompt
+   * construction are NOT skipped) and BEFORE the first message append (so the
+   * append's auto-title does not overwrite it). Omit to keep the auto-derived
+   * title. The caller is responsible for trimming/validation.
+   */
+  readonly title?: string;
 }
 
 export type StartTurnResult =
@@ -370,6 +380,8 @@ export interface SessionOrchestrator {
     systemPrompt?: string;
     /** Images attached to this turn — see {@link StartTurnInput.images}. */
     images?: readonly ImageInput[];
+    /** Conversation tab title — see {@link StartTurnInput.title}. */
+    title?: string;
   }): Promise<void>;
 }
 
@@ -548,6 +560,7 @@ export function createSessionOrchestrator(
     workspaceId: string,
     systemPromptOverride: string | undefined,
     images: readonly ImageInput[] | undefined,
+    title: string | undefined,
   ): void {
     const turnId = generateTurnId();
     const promptStartedAt = deps.now?.() ?? Date.now();
@@ -567,14 +580,34 @@ export function createSessionOrchestrator(
     // The newness flag is also reused to decide whether to construct
     // (first turn) or get (subsequent turn) the system prompt — see the
     // providerOpts assembly below.
+    //
+    // An explicit `title` (e.g. the CLI `--title` flag) is persisted HERE,
+    // AFTER the workspace setup resolves — deliberately NOT before the turn.
+    // Setting it earlier (e.g. in the HTTP route) would pre-create the meta
+    // row, make `meta !== null`, and fool this newness check into skipping
+    // `ensureWorkspace` / `setWorkspaceId` / first-turn system-prompt
+    // construction. By deferring it to here, the title lands after the
+    // workspace is assigned but BEFORE the first message append (so the
+    // append's auto-title sees a non-"Untitled" title and preserves it).
     const workspaceSetupPromise = (async (): Promise<boolean> => {
       const meta = await deps.conversationStore.getConversationMeta(conversationId);
       if (meta === null) {
         await deps.conversationStore.ensureWorkspace(workspaceId);
         await deps.conversationStore.setWorkspaceId(conversationId, workspaceId);
-        return true;
       }
-      return false;
+      if (title !== undefined) {
+        // Best-effort: a title-set failure must NOT break the turn (the
+        // workspace setup above already succeeded). Log and continue — the
+        // append's auto-derived title applies instead.
+        try {
+          await deps.conversationStore.setConversationTitle(conversationId, title);
+        } catch (err) {
+          deps.logger?.child({ conversationId }).warn("orchestrator: title set failure", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      return meta === null;
     })();
 
     // ALWAYS resolve the effective cwd through getEffectiveCwd, passing the
@@ -1021,6 +1054,7 @@ export function createSessionOrchestrator(
       workspaceId,
       systemPrompt,
       images,
+      title,
     }) {
       if (activeTurns.has(conversationId)) {
         return { started: false, reason: "already-active" };
@@ -1035,6 +1069,7 @@ export function createSessionOrchestrator(
         workspaceId ?? "default",
         systemPrompt,
         images,
+        title,
       );
       const turn = activeTurns.get(conversationId);
       const turnId = turn !== undefined ? turn.turnId : "";
@@ -1140,6 +1175,7 @@ export function createSessionOrchestrator(
       workspaceId,
       systemPrompt,
       images,
+      title,
     }) {
       const turnInput: StartTurnInput = {
         conversationId,
@@ -1151,6 +1187,7 @@ export function createSessionOrchestrator(
         ...(workspaceId !== undefined ? { workspaceId } : {}),
         ...(systemPrompt !== undefined ? { systemPrompt } : {}),
         ...(images !== undefined ? { images } : {}),
+        ...(title !== undefined ? { title } : {}),
       };
       const result = orchestrator.startTurn(turnInput);
       if (!result.started) {
