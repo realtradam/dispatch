@@ -19,6 +19,7 @@ import type {
   TurnMetrics,
 } from "@dispatch/kernel";
 import { createLogger, runTurn } from "@dispatch/kernel";
+import { createMessageQueueService } from "@dispatch/message-queue";
 import type { SystemPromptService } from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
 import {
@@ -4347,6 +4348,124 @@ describe("in-flight compaction", () => {
     if ("error" in manual) {
       expect(manual.error).not.toBe("conversation is generating");
     }
+  });
+
+  it("steering messages are persisted and survive in-flight compaction — the store and the LLM's context stay aligned (Bug A + B)", async () => {
+    // Regression test for the two critical bugs:
+    //  A) drainSteering injected steering into the kernel's in-memory messages
+    //     but never persisted it → the user could never see it, and
+    //     compaction (loading the store) scrubbed it.
+    //  B) compaction sliced the store and the kernel's messages independently;
+    //     the unpersisted steering offset the slices → DB and LLM dropped
+    //     DIFFERENT messages (structural divergence).
+    // Fix: drainSteering persists (awaited); compaction uses the kernel's LIVE
+    // messages array, so the store write and the kernel's replacement use the
+    // SAME recent slice → aligned, and the steering is retained.
+    const store = createInMemoryStore();
+    seedHistory(store, "conv-align", 15); // > keepLastN(10) → compactable
+    const queue = createMessageQueueService({
+      id: () => `q-${Math.random().toString(36).slice(2, 8)}`,
+      now: () => 1000,
+      notify: () => {},
+    });
+    queue.enqueue("conv-align", "STEER MID-TURN"); // drained at step 0's boundary
+
+    // contextWindow 1000, percent 85 → threshold 850. Step 0 usage 900 → fire.
+    const { provider, capturedMessages } = createScriptedCapturingProvider([
+      [
+        { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+        { type: "usage", usage: { inputTokens: 900, outputTokens: 10 } },
+        { type: "finish", reason: "tool-calls" },
+      ],
+      // Compaction summary call:
+      [
+        { type: "text-delta", delta: "ALIGN SUMMARY" },
+        { type: "finish", reason: "stop" },
+      ],
+      // Step 1 (post-compaction) — the turn continues:
+      [
+        { type: "text-delta", delta: "done" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+
+    const compactedEvents: ConversationCompactedPayload[] = [];
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [echoTool()],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveModel: () => ({ provider, model: "model" }),
+      resolveModelInfo: async () => ({ id: "test/model", contextWindow: 1000 }),
+      resolveQueue: () => queue,
+      runTurn,
+      emit: (hook, payload) => {
+        if (hook === conversationCompacted) {
+          compactedEvents.push(payload as ConversationCompactedPayload);
+        }
+      },
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-align",
+      text: "keep working overnight",
+      onEvent: () => {},
+      modelName: "test/model",
+    });
+
+    // Bug A: the steering message was PERSISTED to the store (the user CAN see
+    // it). It is either retained in the kept recent slice or captured in the
+    // summary; either way it must be present in the store, not lost.
+    expect(compactedEvents).toHaveLength(1);
+    const stored = store.data.get("conv-align") ?? [];
+    // The compacted history begins with the summary system message.
+    expect(stored[0]?.role).toBe("system");
+    expect((stored[0]?.chunks[0] as { text?: string } | undefined)?.text).toContain(
+      "ALIGN SUMMARY",
+    );
+    // The steering message survived in the kept recent slice (it was the most
+    // recent user message before compaction, so it is within keepLastN=10).
+    const storedSteering = stored.find(
+      (m) =>
+        m.role === "user" && m.chunks.some((c) => c.type === "text" && c.text === "STEER MID-TURN"),
+    );
+    expect(storedSteering).toBeDefined();
+
+    // Bug B: the store and the LLM's context are ALIGNED. The provider's
+    // post-compaction call (captured[2]) is the kernel's working history AFTER
+    // compaction replaced it. The store was written with the SAME compacted
+    // history, then step 1's assistant output was appended on top. So the
+    // kernel's view (captured[2]) must be an exact PREFIX of the store — same
+    // summary, same recent slice, same steering at the same index. (Before the
+    // fix, the store dropped the steering while the kernel kept it, so the two
+    // diverged structurally.)
+    const step1Messages = capturedMessages[2] ?? [];
+    expect(step1Messages[0]?.role).toBe("system"); // summary heads both
+    const kernelSteering = step1Messages.find(
+      (m) =>
+        m.role === "user" && m.chunks.some((c) => c.type === "text" && c.text === "STEER MID-TURN"),
+    );
+    expect(kernelSteering).toBeDefined();
+    // The kernel's post-compaction history is an exact PREFIX of the store
+    // (the store then has step 1's appended assistant output after it). Same
+    // length, same roles in order, same steering index => structural alignment.
+    expect(stored.length).toBeGreaterThanOrEqual(step1Messages.length);
+    const storePrefix = stored.slice(0, step1Messages.length);
+    expect(storePrefix).toHaveLength(step1Messages.length);
+    for (let i = 0; i < step1Messages.length; i++) {
+      expect(storePrefix[i]?.role).toBe(step1Messages[i]?.role);
+    }
+    const storeSteerIdx = storePrefix.findIndex(
+      (m) =>
+        m.role === "user" && m.chunks.some((c) => c.type === "text" && c.text === "STEER MID-TURN"),
+    );
+    const kernelSteerIdx = step1Messages.findIndex(
+      (m) =>
+        m.role === "user" && m.chunks.some((c) => c.type === "text" && c.text === "STEER MID-TURN"),
+    );
+    expect(kernelSteerIdx).toBe(storeSteerIdx);
+    expect(kernelSteerIdx).toBeGreaterThanOrEqual(0);
   });
 });
 

@@ -844,17 +844,33 @@ export function createSessionOrchestrator(
         const drainSteering =
           queue === undefined
             ? undefined
-            : (): readonly ChatMessage[] => {
+            : async (): Promise<readonly ChatMessage[]> => {
                 const queued = queue.drain(conversationId);
                 if (queued.length === 0) return [];
                 const steerText = queued.map((q) => q.text).join("\n\n");
+                const steeringMessage: ChatMessage = {
+                  role: "user",
+                  chunks: [{ type: "text", text: steerText }],
+                };
+                // Persist the injected steering message to the store as part
+                // of the SAME critical section as the injection, so it is
+                // never lost. Without this, the message would live only in
+                // the kernel's in-memory messages array (never persisted),
+                // so a user could never see it — and in-flight compaction
+                // (which loads the store) would scrub it. A fire-and-forget
+                // append would race with the next step's `onStepComplete`
+                // append and collide on the store's seq counter, so we
+                // `await` it (the kernel awaits drainSteering). Errors
+                // propagate (a DB failure ends the turn, matching
+                // `onStepComplete`'s behavior).
+                await deps.conversationStore.append(conversationId, [steeringMessage]);
                 emitToHub(conversationId, {
                   type: "steering",
                   conversationId,
                   turnId,
                   text: steerText,
                 });
-                return [{ role: "user", chunks: [{ type: "text", text: steerText }] }];
+                return [steeringMessage];
               };
 
         // Vision handoff: transform the message list for the provider. When the
@@ -953,7 +969,12 @@ export function createSessionOrchestrator(
                 emit: deps.emit ?? noopEmit,
               },
               conversationId,
-              { keepLastN, modelName: effectiveModelName },
+              // Pass the kernel's LIVE messages array (not a store reload):
+              // it includes mid-turn steering messages (now persisted by
+              // drainSteering) and is the authoritative prompt state. Using it
+              // for the split keeps the store write and the kernel's
+              // replacement aligned (same recent slice) — no DB↔LLM divergence.
+              { keepLastN, modelName: effectiveModelName, messages },
             );
             if ("error" in outcome) {
               turnLogger?.warn("compaction:in-flight:skipped", {
@@ -963,14 +984,11 @@ export function createSessionOrchestrator(
               });
               return; // too short / empty summary / unknown model → no replacement
             }
-            // Replace the kernel's running history with the summary + the
-            // kernel's OWN most-recent N messages. Using the kernel's messages
-            // (not the store's) preserves mid-turn steering messages and the
-            // vision-transformed provider view the kernel already holds — no
-            // re-transcription needed. The STORE was updated by performCompaction
-            // with the canonical (un-transformed) recent messages.
-            const recent = messages.slice(messages.length - keepLastN);
-            return [outcome.summaryMessage, ...recent];
+            // Return the compacted history the kernel should adopt. This is
+            // EXACTLY what performCompaction wrote to the store
+            // ([summary, ...recent-from-live]), so the kernel's working
+            // history and the store stay byte-aligned.
+            return outcome.compactedMessages;
           },
         };
 
@@ -1435,15 +1453,33 @@ interface PerformCompactionResult {
    * build the kernel's replacement history with the SAME summary object.
    */
   readonly summaryMessage: ChatMessage;
+  /**
+   * The full compacted history `[summaryMessage, ...recentKept]` exactly as
+   * written to the store. The in-flight caller returns this to the kernel so
+   * the kernel's working history and the store stay byte-aligned (the same
+   * `recentKept` slice — taken from the caller-supplied live `messages` — is
+   * used for BOTH the store write and this return value).
+   */
+  readonly compactedMessages: readonly ChatMessage[];
 }
 
 /**
- * The shared compaction core: load the conversation history from the store,
- * summarize the oldest `history.length - keepLastN` messages via a provider
- * stream, fork the full pre-compaction history to an archive (non-destructive),
- * and replace the live history with `[summaryMessage, ...recentKept]`. Emits
- * `conversationCompacted`. Returns the result (incl. the `summaryMessage`) or an
- * error object.
+ * The shared compaction core: summarize the oldest `history.length -
+ * keepLastN` messages via a provider stream, fork the full pre-compaction
+ * history to an archive (non-destructive), and replace the live history with
+ * `[summaryMessage, ...recentKept]`. Emits `conversationCompacted`. Returns the
+ * result (incl. the `summaryMessage` + the `compactedMessages`) or an error.
+ *
+ * History source: when `opts.messages` is provided (the in-flight path), it is
+ * used as the authoritative history — this is the kernel's LIVE messages array,
+ * which includes mid-turn steering messages (and the vision-transformed
+ * provider view) that a store reload could miss (the steering persist may not
+ * have completed, or — before this fix — was never done at all). Using the live
+ * array keeps the store write and the kernel's replacement aligned (same
+ * `recentKept` slice), avoiding the DB↔LLM structural divergence where
+ * independent slices dropped different messages. When `opts.messages` is
+ * omitted (the post-seal/manual `compact()` path — the turn has ended, so the
+ * store is stable), the history is loaded from the store.
  *
  * Performs NO active-conversation guard and NO threshold check — those are the
  * callers' policy. No-ops (returns an error) when the conversation is too
@@ -1452,9 +1488,16 @@ interface PerformCompactionResult {
 async function performCompaction(
   deps: PerformCompactionDeps,
   conversationId: string,
-  opts: { readonly keepLastN?: number; readonly modelName?: string },
+  opts: {
+    readonly keepLastN?: number;
+    readonly modelName?: string;
+    /** The kernel's live messages array (in-flight path). Omit to load the store (post-seal/manual). */
+    readonly messages?: readonly ChatMessage[];
+  },
 ): Promise<PerformCompactionResult | { readonly error: string }> {
-  const history = await deps.conversationStore.load(conversationId);
+  // Use the caller-supplied live messages (in-flight) or load the store
+  // (post-seal/manual — the store is stable once the turn has ended).
+  const history = opts.messages ?? (await deps.conversationStore.load(conversationId));
   const keepLastN = opts?.keepLastN ?? DEFAULT_KEEP_LAST_N;
 
   if (history.length <= keepLastN) {
@@ -1556,7 +1599,10 @@ async function performCompaction(
   const archiveId = crypto.randomUUID();
   await deps.conversationStore.forkHistory(conversationId, archiveId);
 
-  // Replace history: [system: summary] + recent messages
+  // Replace history: [system: summary] + the recent kept messages. `toKeep`
+  // is sliced from the caller-supplied live `messages` (in-flight) — the SAME
+  // slice returned below as `compactedMessages` — so the store and the kernel's
+  // working history stay byte-aligned (same messages kept/dropped).
   const summaryMessage: ChatMessage = {
     role: "system",
     chunks: [
@@ -1567,7 +1613,8 @@ async function performCompaction(
     ],
   };
 
-  await deps.conversationStore.replaceHistory(conversationId, [summaryMessage, ...toKeep]);
+  const compactedMessages: readonly ChatMessage[] = [summaryMessage, ...toKeep];
+  await deps.conversationStore.replaceHistory(conversationId, compactedMessages);
   await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
 
   deps.emit(conversationCompacted, {
@@ -1583,6 +1630,7 @@ async function performCompaction(
     messagesSummarized: toSummarize.length,
     messagesKept: toKeep.length,
     summaryMessage,
+    compactedMessages,
   };
 }
 
