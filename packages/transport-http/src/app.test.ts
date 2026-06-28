@@ -799,6 +799,154 @@ describe("POST /chat", () => {
     expect(cap.received?.modelName).toBeUndefined();
     expect(cap.received?.cwd).toBeUndefined();
   });
+
+  it("sets the conversation title from the request before the turn", async () => {
+    const calls: { conversationId: string; title: string }[] = [];
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setConversationTitle(conversationId, title) {
+        calls.push({ conversationId, title });
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+    });
+
+    const res = await app.request("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hi", conversationId: "conv1", title: "My Task" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(calls).toEqual([{ conversationId: "conv1", title: "My Task" }]);
+  });
+
+  it("forwards a trimmed title to setConversationTitle", async () => {
+    const calls: { conversationId: string; title: string }[] = [];
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setConversationTitle(conversationId, title) {
+        calls.push({ conversationId, title });
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+    });
+
+    const res = await app.request("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hi", conversationId: "conv1", title: "  spaced  " }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(calls).toEqual([{ conversationId: "conv1", title: "spaced" }]);
+  });
+
+  it("does not call setConversationTitle when title is omitted", async () => {
+    let setTitleCalled = false;
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setConversationTitle() {
+        setTitleCalled = true;
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+    });
+
+    const res = await app.request("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hi", conversationId: "conv1" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setTitleCalled).toBe(false);
+  });
+
+  it("does not call setConversationTitle for a whitespace-only title", async () => {
+    let setTitleCalled = false;
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setConversationTitle() {
+        setTitleCalled = true;
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+    });
+
+    const res = await app.request("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hi", conversationId: "conv1", title: "   " }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setTitleCalled).toBe(false);
+  });
+
+  it("returns 400 when title is not a string", async () => {
+    let setTitleCalled = false;
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setConversationTitle() {
+        setTitleCalled = true;
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+    });
+
+    const res = await app.request("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hi", conversationId: "conv1", title: 42 }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("title");
+    expect(setTitleCalled).toBe(false);
+  });
+
+  it("proceeds with the turn even if setConversationTitle throws", async () => {
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setConversationTitle() {
+        throw new Error("store unavailable");
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([
+        { type: "done", conversationId: "conv1", turnId: "t1", reason: "stop" },
+      ]),
+      credentialStore: createFakeCredentialStore([]),
+    });
+
+    const res = await app.request("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hi", conversationId: "conv1", title: "My Task" }),
+    });
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text.trim().split("\n")).toHaveLength(1);
+  });
 });
 
 describe("POST /chat/warm", () => {
