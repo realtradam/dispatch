@@ -10,6 +10,7 @@ export type { QueuedMessage, QueuePayload } from "@dispatch/wire";
 export { extension, manifest } from "./extension.js";
 export {
   buildQueueSpec,
+  cancel,
   combine,
   drain,
   enqueue,

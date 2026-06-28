@@ -9,6 +9,7 @@
 
 import type { SurfaceContext, SurfaceRegistry } from "@dispatch/surface-registry";
 import type {
+  ChatQueueCancelMessage,
   ChatQueueMessage,
   ChatSendMessage,
   ChatSubscribeMessage,
@@ -99,6 +100,20 @@ export interface ChatQueueRouteResult {
   readonly workspaceId?: string;
 }
 
+/**
+ * The effect a validated chat.queue.cancel should produce. The shell calls
+ * `orchestrator.cancelQueuedMessage({ conversationId, messageId })` and emits
+ * NOTHING back (fire-and-forget): success is confirmed by the message-queue
+ * SURFACE updating (the cancelled message leaves the snapshot). Cancelling a
+ * message that is no longer queued is a silent no-op (no surface update, no
+ * error). Mirrors `ChatQueueRouteResult`'s fire-and-forget style.
+ */
+export interface ChatQueueCancelRouteResult {
+  readonly kind: "chat-queue-cancel";
+  readonly conversationId: string;
+  readonly messageId: string;
+}
+
 /** The effect any client WS message should produce. */
 export type RouteResult =
   | SurfaceRouteResult
@@ -106,7 +121,8 @@ export type RouteResult =
   | ChatRouteError
   | ChatSubscribeRouteResult
   | ChatUnsubscribeRouteResult
-  | ChatQueueRouteResult;
+  | ChatQueueRouteResult
+  | ChatQueueCancelRouteResult;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -152,6 +168,8 @@ export function routeClientMessage(
       return handleChatUnsubscribe(msg);
     case "chat.queue":
       return handleChatQueue(msg);
+    case "chat.queue.cancel":
+      return handleChatQueueCancel(msg);
   }
 }
 
@@ -250,6 +268,36 @@ function handleChatQueue(msg: ChatQueueMessage): ChatQueueRouteResult | ChatRout
     conversationId: msg.conversationId,
     text: msg.text,
     ...(msg.workspaceId !== undefined ? { workspaceId: msg.workspaceId } : {}),
+  };
+}
+
+/**
+ * Validate a chat.queue.cancel: both `conversationId` and `messageId` must be
+ * non-empty strings. Invalid → `chat-error` (the shell replies with `chat.error`,
+ * same style as a malformed `chat.queue`; the orchestrator is never called).
+ * Valid → `chat-queue-cancel` (the shell calls `orchestrator.cancelQueuedMessage`).
+ */
+function handleChatQueueCancel(
+  msg: ChatQueueCancelMessage,
+): ChatQueueCancelRouteResult | ChatRouteError {
+  if (typeof msg.conversationId !== "string" || msg.conversationId.length === 0) {
+    return {
+      kind: "chat-error",
+      conversationId: msg.conversationId,
+      errorMessage: "chat.queue.cancel requires a non-empty string `conversationId`",
+    };
+  }
+  if (typeof msg.messageId !== "string" || msg.messageId.length === 0) {
+    return {
+      kind: "chat-error",
+      conversationId: msg.conversationId,
+      errorMessage: "chat.queue.cancel requires a non-empty string `messageId`",
+    };
+  }
+  return {
+    kind: "chat-queue-cancel",
+    conversationId: msg.conversationId,
+    messageId: msg.messageId,
   };
 }
 

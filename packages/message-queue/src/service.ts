@@ -11,7 +11,12 @@
 import { defineService, type Logger, type ServiceHandle } from "@dispatch/kernel";
 import type { QueuedMessage } from "@dispatch/wire";
 import type { MessageQueueState, QueueDeps } from "./pure.js";
-import { drain as drainQueue, enqueue as enqueueMessage, getQueue as readQueue } from "./pure.js";
+import {
+  cancel as cancelMessage,
+  drain as drainQueue,
+  enqueue as enqueueMessage,
+  getQueue as readQueue,
+} from "./pure.js";
 
 /**
  * The message-queue service interface. Obtained via
@@ -29,6 +34,14 @@ export interface MessageQueueService {
    * was empty (and then NO surface update is pushed — no change).
    */
   drain(conversationId: string): QueuedMessage[];
+  /**
+   * Cancel: remove a SINGLE queued message by id so it never runs (never
+   * delivered as steering, never carried into a new turn). Returns the
+   * post-cancel queue snapshot. A surface update is pushed ONLY when a message
+   * was actually removed (the queue shrank); cancelling a missing id is a
+   * no-op that pushes nothing (no change). Idempotent.
+   */
+  cancel(conversationId: string, messageId: string): QueuedMessage[];
 }
 
 /**
@@ -83,6 +96,24 @@ export function createMessageQueueService(deps: MessageQueueDeps): MessageQueueS
       });
       deps.notify();
       return drained;
+    },
+    cancel(conversationId, messageId) {
+      // Notify ONLY on a real change (the queue shrank). Compare the pre-cancel
+      // length to the post-cancel snapshot — a missing id is a no-op that pushes
+      // no surface update (mirrors drain's no-notify-on-empty rule).
+      const beforeLen = readQueue(state, conversationId).length;
+      const snapshot = cancelMessage(state, conversationId, messageId);
+      if (snapshot.length === beforeLen) {
+        // nothing removed — no change, no surface push
+        return snapshot;
+      }
+      deps.logger?.debug("message-queue: cancelled", {
+        conversationId,
+        messageId,
+        queueLen: snapshot.length,
+      });
+      deps.notify();
+      return snapshot;
     },
   };
 }
