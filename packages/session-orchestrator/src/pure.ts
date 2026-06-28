@@ -1,4 +1,5 @@
 import type {
+  Attributes,
   ChatMessage,
   Chunk,
   ImageInput,
@@ -133,4 +134,72 @@ export function defaultDispatchPolicy(): ToolDispatchPolicy {
 
 export function generateTurnId(): string {
   return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ── Memory telemetry (leak localization) ────────────────────────────────────
+//
+// Pure helpers for process.memoryUsage() sampling. The orchestrator owns the
+// sample SHAPE (this type) so its per-turn sampling and the host-bin periodic
+// timer share one contract without a cross-package import of an
+// implementation — host-bin imports this type, the orchestrator never imports
+// host-bin. Pure: inputs → attributes/delta, no I/O, no clock.
+
+/**
+ * A snapshot of process.memoryUsage() at one instant. Mirrors the subset of
+ * Node/Bun's MemoryUsage we log for leak localization (rss, heapUsed,
+ * heapTotal, external, arrayBuffers). Owned here so the orchestrator's
+ * per-turn sampling and the host-bin periodic timer agree on the shape.
+ */
+export interface MemorySample {
+  readonly rss: number;
+  readonly heapUsed: number;
+  readonly heapTotal: number;
+  readonly external: number;
+  readonly arrayBuffers: number;
+}
+
+const BYTES_PER_MB = 1024 * 1024;
+
+function mb(bytes: number): number {
+  return Math.round(bytes / BYTES_PER_MB);
+}
+
+/**
+ * Pure: format a {@link MemorySample} as flat logger {@link Attributes}
+ * (values in MB, rounded). Flat scalars are serializable (D3) and queryable
+ * (D9) in the journal. No I/O.
+ *
+ * Pass a `prefix` to namespace the keys — e.g. `memorySampleAttributes(delta,
+ * "delta")` yields `deltaRssMB`, so an "after" log can carry both the absolute
+ * sample (`rssMB`) and the per-turn delta (`deltaRssMB`) without key collision.
+ * The first letter of each field is capitalized after the prefix for
+ * readability (`deltaRssMB`, not `deltarssMB`).
+ */
+export function memorySampleAttributes(sample: MemorySample, prefix?: string): Attributes {
+  const p = prefix === undefined ? "" : prefix;
+  const cap = (s: string): string =>
+    s.length === 0 ? s : `${s[0]?.toUpperCase() ?? ""}${s.slice(1)}`;
+  const field = (name: string): string => (p.length === 0 ? name : `${p}${cap(name)}`);
+  return {
+    [field("rssMB")]: mb(sample.rss),
+    [field("heapUsedMB")]: mb(sample.heapUsed),
+    [field("heapTotalMB")]: mb(sample.heapTotal),
+    [field("externalMB")]: mb(sample.external),
+    [field("arrayBuffersMB")]: mb(sample.arrayBuffers),
+  };
+}
+
+/**
+ * Pure: compute the signed per-field delta `after - before`. A positive
+ * `rss` delta on a sealed turn flags memory retained by the streaming path
+ * (the prime leak suspect). No I/O.
+ */
+export function memoryDelta(before: MemorySample, after: MemorySample): MemorySample {
+  return {
+    rss: after.rss - before.rss,
+    heapUsed: after.heapUsed - before.heapUsed,
+    heapTotal: after.heapTotal - before.heapTotal,
+    external: after.external - before.external,
+    arrayBuffers: after.arrayBuffers - before.arrayBuffers,
+  };
 }

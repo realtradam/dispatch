@@ -4,7 +4,10 @@ import type {
   AgentEvent,
   ChatMessage,
   EventHookDescriptor,
+  LogDeps,
   Logger,
+  LogRecord,
+  LogSink,
   ProviderContract,
   ProviderEvent,
   ProviderStreamOptions,
@@ -15,7 +18,7 @@ import type {
   ToolContract,
   TurnMetrics,
 } from "@dispatch/kernel";
-import { runTurn } from "@dispatch/kernel";
+import { createLogger, runTurn } from "@dispatch/kernel";
 import type { SystemPromptService } from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
 import {
@@ -27,6 +30,7 @@ import {
   type TurnLifecyclePayload,
   type WarmCompletedPayload,
 } from "./orchestrator.js";
+import type { MemorySample } from "./pure.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
 function createInMemoryStore(): ConversationStore & {
@@ -3978,5 +3982,137 @@ describe("system prompt: compaction flow", () => {
     // Must be the COMPACTION_SYSTEM_PROMPT alone — no constructed prefix.
     expect(capturedSystemPrompt).toContain("conversation summarizer");
     expect(capturedSystemPrompt?.startsWith("RECONSTRUCTED")).toBe(false);
+  });
+});
+
+describe("per-turn memory telemetry", () => {
+  function capturingLogger(): { logger: Logger; records: LogRecord[] } {
+    let id = 0;
+    const deps: LogDeps = { now: () => 1000 + id++, newId: () => `id-${id++}` };
+    const records: LogRecord[] = [];
+    const sink: LogSink = { emit: (r) => records.push(r) };
+    return { logger: createLogger({ extensionId: "session-orchestrator" }, sink, deps), records };
+  }
+
+  it("logs before/after samples around the stream, tagged with conversationId + turnId", async () => {
+    const store = createInMemoryStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+    const { logger, records } = capturingLogger();
+
+    const samples: MemorySample[] = [
+      { rss: 100, heapUsed: 10, heapTotal: 20, external: 1, arrayBuffers: 0 },
+      { rss: 250, heapUsed: 30, heapTotal: 20, external: 1, arrayBuffers: 5 },
+    ];
+    let sampleIdx = 0;
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+      logger,
+      sampleMemory: () => samples[sampleIdx++] as MemorySample,
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-mem",
+      text: "hi",
+      onEvent: () => {},
+    });
+
+    expect(captured).toHaveLength(1);
+    const beforeLogs = records.filter((r) => r.kind === "log" && r.msg === "memory:turn:before");
+    const afterLogs = records.filter((r) => r.kind === "log" && r.msg === "memory:turn:after");
+    expect(beforeLogs).toHaveLength(1);
+    expect(afterLogs).toHaveLength(1);
+
+    // Both samples carry the turn's conversationId + turnId correlation.
+    const turnId = captured[0]?.turnId;
+    expect(turnId).toMatch(/^turn-/);
+    const before = beforeLogs[0] as Extract<LogRecord, { kind: "log" }>;
+    const after = afterLogs[0] as Extract<LogRecord, { kind: "log" }>;
+    expect(before.conversationId).toBe("conv-mem");
+    expect(before.turnId).toBe(turnId);
+    expect(after.conversationId).toBe("conv-mem");
+    expect(after.turnId).toBe(turnId);
+
+    // Before sample carries absolute MB values.
+    expect(before.attributes?.rssMB).toBe(0); // 100 bytes rounds to 0 MB
+    // After sample carries absolute + delta (delta rss = 150 bytes → 0 MB).
+    expect(after.attributes?.rssMB).toBe(0);
+    // deltaRssMB is the rounded delta (150 bytes → 0 MB).
+    expect(after.attributes).toHaveProperty("deltaRssMB");
+  });
+
+  it("emits no memory logs when sampleMemory is not injected (degrades off)", async () => {
+    const store = createInMemoryStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captureRunTurn } = createCapturingRunTurn();
+    const { logger, records } = capturingLogger();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+      logger,
+      // sampleMemory intentionally omitted
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-no-mem",
+      text: "hi",
+      onEvent: () => {},
+    });
+
+    const memLogs = records.filter(
+      (r) => r.kind === "log" && typeof r.msg === "string" && r.msg.startsWith("memory:turn"),
+    );
+    expect(memLogs).toHaveLength(0);
+  });
+
+  it("getActiveConversationCount tracks in-flight turns", async () => {
+    const store = createInMemoryStore();
+    const result: RunTurnResult = {
+      messages: [{ role: "assistant", chunks: [{ type: "text", text: "ok" }] }],
+      usage: { inputTokens: 1, outputTokens: 1 },
+      finishReason: "stop",
+    };
+    // A runTurn that blocks until the test releases it — keeps the turn
+    // active so getActiveConversationCount reflects an in-flight turn.
+    let release: () => void = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const blockingRunTurn = async (_input: RunTurnInput): Promise<RunTurnResult> => {
+      await blocked;
+      return result;
+    };
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => ({ id: "p", stream: async function* () {} }),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: blockingRunTurn,
+    });
+
+    expect(orchestrator.getActiveConversationCount()).toBe(0);
+    const done = orchestrator.handleMessage({
+      conversationId: "conv-active",
+      text: "hi",
+      onEvent: () => {},
+    });
+    // Give the detached turn a tick to register as active.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(orchestrator.getActiveConversationCount()).toBe(1);
+
+    release();
+    await done;
+    expect(orchestrator.getActiveConversationCount()).toBe(0);
   });
 });

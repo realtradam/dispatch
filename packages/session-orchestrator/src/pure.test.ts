@@ -6,6 +6,9 @@ import {
   defaultDispatchPolicy,
   delayFor,
   generateTurnId,
+  type MemorySample,
+  memoryDelta,
+  memorySampleAttributes,
   RETRY_BUDGET_MS,
   RETRY_SCHEDULE_MS,
   RETRY_TAIL_MS,
@@ -192,5 +195,73 @@ describe("retry backoff schedule (delayFor)", () => {
     // 8 stepped head + 13 tail repeats.
     expect(schedule.slice(0, 8)).toEqual([...RETRY_SCHEDULE_MS]);
     expect(schedule.slice(8).every((d) => d === RETRY_TAIL_MS)).toBe(true);
+  });
+});
+
+describe("memorySampleAttributes", () => {
+  const sample: MemorySample = {
+    rss: 100 * 1024 * 1024, // 100 MB
+    heapUsed: 40 * 1024 * 1024,
+    heapTotal: 60 * 1024 * 1024,
+    external: 5 * 1024 * 1024,
+    arrayBuffers: 2 * 1024 * 1024,
+  };
+
+  it("formats fields as rounded MB with no prefix", () => {
+    const attrs = memorySampleAttributes(sample);
+    expect(attrs).toEqual({
+      rssMB: 100,
+      heapUsedMB: 40,
+      heapTotalMB: 60,
+      externalMB: 5,
+      arrayBuffersMB: 2,
+    });
+  });
+
+  it("namespaces keys with the given prefix", () => {
+    const attrs = memorySampleAttributes(sample, "delta");
+    expect(attrs).toEqual({
+      deltaRssMB: 100,
+      deltaHeapUsedMB: 40,
+      deltaHeapTotalMB: 60,
+      deltaExternalMB: 5,
+      deltaArrayBuffersMB: 2,
+    });
+  });
+
+  it("rounds fractional MB", () => {
+    const attrs = memorySampleAttributes({ ...sample, rss: 100.6 * 1024 * 1024 });
+    expect(attrs.rssMB).toBe(101);
+  });
+});
+
+describe("memoryDelta", () => {
+  const before: MemorySample = {
+    rss: 200 * 1024 * 1024,
+    heapUsed: 100 * 1024 * 1024,
+    heapTotal: 150 * 1024 * 1024,
+    external: 10 * 1024 * 1024,
+    arrayBuffers: 4 * 1024 * 1024,
+  };
+  const after: MemorySample = {
+    rss: 350 * 1024 * 1024,
+    heapUsed: 120 * 1024 * 1024,
+    heapTotal: 150 * 1024 * 1024,
+    external: 10 * 1024 * 1024,
+    arrayBuffers: 8 * 1024 * 1024,
+  };
+
+  it("computes signed after - before per field", () => {
+    const delta = memoryDelta(before, after);
+    expect(delta.rss).toBe(150 * 1024 * 1024);
+    expect(delta.heapUsed).toBe(20 * 1024 * 1024);
+    expect(delta.heapTotal).toBe(0);
+    expect(delta.external).toBe(0);
+    expect(delta.arrayBuffers).toBe(4 * 1024 * 1024);
+  });
+
+  it("is negative when memory dropped", () => {
+    const delta = memoryDelta(after, before);
+    expect(delta.rss).toBe(-150 * 1024 * 1024);
   });
 });
