@@ -354,7 +354,9 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         };
         const stream = vision.provider.stream([userMessage], [], {
           model: vision.model,
-          systemPrompt: "You are a vision assistant. Describe images faithfully and thoroughly.",
+          systemPrompt:
+            "You are a vision assistant. Describe images faithfully and thoroughly. " +
+            "Do not use any tools — just use your vision to see the image and describe it directly.",
         });
         const description = (await collectTextFromStream(stream)).trim();
         const text =
@@ -657,7 +659,10 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
           modelName: vision.modelName,
           ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
           systemPrompt:
-            "You are a vision assistant. A developer who cannot see images is asking you specific questions about an image they attached. Answer their question precisely and thoroughly.",
+            "You are a vision assistant. A developer who cannot see images is asking you specific " +
+            "questions about an image they attached. Answer their question precisely and thoroughly. " +
+            "Do not use any tools unless specifically asked to — just use your vision to see the " +
+            "image and describe it directly.",
           onEvent: (event: AgentEvent) => {
             if (event.type === "text-delta") {
               responseText += event.delta;
