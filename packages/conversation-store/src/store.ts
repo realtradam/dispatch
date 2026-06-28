@@ -211,6 +211,13 @@ export interface ConversationStore {
     defaultComputerId: string | null,
   ) => Promise<Workspace>;
   /**
+   * Star or unstar a workspace. Creates the workspace if missing (like
+   * `setWorkspaceTitle`). Starred workspaces receive PRIORITY in the
+   * concurrency limiter queue — their agents jump ahead of agents from
+   * non-starred workspaces (oldest-agent-first within each group).
+   */
+  readonly setWorkspaceStarred: (id: string, starred: boolean) => Promise<Workspace>;
+  /**
    * Delete a workspace: (1) find all conversations with `workspaceId === id`,
    * (2) set each to `status = "closed"` and reassign `workspaceId = "default"`,
    * (3) delete the workspace entity. Returns `closedCount`. Throws if `id
@@ -358,6 +365,12 @@ interface WorkspaceRow {
    * workspace inherit it when they set no `computerId` of their own.
    */
   readonly defaultComputerId: string | null;
+  /**
+   * Whether the workspace is starred by the user. Starred workspaces receive
+   * PRIORITY in the concurrency limiter queue. Defaults to `false` on legacy
+   * rows (normalized by `parseWorkspaceRow`).
+   */
+  readonly starred: boolean;
   readonly createdAt: number;
   readonly lastActivityAt: number;
 }
@@ -470,10 +483,13 @@ function parseWorkspaceRow(raw: string): WorkspaceRow | null {
   // (mirrors `defaultCwd`). Absent on legacy rows → null (local).
   const defaultComputerId =
     typeof row.defaultComputerId === "string" ? row.defaultComputerId : null;
+  // `starred` may be absent on legacy rows; treat anything non-boolean as false.
+  const starred = row.starred === true;
   return {
     title: row.title,
     defaultCwd,
     defaultComputerId,
+    starred,
     createdAt: row.createdAt,
     lastActivityAt: row.lastActivityAt,
   };
@@ -485,6 +501,7 @@ function toWorkspace(id: string, row: WorkspaceRow): Workspace {
     title: row.title,
     defaultCwd: row.defaultCwd,
     defaultComputerId: row.defaultComputerId,
+    starred: row.starred === true,
     createdAt: row.createdAt,
     lastActivityAt: row.lastActivityAt,
   };
@@ -545,6 +562,7 @@ export function createConversationStore(
             title: workspaceId,
             defaultCwd: null,
             defaultComputerId: null,
+            starred: false,
             createdAt: ts,
             lastActivityAt: ts,
           }
@@ -552,6 +570,7 @@ export function createConversationStore(
             title: existing.title,
             defaultCwd: existing.defaultCwd,
             defaultComputerId: existing.defaultComputerId,
+            starred: existing.starred,
             createdAt: existing.createdAt,
             lastActivityAt: ts,
           };
@@ -1102,13 +1121,14 @@ export function createConversationStore(
       if (row !== null) return toWorkspace(id, row);
       // Synthesize the always-present "default" workspace when it was
       // never persisted (title "default", defaultCwd null, defaultComputerId
-      // null [local], timestamps 0).
+      // null [local], starred false, timestamps 0).
       if (id === DEFAULT_WORKSPACE_ID) {
         return {
           id: DEFAULT_WORKSPACE_ID,
           title: DEFAULT_WORKSPACE_ID,
           defaultCwd: null,
           defaultComputerId: null,
+          starred: false,
           createdAt: 0,
           lastActivityAt: 0,
         };
@@ -1126,6 +1146,7 @@ export function createConversationStore(
         title: opts?.title ?? id,
         defaultCwd: opts?.defaultCwd ?? null,
         defaultComputerId: opts?.defaultComputerId ?? null,
+        starred: false,
         createdAt: ts,
         lastActivityAt: ts,
       };
@@ -1142,6 +1163,7 @@ export function createConversationStore(
               title: id,
               defaultCwd: null as string | null,
               defaultComputerId: null as string | null,
+              starred: false as boolean,
               createdAt: ts,
               lastActivityAt: ts,
             }
@@ -1150,6 +1172,7 @@ export function createConversationStore(
         title,
         defaultCwd: base.defaultCwd,
         defaultComputerId: base.defaultComputerId,
+        starred: base.starred,
         createdAt: base.createdAt,
         lastActivityAt: base.lastActivityAt,
       };
@@ -1166,6 +1189,7 @@ export function createConversationStore(
               title: id,
               defaultCwd: null as string | null,
               defaultComputerId: null as string | null,
+              starred: false as boolean,
               createdAt: ts,
               lastActivityAt: ts,
             }
@@ -1174,6 +1198,7 @@ export function createConversationStore(
         title: base.title,
         defaultCwd,
         defaultComputerId: base.defaultComputerId,
+        starred: base.starred,
         createdAt: base.createdAt,
         lastActivityAt: base.lastActivityAt,
       };
@@ -1190,6 +1215,7 @@ export function createConversationStore(
               title: id,
               defaultCwd: null as string | null,
               defaultComputerId: null as string | null,
+              starred: false as boolean,
               createdAt: ts,
               lastActivityAt: ts,
             }
@@ -1198,10 +1224,39 @@ export function createConversationStore(
         title: base.title,
         defaultCwd: base.defaultCwd,
         defaultComputerId,
+        starred: base.starred,
         createdAt: base.createdAt,
         lastActivityAt: base.lastActivityAt,
       };
       await storage.set(workspaceKey(id), JSON.stringify(row));
+      return toWorkspace(id, row);
+    },
+
+    async setWorkspaceStarred(id, starred) {
+      const existing = await readWorkspaceRow(id);
+      const ts = now();
+      const base =
+        existing === null
+          ? {
+              title: id,
+              defaultCwd: null as string | null,
+              defaultComputerId: null as string | null,
+              createdAt: ts,
+              lastActivityAt: ts,
+            }
+          : existing;
+      const row: WorkspaceRow = {
+        title: base.title,
+        defaultCwd: base.defaultCwd,
+        defaultComputerId: base.defaultComputerId,
+        starred,
+        createdAt: base.createdAt,
+        lastActivityAt: base.lastActivityAt,
+      };
+      await storage.set(workspaceKey(id), JSON.stringify(row));
+      if (logger !== undefined) {
+        logger.debug("workspace starred set", { workspaceId: id, starred });
+      }
       return toWorkspace(id, row);
     },
 
@@ -1269,6 +1324,7 @@ export function createConversationStore(
           title: DEFAULT_WORKSPACE_ID,
           defaultCwd: null,
           defaultComputerId: null,
+          starred: false,
           createdAt: 0,
           lastActivityAt: 0,
         });

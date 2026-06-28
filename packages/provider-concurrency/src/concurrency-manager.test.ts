@@ -81,7 +81,7 @@ function createManager(opts?: { releaseCooldownMs?: number }): {
 describe("createConcurrencyManager", () => {
   it("returns no-op release for providers with no configured limit", async () => {
     const { manager } = createManager();
-    const release = await manager.acquire("unknown", "conv1", 0);
+    const release = await manager.acquire("unknown", "conv1", "default", 0);
     expect(typeof release).toBe("function");
     // No state → release is a no-op, no error.
     release();
@@ -92,7 +92,7 @@ describe("createConcurrencyManager", () => {
     const { manager } = createManager();
     manager.setLimit("umans", 4);
 
-    const release1 = await manager.acquire("umans", "conv1", 0);
+    const release1 = await manager.acquire("umans", "conv1", "default", 0);
     const status = manager.getStatus("umans");
     expect(status).toEqual({
       providerId: "umans",
@@ -109,11 +109,11 @@ describe("createConcurrencyManager", () => {
     const { manager } = createManager();
     manager.setLimit("umans", 1);
 
-    const release1 = await manager.acquire("umans", "conv1", 100);
+    const release1 = await manager.acquire("umans", "conv1", "default", 100);
 
     // Second request should block (at limit).
     let resolved = false;
-    const promise2 = manager.acquire("umans", "conv2", 200).then((r) => {
+    const promise2 = manager.acquire("umans", "conv2", "default", 200).then((r) => {
       resolved = true;
       return r;
     });
@@ -139,13 +139,13 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 1);
 
     // Hold the single slot.
-    const release0 = await manager.acquire("umans", "holder", 0);
+    const release0 = await manager.acquire("umans", "holder", "default", 0);
 
     // Three agents queue with different prompt start times.
     // Agent C started latest (t=300), Agent A started earliest (t=100).
     const results: string[] = [];
     const acquireAndRecord = (conv: string, promptAt: number) =>
-      manager.acquire("umans", conv, promptAt).then((r) => {
+      manager.acquire("umans", conv, "default", promptAt).then((r) => {
         results.push(conv);
         return r;
       });
@@ -182,7 +182,7 @@ describe("createConcurrencyManager", () => {
     const { manager, timers } = createManager();
     manager.setLimit("umans", 1);
 
-    const release1 = await manager.acquire("umans", "conv1", 0);
+    const release1 = await manager.acquire("umans", "conv1", "default", 0);
     release1();
 
     // Simulate a 429 → queue pauses.
@@ -193,7 +193,7 @@ describe("createConcurrencyManager", () => {
 
     // A new acquire should block (paused, even though under limit).
     let resolved = false;
-    const promise = manager.acquire("umans", "conv2", 0).then((r) => {
+    const promise = manager.acquire("umans", "conv2", "default", 0).then((r) => {
       resolved = true;
       return r;
     });
@@ -222,7 +222,7 @@ describe("createConcurrencyManager", () => {
     const { manager, timers } = createManager();
     manager.setLimit("umans", 1);
 
-    const release = await manager.acquire("umans", "conv1", 0);
+    const release = await manager.acquire("umans", "conv1", "default", 0);
     expect(manager.getStatus("umans")?.inFlight).toBe(1);
 
     // Advance past the slot timeout (5000ms) and fire the watchdog.
@@ -242,11 +242,11 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 1);
 
     // Hold the slot.
-    await manager.acquire("umans", "holder", 0);
+    await manager.acquire("umans", "holder", "default", 0);
 
     // Queue a waiter.
     let resolved = false;
-    const promise = manager.acquire("umans", "waiter", 10).then((r) => {
+    const promise = manager.acquire("umans", "waiter", "default", 10).then((r) => {
       resolved = true;
       return r;
     });
@@ -269,11 +269,11 @@ describe("createConcurrencyManager", () => {
     const { manager } = createManager();
     manager.setLimit("umans", 1);
 
-    const release1 = await manager.acquire("umans", "conv1", 0);
+    const release1 = await manager.acquire("umans", "conv1", "default", 0);
 
     // Queue a waiter.
     let resolved = false;
-    const promise = manager.acquire("umans", "conv2", 100).then((r) => {
+    const promise = manager.acquire("umans", "conv2", "default", 100).then((r) => {
       resolved = true;
       return r;
     });
@@ -296,11 +296,11 @@ describe("createConcurrencyManager", () => {
     const { manager } = createManager();
     manager.setLimit("umans", 1);
 
-    const release1 = await manager.acquire("umans", "conv1", 0);
+    const release1 = await manager.acquire("umans", "conv1", "default", 0);
 
     // Queue two waiters.
-    const p2 = manager.acquire("umans", "conv2", 100);
-    const p3 = manager.acquire("umans", "conv3", 200);
+    const p2 = manager.acquire("umans", "conv2", "default", 100);
+    const p3 = manager.acquire("umans", "conv3", "default", 200);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -356,7 +356,7 @@ describe("createConcurrencyManager", () => {
     const { manager } = createManager();
     manager.setLimit("umans", 2);
 
-    const release = await manager.acquire("umans", "conv1", 0);
+    const release = await manager.acquire("umans", "conv1", "default", 0);
     expect(manager.getStatus("umans")?.inFlight).toBe(1);
 
     release();
@@ -372,9 +372,9 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 3);
 
     const releases = await Promise.all([
-      manager.acquire("umans", "conv1", 0),
-      manager.acquire("umans", "conv2", 0),
-      manager.acquire("umans", "conv3", 0),
+      manager.acquire("umans", "conv1", "default", 0),
+      manager.acquire("umans", "conv2", "default", 0),
+      manager.acquire("umans", "conv3", "default", 0),
     ]);
 
     expect(manager.getStatus("umans")?.inFlight).toBe(3);
@@ -389,12 +389,12 @@ describe("createConcurrencyManager", () => {
     const { manager, timers } = createManager({ releaseCooldownMs: 200 });
     manager.setLimit("umans", 1);
 
-    const release1 = await manager.acquire("umans", "conv1", 0);
+    const release1 = await manager.acquire("umans", "conv1", "default", 0);
     expect(manager.getStatus("umans")?.inFlight).toBe(1);
 
     // Queue a waiter.
     let resolved = false;
-    const promise2 = manager.acquire("umans", "conv2", 100).then((r) => {
+    const promise2 = manager.acquire("umans", "conv2", "default", 100).then((r) => {
       resolved = true;
       return r;
     });
@@ -423,7 +423,7 @@ describe("createConcurrencyManager", () => {
     const { manager, timers } = createManager({ releaseCooldownMs: 200 });
     manager.setLimit("umans", 2);
 
-    const release = await manager.acquire("umans", "conv1", 0);
+    const release = await manager.acquire("umans", "conv1", "default", 0);
     expect(manager.getStatus("umans")?.inFlight).toBe(1);
 
     release();
@@ -441,7 +441,7 @@ describe("createConcurrencyManager", () => {
     const { manager } = createManager({ releaseCooldownMs: 200 });
     manager.setLimit("umans", 1);
     // Acquire + release to schedule a cooldown timer.
-    manager.acquire("umans", "conv1", 0).then((release) => {
+    manager.acquire("umans", "conv1", "default", 0).then((release) => {
       release();
       // Now there's a pending cooldown timer — destroy should clean it up.
       expect(() => manager.destroy()).not.toThrow();
@@ -453,11 +453,11 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 1);
 
     // Hold the single slot.
-    const release1 = await manager.acquire("umans", "conv1", 0);
+    const release1 = await manager.acquire("umans", "conv1", "default", 0);
 
     // Second request should trigger onQueued.
     let queuedCalled = false;
-    const promise = manager.acquire("umans", "conv2", 100, () => {
+    const promise = manager.acquire("umans", "conv2", "default", 100, () => {
       queuedCalled = true;
     });
     await Promise.resolve();
@@ -477,11 +477,303 @@ describe("createConcurrencyManager", () => {
     manager.setLimit("umans", 2);
 
     let queuedCalled = false;
-    const release = await manager.acquire("umans", "conv1", 0, () => {
+    const release = await manager.acquire("umans", "conv1", "default", 0, () => {
       queuedCalled = true;
     });
 
     expect(queuedCalled).toBe(false);
     release();
+  });
+});
+
+// ─── Starred-workspace priority tests ───────────────────────────────────────
+
+describe("starred-workspace priority", () => {
+  it("starred-workspace agents are admitted before non-starred (regardless of promptStartedAt)", async () => {
+    // Use a callback backed by a Set so we can star/unstar at runtime.
+    const starred = new Set<string>();
+    const timers = createFakeTimers();
+    const manager = createConcurrencyManager({
+      now: timers.now,
+      slotTimeoutMs: 5000,
+      watchdogIntervalMs: 1000,
+      defaultPauseMs: 30000,
+      isWorkspaceStarred: (wsId: string) => starred.has(wsId),
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    manager.setLimit("umans", 1);
+
+    // Hold the single slot.
+    const release0 = await manager.acquire("umans", "holder", "default", 0);
+
+    // Three agents queue:
+    //  - convA (workspace "ws-normal", promptAt=100) — non-starred, earliest
+    //  - convB (workspace "ws-starred", promptAt=200) — starred, later
+    //  - convC (workspace "ws-normal", promptAt=300) — non-starred, latest
+    starred.add("ws-starred");
+
+    const results: string[] = [];
+    const acquireAndRecord = (conv: string, wsId: string, promptAt: number) =>
+      manager.acquire("umans", conv, wsId, promptAt).then((r) => {
+        results.push(conv);
+        return r;
+      });
+
+    const pA = acquireAndRecord("convA", "ws-normal", 100);
+    const pB = acquireAndRecord("convB", "ws-starred", 200);
+    const pC = acquireAndRecord("convC", "ws-normal", 300);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(results).toEqual([]); // none resolved yet.
+
+    // Release the holder. The starred agent (convB, t=200) should get the
+    // slot FIRST, even though convA (t=100) started earlier.
+    release0();
+
+    const rB = await pB;
+    expect(results).toEqual(["convB"]);
+    rB();
+
+    // Now the oldest non-starred (convA, t=100) should be next.
+    const rA = await pA;
+    expect(results).toEqual(["convB", "convA"]);
+    rA();
+
+    // Then convC (t=300).
+    const rC = await pC;
+    expect(results).toEqual(["convB", "convA", "convC"]);
+    rC();
+
+    manager.destroy();
+  });
+
+  it("within the starred group, oldest-agent-first is preserved", async () => {
+    const starred = new Set<string>(["ws-starred"]);
+    const timers = createFakeTimers();
+    const manager = createConcurrencyManager({
+      now: timers.now,
+      slotTimeoutMs: 5000,
+      watchdogIntervalMs: 1000,
+      defaultPauseMs: 30000,
+      isWorkspaceStarred: (wsId: string) => starred.has(wsId),
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    manager.setLimit("umans", 1);
+
+    const release0 = await manager.acquire("umans", "holder", "default", 0);
+
+    const results: string[] = [];
+    const acquireAndRecord = (conv: string, wsId: string, promptAt: number) =>
+      manager.acquire("umans", conv, wsId, promptAt).then((r) => {
+        results.push(conv);
+        return r;
+      });
+
+    // Two starred agents: convLate (t=300) queues first, convEarly (t=100) second.
+    const pLate = acquireAndRecord("convLate", "ws-starred", 300);
+    const pEarly = acquireAndRecord("convEarly", "ws-starred", 100);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    release0();
+
+    // convEarly (t=100) should win within the starred group (oldest-first).
+    const rEarly = await pEarly;
+    expect(results).toEqual(["convEarly"]);
+    rEarly();
+
+    const rLate = await pLate;
+    expect(results).toEqual(["convEarly", "convLate"]);
+    rLate();
+
+    manager.destroy();
+  });
+
+  it("starring a workspace while agents are queued re-prioritizes them immediately", async () => {
+    const timers = createFakeTimers();
+    const manager = createConcurrencyManager({
+      now: timers.now,
+      slotTimeoutMs: 5000,
+      watchdogIntervalMs: 1000,
+      defaultPauseMs: 30000,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    manager.setLimit("umans", 1);
+
+    const release0 = await manager.acquire("umans", "holder", "default", 0);
+
+    // convA (non-starred, t=100) queues first.
+    let resolvedA = false;
+    const pA = manager.acquire("umans", "convA", "ws-normal", 100).then((r) => {
+      resolvedA = true;
+      return r;
+    });
+    // convB (non-starred, t=200) queues second.
+    let resolvedB = false;
+    const pB = manager.acquire("umans", "convB", "ws-to-star", 200).then((r) => {
+      resolvedB = true;
+      return r;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resolvedA).toBe(false);
+    expect(resolvedB).toBe(false);
+
+    // Now star convB's workspace AFTER it's queued. notifyWorkspaceStarred
+    // updates the internal cache + re-sorts + tries to grant.
+    manager.notifyWorkspaceStarred("ws-to-star", true);
+
+    // Release the holder — convB (now starred) should jump ahead of convA.
+    release0();
+
+    const rB = await pB;
+    expect(resolvedB).toBe(true);
+    expect(resolvedA).toBe(false);
+    rB();
+
+    // Now convA gets the next slot.
+    const rA = await pA;
+    expect(resolvedA).toBe(true);
+    rA();
+
+    manager.destroy();
+  });
+
+  it("unstar a workspace demotes its queued agents", async () => {
+    const timers = createFakeTimers();
+    const manager = createConcurrencyManager({
+      now: timers.now,
+      slotTimeoutMs: 5000,
+      watchdogIntervalMs: 1000,
+      defaultPauseMs: 30000,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    manager.setLimit("umans", 1);
+
+    // Initially star "ws-starred" via the internal cache.
+    manager.notifyWorkspaceStarred("ws-starred", true);
+
+    const release0 = await manager.acquire("umans", "holder", "default", 0);
+
+    // convA (starred, t=200) queues first.
+    const pA = manager.acquire("umans", "convA", "ws-starred", 200);
+    // convB (non-starred, t=100) queues second but is older.
+    const pB = manager.acquire("umans", "convB", "ws-normal", 100);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Unstar convA's workspace — it should now be behind convB (which is older).
+    manager.notifyWorkspaceStarred("ws-starred", false);
+
+    release0();
+
+    // convB (t=100, now non-starred but oldest) should win.
+    const rB = await pB;
+    expect(rB).toBeDefined();
+    rB();
+
+    const rA = await pA;
+    rA();
+
+    manager.destroy();
+  });
+
+  it("notifyWorkspaceStarred re-sorts queues and tries to grant when capacity is free", async () => {
+    const timers = createFakeTimers();
+    const manager = createConcurrencyManager({
+      now: timers.now,
+      slotTimeoutMs: 5000,
+      watchdogIntervalMs: 1000,
+      defaultPauseMs: 30000,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    manager.setLimit("umans", 1);
+
+    // Slot is held. Two agents queued (both non-starred).
+    const release0 = await manager.acquire("umans", "holder", "default", 0);
+    const pA = manager.acquire("umans", "convA", "ws-normal", 100);
+    const pB = manager.acquire("umans", "convB", "ws-to-star", 200);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Star convB's workspace — notifyWorkspaceStarred re-sorts + tries to
+    // grant. But the slot is still held, so no one is granted yet.
+    manager.notifyWorkspaceStarred("ws-to-star", true);
+
+    // Release the slot — convB (now starred) should get it.
+    release0();
+
+    const rB = await pB;
+    expect(rB).toBeDefined();
+    rB();
+
+    const rA = await pA;
+    rA();
+
+    manager.destroy();
+  });
+
+  it("without isWorkspaceStarred callback, all agents are non-starred (backward compatible)", async () => {
+    const timers = createFakeTimers();
+    const manager = createConcurrencyManager({
+      now: timers.now,
+      slotTimeoutMs: 5000,
+      watchdogIntervalMs: 1000,
+      defaultPauseMs: 30000,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    manager.setLimit("umans", 1);
+
+    const release0 = await manager.acquire("umans", "holder", "default", 0);
+
+    const results: string[] = [];
+    const acquireAndRecord = (conv: string, wsId: string, promptAt: number) =>
+      manager.acquire("umans", conv, wsId, promptAt).then((r) => {
+        results.push(conv);
+        return r;
+      });
+
+    // Queue in non-sorted order: B (t=200), A (t=100).
+    const pB = acquireAndRecord("convB", "ws-any", 200);
+    const pA = acquireAndRecord("convA", "ws-any", 100);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    release0();
+
+    // Without a callback, oldest-first ordering applies (no starred priority).
+    const rA = await pA;
+    expect(results).toEqual(["convA"]);
+    rA();
+
+    const rB = await pB;
+    expect(results).toEqual(["convA", "convB"]);
+    rB();
+
+    manager.destroy();
   });
 });

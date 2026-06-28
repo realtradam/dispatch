@@ -1489,6 +1489,59 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
   });
 
+  // ─── Star/unstar workspace (concurrency priority) ───────────────────────────
+  // Starred workspaces receive PRIORITY in the concurrency limiter queue —
+  // their agents jump ahead of agents from non-starred workspaces. The
+  // starred state is persisted in the conversation store AND the in-memory
+  // cache in the concurrency service is notified so already-queued agents
+  // are re-prioritized immediately.
+
+  app.put("/workspaces/:id/star", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (!isValidWorkspaceSlug(workspaceId)) {
+      return c.json(
+        {
+          error: "Workspace id must be a valid slug (lowercase alphanumeric + hyphens, 1–40 chars)",
+        },
+        400,
+      );
+    }
+    try {
+      const workspace = await opts.conversationStore.setWorkspaceStarred(workspaceId, true);
+      // Notify the concurrency service's in-memory cache so queued agents
+      // from this workspace jump ahead immediately.
+      opts.concurrencyService?.notifyWorkspaceStarred(workspaceId, true);
+      log.info("workspaces: starred", { workspaceId });
+      const response: WorkspaceResponse = workspace;
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("workspaces: star failure", { err, workspaceId });
+      return c.json({ error: "Failed to star workspace" }, 500);
+    }
+  });
+
+  app.delete("/workspaces/:id/star", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (!isValidWorkspaceSlug(workspaceId)) {
+      return c.json(
+        {
+          error: "Workspace id must be a valid slug (lowercase alphanumeric + hyphens, 1–40 chars)",
+        },
+        400,
+      );
+    }
+    try {
+      const workspace = await opts.conversationStore.setWorkspaceStarred(workspaceId, false);
+      opts.concurrencyService?.notifyWorkspaceStarred(workspaceId, false);
+      log.info("workspaces: unstarred", { workspaceId });
+      const response: WorkspaceResponse = workspace;
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("workspaces: unstar failure", { err, workspaceId });
+      return c.json({ error: "Failed to unstar workspace" }, 500);
+    }
+  });
+
   // ─── Heartbeat (per-workspace AI loop) ─────────────────────────────────────
   // The config + run history for a workspace's heartbeat loop. Delegated to
   // the HeartbeatService (provided by the `heartbeat` extension). When
