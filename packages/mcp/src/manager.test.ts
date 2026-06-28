@@ -213,4 +213,29 @@ describe("McpManager", () => {
 
     expect(manager.getClient("nonexistent")).toBeUndefined();
   });
+
+  it("forwards the abort signal: a hanging initialize is interrupted", async () => {
+    // A connection whose initialize never resolves (a misbehaving /
+    // framing-incompatible server). Without a signal this hangs forever.
+    const hangingConn: Connection = {
+      send: () => new Promise(() => {}),
+      notify: () => {},
+      onNotification: () => {},
+      close: () => {},
+      pid: 300,
+    };
+    const manager = makeManager(() => {
+      return { connection: hangingConn, promise: Promise.resolve() };
+    });
+
+    const controller = new AbortController();
+    const connectPromise = manager.ensureConnected(testServer, "/tmp", controller.signal);
+
+    // Abort mid-connect — the signal must reach initialize() and break it.
+    controller.abort();
+
+    await expect(connectPromise).rejects.toThrow();
+    // The server is recorded as broken (not silently wedged).
+    expect(manager.status([testServer])[0].state).toBe("error");
+  });
 });
