@@ -167,6 +167,7 @@
       "name": "@dispatch/provider-concurrency",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
       },
     },

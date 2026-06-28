@@ -47,6 +47,7 @@ describe("WorkspaceStore", () => {
       title: "my-work",
       defaultCwd: null,
       defaultComputerId: null,
+      starred: false,
       createdAt: 1000,
       lastActivityAt: 1000,
     });
@@ -66,6 +67,7 @@ describe("WorkspaceStore", () => {
       title: "my-work",
       defaultCwd: null,
       defaultComputerId: null,
+      starred: false,
       createdAt: 1000,
       lastActivityAt: 1000,
     });
@@ -83,6 +85,7 @@ describe("WorkspaceStore", () => {
       title: "Custom",
       defaultCwd: "/projects/dispatch",
       defaultComputerId: null,
+      starred: false,
       createdAt: 3000,
       lastActivityAt: 3000,
     });
@@ -96,6 +99,7 @@ describe("WorkspaceStore", () => {
       title: "default",
       defaultCwd: null,
       defaultComputerId: null,
+      starred: false,
       createdAt: 0,
       lastActivityAt: 0,
     });
@@ -117,6 +121,7 @@ describe("WorkspaceStore", () => {
       title: "Renamed",
       defaultCwd: null,
       defaultComputerId: null,
+      starred: false,
       createdAt: 1000,
       lastActivityAt: 1000,
     });
@@ -214,6 +219,7 @@ describe("WorkspaceStore", () => {
       title: "default",
       defaultCwd: null,
       defaultComputerId: null,
+      starred: false,
       createdAt: 0,
       lastActivityAt: 0,
       conversationCount: 0,
@@ -421,6 +427,125 @@ describe("WorkspaceStore", () => {
     const meta = await store.getConversationMeta("conv1");
     expect(meta?.workspaceId).toBe("my-work");
   });
+
+  // --- starred (priority for concurrency limiting) ---
+
+  it("ensureWorkspace creates with starred: false", async () => {
+    const store = makeStore();
+    const ws = await store.ensureWorkspace("star-work");
+    expect(ws.starred).toBe(false);
+  });
+
+  it("setWorkspaceStarred true persists and reads back", async () => {
+    const store = makeStore();
+    clock = 1000;
+    await store.ensureWorkspace("star-work");
+    clock = 2000;
+    const ws = await store.setWorkspaceStarred("star-work", true);
+    expect(ws.starred).toBe(true);
+    expect(ws.id).toBe("star-work");
+    const reRead = await store.getWorkspace("star-work");
+    expect(reRead?.starred).toBe(true);
+  });
+
+  it("setWorkspaceStarred false unstars a previously starred workspace", async () => {
+    const store = makeStore();
+    await store.ensureWorkspace("star-work");
+    await store.setWorkspaceStarred("star-work", true);
+    await store.setWorkspaceStarred("star-work", false);
+    const ws = await store.getWorkspace("star-work");
+    expect(ws?.starred).toBe(false);
+  });
+
+  it("setWorkspaceStarred creates the workspace if missing", async () => {
+    const store = makeStore();
+    clock = 5000;
+    const ws = await store.setWorkspaceStarred("brand-new", true);
+    expect(ws).toEqual({
+      id: "brand-new",
+      title: "brand-new",
+      defaultCwd: null,
+      defaultComputerId: null,
+      starred: true,
+      createdAt: 5000,
+      lastActivityAt: 5000,
+    });
+  });
+
+  it("setWorkspaceStarred preserves title/defaultCwd/defaultComputerId", async () => {
+    const store = makeStore();
+    clock = 1000;
+    await store.ensureWorkspace("my-work", {
+      title: "Custom",
+      defaultCwd: "/projects",
+      defaultComputerId: "myserver",
+    });
+    clock = 2000;
+    const ws = await store.setWorkspaceStarred("my-work", true);
+    expect(ws.title).toBe("Custom");
+    expect(ws.defaultCwd).toBe("/projects");
+    expect(ws.defaultComputerId).toBe("myserver");
+    expect(ws.starred).toBe(true);
+    expect(ws.createdAt).toBe(1000);
+  });
+
+  it("listWorkspaces includes starred field", async () => {
+    const store = makeStore();
+    clock = 1000;
+    await store.ensureWorkspace("alpha");
+    await store.setWorkspaceStarred("alpha", true);
+    clock = 2000;
+    await store.ensureWorkspace("beta");
+    const list = await store.listWorkspaces();
+    const alpha = list.find((w) => w.id === "alpha");
+    expect(alpha?.starred).toBe(true);
+    const beta = list.find((w) => w.id === "beta");
+    expect(beta?.starred).toBe(false);
+  });
+
+  it("setWorkspaceTitle preserves starred state", async () => {
+    const store = makeStore();
+    await store.ensureWorkspace("my-work");
+    await store.setWorkspaceStarred("my-work", true);
+    const ws = await store.setWorkspaceTitle("my-work", "Renamed");
+    expect(ws.starred).toBe(true);
+    expect(ws.title).toBe("Renamed");
+  });
+
+  it("setWorkspaceDefaultCwd preserves starred state", async () => {
+    const store = makeStore();
+    await store.ensureWorkspace("my-work");
+    await store.setWorkspaceStarred("my-work", true);
+    const ws = await store.setWorkspaceDefaultCwd("my-work", "/new/path");
+    expect(ws.starred).toBe(true);
+    expect(ws.defaultCwd).toBe("/new/path");
+  });
+
+  it("setWorkspaceDefaultComputerId preserves starred state", async () => {
+    const store = makeStore();
+    await store.ensureWorkspace("my-work");
+    await store.setWorkspaceStarred("my-work", true);
+    const ws = await store.setWorkspaceDefaultComputerId("my-work", "new-host");
+    expect(ws.starred).toBe(true);
+    expect(ws.defaultComputerId).toBe("new-host");
+  });
+
+  it("a legacy WorkspaceRow without starred reads back as false", async () => {
+    const store = makeStore();
+    // Simulate a legacy row persisted before `starred` existed.
+    await storage.set(
+      "workspace:legacy",
+      JSON.stringify({
+        title: "legacy",
+        defaultCwd: "/legacy/cwd",
+        defaultComputerId: null,
+        createdAt: 100,
+        lastActivityAt: 200,
+      }),
+    );
+    const ws = await store.getWorkspace("legacy");
+    expect(ws?.starred).toBe(false);
+  });
 });
 
 describe("ComputerStore", () => {
@@ -497,6 +622,7 @@ describe("ComputerStore", () => {
       title: "brand-new",
       defaultCwd: null,
       defaultComputerId: "remote-host",
+      starred: false,
       createdAt: 5000,
       lastActivityAt: 5000,
     });
@@ -520,6 +646,7 @@ describe("ComputerStore", () => {
       title: "default",
       defaultCwd: null,
       defaultComputerId: null,
+      starred: false,
       createdAt: 0,
       lastActivityAt: 0,
     });
@@ -628,6 +755,7 @@ describe("ComputerStore", () => {
       title: "Remote",
       defaultCwd: null,
       defaultComputerId: "prod-server",
+      starred: false,
       createdAt: 1000,
       lastActivityAt: 1000,
     });
@@ -652,6 +780,7 @@ describe("ComputerStore", () => {
       title: "legacy",
       defaultCwd: "/legacy/cwd",
       defaultComputerId: null,
+      starred: false,
       createdAt: 100,
       lastActivityAt: 200,
     });

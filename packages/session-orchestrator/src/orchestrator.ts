@@ -747,6 +747,7 @@ export function createSessionOrchestrator(
             provider,
             limiter,
             conversationId,
+            workspaceId,
             promptStartedAt,
             () => emitStatus("queued"),
             () => emitStatus("active"),
@@ -1219,10 +1220,12 @@ export function createWarmService(
       // Wrap with concurrency limiting (same as the main turn path).
       const warmLimiter = deps.resolveConcurrencyLimiter?.();
       if (warmLimiter !== undefined) {
+        const warmWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
         provider = wrapProviderWithConcurrency(
           provider,
           warmLimiter,
           conversationId,
+          warmWorkspaceId,
           deps.now?.() ?? Date.now(),
         );
       }
@@ -1376,10 +1379,12 @@ export function createCompactionService(
       // Wrap with concurrency limiting (same as the main turn path).
       const compactionLimiter = deps.resolveConcurrencyLimiter?.();
       if (compactionLimiter !== undefined) {
+        const compactionWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
         provider = wrapProviderWithConcurrency(
           provider,
           compactionLimiter,
           conversationId,
+          compactionWorkspaceId,
           deps.now?.() ?? Date.now(),
         );
       }

@@ -72,6 +72,7 @@ export const manifest: Manifest = {
       "/workspaces/:id/heartbeat",
       "/workspaces/:id/heartbeat/runs",
       "/workspaces/:id/heartbeat/runs/:runId/stop",
+      "/workspaces/:id/star",
       "/workspaces/:id/title",
     ],
   },

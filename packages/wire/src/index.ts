@@ -651,6 +651,13 @@ export interface Workspace {
    * (per-conv `computerId` → this → `null`/local).
    */
   readonly defaultComputerId: string | null;
+  /**
+   * Whether the workspace is starred by the user. Starred workspaces receive
+   * PRIORITY in the concurrency limiter queue — their agents jump ahead of
+   * agents from non-starred workspaces (oldest-agent-first within each group).
+   * Defaults to `false` on creation.
+   */
+  readonly starred: boolean;
   /** Epoch-ms when the workspace was first created. */
   readonly createdAt: number;
   /** Epoch-ms of the most recent conversation activity in this workspace. */

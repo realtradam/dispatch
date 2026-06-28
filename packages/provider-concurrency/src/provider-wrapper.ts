@@ -23,6 +23,8 @@ import type { ConcurrencyLimiter } from "./concurrency-manager.js";
  * @param provider         The underlying provider to wrap.
  * @param limiter          The concurrency limiter (acquire/release/reportRateLimit).
  * @param conversationId   The agent requesting the stream (for slot attribution).
+ * @param workspaceId      The workspace the agent belongs to (for starred
+ *                         priority scheduling in the limiter queue).
  * @param promptStartedAt  When the agent's current prompt (turn) started
  *                         (epoch-ms, for oldest-agent-first scheduling).
  * @param onQueued          Called synchronously when `acquire()` decides to
@@ -36,6 +38,7 @@ export function wrapProviderWithConcurrency(
   provider: ProviderContract,
   limiter: ConcurrencyLimiter,
   conversationId: string,
+  workspaceId: string,
   promptStartedAt: number,
   onQueued?: () => void,
   onAcquired?: () => void,
@@ -50,7 +53,13 @@ export function wrapProviderWithConcurrency(
       tools: readonly ToolContract[],
       opts?: ProviderStreamOptions,
     ): AsyncIterable<ProviderEvent> {
-      const release = await limiter.acquire(providerId, conversationId, promptStartedAt, onQueued);
+      const release = await limiter.acquire(
+        providerId,
+        conversationId,
+        workspaceId,
+        promptStartedAt,
+        onQueued,
+      );
       onAcquired?.();
       try {
         for await (const event of innerStream(messages, tools, opts)) {

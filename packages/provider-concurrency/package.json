@@ -6,6 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "dependencies": {
+    "@dispatch/conversation-store": "workspace:*",
     "@dispatch/kernel": "workspace:*"
   }
 }
