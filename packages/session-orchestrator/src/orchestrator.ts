@@ -170,6 +170,20 @@ export interface EnqueueResult {
   readonly queue: readonly QueuedMessage[];
 }
 
+/**
+ * Result of `SessionOrchestrator.cancelQueuedMessage`. `cancelled` is true when
+ * a message with the given id was found in the conversation's queue and removed
+ * (it will never run — never delivered as steering, never carried into a new
+ * turn). `cancelled` is false when the message was not in the queue (already
+ * drained/delivered, never existed, unknown conversation) OR when the
+ * message-queue extension isn't loaded (degraded — feature off). `queue` is the
+ * post-cancel snapshot (empty when no queue extension is loaded).
+ */
+export interface CancelQueuedMessageResult {
+  readonly cancelled: boolean;
+  readonly queue: readonly QueuedMessage[];
+}
+
 export type TurnEventListener = (event: AgentEvent) => void;
 
 interface ActiveTurn {
@@ -331,6 +345,18 @@ export interface SessionOrchestrator {
    * returned snapshot is empty (degraded — feature off).
    */
   enqueue(input: EnqueueInput): EnqueueResult;
+  /**
+   * Cancel (remove) a SINGLE queued message by id so it never runs. The single
+   * entry transports call to cancel a queued steering message. Resolves the
+   * message-queue service lazily (same as `enqueue`); when the extension isn't
+   * loaded the call degrades to `{ cancelled: false, queue: [] }`. Idempotent —
+   * cancelling a message that is no longer queued (already drained/delivered)
+   * returns `{ cancelled: false, ... }` without error.
+   */
+  cancelQueuedMessage(input: {
+    readonly conversationId: string;
+    readonly messageId: string;
+  }): CancelQueuedMessageResult;
   subscribe(conversationId: string, listener: TurnEventListener): () => void;
   isActive(conversationId: string): boolean;
   /**
@@ -1058,6 +1084,19 @@ export function createSessionOrchestrator(
       const queue = deps.resolveQueue?.();
       const snapshot = queue !== undefined ? queue.enqueue(conversationId, text) : [];
       return { startedTurn: false, queue: snapshot };
+    },
+
+    cancelQueuedMessage({ conversationId, messageId }) {
+      // When the message-queue extension isn't loaded this degrades: nothing to
+      // cancel, empty snapshot (feature off). Mirrors `enqueue`'s degraded path.
+      const queue = deps.resolveQueue?.();
+      if (queue === undefined) {
+        return { cancelled: false, queue: [] };
+      }
+      const beforeLen = queue.getQueue(conversationId).length;
+      const snapshot = queue.cancel(conversationId, messageId);
+      const cancelled = snapshot.length < beforeLen;
+      return { cancelled, queue: snapshot };
     },
 
     subscribe(conversationId, listener) {

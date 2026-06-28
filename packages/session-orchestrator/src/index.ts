@@ -1,5 +1,6 @@
 export { extension, manifest } from "./extension.js";
 export {
+  type CancelQueuedMessageResult,
   type CompactionService,
   type ConversationClosedPayload,
   type ConversationCompactedPayload,

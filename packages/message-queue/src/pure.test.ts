@@ -2,6 +2,7 @@ import type { QueuedMessage } from "@dispatch/wire";
 import { describe, expect, it } from "vitest";
 import {
   buildQueueSpec,
+  cancel,
   combine,
   drain,
   enqueue,
@@ -95,6 +96,84 @@ describe("drain", () => {
     drain(state, "c1");
     expect(drain(state, "c1")).toEqual([]);
     expect(getQueue(state, "c1")).toEqual([]);
+  });
+});
+
+describe("cancel", () => {
+  it("removes the matching message and returns the post-cancel snapshot", () => {
+    const state: MessageQueueState = new Map();
+    const deps = makeDeps();
+    enqueue(state, "c1", "a", deps); // id-1
+    enqueue(state, "c1", "b", deps); // id-2
+    enqueue(state, "c1", "c", deps); // id-3
+
+    const snapshot = cancel(state, "c1", "id-2");
+    expect(snapshot.map((m) => m.id)).toEqual(["id-1", "id-3"]);
+    expect(snapshot.map((m) => m.text)).toEqual(["a", "c"]);
+    // live state reflects the removal
+    expect(getQueue(state, "c1").map((m) => m.id)).toEqual(["id-1", "id-3"]);
+  });
+
+  it("removing the only message drops the key (queue is empty + clean)", () => {
+    const state: MessageQueueState = new Map();
+    const deps = makeDeps();
+    enqueue(state, "c1", "only", deps); // id-1
+
+    const snapshot = cancel(state, "c1", "id-1");
+    expect(snapshot).toEqual([]);
+    expect(getQueue(state, "c1")).toEqual([]);
+    // key removed so a fresh getQueue is a clean empty (not a lingering [] key)
+    expect(state.has("c1")).toBe(false);
+  });
+
+  it("returns a COPY — mutating the snapshot does not affect live state", () => {
+    const state: MessageQueueState = new Map();
+    const deps = makeDeps();
+    enqueue(state, "c1", "a", deps);
+    enqueue(state, "c1", "b", deps);
+
+    const snapshot = cancel(state, "c1", "id-1");
+    snapshot.push({ id: "evil", text: "mutate", queuedAt: 0 });
+    expect(getQueue(state, "c1")).toHaveLength(1);
+  });
+
+  it("is idempotent — cancelling a missing id is a no-op (returns snapshot without it)", () => {
+    const state: MessageQueueState = new Map();
+    const deps = makeDeps();
+    enqueue(state, "c1", "a", deps); // id-1
+
+    // unknown message id
+    const snapshot = cancel(state, "c1", "nope");
+    expect(snapshot.map((m) => m.id)).toEqual(["id-1"]);
+    expect(getQueue(state, "c1")).toHaveLength(1);
+
+    // a second cancel of the already-removed id-1 (re-add then cancel twice)
+    cancel(state, "c1", "id-1");
+    expect(getQueue(state, "c1")).toEqual([]);
+    expect(cancel(state, "c1", "id-1")).toEqual([]); // already gone — no-op
+  });
+
+  it("is scoped per conversation — cancelling on one conversation does not affect another", () => {
+    const state: MessageQueueState = new Map();
+    const deps = makeDeps();
+    enqueue(state, "c1", "a", deps); // id-1
+    enqueue(state, "c2", "b", deps); // id-2
+
+    const snapshot = cancel(state, "c1", "id-1");
+    expect(snapshot).toEqual([]);
+    expect(getQueue(state, "c1")).toEqual([]);
+    // c2 untouched
+    expect(getQueue(state, "c2").map((m) => m.id)).toEqual(["id-2"]);
+  });
+
+  it("cancelling on an unknown / empty conversation is a no-op (returns [])", () => {
+    const state: MessageQueueState = new Map();
+    expect(cancel(state, "unknown", "anything")).toEqual([]);
+    // unknown id on a conversation that exists but is empty post-drain
+    const deps = makeDeps();
+    enqueue(state, "c1", "a", deps);
+    drain(state, "c1"); // empties + deletes the key
+    expect(cancel(state, "c1", "id-1")).toEqual([]);
   });
 });
 

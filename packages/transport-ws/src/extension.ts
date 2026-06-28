@@ -345,6 +345,23 @@ export function createTransportWsExtension(): Extension {
                 break;
               }
 
+              case "chat-queue-cancel": {
+                // Fire-and-forget: success is confirmed by the message-queue
+                // SURFACE updating (the cancelled message leaves the snapshot),
+                // NOT by a reply here. Cancelling a message that is no longer
+                // queued is a silent no-op (no surface update, no error).
+                const cancelResult = orchestrator.cancelQueuedMessage({
+                  conversationId: result.conversationId,
+                  messageId: result.messageId,
+                });
+                logger.info?.("transport-ws: chat.queue.cancel accepted", {
+                  conversationId: result.conversationId,
+                  messageId: result.messageId,
+                  cancelled: cancelResult.cancelled,
+                });
+                break;
+              }
+
               case "chat-error": {
                 logger.warn?.("transport-ws: malformed chat.send", {
                   reason: result.errorMessage,
