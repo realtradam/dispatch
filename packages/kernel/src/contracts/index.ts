@@ -103,6 +103,7 @@ export type {
   ProviderEvent,
   ProviderStreamOptions,
   ProviderToolCallEvent,
+  ProviderUsage,
   ReasoningDeltaEvent,
   ReasoningEffort,
   TextDeltaEvent,

@@ -1062,6 +1062,17 @@ export interface ConcurrencyLimitResponse {
  * - `queued`: how many agents are waiting for a slot.
  * - `paused`: whether the queue is paused due to a 429 backoff.
  * - `pausedUntil`: when the pause expires (epoch-ms), present only when paused.
+ * - `cooldownMs`: the per-slot release cooldown (ms). A recycled slot is held
+ *   this long before the next waiter is admitted — covers the upstream
+ *   provider's accounting lag. Configurable + persisted per provider.
+ * - `autoReduced`: whether the limit was auto-reduced by 1 after a 429
+ *   (adaptive headroom, one-way, persisted). The user restores the limit
+ *   manually via `PUT /concurrency/limits/:providerId`, which clears the flag.
+ *   When `true`, the frontend renders a visible notice/banner.
+ * - `autoReducedFrom`: the original limit before auto-reduction (present only
+ *   when `autoReduced` is true).
+ * - `notice`: a human-readable notice string for the frontend to render as a
+ *   banner when the limit was auto-reduced (present only when `autoReduced`).
  */
 export interface ConcurrencyStatusEntry {
   readonly providerId: string;
@@ -1070,6 +1081,10 @@ export interface ConcurrencyStatusEntry {
   readonly queued: number;
   readonly paused: boolean;
   readonly pausedUntil?: number;
+  readonly cooldownMs: number;
+  readonly autoReduced: boolean;
+  readonly autoReducedFrom?: number;
+  readonly notice?: string;
 }
 
 /**
@@ -1078,4 +1093,27 @@ export interface ConcurrencyStatusEntry {
  */
 export interface ConcurrencyStatusResponse {
   readonly providers: readonly ConcurrencyStatusEntry[];
+}
+
+// ─── Provider concurrency cooldown ────────────────────────────────────────────
+
+/**
+ * Response of `GET /concurrency/cooldown/:providerId` — the per-slot release
+ * cooldown (ms) for a provider. A recycled slot is held this long before the
+ * next waiter is admitted, covering the upstream provider's accounting lag.
+ * When no cooldown was explicitly set, the server default (350ms) is returned.
+ */
+export interface ConcurrencyCooldownResponse {
+  readonly providerId: string;
+  readonly cooldownMs: number;
+}
+
+/**
+ * Body of `PUT /concurrency/cooldown/:providerId` — set the release cooldown
+ * (ms) for a provider. `cooldownMs` must be a non-negative integer (0 = no
+ * cooldown, instant re-admission). The value is persisted and applied to
+ * subsequently recycled slots.
+ */
+export interface SetConcurrencyCooldownRequest {
+  readonly cooldownMs: number;
 }

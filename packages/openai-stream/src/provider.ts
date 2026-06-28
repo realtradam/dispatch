@@ -4,9 +4,11 @@ import type {
   ModelInfo,
   ProviderContract,
   ProviderStreamOptions,
+  ProviderUsage,
   ToolContract,
 } from "@dispatch/kernel";
 import type { FetchLike } from "@dispatch/trace-replay";
+import { getUsage as fetchUsage } from "./getUsage.js";
 import { listModels as fetchModels } from "./listModels.js";
 import { streamChat } from "./stream.js";
 
@@ -64,6 +66,13 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
     ) => streamChat(streamConfig, messages, tools, streamOpts),
     listModels: (): Promise<readonly ModelInfo[]> =>
       fetchModels({
+        baseURL,
+        apiKey,
+        providerId: opts.id,
+        ...(fetchFn !== undefined ? { fetchFn } : {}),
+      }),
+    getUsage: (): Promise<ProviderUsage | undefined> =>
+      fetchUsage({
         baseURL,
         apiKey,
         providerId: opts.id,

@@ -81,6 +81,27 @@ describe("createOpenAICompatProvider stamps the given id on the ProviderContract
 
     await expect(listModels()).rejects.toThrow("listModels[my-custom-id]: HTTP 401 — Unauthorized");
   });
+
+  it("exposes getUsage that returns the upstream concurrent_sessions", async () => {
+    const fetchFn = vi.fn(
+      () =>
+        new Response(JSON.stringify({ usage: { concurrent_sessions: 2 } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }) as unknown as ReturnType<FetchLike>,
+    );
+    const provider = createOpenAICompatProvider({
+      credentials: makeCreds(),
+      model: "test-model",
+      id: "umans",
+      fetchFn,
+    });
+    const getUsage = provider.getUsage;
+    if (!getUsage) throw new Error("getUsage not defined");
+
+    const usage = await getUsage();
+    expect(usage).toEqual({ concurrentSessions: 2 });
+  });
 });
 
 describe("transformBody", () => {
