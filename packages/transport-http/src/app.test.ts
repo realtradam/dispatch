@@ -110,6 +110,7 @@ function createFakeConversationStore(
     title: "default",
     defaultCwd: null,
     defaultComputerId: null,
+    starred: false,
     createdAt: 0,
     lastActivityAt: 0,
   };
@@ -206,6 +207,9 @@ function createFakeConversationStore(
     },
     async setWorkspaceDefaultComputerId(id, defaultComputerId) {
       return { ...sampleWorkspace, id, defaultComputerId };
+    },
+    async setWorkspaceStarred(id, starred) {
+      return { ...sampleWorkspace, id, starred };
     },
     async deleteWorkspace() {
       return { closedCount: 0 };
@@ -3562,6 +3566,7 @@ describe("Workspaces", () => {
     title: "proj",
     defaultCwd: null,
     defaultComputerId: null,
+    starred: false,
     createdAt: 1000,
     lastActivityAt: 2000,
   };
@@ -3755,6 +3760,150 @@ describe("Workspaces", () => {
     });
     const res = await app.request("/workspaces/default", { method: "DELETE" });
     expect(res.status).toBe(409);
+  });
+
+  // ─── Star/unstar workspace (concurrency priority) ────────────────────────
+
+  it("PUT /workspaces/:id/star persists + notifies the concurrency service", async () => {
+    let starredCalled: { id: string; starred: boolean } | null = null;
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setWorkspaceStarred(id, starred) {
+        return { ...sampleWorkspace, id, starred };
+      },
+    };
+    const concurrencyService = {
+      acquire: async () => () => {},
+      reportRateLimit() {},
+      setLimit() {},
+      getLimit: () => undefined,
+      getLimits: () => [],
+      getStatus: () => undefined,
+      getStatusAll: () => [],
+      notifyWorkspaceStarred(id: string, starred: boolean) {
+        starredCalled = { id, starred };
+      },
+      destroy() {},
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      ...(concurrencyService !== undefined ? { concurrencyService } : {}),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/proj/star", { method: "PUT" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WorkspaceResponse;
+    expect(body.starred).toBe(true);
+    expect(starredCalled).toEqual({ id: "proj", starred: true });
+  });
+
+  it("DELETE /workspaces/:id/star persists + notifies the concurrency service", async () => {
+    let starredCalled: { id: string; starred: boolean } | null = null;
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setWorkspaceStarred(id, starred) {
+        return { ...sampleWorkspace, id, starred };
+      },
+    };
+    const concurrencyService = {
+      acquire: async () => () => {},
+      reportRateLimit() {},
+      setLimit() {},
+      getLimit: () => undefined,
+      getLimits: () => [],
+      getStatus: () => undefined,
+      getStatusAll: () => [],
+      notifyWorkspaceStarred(id: string, starred: boolean) {
+        starredCalled = { id, starred };
+      },
+      destroy() {},
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      concurrencyService,
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/proj/star", { method: "DELETE" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WorkspaceResponse;
+    expect(body.starred).toBe(false);
+    expect(starredCalled).toEqual({ id: "proj", starred: false });
+  });
+
+  it("PUT /workspaces/:id/star rejects invalid slug", async () => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/Bad Slug!/star", { method: "PUT" });
+    expect(res.status).toBe(400);
+  });
+
+  it("DELETE /workspaces/:id cleans up the in-memory starred cache (bug fix)", async () => {
+    // Bug 1 fix: deleting a workspace must notify the concurrency service to
+    // remove the workspace ID from the starred cache, preventing stale IDs.
+    let starredCalled: { id: string; starred: boolean } | null = null;
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async deleteWorkspace() {
+        return { closedCount: 2 };
+      },
+    };
+    const concurrencyService = {
+      acquire: async () => () => {},
+      reportRateLimit() {},
+      setLimit() {},
+      getLimit: () => undefined,
+      getLimits: () => [],
+      getStatus: () => undefined,
+      getStatusAll: () => [],
+      notifyWorkspaceStarred(id: string, starred: boolean) {
+        starredCalled = { id, starred };
+      },
+      destroy() {},
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      concurrencyService,
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/proj", { method: "DELETE" });
+    expect(res.status).toBe(200);
+    // The concurrency service must be notified to clear the starred cache.
+    expect(starredCalled).toEqual({ id: "proj", starred: false });
+  });
+
+  it("PUT /workspaces/:id/star logs warning when concurrency service is absent (bug fix)", async () => {
+    // Bug 2 fix: when the concurrency service is not loaded, the star toggle
+    // persists but the priority cache is not updated. A warning log makes this
+    // degraded behavior visible.
+    const logger = createFakeLogger();
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setWorkspaceStarred(id, starred) {
+        return { ...sampleWorkspace, id, starred };
+      },
+    };
+    // NOTE: no concurrencyService provided — simulates the extension being absent.
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger,
+    });
+    const res = await app.request("/workspaces/proj/star", { method: "PUT" });
+    expect(res.status).toBe(200);
+    // The star persisted, but a warning was logged about the missing service.
+    const warnings = logger.records.filter((r) => r.level === "warn");
+    expect(warnings.some((r) => r.msg.includes("concurrency service is not loaded"))).toBe(true);
   });
 });
 

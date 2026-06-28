@@ -1529,12 +1529,91 @@ export function createApp(opts: CreateServerOptions): Hono {
 
     try {
       const { closedCount } = await opts.conversationStore.deleteWorkspace(workspaceId);
+      // Clean up the in-memory starred cache so a deleted workspace's ID
+      // doesn't linger (and so a future workspace re-created with the same
+      // slug doesn't inherit the stale starred state).
+      opts.concurrencyService?.notifyWorkspaceStarred(workspaceId, false);
       log.info("workspaces: deleted", { workspaceId, closedCount });
       const response: DeleteWorkspaceResponse = { workspaceId, closedCount };
       return c.json(response, 200);
     } catch (err) {
       log.error("workspaces: delete failure", { err });
       return c.json({ error: "Failed to delete workspace" }, 500);
+    }
+  });
+
+  // ─── Star/unstar workspace (concurrency priority) ───────────────────────────
+  // Starred workspaces receive PRIORITY in the concurrency limiter queue —
+  // their agents jump ahead of agents from non-starred workspaces. The
+  // starred state is persisted in the conversation store AND the in-memory
+  // cache in the concurrency service is notified so already-queued agents
+  // are re-prioritized immediately.
+
+  app.put("/workspaces/:id/star", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (!isValidWorkspaceSlug(workspaceId)) {
+      return c.json(
+        {
+          error: "Workspace id must be a valid slug (lowercase alphanumeric + hyphens, 1–40 chars)",
+        },
+        400,
+      );
+    }
+    try {
+      const workspace = await opts.conversationStore.setWorkspaceStarred(workspaceId, true);
+      // Notify the concurrency service's in-memory cache so queued agents
+      // from this workspace jump ahead immediately. When the concurrency
+      // service is absent (extension not loaded), the starred state is
+      // persisted but the in-memory priority cache is NOT updated — log a
+      // warning so the degraded behavior is visible (queued agents keep
+      // their old priority until restart or the extension is loaded).
+      if (opts.concurrencyService !== undefined) {
+        opts.concurrencyService.notifyWorkspaceStarred(workspaceId, true);
+      } else {
+        log.warn(
+          "workspaces: starred but concurrency service is not loaded — priority cache not updated",
+          {
+            workspaceId,
+          },
+        );
+      }
+      log.info("workspaces: starred", { workspaceId });
+      const response: WorkspaceResponse = workspace;
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("workspaces: star failure", { err, workspaceId });
+      return c.json({ error: "Failed to star workspace" }, 500);
+    }
+  });
+
+  app.delete("/workspaces/:id/star", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (!isValidWorkspaceSlug(workspaceId)) {
+      return c.json(
+        {
+          error: "Workspace id must be a valid slug (lowercase alphanumeric + hyphens, 1–40 chars)",
+        },
+        400,
+      );
+    }
+    try {
+      const workspace = await opts.conversationStore.setWorkspaceStarred(workspaceId, false);
+      if (opts.concurrencyService !== undefined) {
+        opts.concurrencyService.notifyWorkspaceStarred(workspaceId, false);
+      } else {
+        log.warn(
+          "workspaces: unstarred but concurrency service is not loaded — priority cache not updated",
+          {
+            workspaceId,
+          },
+        );
+      }
+      log.info("workspaces: unstarred", { workspaceId });
+      const response: WorkspaceResponse = workspace;
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("workspaces: unstar failure", { err, workspaceId });
+      return c.json({ error: "Failed to unstar workspace" }, 500);
     }
   });
 

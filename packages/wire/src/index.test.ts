@@ -42,19 +42,24 @@ describe("@dispatch/wire — Computer / Workspace shapes", () => {
     expect(entry.usageCount).toBe(3);
   });
 
-  it("a Workspace carries defaultComputerId (null = local)", () => {
+  it("a Workspace carries defaultComputerId (null = local) and starred", () => {
     const remote: Workspace = {
       id: "default",
       title: "Default",
       defaultCwd: null,
       defaultComputerId: "myserver",
+      starred: false,
       createdAt: 0,
       lastActivityAt: 0,
     };
     expect(remote.defaultComputerId).toBe("myserver");
+    expect(remote.starred).toBe(false);
 
     const local: Workspace = { ...remote, defaultComputerId: null };
     expect(local.defaultComputerId).toBeNull();
+
+    const starred: Workspace = { ...remote, starred: true };
+    expect(starred.starred).toBe(true);
   });
 });
 
