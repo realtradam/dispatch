@@ -104,6 +104,8 @@ EnvironmentFile=/etc/dispatch/env
 WorkingDirectory=/var/lib/dispatch
 Restart=on-failure
 RestartSec=5
+MemoryHigh=20G
+MemoryMax=24G
 StandardOutput=journal
 StandardError=journal
 

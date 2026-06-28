@@ -30,6 +30,9 @@ import {
   defaultDispatchPolicy,
   delayFor,
   generateTurnId,
+  type MemorySample,
+  memoryDelta,
+  memorySampleAttributes,
   resolveModelName,
   resolveReasoningEffort,
 } from "./pure.js";
@@ -331,6 +334,13 @@ export interface SessionOrchestrator {
   subscribe(conversationId: string, listener: TurnEventListener): () => void;
   isActive(conversationId: string): boolean;
   /**
+   * The number of conversations currently driving a turn (in the
+   * `activeConversations` set). Used by host-bin's periodic memory telemetry
+   * to tag each RSS sample with the active-conversation count, so growth can
+   * be attributed to the streaming/turn path vs an idle baseline.
+   */
+  getActiveConversationCount(): number;
+  /**
    * Explicitly close a conversation (the user closed its tab — distinct from a
    * socket disconnect, which never touches the turn): aborts any in-flight turn
    * (the kernel finishes with `finishReason: "aborted"`, partial messages are
@@ -431,6 +441,16 @@ export interface SessionOrchestratorDeps {
   readonly logger?: Logger;
   /** Injected monotonic-ish clock (ms) forwarded to RunTurnInput for timing events. */
   readonly now?: () => number;
+  /**
+   * Optional process.memoryUsage() sampler, injected for testability. When
+   * present, the orchestrator captures a sample immediately before and after
+   * each turn's stream completes (`deps.runTurn`) and logs the per-turn delta
+   * tagged with conversationId + turnId — correlating RSS growth with the
+   * streaming path (the prime leak suspect). When absent (undefined), no
+   * per-turn memory telemetry is emitted (feature degrades off cleanly).
+   * Pure decision logic stays unchanged; this is additive observability.
+   */
+  readonly sampleMemory?: () => MemorySample;
   /** Emit a lifecycle event hook to subscribers. Injected from host. */
   readonly emit?: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
 }
@@ -886,6 +906,18 @@ export function createSessionOrchestrator(
         // FE to syncTail during generation (CR-6).
         await deps.conversationStore.append(conversationId, [userMsg]);
 
+        // Per-turn memory telemetry: capture a sample immediately BEFORE the
+        // stream starts. Paired with the post-stream sample below, this
+        // measures the streaming path's memory footprint per turn (the prime
+        // leak suspect — AI-SDK streaming buffers + per-turn message arrays).
+        // Tagged with conversationId + turnId via the turnLogger's correlation
+        // context. Additive observability only — does not alter the stream.
+        const sampleMem = deps.sampleMemory;
+        const memBefore = sampleMem?.();
+        if (memBefore !== undefined) {
+          turnLogger?.debug("memory:turn:before", memorySampleAttributes(memBefore));
+        }
+
         let stepsPersisted = false;
         const result = await deps.runTurn({
           ...opts,
@@ -898,6 +930,23 @@ export function createSessionOrchestrator(
             stepsPersisted = true;
           },
         });
+
+        // Per-turn memory telemetry: capture a sample immediately AFTER the
+        // stream completes and log the per-turn delta vs `memBefore`. A
+        // positive rss delta on a sealed turn flags memory retained by the
+        // streaming path (the leak we are localizing). No I/O beyond the
+        // injected sampler; pure delta computation via memoryDelta(). The
+        // delta attributes carry a `delta` prefix so the absolute "after"
+        // values and the per-turn delta coexist without key collision.
+        if (memBefore !== undefined) {
+          const memAfter = sampleMem?.();
+          if (memAfter !== undefined) {
+            turnLogger?.info("memory:turn:after", {
+              ...memorySampleAttributes(memAfter),
+              ...memorySampleAttributes(memoryDelta(memBefore, memAfter), "delta"),
+            });
+          }
+        }
 
         // Fallback: if onStepComplete was never called (e.g., a fake
         // runTurn in tests), persist all result messages as a batch.
@@ -1040,6 +1089,10 @@ export function createSessionOrchestrator(
 
     isActive(conversationId) {
       return activeTurns.has(conversationId);
+    },
+
+    getActiveConversationCount() {
+      return activeConversations.size;
     },
 
     closeConversation(conversationId) {

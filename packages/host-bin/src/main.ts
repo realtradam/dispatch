@@ -21,13 +21,20 @@ import {
   type SecretsAccess,
   type StorageNamespace,
 } from "@dispatch/kernel";
-import { extension as lspExt } from "@dispatch/lsp";
+// LSP temporarily disabled — crashes (unhandled JSON parse, ENOENT on
+// transient .old_modules dirs) and a memory leak. Re-enable after fix.
+// import { extension as lspExt } from "@dispatch/lsp";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
-import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
+import {
+  type MemorySample,
+  memorySampleAttributes,
+  extension as sessionOrchestratorExt,
+  sessionOrchestratorHandle,
+} from "@dispatch/session-orchestrator";
 import { extension as skillsExt } from "@dispatch/skills";
 import { extension as sshExt } from "@dispatch/ssh";
 import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
@@ -49,6 +56,7 @@ import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
 import { loadExternalExtensions } from "./load-external.js";
+import { startMemoryTelemetry } from "./mem-telemetry.js";
 
 function createEmptySecrets(): SecretsAccess {
   return {
@@ -101,7 +109,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
   skillsExt,
   systemPromptExt,
   cacheWarmingExt,
-  lspExt,
+  // lspExt,  // LSP temporarily disabled — see import above
   // ssh declares `dependsOn: ["exec-backend"]` and PROVIDES the remote
   // exec-backend factory + the ComputerService the HTTP routes delegate to.
   // Its lookups are lazy (tool-/request-time), but it is placed after
@@ -227,10 +235,45 @@ async function boot(): Promise<void> {
     }
   }
 
+  // Periodic memory telemetry — leak-localization edge effect (AGENTS.md:
+  // timers are edge effects owned by host-bin, the composition root, NOT the
+  // kernel). Logs process.memoryUsage() every 60s tagged with the active-
+  // conversation count, and every 5 min runs Bun.gc(true) + logs RSS
+  // before/after to distinguish live retained objects from GC fragmentation.
+  // The per-turn before/after sampling lives in session-orchestrator; this
+  // owns the PERIODIC baseline. All effects are injected (no ambient state);
+  // stop() is cleared on shutdown so timers never leak across a restart.
+  let memoryTelemetry: { stop: () => void } | undefined;
+  let activeConvCountFn: (() => number) | undefined;
+  try {
+    const orchestrator = host.getHostAPI().getService(sessionOrchestratorHandle);
+    activeConvCountFn = () => orchestrator.getActiveConversationCount();
+    memoryTelemetry = startMemoryTelemetry({
+      logger: logger.child({ extensionId: "mem-telemetry" }),
+      sampleMemory: (): MemorySample => {
+        const m = process.memoryUsage();
+        return {
+          rss: m.rss,
+          heapUsed: m.heapUsed,
+          heapTotal: m.heapTotal,
+          external: m.external,
+          arrayBuffers: m.arrayBuffers,
+        };
+      },
+      gc: () => Bun.gc(true),
+      getActiveConversationCount: () => orchestrator.getActiveConversationCount(),
+    });
+  } catch (err) {
+    logger.error("Memory telemetry not started (session-orchestrator unavailable)", {
+      err,
+    });
+  }
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    memoryTelemetry?.stop();
     logger.info("Shutting down — deactivating extensions");
     await host.deactivate();
     logger.info("Draining collector");
@@ -239,6 +282,38 @@ async function boot(): Promise<void> {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  const memorySnapshot = () => {
+    const m = process.memoryUsage();
+    return memorySampleAttributes({
+      rss: m.rss,
+      heapUsed: m.heapUsed,
+      heapTotal: m.heapTotal,
+      external: m.external,
+      arrayBuffers: m.arrayBuffers,
+    });
+  };
+
+  process.on("unhandledRejection", (reason) => {
+    logger.error("unhandledRejection", {
+      err: reason,
+      handler: "unhandledRejection",
+      activeConversations: activeConvCountFn?.() ?? "unavailable",
+      timestamp: new Date().toISOString(),
+      ...memorySnapshot(),
+    });
+  });
+
+  process.on("uncaughtException", (err) => {
+    logger.error("uncaughtException", {
+      err,
+      handler: "uncaughtException",
+      activeConversations: activeConvCountFn?.() ?? "unavailable",
+      timestamp: new Date().toISOString(),
+      ...memorySnapshot(),
+    });
+    void shutdown();
+  });
 
   logger.info("Dispatch booted");
   console.info("Dispatch booted");

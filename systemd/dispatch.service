@@ -10,6 +10,12 @@ EnvironmentFile=/etc/dispatch/env
 WorkingDirectory=/var/lib/dispatch
 Restart=on-failure
 RestartSec=5
+# Memory-pressure circuit breaker: the server has a memory leak (~2.5 GB/h)
+# that eventually triggers a Bun runtime segfault. These cgroup limits turn
+# the uncontrolled crash into a controlled OOM-kill → clean restart.
+# Machine has 33.24 GB total; 24G hard cap leaves OS headroom.
+MemoryHigh=20G
+MemoryMax=24G
 StandardOutput=journal
 StandardError=journal
 
