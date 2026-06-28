@@ -8,6 +8,7 @@ import type {
   ComputerListResponse,
   ComputerResponse,
   ComputerStatusResponse,
+  ConcurrencyCooldownResponse,
   ConcurrencyLimitResponse,
   ConcurrencyLimitsResponse,
   ConcurrencyStatusResponse,
@@ -31,6 +32,7 @@ import type {
   QueueResponse,
   ReasoningEffortResponse,
   SetCompactPercentRequest,
+  SetConcurrencyCooldownRequest,
   SetConcurrencyLimitRequest,
   SetConversationComputerRequest,
   SetSystemPromptTemplateRequest,
@@ -685,6 +687,53 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
     opts.concurrencyService.removeLimit(providerId);
     return c.json({ ok: true, providerId }, 200);
+  });
+
+  app.get("/concurrency/cooldown/:providerId", (c) => {
+    const providerId = c.req.param("providerId");
+    if (opts.concurrencyService === undefined) {
+      return c.json({ error: "Concurrency service not available" }, 503);
+    }
+    // A cooldown may be the default (when a limit is configured but no explicit
+    // cooldown was set) or explicitly set. getCooldown returns undefined only
+    // when the provider has NO state at all (no limit, no cooldown) — treat that
+    // as "not configured".
+    const cooldownMs = opts.concurrencyService.getCooldown(providerId);
+    if (cooldownMs === undefined) {
+      return c.json({ error: "No concurrency configuration for this provider" }, 404);
+    }
+    const body: ConcurrencyCooldownResponse = { providerId, cooldownMs };
+    return c.json(body, 200);
+  });
+
+  app.put("/concurrency/cooldown/:providerId", async (c) => {
+    const providerId = c.req.param("providerId");
+    if (opts.concurrencyService === undefined) {
+      return c.json({ error: "Concurrency service not available" }, 503);
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      log.warn("concurrency: invalid JSON body");
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    const parsed = body as SetConcurrencyCooldownRequest;
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      typeof parsed.cooldownMs !== "number" ||
+      !Number.isInteger(parsed.cooldownMs) ||
+      parsed.cooldownMs < 0
+    ) {
+      return c.json({ error: "Body must be { cooldownMs: <non-negative integer> }" }, 400);
+    }
+
+    opts.concurrencyService.setCooldown(providerId, parsed.cooldownMs);
+    const responseBody: ConcurrencyCooldownResponse = { providerId, cooldownMs: parsed.cooldownMs };
+    return c.json(responseBody, 200);
   });
 
   app.get("/concurrency/status", (c) => {

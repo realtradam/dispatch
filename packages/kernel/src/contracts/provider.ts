@@ -104,6 +104,19 @@ export interface ProviderStreamOptions {
 }
 
 /**
+ * A snapshot of the provider's current upstream usage. Returned by a
+ * provider's optional `getUsage` so a concurrency limiter can gate slot grants
+ * on the REAL upstream in-flight count (not just the limiter's local accounting,
+ * which lags the upstream `concurrent_sessions` counter by the release
+ * cooldown). `concurrentSessions` is the number of requests the provider counts
+ * as currently in flight.
+ */
+export interface ProviderUsage {
+  /** Upstream count of currently in-flight (generating) sessions. */
+  readonly concurrentSessions: number;
+}
+
+/**
  * Metadata describing a single model a provider can serve. Returned by
  * `listModels` so a catalog (e.g. the credential-store) can enumerate the
  * `<credentialName>/<model>` choices a client may select. Kept minimal — `id`
@@ -154,4 +167,18 @@ export interface ProviderContract {
    * credentials in; today the provider uses the key it resolved at activate.
    */
   readonly listModels?: () => Promise<readonly ModelInfo[]>;
+
+  /**
+   * Fetch the provider's current upstream usage snapshot. Optional: a provider
+   * that cannot (or chooses not to) report usage omits it, and a concurrency
+   * limiter falls back to cooldown-only slot recycling (no usage gate). When
+   * present, the limiter polls this before admitting a QUEUED agent and grants
+   * only when `concurrentSessions` is below the configured limit — preventing an
+   * N+1 overshoot from the upstream accounting lag.
+   *
+   * May return `undefined` (e.g. the endpoint returned an unexpected shape or a
+   * non-200) — the limiter treats `undefined` as "no usage info available" and
+   * falls back to granting (cooldown-only behavior) for that poll.
+   */
+  readonly getUsage?: () => Promise<ProviderUsage | undefined>;
 }

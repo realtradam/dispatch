@@ -8,6 +8,7 @@ export type {
 export { convertMessages } from "./convert-messages.js";
 export type { OpenAITool } from "./convert-tools.js";
 export { convertTools } from "./convert-tools.js";
+export { getUsage } from "./getUsage.js";
 export { isVisionModelId, parseModelList } from "./listModels.js";
 export { parseSSELines } from "./parse-sse.js";
 export type { CreateOpenAICompatProviderOpts } from "./provider.js";
