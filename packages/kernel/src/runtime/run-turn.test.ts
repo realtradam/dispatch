@@ -2899,6 +2899,335 @@ describe("runTurn", () => {
     });
   });
 
+  // ── onStepBoundary (in-flight history replacement) ──────────────────────
+  //
+  // PURE tests: a capturing provider + a fake `onStepBoundary` that returns a
+  // replacement message list (or void). The kernel must adopt the returned
+  // list as its working history for subsequent steps. ZERO mocks of
+  // `@dispatch/*` — the hook is injected like `drainSteering`.
+
+  describe("onStepBoundary", () => {
+    it("returns a replacement → next step's provider input is the replaced history (old messages dropped)", async () => {
+      const compactedHistory: ChatMessage[] = [
+        { role: "system", chunks: [{ type: "text", text: "SUMMARY" }] },
+        { role: "user", chunks: [{ type: "text", text: "recent" }] },
+      ];
+      let boundaryCallCount = 0;
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "usage", usage: { inputTokens: 999, outputTokens: 1 } },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        onStepBoundary: ({ messages }) => {
+          boundaryCallCount++;
+          // Sanity: the kernel passes the full running history at the boundary
+          // (user, assistant tool-call, tool result) — 3 messages.
+          expect(messages.length).toBe(3);
+          return compactedHistory;
+        },
+      });
+
+      expect(boundaryCallCount).toBe(1);
+      expect(capturedMessages).toHaveLength(2);
+      // The second step must see ONLY the replaced history — the original
+      // 3 messages are gone, replaced by [SUMMARY, recent].
+      const secondStepMessages = capturedMessages[1] ?? [];
+      expect(secondStepMessages).toHaveLength(2);
+      expect(secondStepMessages[0]).toEqual(compactedHistory[0]);
+      expect(secondStepMessages[1]).toEqual(compactedHistory[1]);
+    });
+
+    it("returns undefined → history unchanged (byte-identical to omitting the hook)", async () => {
+      let boundaryCallCount = 0;
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        onStepBoundary: () => {
+          boundaryCallCount++;
+          return undefined;
+        },
+      });
+
+      expect(boundaryCallCount).toBe(1);
+      const secondStepMessages = capturedMessages[1] ?? [];
+      // user, assistant(tool-call), tool-result — unchanged.
+      expect(secondStepMessages).toHaveLength(3);
+      expect(secondStepMessages[0]?.role).toBe("user");
+      expect(secondStepMessages[1]?.role).toBe("assistant");
+      expect(secondStepMessages[2]?.role).toBe("tool");
+    });
+
+    it("returns an empty array → treated as no replacement (history unchanged)", async () => {
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        onStepBoundary: () => [],
+      });
+
+      const secondStepMessages = capturedMessages[1] ?? [];
+      // Empty replacement is ignored — history unchanged.
+      expect(secondStepMessages).toHaveLength(3);
+    });
+
+    it("NOT called when a step has no tool calls (text-only turn) — there is no next step", async () => {
+      let boundaryCallCount = 0;
+      const provider = createFakeProvider([
+        [
+          { type: "text-delta", delta: "hello" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        onStepBoundary: () => {
+          boundaryCallCount++;
+          return undefined;
+        },
+      });
+
+      expect(boundaryCallCount).toBe(0);
+    });
+
+    it("multiple tool-call steps → called once per tool-call step, AFTER drainSteering (steering present in messages)", async () => {
+      let boundaryCallCount = 0;
+      const steeringMessage: ChatMessage = {
+        role: "user",
+        chunks: [{ type: "text", text: "steer!" }],
+      };
+      let sawSteeringAtBoundary = false;
+
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "tool-call", toolCallId: "tc2", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        drainSteering: () => [steeringMessage],
+        onStepBoundary: ({ messages }) => {
+          boundaryCallCount++;
+          // drainSteering runs BEFORE onStepBoundary, so the steering message
+          // must already be present in the boundary's `messages`.
+          if (messages.some((m) => m === steeringMessage)) {
+            sawSteeringAtBoundary = true;
+          }
+          return undefined;
+        },
+      });
+
+      // Steps 0 and 1 produced tool calls → boundary once each.
+      // Step 2 (text-only) ends the turn → no boundary. Total = 2.
+      expect(boundaryCallCount).toBe(2);
+      expect(sawSteeringAtBoundary).toBe(true);
+      expect(capturedMessages).toHaveLength(3);
+    });
+
+    it("receives the step's usage as stepUsage", async () => {
+      const seenUsages: Array<{ inputTokens: number; outputTokens: number }> = [];
+      const { provider } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "usage", usage: { inputTokens: 4242, outputTokens: 17 } },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        onStepBoundary: ({ stepUsage }) => {
+          seenUsages.push({
+            inputTokens: stepUsage.inputTokens,
+            outputTokens: stepUsage.outputTokens,
+          });
+          return undefined;
+        },
+      });
+
+      expect(seenUsages).toEqual([{ inputTokens: 4242, outputTokens: 17 }]);
+    });
+
+    it("omitted → strict no-op (byte-identical to before)", async () => {
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        // onStepBoundary omitted — must be a strict no-op.
+      });
+
+      const secondStepMessages = capturedMessages[1] ?? [];
+      expect(secondStepMessages).toHaveLength(3);
+      expect(result.messages).toHaveLength(3);
+    });
+
+    it("replacement adopted across multiple subsequent steps (history stays compacted)", async () => {
+      const compactedHistory: ChatMessage[] = [
+        { role: "system", chunks: [{ type: "text", text: "SUMMARY" }] },
+      ];
+      let boundaryCallCount = 0;
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "tool-call", toolCallId: "tc2", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        // Compact only at the FIRST boundary; subsequent boundaries return void.
+        onStepBoundary: ({ messages }) => {
+          boundaryCallCount++;
+          if (boundaryCallCount === 1) {
+            // Pre-replacement: user + assistant(tool-call) + tool result = 3.
+            expect(messages.length).toBe(3);
+            return compactedHistory;
+          }
+          return undefined;
+        },
+      });
+
+      expect(boundaryCallCount).toBe(2);
+      // After the FIRST boundary compacts to [SUMMARY], step 1's provider call
+      // (captured[1]) sees ONLY [SUMMARY] — the original user message is GONE,
+      // proving the replacement took effect before the next step.
+      const secondStepMessages = capturedMessages[1] ?? [];
+      expect(secondStepMessages).toHaveLength(1);
+      expect(secondStepMessages[0]).toEqual(compactedHistory[0]);
+      // Step 1 then produced tc2 + a tool result (pushed onto messages), so
+      // step 2's provider call (captured[2]) sees [SUMMARY, assistant(tc2),
+      // tool-result] = 3 — the compaction PERSISTED across step 1→2 (the
+      // SUMMARY is still heading the history; the original user message
+      // never came back).
+      const thirdStepMessages = capturedMessages[2] ?? [];
+      expect(thirdStepMessages).toHaveLength(3);
+      expect(thirdStepMessages[0]).toEqual(compactedHistory[0]);
+      expect(thirdStepMessages[1]?.role).toBe("assistant");
+      expect(thirdStepMessages[2]?.role).toBe("tool");
+    });
+  });
+
   // ── Retry with backoff ──────────────────────────────────────────────────
   //
   // PURE tests: a fake `sleep` (records calls, resolves instantly, can abort
