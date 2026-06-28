@@ -720,8 +720,10 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         // and append them after the tool results, before the next call.
         // The kernel owns no queue and names no feature — it just calls
         // the callback and appends. Emits nothing (caller emits the
-        // `steering` AgentEvent in its own wrapper).
-        const steering = input.drainSteering?.() ?? [];
+        // `steering` AgentEvent in its own wrapper). The callback MAY
+        // return a Promise (the shell persists the injected messages
+        // before returning) — `await` handles both sync and async.
+        const steering = (await input.drainSteering?.()) ?? [];
         for (const msg of steering) {
           messages.push(msg);
         }

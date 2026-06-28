@@ -121,13 +121,19 @@ export interface RunTurnInput {
    * results. When omitted or returning an empty array, no injection happens
    * (the runtime is unchanged).
    *
-   * Injected (not ambient) so the kernel stays pure: it owns no queue and
-   * names no feature — it just calls the callback and appends what it gets.
-   * Only invoked when a step PRODUCED tool calls (the tool-result boundary);
-   * a step that ends without tool calls does not drain (the caller decides
-   * what to do with any pending messages after the turn ends).
+   * May return a Promise (the runtime `await`s it): the shell uses this to
+   * PERSIST the injected messages to the store as part of the same critical
+   * section as the injection, so they are never lost (a fire-and-forget
+   * persist would race with the next step's `onStepComplete` append and
+   * collide on the store's seq counter). A sync return is still supported
+   * (backward-compatible). Injected (not ambient) so the kernel stays pure:
+   * it owns no queue and names no feature — it just calls the callback,
+   * awaits it, and appends what it gets. Only invoked when a step PRODUCED
+   * tool calls (the tool-result boundary); a step that ends without tool
+   * calls does not drain (the caller decides what to do with any pending
+   * messages after the turn ends).
    */
-  readonly drainSteering?: () => readonly ChatMessage[];
+  readonly drainSteering?: () => readonly ChatMessage[] | Promise<readonly ChatMessage[]>;
 
   /**
    * Optional. Called by the runtime after each step's messages are finalized
