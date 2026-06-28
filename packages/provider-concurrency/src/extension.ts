@@ -41,14 +41,23 @@ const WATCHDOG_INTERVAL_MS = 30 * 1000;
 const DEFAULT_PAUSE_MS = 30 * 1000;
 const RELEASE_COOLDOWN_MS = 350;
 
-/** Storage key prefix for persisted cooldowns (limits are stored under the bare providerId). */
+/**
+ * Storage key prefixes. Limits are stored under the bare `<providerId>` key
+ * (unchanged for backward compatibility). Cooldowns + the adaptive-headroom
+ * auto-reduce marker are stored under their own prefixed keys so they persist
+ * independently without loadLimits misreading them as limits.
+ */
 const COOLDOWN_KEY_PREFIX = "cooldown:";
+const AUTOREDUCE_KEY_PREFIX = "auto-reduce:";
 
 /**
  * Wrap a `ConcurrencyService` so `setLimit`/`removeLimit`/`setCooldown` persist
  * to the given `StorageNamespace`. All other methods delegate directly to the
  * inner service. Persistence is fire-and-forget — a storage write failure logs
  * a warning but does NOT fail the API call (the in-memory value is already set).
+ *
+ * `restoreLimit` is NOT persisted here — it is a startup restore FROM disk, so
+ * it delegates straight through (the value is already on disk).
  */
 function createPersistedService(
   inner: ConcurrencyService,
@@ -66,7 +75,13 @@ function createPersistedService(
           err: err instanceof Error ? err.message : String(err),
         }),
       );
+      // A MANUAL limit set clears the auto-reduce notice (the user took
+      // control) → drop the persisted auto-reduce marker too.
+      storage.delete(`${AUTOREDUCE_KEY_PREFIX}${providerId}`).catch(() => {
+        /* absent marker is fine */
+      });
     },
+    restoreLimit: inner.restoreLimit.bind(inner),
     removeLimit(providerId) {
       inner.removeLimit(providerId);
       storage.delete(providerId).catch((err) =>
@@ -75,6 +90,9 @@ function createPersistedService(
           err: err instanceof Error ? err.message : String(err),
         }),
       );
+      storage.delete(`${AUTOREDUCE_KEY_PREFIX}${providerId}`).catch(() => {
+        /* absent marker is fine */
+      });
     },
     setCooldown(providerId, cooldownMs) {
       inner.setCooldown(providerId, cooldownMs);
@@ -96,9 +114,14 @@ function createPersistedService(
 }
 
 /**
- * Load saved limits from storage and apply them to the manager.
- * Called during activate, before the service is registered. Skips cooldown
- * keys (prefixed `cooldown:`) — those are loaded by {@link loadCooldowns}.
+ * Load saved limits from storage and apply them to the manager via
+ * `restoreLimit` (NOT `setLimit` — Bug 3). `setLimit` is a MANUAL user action
+ * that clears the auto-reduce notice; using it at startup would wipe the
+ * persisted auto-reduce banner. `restoreLimit` seeds the limit WITHOUT clearing
+ * the notice, and `loadAutoReduce` re-applies the notice afterward.
+ *
+ * Skips prefixed keys (cooldown:/auto-reduce:) — those are loaded by their
+ * own loaders.
  */
 async function loadLimits(
   storage: StorageNamespace,
@@ -108,13 +131,46 @@ async function loadLimits(
   const keys = await storage.keys();
   for (const key of keys) {
     if (key.startsWith(COOLDOWN_KEY_PREFIX)) continue; // cooldown settings
+    if (key.startsWith(AUTOREDUCE_KEY_PREFIX)) continue; // auto-reduce markers
     const providerId = key;
     const raw = await storage.get(providerId);
     if (raw === null) continue;
     const limit = Number.parseInt(raw, 10);
     if (!Number.isNaN(limit) && limit > 0) {
-      manager.setLimit(providerId, limit);
+      manager.restoreLimit(providerId, limit);
       logger.info(`provider-concurrency: restored limit ${limit} for "${providerId}"`);
+    }
+  }
+}
+
+/**
+ * Load saved auto-reduce markers and re-apply them via `restoreLimit` so the
+ * frontend banner survives a restart (Bug 3). A marker is stored under
+ * `auto-reduce:<providerId>` with the value = the ORIGINAL limit before
+ * reduction (autoReducedFrom). The current (reduced) limit was already restored
+ * by {@link loadLimits}; this call re-marks it as auto-reduced.
+ */
+async function loadAutoReduce(
+  storage: StorageNamespace,
+  manager: ConcurrencyService,
+  logger: Logger,
+): Promise<void> {
+  const keys = await storage.keys(AUTOREDUCE_KEY_PREFIX);
+  for (const key of keys) {
+    const providerId = key.slice(AUTOREDUCE_KEY_PREFIX.length);
+    if (providerId.length === 0) continue;
+    const raw = await storage.get(key);
+    if (raw === null) continue;
+    const autoReducedFrom = Number.parseInt(raw, 10);
+    if (!Number.isNaN(autoReducedFrom) && autoReducedFrom > 0) {
+      const currentLimit = manager.getLimit(providerId);
+      if (currentLimit !== undefined && currentLimit < autoReducedFrom) {
+        manager.restoreLimit(providerId, currentLimit, autoReducedFrom);
+        logger.info(
+          `provider-concurrency: restored auto-reduce notice for "${providerId}" ` +
+            `(${autoReducedFrom} -> ${currentLimit})`,
+        );
+      }
     }
   }
 }
@@ -185,21 +241,37 @@ export async function activate(host: HostAPI): Promise<void> {
         oldLimit,
         newLimit,
       });
-      // Persist the reduced (one-way) limit so it survives a restart.
+      // Persist the reduced (one-way) limit so it survives a restart, AND the
+      // auto-reduce marker (autoReducedFrom) so the banner survives too (Bug 3).
       storage.set(providerId, String(newLimit)).catch((err) =>
         logger.warn("provider-concurrency: failed to persist auto-reduced limit", {
           providerId,
           err: err instanceof Error ? err.message : String(err),
         }),
       );
+      storage.set(`${AUTOREDUCE_KEY_PREFIX}${providerId}`, String(oldLimit)).catch((err) =>
+        logger.warn("provider-concurrency: failed to persist auto-reduce marker", {
+          providerId,
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+    onUsagePollError: (providerId, err) => {
+      // A throwing getUsage() is treated as "no usage info" (cooldown-only
+      // fallback) by the manager — this is WARN-level observability only (Bug 2).
+      logger.warn("provider-concurrency: usage poll failed — falling back to cooldown-only", {
+        providerId,
+        err: err instanceof Error ? err.message : String(err),
+      });
     },
   };
 
   const inner = createConcurrencyManager(managerOpts);
 
-  // Restore persisted limits + cooldowns before registering the service so the
-  // first request sees the correct configuration.
+  // Restore persisted limits + auto-reduce notices + cooldowns before registering
+  // the service so the first request sees the correct configuration.
   await loadLimits(storage, inner, logger);
+  await loadAutoReduce(storage, inner, logger);
   await loadCooldowns(storage, inner, logger);
 
   const service = createPersistedService(inner, storage, logger);

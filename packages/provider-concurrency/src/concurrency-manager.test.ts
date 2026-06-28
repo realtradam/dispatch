@@ -64,6 +64,7 @@ function createManager(opts?: {
   releaseCooldownMs?: number;
   fetchUsage?: (providerId: string) => Promise<ProviderUsage | undefined>;
   onLimitReduced?: (providerId: string, newLimit: number, oldLimit: number) => void;
+  onUsagePollError?: (providerId: string, err: unknown) => void;
 }): {
   manager: ConcurrencyService;
   timers: ReturnType<typeof createFakeTimers>;
@@ -77,6 +78,7 @@ function createManager(opts?: {
     ...(opts?.releaseCooldownMs !== undefined ? { releaseCooldownMs: opts.releaseCooldownMs } : {}),
     ...(opts?.fetchUsage !== undefined ? { fetchUsage: opts.fetchUsage } : {}),
     ...(opts?.onLimitReduced !== undefined ? { onLimitReduced: opts.onLimitReduced } : {}),
+    ...(opts?.onUsagePollError !== undefined ? { onUsagePollError: opts.onUsagePollError } : {}),
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     setInterval: timers.setInterval,
@@ -796,5 +798,171 @@ describe("createConcurrencyManager", () => {
       // Advancing past 1s must NOT throw or fire at a drained state.
       expect(() => timers.advance(1000)).not.toThrow();
     });
+  });
+
+  // ─── Bug 1: usage-gate fast-path anti-overshoot ─────────────────────────
+
+  it("Bug 1: a concurrent acquire during a recycle-poll queues instead of fast-pathing (no overshoot)", async () => {
+    // The poll resolves only on an explicit microtask flush (deferred), so a
+    // concurrent acquire arriving mid-poll must see gatePolling/inflated inFlight.
+    let resolvePoll: (snap: ProviderUsage) => void = () => {};
+    const pollCalled: number[] = [];
+    const { manager } = createManager({
+      fetchUsage: () =>
+        new Promise<ProviderUsage>((resolve) => {
+          pollCalled.push(1);
+          resolvePoll = resolve;
+        }),
+    });
+    manager.setLimit("umans", 1);
+    manager.setCooldown("umans", 0);
+
+    // Hold the single slot.
+    const release1 = await manager.acquire("umans", "c1", 0);
+    expect(manager.getStatus("umans")?.inFlight).toBe(1);
+
+    // Queue a waiter (c2). Cooldown is 0, but the gate defers admission until a poll.
+    let c2Granted = false;
+    const p2 = manager.acquire("umans", "c2", 10).then((r) => {
+      c2Granted = true;
+      return r;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Release c1 → recycle → poll started (inFlight held inflated during poll).
+    release1();
+    await Promise.resolve(); // let recycle schedule the poll
+    await Promise.resolve();
+    expect(pollCalled.length).toBeGreaterThanOrEqual(1);
+    // inFlight is still 1 (the recycle's decrement is deferred until the poll).
+    expect(manager.getStatus("umans")?.inFlight).toBe(1);
+
+    // A NEW acquire arriving mid-poll: inFlight is 1 (== limit) → must QUEUE,
+    // not fast-path. Even if it saw inFlight < limit, gatePolling would route it
+    // through the queue. Either way it must NOT be granted yet.
+    let c3Granted = false;
+    const p3 = manager.acquire("umans", "c3", 20).then((r) => {
+      c3Granted = true;
+      return r;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(c3Granted).toBe(false);
+    expect(manager.getStatus("umans")?.queued).toBeGreaterThanOrEqual(1);
+
+    // Resolve the poll with room (0 < 1) → c2 admitted (inFlight: decrement then
+    // re-increment for the grant). c3 stays queued (one admission per poll).
+    resolvePoll({ concurrentSessions: 0 });
+    const release2 = await p2;
+    expect(c2Granted).toBe(true);
+    // c3 NOT admitted by this poll (one per poll).
+    expect(c3Granted).toBe(false);
+
+    release2();
+    void p3;
+  });
+
+  it("Bug 1: when no poll is in flight, the fast-path still grants immediately (common-case throughput preserved)", async () => {
+    const { manager } = createManager({
+      fetchUsage: async () => ({ concurrentSessions: 0 }),
+    });
+    manager.setLimit("umans", 4);
+
+    // Nowhere near the limit, no recycle in progress → fast-path, no poll.
+    const release = await manager.acquire("umans", "c1", 0);
+    expect(manager.getStatus("umans")?.inFlight).toBe(1);
+    release();
+  });
+
+  // ─── Bug 2: fetchUsage exceptions don't become unhandled rejections ──────
+
+  it("Bug 2: a throwing fetchUsage is treated as undefined (cooldown-only fallback) and fires onUsagePollError", async () => {
+    let pollError: { providerId: string; err: unknown } | undefined;
+    const { manager } = createManager({
+      fetchUsage: async () => {
+        throw new Error("usage endpoint exploded");
+      },
+      onUsagePollError: (providerId, err) => {
+        pollError = { providerId, err };
+      },
+    });
+    manager.setLimit("umans", 1);
+    manager.setCooldown("umans", 0);
+
+    const release1 = await manager.acquire("umans", "c1", 0);
+    // Queue a waiter; release → recycle → poll THROWS.
+    const p2 = manager.acquire("umans", "c2", 10);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Must NOT reject / throw unhandled — swallow + fall back to granting.
+    release1();
+    const release2 = await p2; // resolves (cooldown-only fallback grants).
+    expect(release2).toBeTypeOf("function");
+    expect(pollError?.providerId).toBe("umans");
+    expect(pollError?.err).toBeInstanceOf(Error);
+    release2();
+  });
+
+  it("Bug 2: no unhandled promise rejection is left when fetchUsage throws (process stays clean)", async () => {
+    const rejections: unknown[] = [];
+    const handler = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", handler);
+    try {
+      const { manager } = createManager({
+        fetchUsage: async () => {
+          throw new Error("boom");
+        },
+      });
+      manager.setLimit("umans", 1);
+      manager.setCooldown("umans", 0);
+
+      const release1 = await manager.acquire("umans", "c1", 0);
+      manager.acquire("umans", "c2", 10).then((r) => r()); // queue + auto-release
+      await Promise.resolve();
+      await Promise.resolve();
+      release1();
+      // Let the swallowed poll + grant settle fully.
+      await new Promise((r) => setTimeout(r, 5));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", handler);
+    }
+  });
+
+  // ─── Bug 3: persisted auto-reduced limit keeps its notice across restart ─
+
+  it("Bug 3: restoreLimit (startup) preserves the auto-reduce notice that setLimit (manual) clears", () => {
+    const { manager } = createManager();
+    manager.setLimit("umans", 4);
+    manager.reportRateLimit("umans"); // 4 -> 3, autoReduced
+    expect(manager.getStatus("umans")?.autoReduced).toBe(true);
+    expect(manager.getStatus("umans")?.autoReducedFrom).toBe(4);
+
+    // Simulate a restart: a fresh manager restores the persisted limit (3) +
+    // the auto-reduce marker (autoReducedFrom=4) via restoreLimit.
+    const { manager: restarted } = createManager();
+    restarted.restoreLimit("umans", 3, 4);
+    const status = restarted.getStatus("umans");
+    expect(status?.limit).toBe(3);
+    expect(status?.autoReduced).toBe(true);
+    expect(status?.autoReducedFrom).toBe(4);
+    expect(status?.notice).toContain("auto-reduced to 3");
+
+    // Contrast: a MANUAL setLimit clears the notice (user took control).
+    restarted.setLimit("umans", 4);
+    expect(restarted.getStatus("umans")?.autoReduced).toBe(false);
+    expect(restarted.getStatus("umans")?.autoReducedFrom).toBeUndefined();
+  });
+
+  it("Bug 3: restoreLimit without autoReducedFrom does not synthesize a notice", () => {
+    const { manager } = createManager();
+    manager.restoreLimit("umans", 4);
+    const status = manager.getStatus("umans");
+    expect(status?.limit).toBe(4);
+    expect(status?.autoReduced).toBe(false);
+    expect(status?.notice).toBeUndefined();
   });
 });
