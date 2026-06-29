@@ -20,3 +20,4 @@ reports/
 
 # Local observability journal (runtime artifact)
 .dispatch/journal/
+ai-review-report.md
