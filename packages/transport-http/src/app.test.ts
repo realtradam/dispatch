@@ -800,17 +800,11 @@ describe("POST /chat", () => {
     expect(cap.received?.cwd).toBeUndefined();
   });
 
-  it("sets the conversation title from the request before the turn", async () => {
-    const calls: { conversationId: string; title: string }[] = [];
-    const store: ConversationStore = {
-      ...createFakeConversationStore(),
-      async setConversationTitle(conversationId, title) {
-        calls.push({ conversationId, title });
-      },
-    };
+  it("forwards the title to the orchestrator", async () => {
+    const cap = createCapturingOrchestrator();
     const app = createApp({
-      conversationStore: store,
-      orchestrator: createFakeOrchestrator([]),
+      conversationStore: createFakeConversationStore(),
+      orchestrator: cap,
       credentialStore: createFakeCredentialStore([]),
     });
 
@@ -821,20 +815,15 @@ describe("POST /chat", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(calls).toEqual([{ conversationId: "conv1", title: "My Task" }]);
+    expect(cap.received).toBeDefined();
+    expect(cap.received?.title).toBe("My Task");
   });
 
-  it("forwards a trimmed title to setConversationTitle", async () => {
-    const calls: { conversationId: string; title: string }[] = [];
-    const store: ConversationStore = {
-      ...createFakeConversationStore(),
-      async setConversationTitle(conversationId, title) {
-        calls.push({ conversationId, title });
-      },
-    };
+  it("forwards a trimmed title to the orchestrator", async () => {
+    const cap = createCapturingOrchestrator();
     const app = createApp({
-      conversationStore: store,
-      orchestrator: createFakeOrchestrator([]),
+      conversationStore: createFakeConversationStore(),
+      orchestrator: cap,
       credentialStore: createFakeCredentialStore([]),
     });
 
@@ -845,20 +834,14 @@ describe("POST /chat", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(calls).toEqual([{ conversationId: "conv1", title: "spaced" }]);
+    expect(cap.received?.title).toBe("spaced");
   });
 
-  it("does not call setConversationTitle when title is omitted", async () => {
-    let setTitleCalled = false;
-    const store: ConversationStore = {
-      ...createFakeConversationStore(),
-      async setConversationTitle() {
-        setTitleCalled = true;
-      },
-    };
+  it("does not forward a title when omitted", async () => {
+    const cap = createCapturingOrchestrator();
     const app = createApp({
-      conversationStore: store,
-      orchestrator: createFakeOrchestrator([]),
+      conversationStore: createFakeConversationStore(),
+      orchestrator: cap,
       credentialStore: createFakeCredentialStore([]),
     });
 
@@ -869,20 +852,14 @@ describe("POST /chat", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(setTitleCalled).toBe(false);
+    expect(cap.received?.title).toBeUndefined();
   });
 
-  it("does not call setConversationTitle for a whitespace-only title", async () => {
-    let setTitleCalled = false;
-    const store: ConversationStore = {
-      ...createFakeConversationStore(),
-      async setConversationTitle() {
-        setTitleCalled = true;
-      },
-    };
+  it("does not forward a title for a whitespace-only title", async () => {
+    const cap = createCapturingOrchestrator();
     const app = createApp({
-      conversationStore: store,
-      orchestrator: createFakeOrchestrator([]),
+      conversationStore: createFakeConversationStore(),
+      orchestrator: cap,
       credentialStore: createFakeCredentialStore([]),
     });
 
@@ -893,19 +870,12 @@ describe("POST /chat", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(setTitleCalled).toBe(false);
+    expect(cap.received?.title).toBeUndefined();
   });
 
   it("returns 400 when title is not a string", async () => {
-    let setTitleCalled = false;
-    const store: ConversationStore = {
-      ...createFakeConversationStore(),
-      async setConversationTitle() {
-        setTitleCalled = true;
-      },
-    };
     const app = createApp({
-      conversationStore: store,
+      conversationStore: createFakeConversationStore(),
       orchestrator: createFakeOrchestrator([]),
       credentialStore: createFakeCredentialStore([]),
     });
@@ -919,21 +889,19 @@ describe("POST /chat", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("title");
-    expect(setTitleCalled).toBe(false);
   });
 
-  it("proceeds with the turn even if setConversationTitle throws", async () => {
+  it("does not call setConversationTitle itself (the orchestrator owns it)", async () => {
+    let setTitleCalled = false;
     const store: ConversationStore = {
       ...createFakeConversationStore(),
       async setConversationTitle() {
-        throw new Error("store unavailable");
+        setTitleCalled = true;
       },
     };
     const app = createApp({
       conversationStore: store,
-      orchestrator: createFakeOrchestrator([
-        { type: "done", conversationId: "conv1", turnId: "t1", reason: "stop" },
-      ]),
+      orchestrator: createFakeOrchestrator([]),
       credentialStore: createFakeCredentialStore([]),
     });
 
@@ -944,8 +912,10 @@ describe("POST /chat", () => {
     });
 
     expect(res.status).toBe(200);
-    const text = await res.text();
-    expect(text.trim().split("\n")).toHaveLength(1);
+    // The route must NOT pre-create the meta — that would bypass the
+    // orchestrator's new-conversation workspace/system-prompt init. The
+    // orchestrator sets the title after workspace setup instead.
+    expect(setTitleCalled).toBe(false);
   });
 });
 
