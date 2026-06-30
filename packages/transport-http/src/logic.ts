@@ -59,8 +59,10 @@ export interface ChatCommand {
    * A human-readable title for the conversation tab, set at creation time.
    * Parsed from the `ChatRequest.title` field; trimmed server-side. A
    * whitespace-only value is treated as absent (omitted) so the auto-derived
-   * title applies. Forwarded to the `/chat` route which persists it via the
-   * conversation store's `setConversationTitle` before the turn starts.
+   * title applies. Forwarded to the orchestrator, which persists it via the
+   * conversation store's `setConversationTitle` AFTER the new-conversation
+   * workspace setup (so workspace assignment / first-turn system-prompt
+   * construction are not skipped) and before the first message append.
    */
   readonly title?: string;
   /**
