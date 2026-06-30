@@ -203,4 +203,70 @@ describe("McpClient", () => {
       content: [{ type: "text", text: "too late" }],
     });
   });
+
+  /** A connection whose initialize never responds (simulates a framing-
+   * incompatible server like chrome-devtools-mcp under Content-Length framing):
+   * the pending JSON-RPC request would hang forever without a timeout/abort. */
+  function makeHangingConnection(): Connection {
+    const never = new Promise<unknown>(() => {});
+    return {
+      send: () => never,
+      notify: () => {},
+      onNotification: () => {},
+      close: () => {},
+      pid: 1,
+    };
+  }
+
+  it("initialize raises McpTimeoutError when the server never responds", async () => {
+    const { McpTimeoutError } = await import("./timeout.js");
+    const client = new McpClient({ connection: makeHangingConnection() });
+    await expect(client.initialize(undefined, 20)).rejects.toBeInstanceOf(McpTimeoutError);
+    expect(client.getState()).toBe("error");
+  });
+
+  it("initialize is abortable: an aborting signal rejects immediately", async () => {
+    const client = new McpClient({ connection: makeHangingConnection() });
+    const controller = new AbortController();
+    const p = client.initialize(controller.signal, 50_000);
+    controller.abort();
+    await expect(p).rejects.toThrow("Aborted");
+    expect(client.getState()).toBe("error");
+  });
+
+  it("initialize rejects immediately when the signal is already aborted", async () => {
+    const client = new McpClient({ connection: makeHangingConnection() });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(client.initialize(controller.signal, 50_000)).rejects.toThrow("Aborted");
+  });
+
+  it("listTools raises McpTimeoutError when the server never responds", async () => {
+    const { McpTimeoutError } = await import("./timeout.js");
+    // Reach "connected" with a fast (auto-responding) connection, then swap in
+    // a hanging connection for the tools/list call.
+    const fast = makeMockConnection();
+    const client = new McpClient({ connection: fast });
+    await client.initialize();
+
+    const hanging = makeHangingConnection();
+    // Swap the connection so tools/list hangs.
+    (client as unknown as { connection: Connection }).connection = hanging;
+
+    await expect(client.listTools(undefined, 20)).rejects.toBeInstanceOf(McpTimeoutError);
+  });
+
+  it("listTools is abortable", async () => {
+    const fast = makeMockConnection();
+    const client = new McpClient({ connection: fast });
+    await client.initialize();
+
+    const hanging = makeHangingConnection();
+    (client as unknown as { connection: Connection }).connection = hanging;
+
+    const controller = new AbortController();
+    const p = client.listTools(controller.signal, 50_000);
+    controller.abort();
+    await expect(p).rejects.toThrow("Aborted");
+  });
 });

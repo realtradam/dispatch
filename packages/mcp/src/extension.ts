@@ -18,6 +18,7 @@ import { resolveServers } from "./config.js";
 import type { Logger } from "./manager.js";
 import { McpManager } from "./manager.js";
 import { adaptTool, namespace } from "./registry.js";
+import { MCP_CONNECT_TIMEOUT_MS } from "./timeout.js";
 import type { SpawnedProcess, SpawnProcess } from "./transport.js";
 import { createStdioTransport } from "./transport.js";
 import type { McpServerStatus, McpService, ResolvedMcpServer } from "./types.js";
@@ -111,13 +112,19 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
         }
       }
 
-      async function connectAndRegister(server: ResolvedMcpServer, cwd: string): Promise<void> {
-        const client = await manager.ensureConnected(server, cwd);
+      async function connectAndRegister(
+        server: ResolvedMcpServer,
+        cwd: string,
+        signal?: AbortSignal,
+      ): Promise<void> {
+        const client = await manager.ensureConnected(server, cwd, signal);
         registerToolsFromClient(server.id, client);
 
         // Wire list_changed → re-list → re-register. onToolsChanged replaces
         // the handler; ensureConnected returns the same cached client so this
-        // is idempotent across turns.
+        // is idempotent across turns. The async re-list runs LATER (not during
+        // this filter), so it is NOT bound to the filter's signal (already
+        // done) — it relies on listTools()'s own default timeout instead.
         client.onToolsChanged(async () => {
           try {
             await client.listTools();
@@ -133,18 +140,44 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
 
       // Resolve config + ensure servers connected, then drop tools whose
       // server is not connected. Lazy-spawn happens here (first turn).
+      //
+      // The whole connect phase is wrapped in a per-filter AbortController
+      // that fires on EITHER (a) the turn's signal (`assembly.signal`, so
+      // POST /conversations/:id/stop interrupts a stuck connect immediately)
+      // OR (b) a timeout (`MCP_CONNECT_TIMEOUT_MS`, so a misbehaving /
+      // framing-incompatible server cannot hang the turn forever). On abort
+      // we degrade gracefully: skip MCP tools for this turn rather than block.
       host.addFilter(toolsFilter, async (assembly: ToolAssembly): Promise<ToolAssembly> => {
         const cwd = assembly.cwd ?? deps.getCwd();
         const dispatchMcpJson = await deps.readFile(joinPath(cwd, ".dispatch", "mcp.json"));
         const opencodeJson = await deps.readFile(joinPath(cwd, "opencode.json"));
         const { servers } = resolveServers({ dispatchMcpJson, opencodeJson });
 
-        for (const server of servers) {
-          try {
-            await connectAndRegister(server, cwd);
-          } catch {
-            // Connection failure — the manager tracks broken state.
+        const controller = new AbortController();
+        const parentSignal = assembly.signal;
+        const onParentAbort = (): void => controller.abort();
+        if (parentSignal !== undefined) {
+          if (parentSignal.aborted) {
+            controller.abort();
+          } else {
+            parentSignal.addEventListener("abort", onParentAbort, { once: true });
           }
+        }
+        const timer = setTimeout(() => controller.abort(), MCP_CONNECT_TIMEOUT_MS);
+
+        try {
+          for (const server of servers) {
+            try {
+              await connectAndRegister(server, cwd, controller.signal);
+            } catch {
+              // Connection failure / timeout / aborted — the manager tracks
+              // broken state; we keep going (or abort cascades) below.
+            }
+            if (controller.signal.aborted) break;
+          }
+        } finally {
+          clearTimeout(timer);
+          parentSignal?.removeEventListener("abort", onParentAbort);
         }
 
         const statuses = manager.status(servers);

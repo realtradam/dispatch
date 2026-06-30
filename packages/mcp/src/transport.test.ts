@@ -62,7 +62,7 @@ describe("createStdioTransport", () => {
     connection.close();
   });
 
-  it("connection sends framed messages via stdin", () => {
+  it("connection sends newline-delimited messages via stdin (current MCP spec)", () => {
     const pair = makePipe();
     const spawn: SpawnProcess = () => pair.process;
 
@@ -73,8 +73,33 @@ describe("createStdioTransport", () => {
     const writes = pair.writtenToStdin();
     expect(writes.length).toBe(1);
     const text = new TextDecoder().decode(writes[0]);
-    expect(text).toContain("Content-Length:");
+    // Outgoing framing is newline-delimited JSON (not Content-Length).
+    expect(text).not.toContain("Content-Length:");
     expect(text).toContain('"method":"test/method"');
+    expect(text.endsWith("\n")).toBe(true);
+    connection.close();
+  });
+
+  it("decodes a newline-delimited server response (auto-detect)", async () => {
+    const pair = makePipe();
+    const spawn: SpawnProcess = () => pair.process;
+
+    const { connection } = createStdioTransport({ spawn, command: ["test"] }, "/tmp");
+
+    const resultPromise = connection.send("tools/list");
+
+    // Server responds with newline-delimited JSON (e.g. chrome-devtools-mcp).
+    const response = `${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "t", description: "d", inputSchema: { type: "object" } }] },
+    })}\n`;
+    pair.emitStdout(new TextEncoder().encode(response));
+
+    const result = await resultPromise;
+    expect(result).toEqual({
+      tools: [{ name: "t", description: "d", inputSchema: { type: "object" } }],
+    });
     connection.close();
   });
 

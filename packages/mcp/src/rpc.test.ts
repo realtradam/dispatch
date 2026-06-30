@@ -87,11 +87,10 @@ describe("JsonRpcClient", () => {
     client.request("c");
 
     expect(written.length).toBe(3);
-    // Extract JSON body from Content-Length framed messages
+    // Outgoing messages are newline-delimited JSON (current MCP spec framing).
     const parse = (bytes: Uint8Array): { id: number } => {
       const text = new TextDecoder().decode(bytes);
-      const bodyStart = text.indexOf("\r\n\r\n") + 4;
-      return JSON.parse(text.slice(bodyStart)) as { id: number };
+      return JSON.parse(text.replace(/\r?\n$/, "")) as { id: number };
     };
     const msg1 = parse(written[0]);
     const msg2 = parse(written[1]);
