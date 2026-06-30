@@ -217,7 +217,9 @@ function createDrainingCaptureRunTurn(): {
       captured.push(input);
       if (input.drainSteering !== undefined) {
         drainCalled = true;
-        const drained = input.drainSteering();
+        // The kernel awaits drainSteering (it may return a Promise that
+        // persists the injected messages); the fake mirrors that.
+        const drained = await input.drainSteering();
         drainedMessages.push(...drained);
       }
       return {
@@ -332,6 +334,18 @@ describe("drainSteering", () => {
     expect(steering?.conversationId).toBe("conv-drain");
     expect(steering?.text).toBe("first\n\nsecond");
     expect(steering?.turnId).toMatch(/^turn-/);
+
+    // The steering message was PERSISTED to the store (not just injected into
+    // the kernel's in-memory array). Without this, a user could never see the
+    // steering message, and in-flight compaction (which uses the live messages)
+    // would be the only thing keeping it — but only if it fired.
+    const stored = store.data.get("conv-drain") ?? [];
+    const storedSteering = stored.find(
+      (m) =>
+        m.role === "user" &&
+        m.chunks.some((c) => c.type === "text" && c.text === "first\n\nsecond"),
+    );
+    expect(storedSteering).toBeDefined();
   });
 
   it("drainSteering on an empty queue returns [] and emits nothing", async () => {
