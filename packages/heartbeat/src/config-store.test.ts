@@ -77,6 +77,21 @@ describe("applyConfigUpdate (pure)", () => {
     const untouched = applyConfigUpdate(withEffort, { enabled: true });
     expect(untouched.reasoningEffort).toBe("low");
   });
+
+  it("defaults inactiveOnly to true (the heartbeat is quiet by default while the workspace is busy)", () => {
+    expect(DEFAULT_HEARTBEAT_CONFIG.inactiveOnly).toBe(true);
+  });
+
+  it("applies an inactiveOnly update", () => {
+    const next = applyConfigUpdate(DEFAULT_HEARTBEAT_CONFIG, { inactiveOnly: false });
+    expect(next.inactiveOnly).toBe(false);
+  });
+
+  it("leaves inactiveOnly unchanged when absent from the update", () => {
+    const off = applyConfigUpdate(DEFAULT_HEARTBEAT_CONFIG, { inactiveOnly: false });
+    const untouched = applyConfigUpdate(off, { enabled: true });
+    expect(untouched.inactiveOnly).toBe(false);
+  });
 });
 
 describe("createHeartbeatConfigStore", () => {
@@ -104,6 +119,28 @@ describe("createHeartbeatConfigStore", () => {
     expect(next.enabled).toBe(true);
     expect(next.systemPrompt).toBe("a");
     expect(next.taskPrompt).toBe("c");
+  });
+
+  it("round-trips inactiveOnly through persistence", async () => {
+    const storage = createMemoryStorage();
+    const store = createHeartbeatConfigStore(storage);
+    const next = await store.update("ws-1", { inactiveOnly: false });
+    expect(next.inactiveOnly).toBe(false);
+    const store2 = createHeartbeatConfigStore(storage);
+    expect((await store2.get("ws-1")).inactiveOnly).toBe(false);
+  });
+
+  it("defaults inactiveOnly to true for legacy configs persisted before the field existed", async () => {
+    const storage = createMemoryStorage();
+    // Simulate a config written by an older build that had no inactiveOnly
+    // field (a pre-inactive-only heartbeat config).
+    await storage.set("config:ws-1", JSON.stringify({ enabled: true, intervalMinutes: 5 }));
+    const store = createHeartbeatConfigStore(storage);
+    const config = await store.get("ws-1");
+    expect(config.enabled).toBe(true);
+    expect(config.intervalMinutes).toBe(5);
+    // The missing field defaults ON (feature on by default) — never `undefined`.
+    expect(config.inactiveOnly).toBe(true);
   });
 
   it("lists persisted workspace ids", async () => {
