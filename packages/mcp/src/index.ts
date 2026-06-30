@@ -11,6 +11,12 @@ export { encode, FrameDecoder } from "./framing.js";
 export { type Logger, McpManager, type McpManagerDeps } from "./manager.js";
 export { adaptTool, flattenContent, namespace } from "./registry.js";
 export {
+  MCP_CONNECT_TIMEOUT_MS,
+  MCP_DEFAULT_TIMEOUT_MS,
+  McpTimeoutError,
+  withTimeout,
+} from "./timeout.js";
+export {
   type Connection,
   createStdioTransport,
   type SpawnedProcess,

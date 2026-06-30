@@ -819,6 +819,11 @@ export function createSessionOrchestrator(
           conversationId,
           ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
           ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
+          // Thread the turn's abort signal into the filter chain so a filter
+          // awaiting slow I/O (the MCP tools filter connecting to MCP servers)
+          // can be interrupted by POST /conversations/:id/stop instead of
+          // blocking the turn until its own timeout fires.
+          signal: controller.signal,
         });
         const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
         const turnLogger = deps.logger?.child({ conversationId, turnId });

@@ -15,6 +15,15 @@ export interface ToolAssembly {
   readonly computerId?: string;
   /** The conversation this turn belongs to. */
   readonly conversationId: string;
+  /**
+   * The turn's abort signal, threaded through the filter chain so a filter that
+   * awaits slow I/O (e.g. the MCP tools filter connecting to MCP servers) can be
+   * interrupted by `POST /conversations/:id/stop` instead of blocking the turn
+   * until its own timeout fires. Optional: omitted by paths that have no turn
+   * controller (e.g. the cache-warm probe), in which case filters fall back to
+   * their own timeouts. Filters that return a fresh assembly MUST preserve it.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** Filter chain run once per turn to transform the tool set before it reaches runTurn. */
@@ -55,5 +64,6 @@ export function filterRemoteIncompatibleTools(assembly: ToolAssembly): ToolAssem
     ...(assembly.cwd !== undefined ? { cwd: assembly.cwd } : {}),
     ...(assembly.computerId !== undefined ? { computerId: assembly.computerId } : {}),
     conversationId: assembly.conversationId,
+    ...(assembly.signal !== undefined ? { signal: assembly.signal } : {}),
   };
 }

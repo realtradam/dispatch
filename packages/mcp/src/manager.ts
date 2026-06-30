@@ -104,7 +104,19 @@ export class McpManager {
     return results;
   }
 
-  async ensureConnected(server: ResolvedMcpServer, cwd: string): Promise<McpClient> {
+  /**
+   * Ensure a client for `server` is connected, lazily spawning + handshaking on
+   * first access. The optional `signal` (the turn's abort signal) is forwarded
+   * into the `initialize`/`listTools` handshake so `POST /conversations/:id/stop`
+   * can interrupt a stuck connect; the operations are independently bounded by
+   * their own default timeout, so a misbehaving server cannot hang a turn even
+   * when no signal is supplied.
+   */
+  async ensureConnected(
+    server: ResolvedMcpServer,
+    cwd: string,
+    signal?: AbortSignal,
+  ): Promise<McpClient> {
     const existing = this.clients.get(server.id);
     if (existing && existing.client.getState() === "connected") {
       return existing.client;
@@ -119,7 +131,7 @@ export class McpManager {
       this.broken.delete(server.id);
     }
 
-    await this.spawnClient(server, cwd);
+    await this.spawnClient(server, cwd, signal);
     const entry = this.clients.get(server.id);
     if (!entry) {
       throw new Error(`Failed to spawn MCP client for ${server.id}`);
@@ -131,11 +143,15 @@ export class McpManager {
     return entry.client;
   }
 
-  private async spawnClient(server: ResolvedMcpServer, cwd: string): Promise<void> {
+  private async spawnClient(
+    server: ResolvedMcpServer,
+    cwd: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const existingSpawn = this.spawning.get(server.id);
     if (existingSpawn) return existingSpawn;
 
-    const spawnPromise = this.doSpawn(server, cwd);
+    const spawnPromise = this.doSpawn(server, cwd, signal);
     this.spawning.set(server.id, spawnPromise);
 
     try {
@@ -145,7 +161,11 @@ export class McpManager {
     }
   }
 
-  private async doSpawn(server: ResolvedMcpServer, cwd: string): Promise<void> {
+  private async doSpawn(
+    server: ResolvedMcpServer,
+    cwd: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const { connection, promise } = this.connectionFactory(server, cwd);
 
     const client = new McpClient({ connection });
@@ -153,7 +173,7 @@ export class McpManager {
     const entry: ClientEntry = {
       client,
       server,
-      promise: this.initClient(client, server, promise),
+      promise: this.initClient(client, server, promise, signal),
     };
 
     this.clients.set(server.id, entry);
@@ -172,10 +192,11 @@ export class McpManager {
     client: McpClient,
     server: ResolvedMcpServer,
     _transportPromise: Promise<void>,
+    signal?: AbortSignal,
   ): Promise<void> {
     try {
-      await client.initialize();
-      await client.listTools();
+      await client.initialize(signal);
+      await client.listTools(signal);
       this.deps.logger?.info("MCP server connected", {
         serverId: server.id,
         toolCount: String(client.getTools().length),

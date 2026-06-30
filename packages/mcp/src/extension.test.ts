@@ -81,6 +81,9 @@ describe("filterMcpTools (pure)", () => {
 interface FakeServer {
   tools: McpToolInfo[];
   failInitialize: boolean;
+  /** When true, the spawn never responds to `initialize` (a hanging /
+   * framing-incompatible server) — used to exercise timeout/abort paths. */
+  hangInitialize: boolean;
   emitListChanged: () => void;
 }
 
@@ -113,7 +116,11 @@ function makeFakeSpawn(server: FakeServer): SpawnProcess {
             const id = parsed.id ?? 0;
             const method = parsed.method;
             if (method === "initialize") {
-              if (server.failInitialize) {
+              if (server.hangInitialize) {
+                // Never respond — simulates a framing-incompatible server
+                // (e.g. chrome-devtools-mcp under the old Content-Length
+                // framing). The connect must be bounded by timeout/abort.
+              } else if (server.failInitialize) {
                 emit(
                   encode(
                     JSON.stringify({
@@ -246,7 +253,12 @@ const assembly = (tools: ToolContract[], cwd = "/proj"): ToolAssembly => ({
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function makeServer(initialTools: McpToolInfo[]): FakeServer {
-  return { tools: [...initialTools], failInitialize: false, emitListChanged: () => {} };
+  return {
+    tools: [...initialTools],
+    failInitialize: false,
+    hangInitialize: false,
+    emitListChanged: () => {},
+  };
 }
 
 function makeExt(server: FakeServer, configJson: string): Extension {
@@ -359,5 +371,96 @@ describe("mcp extension lifecycle", () => {
 
     const after = await service.status("/proj");
     expect(after[0].state).toBe("disconnected");
+  });
+
+  // -------------------------------------------------------------------------
+  // Bug 2 + Bug 3: a misbehaving/hanging server must not hang a turn, and the
+  // turn's AbortSignal (assembly.signal) must interrupt a stuck connect.
+  // -------------------------------------------------------------------------
+
+  it("degrades gracefully (no MCP tools) when the turn's signal is already aborted", async () => {
+    const server = makeServer([tool("create_object")]);
+    const ext = makeExt(server, dispatchConfig({ freecad: { command: "fake" } }));
+    const { host, getFilter } = makeFakeHost();
+    ext.activate(host);
+    const filter = requireFilter(getFilter);
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const base = assembly([]);
+    // The filter must NOT hang on the (never-needed) connect: an aborted turn
+    // signal propagates to initialize, which rejects immediately.
+    const result = await filter({
+      tools: base.tools,
+      cwd: base.cwd,
+      conversationId: base.conversationId,
+      signal: controller.signal,
+    });
+
+    expect(result.tools).toEqual([]);
+    ext.deactivate?.();
+  });
+
+  it("the turn's signal aborts a hanging server connect (POST /stop interrupts)", async () => {
+    // hangInitialize: the spawn never responds to initialize (a framing-
+    // incompatible / misbehaving server). Without abort propagation this
+    // would hang the filter until MCP_CONNECT_TIMEOUT_MS; with propagation
+    // the abort breaks it immediately.
+    const server = makeServer([tool("create_object")]);
+    server.hangInitialize = true;
+    const ext = makeExt(server, dispatchConfig({ chrome: { command: "fake" } }));
+    const { host, getFilter } = makeFakeHost();
+    ext.activate(host);
+    const filter = requireFilter(getFilter);
+
+    const controller = new AbortController();
+    const base = assembly([]);
+    const resultPromise = filter({
+      tools: base.tools,
+      cwd: base.cwd,
+      conversationId: base.conversationId,
+      signal: controller.signal,
+    });
+
+    // Let the filter progress into the hanging initialize (withTimeout has
+    // its abort listener armed), THEN abort — a true mid-flight cancel
+    // simulating POST /conversations/:id/stop. Without signal propagation
+    // this would hang ~30s (the connect backstop) and time out the test.
+    await flush();
+    controller.abort();
+
+    const result = await resultPromise;
+    // Degraded: no MCP tools surfaced, and the filter resolved (did not hang).
+    expect(result.tools).toEqual([]);
+    ext.deactivate?.();
+  });
+
+  it("non-MCP tools pass through unchanged when an MCP connect fails", async () => {
+    // failInitialize: the server rejects initialize (a fast failure, not a
+    // hang) so the connect degrades promptly without waiting on a backstop.
+    const server = makeServer([tool("create_object")]);
+    server.failInitialize = true;
+    const ext = makeExt(server, dispatchConfig({ chrome: { command: "fake" } }));
+    const { host, getFilter } = makeFakeHost();
+    ext.activate(host);
+    const filter = requireFilter(getFilter);
+
+    const stubNonMcp: ToolContract = {
+      name: "run_shell",
+      description: "kept",
+      parameters: { type: "object" },
+      execute: async () => ({ content: "" }),
+    };
+
+    const result = await filter({
+      tools: [stubNonMcp],
+      cwd: "/proj",
+      conversationId: "c",
+    });
+
+    // Non-MCP tool survives; the failed MCP server contributed no tools.
+    expect(result.tools.map((t) => t.name)).toEqual(["run_shell"]);
+    ext.deactivate?.();
   });
 });
