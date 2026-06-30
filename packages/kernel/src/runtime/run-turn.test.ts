@@ -2853,6 +2853,53 @@ describe("runTurn", () => {
       expect(drainCallCount).toBe(2);
     });
 
+    it("async drainSteering (returns a Promise) is awaited — its messages reach the next step (the shell persists before returning)", async () => {
+      // The shell's drainSteering is async so it can persist the injected
+      // messages before returning. The kernel must `await` it (a sync call
+      // would get a Promise, not the array). This test pins that contract.
+      let drainCallCount = 0;
+      const steeringMessage: ChatMessage = {
+        role: "user",
+        chunks: [{ type: "text", text: "async steer!" }],
+      };
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        // Async drainSteering — resolves on a microtask, like a real persist.
+        drainSteering: () =>
+          new Promise((resolve) => {
+            drainCallCount++;
+            // Defer the resolve so the kernel MUST await to get the array.
+            queueMicrotask(() => resolve([steeringMessage]));
+          }),
+      });
+
+      expect(drainCallCount).toBe(1);
+      const secondStepMessages = capturedMessages[1] ?? [];
+      // The async-returned steering message was awaited and appended AFTER the
+      // tool result, before the next step — proving the kernel awaited it.
+      expect(secondStepMessages).toHaveLength(4);
+      expect(secondStepMessages[3]).toEqual(steeringMessage);
+    });
+
     it("MAX_STEPS=0 (unlimited): turn runs past the old 50-step limit and drains at every tool-result boundary until the model stops naturally", async () => {
       let drainCallCount = 0;
       // 100 tool-call steps (past the old MAX_STEPS=50) + 1 text-only step
