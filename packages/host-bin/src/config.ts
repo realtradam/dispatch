@@ -31,6 +31,18 @@ export function envToConfigMap(
     map["claude.credentialKey"] = claudeCredentialKey;
   }
 
+  // Optional settings consumed by the external Codex (OpenAI subscription)
+  // extension — mirrors the Claude/Anthropic pair above.
+  const openaiModel = env.DISPATCH_OPENAI_MODEL;
+  if (openaiModel !== undefined) {
+    map["provider.openai.model"] = openaiModel;
+  }
+
+  const codexCredentialKey = env.DISPATCH_CODEX_CREDENTIAL_KEY;
+  if (codexCredentialKey !== undefined) {
+    map["codex.credentialKey"] = codexCredentialKey;
+  }
+
   const httpPort = env.BACKEND_PORT ?? env.PORT;
   if (httpPort !== undefined) {
     const n = Number(httpPort);

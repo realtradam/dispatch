@@ -30,6 +30,27 @@ describe("envToConfigMap", () => {
     });
   });
 
+  it("maps DISPATCH_OPENAI_MODEL to provider.openai.model", () => {
+    const result = envToConfigMap({ DISPATCH_OPENAI_MODEL: "gpt-5-codex" });
+    expect(result["provider.openai.model"]).toBe("gpt-5-codex");
+  });
+
+  it("maps DISPATCH_CODEX_CREDENTIAL_KEY to codex.credentialKey", () => {
+    const result = envToConfigMap({ DISPATCH_CODEX_CREDENTIAL_KEY: "codex-oauth" });
+    expect(result["codex.credentialKey"]).toBe("codex-oauth");
+  });
+
+  it("maps the external OpenAI/Codex pair together", () => {
+    const result = envToConfigMap({
+      DISPATCH_OPENAI_MODEL: "gpt-5-codex",
+      DISPATCH_CODEX_CREDENTIAL_KEY: "codex-oauth",
+    });
+    expect(result).toEqual({
+      "provider.openai.model": "gpt-5-codex",
+      "codex.credentialKey": "codex-oauth",
+    });
+  });
+
   it("returns empty map when no relevant env vars are set", () => {
     const result = envToConfigMap({ HOME: "/home/user", PATH: "/usr/bin" });
     expect(result).toEqual({});

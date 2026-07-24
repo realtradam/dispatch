@@ -1,23 +1,68 @@
 #!/usr/bin/env bash
 # bin/up — run the Dispatch backend + web frontend together, both live-reloading.
+# Also loads the external Claude + Codex (OpenAI) extensions when their repos
+# are checked out as siblings of this backend's parent workspace root.
 # Ctrl-C stops BOTH cleanly (including the backend's spawned observability collector).
 #
 #   backend  (this repo)        bun --watch  → HTTP :24203 + surface WS :24205  (FULL restart on change)
+#            + DISPATCH_EXTERNAL_EXTENSIONS → loads ../claude's and ../codex's
+#              extensions (when present), so `claude/<model>` and `openai/<model>`
+#              appear in the catalog and bill via their respective OAuth subscriptions.
 #   frontend (../frontend)   vite         → http://localhost:24204           (HMR, in-place)
 #
 # Assumes frontend is a sibling of this repo. Run:  bin/up   (or:  bun run dev:all)
 
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .../arch-rewrite/bin
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .../backend/bin
 BACKEND="$(cd "$HERE/.." && pwd)"                       # backend repo root
-FRONTEND="$(cd "$HERE/../.." && pwd)/frontend"      # sibling repo
+WORKSPACE="$(cd "$HERE/../.." && pwd)"                  # workspace root (parent of backend)
+FRONTEND="$WORKSPACE/frontend"                          # sibling repo
+CLAUDE="$WORKSPACE/claude"
+CODEX="$WORKSPACE/codex"
 
 if [ ! -d "$FRONTEND" ]; then
 	echo "up: frontend repo not found at $FRONTEND" >&2
 	echo "up: check out 'frontend' beside this repo and retry." >&2
 	exit 1
 fi
+
+# --- external extension entries (optional — skip silently if repos absent) ---
+EXTERNAL_EXTENSIONS=""
+LOADED_LABELS=""
+maybe_add_extension_pair() {
+	# $1 = repo dir, $2 = auth pkg name, $3 = provider pkg name, $4 = label, $5 = node_modules scope
+	local repo="$1" auth_pkg="$2" provider_pkg="$3" label="$4" scope="$5"
+	if [ ! -d "$repo" ]; then
+		return 0  # repo not checked out — skip silently
+	fi
+	local auth_file="$repo/packages/$auth_pkg/src/index.ts"
+	local provider_file="$repo/packages/$provider_pkg/src/index.ts"
+	for f in "$auth_file" "$provider_file"; do
+		if [ ! -f "$f" ]; then
+			echo "up: $label extension entry missing: $f" >&2
+			exit 1
+		fi
+	done
+	# Ensure workspace deps are linked (cheap no-op if already installed).
+	if [ ! -d "$repo/node_modules/$scope" ]; then
+		echo "[up] installing $label workspace deps (first run)…"
+		( cd "$repo" && bun install ) || { echo "up: bun install failed in $repo" >&2; exit 1; }
+	fi
+	if [ -n "$EXTERNAL_EXTENSIONS" ]; then
+		EXTERNAL_EXTENSIONS="$EXTERNAL_EXTENSIONS,"
+	fi
+	EXTERNAL_EXTENSIONS="$EXTERNAL_EXTENSIONS$auth_file,$provider_file"
+	if [ -n "$LOADED_LABELS" ]; then
+		LOADED_LABELS="$LOADED_LABELS + "
+	fi
+	LOADED_LABELS="$LOADED_LABELS$label"
+}
+
+maybe_add_extension_pair "$CLAUDE" "auth-claude" "provider-anthropic" "claude" "@dispatch-claude"
+maybe_add_extension_pair "$CODEX" "auth-codex" "provider-openai" "codex" "@dispatch-codex"
+
+export DISPATCH_EXTERNAL_EXTENSIONS="$EXTERNAL_EXTENSIONS"
 
 cleanup() {
 	echo
@@ -39,6 +84,11 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 echo "[up] backend  → http://localhost:24203   (surface WS :24205)   [bun --watch — restarts on change]"
+if [ -n "$EXTERNAL_EXTENSIONS" ]; then
+	echo "[up] extensions → loaded ($LOADED_LABELS)"
+else
+	echo "[up] extensions → (none — claude/codex repos not found as siblings)"
+fi
 echo "[up] frontend → http://localhost:24204                          [vite HMR]"
 echo "[up] Ctrl-C to stop both."
 echo
@@ -47,6 +97,7 @@ echo
 # set so the Dispatch CLI hits prod) would otherwise override .env and bind the
 # dev server onto the production port (colliding with the prod systemd service).
 # Bun lets shell env win over .env, so pin the dev ports here.
+# DISPATCH_EXTERNAL_EXTENSIONS is exported above, so the backend subshell inherits it.
 setsid bash -c "cd '$BACKEND' && exec env BACKEND_PORT=24203 SURFACE_WS_PORT=24205 bun --watch packages/host-bin/src/main.ts" \
 	> >(sed -u 's/^/[backend]  /') 2>&1 &
 BACK_PG=$!

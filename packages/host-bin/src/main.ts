@@ -193,7 +193,9 @@ async function boot(): Promise<void> {
   const externalExtensions = await loadExternalExtensions(externalSpecifiers, logger);
 
   // Assemble the credential list. MVP keeps the hardcoded `opencode` credential
-  // and adds a `claude` credential when an external Anthropic provider is loaded.
+  // and adds a `claude` credential when an external Anthropic provider is
+  // loaded, and a `codex` credential when an external OpenAI (Codex
+  // subscription) provider is loaded.
   const credentials = [{ name: "opencode", providerId: "openai-compat" }];
 
   // The umans credential is always listed (it's the model-catalog index); the
@@ -210,6 +212,14 @@ async function boot(): Promise<void> {
     const claudeName = process.env.DISPATCH_CLAUDE_CREDENTIAL ?? "claude";
     credentials.push({ name: claudeName, providerId: "anthropic" });
     logger.info(`Registered credential "${claudeName}" → anthropic provider`);
+  }
+  const hasOpenAI = externalExtensions.some((e) =>
+    e.manifest.contributes?.providers?.includes("openai"),
+  );
+  if (hasOpenAI) {
+    const codexName = process.env.DISPATCH_CODEX_CREDENTIAL ?? "codex";
+    credentials.push({ name: codexName, providerId: "openai" });
+    logger.info(`Registered credential "${codexName}" → openai provider`);
   }
 
   const extensions: Extension[] = [
