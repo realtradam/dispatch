@@ -53,6 +53,7 @@ export const manifest: Manifest = {
   apiVersion: "^0.1.0",
   trust: "bundled",
   activation: "eager",
+  capabilities: { network: false },
   dependsOn: ["conversation-store", "credential-store", "session-orchestrator"],
   contributes: {
     services: ["agent-management/service"],
