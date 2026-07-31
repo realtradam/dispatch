@@ -85,6 +85,7 @@
         "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
+        "@dispatch/provider-longcat": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
         "@dispatch/provider-umans": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
@@ -169,6 +170,14 @@
       "dependencies": {
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/provider-longcat": {
+      "name": "@dispatch/provider-longcat",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/openai-stream": "workspace:*",
       },
     },
     "packages/provider-openai-compat": {
@@ -333,7 +342,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.23.0",
+      "version": "0.24.0",
       "dependencies": {
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
@@ -438,6 +447,8 @@
     "@dispatch/openai-stream": ["@dispatch/openai-stream@workspace:packages/openai-stream"],
 
     "@dispatch/provider-concurrency": ["@dispatch/provider-concurrency@workspace:packages/provider-concurrency"],
+
+    "@dispatch/provider-longcat": ["@dispatch/provider-longcat@workspace:packages/provider-longcat"],
 
     "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
 

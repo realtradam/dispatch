@@ -380,7 +380,16 @@ async function* readSSEStream(
           | undefined;
 
         if (usage) {
-          const cacheRead = usage.cache_read_tokens ?? usage.prompt_tokens_details?.cached_tokens;
+          const flat = usage.cache_read_tokens;
+          const nested = usage.prompt_tokens_details?.cached_tokens;
+          // Prefer flat cache_read_tokens when non-zero (canonical for
+          // Anthropic-style providers). Some providers (LongCat) return
+          // cache_read_tokens:0 alongside the real value in
+          // prompt_tokens_details.cached_tokens; `??` alone would shadow that
+          // real value with 0 (0 is not nullish). Fall back to nested when flat
+          // is 0/absent, then to flat (so an explicit 0 with no nested field is
+          // preserved).
+          const cacheRead = flat || (nested ?? flat);
           const cacheWrite = usage.cache_write_tokens;
           const usageObj: {
             inputTokens: number;

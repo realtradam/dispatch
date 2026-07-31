@@ -39,6 +39,9 @@ bun install
 
    # Optional — Umans AI Coding Plan provider (https://code.umans.ai)
    UMANS_API_KEY=sk-...                            # if set, the "umans" provider is registered
+
+   # Optional — LongCat AI provider (https://longcat.chat)
+   LONGCAT_API_KEY=sk-...                          # if set, the "longcat" provider is registered
    ```
 
 2. **Boot the server:**
@@ -271,6 +274,7 @@ topologically at activation). Every extension also depends implicitly on the ker
 | **message-queue** | Per-conversation steering queue + surface; enqueue when idle starts a new turn. | surface-registry |
 | **lsp** | Language Server Protocol client (hand-rolled JSON-RPC over stdio) — lazy-spawn, per-cwd config, diagnostics, `lsp` tool. | — |
 | **provider-umans** | Umans OpenAI-compatible provider (`api.code.umans.ai`); self-contained (reads `UMANS_API_KEY` from env). | — |
+| **provider-longcat** | LongCat OpenAI-compatible provider (`api.longcat.chat`, model `LongCat-2.0`, text-only); self-contained (reads `LONGCAT_API_KEY` from env). | — |
 | **surface-registry** | In-process registry where extensions contribute UI **surfaces** (frontend-agnostic data); exposes a typed `surfaceRegistryHandle` service. | — |
 | **transport-ws** | WebSocket transport serving the surface catalog + per-surface subscribe / update / invoke to clients. | surface-registry |
 | **surface-loaded-extensions** | Contributes the live "Loaded Extensions" surface (a `stat` per activated extension). | surface-registry |
@@ -285,7 +289,7 @@ The **Depends on** column is each package's `@dispatch/*` workspace dependencies
 | **wire** | Types-only wire ABI (`AgentEvent` + conversation model + `Usage`); kernel + transport-contract re-export it so clients consume the wire without the kernel runtime. | — |
 | **transport-contract** | Types-only description of the full HTTP API shared by the server and every client. | wire, kernel |
 | **ui-contract** | Types-only, **frontend-agnostic** vocabulary for backend-declared **surfaces** (`SurfaceSpec`, field kinds, the surface WS protocol). | — |
-| **openai-stream** | Generic OpenAI-compatible stream/convert/listModels library extracted from `provider-openai-compat` (shared by `provider-umans`). | wire |
+| **openai-stream** | Generic OpenAI-compatible stream/convert/listModels library extracted from `provider-openai-compat` (shared by `provider-umans` and `provider-longcat`). | wire |
 | **cli** | The bundled one-shot terminal client documented above. | transport-contract |
 | **host-bin** | The composition root: loads config, activates all extensions through the host, serves HTTP, and supervises the observability collector. | kernel, all extensions, journal-sink |
 | **journal-sink** | Bootstrap `LogSink` that appends structured logs/spans to an NDJSON journal (rotation, fail-safe). | kernel |

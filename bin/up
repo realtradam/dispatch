@@ -87,8 +87,14 @@ trap 'exit 130' INT TERM
 # /etc/dispatch/env is the single source of truth for API keys and prod config.
 # Dev overrides specific values below so the dev server uses local data paths
 # and dev ports instead of prod ones.
+# `set -a` (allexport) around the source so the keys are EXPORTED into the
+# environment — otherwise `source` only creates non-exported shell variables
+# that the `bun` child never inherits (so providers like longcat, whose key
+# lives ONLY in /etc/dispatch/env, wouldn't register).
 if [ -f /etc/dispatch/env ]; then
+	set -a
 	source /etc/dispatch/env
+	set +a
 else
 	echo "up: /etc/dispatch/env not found — run 'sudo bin/setup-env' first" >&2
 	exit 1

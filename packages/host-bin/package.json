@@ -15,6 +15,7 @@
     "@dispatch/provider-openai-compat": "workspace:*",
     "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/provider-umans": "workspace:*",
+    "@dispatch/provider-longcat": "workspace:*",
     "@dispatch/message-queue": "workspace:*",
     "@dispatch/mcp": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*",

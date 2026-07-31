@@ -27,6 +27,7 @@ import {
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
+import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import {
@@ -86,8 +87,8 @@ function createNoopEvents(): EventsEmitter {
 const CORE_EXTENSIONS: readonly Extension[] = [
   storageSqliteExt,
   conversationStoreExt,
-  providerOpenaiCompatExt,
   providerUmansExt,
+  providerLongcatExt,
   providerConcurrencyExt,
   // exec-backend must precede the tool extensions that
   // `dependsOn: ["exec-backend"]` (tool-edit-file/read/shell/write). It
@@ -222,6 +223,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     credentials.push({ name: "umans", providerId: "umans" });
     logger.info(`Registered credential "umans" → umans provider`);
   }
+  if (process.env.LONGCAT_API_KEY) {
+    credentials.push({ name: "longcat", providerId: "longcat" });
+    logger.info(`Registered credential "longcat" → longcat provider`);
+  }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),
   );
@@ -241,9 +246,11 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
 
   const extensions: Extension[] = [
     ...CORE_EXTENSIONS,
-    // auth-apikey only loads when DISPATCH_API_KEY is set (opencode provider).
-    // Without it, the extension would throw on activation.
-    ...(process.env.DISPATCH_API_KEY ? [authApikeyExt] : []),
+    // auth-apikey + provider-openai-compat only load when DISPATCH_API_KEY is
+    // set (opencode provider). provider-openai-compat declares
+    // `dependsOn: ["auth-apikey"]`, so the two must load together — loading the
+    // provider without auth-apikey makes the activation DAG throw.
+    ...(process.env.DISPATCH_API_KEY ? [authApikeyExt, providerOpenaiCompatExt] : []),
     createCredentialStoreExtension({ credentials }),
     // vision-handoff activates AFTER credential-store (it resolves the
     // credential-store service at activate time to find vision-capable models).

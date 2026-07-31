@@ -4,7 +4,7 @@ import { resolveApiKeyCredentials } from "./resolver.js";
 export const apikeyAuth: AuthContract = {
   id: "apikey",
   resolve: async () =>
-    resolveApiKeyCredentials(process.env as Readonly<Record<string, string | undefined>>),
+    resolveApiKeyCredentials(process.env as Readonly<Record<string, string | undefined>>) ?? null,
 };
 
 export const extension: Extension = {

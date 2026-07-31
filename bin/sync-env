@@ -5,8 +5,8 @@
 # arguments (or prompted interactively) and written directly to /etc/dispatch/env.
 #
 # Usage:
-#   sudo bin/sync-env --umans-key "sk-..."
-#   sudo bin/sync-env                          # prompts for the key interactively
+#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..."
+#   sudo bin/sync-env                          # prompts for keys interactively
 #   sudo bin/sync-env --umans-key ""           # removes the umans key
 
 set -euo pipefail
@@ -27,6 +27,7 @@ fi
 
 # --- Parse arguments ---
 UMANS_KEY=""
+LONGCAT_KEY=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--umans-key)
@@ -37,18 +38,30 @@ while [[ $# -gt 0 ]]; do
 			UMANS_KEY="${1#--umans-key=}"
 			shift
 			;;
+		--longcat-key)
+			LONGCAT_KEY="$2"
+			shift 2
+			;;
+		--longcat-key=*)
+			LONGCAT_KEY="${1#--longcat-key=}"
+			shift
+			;;
 		*)
 			echo "sync-env: unknown argument: $1" >&2
-			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"]" >&2
+			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"]" >&2
 			exit 1
 			;;
 	esac
 done
 
-# --- Prompt for key if not provided via argument ---
+# --- Prompt for keys if not provided via arguments ---
 if [ -z "$UMANS_KEY" ] && [ -t 0 ]; then
 	echo -n "Enter UMANS_API_KEY (or press Enter to skip): " >&2
 	read -r UMANS_KEY
+fi
+if [ -z "$LONGCAT_KEY" ] && [ -t 0 ]; then
+	echo -n "Enter LONGCAT_API_KEY (or press Enter to skip): " >&2
+	read -r LONGCAT_KEY
 fi
 
 # --- Update PATH ---
@@ -66,6 +79,16 @@ if [ -n "$UMANS_KEY" ]; then
 		echo "UMANS_API_KEY=$UMANS_KEY" >> "$ENV_FILE"
 	fi
 	echo "  UMANS_API_KEY=${UMANS_KEY:0:8}..." >&2
+fi
+
+# --- Update LONGCAT_API_KEY ---
+if [ -n "$LONGCAT_KEY" ]; then
+	if grep -q "^LONGCAT_API_KEY=" "$ENV_FILE"; then
+		sed -i "s|^LONGCAT_API_KEY=.*|LONGCAT_API_KEY=$LONGCAT_KEY|" "$ENV_FILE"
+	else
+		echo "LONGCAT_API_KEY=$LONGCAT_KEY" >> "$ENV_FILE"
+	fi
+	echo "  LONGCAT_API_KEY=${LONGCAT_KEY:0:8}..." >&2
 fi
 
 # --- Delete the old OpenCode key (revoked — no longer used) ---

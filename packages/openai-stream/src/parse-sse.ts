@@ -111,8 +111,13 @@ export function parseSSELines(lines: readonly string[]): ProviderEvent[] {
     }
 
     if (chunk.usage) {
-      const cacheRead =
-        chunk.usage.cache_read_tokens ?? chunk.usage.prompt_tokens_details?.cached_tokens;
+      const flat = chunk.usage.cache_read_tokens;
+      const nested = chunk.usage.prompt_tokens_details?.cached_tokens;
+      // Prefer flat cache_read_tokens when non-zero (canonical for Anthropic-style
+      // providers). Some providers (LongCat) return cache_read_tokens:0 alongside
+      // the real value in prompt_tokens_details.cached_tokens; `??` alone would
+      // shadow it with 0. Fall back to nested when flat is 0/absent, then to flat.
+      const cacheRead = flat || (nested ?? flat);
       const cacheWrite = chunk.usage.cache_write_tokens;
       events.push({
         type: "usage",
