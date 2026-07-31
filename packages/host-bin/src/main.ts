@@ -53,6 +53,7 @@ import { extension as toolYoutubeTranscriptExt } from "@dispatch/tool-youtube-tr
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
 import { extension as visionHandoffExt } from "@dispatch/vision-handoff";
+import { extension as agentManagementExt } from "@dispatch/agent-management";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
@@ -259,6 +260,11 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     // (per-turn), so activation order between it and session-orchestrator
     // doesn't matter.
     visionHandoffExt,
+    // agent-management activates AFTER session-orchestrator and
+    // conversation-store (it resolves their services at activate time). It
+    // registers the 7 agent-management tools and the AgentManagementService
+    // that vision-handoff will eventually consume for consultations.
+    agentManagementExt,
     ...externalExtensions,
   ];
 

@@ -36,6 +36,7 @@
     "@dispatch/surface-registry": "workspace:*",
     "@dispatch/transport-ws": "workspace:*",
     "@dispatch/system-prompt": "workspace:*",
-    "@dispatch/vision-handoff": "workspace:*"
+    "@dispatch/vision-handoff": "workspace:*",
+    "@dispatch/agent-management": "workspace:*"
   }
 }

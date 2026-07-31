@@ -84,6 +84,7 @@
       "name": "@dispatch/host-bin",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/agent-management": "workspace:*",
         "@dispatch/auth-apikey": "workspace:*",
         "@dispatch/cache-warming": "workspace:*",
         "@dispatch/conversation-store": "workspace:*",
