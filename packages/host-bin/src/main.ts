@@ -87,7 +87,6 @@ function createNoopEvents(): EventsEmitter {
 const CORE_EXTENSIONS: readonly Extension[] = [
   storageSqliteExt,
   conversationStoreExt,
-  authApikeyExt,
   providerOpenaiCompatExt,
   providerUmansExt,
   providerLongcatExt,
@@ -138,7 +137,13 @@ function parseExternalSpecifiers(env: Readonly<Record<string, string | undefined
     .filter((s) => s.length > 0);
 }
 
-async function boot(): Promise<void> {
+export interface BootOptions {
+  /** Extensions bundled at build time (compiled binary). Merged with any
+   * runtime-loaded extensions from `DISPATCH_EXTERNAL_EXTENSIONS` (dev mode). */
+  preloadedExtensions?: readonly Extension[];
+}
+
+export async function boot(opts: BootOptions = {}): Promise<void> {
   const journalPath = process.env.DISPATCH_JOURNAL ?? "./.dispatch/journal/app.ndjson";
   mkdirSync(dirname(journalPath), { recursive: true });
   const logSink = createJournalSink({ path: journalPath });
@@ -192,13 +197,25 @@ async function boot(): Promise<void> {
   const externalSpecifiers = parseExternalSpecifiers(
     process.env as Readonly<Record<string, string | undefined>>,
   );
-  const externalExtensions = await loadExternalExtensions(externalSpecifiers, logger);
+  const runtimeExtensions = await loadExternalExtensions(externalSpecifiers, logger);
+  // Merge build-time bundled extensions (compiled binary) with runtime-loaded
+  // ones (dev mode via DISPATCH_EXTERNAL_EXTENSIONS). Dedup by manifest.id.
+  const seen = new Set(opts.preloadedExtensions?.map((e) => e.manifest.id) ?? []);
+  const externalExtensions = [
+    ...(opts.preloadedExtensions ?? []),
+    ...runtimeExtensions.filter((e) => !seen.has(e.manifest.id)),
+  ];
 
-  // Assemble the credential list. MVP keeps the hardcoded `opencode` credential
-  // and adds a `claude` credential when an external Anthropic provider is
-  // loaded, and a `codex` credential when an external OpenAI (Codex
-  // subscription) provider is loaded.
-  const credentials = [{ name: "opencode", providerId: "openai-compat" }];
+  // Assemble the credential list. The `opencode` credential (OpenAI-compatible
+  // provider) only registers when DISPATCH_API_KEY is set. A `claude` credential
+  // is added when an external Anthropic provider is loaded, and a `codex`
+  // credential when an external OpenAI (Codex subscription) provider is loaded.
+  const credentials: { name: string; providerId: string }[] = [];
+
+  if (process.env.DISPATCH_API_KEY) {
+    credentials.push({ name: "opencode", providerId: "openai-compat" });
+    logger.info(`Registered credential "opencode" → openai-compat provider`);
+  }
 
   // The umans credential is always listed (it's the model-catalog index); the
   // provider itself only registers when UMANS_API_KEY is set, so listCatalog
@@ -230,6 +247,9 @@ async function boot(): Promise<void> {
 
   const extensions: Extension[] = [
     ...CORE_EXTENSIONS,
+    // auth-apikey only loads when DISPATCH_API_KEY is set (opencode provider).
+    // Without it, the extension would throw on activation.
+    ...(process.env.DISPATCH_API_KEY ? [authApikeyExt] : []),
     createCredentialStoreExtension({ credentials }),
     // vision-handoff activates AFTER credential-store (it resolves the
     // credential-store service at activate time to find vision-capable models).
@@ -335,7 +355,12 @@ async function boot(): Promise<void> {
   console.info("Dispatch booted");
 }
 
-boot().catch((err) => {
-  console.error("Fatal boot error:", err);
-  process.exit(1);
-});
+// Only auto-boot when this module is the direct entry point (dev mode via
+// `bun packages/host-bin/src/main.ts`). When imported by a build wrapper
+// (compiled binary), the wrapper calls boot() itself with preloaded extensions.
+if (import.meta.main) {
+  boot().catch((err) => {
+    console.error("Fatal boot error:", err);
+    process.exit(1);
+  });
+}

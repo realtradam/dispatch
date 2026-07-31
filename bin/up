@@ -83,6 +83,23 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
+# --- Source centralized keys/config (shared with prod) ---
+# /etc/dispatch/env is the single source of truth for API keys and prod config.
+# Dev overrides specific values below so the dev server uses local data paths
+# and dev ports instead of prod ones.
+if [ -f /etc/dispatch/env ]; then
+	source /etc/dispatch/env
+else
+	echo "up: /etc/dispatch/env not found — run 'sudo bin/setup-env' first" >&2
+	exit 1
+fi
+
+# Override dev-specific values (prod uses the defaults from /etc/dispatch/env).
+# Unset prod data paths so main.ts falls back to its local .dispatch-data/ defaults.
+export BACKEND_PORT=24203
+export SURFACE_WS_PORT=24205
+unset DISPATCH_DB DISPATCH_TRACE_DB DISPATCH_JOURNAL DISPATCH_WEB_DIR
+
 echo "[up] backend  → http://localhost:24203   (surface WS :24205)   [bun --watch — restarts on change]"
 if [ -n "$EXTERNAL_EXTENSIONS" ]; then
 	echo "[up] extensions → loaded ($LOADED_LABELS)"
@@ -93,10 +110,6 @@ echo "[up] frontend → http://localhost:24204                          [vite HM
 echo "[up] Ctrl-C to stop both."
 echo
 
-# Force the dev ports: a shell-exported BACKEND_PORT (e.g. 24991 from ~/.bashrc,
-# set so the Dispatch CLI hits prod) would otherwise override .env and bind the
-# dev server onto the production port (colliding with the prod systemd service).
-# Bun lets shell env win over .env, so pin the dev ports here.
 # DISPATCH_EXTERNAL_EXTENSIONS is exported above, so the backend subshell inherits it.
 setsid bash -c "cd '$BACKEND' && exec env BACKEND_PORT=24203 SURFACE_WS_PORT=24205 bun --watch packages/host-bin/src/main.ts" \
 	> >(sed -u 's/^/[backend]  /') 2>&1 &
