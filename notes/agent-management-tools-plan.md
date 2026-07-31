@@ -25,7 +25,7 @@ The requested behavior is:
 3. Default a newly summoned agent to the calling conversation's current workspace.
 4. Preserve useful CLI capabilities: model selection, task text, attached files, working directory,
    computer, reasoning effort, title, opening the frontend conversation, waiting, queueing,
-   reading, listing, stopping, and compacting.
+   reading, listing, sending, queueing, and opening.
 5. Make vision consultations hard-isolated: a consultation agent receives no tools and can only
    answer with text.
 6. Never advertise `consult_vision` to a vision-capable model.
@@ -60,7 +60,7 @@ vision as concrete features.
 | Concept | Provisional canonical term | Rationale |
 |---|---|---|
 | A conversation started by an agent for a delegated task | **subagent** | Common agent-system term and matches the user's wording. The actual durable runtime entity remains a `conversation`; “subagent” describes its relationship to a parent. |
-| The feature that starts and controls related conversations | **agent management** | Standard umbrella term covering summon, list, read, send, open, stop, and compact. |
+| The feature that starts and controls related conversations | **agent management** | Standard umbrella term covering summon, list, read, send, open, and cancel. |
 | The new extension/package | **`agent-management`** | Broader than the earlier summon-only `agent-summon` proposal and accurately owns the full family. |
 | Start action/tool | **`summon_agent`** | Keeps the user's requested language and is distinct from continuing an existing conversation. |
 
@@ -139,8 +139,6 @@ interface AgentManagementService {
   send(input: SendAgentInput): Promise<SendAgentResult>;
   cancelMessage(input: CancelAgentMessageInput): Promise<CancelAgentMessageResult>;
   open(input: OpenAgentInput): Promise<OpenAgentResult>;
-  stop(input: StopAgentInput): Promise<StopAgentResult>;
-  compact(input: CompactAgentInput): Promise<CompactAgentResult>;
 }
 ```
 
@@ -153,6 +151,31 @@ The service is useful independently of AI tools:
 - `vision-handoff` uses `summon` with a restricted tool policy.
 - Future extensions can summon/manage conversations without invoking a CLI process.
 - Tests can inject the effects and exercise pure management decisions.
+
+The `SummonAgentInput` type has a wider surface than the `summon_agent` AI tool schema in
+§6.2. The tool schema is what models call and stays narrow. The service method is what
+extensions like `vision-handoff` call programmatically and accepts two additional fields not
+exposed to models:
+
+- `systemPrompt?: string` — an explicit system prompt override, essential for vision
+  consultations that need a focused prompt instead of the default workspace system prompt.
+- `images?: readonly ImageInput[]` — image attachments for vision consultations.
+
+The `summon` algorithm must be executed in this exact order:
+
+1. Generate a new `conversationId` (UUID).
+2. Resolve the caller's effective workspace, working directory, and computer from the
+   conversation store.
+3. Persist `parentConversationId` and `toolPolicy` to the conversation store **before**
+   calling `startTurn`, so the `toolsFilter` chain can read them during the first turn's
+   tool assembly.
+4. Call `orchestrator.startTurn(...)` with the resolved parameters. The orchestrator's
+   existing new-conversation setup path (which detects `meta === null`) handles workspace
+   initialization, title, and system-prompt construction.
+5. Return the conversation ID, workspace ID, status, and started flag.
+
+This order is critical: if lineage or tool policy are persisted after the turn starts, the
+first turn's tool filtering would not see the policy yet.
 
 The contract should document behavior and guarantees, not only shapes:
 
@@ -224,6 +247,12 @@ summon_agent({
 Recommended first-version scope for `toolAccess` is only `all | none`. The underlying persisted
 policy may support allow/deny lists, but exposing arbitrary tool names to models is not required
 for CLI parity and can wait for a concrete consumer.
+
+The `summon_agent` tool schema above is the narrow surface exposed to models. The
+`AgentManagementService.summon` method (§5) accepts two additional fields not shown here:
+`systemPrompt` (an explicit system prompt override used by `vision-handoff` for consultations)
+and `images` (image attachments for vision consultations). These are service-level fields for
+programmatic callers, not AI-callable parameters.
 
 Semantics:
 
@@ -302,7 +331,19 @@ Semantics:
 - `wait` defaults to `false`; when true, wait until the active turn settles or the parent turn is
   cancelled.
 - Return final status, last assistant text, truncation flag, and conversation ID.
-- Do not return private reasoning text.
+- Do not return private reasoning text. The kernel persists reasoning as a distinct
+  `ThinkingChunk` type (`type: "thinking"`), separate from `TextChunk` (`type: "text"`). The
+  implementation reads the last assistant message from the conversation store via `load()` and
+  selects only chunks where `type === "text"`, which structurally excludes thinking — no
+  explicit reasoning-stripping logic is needed. This mirrors the existing
+  `extractLastAssistantText` precedent in `packages/transport-http/src/logic.ts` and the
+  `GET /conversations/:id/last` endpoint's subscribe-wait-load pattern. The filtering lives as a
+  pure helper in `agent-management/src/pure.ts` (not imported from transport-http, to avoid an
+  unnatural standard-extension → HTTP-transport dependency). The store itself returns all chunk
+  types; the text-only selection is a policy decision that belongs to the `read_agent`
+  implementation. For `wait: true`, the service subscribes before checking `isActive`, awaits
+  `turn-sealed` with timeout and `AbortSignal` propagation, unsubscribes in `finally`, then loads
+  from the store and extracts — the same race-free pattern as the existing HTTP endpoint.
 
 ### 6.5 `send_agent_message`
 
@@ -313,24 +354,17 @@ send_agent_message({
   conversationId: string,
   message: string,
   files?: string[],
-  delivery?: "auto" | "queue" | "turn",
   wait?: boolean,
-  open?: boolean,
-  cwd?: string,
-  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max"
+  open?: boolean
 })
 ```
 
-Delivery semantics:
+The message is delivered the same way a user message is: if the target conversation is idle,
+a new turn starts; if it is active, the message is queued for steering. There is no delivery
+mode parameter — the orchestrator's existing behavior handles both cases automatically.
 
-- `auto` (default): use the orchestrator's authoritative behavior—idle starts a turn; active queues
-  a message for steering.
-- `queue`: require message-queue delivery; if idle, use the existing queue contract's defined idle
-  behavior rather than inventing a second queue.
-- `turn`: require the conversation to be idle; if active, return a conflict instead of silently
-  queueing.
-- `wait` defaults to `false`. When delivery immediately starts a new turn, `wait: true` waits for
-  that turn to settle. When delivery is queued to an already-active conversation, `wait: true` is
+- `wait` defaults to `false`. When the message starts a new turn (target was idle), `wait: true`
+  waits for that turn to settle. When the message is queued (target was active), `wait: true` is
   rejected in the first version: the existing message-queue contract exposes a stable queued-message
   ID but not an end-to-end "this queued message caused this later turn" correlation. Inventing that
   correlation inside agent management would duplicate queue ownership. A future message-queue
@@ -338,8 +372,6 @@ Delivery semantics:
   `read_agent` after queue delivery.
 - `open` defaults to `false` for follow-ups.
 - The conversation's persisted workspace, model, tool policy, and computer remain authoritative.
-- `cwd` and `reasoningEffort` are per-turn overrides only when a new turn starts; they cannot mutate
-  an already-active turn.
 
 ### 6.6 `cancel_agent_message`
 
@@ -368,42 +400,13 @@ open_agent({ conversationId: string })
 The service resolves the conversation's persisted workspace before emitting the existing typed
 `conversationOpened` hook. The backend signals; the frontend decides how to render/focus it.
 
-### 6.8 `stop_agent`
+### 6.8 Operations deliberately excluded
 
-Stops active generation without closing or deleting the conversation.
+The CLI capabilities covered by this family are summon/chat, list, read, send/queue, open,
+and cancel. Exclude these until separately justified:
 
-```ts
-stop_agent({ conversationId: string })
-```
-
-This maps to `SessionOrchestrator.stopTurn`, not `closeConversation`. It is idempotent and reports
-whether a turn was active. The normal abort/seal/persist lifecycle remains authoritative.
-
-### 6.9 `compact_agent`
-
-Compacts a managed conversation.
-
-```ts
-compact_agent({
-  conversationId: string,
-  keepLastN?: number,
-  model?: string
-})
-```
-
-This delegates through the existing typed compaction service. It should reject an active
-conversation according to current compaction guarantees rather than racing the turn. Return counts
-and the resulting conversation ID exactly as the compaction contract defines them. Because
-compaction creates a replacement conversation, the compaction owner must preserve the source
-conversation's workspace, lineage, tool policy, working directory, computer, model, and reasoning
-settings on that replacement. Otherwise a restricted descendant could escape authorization or
-regain tools merely by being compacted.
-
-### 6.10 Operations deliberately excluded
-
-The CLI capabilities covered by this family are summon/chat, list, read, send/queue, open, stop,
-and compact. Exclude these until separately justified:
-
+- stop active generation (use the CLI or frontend for this);
+- compact a conversation (use the CLI or existing smart-compaction for this);
 - delete/close conversation;
 - move a conversation between workspaces;
 - mutate a conversation's persistent model, working directory, computer, or reasoning effort;
@@ -438,13 +441,27 @@ Legacy and human-created conversations have no parent.
 Lineage is metadata only. It does not change append-only conversation history or the meaning of a
 conversation.
 
+### 7.1.1 Compaction and lineage preservation
+
+Compaction creates a replacement conversation with a new ID, linked back to the source via the
+existing `compactedFrom` field. The replacement must inherit `parentConversationId` and
+`toolPolicy` from the source conversation. If the parent link is lost, the parent agent can no
+longer find or manage the child through `list_agents`, and the authorization check fails because
+the lineage chain is broken. If the tool policy is lost, a `toolPolicy: none` conversation (such
+as a vision consultation) regains all tools after compaction, defeating the vision isolation
+guarantee — a restricted descendant could escape its restrictions merely by being compacted.
+
+This applies regardless of how compaction is triggered: the `smart-compaction` package, the CLI,
+or any future mechanism. The compaction owner must copy `parentConversationId` and `toolPolicy`
+from the source to the replacement.
+
 ### 7.2 Recommended AI access policy
 
 By default, an agent-management tool caller may manage:
 
 1. Conversations it directly summoned.
 2. Descendants of those conversations.
-3. Its own conversation for read/open only—not stop/send/compact itself from inside its active
+3. Its own conversation for read/open only—not send/cancel itself from inside its active
    turn.
 
 Workspace-wide listing or control should require an explicit argument and a separately documented
@@ -468,7 +485,7 @@ from leaking or selecting an unrelated conversation. Full IDs are still authoriz
 
 - `summon_agent` always creates a new ID, so lineage cycles cannot arise there.
 - Do not provide a public operation that rewrites parent IDs.
-- Reject `send_agent_message`/`stop_agent`/`compact_agent` targeting the caller's currently active
+- Reject `send_agent_message`/`cancel_agent_message` targeting the caller's currently active
   conversation; self-steering already has the message queue and user input paths.
 - No fixed recursion-depth cap is required initially unless provider cost incidents justify it.
   Persisted lineage makes one addable later without ABI redesign.
@@ -519,9 +536,7 @@ Define stable result categories in the service contract, then format them for to
 - forbidden target;
 - unknown model;
 - workspace not found;
-- target active/idle conflict;
 - queue unavailable;
-- compaction unavailable or conflict;
 - wait timeout;
 - caller cancelled;
 - child turn/provider failure.
@@ -577,7 +592,7 @@ Ownership:
 - `vision-handoff` requests `none` through `AgentManagementService`.
 - the kernel receives only the final resolved tool array.
 
-### 10.2 Assembly order
+### 10.2 Assembly order and enforcement
 
 For each turn, `session-orchestrator`:
 
@@ -589,7 +604,44 @@ For each turn, `session-orchestrator`:
 Applying the policy last guarantees a later extension filter cannot reintroduce a tool into a
 `none` conversation.
 
-### 10.3 Creation ordering
+The enforcement mechanism is the existing `toolsFilter` chain in `session-orchestrator`. The
+`agent-management` extension registers a filter handler in this chain at activation time using
+the sanctioned `host.addFilter` pattern (the same pattern used by
+`filterRemoteIncompatibleTools`). The filter reads the conversation's persisted `toolPolicy`
+from the conversation store and filters the tool set accordingly: `mode: "none"` returns an
+empty set; `mode: "all"` passes everything through; `mode: "allow"` intersects with the listed
+tool names; `mode: "deny"` removes the listed tool names. The filter runs once per turn during
+tool assembly, preserving byte-stable tool definitions across steps within the turn.
+
+### 10.3 Conversation-store contract changes
+
+Persisting `parentConversationId` and `toolPolicy` requires new fields and methods on the
+conversation store and the wire type. The current `ConversationMeta` has `id`, `createdAt`,
+`lastActivityAt`, `title`, `status`, `workspaceId`, and `compactedFrom?` — no parent or
+tool-policy field. The following must be added:
+
+New `ConversationStore` methods:
+
+```ts
+readonly setParentConversationId: (conversationId: string, parentId: string) => Promise<void>;
+readonly getParentConversationId: (conversationId: string) => Promise<string | null>;
+readonly setToolPolicy: (conversationId: string, policy: ConversationToolPolicy) => Promise<void>;
+readonly getToolPolicy: (conversationId: string) => Promise<ConversationToolPolicy | null>;
+```
+
+New optional fields on `ConversationMeta` (wire type):
+
+```ts
+readonly parentConversationId?: string;
+readonly toolPolicy?: ConversationToolPolicy;
+```
+
+New storage keys: `conv:{id}:parent` and `conv:{id}:toolpolicy`.
+
+Legacy conversations without these fields resolve to `parentConversationId: null` and
+`toolPolicy: { mode: "all" }` for backward compatibility.
+
+### 10.4 Creation ordering
 
 The initial tool policy enters through `StartTurnInput` and is persisted during normal
 new-conversation setup. It must not create conversation metadata before the orchestrator's newness
@@ -756,11 +808,11 @@ input and persisted conversation chunks carry the actual images.
 | `--open` / `dispatch open` | `open` or `open_agent` |
 | `dispatch list` | `list_agents` |
 | `dispatch read` | `read_agent` |
-| `dispatch send` | `send_agent_message delivery: auto|turn` |
-| `dispatch send --queue` | `send_agent_message delivery: queue` |
+| `dispatch send` | `send_agent_message` (automatic: idle starts turn, active queues) |
+| `dispatch send --queue` | `send_agent_message` (same tool; queueing is automatic when active) |
 | queued-message cancellation endpoint | `cancel_agent_message` |
-| `dispatch stop` | `stop_agent` |
-| `dispatch compact` | `compact_agent` |
+| `dispatch stop` | deliberately unavailable to parent agents (use CLI) |
+| `dispatch compact` | deliberately unavailable to parent agents (use CLI) |
 | `--show-reasoning` | deliberately unavailable to parent agents |
 
 The CLI remains the fallback when tools are unavailable, for human terminal use, and for recovery
@@ -777,8 +829,8 @@ Recommended spans/events:
 - `agent-management.summon` — parent ID, child ID, model name, workspace, wait/open flags;
 - `agent-management.list` — caller ID, scope, result count;
 - `agent-management.read` — caller/target IDs, wait, truncation;
-- `agent-management.send` — caller/target IDs, delivery outcome, wait;
-- `agent-management.open`, `.stop`, `.compact`;
+- `agent-management.send` — caller/target IDs, wait;
+- `agent-management.open`;
 - waiting duration and final status.
 
 Do not put task/message/file content, API keys, image data, or child response bodies in scalar log
@@ -878,8 +930,8 @@ Job:
 - Persist them without pre-creating metadata before new-conversation workspace setup.
 - Add the resolved `modelName` to `ToolAssembly`.
 - Apply persisted tool policy after the tools filter chain.
-- Expose/retain typed operations agent management needs: start/enqueue, subscribe, status, stop,
-  open signal, and compaction through existing services rather than implementation reach-through.
+- Expose/retain typed operations agent management needs: start/enqueue, subscribe, status,
+  and open signal through existing services rather than implementation reach-through.
 - Compact tool-generated image data before incremental persistence via the injected vision service.
 
 Required tests:
@@ -903,14 +955,14 @@ Job:
 
 - Export the typed service handle and contract.
 - Implement pure validation/default/access/formatting decisions plus injected shell effects.
-- Contribute all nine tools:
+- Contribute all seven tools:
   `list_agent_models`, `summon_agent`, `list_agents`, `read_agent`, `send_agent_message`,
-  `cancel_agent_message`, `open_agent`, `stop_agent`, and `compact_agent`.
+  `cancel_agent_message`, and `open_agent`.
 - Resolve caller workspace/working directory/computer through injected stores.
 - Enforce lineage-based target access and scoped short-ID resolution.
 - Read and compose text files with local/remote containment.
 - Implement event-driven waiting, cancellation, timeout, unsubscribe, and result limits.
-- Use existing orchestrator/message-queue/compaction/open behavior instead of duplicating it.
+- Use existing orchestrator/message-queue/open behavior instead of duplicating it.
 
 Required tests, grouped by public operation:
 
@@ -922,12 +974,10 @@ Required tests, grouped by public operation:
 - **list:** children/descendants/workspace; status/query/limit; no unauthorized metadata leak;
   stable result shape.
 - **read:** full and short IDs; ambiguity; unauthorized target; no reasoning; wait/timeout/abort.
-- **send:** auto/queue/turn behavior for active and idle targets; files; waiting; existing policy and
+- **send:** idle starts a turn, active queues; files; waiting; existing policy and
   workspace remain authoritative.
 - **cancel message:** queued, already delivered, unknown, unauthorized, and idempotent cancellation.
 - **open:** emits typed hook with persisted workspace.
-- **stop:** idempotent active/idle; self-target rejection.
-- **compact:** success, unavailable service, active conflict, unauthorized target.
 - **shell:** logs via injected logger; no prompt/file contents in attributes; all subscriptions and
   resources cleaned up.
 
@@ -973,19 +1023,6 @@ Job:
 - Wire its typed dependencies.
 - Ensure `vision-handoff` can resolve the service without raw string coupling.
 - Verify startup when optional services degrade or are unavailable according to contract.
-
-#### Unit G: compaction metadata preservation (conditional owner fan-out)
-
-**Owns:** the package that implements the existing compaction service, currently
-`packages/session-orchestrator/` if retained there. Because Unit C has the same package owner, this
-work must either be included in Unit C's task or performed in a later non-overlapping turn by that
-same owner—never by a concurrent second writer.
-
-Job:
-
-- Preserve workspace, parent lineage, tool policy, working directory, computer, model, and
-  reasoning settings when compaction creates its replacement conversation.
-- Add regression tests proving a `none` descendant remains a `none` descendant after compaction.
 
 #### Affected-owner fan-out
 
@@ -1035,11 +1072,10 @@ No feature work is trusted from an agent's report alone.
    the parent cancels the wait but leaves the child running.
 3. `list_agent_models` returns exact summonable model names and vision metadata without exposing
    credential secrets.
-4. `list_agents`, `read_agent`, `send_agent_message`, `cancel_agent_message`, `open_agent`,
-   `stop_agent`, and `compact_agent` operate on authorized descendants with both full and
-   unambiguous short IDs.
+4. `list_agents`, `read_agent`, `send_agent_message`, `cancel_agent_message`, and `open_agent`
+   operate on authorized descendants with both full and unambiguous short IDs.
 5. An unauthorized sibling conversation cannot be read or mutated through the tools.
-6. `send_agent_message` deterministically distinguishes auto, queue, and new-turn delivery.
+6. `send_agent_message` starts a new turn when the target is idle and queues when active.
 7. The existing CLI continues to pass its current command tests and live smoke tests unchanged.
 8. A non-vision model with a pasted screenshot sees `consult_vision` but not `read_image`.
 9. A vision-capable model never sees `consult_vision`; it can discover a PNG path, call
@@ -1051,25 +1087,50 @@ No feature work is trusted from an agent's report alone.
 
 ---
 
-## 19. Risks and mitigations
+## 19. Cross-repo dependencies
+
+Most of this feature is self-contained in the backend repo. The following changes cross repo
+boundaries and need separate awareness or coordination:
+
+- **`ConversationMeta` wire type change → frontend repo.** Adding `parentConversationId` and
+  `toolPolicy` as optional fields to the wire type (defined in `packages/wire/` in the backend)
+  affects the API responses the frontend receives. For V1 the frontend likely needs no code
+  changes — it can ignore optional fields it does not render — but the contract change should be
+  flagged so the frontend team is aware.
+
+- **`ToolContract` kernel change → all provider adapters.** If `loading` and `namespace` fields
+  are added to `ToolContract` in the future (deferred tool loading), both `packages/openai-stream/`
+  (backend) and `claude/packages/provider-anthropic/` (claude repo) convert `ToolContract` objects
+  and would need to handle the new fields. This is not needed for the first version since deferred
+  tool loading is not being implemented yet.
+
+- **Anthropic deferred tool loading → claude repo.** If deferred tool loading is implemented for
+  Anthropic in the future, the changes live in `claude/packages/provider-anthropic/src/convert.ts`
+  and `stream.ts` — adding `defer_loading` to tool serialization, handling the `tool_search` server
+  tool, and processing `tool_reference` blocks. This is external to the backend repo and needs
+  separate coordination. Not needed for the first version.
+
+---
+
+## 20. Risks and mitigations
 
 | Risk | Mitigation |
 |---|---|
 | Tool restrictions rely only on prompting | Durable conversation tool policy applied last in assembly; provider receives an empty tool list. |
 | AI tool becomes an unrestricted server-wide admin surface | Lineage-based access, workspace-scoped listing, authorized short-ID resolution, self-target rejection. |
 | Parent blocks indefinitely on a child | Non-blocking defaults, event-driven bounded wait, cancellation cleanup, child independence. |
-| Duplicate orchestration logic diverges from CLI/backend behavior | Typed service delegates to existing orchestrator/queue/compaction/open contracts; no CLI subprocess. |
+| Duplicate orchestration logic diverges from CLI/backend behavior | Typed service delegates to existing orchestrator/queue/open contracts; no CLI subprocess. |
 | Workspace defaults depend on frontend/global state | Resolve persisted caller workspace through injected conversation-store service. |
 | A tool filter reintroduces tools to a restricted conversation | Persisted policy is applied after the entire filter chain. |
 | Vision model receives recursive vision tool | Model-aware filter removes `consult_vision`; consultations additionally use policy `none`. |
 | Tool-loaded image breaks provider message ordering | Kernel appends complete tool-result batch before synthetic image-bearing user messages. |
 | SQLite/logs receive large base64 images | Session shell compacts before persistence; events omit image data. |
 | Agent owners overlap | Dependency waves and one package owner per unit; orchestrator owns contracts/config/harness only. |
-| New feature grows into a workflow engine | Explicit exclusions in §6.10; add only after concrete evidence under P4. |
+| New feature grows into a workflow engine | Explicit exclusions in §6.8; add only after concrete evidence under P4. |
 
 ---
 
-## 20. User decision checklist
+## 21. User decision checklist
 
 The plan recommends the bold choices below, but implementation must not begin until the human-gated
 boundary/vocabulary decisions are confirmed.
@@ -1078,7 +1139,7 @@ boundary/vocabulary decisions are confirmed.
    - **`subagent`** for a conversation created by an agent;
    - **agent management** for the feature;
    - **`agent-management`** for the extension;
-   - the nine tool names in §6.
+   - the seven tool names in §6.
 
 2. Extension boundary:
    - **new standard `agent-management` extension**;
@@ -1112,9 +1173,9 @@ boundary/vocabulary decisions are confirmed.
 
 ---
 
-## 21. Recommended implementation stopping point
+## 22. Recommended implementation stopping point
 
-The milestone is complete when the nine management tools, durable policy/lineage, vision tool
+The milestone is complete when the seven management tools, durable policy/lineage, vision tool
 isolation, and native `read_image` path all pass the acceptance scenarios. Stop there. Do not add a
 workflow language, recursive lifecycle manager, automatic continuation agent, budgets, voting,
 scheduled agents, or frontend lineage UI in the same feature. Those are separate capabilities that
