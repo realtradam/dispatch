@@ -1,5 +1,5 @@
+import type { AgentManagementService } from "@dispatch/agent-management";
 import type {
-  AgentEvent,
   ChatMessage,
   ModelInfo,
   ProviderContract,
@@ -7,7 +7,11 @@ import type {
   ToolContract,
 } from "@dispatch/kernel";
 import { describe, expect, it, vi } from "vitest";
-import { createVisionHandoffService, type VisionHandoffDeps } from "./service.js";
+import {
+  createVisionHandoffService,
+  type VisionHandoffDeps,
+  type VisionHandoffService,
+} from "./service.js";
 
 // ── Test doubles (outermost-edge fakes — NOT @dispatch/* mocks) ──────────────
 
@@ -334,46 +338,61 @@ describe("VisionHandoffService.prepareForProvider", () => {
 });
 
 describe("VisionHandoffService.consultVision", () => {
-  function makeOrchestratorDouble(response: string): {
-    orchestrator: NonNullable<
-      VisionHandoffDeps["resolveOrchestrator"] extends () => infer T ? T : never
-    >;
-    handleMessage: ReturnType<typeof vi.fn>;
+  /**
+   * A fake AgentManagementService — only `summon` is exercised by consultVision;
+   * the other methods are stubs. `summon` records its input (so tests assert
+   * the hard-isolation guarantees: toolAccess none, systemPrompt, wait, title,
+   * inherited callerConversationId) and returns the configured reply.
+   */
+  function makeAgentManagementDouble(
+    reply = "The error is on line 12.",
+    summonImpl?: (input: Record<string, unknown>) => Promise<unknown>,
+  ): {
+    service: AgentManagementService;
+    summon: ReturnType<typeof vi.fn>;
   } {
-    const handleMessage = vi.fn(
-      async (input: {
-        conversationId: string;
-        text: string;
-        onEvent: (event: AgentEvent) => void;
-      }): Promise<void> => {
-        input.onEvent({
-          type: "text-delta",
-          conversationId: input.conversationId,
-          turnId: "t1",
-          delta: response,
-        });
-        input.onEvent({
-          type: "done",
-          conversationId: input.conversationId,
-          turnId: "t1",
-          reason: "stop",
-        });
-      },
+    const summon = vi.fn(
+      summonImpl ??
+        (async (_input: Record<string, unknown>) => ({
+          ok: true as const,
+          value: {
+            conversationId: "consultation-xyz",
+            workspaceId: "ws-1",
+            status: "idle" as const,
+            started: true,
+            reply,
+          },
+        })),
     );
-    return { orchestrator: { handleMessage }, handleMessage };
+    const svc = {
+      summon,
+      listModels: vi.fn(async () => ({ ok: true, value: { models: [] } })),
+      list: vi.fn(async () => ({ ok: true, value: { agents: [], truncated: false } })),
+      read: vi.fn(async () => ({ ok: true, value: { reply: "", truncated: false } })),
+      send: vi.fn(async () => ({ ok: true, value: { delivered: "started-turn" } })),
+      cancelMessage: vi.fn(async () => ({ ok: true, value: { cancelled: true, queueLength: 0 } })),
+      open: vi.fn(async () => ({ ok: true, value: { workspaceId: "ws-1" } })),
+    } as unknown as AgentManagementService;
+    return { service: svc, summon };
+  }
+
+  /** Register a pasted image (as prepareForProvider would) and return its id. */
+  async function registerImage(
+    svc: VisionHandoffService,
+    conversationId: string,
+    url: string,
+  ): Promise<void> {
+    const messages: ChatMessage[] = [{ role: "user", chunks: [{ type: "image", url }] }];
+    await svc.prepareForProvider(messages, "umans/umans-glm-5.2", { conversationId });
   }
 
   it("opens a new consultation with a pasted image and returns convId + response", async () => {
     const deps = makeDeps();
-    const { orchestrator, handleMessage } = makeOrchestratorDouble("The error is on line 12.");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt, summon } = makeAgentManagementDouble("The error is on line 12.");
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
 
-    // Register an image first (as prepareForProvider would).
-    const messages: ChatMessage[] = [
-      { role: "user", chunks: [{ type: "image", url: "data:image/png;base64,img1" }] },
-    ];
-    await svc.prepareForProvider(messages, "umans/umans-glm-5.2", { conversationId: "conv-1" });
+    await registerImage(svc, "conv-1", "data:image/png;base64,img1");
 
     const result = await svc.consultVision("What error is shown?", {
       conversationId: "conv-1",
@@ -382,68 +401,96 @@ describe("VisionHandoffService.consultVision", () => {
 
     expect("error" in result).toBe(false);
     if (!("error" in result)) {
-      expect(result.conversationId).toBeTruthy();
+      expect(result.conversationId).toBe("consultation-xyz");
       expect(result.response).toContain("line 12");
       expect(result.response).toContain(result.conversationId);
-      expect(result.response).toContain("dispatch CLI");
+      // Follow-up now points to management tools, not the CLI only.
+      expect(result.response).toContain("send_agent_message");
     }
-    // The orchestrator was called with the vision model + the image.
-    expect(handleMessage).toHaveBeenCalledOnce();
-    const call = handleMessage.mock.calls[0]?.[0];
-    expect(call.modelName).toBe("umans/umans-kimi-k2.7");
+    // summon was called with the vision model + the image + hard isolation.
+    expect(summon).toHaveBeenCalledOnce();
+    const call = summon.mock.calls[0]?.[0];
+    expect(call.model).toBe("umans/umans-kimi-k2.7");
     expect(call.images).toHaveLength(1);
     expect(call.images?.[0]?.url).toBe("data:image/png;base64,img1");
   });
 
-  it("labels the consultation tab with an 'IMAGE - ' prefixed title", async () => {
+  it("passes toolAccess none, wait, open, systemPrompt, and title (hard isolation)", async () => {
     const deps = makeDeps();
-    const { orchestrator } = makeOrchestratorDouble("The error is on line 12.");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt, summon } = makeAgentManagementDouble();
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
 
-    // Register an image first (as prepareForProvider would).
-    const messages: ChatMessage[] = [
-      { role: "user", chunks: [{ type: "image", url: "data:image/png;base64,img1" }] },
-    ];
-    await svc.prepareForProvider(messages, "umans/umans-glm-5.2", { conversationId: "conv-1" });
+    await registerImage(svc, "conv-1", "data:image/png;base64,img1");
 
-    const result = await svc.consultVision("What error is shown?", {
+    await svc.consultVision("What error is shown?", {
       conversationId: "conv-1",
       imageIds: [1],
     });
 
-    expect("error" in result).toBe(false);
-    // The title was set with the IMAGE - prefix + the question.
-    expect(deps.setConversationTitle).toHaveBeenCalledOnce();
-    const [titleConvId, title] = (deps.setConversationTitle as ReturnType<typeof vi.fn>).mock
-      .calls[0];
-    expect(titleConvId).toBe((result as { conversationId: string }).conversationId);
-    expect(title).toBe("IMAGE - What error is shown?");
+    const call = summon.mock.calls[0]?.[0];
+    // toolAccess none → durable toolPolicy { mode: "none" } (provider sees []).
+    expect(call.toolAccess).toBe("none");
+    expect(call.wait).toBe(true);
+    expect(call.open).toBe(true);
+    expect(call.systemPrompt).toEqual(expect.any(String));
+    expect(call.systemPrompt.length).toBeGreaterThan(0);
+    // Title carries the IMAGE - prefix.
+    expect(call.title).toBe("IMAGE - What error is shown?");
   });
 
-  it("does not call setConversationTitle when it is not provided", async () => {
-    const deps = makeDeps({ setConversationTitle: undefined });
-    const { orchestrator } = makeOrchestratorDouble("response");
-    deps.resolveOrchestrator = () => orchestrator;
+  it("inherits the caller's conversation id (lineage)", async () => {
+    const deps = makeDeps();
+    const { service: agentMgmt, summon } = makeAgentManagementDouble();
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
 
-    const messages: ChatMessage[] = [
-      { role: "user", chunks: [{ type: "image", url: "data:image/png;base64,img1" }] },
-    ];
-    await svc.prepareForProvider(messages, "umans/umans-glm-5.2", { conversationId: "conv-1" });
+    await registerImage(svc, "parent-conv", "data:image/png;base64,img1");
 
-    // Should NOT throw — setConversationTitle is optional.
-    const result = await svc.consultVision("What?", {
-      conversationId: "conv-1",
-      imageIds: [1],
-    });
+    await svc.consultVision("What?", { conversationId: "parent-conv", imageIds: [1] });
+
+    // The service resolves workspace/cwd/computer from this caller id (plan §11
+    // guarantee 5) — vision-handoff passes it through as callerConversationId.
+    expect(summon.mock.calls[0]?.[0].callerConversationId).toBe("parent-conv");
+    // No explicit cwd/computerId override is forced by vision-handoff when the
+    // caller didn't pass one — inheritance is the service's job.
+    expect(summon.mock.calls[0]?.[0].cwd).toBeUndefined();
+  });
+
+  it("forwards an explicit cwd override", async () => {
+    const deps = makeDeps();
+    const { service: agentMgmt, summon } = makeAgentManagementDouble();
+    deps.resolveAgentManagement = () => agentMgmt;
+    const svc = createVisionHandoffService(deps);
+
+    await registerImage(svc, "conv-1", "data:image/png;base64,img1");
+
+    await svc.consultVision("What?", { conversationId: "conv-1", imageIds: [1], cwd: "/work" });
+
+    expect(summon.mock.calls[0]?.[0].cwd).toBe("/work");
+  });
+
+  it("parent receives text only (the reply), not tool data or child reasoning", async () => {
+    const deps = makeDeps();
+    const { service: agentMgmt } = makeAgentManagementDouble("ANSWER TEXT");
+    deps.resolveAgentManagement = () => agentMgmt;
+    const svc = createVisionHandoffService(deps);
+
+    await registerImage(svc, "conv-1", "data:image/png;base64,img1");
+
+    const result = await svc.consultVision("What?", { conversationId: "conv-1", imageIds: [1] });
     expect("error" in result).toBe(false);
+    if (!("error" in result)) {
+      // The response is the vision model's answer text, wrapped by
+      // formatConsultResult — no tool calls or reasoning leaked through.
+      expect(result.response).toContain("ANSWER TEXT");
+    }
   });
 
   it("opens a consultation with a file path image", async () => {
     const deps = makeDeps();
-    const { orchestrator } = makeOrchestratorDouble("It's a diagram.");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt } = makeAgentManagementDouble("It's a diagram.");
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
 
     const result = await svc.consultVision("What is this diagram?", {
@@ -458,8 +505,8 @@ describe("VisionHandoffService.consultVision", () => {
 
   it("returns an error when imageId is not registered", async () => {
     const deps = makeDeps();
-    const { orchestrator } = makeOrchestratorDouble("response");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt } = makeAgentManagementDouble();
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
 
     const result = await svc.consultVision("What?", {
@@ -472,22 +519,25 @@ describe("VisionHandoffService.consultVision", () => {
     }
   });
 
-  it("returns an error when no orchestrator is available", async () => {
+  it("returns an error when no agent-management service is available", async () => {
     const deps = makeDeps();
-    // No resolveOrchestrator provided.
+    // No resolveAgentManagement provided.
     const svc = createVisionHandoffService(deps);
     const result = await svc.consultVision("What?", {
       conversationId: "conv-1",
       imageIds: [1],
     });
     expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("Agent management");
+    }
   });
 
   it("returns an error when no vision model is available", async () => {
     const deps = makeDeps();
     (deps.credentialStore.listCatalog as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    const { orchestrator } = makeOrchestratorDouble("response");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt } = makeAgentManagementDouble();
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
     const result = await svc.consultVision("What?", {
       conversationId: "conv-1",
@@ -501,13 +551,56 @@ describe("VisionHandoffService.consultVision", () => {
 
   it("returns an error when no image source is provided", async () => {
     const deps = makeDeps();
-    const { orchestrator } = makeOrchestratorDouble("response");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt } = makeAgentManagementDouble();
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
     const result = await svc.consultVision("What?", {
       conversationId: "conv-1",
     });
     expect("error" in result).toBe(true);
+  });
+
+  it("surfaces a typed error when summon itself fails", async () => {
+    const deps = makeDeps();
+    const { service: agentMgmt } = makeAgentManagementDouble("", async () => ({
+      ok: false,
+      error: { code: "unknown-model", message: "model vanished" },
+    }));
+    deps.resolveAgentManagement = () => agentMgmt;
+    const svc = createVisionHandoffService(deps);
+
+    await registerImage(svc, "conv-1", "data:image/png;base64,img1");
+
+    const result = await svc.consultVision("What?", { conversationId: "conv-1", imageIds: [1] });
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("model vanished");
+    }
+  });
+
+  it("returns an error when the wait times out (child still running)", async () => {
+    const deps = makeDeps();
+    const { service: agentMgmt } = makeAgentManagementDouble("", async () => ({
+      ok: true,
+      value: {
+        conversationId: "c-running",
+        workspaceId: "ws",
+        status: "active",
+        started: true,
+        waitTimeout: true,
+      },
+    }));
+    deps.resolveAgentManagement = () => agentMgmt;
+    const svc = createVisionHandoffService(deps);
+
+    await registerImage(svc, "conv-1", "data:image/png;base64,img1");
+
+    const result = await svc.consultVision("What?", { conversationId: "conv-1", imageIds: [1] });
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("timed out");
+      expect(result.error).toContain("c-running");
+    }
   });
 
   it("uses the configured compaction model (via getVisionSettings) for the consultation", async () => {
@@ -550,8 +643,8 @@ describe("VisionHandoffService.consultVision", () => {
       imageLimit: 10,
       compactionModel: "umans/umans-qwen3.6-35b-a3b",
     });
-    const { orchestrator, handleMessage } = makeOrchestratorDouble("saw a chart");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt, summon } = makeAgentManagementDouble("saw a chart");
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
 
     const result = await svc.consultVision("What is this diagram?", {
@@ -559,15 +652,15 @@ describe("VisionHandoffService.consultVision", () => {
       path: "diagram.png",
     });
     expect("error" in result).toBe(false);
-    expect(handleMessage).toHaveBeenCalledOnce();
-    expect(handleMessage.mock.calls[0]?.[0].modelName).toBe("umans/umans-qwen3.6-35b-a3b");
+    expect(summon).toHaveBeenCalledOnce();
+    expect(summon.mock.calls[0]?.[0].model).toBe("umans/umans-qwen3.6-35b-a3b");
   });
 
   it("falls back to auto-select when compactionModel is null (via getVisionSettings)", async () => {
     const deps = makeDeps();
     deps.getVisionSettings = async () => ({ imageLimit: 10, compactionModel: null });
-    const { orchestrator, handleMessage } = makeOrchestratorDouble("response");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt, summon } = makeAgentManagementDouble();
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
 
     await svc.consultVision("What?", {
@@ -575,20 +668,20 @@ describe("VisionHandoffService.consultVision", () => {
       path: "diagram.png",
     });
     // Auto-select picks the first vision model in the catalog (kimi).
-    expect(handleMessage.mock.calls[0]?.[0].modelName).toBe("umans/umans-kimi-k2.7");
+    expect(summon.mock.calls[0]?.[0].model).toBe("umans/umans-kimi-k2.7");
   });
 
   it("falls back to auto-select when getVisionSettings is not provided", async () => {
     const deps = makeDeps();
     // getVisionSettings deliberately NOT provided (legacy wiring).
-    const { orchestrator, handleMessage } = makeOrchestratorDouble("response");
-    deps.resolveOrchestrator = () => orchestrator;
+    const { service: agentMgmt, summon } = makeAgentManagementDouble();
+    deps.resolveAgentManagement = () => agentMgmt;
     const svc = createVisionHandoffService(deps);
 
     await svc.consultVision("What?", {
       conversationId: "conv-1",
       path: "diagram.png",
     });
-    expect(handleMessage.mock.calls[0]?.[0].modelName).toBe("umans/umans-kimi-k2.7");
+    expect(summon.mock.calls[0]?.[0].model).toBe("umans/umans-kimi-k2.7");
   });
 });

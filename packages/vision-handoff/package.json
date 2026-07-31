@@ -6,9 +6,12 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "dependencies": {
+    "@dispatch/agent-management": "workspace:*",
     "@dispatch/conversation-store": "workspace:*",
     "@dispatch/credential-store": "workspace:*",
+    "@dispatch/exec-backend": "workspace:*",
     "@dispatch/kernel": "workspace:*",
-    "@dispatch/openai-stream": "workspace:*"
+    "@dispatch/openai-stream": "workspace:*",
+    "@dispatch/session-orchestrator": "workspace:*"
   }
 }

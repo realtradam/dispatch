@@ -7,6 +7,9 @@
     { "path": "../wire" },
     { "path": "../conversation-store" },
     { "path": "../credential-store" },
-    { "path": "../openai-stream" }
+    { "path": "../openai-stream" },
+    { "path": "../exec-backend" },
+    { "path": "../session-orchestrator" },
+    { "path": "../agent-management" }
   ]
 }

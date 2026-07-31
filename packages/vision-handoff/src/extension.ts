@@ -21,15 +21,16 @@
 
 import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { agentManagementHandle } from "@dispatch/agent-management";
 import { conversationStoreHandle } from "@dispatch/conversation-store";
 import type { CredentialStore } from "@dispatch/credential-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
+import { execBackendHandle } from "@dispatch/exec-backend";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
-import {
-  createVisionHandoffService,
-  orchestratorLocalHandle,
-  visionHandoffHandle,
-} from "./service.js";
+import { type ToolAssembly, toolsFilter } from "@dispatch/session-orchestrator";
+import { filterVisionTools } from "./pure.js";
+import { createReadImageTool } from "./read-image.js";
+import { createVisionHandoffService, visionHandoffHandle } from "./service.js";
 import { createConsultVisionTool } from "./tool.js";
 
 export const manifest: Manifest = {
@@ -39,8 +40,11 @@ export const manifest: Manifest = {
   apiVersion: "^0.1.0",
   trust: "bundled",
   activation: "eager",
-  capabilities: { network: true },
-  contributes: { services: ["vision-handoff/service"], tools: ["consult_vision"] },
+  capabilities: { network: true, fs: true },
+  contributes: {
+    services: ["vision-handoff/service"],
+    tools: ["consult_vision", "read_image"],
+  },
 };
 
 const IMAGE_DIR = process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images";
@@ -166,11 +170,14 @@ export async function activate(host: HostAPI): Promise<void> {
     resolveImageUrl,
     deleteTmpImage,
     deleteConversationImages,
-    resolveOrchestrator: () => {
-      const loaded = host.getExtensions().some((m) => m.id === "session-orchestrator");
+    // Lazily resolve the AgentManagementService — consultations are started via
+    // its `summon` method (plan §11 hard isolation). Lazy so activation order
+    // doesn't matter; `undefined` degrades consult_vision with an error.
+    resolveAgentManagement: () => {
+      const loaded = host.getExtensions().some((m) => m.id === "agent-management");
       if (!loaded) return undefined;
       try {
-        return host.getService(orchestratorLocalHandle);
+        return host.getService(agentManagementHandle);
       } catch {
         return undefined;
       }
@@ -183,10 +190,6 @@ export async function activate(host: HostAPI): Promise<void> {
       const store = host.getService(conversationStoreHandle);
       await store.setImageTranscription(conversationId, url, text);
     },
-    setConversationTitle: async (conversationId: string, title: string) => {
-      const store = host.getService(conversationStoreHandle);
-      await store.setConversationTitle(conversationId, title);
-    },
     getVisionSettings: async () => {
       const store = host.getService(conversationStoreHandle);
       return store.getVisionSettings();
@@ -196,7 +199,39 @@ export async function activate(host: HostAPI): Promise<void> {
 
   host.provideService(visionHandoffHandle, service);
   host.defineTool(createConsultVisionTool(service));
-  host.logger.info("vision-handoff: registered (consult_vision tool + handoff service)");
+
+  // read_image — advertised ONLY to vision-capable models (the filter below
+  // hides it from non-vision models). Reads filesystem images into the model's
+  // own context via the injected exec backend (local/remote). Resolved eagerly
+  // (the exec-backend resolver is synchronous + side-effect-free — merely
+  // resolving a backend opens no connection); if exec-backend is not loaded,
+  // read_image is not registered (degrades gracefully — consult_vision still
+  // works without it).
+  try {
+    const resolveBackend = host.getService(execBackendHandle);
+    host.defineTool(createReadImageTool({ resolveBackend, workdir: process.cwd() }));
+  } catch {
+    host.logger.warn(
+      "vision-handoff: exec-backend service not available — the read_image tool is disabled.",
+    );
+  }
+
+  // Model-aware tools filter (plan §12): runs once per turn, hiding
+  // consult_vision from vision-capable models (they see images natively) and
+  // hiding read_image from non-vision models (they can't view the images it
+  // returns). ModelInfo.vision is authoritative; the name heuristic is the
+  // fallback (isVisionCapable). Final toolPolicy application runs AFTER this
+  // filter (in session-orchestrator), so a `none`-policy consultation receives
+  // neither tool regardless.
+  host.addFilter(toolsFilter, async (assembly: ToolAssembly): Promise<ToolAssembly> => {
+    const capable = await service.isVisionCapable(assembly.modelName);
+    const tools = filterVisionTools(assembly.tools, capable);
+    return { ...assembly, tools };
+  });
+
+  host.logger.info(
+    "vision-handoff: registered (consult_vision + read_image tools, handoff service, model-aware tools filter)",
+  );
 }
 
 export const extension: Extension = { manifest, activate };

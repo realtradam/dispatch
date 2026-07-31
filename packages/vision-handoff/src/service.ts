@@ -20,9 +20,9 @@
  * decisions live in `pure.ts`. This shell wires them.
  */
 
+import type { AgentManagementService } from "@dispatch/agent-management";
 import type { CredentialStore } from "@dispatch/credential-store";
 import type {
-  AgentEvent,
   ChatMessage,
   Chunk,
   ImageInput,
@@ -40,28 +40,6 @@ import {
   formatNoVisionPlaceholder,
   isVisionCapable,
 } from "./pure.js";
-
-/**
- * Minimal orchestrator interface the service needs to start vision consultation
- * turns. Defined locally (not imported from session-orchestrator) to avoid a
- * compile-time dependency — resolved lazily at runtime via a local handle keyed
- * to the same service ID.
- */
-export interface OrchestratorForVision {
-  readonly handleMessage: (input: {
-    readonly conversationId: string;
-    readonly text: string;
-    readonly onEvent: (event: AgentEvent) => void;
-    readonly modelName?: string;
-    readonly cwd?: string;
-    readonly images?: readonly ImageInput[];
-    readonly systemPrompt?: string;
-  }) => Promise<void>;
-}
-
-/** Local handle for the session-orchestrator service (same ID, no import dep). */
-export const orchestratorLocalHandle: ServiceHandle<OrchestratorForVision> =
-  defineService<OrchestratorForVision>("session-orchestrator/orchestrator");
 
 /**
  * Resolved vision model — a provider + its model id, ready to stream from.
@@ -93,11 +71,14 @@ export interface VisionHandoffDeps {
    */
   readonly readFileAsDataUrl: (path: string, cwd?: string) => Promise<string>;
   /**
-   * Lazily resolve the session-orchestrator (for starting vision consultation
-   * turns). Returns `undefined` when not available — `consult_vision` degrades
-   * with an error. Lazy so activation order doesn't matter.
+   * Lazily resolve the AgentManagementService (the typed handle from
+   * `@dispatch/agent-management`). Vision consultations are started via its
+   * `summon` method with `toolAccess: "none"` + a focused system prompt, so this
+   * extension owns NO conversation-start/wait logic (plan §11). Returns
+   * `undefined` when `agent-management` is not loaded — `consult_vision`
+   * degrades with an error. Lazy so activation order doesn't matter.
    */
-  readonly resolveOrchestrator?: () => OrchestratorForVision | undefined;
+  readonly resolveAgentManagement?: () => AgentManagementService | undefined;
   /**
    * Get the per-conversation cached image transcriptions (imageUrl → text).
    * Used to avoid re-transcribing old images that were compacted to text on a
@@ -148,14 +129,6 @@ export interface VisionHandoffDeps {
    */
   readonly deleteConversationImages?: (conversationId: string) => Promise<void>;
   /**
-   * Set the human-readable title of a conversation. Used to label vision
-   * consultation tabs with an `"IMAGE - "` prefix so they're visually
-   * distinguishable from normal conversation tabs. Backed by the conversation
-   * store's `setConversationTitle`. Optional — when absent, consultation tabs
-   * keep their default (question-derived) title.
-   */
-  readonly setConversationTitle?: (conversationId: string, title: string) => Promise<void>;
-  /**
    * Read the global vision settings (image compaction limit + compaction
    * model). Used by `consultVision` so the `consult_vision` tool honors the
    * configured compaction model when one is set (null = auto-select). Backed by
@@ -166,8 +139,6 @@ export interface VisionHandoffDeps {
     readonly imageLimit: number;
     readonly compactionModel: string | null;
   }>;
-  /** Generate a new conversation ID for a consultation. Defaults to crypto.randomUUID. */
-  readonly generateId?: () => string;
   readonly logger?: Logger;
 }
 
@@ -270,7 +241,6 @@ function hasImageChunks(messages: readonly ChatMessage[]): boolean {
 
 export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHandoffService {
   const log = deps.logger;
-  const generateId = deps.generateId ?? (() => crypto.randomUUID());
 
   // Per-conversation image registry: conversationId → (imageId → image data).
   // Populated by prepareForProvider; consulted by the consult_vision tool.
@@ -606,10 +576,10 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
     ): Promise<
       { readonly conversationId: string; readonly response: string } | { readonly error: string }
     > {
-      const orchestrator = deps.resolveOrchestrator?.();
-      if (orchestrator === undefined) {
+      const agentManagement = deps.resolveAgentManagement?.();
+      if (agentManagement === undefined) {
         return {
-          error: "The session orchestrator is not available — cannot start a vision consultation.",
+          error: "Agent management is not available — cannot start a vision consultation.",
         };
       }
 
@@ -660,64 +630,68 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         };
       }
 
-      // Start a NEW conversation with the vision model.
-      const consultationId = generateId();
+      // Start a NEW consultation via the AgentManagementService — the ONLY
+      // conversation-start/wait path (plan §11 hard isolation). The service
+      // generates the conversation id, persists parentConversationId +
+      // toolPolicy BEFORE the first turn, and starts the turn. We pass:
+      //  - toolAccess: "none" → durable toolPolicy { mode: "none" } so the
+      //    provider receives tools: [] on the first AND all later turns.
+      //  - systemPrompt: the focused vision prompt (guidance, not enforcement).
+      //  - wait: true → block for the child's first turn to settle and return
+      //    the final assistant text (the parent receives text only — never
+      //    child reasoning or tool data; plan §11 guarantee 4).
+      //  - title: the "IMAGE - " prefixed question so the consultation tab is
+      //    visually distinguishable (flows via summon → startTurn → orchestrator).
+      //  - cwd/computerId: inherited from the caller by the service (plan §11
+      //    guarantee 5); an explicit cwd override is forwarded when present.
       log?.info("vision-handoff: starting consultation", {
-        consultationId,
         visionModel: vision.modelName,
         imageCount: images.length,
         fromConversation: opts.conversationId,
       });
 
-      // Label the consultation tab with an "IMAGE - " prefix so it's visually
-      // distinguishable from normal conversation tabs. Set BEFORE the turn
-      // starts so the tab shows the correct title from the first moment (the
-      // store keeps a non-"Untitled" title on first message append).
-      if (deps.setConversationTitle !== undefined) {
-        try {
-          await deps.setConversationTitle(consultationId, formatConsultationTitle(question));
-        } catch (err) {
-          // Best-effort — don't let a title-write failure break the consultation.
-          log?.warn("vision-handoff: failed to set consultation title", {
-            consultationId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
+      const systemPrompt =
+        "You are a vision assistant. A developer who cannot see images is asking you specific " +
+        "questions about an image they attached. Answer their question precisely and thoroughly. " +
+        "Do not use any tools — just use your vision to see the image and describe it directly.";
+
+      const result = await agentManagement.summon({
+        callerConversationId: opts.conversationId,
+        model: vision.modelName,
+        task: question,
+        images,
+        wait: true,
+        open: true,
+        toolAccess: "none",
+        systemPrompt,
+        title: formatConsultationTitle(question),
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+      });
+
+      if (!result.ok) {
+        return { error: result.error.message };
       }
 
-      let responseText = "";
-      let errorMessage = "";
-      try {
-        await orchestrator.handleMessage({
-          conversationId: consultationId,
-          text: question,
-          images,
-          modelName: vision.modelName,
-          ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-          systemPrompt:
-            "You are a vision assistant. A developer who cannot see images is asking you specific " +
-            "questions about an image they attached. Answer their question precisely and thoroughly. " +
-            "Do not use any tools unless specifically asked to — just use your vision to see the " +
-            "image and describe it directly.",
-          onEvent: (event: AgentEvent) => {
-            if (event.type === "text-delta") {
-              responseText += event.delta;
-            } else if (event.type === "error") {
-              errorMessage = event.message;
-            }
-          },
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { error: `Vision consultation failed: ${msg}` };
+      const v = result.value;
+      // The wait was ended by timeout (child still running) or the parent's
+      // abort (child still running). Surface a typed outcome pointing to the
+      // management tools for follow-up rather than an opaque failure.
+      if (v.waitTimeout) {
+        return {
+          error:
+            `Vision consultation timed out (conversation ${v.conversationId} is still ` +
+            `running). Read its latest reply with read_agent, or the dispatch CLI.`,
+        };
+      }
+      if (v.waitCancelled) {
+        return {
+          error: `Vision consultation was cancelled (conversation ${v.conversationId} is still running).`,
+        };
       }
 
-      if (errorMessage.length > 0 && responseText.trim().length === 0) {
-        return { error: `Vision consultation failed: ${errorMessage}` };
-      }
-
-      const response = formatConsultResult(consultationId, responseText);
-      return { conversationId: consultationId, response };
+      const response = formatConsultResult(v.conversationId, v.reply ?? "");
+      return { conversationId: v.conversationId, response };
     },
   };
 

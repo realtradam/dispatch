@@ -398,10 +398,13 @@
       "name": "@dispatch/vision-handoff",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/agent-management": "workspace:*",
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
+        "@dispatch/exec-backend": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/openai-stream": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
       },
     },
     "packages/wire": {

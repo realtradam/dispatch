@@ -8,7 +8,7 @@
  * consultation tool's result.
  */
 
-import type { ModelInfo, ProviderEvent } from "@dispatch/kernel";
+import type { ModelInfo, ProviderEvent, ToolContract } from "@dispatch/kernel";
 import { isVisionModelId } from "@dispatch/openai-stream";
 
 /**
@@ -160,8 +160,9 @@ export function formatConsultationTitle(question: string): string {
 /**
  * Format the `consult_vision` tool's result string. Returns the conversation ID
  * (so the model / user can continue the vision consultation), the vision model's
- * response, and a note that follow-up questions use the dispatch CLI (the model
- * can load the `dispatch-cli` skill for the exact commands).
+ * response, and a note that follow-up questions use the agent-management tools
+ * (`send_agent_message` / `read_agent`) — the conversation ID is the bridge. The
+ * dispatch CLI remains a fallback for terminal use and recovery.
  *
  * Pure.
  *
@@ -173,7 +174,160 @@ export function formatConsultResult(conversationId: string, response: string): s
   return (
     `Vision consultation opened in conversation ${conversationId}.\n\n` +
     `Response: ${trimmed}\n\n` +
-    `To ask follow-up questions about this image, use the dispatch CLI ` +
-    `(conversation: ${conversationId}).`
+    `To ask follow-up questions about this image, use the agent-management ` +
+    `tools with this conversation ID: send_agent_message (to ask another ` +
+    `question) and read_agent (to read the latest reply). The dispatch CLI ` +
+    `(conversation: ${conversationId}) remains a fallback for terminal use.`
   );
+}
+
+// ── Model-aware vision tool filtering (plan §12) ────────────────────────────
+
+/**
+ * Filter the tool set for a turn based on whether the active model is
+ * vision-capable. Complementary visibility (plan §12):
+ *
+ * | capability      | consult_vision | read_image |
+ * |-----------------|---------------:|-----------:|
+ * | vision-capable  |        hidden  |  available |
+ * | non-vision      |     available  |     hidden |
+ *
+ * A `toolPolicy: none` conversation still receives neither tool — the final
+ * policy application (in session-orchestrator) runs AFTER this filter, so it
+ * strips everything regardless. Tool-name matching is DATA (the kernel routes
+ * tool-calls by name — the sanctioned string-keyed exception), so a name-based
+ * filter is correct here.
+ *
+ * Pure.
+ *
+ * @param tools           The assembled tool set for this turn.
+ * @param visionCapable   Whether the turn's resolved model can see images.
+ */
+export function filterVisionTools(
+  tools: readonly ToolContract[],
+  visionCapable: boolean,
+): readonly ToolContract[] {
+  if (visionCapable) {
+    // Vision-capable model: it sees images natively, so it never needs to
+    // consult another vision model. `read_image` stays (it lets the model pull
+    // a filesystem image into context).
+    return tools.filter((t) => t.name !== "consult_vision");
+  }
+  // Non-vision model: it cannot see images, so `read_image` is useless to it
+  // (it would return images it cannot view). `consult_vision` stays (it lets
+  // the model delegate image analysis to a vision-capable model).
+  return tools.filter((t) => t.name !== "read_image");
+}
+
+// ── read_image tool pure helpers (plan §13) ─────────────────────────────────
+
+/** Supported image extensions → MIME types. Pure data. */
+export const IMAGE_MIME_BY_EXT: Readonly<Record<string, string>> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+};
+
+/** Maximum number of images a single read_image call may return. */
+export const READ_IMAGE_MAX_COUNT = 10;
+/** Maximum size of a single image (bytes). */
+export const READ_IMAGE_MAX_PER_FILE = 20 * 1024 * 1024; // 20 MiB
+/** Maximum total size across all images in one call (bytes). */
+export const READ_IMAGE_MAX_TOTAL = 50 * 1024 * 1024; // 50 MiB
+
+/** The MIME type for an image path, or `undefined` when unsupported. Pure. */
+export function mimeFromPath(path: string): string | undefined {
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const base = path.slice(slash + 1);
+  const dot = base.lastIndexOf(".");
+  if (dot < 0) return undefined;
+  const ext = base.slice(dot).toLowerCase();
+  return IMAGE_MIME_BY_EXT[ext];
+}
+
+/**
+ * Resolve `path` against `cwd` to an absolute path and verify it stays WITHIN
+ * `cwd` (working-directory containment — plan §13.2 point 3). Returns the
+ * absolute path, or an error string. Absolute paths outside `cwd` and `..`
+ * traversal that escapes `cwd` are rejected.
+ *
+ * Pure given the injected `resolve` (node:path).
+ *
+ * @param resolve  `node:path`'s `resolve` (injected so this is testable).
+ * @param path     The model-supplied path (relative or absolute).
+ * @param cwd      The working directory to resolve against and contain to.
+ */
+export function resolveAndContain(
+  resolve: (base: string, rel: string) => string,
+  path: string,
+  cwd: string,
+): { readonly abs: string } | { readonly error: string } {
+  const abs = resolve(cwd, path);
+  // Containment: the resolved path must equal cwd or live under it. Compare
+  // with a trailing separator so a sibling like `/work-evil` is NOT treated as
+  // inside `/work`.
+  const base = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  if (abs !== cwd && !abs.startsWith(base)) {
+    return { error: `Path "${path}" escapes the working directory.` };
+  }
+  return { abs };
+}
+
+/** A read_image result for a single image: the data URL + its metadata. */
+export interface ReadImageEntry {
+  /** The original (model-supplied) path. */
+  readonly path: string;
+  /** The resolved absolute path. */
+  readonly abs: string;
+  readonly mimeType: string;
+  /** Decoded image size in bytes. */
+  readonly size: number;
+  /** `data:<mime>;base64,<...>` — the native image attachment URL. */
+  readonly dataUrl: string;
+}
+
+/**
+ * Validate a decoded image's size against the per-file and running total caps.
+ * Returns `undefined` when valid, or an error string. Pure.
+ */
+export function validateImageSize(size: number, runningTotal: number): string | undefined {
+  if (size > READ_IMAGE_MAX_PER_FILE) {
+    return (
+      `Image is ${formatBytes(size)} which exceeds the per-image limit of ` +
+      `${formatBytes(READ_IMAGE_MAX_PER_FILE)}.`
+    );
+  }
+  if (runningTotal + size > READ_IMAGE_MAX_TOTAL) {
+    return `Total image size would exceed the limit of ${formatBytes(READ_IMAGE_MAX_TOTAL)}.`;
+  }
+  return undefined;
+}
+
+/**
+ * Format a byte count as a human-readable string (e.g. `1.5 MiB`). Pure.
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
+
+/**
+ * Format the text metadata for a read_image result (one line per image, with
+ * the path, MIME type, and size). This is the `content` the model reads; the
+ * actual image bytes travel as native `images` attachments. Pure.
+ */
+export function formatReadImageResult(entries: readonly ReadImageEntry[]): string {
+  if (entries.length === 0) return "No images read.";
+  const lines = entries.map((e) => `${e.path} — ${e.mimeType}, ${formatBytes(e.size)}`);
+  return `Read ${entries.length} image${entries.length > 1 ? "s" : ""}:\n${lines.join("\n")}`;
 }

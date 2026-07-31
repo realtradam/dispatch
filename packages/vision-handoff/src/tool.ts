@@ -12,9 +12,9 @@
  * the "[Image N attached]" placeholders the orchestrator injected). For image
  * FILES on disk, the model passes a `path`.
  *
- * Follow-up questions are NOT handled by this tool — the model uses the dispatch
- * CLI to continue the vision conversation (the returned conversation ID is the
- * bridge; the model can load the `dispatch-cli` skill for the exact commands).
+ * Follow-up questions use the agent-management tools (`send_agent_message` /
+ * `read_agent`) on the returned conversation ID — the dispatch CLI remains a
+ * terminal fallback.
  */
 
 import type { ToolContract, ToolExecuteContext, ToolResult } from "@dispatch/kernel";
@@ -30,7 +30,8 @@ export function createConsultVisionTool(service: VisionHandoffService): ToolCont
       "Use this when you cannot view an image (e.g. a pasted screenshot or diagram) " +
       "and need to know what it shows — ask a SPECIFIC question (e.g. 'What error " +
       "message is on line 12?' rather than 'describe this image'). The conversation " +
-      "ID is returned so follow-up questions can be asked via the dispatch CLI.",
+      "ID is returned so follow-up questions can be asked via the agent-management " +
+      "tools (send_agent_message / read_agent); the dispatch CLI is a fallback.",
     parameters: {
       type: "object",
       properties: {
