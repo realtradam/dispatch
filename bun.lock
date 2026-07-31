@@ -11,6 +11,17 @@
         "vitest": "^3.0.0",
       },
     },
+    "packages/agent-management": {
+      "name": "@dispatch/agent-management",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
+        "@dispatch/credential-store": "workspace:*",
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/wire": "workspace:*",
+      },
+    },
     "packages/auth-apikey": {
       "name": "@dispatch/auth-apikey",
       "version": "0.0.0",
@@ -415,6 +426,8 @@
     "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.4.16", "", { "os": "win32", "cpu": "arm64" }, "sha512-0rgImMsNb5v/chhkIFe3wu7PEFClS6RBAYUijGL9UsYN3PanSaoK24HSSuSJb1pYbYYVjzAyZTl3gtjJ84BM8A=="],
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.4.16", "", { "os": "win32", "cpu": "x64" }, "sha512-Kp85jgoBHa05gix6UIRjfCDiUV3w/8VIdZ247VyyO2gEjaw12WEVhdIjlxp/AMzXxqxQwbxNTDVZ3Mwd2RG5rw=="],
+
+    "@dispatch/agent-management": ["@dispatch/agent-management@workspace:packages/agent-management"],
 
     "@dispatch/auth-apikey": ["@dispatch/auth-apikey@workspace:packages/auth-apikey"],
 

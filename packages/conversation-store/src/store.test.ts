@@ -8,7 +8,12 @@ import type {
   TurnMetrics,
 } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
-import { CONVERSATION_INDEX_KEY, chunkKey, metaKey, toolPolicyKey as toolPolicyKeyRaw } from "./keys.js";
+import {
+  CONVERSATION_INDEX_KEY,
+  chunkKey,
+  metaKey,
+  toolPolicyKey as toolPolicyKeyRaw,
+} from "./keys.js";
 import { createConversationStore, extractTitle, parseToolPolicy } from "./store.js";
 
 interface SpanEvent {
@@ -1737,14 +1742,20 @@ describe("ConversationStore toolPolicy", () => {
     const store = createConversationStore(storage);
     const policy: ConversationToolPolicy = { mode: "allow", names: ["read_file", "web_search"] };
     await store.setToolPolicy("conv1", policy);
-    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "allow", names: ["read_file", "web_search"] });
+    expect(await store.getToolPolicy("conv1")).toEqual({
+      mode: "allow",
+      names: ["read_file", "web_search"],
+    });
   });
 
   it("round-trips mode 'deny' with names", async () => {
     const store = createConversationStore(storage);
     const policy: ConversationToolPolicy = { mode: "deny", names: ["run_shell", "edit_file"] };
     await store.setToolPolicy("conv1", policy);
-    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "deny", names: ["run_shell", "edit_file"] });
+    expect(await store.getToolPolicy("conv1")).toEqual({
+      mode: "deny",
+      names: ["run_shell", "edit_file"],
+    });
   });
 
   it("setToolPolicy is an upsert (second set overwrites)", async () => {
@@ -1848,5 +1859,127 @@ describe("ConversationStore listChildren", () => {
 
     expect((await store.listChildren("parentA")).sort()).toEqual(["a1"]);
     expect((await store.listChildren("parentB")).sort()).toEqual(["b1"]);
+  });
+});
+
+describe("ConversationStore parentConversationId cycle prevention", () => {
+  let storage: StorageNamespace;
+
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
+
+  it("refuses a self-parent (trivial cycle) through the public write path", async () => {
+    const store = createConversationStore(storage);
+    await store.setParentConversationId("A", "A");
+    expect(await store.getParentConversationId("A")).toBeNull();
+  });
+
+  it("no cycles through the public write-on-create path: a link closing a loop is refused", async () => {
+    const store = createConversationStore(storage);
+    // Build a 2-node chain the WRONG way first: A's parent is B (A → B).
+    await store.setParentConversationId("A", "B");
+    expect(await store.getParentConversationId("A")).toBe("B");
+
+    // Setting B → A would close the loop A → B → A. It must be refused so
+    // that a cycle cannot arise through this public write path.
+    await store.setParentConversationId("B", "A");
+    expect(await store.getParentConversationId("B")).toBeNull();
+
+    // The existing acyclic link is left intact.
+    expect(await store.getParentConversationId("A")).toBe("B");
+    // B is not listed as a child of A (the refused link was not written).
+    expect(await store.listChildren("A")).toEqual([]);
+  });
+
+  it("refuses a cycle in a longer chain (C → A where A → B → C)", async () => {
+    const store = createConversationStore(storage);
+    // Chain: A → B → C (each points up to its parent).
+    await store.setParentConversationId("A", "B");
+    await store.setParentConversationId("B", "C");
+    // Closing C → A would form A → B → C → A.
+    await store.setParentConversationId("C", "A");
+    expect(await store.getParentConversationId("C")).toBeNull();
+    expect(await store.getParentConversationId("B")).toBe("C");
+    expect(await store.getParentConversationId("A")).toBe("B");
+  });
+
+  it("an acyclic second set still upserts (cycle guard does not block normal rewrites)", async () => {
+    const store = createConversationStore(storage);
+    await store.setParentConversationId("child", "parentA");
+    // parentB is unrelated to child; no cycle — overwrites to parentB.
+    await store.setParentConversationId("child", "parentB");
+    expect(await store.getParentConversationId("child")).toBe("parentB");
+  });
+});
+
+describe("ConversationStore deleteConversation (deletion lifecycle)", () => {
+  let storage: StorageNamespace;
+
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
+
+  it("deletion cleanup: removes parent + toolPolicy metadata and the index entry", async () => {
+    const store = createConversationStore(storage);
+    // Create a conversation carrying the new lineage + policy metadata.
+    await store.setConversationStatus("child1", "idle");
+    await store.setParentConversationId("child1", "parentA");
+    await store.setToolPolicy("child1", { mode: "none" });
+    expect(await store.getParentConversationId("child1")).toBe("parentA");
+    expect(await store.getToolPolicy("child1")).toEqual({ mode: "none" });
+    expect(await store.getConversationMeta("child1")).not.toBeNull();
+
+    await store.deleteConversation("child1");
+
+    // The dedicated metadata keys are gone; accessors fall back to legacy
+    // defaults (parent null, policy null → caller resolves to 'all').
+    expect(await store.getParentConversationId("child1")).toBeNull();
+    expect(await store.getToolPolicy("child1")).toBeNull();
+    expect(await store.getConversationMeta("child1")).toBeNull();
+    // Removed from the index: not listed, not discoverable as a child.
+    expect(await store.listChildren("parentA")).toEqual([]);
+    expect((await store.listConversations()).map((m) => m.id)).not.toContain("child1");
+  });
+
+  it("deletes a conversation's chunks, metrics, and scalar settings too", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+    await store.append("conv1", [msg]);
+    await store.setCwd("conv1", "/tmp");
+    await store.setModel("conv1", "cred/model");
+    await store.setReasoningEffort("conv1", "high");
+    await store.setToolPolicy("conv1", { mode: "allow", names: ["read_file"] });
+
+    await store.deleteConversation("conv1");
+
+    expect(await store.load("conv1")).toEqual([]);
+    expect(await store.getCwd("conv1")).toBeNull();
+    expect(await store.getModel("conv1")).toBeNull();
+    expect(await store.getReasoningEffort("conv1")).toBeNull();
+    expect(await store.getToolPolicy("conv1")).toBeNull();
+  });
+
+  it("does not affect other conversations (sibling isolation)", async () => {
+    const store = createConversationStore(storage);
+    await store.setConversationStatus("child1", "idle");
+    await store.setConversationStatus("child2", "idle");
+    await store.setParentConversationId("child1", "parentA");
+    await store.setParentConversationId("child2", "parentA");
+    await store.setToolPolicy("child1", { mode: "none" });
+
+    await store.deleteConversation("child1");
+
+    // child2 is untouched.
+    expect(await store.getParentConversationId("child2")).toBe("parentA");
+    expect(await store.getConversationMeta("child2")).not.toBeNull();
+    expect(await store.listChildren("parentA")).toEqual(["child2"]);
+  });
+
+  it("is idempotent for an unknown conversation", async () => {
+    const store = createConversationStore(storage);
+    await store.deleteConversation("never_existed");
+    // Still no conversations present.
+    expect(await store.listConversations()).toEqual([]);
   });
 });

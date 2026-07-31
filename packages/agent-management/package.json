@@ -1,0 +1,18 @@
+{
+  "name": "@dispatch/agent-management",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/wire": "workspace:*",
+    "@dispatch/conversation-store": "workspace:*",
+    "@dispatch/credential-store": "workspace:*",
+    "@dispatch/session-orchestrator": "workspace:*"
+  }
+}

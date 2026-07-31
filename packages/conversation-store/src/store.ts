@@ -27,8 +27,8 @@ import {
   metricsPrefix,
   metricsSeqKey,
   modelKey,
-  parseSeq,
   parentKey,
+  parseSeq,
   reasoningEffortKey,
   seqKey,
   toolPolicyKey,
@@ -109,11 +109,16 @@ export interface ConversationStore {
    * conversation that spawned this one.
    */
   readonly getParentConversationId: (conversationId: string) => Promise<string | null>;
-  /** Persist (upsert) the parent conversation id for a conversation. */
-  readonly setParentConversationId: (
-    conversationId: string,
-    parentId: string,
-  ) => Promise<void>;
+  /**
+   * Persist (upsert) the parent conversation id for a conversation. The
+   * lineage link is normally written once at creation (the write-on-create
+   * path). A write that would close a cycle — setting `conversationId →
+   * parentId` when `conversationId` is already an ancestor of `parentId`, or
+   * a self-parent (`conversationId === parentId`) — is REFUSED (no-op), so
+   * cycles cannot arise through this public path (§7.4). Non-cycle writes
+   * upsert (a second set with a different, acyclic parent overwrites).
+   */
+  readonly setParentConversationId: (conversationId: string, parentId: string) => Promise<void>;
   /**
    * The persisted per-conversation tool policy, or `null` when never set
    * (legacy — callers interpret absence as `{ mode: 'all' }`). A present-but
@@ -121,10 +126,7 @@ export interface ConversationStore {
    */
   readonly getToolPolicy: (conversationId: string) => Promise<ConversationToolPolicy | null>;
   /** Persist (upsert) the per-conversation tool policy. */
-  readonly setToolPolicy: (
-    conversationId: string,
-    policy: ConversationToolPolicy,
-  ) => Promise<void>;
+  readonly setToolPolicy: (conversationId: string, policy: ConversationToolPolicy) => Promise<void>;
   /**
    * List the ids of conversations whose `parentConversationId` equals
    * `parentId` (direct children). Returns an empty array when `parentId` has
@@ -132,6 +134,16 @@ export interface ConversationStore {
    * pointer (O(n) over all known conversations).
    */
   readonly listChildren: (parentId: string) => Promise<string[]>;
+  /**
+   * Delete a conversation ENTIRELY: every persisted key in its `conv:{id}:*`
+   * namespace (chunks, metrics, meta, cwd, model, computer, reasoning-effort,
+   * compact-percent, image-transcriptions, parent, toolPolicy) and its entry
+   * in the conversation index. This is the normal conversation deletion
+   * lifecycle through which parent/toolPolicy metadata is cleaned. Idempotent
+   * for an unknown conversation. Lineage metadata only at the storage layer —
+   * it does not rewind append-only history semantics of other conversations.
+   */
+  readonly deleteConversation: (conversationId: string) => Promise<void>;
   /**
    * List all known conversations, sorted by `lastActivityAt` descending (most
    * recent first). Metadata (createdAt, lastActivityAt, title) is tracked
@@ -924,6 +936,34 @@ export function createConversationStore(
     },
 
     async setParentConversationId(conversationId, parentId) {
+      // Self-parent is a trivial cycle — refuse it outright.
+      if (conversationId === parentId) {
+        if (logger !== undefined) {
+          logger.warn("refused self-parent (would form a trivial cycle)", { conversationId });
+        }
+        return;
+      }
+      // Cycle guard: setting `conversationId → parentId` closes a loop iff
+      // `conversationId` is already an ancestor of `parentId` (i.e. parentId
+      // descends from conversationId). Walk parentId's ancestor chain; if we
+      // ever reach `conversationId`, refuse the write so cycles cannot arise
+      // through this public write-on-create path (§7.4). Non-cycle writes
+      // still upsert (a later acyclic set overwrites an earlier parent).
+      let cursor: string | null = parentId;
+      const guard = new Set<string>();
+      while (cursor !== null) {
+        if (cursor === conversationId) {
+          if (logger !== undefined) {
+            logger.warn("refused cyclic parent link", { conversationId, parentId });
+          }
+          return;
+        }
+        // Defensive: stop walking if the persisted lineage already contains a
+        // cycle (should be unreachable via this path, but never loop forever).
+        if (guard.has(cursor)) break;
+        guard.add(cursor);
+        cursor = await storage.get(parentKey(cursor));
+      }
       await storage.set(parentKey(conversationId), parentId);
       if (logger !== undefined) {
         logger.debug("parentConversationId set", { conversationId });
@@ -969,6 +1009,56 @@ export function createConversationStore(
         }
       }
       return children;
+    },
+    async deleteConversation(conversationId) {
+      // Purge every persisted key for this conversation. The seq-suffixed
+      // chunk and metrics keys are removed via their segment prefixes
+      // (`chunkPrefix`/`metricsPrefix`); the scalar metadata keys (including
+      // the lineage `parent` and `toolPolicy` keys) are deleted explicitly.
+      // This explicit enumeration avoids a bare `conv:{id}:` prefix scan,
+      // which would be unsafe if a conversation id ever contained a colon.
+      for (const k of await storage.keys(chunkPrefix(conversationId))) {
+        await storage.delete(k);
+      }
+      for (const k of await storage.keys(metricsPrefix(conversationId))) {
+        await storage.delete(k);
+      }
+      for (const k of [
+        seqKey(conversationId),
+        metaKey(conversationId),
+        cwdKey(conversationId),
+        computerKey(conversationId),
+        reasoningEffortKey(conversationId),
+        modelKey(conversationId),
+        compactThresholdKey(conversationId),
+        imageTranscriptionsKey(conversationId),
+        parentKey(conversationId),
+        toolPolicyKey(conversationId),
+        metricsSeqKey(conversationId),
+      ]) {
+        await storage.delete(k);
+      }
+      // Remove the conversation from the persisted index (idempotent if
+      // absent).
+      const indexRaw = await storage.get(CONVERSATION_INDEX_KEY);
+      if (indexRaw !== null) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(indexRaw);
+        } catch {
+          parsed = [];
+        }
+        const ids = Array.isArray(parsed)
+          ? (parsed.filter((v) => typeof v === "string") as string[])
+          : [];
+        const filtered = ids.filter((id) => id !== conversationId);
+        if (filtered.length !== ids.length) {
+          await storage.set(CONVERSATION_INDEX_KEY, JSON.stringify(filtered));
+        }
+      }
+      if (logger !== undefined) {
+        logger.debug("conversation deleted", { conversationId });
+      }
     },
     async listConversations(filter) {
       const raw = await storage.get(CONVERSATION_INDEX_KEY);

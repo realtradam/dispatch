@@ -110,6 +110,9 @@
       "path": "./packages/system-prompt"
     },
     {
+      "path": "./packages/agent-management"
+    },
+    {
       "path": "./packages/cli"
     },
     {
