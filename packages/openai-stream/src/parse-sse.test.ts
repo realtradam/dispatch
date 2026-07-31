@@ -168,6 +168,39 @@ describe("parseSSELines", () => {
     expect(usageEvent.usage.cacheReadTokens).toBe(50);
   });
 
+  it("uses nested cached_tokens when flat cache_read_tokens is 0 (LongCat shape)", () => {
+    // LongCat returns cache_read_tokens:0 alongside the real cache hit in
+    // prompt_tokens_details.cached_tokens. `??` would shadow the real value
+    // with 0 (0 is not nullish); the parser must fall through to the nested field.
+    const lines = [
+      'data: {"id":"chatcmpl-longcat","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+      'data: {"id":"chatcmpl-longcat","usage":{"prompt_tokens":3013,"completion_tokens":5,"cache_read_tokens":0,"prompt_tokens_details":{"cached_tokens":2944}}}',
+      "data: [DONE]",
+    ];
+
+    const events = parseSSELines(lines);
+    const usageEvent = events.find((e) => e.type === "usage") as Extract<
+      ProviderEvent,
+      { type: "usage" }
+    >;
+    expect(usageEvent.usage.cacheReadTokens).toBe(2944);
+  });
+
+  it("preserves an explicit flat 0 when nested cached_tokens is absent", () => {
+    const lines = [
+      'data: {"id":"chatcmpl-zero","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+      'data: {"id":"chatcmpl-zero","usage":{"prompt_tokens":5,"completion_tokens":1,"cache_read_tokens":0}}',
+      "data: [DONE]",
+    ];
+
+    const events = parseSSELines(lines);
+    const usageEvent = events.find((e) => e.type === "usage") as Extract<
+      ProviderEvent,
+      { type: "usage" }
+    >;
+    expect(usageEvent.usage.cacheReadTokens).toBe(0);
+  });
+
   it("returns undefined for cacheReadTokens when neither flat nor nested present", () => {
     const lines = [
       'data: {"id":"chatcmpl-none","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
