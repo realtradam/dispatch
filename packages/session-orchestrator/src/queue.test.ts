@@ -2,6 +2,7 @@ import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
   AgentEvent,
   ChatMessage,
+  ConversationToolPolicy,
   ProviderContract,
   ProviderEvent,
   ReasoningEffort,
@@ -26,18 +27,24 @@ function createInMemoryStore(): ConversationStore & {
   readonly cwdData: Map<string, string>;
   readonly effortData: Map<string, ReasoningEffort>;
   readonly modelData: Map<string, string>;
+  readonly parentData: Map<string, string>;
+  readonly toolPolicyData: Map<string, ConversationToolPolicy>;
 } {
   const data = new Map<string, ChatMessage[]>();
   const metricsData = new Map<string, TurnMetrics[]>();
   const cwdData = new Map<string, string>();
   const effortData = new Map<string, ReasoningEffort>();
   const modelData = new Map<string, string>();
+  const parentData = new Map<string, string>();
+  const toolPolicyData = new Map<string, ConversationToolPolicy>();
   return {
     data,
     metricsData,
     cwdData,
     effortData,
     modelData,
+    parentData,
+    toolPolicyData,
     async append(conversationId, messages) {
       const existing = data.get(conversationId) ?? [];
       data.set(conversationId, [...existing, ...messages]);
@@ -95,6 +102,21 @@ function createInMemoryStore(): ConversationStore & {
       } else {
         modelData.set(conversationId, model);
       }
+    },
+    async getParentConversationId(conversationId) {
+      return parentData.get(conversationId) ?? null;
+    },
+    async setParentConversationId(conversationId, parentId) {
+      parentData.set(conversationId, parentId);
+    },
+    async getToolPolicy(conversationId) {
+      return toolPolicyData.get(conversationId) ?? null;
+    },
+    async setToolPolicy(conversationId, policy) {
+      toolPolicyData.set(conversationId, policy);
+    },
+    async listChildren() {
+      return [];
     },
     async listConversations() {
       return [];
@@ -173,6 +195,15 @@ function createInMemoryStore(): ConversationStore & {
     async getEffectiveComputer() {
       return null;
     },
+    async getImageTranscriptions() {
+      return new Map();
+    },
+    async setImageTranscription() {},
+    async getVisionSettings() {
+      return { imageLimit: 10, compactionModel: null };
+    },
+    async setVisionImageLimit() {},
+    async setVisionCompactionModel() {},
   };
 }
 

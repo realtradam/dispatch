@@ -3,6 +3,7 @@ import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
   AgentEvent,
   ChatMessage,
+  ConversationToolPolicy,
   EventHookDescriptor,
   LogDeps,
   Logger,
@@ -44,6 +45,8 @@ function createInMemoryStore(): ConversationStore & {
   readonly effortData: Map<string, ReasoningEffort>;
   readonly modelData: Map<string, string>;
   readonly workspaceIdData: Map<string, string>;
+  readonly parentData: Map<string, string>;
+  readonly toolPolicyData: Map<string, ConversationToolPolicy>;
 } {
   const data = new Map<string, ChatMessage[]>();
   const metricsData = new Map<string, TurnMetrics[]>();
@@ -53,6 +56,8 @@ function createInMemoryStore(): ConversationStore & {
   const modelData = new Map<string, string>();
   const workspaceIdData = new Map<string, string>();
   const compactPercentData = new Map<string, number>();
+  const parentData = new Map<string, string>();
+  const toolPolicyData = new Map<string, ConversationToolPolicy>();
   // Track conversations that have a meta row. In the real store, append,
   // setWorkspaceId, setConversationStatus, setConversationTitle, and
   // setCompactedFrom all create a minimal meta row on first contact.
@@ -67,6 +72,8 @@ function createInMemoryStore(): ConversationStore & {
     effortData,
     modelData,
     workspaceIdData,
+    parentData,
+    toolPolicyData,
     async append(conversationId, messages) {
       knownConversations.add(conversationId);
       const existing = data.get(conversationId) ?? [];
@@ -134,6 +141,21 @@ function createInMemoryStore(): ConversationStore & {
       } else {
         modelData.set(conversationId, model);
       }
+    },
+    async getParentConversationId(conversationId) {
+      return parentData.get(conversationId) ?? null;
+    },
+    async setParentConversationId(conversationId, parentId) {
+      parentData.set(conversationId, parentId);
+    },
+    async getToolPolicy(conversationId) {
+      return toolPolicyData.get(conversationId) ?? null;
+    },
+    async setToolPolicy(conversationId, policy) {
+      toolPolicyData.set(conversationId, policy);
+    },
+    async listChildren() {
+      return [];
     },
     async listConversations() {
       return [];
@@ -236,6 +258,15 @@ function createInMemoryStore(): ConversationStore & {
     async getEffectiveComputer(conversationId, overrideAlias) {
       return overrideAlias ?? computerData.get(conversationId) ?? null;
     },
+    async getImageTranscriptions() {
+      return new Map();
+    },
+    async setImageTranscription() {},
+    async getVisionSettings() {
+      return { imageLimit: 10, compactionModel: null };
+    },
+    async setVisionImageLimit() {},
+    async setVisionCompactionModel() {},
   };
 }
 
@@ -828,6 +859,17 @@ describe("turn-sealed event", () => {
         return null;
       },
       async setModel() {},
+      async getParentConversationId() {
+        return null;
+      },
+      async setParentConversationId() {},
+      async getToolPolicy() {
+        return null;
+      },
+      async setToolPolicy() {},
+      async listChildren() {
+        return [];
+      },
       async listConversations() {
         return [];
       },
@@ -905,6 +947,15 @@ describe("turn-sealed event", () => {
       async getEffectiveComputer() {
         return null;
       },
+      async getImageTranscriptions() {
+        return new Map();
+      },
+      async setImageTranscription() {},
+      async getVisionSettings() {
+        return { imageLimit: 10, compactionModel: null };
+      },
+      async setVisionImageLimit() {},
+      async setVisionCompactionModel() {},
     };
 
     const { orchestrator } = createSessionOrchestrator({
@@ -1259,6 +1310,17 @@ describe("turn metrics persistence", () => {
         return null;
       },
       async setModel() {},
+      async getParentConversationId() {
+        return null;
+      },
+      async setParentConversationId() {},
+      async getToolPolicy() {
+        return null;
+      },
+      async setToolPolicy() {},
+      async listChildren() {
+        return [];
+      },
       async listConversations() {
         return [];
       },
@@ -1336,6 +1398,15 @@ describe("turn metrics persistence", () => {
       async getEffectiveComputer() {
         return null;
       },
+      async getImageTranscriptions() {
+        return new Map();
+      },
+      async setImageTranscription() {},
+      async getVisionSettings() {
+        return { imageLimit: 10, compactionModel: null };
+      },
+      async setVisionImageLimit() {},
+      async setVisionCompactionModel() {},
     };
 
     const { orchestrator } = createSessionOrchestrator({

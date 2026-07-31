@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   CompactionResult,
   ConversationStatus,
+  ConversationToolPolicy,
   EventHookDescriptor,
   ImageInput,
   Logger,
@@ -36,7 +37,7 @@ import {
   resolveModelName,
   resolveReasoningEffort,
 } from "./pure.js";
-import type { ToolAssembly } from "./tools-filter.js";
+import { applyToolPolicy, type ToolAssembly } from "./tools-filter.js";
 
 // --- Vision handoff (lazy, optional) ---
 
@@ -142,6 +143,38 @@ export interface StartTurnInput {
    * title. The caller is responsible for trimming/validation.
    */
   readonly title?: string;
+  /**
+   * The parent conversation that summoned this one (lineage metadata). When
+   * provided, it is persisted via `setParentConversationId` DURING new-
+   * conversation workspace setup — AFTER the `meta === null` newness check
+   * (so it never pre-creates the meta row and skips workspace assignment,
+   * title, or first-turn system-prompt construction — the same ordering
+   * hazard already documented for `title`). Persisted on a SEPARATE store
+   * key (`conv:{id}:parent`), so it does NOT touch the meta row at all.
+   *
+   * The agent-management extension persists `parentConversationId` and
+   * `toolPolicy` BEFORE calling `startTurn` (plan §5 step 3), so the
+   * toolsFilter chain can read the policy during the first turn's tool
+   * assembly. The orchestrator re-stamps the same value here idempotently
+   * (never overwrites with a different value) and never invents one — it
+   * only persists what the caller explicitly passed. Omit for a top-level
+   * conversation.
+   */
+  readonly parentConversationId?: string;
+  /**
+   * The initial durable tool policy for a new conversation. When provided, it
+   * is persisted via `setToolPolicy` DURING new-conversation workspace setup
+   * — AFTER the newness check (same hazard avoidance as `title` and
+   * `parentConversationId`). Persisted on a SEPARATE store key
+   * (`conv:{id}:toolpolicy`), so it never pre-creates the meta row.
+   *
+   * The orchestrator applies the persisted policy LAST in tool assembly
+   * (after the entire `toolsFilter` chain), so no extension filter can
+   * re-add a tool into a restricted conversation. Legacy conversations
+   * without a persisted policy resolve to `{ mode: "all" }` (backward
+   * compatible). Omit for an ordinary (unrestricted) conversation.
+   */
+  readonly toolPolicy?: ConversationToolPolicy;
 }
 
 export type StartTurnResult =
@@ -409,6 +442,10 @@ export interface SessionOrchestrator {
     images?: readonly ImageInput[];
     /** Conversation tab title — see {@link StartTurnInput.title}. */
     title?: string;
+    /** Parent conversation lineage — see {@link StartTurnInput.parentConversationId}. */
+    parentConversationId?: string;
+    /** Durable tool policy — see {@link StartTurnInput.toolPolicy}. */
+    toolPolicy?: ConversationToolPolicy;
   }): Promise<void>;
 }
 
@@ -588,6 +625,8 @@ export function createSessionOrchestrator(
     systemPromptOverride: string | undefined,
     images: readonly ImageInput[] | undefined,
     title: string | undefined,
+    parentConversationId: string | undefined,
+    toolPolicy: ConversationToolPolicy | undefined,
   ): void {
     const turnId = generateTurnId();
     const promptStartedAt = deps.now?.() ?? Date.now();
@@ -616,6 +655,18 @@ export function createSessionOrchestrator(
     // construction. By deferring it to here, the title lands after the
     // workspace is assigned but BEFORE the first message append (so the
     // append's auto-title sees a non-"Untitled" title and preserves it).
+    //
+    // Lineage (`parentConversationId`) and the durable `toolPolicy` follow
+    // the EXACT same hazard avoidance as `title`: persisted HERE, after the
+    // newness check, using SEPARATE store keys (`conv:{id}:parent` and
+    // `conv:{id}:toolpolicy`) that do NOT touch the meta row — so they never
+    // pre-create metadata and never skip workspace assignment / title /
+    // first-turn system-prompt construction (plan §10.4). The agent-management
+    // extension ALSO persists these BEFORE calling startTurn (plan §5 step 3,
+    // so the toolsFilter can read the policy during the first turn); re-stamping
+    // the same value here is idempotent — the orchestrator never overwrites with
+    // a different value and never invents one (only persists what the caller
+    // explicitly passed). Legacy/ordinary conversations omit both → no-op.
     const workspaceSetupPromise = (async (): Promise<boolean> => {
       const meta = await deps.conversationStore.getConversationMeta(conversationId);
       if (meta === null) {
@@ -630,6 +681,32 @@ export function createSessionOrchestrator(
           await deps.conversationStore.setConversationTitle(conversationId, title);
         } catch (err) {
           deps.logger?.child({ conversationId }).warn("orchestrator: title set failure", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      // Persist lineage + tool policy AFTER the newness check (separate
+      // keys — never pre-create the meta row). Best-effort like `title`: a
+      // failure must not break the turn. Only persisted when explicitly
+      // provided; omitted = leave whatever agent-management pre-persisted
+      // (or nothing for a legacy conversation) untouched.
+      if (parentConversationId !== undefined) {
+        try {
+          await deps.conversationStore.setParentConversationId(
+            conversationId,
+            parentConversationId,
+          );
+        } catch (err) {
+          deps.logger?.child({ conversationId }).warn("orchestrator: parent set failure", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      if (toolPolicy !== undefined) {
+        try {
+          await deps.conversationStore.setToolPolicy(conversationId, toolPolicy);
+        } catch (err) {
+          deps.logger?.child({ conversationId }).warn("orchestrator: toolPolicy set failure", {
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -815,17 +892,36 @@ export function createSessionOrchestrator(
         }
 
         const baseTools = deps.resolveTools();
-        const assembled = await deps.applyToolsFilter({
+        const filtered = await deps.applyToolsFilter({
           tools: baseTools,
           conversationId,
           ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
           ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
+          // Thread the resolved model name into the assembly so model-aware
+          // filters (e.g. vision-handoff hiding consult_vision from
+          // vision-capable models) see which model is being used this turn.
+          // Omitted (undefined) on the default-provider fallthrough — model-
+          // aware filters treat absence as "unknown metadata".
+          ...(effectiveModelName !== undefined ? { modelName: effectiveModelName } : {}),
           // Thread the turn's abort signal into the filter chain so a filter
           // awaiting slow I/O (the MCP tools filter connecting to MCP servers)
           // can be interrupted by POST /conversations/:id/stop instead of
           // blocking the turn until its own timeout fires.
           signal: controller.signal,
         });
+        // Apply the persisted conversation tool policy LAST — after the entire
+        // toolsFilter chain — so NO extension filter can re-add a tool into a
+        // restricted conversation (plan §10.2). A `mode: "none"` conversation
+        // (e.g. a vision consultation) receives an empty tool set on every
+        // turn; legacy/ordinary conversations without a persisted policy resolve
+        // to `{ mode: "all" }` (passthrough — byte-identical to today). The
+        // policy is read from the store each turn, so it survives follow-up
+        // turns and a backend restart (durable). This MUST run after
+        // applyToolsFilter, never as a filter IN the chain — otherwise a later
+        // filter could re-introduce a restricted tool.
+        const persistedPolicy = await deps.conversationStore.getToolPolicy(conversationId);
+        const policy = persistedPolicy ?? ({ mode: "all" } as const);
+        const assembled = applyToolPolicy(filtered, policy);
         const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
         const turnLogger = deps.logger?.child({ conversationId, turnId });
         const metrics = createMetricsAccumulator();
@@ -1179,6 +1275,8 @@ export function createSessionOrchestrator(
       systemPrompt,
       images,
       title,
+      parentConversationId,
+      toolPolicy,
     }) {
       if (activeTurns.has(conversationId)) {
         return { started: false, reason: "already-active" };
@@ -1194,6 +1292,8 @@ export function createSessionOrchestrator(
         systemPrompt,
         images,
         title,
+        parentConversationId,
+        toolPolicy,
       );
       const turn = activeTurns.get(conversationId);
       const turnId = turn !== undefined ? turn.turnId : "";
@@ -1313,6 +1413,8 @@ export function createSessionOrchestrator(
       systemPrompt,
       images,
       title,
+      parentConversationId,
+      toolPolicy,
     }) {
       const turnInput: StartTurnInput = {
         conversationId,
@@ -1325,6 +1427,8 @@ export function createSessionOrchestrator(
         ...(systemPrompt !== undefined ? { systemPrompt } : {}),
         ...(images !== undefined ? { images } : {}),
         ...(title !== undefined ? { title } : {}),
+        ...(parentConversationId !== undefined ? { parentConversationId } : {}),
+        ...(toolPolicy !== undefined ? { toolPolicy } : {}),
       };
       const result = orchestrator.startTurn(turnInput);
       if (!result.started) {
