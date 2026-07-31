@@ -11,6 +11,7 @@ export type {
   CompactionResult,
   ConversationMeta,
   ConversationStatus,
+  ConversationToolPolicy,
   ErrorChunk,
   ImageChunk,
   ImageInput,

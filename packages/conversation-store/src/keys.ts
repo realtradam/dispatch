@@ -62,6 +62,16 @@ export function modelKey(conversationId: string): string {
   return `conv:${conversationId}:model`;
 }
 
+/** The parent conversation id for a spawned/forked conversation (plain string value). */
+export function parentKey(conversationId: string): string {
+  return `conv:${conversationId}:parent`;
+}
+
+/** The per-conversation tool policy (JSON `ConversationToolPolicy`). */
+export function toolPolicyKey(conversationId: string): string {
+  return `conv:${conversationId}:toolpolicy`;
+}
+
 export function compactThresholdKey(conversationId: string): string {
   return `conv:${conversationId}:compact-percent`;
 }

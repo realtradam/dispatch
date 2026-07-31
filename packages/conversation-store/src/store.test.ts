@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  ConversationToolPolicy,
   Logger,
   Span,
   StepId,
@@ -7,8 +8,8 @@ import type {
   TurnMetrics,
 } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
-import { CONVERSATION_INDEX_KEY, chunkKey, metaKey } from "./keys.js";
-import { createConversationStore, extractTitle } from "./store.js";
+import { CONVERSATION_INDEX_KEY, chunkKey, metaKey, toolPolicyKey as toolPolicyKeyRaw } from "./keys.js";
+import { createConversationStore, extractTitle, parseToolPolicy } from "./store.js";
 
 interface SpanEvent {
   readonly kind: "span-open" | "span-close";
@@ -1661,5 +1662,191 @@ describe("ConversationStore conversation metadata + list + title", () => {
     const snapshot = JSON.stringify(messages);
     extractTitle(messages);
     expect(JSON.stringify(messages)).toBe(snapshot);
+  });
+});
+
+describe("ConversationStore parentConversationId", () => {
+  let storage: StorageNamespace;
+
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
+
+  it("getParentConversationId returns null when never set (legacy default)", async () => {
+    const store = createConversationStore(storage);
+    expect(await store.getParentConversationId("conv_unknown")).toBeNull();
+  });
+
+  it("setParentConversationId then get round-trips the value", async () => {
+    const store = createConversationStore(storage);
+    await store.setParentConversationId("child1", "parentA");
+    expect(await store.getParentConversationId("child1")).toBe("parentA");
+  });
+
+  it("setParentConversationId is an upsert (second set overwrites)", async () => {
+    const store = createConversationStore(storage);
+    await store.setParentConversationId("child1", "parentA");
+    await store.setParentConversationId("child1", "parentB");
+    expect(await store.getParentConversationId("child1")).toBe("parentB");
+  });
+
+  it("isolates parent ids by conversation", async () => {
+    const store = createConversationStore(storage);
+    await store.setParentConversationId("childA", "parent1");
+    await store.setParentConversationId("childB", "parent2");
+    expect(await store.getParentConversationId("childA")).toBe("parent1");
+    expect(await store.getParentConversationId("childB")).toBe("parent2");
+  });
+
+  it("parentConversationId persists across a fresh store instance", async () => {
+    const store1 = createConversationStore(storage);
+    await store1.setParentConversationId("child1", "parentA");
+
+    const store2 = createConversationStore(storage);
+    expect(await store2.getParentConversationId("child1")).toBe("parentA");
+  });
+});
+
+describe("ConversationStore toolPolicy", () => {
+  let storage: StorageNamespace;
+
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
+
+  it("getToolPolicy returns null when never set (legacy default)", async () => {
+    const store = createConversationStore(storage);
+    expect(await store.getToolPolicy("conv_unknown")).toBeNull();
+  });
+
+  it("round-trips mode 'all'", async () => {
+    const store = createConversationStore(storage);
+    const policy: ConversationToolPolicy = { mode: "all" };
+    await store.setToolPolicy("conv1", policy);
+    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "all" });
+  });
+
+  it("round-trips mode 'none'", async () => {
+    const store = createConversationStore(storage);
+    const policy: ConversationToolPolicy = { mode: "none" };
+    await store.setToolPolicy("conv1", policy);
+    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "none" });
+  });
+
+  it("round-trips mode 'allow' with names", async () => {
+    const store = createConversationStore(storage);
+    const policy: ConversationToolPolicy = { mode: "allow", names: ["read_file", "web_search"] };
+    await store.setToolPolicy("conv1", policy);
+    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "allow", names: ["read_file", "web_search"] });
+  });
+
+  it("round-trips mode 'deny' with names", async () => {
+    const store = createConversationStore(storage);
+    const policy: ConversationToolPolicy = { mode: "deny", names: ["run_shell", "edit_file"] };
+    await store.setToolPolicy("conv1", policy);
+    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "deny", names: ["run_shell", "edit_file"] });
+  });
+
+  it("setToolPolicy is an upsert (second set overwrites)", async () => {
+    const store = createConversationStore(storage);
+    await store.setToolPolicy("conv1", { mode: "all" });
+    await store.setToolPolicy("conv1", { mode: "none" });
+    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "none" });
+  });
+
+  it("isolates policies by conversation", async () => {
+    const store = createConversationStore(storage);
+    await store.setToolPolicy("convA", { mode: "allow", names: ["a"] });
+    await store.setToolPolicy("convB", { mode: "deny", names: ["b"] });
+    expect(await store.getToolPolicy("convA")).toEqual({ mode: "allow", names: ["a"] });
+    expect(await store.getToolPolicy("convB")).toEqual({ mode: "deny", names: ["b"] });
+  });
+
+  it("toolPolicy persists across a fresh store instance", async () => {
+    const store1 = createConversationStore(storage);
+    await store1.setToolPolicy("conv1", { mode: "allow", names: ["x"] });
+
+    const store2 = createConversationStore(storage);
+    expect(await store2.getToolPolicy("conv1")).toEqual({ mode: "allow", names: ["x"] });
+  });
+
+  it("malformed policy (corrupt JSON) degrades to { mode: 'all' }", async () => {
+    // Write a corrupt JSON value directly to the storage key.
+    await storage.set(toolPolicyKeyRaw("conv1"), "{not valid json");
+    const store = createConversationStore(storage);
+    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "all" });
+  });
+
+  it("malformed policy (bad shape) degrades to { mode: 'all' }", async () => {
+    await storage.set(toolPolicyKeyRaw("conv1"), JSON.stringify({ mode: "bogus" }));
+    const store = createConversationStore(storage);
+    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "all" });
+  });
+
+  it("malformed policy (allow with non-string names) degrades to { mode: 'all' }", async () => {
+    await storage.set(
+      toolPolicyKeyRaw("conv1"),
+      JSON.stringify({ mode: "allow", names: ["ok", 42] }),
+    );
+    const store = createConversationStore(storage);
+    expect(await store.getToolPolicy("conv1")).toEqual({ mode: "all" });
+  });
+
+  it("parseToolPolicy: null raw → null (never set)", () => {
+    expect(parseToolPolicy(null)).toBeNull();
+  });
+
+  it("parseToolPolicy: allow/deny copy the names array (does not alias the source)", () => {
+    const result = parseToolPolicy(JSON.stringify({ mode: "allow", names: ["a", "b"] }));
+    expect(result).toEqual({ mode: "allow", names: ["a", "b"] });
+  });
+});
+
+describe("ConversationStore listChildren", () => {
+  let storage: StorageNamespace;
+
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
+
+  it("returns empty array when the parent has no children", async () => {
+    const store = createConversationStore(storage);
+    expect(await store.listChildren("parentA")).toEqual([]);
+  });
+
+  it("lists direct children where parentConversationId == parentId", async () => {
+    const store = createConversationStore(storage);
+    // Give each child a meta row so it lands in the conversation index.
+    await store.setConversationStatus("child1", "idle");
+    await store.setConversationStatus("child2", "idle");
+    await store.setConversationStatus("child3", "idle");
+    await store.setParentConversationId("child1", "parentA");
+    await store.setParentConversationId("child2", "parentA");
+    await store.setParentConversationId("child3", "parentB");
+
+    const children = await store.listChildren("parentA");
+    expect(children.sort()).toEqual(["child1", "child2"]);
+  });
+
+  it("does not include grandchildren (only direct children)", async () => {
+    const store = createConversationStore(storage);
+    await store.setConversationStatus("child1", "idle");
+    await store.setConversationStatus("grandchild1", "idle");
+    await store.setParentConversationId("child1", "parentA");
+    await store.setParentConversationId("grandchild1", "child1");
+
+    const children = await store.listChildren("parentA");
+    expect(children).toEqual(["child1"]);
+  });
+
+  it("is isolated by parent id", async () => {
+    const store = createConversationStore(storage);
+    await store.setConversationStatus("a1", "idle");
+    await store.setConversationStatus("b1", "idle");
+    await store.setParentConversationId("a1", "parentA");
+    await store.setParentConversationId("b1", "parentB");
+
+    expect((await store.listChildren("parentA")).sort()).toEqual(["a1"]);
+    expect((await store.listChildren("parentB")).sort()).toEqual(["b1"]);
   });
 });

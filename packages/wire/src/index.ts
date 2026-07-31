@@ -588,6 +588,19 @@ export type ConversationStatus = "active" | "queued" | "idle" | "closed";
  * `lastActivityAt` is updated on every append. `status` tracks the tab lifecycle
  * for cross-device persistence.
  */
+/**
+ * A per-conversation policy controlling which tools an agent may invoke during
+ * a turn. The default (when a conversation has no persisted policy) is
+ * interpreted as `{ mode: 'all' }` by callers; the store itself returns `null`
+ * for a never-set policy. `allow` permits ONLY the listed tool names;
+ * `deny` permits all EXCEPT the listed tool names. `none` disables all tools.
+ */
+export type ConversationToolPolicy =
+  | { readonly mode: "all" }
+  | { readonly mode: "none" }
+  | { readonly mode: "allow"; readonly names: readonly string[] }
+  | { readonly mode: "deny"; readonly names: readonly string[] };
+
 export interface ConversationMeta {
   readonly id: string;
   readonly createdAt: number;
@@ -606,6 +619,18 @@ export interface ConversationMeta {
    * that have never been compacted.
    */
   readonly compactedFrom?: string;
+  /**
+   * For a conversation spawned by another (e.g. a forked/sub-agent
+   * conversation), the ID of the PARENT conversation. Absent on top-level
+   * conversations that have no parent.
+   */
+  readonly parentConversationId?: string;
+  /**
+   * The per-conversation tool policy controlling which tools an agent may
+   * invoke during a turn. Absent on conversations that have no persisted
+   * policy; callers interpret absence as `{ mode: 'all' }`.
+   */
+  readonly toolPolicy?: ConversationToolPolicy;
 }
 
 // ─── Compaction ──────────────────────────────────────────────────────────────

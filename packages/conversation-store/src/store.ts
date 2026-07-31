@@ -4,6 +4,7 @@ import type {
   Chunk,
   ConversationMeta,
   ConversationStatus,
+  ConversationToolPolicy,
   Logger,
   ReasoningEffort,
   Role,
@@ -27,8 +28,10 @@ import {
   metricsSeqKey,
   modelKey,
   parseSeq,
+  parentKey,
   reasoningEffortKey,
   seqKey,
+  toolPolicyKey,
   VISION_SETTINGS_KEY,
   workspaceKey,
 } from "./keys.js";
@@ -100,6 +103,35 @@ export interface ConversationStore {
    * `PUT /conversations/:id/model` with a `null` body.
    */
   readonly setModel: (conversationId: string, model: string) => Promise<void>;
+  /**
+   * The persisted parent conversation id for a spawned/forked conversation, or
+   * `null` if never set (a top-level conversation). The id of the PARENT
+   * conversation that spawned this one.
+   */
+  readonly getParentConversationId: (conversationId: string) => Promise<string | null>;
+  /** Persist (upsert) the parent conversation id for a conversation. */
+  readonly setParentConversationId: (
+    conversationId: string,
+    parentId: string,
+  ) => Promise<void>;
+  /**
+   * The persisted per-conversation tool policy, or `null` when never set
+   * (legacy — callers interpret absence as `{ mode: 'all' }`). A present-but
+   * malformed value degrades to `{ mode: 'all' }` (never throws).
+   */
+  readonly getToolPolicy: (conversationId: string) => Promise<ConversationToolPolicy | null>;
+  /** Persist (upsert) the per-conversation tool policy. */
+  readonly setToolPolicy: (
+    conversationId: string,
+    policy: ConversationToolPolicy,
+  ) => Promise<void>;
+  /**
+   * List the ids of conversations whose `parentConversationId` equals
+   * `parentId` (direct children). Returns an empty array when `parentId` has
+   * no children. Scans the conversation index, reading each child's parent
+   * pointer (O(n) over all known conversations).
+   */
+  readonly listChildren: (parentId: string) => Promise<string[]>;
   /**
    * List all known conversations, sorted by `lastActivityAt` descending (most
    * recent first). Metadata (createdAt, lastActivityAt, title) is tracked
@@ -442,6 +474,37 @@ function toMeta(id: string, row: ConversationMetaRow): ConversationMeta {
     workspaceId: row.workspaceId ?? "default",
     ...(row.compactedFrom !== undefined ? { compactedFrom: row.compactedFrom } : {}),
   };
+}
+
+/**
+ * Parse a persisted {@link ConversationToolPolicy} (JSON at
+ * `toolPolicyKey(id)`), returning `null` when absent (never set — callers
+ * interpret as `{ mode: 'all' }`), and degrading ANY malformed / unrecognized
+ * value to `{ mode: 'all' }` (never throws). A well-formed row requires a
+ * valid `mode`; `allow`/`deny` additionally require a `string[]` `names`.
+ *
+ * Pure (input → output); exported so tests can exercise the degradation rules.
+ */
+export function parseToolPolicy(raw: string | null): ConversationToolPolicy | null {
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { mode: "all" };
+  }
+  if (typeof parsed !== "object" || parsed === null) return { mode: "all" };
+  const mode = (parsed as { mode?: unknown }).mode;
+  if (mode === "all") return { mode: "all" };
+  if (mode === "none") return { mode: "none" };
+  if (mode === "allow" || mode === "deny") {
+    const names = (parsed as { names?: unknown }).names;
+    if (!Array.isArray(names) || !names.every((n) => typeof n === "string")) {
+      return { mode: "all" };
+    }
+    return { mode, names: [...names] } as ConversationToolPolicy;
+  }
+  return { mode: "all" };
 }
 
 /**
@@ -854,6 +917,58 @@ export function createConversationStore(
       if (logger !== undefined) {
         logger.debug("model set", { conversationId });
       }
+    },
+
+    async getParentConversationId(conversationId) {
+      return await storage.get(parentKey(conversationId));
+    },
+
+    async setParentConversationId(conversationId, parentId) {
+      await storage.set(parentKey(conversationId), parentId);
+      if (logger !== undefined) {
+        logger.debug("parentConversationId set", { conversationId });
+      }
+    },
+
+    async getToolPolicy(conversationId) {
+      const raw = await storage.get(toolPolicyKey(conversationId));
+      return parseToolPolicy(raw);
+    },
+
+    async setToolPolicy(conversationId, policy) {
+      await storage.set(toolPolicyKey(conversationId), JSON.stringify(policy));
+      if (logger !== undefined) {
+        logger.debug("toolPolicy set", { conversationId });
+      }
+    },
+
+    async listChildren(parentId) {
+      // Scan the conversation index; for each conversation, read its
+      // persisted parent pointer and keep those matching `parentId`.
+      // `setParentConversationId` does not touch the index, so a child with a
+      // parent set but no meta row is still discoverable here only if it is in
+      // the index — which it is whenever it was created via the store (append
+      // / status / title / workspace all call `ensureInIndex`).
+      const raw = await storage.get(CONVERSATION_INDEX_KEY);
+      if (raw === null) return [];
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return [];
+      }
+      if (!Array.isArray(parsed)) return [];
+      const seen = new Set<string>();
+      const children: string[] = [];
+      for (const v of parsed) {
+        if (typeof v !== "string" || seen.has(v)) continue;
+        seen.add(v);
+        const parent = await storage.get(parentKey(v));
+        if (parent === parentId) {
+          children.push(v);
+        }
+      }
+      return children;
     },
     async listConversations(filter) {
       const raw = await storage.get(CONVERSATION_INDEX_KEY);
