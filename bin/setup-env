@@ -63,6 +63,9 @@ DISPATCH_MODEL=${DISPATCH_MODEL:-deepseek-v4-flash}
 # ─── Umans provider ──────────────────────────────────────────────────────────
 ${UMANS_API_KEY:+UMANS_API_KEY=${UMANS_API_KEY}}
 
+# ─── LongCat provider ────────────────────────────────────────────────────────
+${LONGCAT_API_KEY:+LONGCAT_API_KEY=${LONGCAT_API_KEY}}
+
 # ─── Data paths ──────────────────────────────────────────────────────────────
 DISPATCH_DB=/var/lib/dispatch/dispatch.db
 DISPATCH_TRACE_DB=/var/lib/dispatch/traces.db
@@ -75,5 +78,6 @@ echo "[setup-env] wrote /etc/dispatch/env"
 echo "  HOME=$REAL_HOME (skills: $REAL_HOME/.skills/)"
 echo "  DISPATCH_API_KEY=${DISPATCH_API_KEY:0:8}..."
 ${UMANS_API_KEY:+echo "  UMANS_API_KEY=${UMANS_API_KEY:0:8}..."}
+${LONGCAT_API_KEY:+echo "  LONGCAT_API_KEY=${LONGCAT_API_KEY:0:8}..."}
 echo "  Ports: HTTP=24991 WS=24990"
 echo "  Data:  /var/lib/dispatch/ + /var/log/dispatch/"

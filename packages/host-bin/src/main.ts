@@ -27,6 +27,7 @@ import {
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
+import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import {
@@ -89,6 +90,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
   authApikeyExt,
   providerOpenaiCompatExt,
   providerUmansExt,
+  providerLongcatExt,
   providerConcurrencyExt,
   // exec-backend must precede the tool extensions that
   // `dependsOn: ["exec-backend"]` (tool-edit-file/read/shell/write). It
@@ -204,6 +206,10 @@ async function boot(): Promise<void> {
   if (process.env.UMANS_API_KEY) {
     credentials.push({ name: "umans", providerId: "umans" });
     logger.info(`Registered credential "umans" → umans provider`);
+  }
+  if (process.env.LONGCAT_API_KEY) {
+    credentials.push({ name: "longcat", providerId: "longcat" });
+    logger.info(`Registered credential "longcat" → longcat provider`);
   }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),

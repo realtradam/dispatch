@@ -4,6 +4,7 @@ set -euo pipefail
 ENV_FILE="/etc/dispatch/env"
 OPENCODE_KEY="sk-P2DW7UFzQZgI8TnYzp6wWKxv6suzFvSGRrwewhUK0OjA4C7bLzsKHki7r7zZOAH1"
 UMANS_KEY="sk-bvI-mgUrp5qJzMlK8ndoDqJ3dK0U-ds_8KYS8pzpRLw"
+LONGCAT_KEY="sk-..."
 # PATH that includes user-installed tools (mise, bun, npm global, etc.)
 DISPATCH_PATH="/home/PII_REDACTED_USER_01/.local/bin:/home/PII_REDACTED_USER_01/.local/share/mise/shims:/home/PII_REDACTED_USER_01/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/bin"
 
@@ -31,6 +32,13 @@ if grep -q "^UMANS_API_KEY=" "$ENV_FILE"; then
 	sed -i "s|^UMANS_API_KEY=.*|UMANS_API_KEY=$UMANS_KEY|" "$ENV_FILE"
 else
 	echo "UMANS_API_KEY=$UMANS_KEY" >> "$ENV_FILE"
+fi
+
+# Update LONGCAT_API_KEY
+if grep -q "^LONGCAT_API_KEY=" "$ENV_FILE"; then
+	sed -i "s|^LONGCAT_API_KEY=.*|LONGCAT_API_KEY=$LONGCAT_KEY|" "$ENV_FILE"
+else
+	echo "LONGCAT_API_KEY=$LONGCAT_KEY" >> "$ENV_FILE"
 fi
 
 # Delete the backup key line
