@@ -87,7 +87,6 @@ function createNoopEvents(): EventsEmitter {
 const CORE_EXTENSIONS: readonly Extension[] = [
   storageSqliteExt,
   conversationStoreExt,
-  providerOpenaiCompatExt,
   providerUmansExt,
   providerLongcatExt,
   providerConcurrencyExt,
@@ -247,9 +246,11 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
 
   const extensions: Extension[] = [
     ...CORE_EXTENSIONS,
-    // auth-apikey only loads when DISPATCH_API_KEY is set (opencode provider).
-    // Without it, the extension would throw on activation.
-    ...(process.env.DISPATCH_API_KEY ? [authApikeyExt] : []),
+    // auth-apikey + provider-openai-compat only load when DISPATCH_API_KEY is
+    // set (opencode provider). provider-openai-compat declares
+    // `dependsOn: ["auth-apikey"]`, so the two must load together — loading the
+    // provider without auth-apikey makes the activation DAG throw.
+    ...(process.env.DISPATCH_API_KEY ? [authApikeyExt, providerOpenaiCompatExt] : []),
     createCredentialStoreExtension({ credentials }),
     // vision-handoff activates AFTER credential-store (it resolves the
     // credential-store service at activate time to find vision-capable models).
