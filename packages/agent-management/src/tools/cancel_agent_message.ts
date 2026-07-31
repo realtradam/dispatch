@@ -7,8 +7,8 @@
  */
 
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
-import type { AgentManagementService } from "../service.js";
 import { formatCancelAgentMessageResult, formatError } from "../pure.js";
+import type { AgentManagementService } from "../service.js";
 
 export function createCancelAgentMessageTool(service: AgentManagementService): ToolContract {
   return {

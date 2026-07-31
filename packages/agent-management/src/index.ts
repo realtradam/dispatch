@@ -7,12 +7,26 @@
 
 export { extension, manifest } from "./extension.js";
 export {
-  agentManagementHandle,
-  createAgentManagementService,
+  type AccessOperation,
+  decideAccess,
+  extractLastAssistantReply,
+  extractLastError,
+  filterModelEntries,
+  formatFileAttachments,
+  heuristicVisionCapable,
+  resolveShortId,
+  resolveVision,
+  type ShortIdResolution,
+  shortId,
+  truncateText,
+} from "./pure.js";
+export {
   type AgentManagementDeps,
   type AgentManagementService,
+  agentManagementHandle,
   type CancelAgentMessageInput,
   type CancelAgentMessageResult,
+  createAgentManagementService,
   type ListAgentsInput,
   type ListAgentsResult,
   type ListModelsInput,
@@ -27,23 +41,9 @@ export {
   type SummonAgentResult,
 } from "./service.js";
 export type {
+  AgentEntry,
   AgentManagementError,
   AgentManagementErrorCode,
   ModelEntry,
-  AgentEntry,
   Result,
 } from "./types.js";
-export {
-  decideAccess,
-  extractLastAssistantReply,
-  extractLastError,
-  filterModelEntries,
-  formatFileAttachments,
-  heuristicVisionCapable,
-  resolveShortId,
-  resolveVision,
-  shortId,
-  truncateText,
-  type AccessOperation,
-  type ShortIdResolution,
-} from "./pure.js";

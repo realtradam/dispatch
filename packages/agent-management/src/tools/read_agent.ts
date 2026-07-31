@@ -7,8 +7,8 @@
  */
 
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
-import type { AgentManagementService } from "../service.js";
 import { formatError, formatReadAgentResult } from "../pure.js";
+import type { AgentManagementService } from "../service.js";
 
 export function createReadAgentTool(service: AgentManagementService): ToolContract {
   return {

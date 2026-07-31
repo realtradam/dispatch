@@ -1,22 +1,25 @@
 /**
- * agent-management extension manifest + activation.
+ * agent-management extension — the standard extension that exposes the
+ * AI-callable tool family for starting and managing agent conversations (plan
+ * §3.2, §6). Contributes seven tools and a typed `AgentManagementService`
+ * service handle; contributes NO providers.
  *
- * Contributes the typed {@link AgentManagementService} handle and all 7
- * AI-callable tools. The service delegates to the existing session-orchestrator
- * (start/enqueue/subscribe/cancel) and conversation-store (lineage/policy/
- * context) — it duplicates no orchestration logic. Tools are always visible
- * (no deferred loading). Effects (filesystem, orchestrator, event-bus) live
- * here in the shell, injected into the service; pure decisions live in
- * `pure.ts`. No `console.*`; logging via `host.logger`.
+ * Mirrors the session-orchestrator activation pattern: resolve sibling services
+ * through their typed handles, build the service with injected effects, register
+ * it via `host.provideService`, and register each tool via `host.defineTool`.
+ * Queue operations (send / cancel) route through the session-orchestrator's own
+ * `enqueue` / `cancelQueuedMessage` (which resolve the message-queue lazily), so
+ * this extension has NO direct dependency on the message-queue extension — the
+ * feature degrades off cleanly when it isn't loaded.
  */
 
-import { readFile as fsReadFile, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve as pathResolve } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { resolve as resolvePath, sep } from "node:path";
 import { conversationStoreHandle } from "@dispatch/conversation-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { sessionOrchestratorHandle } from "@dispatch/session-orchestrator";
-import { type AgentManagementService, agentManagementHandle, createAgentManagementService } from "./service.js";
+import { type AgentManagementDeps, createAgentManagementService } from "./service.js";
 import {
   createCancelAgentMessageTool,
   createListAgentModelsTool,
@@ -26,6 +29,22 @@ import {
   createSendAgentMessageTool,
   createSummonAgentTool,
 } from "./tools/index.js";
+import { agentManagementHandle } from "./types.js";
+
+// ── Bounded config (plan §6: bounded default/max result counts; §9: file
+// size limit; §8.2: max wait duration). Injected as deps so tests override them
+// and the pure decision logic never reads ambient config. ────────────────────
+
+/** Maximum bytes of a single attached text file (plan §9: reject oversized). */
+const MAX_FILE_BYTES = 1_048_576; // 1 MiB
+/** Maximum duration a `wait: true` operation blocks (plan §8.2). */
+const MAX_WAIT_MS = 120_000;
+const DEFAULT_LIST_LIMIT = 50;
+const MAX_LIST_LIMIT = 200;
+const DEFAULT_MODEL_LIMIT = 50;
+const MAX_MODEL_LIMIT = 200;
+const DEFAULT_READ_CHARS = 8000;
+const MAX_READ_CHARS = 32000;
 
 export const manifest: Manifest = {
   id: "agent-management",
@@ -34,7 +53,6 @@ export const manifest: Manifest = {
   apiVersion: "^0.1.0",
   trust: "bundled",
   activation: "eager",
-  capabilities: { network: false },
   dependsOn: ["conversation-store", "credential-store", "session-orchestrator"],
   contributes: {
     services: ["agent-management/service"],
@@ -50,76 +68,72 @@ export const manifest: Manifest = {
   },
 };
 
-/** Max text-file size the `files` attachment will read (512 KiB). */
-const MAX_FILE_BYTES = 512 * 1024;
-
 /**
- * Local-filesystem file reader (the shell edge for `files` attachments). Resolves
- * a relative path against `cwd` (or `process.cwd()` when absent), enforces
- * working-directory containment, rejects non-regular files and oversized files,
- * and reads UTF-8. Throws on any error — the service maps that to an
- * `invalid-input` result. Remote-execution backends can replace this injected
- * function later (plan §9); v1 is local-only.
+ * Production text-file reader — the injected filesystem edge (plan §9). Resolves
+ * a relative path against `cwd`, enforces working-directory containment, rejects
+ * directories / oversized files, and reads UTF-8. Throws on any failure so the
+ * service shell can map it to a stable `invalid-input` error. Local only (no
+ * `computerId` in the contract); remote file reading is a future concern.
  */
-function createReadFileContent(
-  maxBytes: number,
-): (path: string, cwd: string | undefined) => Promise<string> {
-  return async (path, cwd) => {
-    const base = cwd ?? process.cwd();
-    const abs = isAbsolute(path) ? pathResolve(path) : pathResolve(base, path);
-    // Containment: the resolved path must stay under the working directory.
-    const rel = relative(base, abs);
-    if (rel.startsWith("..") || isAbsolute(rel)) {
-      throw new Error(`file path escapes the working directory: ${path}`);
-    }
-    const info = await stat(abs);
-    if (!info.isFile()) {
-      throw new Error(`not a regular file: ${path}`);
-    }
-    if (info.size > maxBytes) {
-      throw new Error(`file too large (${info.size} bytes > ${maxBytes}): ${path}`);
-    }
-    return fsReadFile(abs, "utf8");
-  };
+async function readFileContent(filePath: string, cwd: string | undefined): Promise<string> {
+  const base = cwd ?? process.cwd();
+  const baseAbs = resolvePath(base);
+  const resolved = resolvePath(baseAbs, filePath);
+  // Working-directory containment: the resolved path must be the base itself or
+  // live beneath it. This rejects `..` escapes and absolute paths outside cwd.
+  if (resolved !== baseAbs && !resolved.startsWith(`${baseAbs}${sep}`)) {
+    throw new Error(`path "${filePath}" escapes the working directory`);
+  }
+  const info = await stat(resolved);
+  if (!info.isFile()) {
+    throw new Error(`"${filePath}" is not a regular file`);
+  }
+  if (info.size > MAX_FILE_BYTES) {
+    throw new Error(`"${filePath}" exceeds the ${MAX_FILE_BYTES}-byte limit`);
+  }
+  return readFile(resolved, "utf8");
 }
 
 export function activate(host: HostAPI): void {
   const conversationStore = host.getService(conversationStoreHandle);
   const credentialStore = host.getService(credentialStoreHandle);
 
-  const service: AgentManagementService = createAgentManagementService({
+  const deps: AgentManagementDeps = {
     conversationStore,
     credentialStore,
+    // Lazily resolve the session-orchestrator. Checked via the activated-
+    // manifests list so `host.getService` is only called when the service is
+    // registered (mirrors the orchestrator's own lazy `resolveQueue`). The
+    // orchestrator owns the idle→startTurn vs active→queue decision and the
+    // queued-message cancellation, so this extension never touches the
+    // message-queue extension directly.
     resolveOrchestrator: () => {
-      // Lazily resolve the session-orchestrator. Returns undefined when the
-      // extension isn't loaded (feature degrades off — reported as an
-      // invalid-input result). Lazy so activation order doesn't matter.
       const loaded = host.getExtensions().some((m) => m.id === "session-orchestrator");
-      if (!loaded) return undefined;
-      try {
-        return host.getService(sessionOrchestratorHandle);
-      } catch {
-        return undefined;
-      }
+      return loaded ? host.getService(sessionOrchestratorHandle) : undefined;
     },
     emit: (hook, payload) => host.emit(hook, payload),
-    readFileContent: createReadFileContent(MAX_FILE_BYTES),
+    readFileContent,
     generateId: () => crypto.randomUUID(),
-    logger: host.logger.child({ extensionId: "agent-management" }),
+    logger: host.logger,
     // ── bounds ──
-    maxWaitMs: 120_000,
-    defaultListLimit: 20,
-    maxListLimit: 100,
-    defaultModelLimit: 20,
-    maxModelLimit: 100,
+    maxWaitMs: MAX_WAIT_MS,
+    defaultListLimit: DEFAULT_LIST_LIMIT,
+    maxListLimit: MAX_LIST_LIMIT,
+    defaultModelLimit: DEFAULT_MODEL_LIMIT,
+    maxModelLimit: MAX_MODEL_LIMIT,
     maxFileBytes: MAX_FILE_BYTES,
-    defaultReadChars: 4000,
-    maxReadChars: 20_000,
-  });
+    defaultReadChars: DEFAULT_READ_CHARS,
+    maxReadChars: MAX_READ_CHARS,
+  };
+
+  const service = createAgentManagementService(deps);
 
   host.provideService(agentManagementHandle, service);
 
-  // Register all 7 tools (always visible — no deferred loading).
+  // Register the seven AI-callable tools (plan §6). Each is a thin shell that
+  // parses args, pulls the caller conversation id from ToolExecuteContext, calls
+  // the typed service, and formats the result. Mutating tools are not
+  // concurrency-safe (plan §8.4) — the tool contracts declare that themselves.
   host.defineTool(createListAgentModelsTool(service));
   host.defineTool(createSummonAgentTool(service));
   host.defineTool(createListAgentsTool(service));
@@ -128,7 +142,10 @@ export function activate(host: HostAPI): void {
   host.defineTool(createCancelAgentMessageTool(service));
   host.defineTool(createOpenAgentTool(service));
 
-  host.logger.info("agent-management: registered (7 tools + AgentManagementService)");
+  host.logger.info("agent-management: activated");
 }
 
-export const extension: Extension = { manifest, activate };
+export const extension: Extension = {
+  manifest,
+  activate,
+};

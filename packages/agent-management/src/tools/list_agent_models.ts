@@ -7,8 +7,8 @@
  */
 
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
-import type { AgentManagementService } from "../service.js";
 import { formatError, formatListModelsResult } from "../pure.js";
+import type { AgentManagementService } from "../service.js";
 
 export function createListAgentModelsTool(service: AgentManagementService): ToolContract {
   return {
@@ -44,7 +44,8 @@ export function createListAgentModelsTool(service: AgentManagementService): Tool
       const callerConversationId = ctx.conversationId;
       if (typeof callerConversationId !== "string" || callerConversationId.length === 0) {
         return {
-          content: "Error [invalid-input]: list_agent_models requires a caller conversation context.",
+          content:
+            "Error [invalid-input]: list_agent_models requires a caller conversation context.",
           isError: true,
         };
       }

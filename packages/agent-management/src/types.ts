@@ -12,7 +12,6 @@
  * programmatic callers like `vision-handoff`) that are NOT exposed to models.
  */
 
-import { defineService } from "@dispatch/kernel";
 import type {
   ConversationStatus,
   ConversationToolPolicy,
@@ -22,6 +21,7 @@ import type {
   ReasoningEffort,
   ServiceHandle,
 } from "@dispatch/kernel";
+import { defineService } from "@dispatch/kernel";
 
 // ─── Error taxonomy (plan §8.5) ─────────────────────────────────────────────
 
@@ -249,4 +249,4 @@ export const agentManagementHandle: ServiceHandle<AgentManagementService> =
   defineService<AgentManagementService>("agent-management/service");
 
 /** Re-exported so consumers can emit the open signal via the typed hook. */
-export type { EventHookDescriptor, ModelInfo, ConversationToolPolicy };
+export type { ConversationToolPolicy, EventHookDescriptor, ModelInfo };

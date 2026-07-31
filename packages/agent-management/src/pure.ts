@@ -8,7 +8,12 @@
  * mocks.
  */
 
-import type { ChatMessage, ConversationMeta, ConversationStatus, ModelInfo } from "@dispatch/kernel";
+import type {
+  ChatMessage,
+  ConversationMeta,
+  ConversationStatus,
+  ModelInfo,
+} from "@dispatch/kernel";
 import type {
   AgentEntry,
   AgentManagementError,
@@ -304,9 +309,7 @@ export function formatError(error: AgentManagementError): string {
   return base;
 }
 
-export function formatListModelsResult(result: {
-  readonly models: readonly ModelEntry[];
-}): string {
+export function formatListModelsResult(result: { readonly models: readonly ModelEntry[] }): string {
   if (result.models.length === 0) return "No models found.";
   const lines = result.models.map((m) => {
     const parts = [m.name];
@@ -346,7 +349,8 @@ export function formatListAgentsResult(r: {
     if (a.model !== undefined) parts.push(`model=${a.model}`);
     parts.push(`status=${a.status}`);
     parts.push(`ws=${a.workspaceId}`);
-    if (a.parentConversationId !== undefined) parts.push(`parent=${shortId(a.parentConversationId)}`);
+    if (a.parentConversationId !== undefined)
+      parts.push(`parent=${shortId(a.parentConversationId)}`);
     parts.push(a.manageable ? "manageable" : "read-only");
     return `  ${parts.join(" ")}`;
   });
@@ -405,7 +409,10 @@ export function formatCancelAgentMessageResult(r: {
   )}. Queue length is ${r.queueLength}.`;
 }
 
-export function formatOpenAgentResult(r: { readonly conversationId: string; readonly workspaceId: string }): string {
+export function formatOpenAgentResult(r: {
+  readonly conversationId: string;
+  readonly workspaceId: string;
+}): string {
   return `Opened agent ${shortId(r.conversationId)} (id: ${r.conversationId}) in workspace "${r.workspaceId}".`;
 }
 

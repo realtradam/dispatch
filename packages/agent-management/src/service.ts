@@ -29,13 +29,11 @@ import type {
   ConversationToolPolicy,
   EventHookDescriptor,
   Logger,
+  ModelInfo,
 } from "@dispatch/kernel";
-import type { QueuedMessage } from "@dispatch/wire";
+import type { SessionOrchestrator, StartTurnInput } from "@dispatch/session-orchestrator";
 import { conversationOpened } from "@dispatch/session-orchestrator";
-import type {
-  SessionOrchestrator,
-  StartTurnInput,
-} from "@dispatch/session-orchestrator";
+import type { QueuedMessage } from "@dispatch/wire";
 import type {
   AgentEntry,
   AgentManagementService,
@@ -57,12 +55,15 @@ import type {
   SummonAgentResult,
 } from "./types.js";
 import { err, ok } from "./types.js";
+
 export { agentManagementHandle } from "./types.js";
+
 import {
+  type AccessOperation,
   clampLimit,
   decideAccess,
-  extractLastError,
   extractLastAssistantReply,
+  extractLastError,
   filterByQuery,
   filterByStatus,
   filterModelEntries,
@@ -73,7 +74,6 @@ import {
   sortByActivityDesc,
   toAgentEntry,
   truncateText,
-  type AccessOperation,
 } from "./pure.js";
 
 // ─── Dependencies (all injected — no ambient state) ─────────────────────────
@@ -191,9 +191,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     // Short-prefix path: resolve inside the authorized candidate set only.
     const descendants = await collectDescendants(callerId);
     const candidates =
-      op === "read" || op === "open"
-        ? [...descendants, callerId]
-        : [...descendants];
+      op === "read" || op === "open" ? [...descendants, callerId] : [...descendants];
     const res = resolveShortId(candidates, idInput);
     switch (res.kind) {
       case "too-short":
@@ -202,10 +200,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
           `conversation id prefix must be at least 4 characters (got "${idInput}")`,
         );
       case "none":
-        return err(
-          "unknown-conversation",
-          `no manageable conversation matches "${idInput}"`,
-        );
+        return err("unknown-conversation", `no manageable conversation matches "${idInput}"`);
       case "ambiguous":
         return err(
           "ambiguous-conversation",
@@ -356,7 +351,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     // heuristic). Fetching ModelInfo per model is the catalog-failure surface.
     const entries: ModelEntry[] = [];
     for (const name of catalog) {
-      let info;
+      let info: ModelInfo | undefined;
       try {
         info = await deps.credentialStore.getModelInfo(name);
       } catch {
@@ -376,7 +371,10 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       ...(input.vision !== undefined ? { vision: input.vision } : {}),
       limit,
     });
-    log.debug("agent-management.list", { callerId: input.callerConversationId, count: filtered.length });
+    log.debug("agent-management.list", {
+      callerId: input.callerConversationId,
+      count: filtered.length,
+    });
     return ok({ models: filtered });
   }
 
@@ -411,7 +409,10 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       return err("invalid-input", `failed to read model catalog: ${msg}`);
     }
     if (!catalog.includes(input.model)) {
-      return err("unknown-model", `unknown model "${input.model}"; use list_agent_models to discover valid names`);
+      return err(
+        "unknown-model",
+        `unknown model "${input.model}"; use list_agent_models to discover valid names`,
+      );
     }
 
     // Resolve caller context (plan §5 step 2).
@@ -430,8 +431,8 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     }
 
     // Effective child cwd/computer inherit the caller's (plan §6.2).
-    const cwd = input.cwd ?? (callerCwd ?? undefined);
-    const computerId = input.computerId ?? (callerComputer ?? undefined);
+    const cwd = input.cwd ?? callerCwd ?? undefined;
+    const computerId = input.computerId ?? callerComputer ?? undefined;
 
     // Compose file attachments (resolve against the child's effective cwd).
     const filesResult = await readFiles(input.files, cwd);
@@ -462,7 +463,9 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       ...(cwd !== undefined ? { cwd } : {}),
       ...(computerId !== undefined ? { computerId } : {}),
       ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}),
-      ...(input.title !== undefined && input.title.trim().length > 0 ? { title: input.title.trim() } : {}),
+      ...(input.title !== undefined && input.title.trim().length > 0
+        ? { title: input.title.trim() }
+        : {}),
       ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
       ...(input.images !== undefined ? { images: input.images } : {}),
     };
@@ -496,7 +499,12 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     }
 
     // Blocking: wait for the child's first turn to settle.
-    const outcome = await waitForTurnSettled(orchestrator, conversationId, input.signal, deps.maxWaitMs);
+    const outcome = await waitForTurnSettled(
+      orchestrator,
+      conversationId,
+      input.signal,
+      deps.maxWaitMs,
+    );
     const finalStatus = await getStatus(conversationId);
     if (outcome === "timeout") {
       return ok({ conversationId, workspaceId, status: finalStatus, started, waitTimeout: true });
@@ -507,7 +515,14 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     const replyResult = await loadReply(conversationId, deps.defaultReadChars);
     if (!replyResult.ok) {
       // child-turn-failed: keep the conversation id in a success shell.
-      return ok({ conversationId, workspaceId, status: finalStatus, started, reply: "", truncated: false });
+      return ok({
+        conversationId,
+        workspaceId,
+        status: finalStatus,
+        started,
+        reply: "",
+        truncated: false,
+      });
     }
     return ok({
       conversationId,
@@ -832,9 +847,9 @@ export type {
   OpenAgentResult,
   ReadAgentInput,
   ReadAgentResult,
+  Result,
   SendAgentInput,
   SendAgentResult,
   SummonAgentInput,
   SummonAgentResult,
-  Result,
 };

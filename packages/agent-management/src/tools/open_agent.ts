@@ -6,8 +6,8 @@
  */
 
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
-import type { AgentManagementService } from "../service.js";
 import { formatError, formatOpenAgentResult } from "../pure.js";
+import type { AgentManagementService } from "../service.js";
 
 export function createOpenAgentTool(service: AgentManagementService): ToolContract {
   return {

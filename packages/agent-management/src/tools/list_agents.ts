@@ -5,10 +5,9 @@
  * Returns concise machine-readable JSON text, never a terminal table.
  */
 
-import type { ConversationStatus } from "@dispatch/kernel";
-import type { ToolContract, ToolResult } from "@dispatch/kernel";
-import type { AgentManagementService } from "../service.js";
+import type { ConversationStatus, ToolContract, ToolResult } from "@dispatch/kernel";
 import { formatError, formatListAgentsResult } from "../pure.js";
+import type { AgentManagementService } from "../service.js";
 
 const VALID_STATUSES: readonly ConversationStatus[] = ["active", "queued", "idle", "closed"];
 
@@ -27,7 +26,8 @@ export function createListAgentsTool(service: AgentManagementService): ToolContr
       properties: {
         workspaceId: {
           type: "string",
-          description: "Workspace to list (defaults to your workspace; for relationship=workspace).",
+          description:
+            "Workspace to list (defaults to your workspace; for relationship=workspace).",
         },
         status: {
           type: "array",
@@ -67,8 +67,9 @@ export function createListAgentsTool(service: AgentManagementService): ToolContr
       } | null;
 
       const status = Array.isArray(input?.status)
-        ? input.status.filter((s): s is ConversationStatus =>
-            typeof s === "string" && VALID_STATUSES.includes(s as ConversationStatus),
+        ? input.status.filter(
+            (s): s is ConversationStatus =>
+              typeof s === "string" && VALID_STATUSES.includes(s as ConversationStatus),
           )
         : undefined;
       const relationship =

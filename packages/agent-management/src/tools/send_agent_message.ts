@@ -10,8 +10,8 @@
  */
 
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
-import type { AgentManagementService } from "../service.js";
 import { formatError, formatSendAgentResult } from "../pure.js";
+import type { AgentManagementService } from "../service.js";
 
 export function createSendAgentMessageTool(service: AgentManagementService): ToolContract {
   return {
@@ -38,7 +38,8 @@ export function createSendAgentMessageTool(service: AgentManagementService): Too
         files: {
           type: "array",
           items: { type: "string" },
-          description: "Text files to read and fold into the message (resolved against the target's cwd).",
+          description:
+            "Text files to read and fold into the message (resolved against the target's cwd).",
         },
         wait: {
           type: "boolean",
@@ -58,7 +59,8 @@ export function createSendAgentMessageTool(service: AgentManagementService): Too
       const callerConversationId = ctx.conversationId;
       if (typeof callerConversationId !== "string" || callerConversationId.length === 0) {
         return {
-          content: "Error [invalid-input]: send_agent_message requires a caller conversation context.",
+          content:
+            "Error [invalid-input]: send_agent_message requires a caller conversation context.",
           isError: true,
         };
       }

@@ -9,10 +9,9 @@
  * unless explicitly overridden.
  */
 
-import type { ReasoningEffort } from "@dispatch/kernel";
-import type { ToolContract, ToolResult } from "@dispatch/kernel";
-import type { AgentManagementService } from "../service.js";
+import type { ReasoningEffort, ToolContract, ToolResult } from "@dispatch/kernel";
 import { formatError, formatSummonResult } from "../pure.js";
+import type { AgentManagementService } from "../service.js";
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
