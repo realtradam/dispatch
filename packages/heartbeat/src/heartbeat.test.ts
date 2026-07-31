@@ -70,6 +70,18 @@ interface PendingTurn {
 }
 
 /**
+ * Return the first pending turn, narrowed to a non-undefined value. The tests
+ * assert `orch.pending.toHaveLength(1)` immediately before calling this, so the
+ * element is guaranteed present — this guard just satisfies the type system
+ * without a non-null assertion (`noNonNullAssertion`).
+ */
+function firstPendingTurn(orch: { readonly pending: readonly PendingTurn[] }): PendingTurn {
+  const turn = orch.pending[0];
+  if (turn === undefined) throw new Error("expected a pending turn");
+  return turn;
+}
+
+/**
  * A fake orchestrator that records handleMessage calls and lets the test
  * control when each turn seals. This is the injected edge — the service depends
  * on the SessionOrchestrator interface, not its implementation.
@@ -216,7 +228,7 @@ describe("createHeartbeatService", () => {
       await flush();
       expect(orch.pending).toHaveLength(1);
       expect((await svc.listRuns("ws-1"))[0]?.status).toBe("running");
-      orch.pending[0]!.resolve();
+      firstPendingTurn(orch).resolve();
       await flush();
     });
 
@@ -238,7 +250,7 @@ describe("createHeartbeatService", () => {
       await flush();
       expect(orch.pending).toHaveLength(1);
       expect((await svc.listRuns("ws-1"))[0]?.status).toBe("running");
-      orch.pending[0]!.resolve();
+      firstPendingTurn(orch).resolve();
       await flush();
     });
 
@@ -259,7 +271,7 @@ describe("createHeartbeatService", () => {
       advance(60_000); // next interval → fire again
       await flush();
       expect(orch.pending).toHaveLength(1); // now it fires
-      orch.pending[0]!.resolve();
+      firstPendingTurn(orch).resolve();
       await flush();
     });
 
@@ -284,7 +296,7 @@ describe("createHeartbeatService", () => {
       await flush();
       expect(consulted).toBe(false); // never asked — setting is off
       expect(orch.pending).toHaveLength(1);
-      orch.pending[0]!.resolve();
+      firstPendingTurn(orch).resolve();
       await flush();
     });
 
@@ -305,7 +317,7 @@ describe("createHeartbeatService", () => {
       expect(orch.pending).toHaveLength(1);
       expect((await svc.listRuns("ws-free"))[0]?.status).toBe("running");
       expect(await svc.listRuns("ws-busy")).toHaveLength(0);
-      orch.pending[0]!.resolve();
+      firstPendingTurn(orch).resolve();
       await flush();
     });
   });
@@ -336,7 +348,7 @@ describe("createHeartbeatService", () => {
     advance(60_000); // 1-minute interval → fire
     await flush(); // let the async fire() reach handleMessage
     expect(orch.pending).toHaveLength(1);
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     expect(turn.text).toBe("check stuck chats");
     expect(turn.systemPrompt).toBe("you are a monitor");
     expect(turn.modelName).toBe("opencode/gpt-4o");
@@ -388,7 +400,7 @@ describe("createHeartbeatService", () => {
 
     advance(60_000);
     await flush();
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     // The conversation is filed in the heartbeat workspace …
     expect(turn.workspaceId).toBe("heartbeat");
     // … but the turn's cwd is the CONFIGURED workspace's defaultCwd, so
@@ -410,7 +422,7 @@ describe("createHeartbeatService", () => {
 
     advance(60_000);
     await flush();
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     expect(turn.workspaceId).toBe("heartbeat");
     // No cwd override sent — the orchestrator resolves the turn cwd from
     // the heartbeat workspace (no defaultCwd → server default cwd).
@@ -427,7 +439,7 @@ describe("createHeartbeatService", () => {
 
     advance(60_000);
     await flush();
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     expect(turn.workspaceId).toBe("heartbeat");
     expect(turn.cwd).toBeUndefined();
     turn.resolve();
@@ -446,7 +458,7 @@ describe("createHeartbeatService", () => {
     });
     advance(60_000);
     await flush();
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     expect(turn.modelName).toBeUndefined();
     expect(turn.reasoningEffort).toBeUndefined();
     turn.resolve();
@@ -484,7 +496,7 @@ describe("createHeartbeatService", () => {
     advance(60_000);
     await flush();
     expect(orch.pending).toHaveLength(1);
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     // Variables substituted — NOT left as literal [type:name] text.
     expect(turn.systemPrompt).toBe("You run on Linux (WSL) in /repo (ws ws-1).");
     expect(turn.text).toBe(`Check chats for ${turn.conversationId} on Linux (WSL).`);
@@ -506,7 +518,7 @@ describe("createHeartbeatService", () => {
 
     advance(60_000);
     await flush();
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     // Unresolved — literals reach the orchestrator verbatim.
     expect(turn.systemPrompt).toBe("raw [system:os] prompt");
     expect(turn.text).toBe("raw [system:date] task");
@@ -535,7 +547,7 @@ describe("createHeartbeatService", () => {
     advance(60_000);
     await flush();
     expect(orch.pending).toHaveLength(1);
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     expect(turn.systemPrompt).toBe("GLOBAL DEFAULT TEMPLATE");
     turn.resolve();
     await flush();
@@ -575,7 +587,7 @@ describe("createHeartbeatService", () => {
     advance(60_000);
     await flush();
     expect(orch.pending).toHaveLength(1);
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     // The global template was inherited (not empty), then its [type:name]
     // placeholders were substituted — NOT left literal, NOT empty.
     expect(turn.systemPrompt).toBe("You run on Linux (WSL) in /repo (ws ws-1).");
@@ -602,7 +614,7 @@ describe("createHeartbeatService", () => {
 
     advance(60_000);
     await flush();
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     // The override is used (and resolved), not the global template.
     expect(turn.systemPrompt).toBe("custom override on Linux (WSL)");
     turn.resolve();
@@ -623,7 +635,7 @@ describe("createHeartbeatService", () => {
 
     advance(60_000);
     await flush();
-    const turn = orch.pending[0]!;
+    const turn = firstPendingTurn(orch);
     expect(turn.systemPrompt).toBe("");
     turn.resolve();
     await flush();

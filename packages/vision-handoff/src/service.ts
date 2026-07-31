@@ -439,7 +439,8 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
   async function resolveImageUrlsInMessages(
     messages: readonly ChatMessage[],
   ): Promise<readonly ChatMessage[]> {
-    if (deps.resolveImageUrl === undefined) return messages;
+    const resolveImageUrl = deps.resolveImageUrl;
+    if (resolveImageUrl === undefined) return messages;
     let hasCompact = false;
     for (const msg of messages) {
       if (msg.chunks.some((c) => c.type === "image")) {
@@ -457,7 +458,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       const newChunks: Chunk[] = [];
       for (const chunk of msg.chunks) {
         if (chunk.type === "image") {
-          const dataUrl = await deps.resolveImageUrl!(chunk.url);
+          const dataUrl = await resolveImageUrl(chunk.url);
           newChunks.push({
             type: "image",
             url: dataUrl,
