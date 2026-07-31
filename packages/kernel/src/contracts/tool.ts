@@ -7,6 +7,7 @@
  * Extensions may use zod internally and convert to this shape.
  */
 
+import type { ImageInput } from "./conversation.js";
 import type { Logger } from "./logging.js";
 
 /**
@@ -100,6 +101,24 @@ export interface ToolExecuteContext {
 export interface ToolResult {
   readonly content: string;
   readonly isError?: boolean;
+  /**
+   * Optional image attachments the tool produces (e.g. a screenshot, a chart,
+   * a vision consultation result). Generic and provider-agnostic — the kernel
+   * names no concrete tool or feature. Each `ImageInput` carries a `url` that is
+   * EITHER a base64 data URL (`data:image/…;base64,…`) OR an `http(s)://` URL,
+   * the same semantics as `ImageChunk.url` / user-attached images.
+   *
+   * The kernel performs NO file read, URL resolution, persistence, or image
+   * compaction. During the active turn it threads the images into the next
+   * provider step as a deterministic user-role image message appended AFTER all
+   * tool-role result messages (so a complete parallel tool-call/result batch
+   * precedes the synthetic image content). An error result (`isError: true`) is
+   * treated as failed and does NOT emit image messages — partial image content
+   * never leaks from a failed tool. Omitting `images` (or an empty array) is
+   * byte-stable: no synthetic user message is produced, so ordinary text-only
+   * tools are unchanged.
+   */
+  readonly images?: readonly ImageInput[];
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatMessage } from "../contracts/conversation.js";
+import type { ChatMessage, ImageChunk, ImageInput } from "../contracts/conversation.js";
 import type { AgentEvent } from "../contracts/events.js";
 import type { LogDeps, Logger, LogRecord, LogSink } from "../contracts/logging.js";
 import type { ProviderContract, ProviderEvent } from "../contracts/provider.js";
@@ -3807,6 +3807,503 @@ describe("runTurn", () => {
       // Both retries precede the text.
       const retryCount = types.filter((t) => t === "provider-retry").length;
       expect(retryCount).toBe(2);
+    });
+  });
+
+  // ── ToolResult.images threading (generic multimodal tool-result support) ──
+  //
+  // After a step with tool calls: (1) append all tool-role result messages in
+  // call order, (2) then append deterministic user-role image messages for
+  // results with images, (3) begin the next provider step. All tool results
+  // must precede the synthetic user messages. Text-only tools are byte-stable.
+  // Error and abort paths never leak partial image messages.
+
+  describe("ToolResult.images threading", () => {
+    function imageInput(url: string, mimeType?: string): ImageInput {
+      return { url, ...(mimeType !== undefined ? { mimeType } : {}) };
+    }
+
+    function expectImageChunks(msg: ChatMessage | undefined): ImageChunk[] {
+      expect(msg).toBeDefined();
+      expect(msg?.role).toBe("user");
+      return (msg?.chunks ?? []) as ImageChunk[];
+    }
+
+    it("no image result means no synthetic user message (text-only byte-stable)", async () => {
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+
+      // Text-only tool → result is identical to before images existed.
+      expect(result.messages).toHaveLength(3);
+      expect(result.messages[0]?.role).toBe("assistant");
+      expect(result.messages[1]?.role).toBe("tool");
+      expect(result.messages[2]?.role).toBe("assistant");
+
+      // The next provider step sees: user, assistant(tool-call), tool — NO
+      // synthetic user image message.
+      expect(capturedMessages).toHaveLength(2);
+      const nextStep = capturedMessages[1] ?? [];
+      expect(nextStep).toHaveLength(3);
+      expect(nextStep.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+    });
+
+    it("empty images array means no synthetic user message (byte-stable)", async () => {
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("echo", async () => ({ content: "echoed", images: [] }));
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+
+      expect(result.messages).toHaveLength(3);
+      const nextStep = capturedMessages[1] ?? [];
+      expect(nextStep.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+    });
+
+    it("single image result: a synthetic user image message follows the tool result and precedes the next step", async () => {
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "snap", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const img = imageInput("data:image/png;base64,AAAA", "image/png");
+      const tool = createFakeTool("snap", async () => ({ content: "captured", images: [img] }));
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+
+      // result: assistant(tool-call), tool-result, user(image), assistant
+      expect(result.messages).toHaveLength(4);
+      expect(result.messages.map((m) => m.role)).toEqual([
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+      ]);
+
+      const imageMsg = result.messages[2];
+      const chunks = expectImageChunks(imageMsg);
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]).toEqual({ type: "image", url: img.url, mimeType: "image/png" });
+
+      // Next provider step: user, assistant(tool-call), tool, user(image)
+      const nextStep = capturedMessages[1] ?? [];
+      expect(nextStep.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
+      expect(nextStep[3]).toEqual(imageMsg);
+    });
+
+    it("image without mimeType infers nothing extra (url-only image chunk)", async () => {
+      const provider = createFakeProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "snap", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const img = imageInput("https://example.com/i.png");
+      const tool = createFakeTool("snap", async () => ({ content: "captured", images: [img] }));
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+
+      const imageMsg = result.messages[2];
+      const chunks = expectImageChunks(imageMsg);
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]).toEqual({ type: "image", url: img.url });
+      expect(chunks[0]?.mimeType).toBeUndefined();
+    });
+
+    it("multiple images in one result become multiple image chunks in one user message", async () => {
+      const { provider } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "snap", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const imgs = [
+        imageInput("data:image/png;base64,AAAA", "image/png"),
+        imageInput("data:image/jpeg;base64,BBBB", "image/jpeg"),
+      ];
+      const tool = createFakeTool("snap", async () => ({ content: "captured", images: imgs }));
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+
+      const imageMsg = result.messages[2];
+      const chunks = expectImageChunks(imageMsg);
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]).toEqual({ type: "image", url: imgs[0]?.url, mimeType: "image/png" });
+      expect(chunks[1]).toEqual({ type: "image", url: imgs[1]?.url, mimeType: "image/jpeg" });
+
+      // Exactly one synthetic user message (not one per image).
+      const userMsgs = result.messages.filter((m) => m.role === "user");
+      expect(userMsgs).toHaveLength(1);
+    });
+
+    it("multiple image-bearing results: one user message per result, in call order", async () => {
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "a", input: {} },
+          { type: "tool-call", toolCallId: "tc2", toolName: "b", input: {} },
+          { type: "tool-call", toolCallId: "tc3", toolName: "c", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const toolA = createFakeTool("a", async () => ({ content: "a", images: [imageInput("ua")] }));
+      const toolB = createFakeTool("b", async () => ({ content: "b" })); // text-only
+      const toolC = createFakeTool("c", async () => ({ content: "c", images: [imageInput("uc")] }));
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [toolA, toolB, toolC],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+
+      // Order: assistant, tool(a), tool(b), tool(c), user(img-a), user(img-c), assistant
+      expect(result.messages.map((m) => m.role)).toEqual([
+        "assistant",
+        "tool",
+        "tool",
+        "tool",
+        "user",
+        "user",
+        "assistant",
+      ]);
+
+      // All tool-role results precede the image-bearing user messages.
+      const roles = result.messages.map((m) => m.role);
+      const lastToolIdx = roles.lastIndexOf("tool");
+      const firstUserIdx = roles.indexOf("user");
+      expect(lastToolIdx).toBeLessThan(firstUserIdx);
+
+      // Image order follows call order (a then c; b had no images).
+      const userMsgs = result.messages.filter((m) => m.role === "user");
+      expect(userMsgs).toHaveLength(2);
+      const firstImg = (userMsgs[0]?.chunks[0] as ImageChunk).url;
+      const secondImg = (userMsgs[1]?.chunks[0] as ImageChunk).url;
+      expect(firstImg).toBe("ua");
+      expect(secondImg).toBe("uc");
+
+      // Next provider step sees tool results then image messages in order.
+      const nextStep = capturedMessages[1] ?? [];
+      expect(nextStep.map((m) => m.role)).toEqual([
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "tool",
+        "user",
+        "user",
+      ]);
+    });
+
+    it("parallel calls (maxConcurrent): all tool-role results precede image-bearing user messages", async () => {
+      const { provider } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "a", input: {} },
+          { type: "tool-call", toolCallId: "tc2", toolName: "b", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const toolA = createFakeTool("a", async () => {
+        await delay(20);
+        return { content: "a", images: [imageInput("ua")] };
+      });
+      const toolB = createFakeTool("b", async () => {
+        await delay(10);
+        return { content: "b", images: [imageInput("ub")] };
+      });
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [toolA, toolB],
+        dispatch: { maxConcurrent: 2, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+
+      // Regardless of completion order, tool results come before image msgs.
+      const roles = result.messages.map((m) => m.role);
+      expect(roles).toEqual(["assistant", "tool", "tool", "user", "user", "assistant"]);
+      const lastToolIdx = roles.lastIndexOf("tool");
+      const firstUserIdx = roles.indexOf("user");
+      expect(lastToolIdx).toBeLessThan(firstUserIdx);
+
+      // Image messages follow call order (tc1=a before tc2=b), not completion.
+      const userMsgs = result.messages.filter((m) => m.role === "user");
+      expect((userMsgs[0]?.chunks[0] as ImageChunk).url).toBe("ua");
+      expect((userMsgs[1]?.chunks[0] as ImageChunk).url).toBe("ub");
+    });
+
+    it("error tool result does not emit an image message (no partial image leak)", async () => {
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "fail", input: {} },
+          { type: "tool-call", toolCallId: "tc2", toolName: "ok", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const failTool = createFakeTool("fail", async () => ({
+        content: "boom",
+        isError: true,
+        images: [imageInput("should-not-leak")],
+      }));
+      const okTool = createFakeTool("ok", async () => ({
+        content: "ok",
+        images: [imageInput("ok-img")],
+      }));
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [failTool, okTool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+
+      // Only the successful tool's image message appears.
+      const userMsgs = result.messages.filter((m) => m.role === "user");
+      expect(userMsgs).toHaveLength(1);
+      expect((userMsgs[0]?.chunks[0] as ImageChunk).url).toBe("ok-img");
+
+      // The error tool's images never reach the next provider step. The
+      // next step's input includes the original user message, so check the
+      // image-bearing user messages specifically.
+      const nextStep = capturedMessages[1] ?? [];
+      const nextImageMsgs = nextStep.filter(
+        (m) => m.role === "user" && m.chunks.some((c) => c.type === "image"),
+      );
+      expect(nextImageMsgs).toHaveLength(1);
+      expect((nextImageMsgs[0]?.chunks[0] as ImageChunk).url).toBe("ok-img");
+    });
+
+    it("abort mid-tool does not leak partial image messages", async () => {
+      const ac = new AbortController();
+
+      const tool = createFakeTool("snap", async (_input, ctx) => {
+        await delay(200);
+        if (ctx.signal.aborted) return { content: "Aborted", isError: true };
+        // A result that would carry images — but the abort path must
+        // suppress it entirely.
+        return { content: "captured", images: [imageInput("leaked")] };
+      });
+
+      const provider: ProviderContract = {
+        id: "fake",
+        stream(_messages, _tools) {
+          return (async function* () {
+            yield {
+              type: "tool-call",
+              toolCallId: "tc1",
+              toolName: "snap",
+              input: {},
+            } as ProviderEvent;
+            ac.abort();
+            await delay(10);
+            yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+          })();
+        },
+      };
+
+      const { events, emit } = createCollectingEmit();
+
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit,
+        signal: ac.signal,
+      });
+
+      expect(result.finishReason).toBe("aborted");
+      // No user-role image message is produced on abort.
+      const userMsgs = result.messages.filter((m) => m.role === "user");
+      expect(userMsgs).toHaveLength(0);
+      // Tool results on abort are all errors.
+      const toolResults = events.filter((e) => e.type === "tool-result");
+      for (const tr of toolResults) {
+        if (tr.type === "tool-result") {
+          expect(tr.isError).toBe(true);
+        }
+      }
+    });
+
+    it("images are threaded before steering messages at the tool-result boundary", async () => {
+      const steeringMessage: ChatMessage = {
+        role: "user",
+        chunks: [{ type: "text", text: "steer!" }],
+      };
+
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "snap", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("snap", async () => ({
+        content: "captured",
+        images: [imageInput("ua", "image/png")],
+      }));
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        drainSteering: () => [steeringMessage],
+      });
+
+      // Next step order: user, assistant(tool-call), tool, user(image), user(steer)
+      const nextStep = capturedMessages[1] ?? [];
+      expect(nextStep.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "user"]);
+      // The image message precedes the steering message.
+      expect((nextStep[3]?.chunks[0] as ImageChunk).url).toBe("ua");
+      expect(nextStep[4]).toEqual(steeringMessage);
+      // Steering is NOT in the turn result (caller owns it); the image IS.
+    });
+
+    it("image messages are passed to onStepComplete for persistence (after tool results)", async () => {
+      const { provider } = createCapturingProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "snap", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const tool = createFakeTool("snap", async () => ({
+        content: "captured",
+        images: [imageInput("ua", "image/png")],
+      }));
+
+      const stepCalls: ChatMessage[][] = [];
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        onStepComplete: (msgs) => {
+          stepCalls.push(msgs);
+        },
+      });
+
+      // The first (tool-call) step's onStepComplete batch includes the image
+      // message after the assistant + tool messages.
+      const firstBatch = stepCalls[0] ?? [];
+      expect(firstBatch.map((m) => m.role)).toEqual(["assistant", "tool", "user"]);
+      expect((firstBatch[2]?.chunks[0] as ImageChunk).url).toBe("ua");
     });
   });
 });

@@ -1,4 +1,4 @@
-import type { ChatMessage, Chunk, StepId } from "../contracts/conversation.js";
+import type { ChatMessage, Chunk, ImageChunk, StepId } from "../contracts/conversation.js";
 import type { Logger, Span } from "../contracts/logging.js";
 import type {
   ProviderContract,
@@ -145,6 +145,15 @@ interface StepResult {
   readonly assistantMessage: ChatMessage | undefined;
   readonly toolCalls: ToolCall[];
   readonly toolMessages: ChatMessage[];
+  /**
+   * Synthetic user-role image messages derived from tool results that carry
+   * `images`. One message per result-with-images, in call order. Built only
+   * from successful (non-error) results; an error result never emits images.
+   * Empty for text-only results. The runtime appends these AFTER all
+   * tool-role result messages so a complete parallel tool-call/result batch
+   * precedes the synthetic image content.
+   */
+  readonly imageMessages: ChatMessage[];
   readonly usage: Usage;
   readonly finishReason: string;
 }
@@ -521,6 +530,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
   }
 
   const toolMessages: ChatMessage[] = [];
+  const imageMessages: ChatMessage[] = [];
   for (const call of toolCalls) {
     const result = results.get(call.id);
     if (result !== undefined) {
@@ -553,6 +563,21 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
           },
         ],
       });
+
+      // Synthetic user-role image message for a successful result that carries
+      // images. Error results are treated as failed and emit NO images — a
+      // failed tool never leaks partial image content into the next step.
+      // One message per result, in call order; the runtime appends these
+      // AFTER every tool-role result message (see runTurn). Omitting `images`
+      // or an empty array produces nothing, so text-only tools are unchanged.
+      if (!isError && result.images !== undefined && result.images.length > 0) {
+        const imageChunks: ImageChunk[] = result.images.map((img) => ({
+          type: "image",
+          url: img.url,
+          ...(img.mimeType !== undefined ? { mimeType: img.mimeType } : {}),
+        }));
+        imageMessages.push({ role: "user", chunks: imageChunks });
+      }
     }
   }
 
@@ -573,7 +598,14 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
   const assistantMessage: ChatMessage | undefined =
     chunks.length > 0 ? { role: "assistant", chunks } : undefined;
 
-  return { assistantMessage, toolCalls, toolMessages, usage: stepUsage, finishReason };
+  return {
+    assistantMessage,
+    toolCalls,
+    toolMessages,
+    imageMessages,
+    usage: stepUsage,
+    finishReason,
+  };
 }
 
 export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
@@ -672,13 +704,29 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
           ? stripToolCallChunks(stepResult.assistantMessage)
           : stepResult.assistantMessage;
       const toolMessages = stepAborted ? [] : stepResult.toolMessages;
+      // An aborted step never leaks synthetic image messages: the dispatcher
+      // synthesized "Aborted" error results for unresolved calls, and the
+      // assistant's tool-call chunks were stripped, so no image content may
+      // follow a partial tool-call batch into the next step.
+      const imageMessages = stepAborted ? [] : stepResult.imageMessages;
 
       if (assistantMessage !== undefined) {
         messages.push(assistantMessage);
         resultMessages.push(assistantMessage);
       }
 
+      // 1. Append all tool-role result messages in call order.
       for (const msg of toolMessages) {
+        messages.push(msg);
+        resultMessages.push(msg);
+      }
+
+      // 2. Then append deterministic user-role image messages for results
+      //    with images. All tool results precede these synthetic user
+      //    messages so providers that require a complete parallel
+      //    tool-call/result batch remain valid. Empty for text-only results
+      //    (byte-stable — no image result means no synthetic user message).
+      for (const msg of imageMessages) {
         messages.push(msg);
         resultMessages.push(msg);
       }
@@ -693,6 +741,9 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
           stepMessages.push(assistantMessage);
         }
         for (const msg of toolMessages) {
+          stepMessages.push(msg);
+        }
+        for (const msg of imageMessages) {
           stepMessages.push(msg);
         }
         if (stepMessages.length > 0) {
@@ -717,12 +768,12 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       } else {
         // Tool-result boundary: this step produced tool calls and we are
         // about to call provider.stream again. Drain steering messages
-        // and append them after the tool results, before the next call.
-        // The kernel owns no queue and names no feature — it just calls
-        // the callback and appends. Emits nothing (caller emits the
-        // `steering` AgentEvent in its own wrapper). The callback MAY
-        // return a Promise (the shell persists the injected messages
-        // before returning) — `await` handles both sync and async.
+        // and append them after the tool results (and any synthetic image
+        // messages), before the next call. The kernel owns no queue and names
+        // no feature — it just calls the callback and appends. Emits nothing
+        // (caller emits the `steering` AgentEvent in its own wrapper). The
+        // callback MAY return a Promise (the shell persists the injected
+        // messages before returning) — `await` handles both sync and async.
         const steering = (await input.drainSteering?.()) ?? [];
         for (const msg of steering) {
           messages.push(msg);
