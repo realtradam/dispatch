@@ -94,6 +94,78 @@ describe("VisionHandoffService.resolveVisionModel", () => {
     const vision = await svc.resolveVisionModel("umans/umans-kimi-k2.7");
     expect(vision).toBeUndefined();
   });
+
+  it("uses the preferred model when it is vision-capable", async () => {
+    // Catalog default would resolve kimi; preferring qwen selects qwen.
+    const deps = makeDeps();
+    (deps.credentialStore.listCatalog as ReturnType<typeof vi.fn>).mockResolvedValue([
+      "umans/umans-glm-5.2",
+      "umans/umans-kimi-k2.7",
+      "umans/umans-qwen3.6-35b-a3b",
+    ]);
+    (deps.credentialStore.getModelInfo as ReturnType<typeof vi.fn>).mockImplementation(
+      async (name: string) => {
+        const map: Record<string, ModelInfo> = {
+          "umans/umans-kimi-k2.7": { id: "umans-kimi-k2.7", vision: true },
+          "umans/umans-qwen3.6-35b-a3b": { id: "umans-qwen3.6-35b-a3b", vision: true },
+          "umans/umans-glm-5.2": { id: "umans-glm-5.2" },
+        };
+        return map[name];
+      },
+    );
+    (deps.credentialStore.resolve as ReturnType<typeof vi.fn>).mockImplementation(
+      (name: string) => {
+        if (name === "umans/umans-kimi-k2.7")
+          return { providerId: "umans", model: "umans-kimi-k2.7" };
+        if (name === "umans/umans-qwen3.6-35b-a3b")
+          return { providerId: "umans", model: "umans-qwen3.6-35b-a3b" };
+        if (name === "umans/umans-glm-5.2") return { providerId: "umans", model: "umans-glm-5.2" };
+        return undefined;
+      },
+    );
+    (deps.resolveModel as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+      name === "umans/umans-kimi-k2.7" ||
+      name === "umans/umans-qwen3.6-35b-a3b" ||
+      name === "umans/umans-glm-5.2"
+        ? { provider: makeVisionProvider(() => "x", "umans"), model: name.split("/")[1] }
+        : undefined,
+    );
+    const svc = createVisionHandoffService(deps);
+    const vision = await svc.resolveVisionModel(undefined, "umans/umans-qwen3.6-35b-a3b");
+    expect(vision?.modelName).toBe("umans/umans-qwen3.6-35b-a3b");
+    expect(vision?.model).toBe("umans-qwen3.6-35b-a3b");
+  });
+
+  it("falls back to the catalog scan when the preferred model is not vision-capable", async () => {
+    const svc = createVisionHandoffService(makeDeps());
+    const vision = await svc.resolveVisionModel(undefined, "umans/umans-glm-5.2");
+    expect(vision?.modelName).toBe("umans/umans-kimi-k2.7");
+  });
+
+  it("falls back to the catalog scan when the preferred model is vision-capable but unresolvable", async () => {
+    // Preferred is vision-capable but resolveModel returns undefined for it;
+    // must fall back to the catalog scan (kimi).
+    const deps = makeDeps();
+    (deps.resolveModel as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+      // The preferred is NOT resolvable; kimi still is.
+      name === "umans/umans-kimi-k2.7"
+        ? { provider: makeVisionProvider(() => "x", "umans"), model: "umans-kimi-k2.7" }
+        : undefined,
+    );
+    const svc = createVisionHandoffService(deps);
+    const vision = await svc.resolveVisionModel(undefined, "umans/umans-qwen3.6-35b-a3b");
+    expect(vision?.modelName).toBe("umans/umans-kimi-k2.7");
+  });
+
+  it("returns undefined when the preferred is non-vision and no vision model is in the catalog", async () => {
+    const deps = makeDeps();
+    (deps.credentialStore.listCatalog as ReturnType<typeof vi.fn>).mockResolvedValue([
+      "umans/umans-glm-5.2",
+    ]);
+    const svc = createVisionHandoffService(deps);
+    const vision = await svc.resolveVisionModel(undefined, "umans/umans-glm-5.2");
+    expect(vision).toBeUndefined();
+  });
 });
 
 describe("VisionHandoffService.prepareForProvider", () => {
@@ -193,6 +265,71 @@ describe("VisionHandoffService.prepareForProvider", () => {
     const text = (result[0]?.chunks[0] as { text: string }).text;
     expect(text).toContain("no vision-capable model");
     expect(text).not.toContain("consult_vision");
+  });
+
+  it("uses the configured compactionModel to transcribe compacted images", async () => {
+    // Vision-capable current model with imageLimit=1 and two images: the oldest
+    // is compacted to text. With a preferred compactionModel set, the
+    // transcription must use THAT model (not the default catalog scan).
+    const kimiProvider = makeVisionProvider((url) => `KIMI(${url})`, "umans");
+    const qwenProvider = makeVisionProvider((url) => `QWEN(${url})`, "umans-qwen");
+    const deps = makeDeps();
+    (deps.credentialStore.listCatalog as ReturnType<typeof vi.fn>).mockResolvedValue([
+      "umans/umans-kimi-k2.7", // default scan would pick this
+      "umans/umans-qwen3.6-35b-a3b",
+    ]);
+    (deps.credentialStore.getModelInfo as ReturnType<typeof vi.fn>).mockImplementation(
+      async (name: string) => {
+        const map: Record<string, ModelInfo> = {
+          "umans/umans-kimi-k2.7": { id: "umans-kimi-k2.7", vision: true },
+          "umans/umans-qwen3.6-35b-a3b": { id: "umans-qwen3.6-35b-a3b", vision: true },
+        };
+        return map[name];
+      },
+    );
+    (deps.credentialStore.resolve as ReturnType<typeof vi.fn>).mockImplementation(
+      (name: string) => {
+        if (name === "umans/umans-kimi-k2.7")
+          return { providerId: "umans", model: "umans-kimi-k2.7" };
+        if (name === "umans/umans-qwen3.6-35b-a3b")
+          return { providerId: "umans-qwen", model: "umans-qwen3.6-35b-a3b" };
+        return undefined;
+      },
+    );
+    (deps.resolveModel as ReturnType<typeof vi.fn>).mockImplementation((name: string) => {
+      if (name === "umans/umans-kimi-k2.7")
+        return { provider: kimiProvider, model: "umans-kimi-k2.7" };
+      if (name === "umans/umans-qwen3.6-35b-a3b")
+        return { provider: qwenProvider, model: "umans-qwen3.6-35b-a3b" };
+      return undefined;
+    });
+    const svc = createVisionHandoffService(deps);
+
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        chunks: [
+          { type: "text", text: "look" },
+          { type: "image", url: "data:image/png;base64,OLD" },
+          { type: "image", url: "data:image/png;base64,NEW" },
+        ],
+      },
+    ];
+    const result = await svc.prepareForProvider(messages, "umans/umans-kimi-k2.7", {
+      conversationId: "conv-1",
+      imageLimit: 1,
+      compactionModel: "umans/umans-qwen3.6-35b-a3b",
+    });
+    // The oldest image (OLD) is compacted to text via the PREFERRED qwen model.
+    const transcribed = result[0]?.chunks.find(
+      (c) => c.type === "text" && c.text.includes("Compacted image"),
+    ) as { text: string } | undefined;
+    expect(transcribed).toBeDefined();
+    expect(transcribed?.text).toContain("QWEN(data:image/png;base64,OLD)");
+    // The most recent image (NEW) stays native.
+    expect(result[0]?.chunks.some((c) => c.type === "image")).toBe(true);
+    // kimi was NOT used for transcription (preferred overrode the catalog scan).
+    expect(kimiProvider.stream).not.toHaveBeenCalled();
   });
 });
 
@@ -371,5 +508,87 @@ describe("VisionHandoffService.consultVision", () => {
       conversationId: "conv-1",
     });
     expect("error" in result).toBe(true);
+  });
+
+  it("uses the configured compaction model (via getVisionSettings) for the consultation", async () => {
+    // Two vision models in the catalog; default scan would pick kimi first.
+    // The configured compactionModel points at qwen — consultVision must use it.
+    const deps = makeDeps();
+    (deps.credentialStore.listCatalog as ReturnType<typeof vi.fn>).mockResolvedValue([
+      "umans/umans-glm-5.2",
+      "umans/umans-kimi-k2.7",
+      "umans/umans-qwen3.6-35b-a3b",
+    ]);
+    (deps.credentialStore.getModelInfo as ReturnType<typeof vi.fn>).mockImplementation(
+      async (name: string) => {
+        const map: Record<string, ModelInfo> = {
+          "umans/umans-kimi-k2.7": { id: "umans-kimi-k2.7", vision: true },
+          "umans/umans-qwen3.6-35b-a3b": { id: "umans-qwen3.6-35b-a3b", vision: true },
+          "umans/umans-glm-5.2": { id: "umans-glm-5.2" },
+        };
+        return map[name];
+      },
+    );
+    (deps.credentialStore.resolve as ReturnType<typeof vi.fn>).mockImplementation(
+      (name: string) => {
+        if (name === "umans/umans-kimi-k2.7")
+          return { providerId: "umans", model: "umans-kimi-k2.7" };
+        if (name === "umans/umans-qwen3.6-35b-a3b")
+          return { providerId: "umans", model: "umans-qwen3.6-35b-a3b" };
+        if (name === "umans/umans-glm-5.2") return { providerId: "umans", model: "umans-glm-5.2" };
+        return undefined;
+      },
+    );
+    (deps.resolveModel as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+      name === "umans/umans-kimi-k2.7" ||
+      name === "umans/umans-qwen3.6-35b-a3b" ||
+      name === "umans/umans-glm-5.2"
+        ? { provider: makeVisionProvider(() => "desc", "umans"), model: name.split("/")[1] }
+        : undefined,
+    );
+    deps.getVisionSettings = async () => ({
+      imageLimit: 10,
+      compactionModel: "umans/umans-qwen3.6-35b-a3b",
+    });
+    const { orchestrator, handleMessage } = makeOrchestratorDouble("saw a chart");
+    deps.resolveOrchestrator = () => orchestrator;
+    const svc = createVisionHandoffService(deps);
+
+    const result = await svc.consultVision("What is this diagram?", {
+      conversationId: "conv-1",
+      path: "diagram.png",
+    });
+    expect("error" in result).toBe(false);
+    expect(handleMessage).toHaveBeenCalledOnce();
+    expect(handleMessage.mock.calls[0]?.[0].modelName).toBe("umans/umans-qwen3.6-35b-a3b");
+  });
+
+  it("falls back to auto-select when compactionModel is null (via getVisionSettings)", async () => {
+    const deps = makeDeps();
+    deps.getVisionSettings = async () => ({ imageLimit: 10, compactionModel: null });
+    const { orchestrator, handleMessage } = makeOrchestratorDouble("response");
+    deps.resolveOrchestrator = () => orchestrator;
+    const svc = createVisionHandoffService(deps);
+
+    await svc.consultVision("What?", {
+      conversationId: "conv-1",
+      path: "diagram.png",
+    });
+    // Auto-select picks the first vision model in the catalog (kimi).
+    expect(handleMessage.mock.calls[0]?.[0].modelName).toBe("umans/umans-kimi-k2.7");
+  });
+
+  it("falls back to auto-select when getVisionSettings is not provided", async () => {
+    const deps = makeDeps();
+    // getVisionSettings deliberately NOT provided (legacy wiring).
+    const { orchestrator, handleMessage } = makeOrchestratorDouble("response");
+    deps.resolveOrchestrator = () => orchestrator;
+    const svc = createVisionHandoffService(deps);
+
+    await svc.consultVision("What?", {
+      conversationId: "conv-1",
+      path: "diagram.png",
+    });
+    expect(handleMessage.mock.calls[0]?.[0].modelName).toBe("umans/umans-kimi-k2.7");
   });
 });

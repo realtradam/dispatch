@@ -35,19 +35,42 @@ export function isVisionCapable(
 }
 
 /**
- * Find the first vision-capable model name in a catalog, given a lookup that
- * resolves a `<credentialName>/<model>` → `ModelInfo`. Returns `undefined` when
- * no vision-capable model is available. Pure given the (async) lookup.
+ * Find a vision-capable model name in a catalog, given a lookup that resolves a
+ * `<credentialName>/<model>` → `ModelInfo`. Returns `undefined` when no vision-
+ * capable model is available. Pure given the (async) lookup.
  *
- * @param catalog  The full list of model names (`<credentialName>/<model>`).
- * @param getInfo  Async lookup of a model name → ModelInfo (from the credential store).
- * @param exclude  Optional model name to skip (e.g. the current non-vision model).
+ * When a `preferred` name is given AND it is vision-capable (per
+ * {@link isVisionCapable}), it is returned immediately — this honors the
+ * per-conversation `compactionModel` setting. Otherwise the catalog is scanned
+ * in order for the first vision-capable model (the auto-select behavior).
+ *
+ * Note: this only decides which NAME to pick based on vision capability; it
+ * does NOT check whether the model is resolvable to a provider (that is the
+ * shell's job in `resolveVisionModel`, which falls back to the catalog scan
+ * when a preferred name turns out to be unresolvable).
+ *
+ * @param catalog    The full list of model names (`<credentialName>/<model>`).
+ * @param getInfo    Async lookup of a model name → ModelInfo (from the credential store).
+ * @param exclude    Optional model name to skip (e.g. the current non-vision model).
+ * @param preferred  Optional model name to prefer (the `compactionModel` setting).
+ *                   Used when it is vision-capable; ignored otherwise.
  */
 export async function findVisionModelName(
   catalog: readonly string[],
   getInfo: (modelName: string) => Promise<ModelInfo | undefined>,
   exclude?: string,
+  preferred?: string,
 ): Promise<string | undefined> {
+  // Preferred path: honor the configured compaction model when it is vision-
+  // capable. `isVisionCapable` consults ModelInfo (authoritative) and falls
+  // back to the name heuristic, so a preferred model is accepted whether or
+  // not it happens to be listed in the catalog.
+  if (preferred !== undefined && preferred !== exclude) {
+    const info = await getInfo(preferred);
+    if (isVisionCapable(preferred, info)) return preferred;
+  }
+
+  // Fallback: scan the catalog in order for the first vision-capable model.
   for (const name of catalog) {
     if (exclude !== undefined && name === exclude) continue;
     // Fast path: the name heuristic lets us short-circuit without an async

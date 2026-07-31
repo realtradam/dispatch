@@ -155,6 +155,17 @@ export interface VisionHandoffDeps {
    * keep their default (question-derived) title.
    */
   readonly setConversationTitle?: (conversationId: string, title: string) => Promise<void>;
+  /**
+   * Read the global vision settings (image compaction limit + compaction
+   * model). Used by `consultVision` so the `consult_vision` tool honors the
+   * configured compaction model when one is set (null = auto-select). Backed by
+   * the conversation store's `getVisionSettings`. Optional — when absent,
+   * `consult_vision` uses the auto-select catalog scan (legacy behavior).
+   */
+  readonly getVisionSettings?: () => Promise<{
+    readonly imageLimit: number;
+    readonly compactionModel: string | null;
+  }>;
   /** Generate a new conversation ID for a consultation. Defaults to crypto.randomUUID. */
   readonly generateId?: () => string;
   readonly logger?: Logger;
@@ -186,10 +197,15 @@ export interface VisionHandoffService {
   readonly purgeConversationImages: (conversationId: string) => Promise<void>;
 
   /**
-   * Resolve a vision-capable model from the catalog (any provider). Returns
-   * `undefined` when none is available.
+   * Resolve a vision-capable model from the catalog (any provider). When a
+   * `preferredName` is given and it is vision-capable AND resolvable, it is
+   * used; otherwise the catalog is scanned for the first vision-capable model
+   * (the auto-select behavior). Returns `undefined` when none is available.
    */
-  readonly resolveVisionModel: (excludeName?: string) => Promise<ResolvedVisionModel | undefined>;
+  readonly resolveVisionModel: (
+    excludeName?: string,
+    preferredName?: string,
+  ) => Promise<ResolvedVisionModel | undefined>;
 
   /**
    * Transform a message list for the provider: if the active model is
@@ -205,6 +221,7 @@ export interface VisionHandoffService {
     opts?: {
       readonly conversationId?: string;
       readonly imageLimit?: number;
+      readonly compactionModel?: string | null;
       readonly signal?: AbortSignal;
       readonly logger?: Logger;
     },
@@ -266,12 +283,21 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
 
   async function resolveVisionModel(
     excludeName?: string,
+    preferredName?: string,
   ): Promise<ResolvedVisionModel | undefined> {
     const catalog = await deps.credentialStore.listCatalog();
-    const name = await findVisionModelName(catalog, getInfo, excludeName);
-    if (name === undefined) return undefined;
-    const resolved = deps.resolveModel(name);
-    if (resolved === undefined) return undefined;
+    // `findVisionModelName` honors a vision-capable `preferredName` first, then
+    // falls back to the catalog scan. A preferred name that is vision-capable
+    // but NOT resolvable to a provider (e.g. its provider extension isn't
+    // loaded) must still fall back to the catalog scan — so when the selected
+    // name was the preference and it doesn't resolve, retry without it.
+    let name = await findVisionModelName(catalog, getInfo, excludeName, preferredName);
+    let resolved = name !== undefined ? deps.resolveModel(name) : undefined;
+    if (resolved === undefined && preferredName !== undefined && name === preferredName) {
+      name = await findVisionModelName(catalog, getInfo, excludeName);
+      resolved = name !== undefined ? deps.resolveModel(name) : undefined;
+    }
+    if (name === undefined || resolved === undefined) return undefined;
     return { provider: resolved.provider, model: resolved.model, modelName: name };
   }
 
@@ -292,6 +318,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       | {
           readonly conversationId?: string;
           readonly imageLimit?: number;
+          readonly compactionModel?: string | null;
           readonly signal?: AbortSignal;
           readonly logger?: Logger;
         }
@@ -329,7 +356,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
 
     // Transcribe any that aren't cached yet (via the vision model).
     const transcriptions = new Map<string, string>(cache);
-    const vision = await resolveVisionModel();
+    const vision = await resolveVisionModel(undefined, opts?.compactionModel ?? undefined);
     for (const entry of toTranscribe) {
       if (transcriptions.has(entry.url)) continue;
       if (vision === undefined) {
@@ -492,6 +519,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       opts?: {
         readonly conversationId?: string;
         readonly imageLimit?: number;
+        readonly compactionModel?: string | null;
         readonly signal?: AbortSignal;
         readonly logger?: Logger;
       },
@@ -517,7 +545,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       }
 
       // ── Non-vision model: placeholders + consult_vision ──────────────────
-      const vision = await resolveVisionModel();
+      const vision = await resolveVisionModel(undefined, opts?.compactionModel ?? undefined);
       const convId = opts?.conversationId;
 
       const placeholderFn =
@@ -584,7 +612,14 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         };
       }
 
-      const vision = await resolveVisionModel();
+      // Honor the configured compaction model when one is set (null = auto-select).
+      // The `consult_vision` tool doesn't carry the setting, so the service reads
+      // the global vision settings here — mirroring how `prepareForProvider`
+      // receives the per-turn `compactionModel` from the orchestrator.
+      const settings =
+        deps.getVisionSettings !== undefined ? await deps.getVisionSettings() : undefined;
+      const preferred = settings?.compactionModel ?? undefined;
+      const vision = await resolveVisionModel(undefined, preferred);
       if (vision === undefined) {
         return {
           error:

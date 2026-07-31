@@ -187,6 +187,10 @@ export async function activate(host: HostAPI): Promise<void> {
       const store = host.getService(conversationStoreHandle);
       await store.setConversationTitle(conversationId, title);
     },
+    getVisionSettings: async () => {
+      const store = host.getService(conversationStoreHandle);
+      return store.getVisionSettings();
+    },
     logger: host.logger.child({ extensionId: "vision-handoff" }),
   });
 

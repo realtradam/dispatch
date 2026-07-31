@@ -80,6 +80,83 @@ describe("findVisionModelName", () => {
     const name = await findVisionModelName([], getInfo);
     expect(name).toBeUndefined();
   });
+
+  // ── preferred model (compactionModel setting) ─────────────────────────────
+
+  it("honors a vision-capable preferred model even when it is not the catalog's first", async () => {
+    // Catalog order would pick kimi first; preferring qwen selects qwen.
+    const name = await findVisionModelName(
+      ["umans/umans-glm-5.2", "umans/umans-kimi-k2.7", "umans/umans-qwen3.6-35b-a3b"],
+      getInfo,
+      undefined,
+      "umans/umans-qwen3.6-35b-a3b",
+    );
+    expect(name).toBe("umans/umans-qwen3.6-35b-a3b");
+  });
+
+  it("honors a preferred model detected via ModelInfo.vision (name heuristic misses)", async () => {
+    // llama-vision is vision-capable only via ModelInfo.vision, not the heuristic.
+    const name = await findVisionModelName(
+      ["umans/umans-kimi-k2.7", "umans/llama-vision"],
+      getInfo,
+      undefined,
+      "umans/llama-vision",
+    );
+    expect(name).toBe("umans/llama-vision");
+  });
+
+  it("falls back to the catalog scan when the preferred model is NOT vision-capable", async () => {
+    const name = await findVisionModelName(
+      ["umans/umans-kimi-k2.7", "umans/umans-glm-5.2"],
+      getInfo,
+      undefined,
+      "umans/umans-glm-5.2", // non-vision preferred
+    );
+    expect(name).toBe("umans/umans-kimi-k2.7");
+  });
+
+  it("falls back to the catalog scan when the preferred model is unknown (no ModelInfo)", async () => {
+    const name = await findVisionModelName(
+      ["umans/umans-kimi-k2.7"],
+      getInfo,
+      undefined,
+      "umans/does-not-exist", // no ModelInfo, not a vision name
+    );
+    expect(name).toBe("umans/umans-kimi-k2.7");
+  });
+
+  it("ignores the preferred model when it equals the excluded model", async () => {
+    // Preferred === excluded → must not be returned; falls back to scan.
+    const name = await findVisionModelName(
+      ["umans/umans-kimi-k2.7", "umans/umans-qwen3.6-35b-a3b"],
+      getInfo,
+      "umans/umans-kimi-k2.7",
+      "umans/umans-kimi-k2.7",
+    );
+    expect(name).toBe("umans/umans-qwen3.6-35b-a3b");
+  });
+
+  it("returns the preferred model even when it is not in the catalog", async () => {
+    // A preferred vision model not listed in the catalog is still honored
+    // (the setting may name a model that resolves but isn't enumerated).
+    const name = await findVisionModelName(
+      ["umans/umans-glm-5.2"],
+      getInfo,
+      undefined,
+      "umans/umans-qwen3.6-35b-a3b",
+    );
+    expect(name).toBe("umans/umans-qwen3.6-35b-a3b");
+  });
+
+  it("returns undefined when the preferred is non-vision and the catalog has no vision model", async () => {
+    const name = await findVisionModelName(
+      ["umans/umans-glm-5.2"],
+      getInfo,
+      undefined,
+      "umans/umans-glm-5.2",
+    );
+    expect(name).toBeUndefined();
+  });
 });
 
 describe("collectTextFromStream", () => {

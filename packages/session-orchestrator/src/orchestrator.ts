@@ -74,6 +74,7 @@ export interface VisionHandoffService {
     opts?: {
       readonly conversationId?: string;
       readonly imageLimit?: number;
+      readonly compactionModel?: string | null;
       readonly signal?: AbortSignal;
       readonly logger?: Logger;
     },
@@ -957,6 +958,7 @@ export function createSessionOrchestrator(
             {
               conversationId,
               imageLimit: visionSettings.imageLimit,
+              compactionModel: visionSettings.compactionModel,
               signal: controller.signal,
               ...(turnLogger !== undefined ? { logger: turnLogger } : {}),
             },
