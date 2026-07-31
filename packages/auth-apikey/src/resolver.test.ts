@@ -25,13 +25,15 @@ describe("resolveApiKeyCredentials", () => {
     });
   });
 
-  it("throws a clear error when DISPATCH_API_KEY is absent", () => {
+  it("returns undefined when DISPATCH_API_KEY is absent", () => {
     const env = {};
-    expect(() => resolveApiKeyCredentials(env)).toThrow("DISPATCH_API_KEY");
+    const result = resolveApiKeyCredentials(env);
+    expect(result).toBeUndefined();
   });
 
-  it("throws when DISPATCH_API_KEY is empty string", () => {
+  it("returns undefined when DISPATCH_API_KEY is empty string", () => {
     const env = { DISPATCH_API_KEY: "" };
-    expect(() => resolveApiKeyCredentials(env)).toThrow("DISPATCH_API_KEY");
+    const result = resolveApiKeyCredentials(env);
+    expect(result).toBeUndefined();
   });
 });

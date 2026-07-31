@@ -1,39 +1,80 @@
 #!/bin/bash
+# bin/sync-env — update /etc/dispatch/env with keys + system paths.
+#
+# Keys are NEVER stored in this file or in the repo. They are passed as
+# arguments (or prompted interactively) and written directly to /etc/dispatch/env.
+#
+# Usage:
+#   sudo bin/sync-env --umans-key "sk-..."
+#   sudo bin/sync-env                          # prompts for the key interactively
+#   sudo bin/sync-env --umans-key ""           # removes the umans key
+
 set -euo pipefail
 
 ENV_FILE="/etc/dispatch/env"
-OPENCODE_KEY="sk-P2DW7UFzQZgI8TnYzp6wWKxv6suzFvSGRrwewhUK0OjA4C7bLzsKHki7r7zZOAH1"
-UMANS_KEY="sk-bvI-mgUrp5qJzMlK8ndoDqJ3dK0U-ds_8KYS8pzpRLw"
 # PATH that includes user-installed tools (mise, bun, npm global, etc.)
 DISPATCH_PATH="/home/PII_REDACTED_USER_01/.local/bin:/home/PII_REDACTED_USER_01/.local/share/mise/shims:/home/PII_REDACTED_USER_01/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/bin"
 
-if [ ! -f "$ENV_FILE" ]; then
-	echo "Error: $ENV_FILE not found" >&2
+if [[ "$(id -u)" -ne 0 ]]; then
+	echo "sync-env: must run as root (use sudo)" >&2
 	exit 1
 fi
 
-# Update PATH (so tools like typescript-language-server, npm, bun are found)
+if [ ! -f "$ENV_FILE" ]; then
+	echo "sync-env: $ENV_FILE not found — run 'sudo bin/setup-env' first" >&2
+	exit 1
+fi
+
+# --- Parse arguments ---
+UMANS_KEY=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--umans-key)
+			UMANS_KEY="$2"
+			shift 2
+			;;
+		--umans-key=*)
+			UMANS_KEY="${1#--umans-key=}"
+			shift
+			;;
+		*)
+			echo "sync-env: unknown argument: $1" >&2
+			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"]" >&2
+			exit 1
+			;;
+	esac
+done
+
+# --- Prompt for key if not provided via argument ---
+if [ -z "$UMANS_KEY" ] && [ -t 0 ]; then
+	echo -n "Enter UMANS_API_KEY (or press Enter to skip): " >&2
+	read -r UMANS_KEY
+fi
+
+# --- Update PATH ---
 if grep -q "^PATH=" "$ENV_FILE"; then
 	sed -i "s|^PATH=.*|PATH=$DISPATCH_PATH|" "$ENV_FILE"
 else
 	echo "PATH=$DISPATCH_PATH" >> "$ENV_FILE"
 fi
 
-# Update DISPATCH_API_KEY
-if grep -q "^DISPATCH_API_KEY=" "$ENV_FILE"; then
-	sed -i "s|^DISPATCH_API_KEY=.*|DISPATCH_API_KEY=$OPENCODE_KEY|" "$ENV_FILE"
-else
-	echo "DISPATCH_API_KEY=$OPENCODE_KEY" >> "$ENV_FILE"
+# --- Update UMANS_API_KEY ---
+if [ -n "$UMANS_KEY" ]; then
+	if grep -q "^UMANS_API_KEY=" "$ENV_FILE"; then
+		sed -i "s|^UMANS_API_KEY=.*|UMANS_API_KEY=$UMANS_KEY|" "$ENV_FILE"
+	else
+		echo "UMANS_API_KEY=$UMANS_KEY" >> "$ENV_FILE"
+	fi
+	echo "  UMANS_API_KEY=${UMANS_KEY:0:8}..." >&2
 fi
 
-# Update UMANS_API_KEY
-if grep -q "^UMANS_API_KEY=" "$ENV_FILE"; then
-	sed -i "s|^UMANS_API_KEY=.*|UMANS_API_KEY=$UMANS_KEY|" "$ENV_FILE"
-else
-	echo "UMANS_API_KEY=$UMANS_KEY" >> "$ENV_FILE"
-fi
-
+# --- Delete the old OpenCode key (revoked — no longer used) ---
+sed -i "/^DISPATCH_API_KEY=/d" "$ENV_FILE"
 # Delete the backup key line
 sed -i "/^DISPATCH_API_KEY_OPENCODE2=/d" "$ENV_FILE"
+
+# --- Set permissions: root:PII_REDACTED_USER_01 640 (PII_REDACTED_USER_01 can read for dev) ---
+chown root:PII_REDACTED_USER_01 "$ENV_FILE" 2>/dev/null || true
+chmod 640 "$ENV_FILE"
 
 echo "Updated $ENV_FILE"
