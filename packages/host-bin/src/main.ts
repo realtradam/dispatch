@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { extension as agentManagementExt } from "@dispatch/agent-management";
 import { extension as authApikeyExt } from "@dispatch/auth-apikey";
 import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
@@ -53,7 +54,6 @@ import { extension as toolYoutubeTranscriptExt } from "@dispatch/tool-youtube-tr
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
 import { extension as visionHandoffExt } from "@dispatch/vision-handoff";
-import { extension as agentManagementExt } from "@dispatch/agent-management";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";

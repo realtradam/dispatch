@@ -56,6 +56,17 @@
 | **working directory** | The per-conversation filesystem directory that tools and `language server`s operate within (`ToolExecuteContext.cwd`). Persisted per conversation by `conversation-store`; gettable/settable via the cwd endpoint; defaults a turn's cwd when `/chat` omits it. | cwd (spell out on first use), workdir (when meaning the conversation's directory) |
 | **reasoning effort** | The per-request thinking-depth knob: how much extended thinking the model spends before answering. Ladder `low \| medium \| high \| xhigh \| max` (`ReasoningEffort` in `@dispatch/wire`). Resolution per turn: `ChatRequest.reasoningEffort` override → persisted per-conversation value → default `high`. Each provider maps a level to its native knob in its own code (e.g. Anthropic `thinking.budget_tokens`); providers without such a knob ignore it. | thinking level, effort level, thinking budget (that's the provider-NATIVE knob a level maps to) |
 | **context size** | The number of tokens a conversation currently occupies: the most recent turn's FINAL step `inputTokens + outputTokens` (NOT the aggregate per-turn `usage`, which sums per-step prompts and overcounts a multi-step turn). Stamped on `TurnDoneEvent.contextSize` (live) + `TurnMetrics.contextSize` (persisted); a client reads the LATEST turn's value as current usage. Distinct from the model's **context window** (its max token limit — a later feature). | context window (when meaning current usage), context length, tokens used, context usage |
+| **subagent** | A **conversation** started by an agent to perform a delegated task. It has its own model, history, workspace assignment, working directory, computer, and tool policy. The parent relationship is durable metadata (`parentConversationId`); the execution unit remains an ordinary conversation. | child session, worker agent, spawned chat, agent tab |
+| **agent management** | The feature that starts and controls related agent conversations: summon, list, read, send, queue, cancel, and open. The tool family exposed to agents. | subagent orchestration, agent control |
+| **agent-management** | The standard extension (package `agent-management`) that exposes the management tool family and the typed `AgentManagementService`. The extension name (kebab-case); the feature is **agent management**. | (not the feature; the feature is agent management) |
+| **agent management tool** | One of the seven AI-callable tools contributed by `agent-management`: `list_agent_models`, `summon_agent`, `list_agents`, `read_agent`, `send_agent_message`, `cancel_agent_message`, `open_agent`. | (see each tool name below) |
+| **list_agent_models** | Management tool: returns catalog model names suitable for `summon_agent`, with optional query / vision / limit filters. | — |
+| **summon_agent** | Management tool: starts a new `subagent` conversation (inheriting the caller's workspace, working directory, and computer by default) and kicks off its first turn. | start agent, spawn |
+| **list_agents** | Management tool: lists manageable conversations (defaulting to the caller's workspace and direct children). | — |
+| **read_agent** | Management tool: reads a subagent's latest assistant **text** (never its tool history or reasoning) or its status. | — |
+| **send_agent_message** | Management tool: sends a message to a managed conversation — starts a new turn when idle, queues for mid-turn steering when active. | — |
+| **cancel_agent_message** | Management tool: cancels one queued message on a managed conversation. | — |
+| **open_agent** | Management tool: signals connected frontends to open/focus a managed conversation. | — |
 
 | **MCP** | Model Context Protocol — the JSON-RPC 2.0-over-stdio/HTTP protocol an `MCP server` speaks. Used as the adjective for the feature (the `mcp` extension). | — |
 | **MCP server** | A process/service speaking MCP that exposes Tools, Resources, and/or Prompts. Spawned (stdio) or connected (HTTP) by Dispatch acting as `MCP host`. Configured per-cwd via `.dispatch/mcp.json` or `opencode.json`'s `mcp` key. | MCP provider (that's a Dispatch provider) |
@@ -67,3 +78,8 @@
   resolved (renamed to `conversationId` across contracts + every consumer; see
   tasks.md Step 4). `tabId` is retained only in the "Aliases to avoid" column
   above so it is never reintroduced.
+- The agent-management feature introduced new confirmed terms — **subagent**,
+  **agent management**, **agent-management**, and the seven tool names — per the
+  human-confirmed decisions in `notes/agent-management-tools-plan.md` §21. The
+  aliases `child session`, `worker agent`, `spawned chat`, and `agent tab` map
+  back to **subagent** and must not be used.

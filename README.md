@@ -8,7 +8,7 @@ in a separate repo and talks to the same typed contracts over HTTP + a surface W
   the Vercel AI SDK for providers.
 - **Architecture:** `kernel → core extensions → standard extensions`. The kernel touches no I/O
   and names no concrete feature; effects live in extensions, injected through typed contracts.
-- **Tests:** 1453 vitest + bun:sqlite integration tests, zero internal mocks on pure-core packages.
+- **Tests:** 2268 vitest tests + 124 bun:sqlite integration tests, zero internal mocks on pure-core packages.
 
 ---
 
@@ -261,6 +261,7 @@ topologically at activation). Every extension also depends implicitly on the ker
 
 | Package | Description | Depends on |
 |---|---|---|
+| **agent-management** | Exposes the agent-management tool family for starting/managing **subagent** conversations (`list_agent_models`, `summon_agent`, `list_agents`, `read_agent`, `send_agent_message`, `cancel_agent_message`, `open_agent`) plus a typed `AgentManagementService`. The native-tools alternative to the `dispatch` CLI; the CLI remains the fallback/recovery surface. | conversation-store, credential-store, session-orchestrator |
 | **tool-read-file** | `read_file` tool with offset/limit pagination, directory listing, and workdir containment. | — |
 | **tool-shell** | `run_shell` tool — foreground, streamed output, process-group kill on abort/timeout. | — |
 | **tool-edit-file** | `edit_file` tool — exact-string replacement, `replaceAll` flag, workdir-contained. | — |
