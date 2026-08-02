@@ -1,7 +1,13 @@
 import type { ApiKeyCredentials, ModelInfo, ProviderContract } from "@dispatch/kernel";
 import type { FetchLike } from "@dispatch/trace-replay";
 import { describe, expect, it, vi } from "vitest";
-import { isVisionModelId, parseModelList } from "./listModels.js";
+import {
+  isVisionModelId,
+  listUmansModels,
+  parseModelList,
+  parseUmansModelInfo,
+  visionFromUmansCapability,
+} from "./listModels.js";
 import { createOpenAICompatProvider } from "./provider.js";
 
 function makeProvider(fetchFn: FetchLike, apiKey = "sk-test-1234567890abcdef"): ProviderContract {
@@ -81,6 +87,156 @@ describe("listModels — vision capability detection", () => {
       { id: "umans-glm-5.2", contextWindow: 405504 },
       { id: "umans-coder" },
     ]);
+  });
+});
+
+describe("listModels — vision capability mapping (visionFromUmansCapability)", () => {
+  it("maps true -> true", () => {
+    expect(visionFromUmansCapability(true)).toBe(true);
+  });
+
+  it("maps false -> false", () => {
+    expect(visionFromUmansCapability(false)).toBe(false);
+  });
+
+  it("maps 'via-handoff' -> false (native Chat-Completions image input is not supported)", () => {
+    expect(visionFromUmansCapability("via-handoff")).toBe(false);
+  });
+
+  it("maps undefined -> undefined (unknown — callers fall back to heuristic)", () => {
+    expect(visionFromUmansCapability(undefined)).toBeUndefined();
+  });
+});
+
+describe("listModels — Umans /models/info parsing (parseUmansModelInfo)", () => {
+  it("maps the real supports_vision values to ModelInfo.vision (true/false/via-handoff)", () => {
+    const result = parseUmansModelInfo({
+      "umans-kimi-k2.7": {
+        capabilities: { context_window: 262144, supports_vision: true },
+      },
+      "umans-coder": {
+        capabilities: { context_window: 262144, supports_vision: true },
+      },
+      "umans-flash": {
+        capabilities: { context_window: 262144, supports_vision: true },
+      },
+      "umans-glm-5.2": {
+        capabilities: { context_window: 405504, supports_vision: "via-handoff" },
+      },
+      "umans-deepseek-v4-flash-0731": {
+        capabilities: { context_window: 1048576, supports_vision: false },
+      },
+    });
+    expect(result).toEqual([
+      { id: "umans-kimi-k2.7", contextWindow: 262144, vision: true },
+      { id: "umans-coder", contextWindow: 262144, vision: true },
+      { id: "umans-flash", contextWindow: 262144, vision: true },
+      { id: "umans-glm-5.2", contextWindow: 405504, vision: false },
+      { id: "umans-deepseek-v4-flash-0731", contextWindow: 1048576, vision: false },
+    ]);
+  });
+
+  it("includes display_name when present", () => {
+    const result = parseUmansModelInfo({
+      "umans-coder": {
+        display_name: "Umans Coder",
+        capabilities: { context_window: 262144, supports_vision: true },
+      },
+    });
+    expect(result).toEqual([
+      { id: "umans-coder", displayName: "Umans Coder", contextWindow: 262144, vision: true },
+    ]);
+  });
+
+  it("omits vision when the capability field is absent (caller may use the name fallback)", () => {
+    const result = parseUmansModelInfo({
+      "umans-coder": { capabilities: { context_window: 262144 } },
+    });
+    expect(result).toEqual([{ id: "umans-coder", contextWindow: 262144 }]);
+  });
+
+  it("returns empty array for an empty response map", () => {
+    expect(parseUmansModelInfo({})).toEqual([]);
+  });
+});
+
+describe("listModels — Umans /models/info fetch (listUmansModels)", () => {
+  it("GETs /models/info with bearer key and maps capabilities -> ModelInfo[]", async () => {
+    const fetchFn = vi.fn(
+      () =>
+        jsonResponse({
+          "umans-kimi-k2.7": { capabilities: { context_window: 262144, supports_vision: true } },
+          "umans-glm-5.2": {
+            capabilities: { context_window: 405504, supports_vision: "via-handoff" },
+          },
+        }) as unknown as ReturnType<FetchLike>,
+    );
+
+    const models = await listUmansModels({
+      baseURL: "https://api.code.umans.ai/v1",
+      apiKey: "sk-test-1234567890abcdef",
+      providerId: "umans",
+      fetchFn,
+    });
+
+    expect(fetchFn).toHaveBeenCalledOnce();
+    const callArgs = fetchFn.mock.calls[0];
+    if (!callArgs) throw new Error("no call args");
+    const [url, init] = callArgs as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.code.umans.ai/v1/models/info");
+    expect(init.method).toBe("GET");
+    expect(init.headers).toEqual({ Authorization: "Bearer sk-test-1234567890abcdef" });
+
+    expect(models).toEqual([
+      { id: "umans-kimi-k2.7", contextWindow: 262144, vision: true },
+      { id: "umans-glm-5.2", contextWindow: 405504, vision: false },
+    ] as readonly ModelInfo[]);
+  });
+
+  it("throws on non-OK HTTP status with a clear message", async () => {
+    const fetchFn = vi.fn(
+      () =>
+        new Response("Forbidden", {
+          status: 403,
+          headers: { "Content-Type": "text/plain" },
+        }) as unknown as ReturnType<FetchLike>,
+    );
+    await expect(
+      listUmansModels({
+        baseURL: "https://api.code.umans.ai/v1",
+        apiKey: "sk-test",
+        providerId: "umans",
+        fetchFn,
+      }),
+    ).rejects.toThrow("listModels[umans]: HTTP 403 — Forbidden");
+  });
+
+  it("throws on network error with a clear message", async () => {
+    const fetchFn = vi.fn(() => {
+      throw new Error("connection refused");
+    }) as unknown as FetchLike;
+    await expect(
+      listUmansModels({
+        baseURL: "https://api.code.umans.ai/v1",
+        apiKey: "sk-test",
+        providerId: "umans",
+        fetchFn,
+      }),
+    ).rejects.toThrow("listModels[umans]: network error — connection refused");
+  });
+
+  it("throws when the response is not a model-info map keyed by model id", async () => {
+    const fetchFn = vi.fn(() => jsonResponse([{ id: "a" }]) as unknown as ReturnType<FetchLike>);
+    await expect(
+      listUmansModels({
+        baseURL: "https://api.code.umans.ai/v1",
+        apiKey: "sk-test",
+        providerId: "umans",
+        fetchFn,
+      }),
+    ).rejects.toThrow(
+      "listModels[umans]: unexpected response shape — expected a model-info map keyed by model id",
+    );
   });
 });
 

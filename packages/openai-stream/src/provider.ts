@@ -41,6 +41,15 @@ export interface CreateOpenAICompatProviderOpts {
     body: Record<string, unknown>,
     opts: ProviderStreamOptions,
   ) => Record<string, unknown>;
+  /**
+   * Optional custom model-list implementation, overriding the default
+   * OpenAI-compatible `/models` fetch. A provider extension supplies this to read
+   * a richer model-capability endpoint (e.g. the Umans provider reads
+   * `/models/info` for real `supports_vision`). When absent, the generic `/models`
+   * fetch (with the name-based vision fallback) is used — so other providers
+   * (openai-compat, longcat) keep their existing behavior unchanged.
+   */
+  readonly listModels?: () => Promise<readonly ModelInfo[]>;
 }
 
 export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts): ProviderContract {
@@ -65,12 +74,14 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
       streamOpts?: ProviderStreamOptions,
     ) => streamChat(streamConfig, messages, tools, streamOpts),
     listModels: (): Promise<readonly ModelInfo[]> =>
-      fetchModels({
-        baseURL,
-        apiKey,
-        providerId: opts.id,
-        ...(fetchFn !== undefined ? { fetchFn } : {}),
-      }),
+      opts.listModels !== undefined
+        ? opts.listModels()
+        : fetchModels({
+            baseURL,
+            apiKey,
+            providerId: opts.id,
+            ...(fetchFn !== undefined ? { fetchFn } : {}),
+          }),
     getUsage: (): Promise<ProviderUsage | undefined> =>
       fetchUsage({
         baseURL,

@@ -24,18 +24,68 @@ interface OpenAIModelListResponse {
 }
 
 /**
- * Whether a model id is vision-capable (can natively accept image input).
+ * The value of the Umans `/models/info` per-model `capabilities.supports_vision`
+ * field. `true`/`false` are the direct native-image capabilities; `"via-handoff"`
+ * means vision is only reachable through the Anthropic Messages endpoint server-
+ * side handoff, not direct Chat-Completions image input.
+ */
+export type UmansVisionCapability = boolean | "via-handoff" | undefined;
+
+/**
+ * The shape of a single entry in the Umans `/models/info` response. The response
+ * is a JSON object keyed by model id, each value carrying metadata plus a
+ * `capabilities` object that holds the runtime-relevant fields (`context_window`,
+ * `max_completion_tokens`, `supports_vision`).
+ */
+export interface UmansModelInfoEntry {
+  readonly name?: string;
+  readonly display_name?: string;
+  readonly capabilities?: {
+    readonly context_window?: number;
+    readonly max_completion_tokens?: number;
+    readonly supports_vision?: UmansVisionCapability;
+  };
+}
+
+/** The Umans `/models/info` response: a JSON object keyed by model id. */
+export type UmansModelInfoResponse = Readonly<Record<string, UmansModelInfoEntry>>;
+
+/**
+ * Map an Umans `supports_vision` capability value to the `ModelInfo.vision`
+ * boolean the orchestrator/vision-handoff consume.
  *
- * The OpenAI-compatible `/models` endpoint does not reliably report image
- * capabilities, so this is a hardcoded heuristic by model id: the Umans Kimi
- * (`umans-kimi-k2.7`) and Umans Qwen (`umans-qwen3.6-35b-a3b`) models are
- * vision-capable; all others are treated as non-vision. This is the single
- * source of truth — the orchestrator's vision handoff and the `consult_vision`
- * tool both consult the `ModelInfo.vision` flag this sets, so adding a model
- * here enables vision everywhere. Pure: id → boolean, no I/O.
+ * - `true`  → `true`  (accepts native image input in the Chat-Completions channel).
+ * - `false` → `false` (no image input).
+ * - `"via-handoff"` → `false`. This value means vision is reachable ONLY through
+ *   the Anthropic Messages endpoint's server-side handoff (e.g. `umans-glm-5.2`),
+ *   NOT through direct Chat-Completions image input. The `ModelInfo.vision: true`
+ *   contract is specifically "image chunks are passed through to the provider
+ *   serialized to its image-content format" over the provider's own stream channel
+ *   — which the Umans provider (a Chat-Completions provider) cannot do for a
+ *   via-handoff model. Marking it `true` would route native image content at a
+ *   channel the model can't accept, breaking the pass-through. Marking it `false`
+ *   routes images through the vision handoff (`consult_vision`) to a genuinely
+ *   vision-native model (e.g. Kimi), which is the functioning path for these
+ *   models. This is the deliberate, documented choice.
+ * - `undefined` → `undefined` (capability unknown/absent; callers fall back to a
+ *   name heuristic or treat as non-vision).
+ */
+export function visionFromUmansCapability(capability: UmansVisionCapability): boolean | undefined {
+  if (capability === true) return true;
+  if (capability === false || capability === "via-handoff") return false;
+  return undefined;
+}
+
+/**
+ * Whether a model id is vision-capable (can natively accept image input), by a
+ * hardcoded name heuristic.
  *
- * (When an endpoint gains reliable vision reporting, this can be replaced with
- * a real capability check without changing callers.)
+ * This is a FALLBACK used ONLY where a provider's live endpoint reports no
+ * capability field (e.g. the generic OpenAI-compatible `/models` list, which
+ * has no image-capability signal). The Umans provider itself now reads the real
+ * `/v1/models/info` endpoint (`listUmansModels`) and never relies on this guess
+ * — its `supports_vision` field is authoritative. Matches the Umans Kimi
+ * (`umans-kimi-*`) and Umans Qwen (`umans-qwen*`) families. Pure: id → boolean.
  */
 export function isVisionModelId(id: string): boolean {
   const lower = id.toLowerCase();
@@ -59,6 +109,73 @@ export function parseModelList(data: readonly OpenAIModelEntry[]): readonly Mode
       ...(vision ? { vision } : {}),
     };
   });
+}
+
+/**
+ * Pure mapping: the Umans `/models/info` response (a JSON object keyed by model
+ * id) → ModelInfo[].
+ *
+ * Source of truth is the REAL capability metadata: `capabilities.supports_vision`
+ * drives `vision` (via {@link visionFromUmansCapability}), and
+ * `capabilities.context_window` drives `contextWindow`. Only entries present in
+ * the response are emitted (no hardcoded model list). Optionally includes the
+ * human `display_name` when present. Pure: response map → ModelInfo[], no I/O.
+ */
+export function parseUmansModelInfo(response: UmansModelInfoResponse): readonly ModelInfo[] {
+  return Object.entries(response).map(([id, entry]) => {
+    const contextWindow = entry.capabilities?.context_window;
+    const vision = visionFromUmansCapability(entry.capabilities?.supports_vision);
+    const displayName = entry.display_name;
+    return {
+      id,
+      ...(displayName !== undefined ? { displayName } : {}),
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+      ...(vision !== undefined ? { vision } : {}),
+    };
+  });
+}
+
+/**
+ * List Umans models by reading the real `/v1/models/info` endpoint (baseURL is
+ * `https://api.code.umans.ai/v1`), mapping each model's reported
+ * `capabilities.supports_vision` → `ModelInfo.vision` and its context window.
+ *
+ * Mirrors the Codex provider philosophy (read the live endpoint, no hardcoded
+ * fallback list): model ids rotate and a stale guess silently hands callers the
+ * wrong model. On failure this throws a labelled error (matching {@link listModels})
+ * so the caller surfaces it rather than silently degrading.
+ */
+export async function listUmansModels(config: ListModelsConfig): Promise<readonly ModelInfo[]> {
+  const effectiveFetch: FetchLike = config.fetchFn ?? fetch;
+  const url = `${config.baseURL}/models/info`;
+
+  let response: Response;
+  try {
+    response = await effectiveFetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+    });
+  } catch (err) {
+    throw new Error(
+      `listModels[${config.providerId}]: network error — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "unknown");
+    throw new Error(`listModels[${config.providerId}]: HTTP ${response.status} — ${text}`);
+  }
+
+  const body = (await response.json()) as unknown;
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new Error(
+      `listModels[${config.providerId}]: unexpected response shape — expected a model-info map keyed by model id`,
+    );
+  }
+
+  return parseUmansModelInfo(body as UmansModelInfoResponse);
 }
 
 export interface ListModelsConfig {
