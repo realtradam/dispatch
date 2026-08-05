@@ -318,8 +318,15 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
 
   /** Resolve the persisted workspace and emit the `conversationOpened` hook
    * (owned by session-orchestrator; imported as the typed event symbol). */
-  async function emitOpen(conversationId: string): Promise<string> {
-    const workspaceId = await store.getWorkspaceId(conversationId);
+  async function emitOpen(conversationId: string, knownWorkspaceId?: string): Promise<string> {
+    // Prefer the caller-supplied (already-resolved) workspace when provided.
+    // This avoids the race where a freshly-summoned conversation's workspace
+    // has not yet been persisted by startTurn's detached workspace setup —
+    // reading getWorkspaceId() at that instant returns the "default" fallback
+    // and broadcasts the wrong workspace, which stamps the frontend tab under
+    // "default". Existing/ordinary conversations pass no known workspace, so
+    // we still resolve from the store (correct for already-persisted metadata).
+    const workspaceId = knownWorkspaceId ?? (await store.getWorkspaceId(conversationId));
     deps.emit(conversationOpened, { conversationId, workspaceId });
     return workspaceId;
   }
@@ -482,8 +489,11 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     });
 
     // Open the new conversation in connected frontends (default true).
+    // Pass the already-resolved intended workspace so the conversation.open
+    // signal carries the correct workspace even before startTurn's detached
+    // workspace setup persists it (avoids the "tab lands in default" race).
     if (input.open !== false) {
-      await emitOpen(conversationId);
+      await emitOpen(conversationId, workspaceId);
     }
 
     const status = await getStatus(conversationId);
