@@ -5,9 +5,10 @@
 # arguments (or prompted interactively) and written directly to /etc/dispatch/env.
 #
 # Usage:
-#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..."
+#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..." --opencode-key "1=sk-..."
 #   sudo bin/sync-env                          # prompts for keys interactively
 #   sudo bin/sync-env --umans-key ""           # removes the umans key
+#   sudo bin/sync-env --opencode-key "1="      # removes numbered OpenCode key #1
 
 set -euo pipefail
 
@@ -28,6 +29,8 @@ fi
 # --- Parse arguments ---
 UMANS_KEY=""
 LONGCAT_KEY=""
+declare -a OPENCODE_NUMBERS=()
+declare -a OPENCODE_VALUES=()
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--umans-key)
@@ -46,9 +49,33 @@ while [[ $# -gt 0 ]]; do
 			LONGCAT_KEY="${1#--longcat-key=}"
 			shift
 			;;
+		--opencode-key)
+			# Value is "<number>=<key>". An empty "<number>=" removes that key.
+			NUM="${2%%=*}"
+			VAL="${2#*=}"
+			if [[ ! "$NUM" =~ ^[1-9][0-9]*$ ]]; then
+				echo "sync-env: invalid OpenCode number in '$2' (must be a positive integer)" >&2
+				exit 1
+			fi
+			OPENCODE_NUMBERS+=("$NUM")
+			OPENCODE_VALUES+=("$VAL")
+			shift 2
+			;;
+		--opencode-key=*)
+			PAIR="${1#--opencode-key=}"
+			NUM="${PAIR%%=*}"
+			VAL="${PAIR#*=}"
+			if [[ ! "$NUM" =~ ^[1-9][0-9]*$ ]]; then
+				echo "sync-env: invalid OpenCode number in '$PAIR' (must be a positive integer)" >&2
+				exit 1
+			fi
+			OPENCODE_NUMBERS+=("$NUM")
+			OPENCODE_VALUES+=("$VAL")
+			shift
+			;;
 		*)
 			echo "sync-env: unknown argument: $1" >&2
-			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"]" >&2
+			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--opencode-key \"1=sk-...\"]" >&2
 			exit 1
 			;;
 	esac
@@ -91,7 +118,37 @@ if [ -n "$LONGCAT_KEY" ]; then
 	echo "  LONGCAT_API_KEY=${LONGCAT_KEY:0:8}..." >&2
 fi
 
-# --- Delete the old OpenCode key (revoked — no longer used) ---
+# --- Update numbered OpenCode keys (OPENCODE_API_KEY_<n>) ---
+i=0
+for NUM in "${OPENCODE_NUMBERS[@]}"; do
+	VAL="${OPENCODE_VALUES[$i]}"
+	VAR="OPENCODE_API_KEY_${NUM}"
+	if [ -n "$VAL" ]; then
+		if grep -q "^$VAR=" "$ENV_FILE"; then
+			sed -i "s|^$VAR=.*|$VAR=$VAL|" "$ENV_FILE"
+		else
+			echo "$VAR=$VAL" >> "$ENV_FILE"
+		fi
+		echo "  $VAR=${VAL:0:8}..." >&2
+	else
+		# Empty value → remove the numbered key.
+		sed -i "/^$VAR=/d" "$ENV_FILE"
+		echo "  removed $VAR" >&2
+	fi
+	i=$((i + 1))
+done
+
+# If any numbered OpenCode keys remain, make sure the shared defaults are present.
+if grep -q "^OPENCODE_API_KEY_" "$ENV_FILE"; then
+	if ! grep -q "^DISPATCH_BASE_URL=" "$ENV_FILE"; then
+		echo "DISPATCH_BASE_URL=https://opencode.ai/zen/go/v1" >> "$ENV_FILE"
+	fi
+	if ! grep -q "^DISPATCH_MODEL=" "$ENV_FILE"; then
+		echo "DISPATCH_MODEL=deepseek-v4-flash" >> "$ENV_FILE"
+	fi
+fi
+
+# --- Delete the old OpenCode key (obsolete — no longer supported) ---
 sed -i "/^DISPATCH_API_KEY=/d" "$ENV_FILE"
 # Delete the backup key line
 sed -i "/^DISPATCH_API_KEY_OPENCODE2=/d" "$ENV_FILE"

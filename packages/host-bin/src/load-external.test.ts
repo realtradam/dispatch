@@ -23,20 +23,20 @@ describe("loadExternalExtensions", () => {
   });
 
   it("loads a real extension module by package name", async () => {
-    // auth-apikey is a bundled extension that exports `extension`; we use it as
-    // a stand-in for an external module to exercise the dynamic-import path.
-    const loaded = await loadExternalExtensions(["@dispatch/auth-apikey"], makeLogger());
+    // heartbeat is a bundled extension that exports `extension`; we use it as a
+    // stand-in for an external module to exercise the dynamic-import path.
+    const loaded = await loadExternalExtensions(["@dispatch/heartbeat"], makeLogger());
     expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.manifest.id).toBe("auth-apikey");
+    expect(loaded[0]?.manifest.id).toBe("heartbeat");
   });
 
   it("skips a specifier that cannot be imported without throwing", async () => {
     const loaded = await loadExternalExtensions(
-      ["./does-not-exist-xyz.js", "@dispatch/auth-apikey"],
+      ["./does-not-exist-xyz.js", "@dispatch/heartbeat"],
       makeLogger(),
     );
     // The bad one is skipped; the good one still loads.
-    expect(loaded.map((e) => e.manifest.id)).toEqual(["auth-apikey"]);
+    expect(loaded.map((e) => e.manifest.id)).toEqual(["heartbeat"]);
   });
 
   it("skips a module that exports no valid extension", async () => {

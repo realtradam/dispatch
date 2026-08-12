@@ -1106,7 +1106,7 @@ export interface StopHeartbeatRunResponse {
 /**
  * Response of `GET /concurrency/limits` — all providers with configured
  * concurrency limits. Each entry pairs a provider id (e.g. "umans",
- * "openai-compat") with its maximum concurrent in-flight requests. Providers
+ * "opencode-1") with its maximum concurrent in-flight requests. Providers
  * not listed here have no limit (unlimited).
  */
 export interface ConcurrencyLimitsResponse {

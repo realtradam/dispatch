@@ -340,15 +340,16 @@ export function createApp(opts: CreateServerOptions): Hono {
 
   app.get("/models", async (c) => {
     try {
-      const models = await opts.credentialStore.listCatalog();
+      const entries = await opts.credentialStore.listCatalogDetailed();
+      const models = entries.map((e) => e.name);
       const modelInfo: Record<string, { contextWindow?: number; vision?: boolean }> = {};
-      for (const modelName of models) {
-        const info = await opts.credentialStore.getModelInfo(modelName);
-        if (info?.contextWindow !== undefined || info?.vision === true) {
-          const entry: { contextWindow?: number; vision?: boolean } = {};
-          if (info?.contextWindow !== undefined) entry.contextWindow = info.contextWindow;
-          if (info?.vision === true) entry.vision = true;
-          modelInfo[modelName] = entry;
+      for (const entry of entries) {
+        if (entry.info.contextWindow !== undefined || entry.info.vision === true) {
+          const infoEntry: { contextWindow?: number; vision?: boolean } = {};
+          if (entry.info.contextWindow !== undefined)
+            infoEntry.contextWindow = entry.info.contextWindow;
+          if (entry.info.vision === true) infoEntry.vision = true;
+          modelInfo[entry.name] = infoEntry;
         }
       }
       const body: ModelsResponse = {

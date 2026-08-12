@@ -362,11 +362,14 @@ function createFakeCredentialStore(models: string[]): CredentialStore {
     resolve() {
       return undefined;
     },
-    async getModelInfo() {
-      return undefined;
+    async getModelInfo(name) {
+      return { id: name.split("/").pop() ?? name };
     },
     async listCatalog() {
       return models;
+    },
+    async listCatalogDetailed() {
+      return models.map((name) => ({ name, info: { id: name.split("/").pop() ?? name } }));
     },
   };
 }
@@ -380,6 +383,9 @@ function createThrowingCredentialStore(error: Error): CredentialStore {
       return undefined;
     },
     async listCatalog() {
+      throw error;
+    },
+    async listCatalogDetailed() {
       throw error;
     },
   };

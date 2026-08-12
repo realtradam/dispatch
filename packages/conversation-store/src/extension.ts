@@ -18,6 +18,18 @@ export const extension: Extension = {
     const storage = host.storage("conversation-store");
     const store = createConversationStore(storage, host.logger, undefined, process.cwd());
 
+    // One-time persisted-state migration: rewrite obsolete `opencode/<model>`
+    // per-conversation model values to the numbered `opencode-1/<model>`
+    // namespace. Idempotent (only touches `opencode/`-prefixed values), so a
+    // re-run is a no-op. Runtime code understands ONLY numbered names; no alias
+    // is retained.
+    const migrated = await store.migrateLegacyOpenCodeModels();
+    if (migrated > 0) {
+      host.logger.info(
+        `conversation-store: migrated ${migrated} legacy "opencode/" model selection(s) → "opencode-1/"`,
+      );
+    }
+
     const stale = await store.listConversations({ status: ["active"] });
     for (const m of stale) {
       await store.setConversationStatus(m.id, "idle");

@@ -1226,6 +1226,40 @@ describe("ConversationStore model", () => {
     expect(await store2.getModel("conv1")).toBe("umans/umans-glm-5.2");
   });
 
+  it("migrateLegacyOpenCodeModels rewrites opencode/<model> → opencode-1/<model>", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("conv1", "opencode/deepseek-v4-flash");
+    await store.setModel("conv2", "opencode/nested/model");
+    // A numbered value (or any non-legacy value) must be untouched.
+    await store.setModel("conv3", "opencode-1/deepseek-v4-flash");
+    await store.setModel("conv4", "umans/umans-glm-5.2");
+
+    const migrated = await store.migrateLegacyOpenCodeModels();
+    expect(migrated).toBe(2);
+    expect(await store.getModel("conv1")).toBe("opencode-1/deepseek-v4-flash");
+    expect(await store.getModel("conv2")).toBe("opencode-1/nested/model");
+    expect(await store.getModel("conv3")).toBe("opencode-1/deepseek-v4-flash");
+    expect(await store.getModel("conv4")).toBe("umans/umans-glm-5.2");
+  });
+
+  it("migrateLegacyOpenCodeModels is idempotent (no legacy values left to rewrite)", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("conv1", "opencode/gpt");
+    await store.migrateLegacyOpenCodeModels();
+    expect(await store.getModel("conv1")).toBe("opencode-1/gpt");
+
+    // Second run is a no-op.
+    expect(await store.migrateLegacyOpenCodeModels()).toBe(0);
+    expect(await store.getModel("conv1")).toBe("opencode-1/gpt");
+  });
+
+  it("migrateLegacyOpenCodeModels returns 0 when nothing old exists", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("conv1", "umans/umans-glm-5.2");
+    expect(await store.migrateLegacyOpenCodeModels()).toBe(0);
+    expect(await store.getModel("conv1")).toBe("umans/umans-glm-5.2");
+  });
+
   it("model keys do not collide with chunk/cwd/metrics/reasoning-effort key spaces", async () => {
     const store = createConversationStore(storage);
     const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };

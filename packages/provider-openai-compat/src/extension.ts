@@ -1,51 +1,63 @@
-import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
+import type { ApiKeyCredentials, Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { createOpenAICompatProvider } from "@dispatch/openai-stream";
+import type { OpenCodeNumberedCredential } from "./opencode-config.js";
 
 export const manifest: Manifest = {
   id: "provider-openai-compat",
   name: "OpenAI-Compatible Provider",
   version: "0.0.0",
   apiVersion: "^0.1.0",
-  dependsOn: ["auth-apikey"],
   trust: "bundled",
   activation: "eager",
   capabilities: { network: true },
-  contributes: { providers: ["openai-compat"] },
+  contributes: { providers: ["opencode"] },
 };
 
+/**
+ * Configuration key under which host-bin exposes the parsed numbered OpenCode
+ * credentials to this extension. The value is an array of
+ * {@link OpenCodeNumberedCredential} sorted numerically ascending, each with
+ * its OWN apiKey/baseURL/model. Absent/empty → no OpenCode providers register
+ * (OpenCode simply unavailable).
+ */
+export const OPENCODE_CREDENTIALS_CONFIG_KEY = "opencode.credentials";
+
 export async function activate(host: HostAPI): Promise<void> {
-  const auth = host.getAuthProvider("apikey");
-  if (!auth) {
-    host.logger.warn(
-      "provider-openai-compat: auth-apikey extension not available. Provider not registered.",
+  const creds = host.config.get<OpenCodeNumberedCredential[] | undefined>(
+    OPENCODE_CREDENTIALS_CONFIG_KEY,
+  );
+
+  if (creds === undefined || creds.length === 0) {
+    host.logger.info(
+      "provider-openai-compat: no numbered OpenCode credentials configured. OpenCode provider not registered.",
     );
     return;
   }
 
-  const creds = await auth.resolve();
-  if (!creds) {
-    host.logger.warn(
-      "provider-openai-compat: no credentials resolved from auth-apikey. Provider not registered.",
+  let registered = 0;
+  for (const entry of creds) {
+    const id = `opencode-${entry.number}`;
+    const credentials: ApiKeyCredentials = {
+      type: "api-key",
+      apiKey: entry.apiKey,
+      baseURL: entry.baseURL,
+    };
+    const provider = createOpenAICompatProvider({
+      credentials,
+      model: entry.model,
+      id,
+    });
+    host.defineProvider(provider);
+    registered++;
+    // Log only the NUMBER + model — never the secret key.
+    host.logger.info(
+      `provider-openai-compat: registered numbered OpenCode provider "${id}" (model=${entry.model})`,
     );
-    return;
   }
 
-  if (creds.type !== "api-key") {
-    host.logger.warn(
-      `provider-openai-compat: expected api-key credentials but got "${creds.type}". Provider not registered.`,
-    );
-    return;
-  }
-
-  const model = host.config.get<string>("provider.openai-compat.model") ?? "deepseek-v4-flash";
-
-  const provider = createOpenAICompatProvider({
-    credentials: creds,
-    model,
-    id: "openai-compat",
-  });
-  host.defineProvider(provider);
-  host.logger.info(`provider-openai-compat: registered (model=${model})`);
+  host.logger.info(
+    `provider-openai-compat: registered ${registered} numbered OpenCode provider(s)`,
+  );
 }
 
 export const extension: Extension = {

@@ -14,7 +14,11 @@ function fakeProvider(
 }
 
 describe("createCredentialStore", () => {
-  const credentials = [{ name: "opencode", providerId: "openai-compat" }];
+  // Numbered OpenCode scheme: a credential + provider per number.
+  const credentials = [
+    { name: "opencode-1", providerId: "opencode-1" },
+    { name: "opencode-2", providerId: "opencode-2" },
+  ];
   const providers = new Map<string, ProviderContract>();
 
   const store = createCredentialStore({
@@ -23,15 +27,28 @@ describe("createCredentialStore", () => {
   });
 
   describe("resolve", () => {
-    it("resolves a simple model name", () => {
-      providers.set("openai-compat", fakeProvider("openai-compat"));
+    it("resolves a numbered model name to its matching numbered provider", () => {
+      providers.set("opencode-1", fakeProvider("opencode-1"));
+      const result = store.resolve("opencode-1/deepseek-v4-flash");
+      expect(result).toEqual({ providerId: "opencode-1", model: "deepseek-v4-flash" });
+    });
+
+    it("resolves #2 to a DIFFERENT provider than #1 (per-key isolation)", () => {
+      providers.set("opencode-2", fakeProvider("opencode-2"));
+      const r1 = store.resolve("opencode-1/a");
+      const r2 = store.resolve("opencode-2/b");
+      expect(r1?.providerId).toBe("opencode-1");
+      expect(r2?.providerId).toBe("opencode-2");
+    });
+
+    it("does NOT resolve the obsolete opencode/<model> namespace (no opencode credential)", () => {
       const result = store.resolve("opencode/deepseek-v4-flash");
-      expect(result).toEqual({ providerId: "openai-compat", model: "deepseek-v4-flash" });
+      expect(result).toBeUndefined();
     });
 
     it("resolves a model name with slashes", () => {
-      const result = store.resolve("opencode/a/b");
-      expect(result).toEqual({ providerId: "openai-compat", model: "a/b" });
+      const result = store.resolve("opencode-1/a/b");
+      expect(result).toEqual({ providerId: "opencode-1", model: "a/b" });
     });
 
     it("returns undefined for unknown credential name", () => {
@@ -45,37 +62,81 @@ describe("createCredentialStore", () => {
     });
 
     it("returns undefined for empty model segment", () => {
-      const result = store.resolve("opencode/");
+      const result = store.resolve("opencode-1/");
       expect(result).toBeUndefined();
     });
   });
 
   describe("listCatalog", () => {
-    it("lists models from providers with listModels", async () => {
+    it("lists numbered models from providers with listModels", async () => {
       providers.set(
-        "openai-compat",
-        fakeProvider("openai-compat", async () => [{ id: "m1" }, { id: "m2" }]),
+        "opencode-1",
+        fakeProvider("opencode-1", async () => [{ id: "m1" }, { id: "m2" }]),
+      );
+      providers.set(
+        "opencode-2",
+        fakeProvider("opencode-2", async () => [{ id: "n1" }]),
       );
 
       const catalog = await store.listCatalog();
-      expect(catalog).toEqual(["opencode/m1", "opencode/m2"]);
+      expect(catalog.sort()).toEqual(["opencode-1/m1", "opencode-1/m2", "opencode-2/n1"]);
     });
 
     it("skips credentials whose provider has no listModels", async () => {
-      providers.set("openai-compat", fakeProvider("openai-compat"));
-
+      providers.set("opencode-1", fakeProvider("opencode-1"));
       const catalog = await store.listCatalog();
-      expect(catalog).toEqual([]);
+      expect(catalog).toEqual(["opencode-2/n1"]);
     });
 
     it("skips credentials whose provider is missing", async () => {
       const emptyStore = createCredentialStore({
-        credentials: [{ name: "missing", providerId: "nonexistent" }],
+        credentials: [{ name: "opencode-9", providerId: "opencode-9" }],
         getProvider: () => undefined,
       });
-
       const catalog = await emptyStore.listCatalog();
       expect(catalog).toEqual([]);
+    });
+  });
+
+  describe("listCatalogDetailed", () => {
+    it("returns names + metadata in ONE pass (calls listModels once per provider)", async () => {
+      let calls = 0;
+      const localProviders = new Map<string, ProviderContract>();
+      localProviders.set(
+        "opencode-1",
+        fakeProvider("opencode-1", async () => {
+          calls++;
+          return [
+            { id: "m1", displayName: "Model One", contextWindow: 64000, vision: true },
+            { id: "m2" },
+          ];
+        }),
+      );
+      const localStore = createCredentialStore({
+        credentials: [{ name: "opencode-1", providerId: "opencode-1" }],
+        getProvider: (id) => localProviders.get(id),
+      });
+
+      const entries = await localStore.listCatalogDetailed();
+      expect(calls).toBe(1); // single upstream list per provider — no duplicate
+      expect(entries).toEqual([
+        {
+          name: "opencode-1/m1",
+          info: { id: "m1", displayName: "Model One", contextWindow: 64000, vision: true },
+        },
+        { name: "opencode-1/m2", info: { id: "m2" } },
+      ]);
+    });
+  });
+
+  describe("getModelInfo", () => {
+    it("looks up info for a numbered model, calling listModels once", async () => {
+      providers.set(
+        "opencode-2",
+        fakeProvider("opencode-2", async () => [{ id: "n1", contextWindow: 128000 }]),
+      );
+      const info = await store.getModelInfo("opencode-2/n1");
+      expect(info?.contextWindow).toBe(128000);
     });
   });
 });

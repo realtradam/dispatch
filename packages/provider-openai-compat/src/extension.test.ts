@@ -1,99 +1,93 @@
-import type { ApiKeyCredentials, AuthContract, HostAPI } from "@dispatch/kernel";
+import type { HostAPI, Manifest, ProviderContract } from "@dispatch/kernel";
 import { describe, expect, it, vi } from "vitest";
-import { activate, manifest } from "./extension.js";
+import { activate, extension, manifest, OPENCODE_CREDENTIALS_CONFIG_KEY } from "./extension.js";
+import type { OpenCodeNumberedCredential } from "./opencode-config.js";
 
-function makeFakeHost(overrides: {
-  getAuthProvider?: (id: string) => AuthContract | undefined;
-  configGet?: (key: string) => unknown;
-}): { host: HostAPI; defineProvider: ReturnType<typeof vi.fn> } {
+function makeFakeHost(creds?: OpenCodeNumberedCredential[]): {
+  host: HostAPI;
+  defineProvider: ReturnType<typeof vi.fn>;
+  info: ReturnType<typeof vi.fn>;
+} {
   const defineProvider = vi.fn();
-  const warn = vi.fn();
   const info = vi.fn();
+  const warn = vi.fn();
   const host = {
     defineProvider,
-    config: { get: overrides.configGet ?? (() => undefined) },
+    config: {
+      get: (key: string) => (key === OPENCODE_CREDENTIALS_CONFIG_KEY ? creds : undefined),
+    },
     logger: { debug: vi.fn(), info, warn, error: vi.fn() },
-    getAuthProvider: overrides.getAuthProvider ?? (() => undefined),
   } as unknown as HostAPI;
-  return { host, defineProvider };
+  return { host, defineProvider, info };
 }
 
-describe("provider-openai-compat activation", () => {
-  it("registers provider when auth resolves ApiKeyCredentials", async () => {
-    const fakeCreds: ApiKeyCredentials = { type: "api-key", apiKey: "sk-test" };
-    const fakeAuth: AuthContract = {
-      id: "apikey",
-      resolve: async () => fakeCreds,
-    };
-
-    const { host, defineProvider } = makeFakeHost({
-      getAuthProvider: (id) => (id === "apikey" ? fakeAuth : undefined),
-    });
+describe("provider-openai-compat activation (numbered OpenCode)", () => {
+  it("registers one provider per numbered credential with id opencode-<N>", async () => {
+    const creds: OpenCodeNumberedCredential[] = [
+      { number: 1, apiKey: "sk-1", baseURL: "https://oc/v1", model: "m1" },
+      { number: 2, apiKey: "sk-2", baseURL: "https://oc/v1", model: "m2" },
+    ];
+    const { host, defineProvider } = makeFakeHost(creds);
 
     await activate(host);
 
-    expect(defineProvider).toHaveBeenCalledTimes(1);
-    expect(defineProvider.mock.calls[0]?.[0]?.id).toBe("openai-compat");
+    expect(defineProvider).toHaveBeenCalledTimes(2);
+    const ids = defineProvider.mock.calls.map((c) => (c[0] as ProviderContract).id);
+    expect(ids).toEqual(["opencode-1", "opencode-2"]);
   });
 
-  it("does not register provider when getAuthProvider returns undefined", async () => {
-    const { host, defineProvider } = makeFakeHost({
-      getAuthProvider: () => undefined,
-    });
-
+  it("does not register providers when no numbered credentials are configured", async () => {
+    const { host, defineProvider } = makeFakeHost(undefined);
     await activate(host);
-
     expect(defineProvider).not.toHaveBeenCalled();
   });
 
-  it("does not register provider when resolve returns null", async () => {
-    const fakeAuth: AuthContract = {
-      id: "apikey",
-      resolve: async () => null,
-    };
-
-    const { host, defineProvider } = makeFakeHost({
-      getAuthProvider: (id) => (id === "apikey" ? fakeAuth : undefined),
-    });
-
+  it("does not register providers when the numbered list is empty", async () => {
+    const { host, defineProvider } = makeFakeHost([]);
     await activate(host);
-
     expect(defineProvider).not.toHaveBeenCalled();
   });
 
-  it("does not register provider when credentials are not api-key type", async () => {
-    const fakeAuth: AuthContract = {
-      id: "apikey",
-      resolve: async () => ({ type: "bearer-token", token: "tok-123" }),
-    };
-
-    const { host, defineProvider } = makeFakeHost({
-      getAuthProvider: (id) => (id === "apikey" ? fakeAuth : undefined),
-    });
-
+  it("gives each numbered provider its own key (no cross-key sharing)", async () => {
+    const creds: OpenCodeNumberedCredential[] = [
+      { number: 1, apiKey: "sk-key-1", baseURL: "https://oc/v1", model: "m1" },
+      { number: 2, apiKey: "sk-key-2", baseURL: "https://oc/v1", model: "m2" },
+    ];
+    const { host, defineProvider } = makeFakeHost(creds);
     await activate(host);
 
-    expect(defineProvider).not.toHaveBeenCalled();
+    const p1 = defineProvider.mock.calls[0]?.[0] as ProviderContract;
+    const p2 = defineProvider.mock.calls[1]?.[0] as ProviderContract;
+    expect(p1.id).toBe("opencode-1");
+    expect(p2.id).toBe("opencode-2");
+    // The provider contract carries stream/listModels/getUsage closures bound to
+    // each number's own key; distinct ids are proof of distinct instances.
+    expect(p1.stream).not.toBe(p2.stream);
+    expect(p1.listModels).not.toBe(p2.listModels);
+    expect(p1.getUsage).not.toBe(p2.getUsage);
   });
 
-  it("uses default model when config returns undefined", async () => {
-    const fakeCreds: ApiKeyCredentials = { type: "api-key", apiKey: "sk-test" };
-    const fakeAuth: AuthContract = {
-      id: "apikey",
-      resolve: async () => fakeCreds,
-    };
-
-    const { host, defineProvider } = makeFakeHost({
-      getAuthProvider: (id) => (id === "apikey" ? fakeAuth : undefined),
-      configGet: () => undefined,
-    });
-
+  it("does not log the secret key", async () => {
+    const creds: OpenCodeNumberedCredential[] = [
+      { number: 7, apiKey: "TOP-SECRET-KEY", baseURL: "https://oc/v1", model: "m7" },
+    ];
+    const { host, info } = makeFakeHost(creds);
     await activate(host);
-
-    expect(defineProvider).toHaveBeenCalledTimes(1);
+    const logged = info.mock.calls.map((c) => JSON.stringify(c)).join(" ");
+    expect(logged).not.toContain("TOP-SECRET-KEY");
+    expect(logged).toContain("opencode-7");
   });
 
-  it("declares dependsOn auth-apikey", () => {
-    expect(manifest.dependsOn).toEqual(["auth-apikey"]);
+  it("declares contributes providers = ['opencode'] (obsolete openai-compat namespace gone)", () => {
+    expect(manifest.contributes?.providers).toEqual(["opencode"]);
+  });
+
+  it("no longer depends on auth-apikey", () => {
+    expect(manifest.dependsOn).toBeUndefined();
+  });
+
+  it("exports the extension object", () => {
+    expect(extension).toBeDefined();
+    expect((extension.manifest as Manifest).id).toBe("provider-openai-compat");
   });
 });

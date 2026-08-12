@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { extension as agentManagementExt } from "@dispatch/agent-management";
-import { extension as authApikeyExt } from "@dispatch/auth-apikey";
 import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
 import { createCredentialStoreExtension } from "@dispatch/credential-store";
@@ -29,7 +28,10 @@ import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
 import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
-import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
+import {
+  parseNumberedOpenCodeEnv,
+  extension as providerOpenaiCompatExt,
+} from "@dispatch/provider-openai-compat";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import {
   type MemorySample,
@@ -206,15 +208,43 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     ...runtimeExtensions.filter((e) => !seen.has(e.manifest.id)),
   ];
 
-  // Assemble the credential list. The `opencode` credential (OpenAI-compatible
-  // provider) only registers when DISPATCH_API_KEY is set. A `claude` credential
+  // Assemble the credential list. Numbered OpenCode credentials each register a
+  // DISTINCT credential (and provider) named `opencode-<N>` → providerId
+  // `opencode-<N>`. The old single `opencode` credential and the legacy
+  // DISPATCH_API_KEY openai-compat path are gone entirely. A `claude` credential
   // is added when an external Anthropic provider is loaded, and a `codex`
   // credential when an external OpenAI (Codex subscription) provider is loaded.
   const credentials: { name: string; providerId: string }[] = [];
 
-  if (process.env.DISPATCH_API_KEY) {
-    credentials.push({ name: "opencode", providerId: "openai-compat" });
-    logger.info(`Registered credential "opencode" → openai-compat provider`);
+  // Parse numbered OpenCode credentials from the environment (never log values).
+  const numberedOpenCode = parseNumberedOpenCodeEnv(
+    process.env as Readonly<Record<string, string | undefined>>,
+    {
+      ...(process.env.DISPATCH_BASE_URL !== undefined
+        ? { baseURL: process.env.DISPATCH_BASE_URL }
+        : {}),
+      ...(process.env.DISPATCH_MODEL !== undefined ? { model: process.env.DISPATCH_MODEL } : {}),
+    },
+  );
+  for (const entry of numberedOpenCode.credentials) {
+    const name = `opencode-${entry.number}`;
+    credentials.push({ name, providerId: name });
+    logger.info(`Registered numbered credential "${name}" → opencode provider #${entry.number}`);
+  }
+  if (numberedOpenCode.credentials.length === 0) {
+    logger.info(
+      "OpenCode provider: no numbered OPENCODE_API_KEY_<n> configured — OpenCode unavailable",
+    );
+  }
+  if (numberedOpenCode.diagnostics.length > 0) {
+    // Surface validation findings WITHOUT exposing the secret values.
+    for (const d of numberedOpenCode.diagnostics) {
+      logger.warn(`OpenCode config: skipped malformed entry ${d.key}`, {
+        key: d.key,
+        issue: d.issue,
+        ...(d.duplicateOf !== undefined ? { duplicateOf: d.duplicateOf } : {}),
+      });
+    }
   }
 
   // The umans credential is always listed (it's the model-catalog index); the
@@ -247,11 +277,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
 
   const extensions: Extension[] = [
     ...CORE_EXTENSIONS,
-    // auth-apikey + provider-openai-compat only load when DISPATCH_API_KEY is
-    // set (opencode provider). provider-openai-compat declares
-    // `dependsOn: ["auth-apikey"]`, so the two must load together — loading the
-    // provider without auth-apikey makes the activation DAG throw.
-    ...(process.env.DISPATCH_API_KEY ? [authApikeyExt, providerOpenaiCompatExt] : []),
+    // provider-openai-compat registers one numbered OpenCode provider per
+    // OPENCODE_API_KEY_<n>. It is always loaded — when no numbered credentials
+    // are configured it self-degrades (registers nothing; OpenCode unavailable).
+    providerOpenaiCompatExt,
     createCredentialStoreExtension({ credentials }),
     // vision-handoff activates AFTER credential-store (it resolves the
     // credential-store service at activate time to find vision-capable models).

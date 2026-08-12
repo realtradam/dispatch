@@ -10,6 +10,14 @@ export interface ResolvedModel {
   readonly model: string;
 }
 
+/** A fully-qualified `<credentialName>/<model>` entry plus its metadata. */
+export interface CatalogEntry {
+  /** Fully-qualified model name, e.g. `opencode-1/deepseek-v4-flash`. */
+  readonly name: string;
+  /** The provider's {@link ModelInfo}. */
+  readonly info: ModelInfo;
+}
+
 export interface CredentialStore {
   /**
    * Split a model name on the FIRST "/": name=before, model=after (model may contain "/").
@@ -26,6 +34,18 @@ export interface CredentialStore {
   listCatalog(): Promise<readonly string[]>;
 
   /**
+   * The model catalog WITH per-model metadata, resolved in ONE pass: for each
+   * credential, the provider's `listModels` is called exactly once and each
+   * model's {@link ModelInfo} is carried alongside its fully-qualified name.
+   *
+   * This is the single-pass primitive a catalog endpoint (`GET /models`) should
+   * use. Consumers that call `listCatalog()` then `getModelInfo()` per entry
+   * would re-invoke the provider's upstream model-list per model — that
+   * duplicate is exactly what this avoids.
+   */
+  listCatalogDetailed(): Promise<readonly CatalogEntry[]>;
+
+  /**
    * Returns the full `ModelInfo` for a `<credentialName>/<model>` string, or
    * undefined if unknown. Caches the result of `listModels` per credential.
    * Used to look up `contextWindow` for auto-compaction.
@@ -36,6 +56,31 @@ export interface CredentialStore {
 export interface CredentialStoreDeps {
   readonly credentials: readonly Credential[];
   readonly getProvider: (id: string) => ProviderContract | undefined;
+}
+
+/**
+ * Resolve the full catalog with metadata in ONE pass. For each credential we
+ * invoke its provider's `listModels` exactly once, emitting every model under
+ * the credential's fully-qualified namespace with its {@link ModelInfo}. This
+ * is the shared primitive behind `listCatalog` (names only) and
+ * `listCatalogDetailed` (names + info), so callers never double-fetch the
+ * upstream model list.
+ */
+async function listCatalogDetailedInternal(
+  deps: CredentialStoreDeps,
+): Promise<readonly CatalogEntry[]> {
+  const entries: CatalogEntry[] = [];
+  for (const credential of deps.credentials) {
+    const provider = deps.getProvider(credential.providerId);
+    if (!provider?.listModels) {
+      continue;
+    }
+    const models = await provider.listModels();
+    for (const model of models) {
+      entries.push({ name: `${credential.name}/${model.id}`, info: model });
+    }
+  }
+  return entries;
 }
 
 export function createCredentialStore(deps: CredentialStoreDeps): CredentialStore {
@@ -67,21 +112,12 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
     },
 
     async listCatalog(): Promise<readonly string[]> {
-      const results: string[] = [];
+      const entries = await listCatalogDetailedInternal(deps);
+      return entries.map((e) => e.name);
+    },
 
-      for (const credential of deps.credentials) {
-        const provider = deps.getProvider(credential.providerId);
-        if (!provider?.listModels) {
-          continue;
-        }
-
-        const models = await provider.listModels();
-        for (const model of models) {
-          results.push(`${credential.name}/${model.id}`);
-        }
-      }
-
-      return results;
+    async listCatalogDetailed(): Promise<readonly CatalogEntry[]> {
+      return listCatalogDetailedInternal(deps);
     },
 
     async getModelInfo(modelName: string): Promise<ModelInfo | undefined> {

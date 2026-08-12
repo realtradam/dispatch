@@ -135,6 +135,9 @@ function fakeCredentialStore(): CredentialStore {
     async listCatalog() {
       return [];
     },
+    async listCatalogDetailed() {
+      return [];
+    },
   };
 }
 

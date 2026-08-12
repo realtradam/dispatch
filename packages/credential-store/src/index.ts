@@ -1,5 +1,6 @@
 export { createCredentialStoreExtension, manifest } from "./extension.js";
 export type {
+  CatalogEntry,
   Credential,
   CredentialStore,
   CredentialStoreDeps,

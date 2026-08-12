@@ -145,7 +145,7 @@ export interface ModelInfo {
  * concrete LLM API is behind it.
  */
 export interface ProviderContract {
-  /** Unique identifier for this provider (e.g. "anthropic", "openai-compat"). */
+  /** Unique identifier for this provider (e.g. "anthropic", "opencode-1"). */
   readonly id: string;
 
   /**

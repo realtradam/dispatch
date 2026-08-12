@@ -73,5 +73,6 @@ export function wrapProviderWithConcurrency(
       }
     },
     ...(provider.listModels !== undefined ? { listModels: provider.listModels } : {}),
+    ...(provider.getUsage !== undefined ? { getUsage: provider.getUsage } : {}),
   };
 }

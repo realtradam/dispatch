@@ -1,26 +1,33 @@
 import type { ConfigAccess } from "@dispatch/kernel";
+import {
+  OPENCODE_CREDENTIALS_CONFIG_KEY,
+  parseNumberedOpenCodeEnv,
+} from "@dispatch/provider-openai-compat";
 
 export function envToConfigMap(
   env: Readonly<Record<string, string | undefined>>,
 ): Record<string, unknown> {
   const map: Record<string, unknown> = {};
 
-  const apiKey = env.DISPATCH_API_KEY;
-  if (apiKey !== undefined) {
-    map["provider.openai-compat.apiKey"] = apiKey;
-  }
-
+  // Numbered OpenCode credentials. DISPATCH_BASE_URL / DISPATCH_MODEL (if
+  // present) are used as SHARED defaults for every numbered credential; the API
+  // keys come exclusively from OPENCODE_API_KEY_<n>. There is NO legacy
+  // DISPATCH_API_KEY path — it is entirely ignored.
   const baseURL = env.DISPATCH_BASE_URL;
-  if (baseURL !== undefined) {
-    map["provider.openai-compat.baseURL"] = baseURL;
-  }
-
   const model = env.DISPATCH_MODEL;
-  if (model !== undefined) {
-    map["provider.openai-compat.model"] = model;
+  const opencode = parseNumberedOpenCodeEnv(
+    env,
+    baseURL !== undefined || model !== undefined
+      ? {
+          ...(baseURL !== undefined ? { baseURL } : {}),
+          ...(model !== undefined ? { model } : {}),
+        }
+      : {},
+  );
+  if (opencode.credentials.length > 0) {
+    map[OPENCODE_CREDENTIALS_CONFIG_KEY] = opencode.credentials;
   }
 
-  // Optional settings consumed by external extensions (e.g. the Claude provider).
   const anthropicModel = env.DISPATCH_ANTHROPIC_MODEL;
   if (anthropicModel !== undefined) {
     map["provider.anthropic.model"] = anthropicModel;

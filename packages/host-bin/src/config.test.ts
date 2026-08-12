@@ -1,33 +1,51 @@
+import { OPENCODE_CREDENTIALS_CONFIG_KEY } from "@dispatch/provider-openai-compat";
 import { describe, expect, it } from "vitest";
 import { configMapToAccess, envToConfigMap } from "./config.js";
 
 describe("envToConfigMap", () => {
-  it("maps DISPATCH_API_KEY to provider.openai-compat.apiKey", () => {
-    const result = envToConfigMap({ DISPATCH_API_KEY: "sk-test-123" });
-    expect(result["provider.openai-compat.apiKey"]).toBe("sk-test-123");
-  });
-
-  it("maps DISPATCH_BASE_URL to provider.openai-compat.baseURL", () => {
-    const result = envToConfigMap({ DISPATCH_BASE_URL: "https://custom.api/v1" });
-    expect(result["provider.openai-compat.baseURL"]).toBe("https://custom.api/v1");
-  });
-
-  it("maps DISPATCH_MODEL to provider.openai-compat.model", () => {
-    const result = envToConfigMap({ DISPATCH_MODEL: "gpt-4" });
-    expect(result["provider.openai-compat.model"]).toBe("gpt-4");
-  });
-
-  it("maps all three env vars together", () => {
+  it("maps numbered OPENCODE_API_KEY_<n> into opencode.credentials sorted numerically", () => {
     const result = envToConfigMap({
-      DISPATCH_API_KEY: "key",
-      DISPATCH_BASE_URL: "https://api.example.com",
+      OPENCODE_API_KEY_2: "sk-2",
+      OPENCODE_API_KEY_10: "sk-10",
+      OPENCODE_API_KEY_1: "sk-1",
+    });
+    const creds = result[OPENCODE_CREDENTIALS_CONFIG_KEY] as Array<{
+      number: number;
+      apiKey: string;
+    }>;
+    expect(creds.map((c) => c.number)).toEqual([1, 2, 10]);
+    expect(creds.map((c) => c.apiKey)).toEqual(["sk-1", "sk-2", "sk-10"]);
+  });
+
+  it("uses DISPATCH_BASE_URL / DISPATCH_MODEL as shared defaults for numbered creds", () => {
+    const result = envToConfigMap({
+      DISPATCH_BASE_URL: "https://custom.example/v1",
       DISPATCH_MODEL: "my-model",
+      OPENCODE_API_KEY_1: "sk-1",
     });
-    expect(result).toEqual({
-      "provider.openai-compat.apiKey": "key",
-      "provider.openai-compat.baseURL": "https://api.example.com",
-      "provider.openai-compat.model": "my-model",
+    const creds = result[OPENCODE_CREDENTIALS_CONFIG_KEY] as Array<{
+      baseURL: string;
+      model: string;
+    }>;
+    expect(creds[0]?.baseURL).toBe("https://custom.example/v1");
+    expect(creds[0]?.model).toBe("my-model");
+  });
+
+  it("does NOT set opencode.credentials when no numbered keys are present", () => {
+    const result = envToConfigMap({ HOME: "/root", DISPATCH_API_KEY: "sk-legacy" });
+    expect(result[OPENCODE_CREDENTIALS_CONFIG_KEY]).toBeUndefined();
+  });
+
+  it("completely ignores the legacy DISPATCH_API_KEY path", () => {
+    const result = envToConfigMap({
+      DISPATCH_API_KEY: "sk-legacy",
+      DISPATCH_BASE_URL: "https://oc/v1",
+      DISPATCH_MODEL: "deepseek-v4-flash",
     });
+    expect(result["provider.openai-compat.apiKey"]).toBeUndefined();
+    expect(result["provider.openai-compat.baseURL"]).toBeUndefined();
+    expect(result["provider.openai-compat.model"]).toBeUndefined();
+    expect(result[OPENCODE_CREDENTIALS_CONFIG_KEY]).toBeUndefined();
   });
 
   it("maps DISPATCH_OPENAI_MODEL to provider.openai.model", () => {
@@ -56,23 +74,6 @@ describe("envToConfigMap", () => {
     expect(result).toEqual({});
   });
 
-  it("skips undefined env vars", () => {
-    const result = envToConfigMap({ DISPATCH_API_KEY: undefined });
-    expect(result).toEqual({});
-  });
-
-  it("includes only set vars when some are missing", () => {
-    const result = envToConfigMap({
-      DISPATCH_API_KEY: "key",
-      DISPATCH_MODEL: undefined,
-    });
-    expect(result).toEqual({
-      "provider.openai-compat.apiKey": "key",
-    });
-    expect(result["provider.openai-compat.baseURL"]).toBeUndefined();
-    expect(result["provider.openai-compat.model"]).toBeUndefined();
-  });
-
   it("maps SURFACE_WS_PORT to surfaceWsPort", () => {
     const result = envToConfigMap({ SURFACE_WS_PORT: "24206" });
     expect(result.surfaceWsPort).toBe(24206);
@@ -96,8 +97,8 @@ describe("envToConfigMap", () => {
 
 describe("configMapToAccess", () => {
   it("returns value for existing key", () => {
-    const access = configMapToAccess({ "provider.openai-compat.apiKey": "sk-123" });
-    expect(access.get("provider.openai-compat.apiKey")).toBe("sk-123");
+    const access = configMapToAccess({ "opencode.credentials": [{ number: 1 }] });
+    expect(access.get("opencode.credentials")).toEqual([{ number: 1 }]);
   });
 
   it("returns undefined for missing key", () => {

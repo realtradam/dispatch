@@ -132,8 +132,8 @@ sudo systemctl enable dispatch
 
 if grep -q 'sk-\.\.\.' /etc/dispatch/env 2>/dev/null; then
 	echo ""
-	echo "[install] done — but DISPATCH_API_KEY is still the placeholder."
-	echo "  1. Edit /etc/dispatch/env and set your API key"
+	echo "[install] done — but an API key is still the placeholder."
+	echo "  1. Edit /etc/dispatch/env and set your API keys (e.g. OPENCODE_API_KEY_1, UMANS_API_KEY)"
 	echo "  2. sudo systemctl start dispatch"
 	echo "  3. journalctl -u dispatch -f"
 else

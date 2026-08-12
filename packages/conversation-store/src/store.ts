@@ -104,6 +104,17 @@ export interface ConversationStore {
    */
   readonly setModel: (conversationId: string, model: string) => Promise<void>;
   /**
+   * Idempotent one-time migration: rewrite any persisted `conv:<id>:model`
+   * value that uses the OBSOLETE `opencode/<model>` namespace to the numbered
+   * `opencode-1/<model>` namespace. Only exact `opencode/`-prefixed values are
+   * touched (nothing else), so a re-run is a no-op. Runtime code understands
+   * ONLY the numbered namespace — no alias or fallback is retained. Returns the
+   * number of persisted values rewritten. Pure mapping + storage I/O; never
+   * logs the models as secrets (model names are not secrets, but the rewrite is
+   * scoped strictly to the legacy prefix).
+   */
+  readonly migrateLegacyOpenCodeModels: () => Promise<number>;
+  /**
    * The persisted parent conversation id for a spawned/forked conversation, or
    * `null` if never set (a top-level conversation). The id of the PARENT
    * conversation that spawned this one.
@@ -929,6 +940,26 @@ export function createConversationStore(
       if (logger !== undefined) {
         logger.debug("model set", { conversationId });
       }
+    },
+
+    async migrateLegacyOpenCodeModels() {
+      // Enumerate every persisted `conv:<id>:model` key.
+      const legacyPrefix = "opencode/";
+      const modelSuffix = ":model";
+      const convKeys = await storage.keys("conv:");
+      let migrated = 0;
+      for (const key of convKeys) {
+        if (!key.endsWith(modelSuffix)) continue;
+        const raw = await storage.get(key);
+        if (raw === null) continue;
+        if (!raw.startsWith(legacyPrefix)) continue; // only the obsolete namespace
+        const model = raw.slice(legacyPrefix.length);
+        if (model.length === 0) continue;
+        // Migrate `opencode/<model>` → `opencode-1/<model>`.
+        await storage.set(key, `opencode-1/${model}`);
+        migrated++;
+      }
+      return migrated;
     },
 
     async getParentConversationId(conversationId) {

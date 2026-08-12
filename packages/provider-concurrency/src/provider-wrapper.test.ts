@@ -153,6 +153,29 @@ describe("wrapProviderWithConcurrency", () => {
     expect(models).toEqual([{ id: "model-1" }]);
   });
 
+  it("preserves the provider's getUsage method (usage gate must survive wrapping)", async () => {
+    const provider: ProviderContract = {
+      id: "usage-provider",
+      stream: async function* (): AsyncIterable<ProviderEvent> {
+        yield { type: "finish", reason: "stop" };
+      },
+      getUsage: async () => ({ concurrentSessions: 2 }),
+    };
+    const limiter = recordingLimiter();
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
+
+    expect(wrapped.getUsage).toBeDefined();
+    const usage = await wrapped.getUsage?.();
+    expect(usage).toEqual({ concurrentSessions: 2 });
+  });
+
+  it("does NOT define getUsage when the inner provider has none", async () => {
+    const provider = fakeProvider([{ type: "finish", reason: "stop" }]);
+    const limiter = recordingLimiter();
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
+    expect(wrapped.getUsage).toBeUndefined();
+  });
+
   it("calls onQueued when the request blocks and onAcquired when the slot is granted", async () => {
     let queuedCalled = false;
     let acquiredCalled = false;
