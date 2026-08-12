@@ -66,7 +66,7 @@ they justify every rule below.
 ## 2. Summoning agents via the `dispatch` CLI
 
 The **`dispatch` CLI** is the summon mechanism; **`umans/umans-glm-5.2`** is the BUILDING
-agent (capable coder; browse alternatives with `dispatch models`). `$DISPATCH_MODEL` (`opencode/deepseek-v4-flash`) is the *app's own
+agent (capable coder; browse alternatives with `dispatch models`). `$DISPATCH_MODEL` (`opencode-1/deepseek-v4-flash`) is the *app's own
 runtime testbench*, never a builder. (The legacy `opencode run` and Task-tool paths are retired;
 `notes/opencode-agents.md` is historical.)
 
@@ -379,7 +379,7 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
                        transport-contract re-export it so clients consume the wire w/o the kernel runtime
     transport-contract/  types-only HTTP API contract (CLI + future web + server share it)
     ui-contract/         types-only surface ABI (frontend-agnostic; web + CLI render it)
-    storage-sqlite/ conversation-store/ auth-apikey/ provider-openai-compat/
+    storage-sqlite/ conversation-store/ provider-openai-compat/
     credential-store/  named credentials + model catalog (resolve / listCatalog)
     session-orchestrator/ transport-http/    (core extensions)
     tool-read-file/    standard tool extension (read_file; cwd-aware)

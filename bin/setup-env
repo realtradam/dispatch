@@ -4,6 +4,8 @@
 #
 # Keys are NEVER read from .env or stored in the repo. They are passed as
 # arguments or prompted interactively and written directly to /etc/dispatch/env.
+# Secret values are never echoed — not even their prefixes (only the provider /
+# credential NUMBER is reported).
 #
 # Usage:
 #   sudo bin/setup-env --umans-key "sk-..." --longcat-key "ak-..." \
@@ -11,13 +13,19 @@
 #   sudo bin/setup-env                          # prompts for keys interactively
 #
 # Numbered OpenCode keys: pass `--opencode-key <number>=<key>` per numbered
-# credential (numbers are stable identities; gaps allowed). Values are written
-# straight to the env file and never echoed in full.
+# credential (numbers are stable identities; gaps allowed). On a REFRESH the
+# existing numbered keys are PRESERVED unless you explicitly re-pass a number
+# (to replace its key) or pass an empty value for a number (to remove it):
+#   --opencode-key "1=sk-new"        # replace #1 with a new key
+#   --opencode-key "3="              # remove #3 (explicit removal)
+# Untouched numbered keys survive a refresh — a refresh NEVER silently deletes
+# numbered keys on its own.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
+ENV_FILE="/etc/dispatch/env"
 
 if [[ "$(id -u)" -ne 0 ]]; then
 	echo "setup-env: must run as root (use sudo)" >&2
@@ -29,8 +37,33 @@ mkdir -p /etc/dispatch /var/lib/dispatch /var/log/dispatch
 # --- Parse arguments ---
 UMANS_KEY=""
 LONGCAT_KEY=""
-declare -a OPENCODE_NUMBERS=()
-declare -a OPENCODE_VALUES=()
+# Maps a canonical OpenCode number → value. Empty value means "removal".
+declare -A OPENCODE_MAP=()
+# A helper that validates + records one <number>=<key> argument. Last-wins for
+# a repeated number (deterministic canonicalization of duplicates).
+add_opencode() {
+	local pair="$1"
+	local NUM VAL
+	if [[ "$pair" != *=* ]]; then
+		# Missing '=' separator — e.g. a bare number or key was passed.
+		echo "setup-env: --opencode-key expects '<number>=<key>' (got '${pair}' with no '=' separator)" >&2
+		exit 1
+	fi
+	NUM="${pair%%=*}"
+	VAL="${pair#*=}"
+	if [[ ! "$NUM" =~ ^[1-9][0-9]*$ ]]; then
+		echo "setup-env: invalid OpenCode number '${NUM}' (must be a canonical positive integer [1-9][0-9]*, no leading zero)" >&2
+		exit 1
+	fi
+	# Reject values that would corrupt the env file or downstream sed/awk
+	# processing. A team key never contains these.
+	if [[ "$VAL" == *$'\n'* || "$VAL" == *$'\r'* || "$VAL" == *=* || "$VAL" == *'|'* ]]; then
+		echo "setup-env: OpenCode key for number ${NUM} contains unsafe characters (newline/CR/'='/pipe) — refusing" >&2
+		exit 1
+	fi
+	OPENCODE_MAP["$NUM"]="$VAL"
+}
+
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--umans-key)
@@ -50,35 +83,11 @@ while [[ $# -gt 0 ]]; do
 			shift
 			;;
 		--opencode-key)
-			# Value is "<number>=<key>".
-			NUM="${2%%=*}"
-			VAL="${2#*=}"
-			if [[ ! "$NUM" =~ ^[1-9][0-9]*$ ]]; then
-				echo "setup-env: invalid OpenCode number in '$2' (must be a positive integer)" >&2
-				exit 1
-			fi
-			if [[ -z "$VAL" ]]; then
-				echo "setup-env: empty OpenCode key for number $NUM" >&2
-				exit 1
-			fi
-			OPENCODE_NUMBERS+=("$NUM")
-			OPENCODE_VALUES+=("$VAL")
+			add_opencode "$2"
 			shift 2
 			;;
 		--opencode-key=*)
-			PAIR="${1#--opencode-key=}"
-			NUM="${PAIR%%=*}"
-			VAL="${PAIR#*=}"
-			if [[ ! "$NUM" =~ ^[1-9][0-9]*$ ]]; then
-				echo "setup-env: invalid OpenCode number in '$PAIR' (must be a positive integer)" >&2
-				exit 1
-			fi
-			if [[ -z "$VAL" ]]; then
-				echo "setup-env: empty OpenCode key for number $NUM" >&2
-				exit 1
-			fi
-			OPENCODE_NUMBERS+=("$NUM")
-			OPENCODE_VALUES+=("$VAL")
+			add_opencode "${1#--opencode-key=}"
 			shift
 			;;
 		*)
@@ -115,18 +124,48 @@ chown -R "$REAL_USER:$REAL_GROUP" /var/lib/dispatch /var/log/dispatch
 # PATH that includes user-installed tools
 DISPATCH_PATH="/home/PII_REDACTED_USER_01/.local/bin:/home/PII_REDACTED_USER_01/.local/share/mise/shims:/home/PII_REDACTED_USER_01/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/bin"
 
-# Build the numbered OpenCode lines (each on its own numbered var).
+# --- Merge existing numbered OpenCode keys on a REFRESH (issue: never silently
+# --- delete numbered keys). Read the current env file's OPENCODE_API_KEY_<n>
+# --- lines and carry forward any number NOT explicitly provided on this run.
+# --- A number passed with an empty value is an explicit removal. A number
+# --- passed with a value is an explicit replacement. Everything else survives.
+if [ -f "$ENV_FILE" ]; then
+	while IFS= read -r line; do
+		[[ "$line" == OPENCODE_API_KEY_* ]] || continue
+		line="${line%%$'\r'*}" # strip any CR to keep numbers clean (env files are LF)
+		key="${line%%=*}"
+		val="${line#*=}"
+		num="${key#OPENCODE_API_KEY_}"
+		# Only carry forward CANONICAL numbered keys (ignore obsolete/malformed
+		# lines — boot would reject them anyway).
+		if [[ "$num" =~ ^[1-9][0-9]*$ ]]; then
+			if [[ -z "${OPENCODE_MAP[$num]+x}" ]]; then
+				OPENCODE_MAP["$num"]="$val"
+			fi
+		fi
+	done < "$ENV_FILE"
+fi
+
+# Sorted numeric list of every carry forward / provided key (stable output).
+mapfile -t OPENCODE_NUMBERS < <(
+	for n in "${!OPENCODE_MAP[@]}"; do
+		printf '%s\n' "$n"
+	done | sort -n
+)
+
+# Build the numbered OpenCode lines (each on its own numbered var). A key with
+# an EMPTY value means it was explicitly removed → emit nothing for it.
 OPENCODE_LINES=""
-i=0
 for NUM in "${OPENCODE_NUMBERS[@]}"; do
-	VAL="${OPENCODE_VALUES[$i]}"
-	OPENCODE_LINES="${OPENCODE_LINES}OPENCODE_API_KEY_${NUM}=${VAL}
+	VAL="${OPENCODE_MAP[$NUM]}"
+	if [ -n "$VAL" ]; then
+		OPENCODE_LINES="${OPENCODE_LINES}OPENCODE_API_KEY_${NUM}=${VAL}
 "
-	i=$((i + 1))
+	fi
 done
 
 # Write the system env file
-tee /etc/dispatch/env > /dev/null << EOF
+tee "$ENV_FILE" > /dev/null << EOF
 # /etc/dispatch/env — Dispatch server configuration (systemd EnvironmentFile)
 # Generated by bin/setup-env
 # Edit manually, then: systemctl restart dispatch
@@ -161,14 +200,14 @@ DISPATCH_JOURNAL=/var/log/dispatch/app.ndjson
 EOF
 
 # Set permissions: root:PII_REDACTED_USER_01 640 (PII_REDACTED_USER_01 can read for dev via bin/up)
-chown root:"$REAL_GROUP" /etc/dispatch/env
-chmod 640 /etc/dispatch/env
+chown root:"$REAL_GROUP" "$ENV_FILE"
+chmod 640 "$ENV_FILE"
 
-echo "[setup-env] wrote /etc/dispatch/env"
+echo "[setup-env] wrote $ENV_FILE"
 echo "  HOME=$REAL_HOME (skills: $REAL_HOME/.skills/)"
-${UMANS_KEY:+echo "  UMANS_API_KEY=${UMANS_KEY:0:8}..."}
-${LONGCAT_KEY:+echo "  LONGCAT_API_KEY=${LONGCAT_KEY:0:8}..."}
-if [ -n "$OPENCODE_LINES" ]; then
+${UMANS_KEY:+echo "  UMANS_API_KEY configured (value not echoed)"}
+${LONGCAT_KEY:+echo "  LONGCAT_API_KEY configured (value not echoed)"}
+if [ "${#OPENCODE_MAP[@]}" -gt 0 ]; then
 	echo "  OpenCode numbered keys: ${OPENCODE_NUMBERS[*]} (values not echoed)"
 fi
 echo "  Ports: HTTP=24991 WS=24990"

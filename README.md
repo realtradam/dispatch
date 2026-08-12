@@ -251,7 +251,7 @@ topologically at activation). Every extension also depends implicitly on the ker
 | Package | Description | Depends on |
 |---|---|---|
 | **storage-sqlite** | Concrete `bun:sqlite` backend behind the kernel's storage interface (a host bootstrap dependency; its `activate` is an intentional no-op). | — |
-| **auth-apikey** | Resolves an API key (the secret) from the environment into `ApiKeyCredentials` for a provider to consume. | — |
+| **provider-openai-compat** | Registers a numbered `opencode-<n>` provider per `OPENCODE_API_KEY_<n>` (streaming chat + `listModels` + `getUsage`); the OpenCode Go path. The obsolete `auth-apikey` package that resolved `DISPATCH_API_KEY` is removed entirely. | — |
 | **credential-store** | Owns named **credentials** and the **model catalog** — resolves a `<credential>/<model>` model name to a provider + model and aggregates `GET /models`. | — |
 | **provider-openai-compat** | Registers a numbered `opencode-<n>` provider per `OPENCODE_API_KEY_<n>` (streaming chat + `listModels` + `getUsage`); the OpenCode Go path. | — |
 | **conversation-store** | Append-only persistence of the turn/chunk log, with a pure `reconcile` that repairs any interrupted turn on load. | — |

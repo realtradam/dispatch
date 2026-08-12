@@ -36,12 +36,12 @@ describe("applyConfigUpdate (pure)", () => {
       enabled: true,
       systemPrompt: "you are a monitor",
       taskPrompt: "check for stuck chats",
-      model: "opencode/gpt-4o",
+      model: "opencode-1/gpt-4o",
     });
     expect(next.enabled).toBe(true);
     expect(next.systemPrompt).toBe("you are a monitor");
     expect(next.taskPrompt).toBe("check for stuck chats");
-    expect(next.model).toBe("opencode/gpt-4o");
+    expect(next.model).toBe("opencode-1/gpt-4o");
     // Untouched fields keep defaults.
     expect(next.intervalMinutes).toBe(30);
     expect(next.reasoningEffort).toBeNull();

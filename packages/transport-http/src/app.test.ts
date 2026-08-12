@@ -606,13 +606,13 @@ describe("GET /models", () => {
     const app = createApp({
       conversationStore: createFakeConversationStore(),
       orchestrator: createFakeOrchestrator([]),
-      credentialStore: createFakeCredentialStore(["opencode/m1", "openai/gpt-4"]),
+      credentialStore: createFakeCredentialStore(["opencode-1/m1", "openai/gpt-4"]),
       logger: noopLogger,
     });
     const res = await app.request("/models");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { models: readonly string[] };
-    expect(body.models).toEqual(["opencode/m1", "openai/gpt-4"]);
+    expect(body.models).toEqual(["opencode-1/m1", "openai/gpt-4"]);
   });
 
   it("returns empty array when no models", async () => {
@@ -802,7 +802,7 @@ describe("POST /chat", () => {
       body: JSON.stringify({
         message: "hi",
         conversationId: "conv1",
-        model: "opencode/m1",
+        model: "opencode-1/m1",
         cwd: "/tmp",
       }),
     });
@@ -811,7 +811,7 @@ describe("POST /chat", () => {
     expect(cap.received).toBeDefined();
     expect(cap.received?.conversationId).toBe("conv1");
     expect(cap.received?.text).toBe("hi");
-    expect(cap.received?.modelName).toBe("opencode/m1");
+    expect(cap.received?.modelName).toBe("opencode-1/m1");
     expect(cap.received?.cwd).toBe("/tmp");
   });
 
@@ -1690,7 +1690,7 @@ describe("POST /chat logging", () => {
       body: JSON.stringify({
         message: "hi",
         conversationId: "conv1",
-        model: "opencode/m1",
+        model: "opencode-1/m1",
         cwd: "/tmp",
       }),
     });
@@ -1778,7 +1778,7 @@ describe("CORS", () => {
       orchestrator: createFakeOrchestrator([
         { type: "done", conversationId: "conv1", turnId: "turn1", reason: "stop" },
       ]),
-      credentialStore: createFakeCredentialStore(["opencode/m1"]),
+      credentialStore: createFakeCredentialStore(["opencode-1/m1"]),
     });
   }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OPENCODE_BASE_URL,
   DEFAULT_OPENCODE_MODEL,
+  formatOpenCodeEnvDiagnostics,
   hasNumberedOpenCodeCredentials,
   parseNumberedOpenCodeEnv,
 } from "./opencode-config.js";
@@ -72,23 +73,35 @@ describe("parseNumberedOpenCodeEnv", () => {
     });
   });
 
-  it("ignores non-digit suffixes (not OpenCode keys at all)", () => {
+  it("rejects non-digit suffixes (noncanonical, never silently ignored)", () => {
     const { credentials, diagnostics } = parseNumberedOpenCodeEnv({
       OPENCODE_API_KEY_foo: "sk-foo",
       OPENCODE_API_KEY_1a: "sk-1a",
     });
     expect(credentials).toEqual([]);
-    expect(diagnostics).toEqual([]);
+    expect(diagnostics).toEqual([
+      { key: "OPENCODE_API_KEY_foo", issue: "noncanonical" },
+      { key: "OPENCODE_API_KEY_1a", issue: "noncanonical" },
+    ]);
   });
 
-  it("rejects trailing-dot/dash/space suffixes (not all-digits)", () => {
+  it("rejects trailing-space/mixed/empty suffixes as noncanonical (never ignored)", () => {
     const env: Record<string, string> = {
       "OPENCODE_API_KEY_1 ": "sk",
       OPENCODE_API_KEY_n: "sk",
+      OPENCODE_API_KEY_: "sk",
     };
     const { credentials, diagnostics } = parseNumberedOpenCodeEnv(env);
     expect(credentials).toEqual([]);
-    expect(diagnostics).toEqual([]);
+    expect(diagnostics).toHaveLength(3);
+    for (const d of diagnostics) {
+      expect(d.issue).toBe("noncanonical");
+    }
+    expect(diagnostics).toEqual([
+      { key: "OPENCODE_API_KEY_1 ", issue: "noncanonical" },
+      { key: "OPENCODE_API_KEY_n", issue: "noncanonical" },
+      { key: "OPENCODE_API_KEY_", issue: "noncanonical" },
+    ]);
   });
 
   it("rejects empty values", () => {
@@ -145,21 +158,85 @@ describe("parseNumberedOpenCodeEnv", () => {
     expect(result.diagnostics).toEqual([]);
   });
 
-  it("ignores the obsolete unnumbered OPENCODE_API_KEY entirely", () => {
+  it("rejects the obsolete unnumbered OPENCODE_API_KEY as legacy-unnumbered", () => {
     const { credentials, diagnostics } = parseNumberedOpenCodeEnv({
       OPENCODE_API_KEY: "sk-unnumbered",
     });
     expect(credentials).toEqual([]);
-    expect(diagnostics).toEqual([]);
+    expect(diagnostics).toContainEqual({
+      key: "OPENCODE_API_KEY",
+      issue: "legacy-unnumbered",
+    });
+    // Never leak the value.
+    expect(JSON.stringify(diagnostics).includes("sk-unnumbered")).toBe(false);
   });
 
-  it("collides with legacy DISPATCH_API_KEY: it is completely ignored", () => {
-    const { credentials } = parseNumberedOpenCodeEnv({
+  it("rejects the legacy DISPATCH_API_KEY as legacy-dispatch (never ignored)", () => {
+    const { credentials, diagnostics } = parseNumberedOpenCodeEnv({
       DISPATCH_API_KEY: "sk-legacy",
       DISPATCH_BASE_URL: "https://x",
       DISPATCH_MODEL: "m",
     });
     expect(credentials).toEqual([]);
+    expect(diagnostics).toContainEqual({
+      key: "DISPATCH_API_KEY",
+      issue: "legacy-dispatch",
+    });
+    // Never leak the value.
+    expect(JSON.stringify(diagnostics).includes("sk-legacy")).toBe(false);
+  });
+
+  it("does not flag a legacy variable that is unset/empty (nothing configured)", () => {
+    const { credentials, diagnostics } = parseNumberedOpenCodeEnv({
+      DISPATCH_API_KEY: "",
+      DISPATCH_BASE_URL: "https://x",
+    });
+    expect(credentials).toEqual([]);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("flags legacy variables even when valid numbered keys exist", () => {
+    const { credentials, diagnostics } = parseNumberedOpenCodeEnv({
+      DISPATCH_API_KEY: "sk-legacy",
+      OPENCODE_API_KEY_1: "sk-1",
+    });
+    expect(credentials.map((c) => c.number)).toEqual([1]);
+    expect(diagnostics).toContainEqual({ key: "DISPATCH_API_KEY", issue: "legacy-dispatch" });
+  });
+});
+
+describe("formatOpenCodeEnvDiagnostics", () => {
+  it("returns null when there are no diagnostics", () => {
+    expect(formatOpenCodeEnvDiagnostics([])).toBeNull();
+  });
+
+  it("renders every issue kind secret-free with the offending key name", () => {
+    const msg = formatOpenCodeEnvDiagnostics([
+      { key: "OPENCODE_API_KEY_01", issue: "noncanonical" },
+      { key: "OPENCODE_API_KEY_0", issue: "zero" },
+      { key: "OPENCODE_API_KEY_3", issue: "empty" },
+      { key: "OPENCODE_API_KEY_4", issue: "duplicate", duplicateOf: 1 },
+      { key: "DISPATCH_API_KEY", issue: "legacy-dispatch" },
+      { key: "OPENCODE_API_KEY", issue: "legacy-unnumbered" },
+    ]);
+    expect(msg).not.toBeNull();
+    expect(msg).toContain("OPENCODE_API_KEY_01");
+    expect(msg).toContain("OPENCODE_API_KEY_0");
+    expect(msg).toContain("OPENCODE_API_KEY_3");
+    expect(msg).toContain("OPENCODE_API_KEY_4");
+    expect(msg).toContain("OPENCODE_API_KEY_1");
+    expect(msg).toContain("DISPATCH_API_KEY");
+    expect(msg).toContain("OPENCODE_API_KEY");
+  });
+
+  it("never includes any secret value in the formatted output", () => {
+    const result = parseNumberedOpenCodeEnv({
+      OPENCODE_API_KEY_1: "SUPER-SECRET-AAAA",
+      OPENCODE_API_KEY_2: "SUPER-SECRET-AAAA",
+    });
+    const msg = formatOpenCodeEnvDiagnostics(result.diagnostics) ?? "";
+    expect(msg).not.toContain("SUPER-SECRET");
+    expect(msg).not.toContain("AAAA");
   });
 });
 

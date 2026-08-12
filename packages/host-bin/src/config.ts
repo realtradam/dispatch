@@ -1,5 +1,6 @@
 import type { ConfigAccess } from "@dispatch/kernel";
 import {
+  formatOpenCodeEnvDiagnostics,
   OPENCODE_CREDENTIALS_CONFIG_KEY,
   parseNumberedOpenCodeEnv,
 } from "@dispatch/provider-openai-compat";
@@ -12,7 +13,10 @@ export function envToConfigMap(
   // Numbered OpenCode credentials. DISPATCH_BASE_URL / DISPATCH_MODEL (if
   // present) are used as SHARED defaults for every numbered credential; the API
   // keys come exclusively from OPENCODE_API_KEY_<n>. There is NO legacy
-  // DISPATCH_API_KEY path — it is entirely ignored.
+  // DISPATCH_API_KEY path, and no silent-ignore of malformed/obsolete numbered
+  // variables: ANY validation diagnostic ABORTS config assembly with a
+  // secret-free fatal error so the process cannot boot with a partial or
+  // invalid credential set.
   const baseURL = env.DISPATCH_BASE_URL;
   const model = env.DISPATCH_MODEL;
   const opencode = parseNumberedOpenCodeEnv(
@@ -24,6 +28,11 @@ export function envToConfigMap(
         }
       : {},
   );
+  if (opencode.diagnostics.length > 0) {
+    const detail =
+      formatOpenCodeEnvDiagnostics(opencode.diagnostics) ?? "invalid OpenCode environment";
+    throw new Error(`OpenCode configuration is invalid and will not be booted: ${detail}`);
+  }
   if (opencode.credentials.length > 0) {
     map[OPENCODE_CREDENTIALS_CONFIG_KEY] = opencode.credentials;
   }

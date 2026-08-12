@@ -26,9 +26,6 @@
       "path": "./packages/storage-sqlite"
     },
     {
-      "path": "./packages/auth-apikey"
-    },
-    {
       "path": "./packages/provider-longcat"
     },
     {

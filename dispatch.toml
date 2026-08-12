@@ -4,7 +4,8 @@
 # ~/.config/dispatch/dispatch.toml — no per-repo LSP block needed. Agents can use
 # the `lsp` tool (diagnostics / references / definition) on .ts files directly.
 #
-# Credentials for the rewrite live in .env (gitignored), read by auth-apikey.
+# Credentials for the rewrite live in .env (gitignored), read by the numbered
+# OpenCode (provider-openai-compat) + umans + longcat providers at boot.
 
 # SSH computer discovery — hosts to exclude from the computer catalog.
 # Computers are auto-discovered from ~/.ssh/known_hosts (hosts you've connected

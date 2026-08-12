@@ -15,6 +15,7 @@ export { activate, extension, manifest, OPENCODE_CREDENTIALS_CONFIG_KEY } from "
 export {
   DEFAULT_OPENCODE_BASE_URL,
   DEFAULT_OPENCODE_MODEL,
+  formatOpenCodeEnvDiagnostics,
   hasNumberedOpenCodeCredentials,
   OPENCODE_API_KEY_PREFIX,
   type OpenCodeEnvDiagnostic,

@@ -217,6 +217,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
   const credentials: { name: string; providerId: string }[] = [];
 
   // Parse numbered OpenCode credentials from the environment (never log values).
+  // NOTE: `envToConfigMap` above already ABORTED boot with a secret-free fatal
+  // error if any numbered/legacy/obsolete OpenCode variable is invalid — so the
+  // environment reached here is guaranteed clean (diagnostics empty). This
+  // block only assembles credential names from the validated set.
   const numberedOpenCode = parseNumberedOpenCodeEnv(
     process.env as Readonly<Record<string, string | undefined>>,
     {
@@ -226,6 +230,13 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
       ...(process.env.DISPATCH_MODEL !== undefined ? { model: process.env.DISPATCH_MODEL } : {}),
     },
   );
+  // Defensive invariant: config assembly above refused to boot on diagnostics,
+  // so we must never silently boot with a partial/invalid set here.
+  if (numberedOpenCode.diagnostics.length > 0) {
+    throw new Error(
+      "BUG: invalid OpenCode environment reached credential assembly despite config validation",
+    );
+  }
   for (const entry of numberedOpenCode.credentials) {
     const name = `opencode-${entry.number}`;
     credentials.push({ name, providerId: name });
@@ -235,16 +246,6 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     logger.info(
       "OpenCode provider: no numbered OPENCODE_API_KEY_<n> configured — OpenCode unavailable",
     );
-  }
-  if (numberedOpenCode.diagnostics.length > 0) {
-    // Surface validation findings WITHOUT exposing the secret values.
-    for (const d of numberedOpenCode.diagnostics) {
-      logger.warn(`OpenCode config: skipped malformed entry ${d.key}`, {
-        key: d.key,
-        issue: d.issue,
-        ...(d.duplicateOf !== undefined ? { duplicateOf: d.duplicateOf } : {}),
-      });
-    }
   }
 
   // The umans credential is always listed (it's the model-catalog index); the

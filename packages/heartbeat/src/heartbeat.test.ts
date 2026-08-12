@@ -340,7 +340,7 @@ describe("createHeartbeatService", () => {
       enabled: true,
       systemPrompt: "you are a monitor",
       taskPrompt: "check stuck chats",
-      model: "opencode/gpt-4o",
+      model: "opencode-1/gpt-4o",
       reasoningEffort: "high",
       intervalMinutes: 1,
     });
@@ -351,7 +351,7 @@ describe("createHeartbeatService", () => {
     const turn = firstPendingTurn(orch);
     expect(turn.text).toBe("check stuck chats");
     expect(turn.systemPrompt).toBe("you are a monitor");
-    expect(turn.modelName).toBe("opencode/gpt-4o");
+    expect(turn.modelName).toBe("opencode-1/gpt-4o");
     expect(turn.reasoningEffort).toBe("high");
     // Spawned conversations go to the DEDICATED heartbeat workspace (not
     // the configured workspace), while the run stays tracked under ws-1.
@@ -489,7 +489,7 @@ describe("createHeartbeatService", () => {
       enabled: true,
       systemPrompt: "You run on [system:os] in [prompt:cwd] (ws [prompt:workspace_id]).",
       taskPrompt: "Check chats for [prompt:conversation_id] on [system:os].",
-      model: "opencode/gpt-4o",
+      model: "opencode-1/gpt-4o",
       intervalMinutes: 1,
     });
 
@@ -500,7 +500,7 @@ describe("createHeartbeatService", () => {
     // Variables substituted — NOT left as literal [type:name] text.
     expect(turn.systemPrompt).toBe("You run on Linux (WSL) in /repo (ws ws-1).");
     expect(turn.text).toBe(`Check chats for ${turn.conversationId} on Linux (WSL).`);
-    expect(turn.modelName).toBe("opencode/gpt-4o");
+    expect(turn.modelName).toBe("opencode-1/gpt-4o");
     turn.resolve();
     await flush();
   });

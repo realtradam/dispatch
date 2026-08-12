@@ -32,20 +32,49 @@ describe("envToConfigMap", () => {
   });
 
   it("does NOT set opencode.credentials when no numbered keys are present", () => {
-    const result = envToConfigMap({ HOME: "/root", DISPATCH_API_KEY: "sk-legacy" });
+    const result = envToConfigMap({ HOME: "/root" });
     expect(result[OPENCODE_CREDENTIALS_CONFIG_KEY]).toBeUndefined();
   });
 
-  it("completely ignores the legacy DISPATCH_API_KEY path", () => {
-    const result = envToConfigMap({
-      DISPATCH_API_KEY: "sk-legacy",
-      DISPATCH_BASE_URL: "https://oc/v1",
-      DISPATCH_MODEL: "deepseek-v4-flash",
-    });
-    expect(result["provider.openai-compat.apiKey"]).toBeUndefined();
-    expect(result["provider.openai-compat.baseURL"]).toBeUndefined();
-    expect(result["provider.openai-compat.model"]).toBeUndefined();
-    expect(result[OPENCODE_CREDENTIALS_CONFIG_KEY]).toBeUndefined();
+  it("fails deterministically on the legacy DISPATCH_API_KEY (never silently ignored)", () => {
+    expect(() =>
+      envToConfigMap({
+        DISPATCH_API_KEY: "sk-legacy",
+        DISPATCH_BASE_URL: "https://oc/v1",
+        DISPATCH_MODEL: "deepseek-v4-flash",
+      }),
+    ).toThrow(/DISPATCH_API_KEY/);
+  });
+
+  it("fails deterministically on an unnumbered OPENCODE_API_KEY", () => {
+    expect(() => envToConfigMap({ OPENCODE_API_KEY: "sk-unnumbered" })).toThrow(/OPENCODE_API_KEY/);
+  });
+
+  it("fails deterministically on a malformed numbered suffix", () => {
+    expect(() => envToConfigMap({ OPENCODE_API_KEY_foo: "sk", OPENCODE_API_KEY_01: "sk" })).toThrow(
+      /OPENCODE_API_KEY_foo/,
+    );
+  });
+
+  it("aborts config assembly with a secret-free error (no secret leaked in message)", () => {
+    let message = "";
+    try {
+      envToConfigMap({ DISPATCH_API_KEY: "top-secret-legacy-value" });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/DISPATCH_API_KEY/);
+    expect(message).not.toContain("top-secret-legacy-value");
+  });
+
+  it("fails deterministically on empty or duplicate numbered keys", () => {
+    expect(() =>
+      envToConfigMap({
+        OPENCODE_API_KEY_1: "",
+        OPENCODE_API_KEY_2: "shared",
+        OPENCODE_API_KEY_3: "shared",
+      }),
+    ).toThrow(/OPENCODE_API_KEY/);
   });
 
   it("maps DISPATCH_OPENAI_MODEL to provider.openai.model", () => {

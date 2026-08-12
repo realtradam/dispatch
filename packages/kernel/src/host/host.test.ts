@@ -430,7 +430,7 @@ describe("createHost", () => {
 
     it("defineAuth populates the auth registry", async () => {
       const auth = createFakeAuth("apikey");
-      const ext = createExtension("auth-apikey", {
+      const ext = createExtension("test-auth", {
         activate: (host) => {
           host.defineAuth(auth);
         },
@@ -779,13 +779,13 @@ describe("createHost", () => {
       let capturedAuth: ReadonlyMap<string, AuthContract> | undefined;
       let capturedSingle: AuthContract | undefined;
 
-      const producer = createExtension("auth-apikey", {
+      const producer = createExtension("test-auth", {
         activate: (host) => {
           host.defineAuth(auth);
         },
       });
       const consumer = createExtension("consumer", {
-        dependsOn: ["auth-apikey"],
+        dependsOn: ["test-auth"],
         activate: (host) => {
           capturedAuth = host.getAuthProviders();
           capturedSingle = host.getAuthProvider("apikey");

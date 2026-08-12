@@ -88,10 +88,10 @@ describe("parseChatBody", () => {
   });
 
   it("extracts model when present", () => {
-    const result = parseChatBody({ message: "hi", model: "opencode/m1" }, fakeId);
+    const result = parseChatBody({ message: "hi", model: "opencode-1/m1" }, fakeId);
     expect(isParseError(result)).toBe(false);
     if (!isParseError(result)) {
-      expect(result.model).toBe("opencode/m1");
+      expect(result.model).toBe("opencode-1/m1");
     }
   });
 
