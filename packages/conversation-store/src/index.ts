@@ -8,4 +8,5 @@ export {
   createConversationStore,
   extractTitle,
   isValidWorkspaceSlug,
+  parseNamedAgentSelectionSnapshot,
 } from "./store.js";

@@ -8,16 +8,11 @@
  * mocks.
  */
 
-import type {
-  ChatMessage,
-  ConversationMeta,
-  ConversationStatus,
-  ModelInfo,
-} from "@dispatch/kernel";
+import type { ChatMessage, ConversationMeta, ConversationStatus } from "@dispatch/kernel";
 import type {
   AgentEntry,
   AgentManagementError,
-  ModelEntry,
+  NamedAgentEntry,
   ReadAgentResult,
   SummonAgentResult,
 } from "./types.js";
@@ -111,64 +106,25 @@ export function truncateText(text: string, maxChars: number): { text: string; tr
   return { text: `${text.slice(0, maxChars)}…`, truncated: true };
 }
 
-// ─── Vision capability ──────────────────────────────────────────────────────
+// ─── Named Agent list filtering ─────────────────────────────────────────────
 
 /**
- * Name-based heuristic for vision capability, used ONLY when authoritative
- * `ModelInfo.vision` metadata is absent (plan §6.1/§12). Conservative: matches
- * well-known vision-capable model name patterns.
+ * Filter and bound a list of {@link NamedAgentEntry} (already built from the
+ * local Named Agent registry by the shell). Preserves the registry's stable
+ * case-insensitive name order. `query` is a case-insensitive substring filter
+ * over the Named Agent NAME (not the raw model — agents summon by friendly
+ * name). `limit` caps the result count. No vision filter: no local metadata
+ * supports it, and reintroducing it would require the slow catalog scan the
+ * Named Agent path exists to avoid (plan §8.1).
  */
-export function heuristicVisionCapable(modelName: string): boolean {
-  const lower = modelName.toLowerCase();
-  if (lower.includes("vision")) return true;
-  // Known vision-capable families.
-  if (lower.includes("gpt-4o")) return true;
-  if (lower.includes("gpt-4.1")) return true;
-  if (lower.includes("claude-3")) return true;
-  if (lower.includes("claude-4")) return true;
-  if (lower.includes("gemini")) return true;
-  if (lower.includes("kimi")) return true;
-  if (lower.includes("qwen-vl")) return true;
-  if (lower.includes("llava")) return true;
-  if (lower.includes("pixtral")) return true;
-  return false;
-}
-
-/**
- * Resolve vision capability: authoritative `ModelInfo.vision` wins when
- * present; otherwise the name heuristic is the fallback (plan §6.1).
- */
-export function resolveVision(modelName: string, info: ModelInfo | undefined): boolean {
-  if (info?.vision !== undefined) return info.vision;
-  return heuristicVisionCapable(modelName);
-}
-
-// ─── Model catalog filtering ────────────────────────────────────────────────
-
-/**
- * Filter and bound a list of {@link ModelEntry} (already built from the
- * catalog + ModelInfo by the shell). Preserves the stable catalog order.
- * `vision: true` keeps only vision-capable models; `vision: false` keeps only
- * non-vision; omitted applies no vision filter. `query` is a case-insensitive
- * substring filter over name/display name. `limit` caps the result count.
- */
-export function filterModelEntries(
-  entries: readonly ModelEntry[],
-  opts: { readonly query?: string; readonly vision?: boolean; readonly limit: number },
-): ModelEntry[] {
-  let result: ModelEntry[] = [...entries];
-  if (opts.vision === true) result = result.filter((e) => e.vision);
-  else if (opts.vision === false) result = result.filter((e) => !e.vision);
+export function filterNamedAgentEntries(
+  entries: readonly NamedAgentEntry[],
+  opts: { readonly query?: string; readonly limit: number },
+): NamedAgentEntry[] {
   const q = opts.query?.trim();
-  if (q !== undefined && q.length > 0) {
-    const needle = q.toLowerCase();
-    result = result.filter(
-      (e) =>
-        e.name.toLowerCase().includes(needle) ||
-        (e.displayName?.toLowerCase().includes(needle) ?? false),
-    );
-  }
-  return result.slice(0, opts.limit);
+  if (q === undefined || q.length === 0) return entries.slice(0, opts.limit);
+  const needle = q.toLowerCase();
+  return entries.filter((e) => e.name.toLowerCase().includes(needle)).slice(0, opts.limit);
 }
 
 // ─── File attachment composition ────────────────────────────────────────────
@@ -309,18 +265,24 @@ export function formatError(error: AgentManagementError): string {
   return base;
 }
 
-export function formatListModelsResult(result: { readonly models: readonly ModelEntry[] }): string {
-  if (result.models.length === 0) return "No models found.";
-  const lines = result.models.map((m) => {
-    const parts = [m.name];
-    if (m.displayName !== undefined) parts.push(`(${m.displayName})`);
-    const tags: string[] = [];
-    if (m.vision) tags.push("vision");
-    if (m.contextWindow !== undefined) tags.push(`ctx:${m.contextWindow}`);
-    if (tags.length > 0) parts.push(`[${tags.join(", ")}]`);
-    return `  ${parts.join(" ")}`;
-  });
-  return `Available models (${result.models.length}):\n${lines.join("\n")}`;
+/**
+ * Format `list_agent_models` output. Lists the Named Agents available for
+ * `summon_agent` (plan §8.1) — NOT the raw provider catalog. Each line shows
+ * the friendly name and the resolved canonical model it is bound to. An empty
+ * list returns immediate setup guidance rather than falling back to the raw
+ * catalog.
+ */
+export function formatListModelsResult(result: {
+  readonly models: readonly NamedAgentEntry[];
+}): string {
+  if (result.models.length === 0) {
+    return (
+      "No named agents are configured. Ask the user to add one in the Named Agents " +
+      "sidebar view."
+    );
+  }
+  const lines = result.models.map((m) => `  ${m.name} (${m.model})`);
+  return `Available named agents (${result.models.length}):\n${lines.join("\n")}`;
 }
 
 export function formatSummonResult(r: SummonAgentResult): string {

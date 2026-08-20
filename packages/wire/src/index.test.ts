@@ -8,7 +8,16 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Chunk, Computer, ComputerEntry, ImageChunk, ImageInput, Workspace } from "./index.js";
+import type {
+  Chunk,
+  Computer,
+  ComputerEntry,
+  ImageChunk,
+  ImageInput,
+  NamedAgent,
+  NamedAgentSelectionSnapshot,
+  Workspace,
+} from "./index.js";
 
 describe("@dispatch/wire — Computer / Workspace shapes", () => {
   it("a Computer literal satisfies the Computer type", () => {
@@ -89,5 +98,29 @@ describe("@dispatch/wire — ImageChunk / ImageInput shapes", () => {
     const chunk: Chunk = { type: "image", url: "data:image/png;base64,x" };
     // Compile-time proof: an ImageChunk satisfies the Chunk union.
     expect(chunk.type).toBe("image");
+  });
+});
+
+describe("@dispatch/wire — NamedAgent / selection snapshot shapes", () => {
+  it("a NamedAgent carries id, name, and canonical model", () => {
+    const agent: NamedAgent = {
+      id: "named-agent-1",
+      name: "Coding Agent",
+      model: "opencode-1/claude-sonnet-4.5",
+    };
+    expect(agent.id).toBe("named-agent-1");
+    expect(agent.name).toBe("Coding Agent");
+    expect(agent.model).toBe("opencode-1/claude-sonnet-4.5");
+  });
+
+  it("a NamedAgentSelectionSnapshot carries the frozen id, name, and model", () => {
+    const snap: NamedAgentSelectionSnapshot = {
+      namedAgentId: "named-agent-1",
+      namedAgentName: "Research Agent",
+      model: "umans/umans-glm-5.2",
+    };
+    expect(snap.namedAgentId).toBe("named-agent-1");
+    expect(snap.namedAgentName).toBe("Research Agent");
+    expect(snap.model).toBe("umans/umans-glm-5.2");
   });
 });

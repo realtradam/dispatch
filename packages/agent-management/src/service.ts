@@ -2,21 +2,31 @@
  * AgentManagementService — the imperative shell that wires injected stores +
  * the session-orchestrator to the pure decision logic in `pure.ts` (plan P2).
  *
- * Effects (conversation-store, credential-store, orchestrator, filesystem,
- * event-bus) are injected via {@link AgentManagementDeps}; decision logic is
- * pure. The service is useful independently of the AI tools — `vision-handoff`
- * calls `summon` with a restricted tool policy, and tests inject fakes.
+ * Effects (conversation-store, credential-store, named-agents registry,
+ * orchestrator, filesystem, event-bus) are injected via
+ * {@link AgentManagementDeps}; decision logic is pure. The service is useful
+ * independently of the AI tools — `vision-handoff` calls `summon` with a
+ * restricted tool policy, and tests inject fakes.
+ *
+ * `list_agent_models` reads ONLY from the named-agents registry (plan §8.1) —
+ * ZERO provider-catalog calls. `summon` selects by `agent` (a Named Agent,
+ * resolved locally, snapshotted onto the conversation — plan §8.2/§7) XOR by
+ * the backward-compatible raw `model` (catalog-validated, plan §13).
  *
  * Summon algorithm (plan §5) — executed in this exact order:
- *  1. Generate a new conversationId (UUID).
- *  2. Resolve the caller's effective workspace, working directory, computer.
- *  3. Persist `parentConversationId` + `toolPolicy` BEFORE calling startTurn
+ *  1. Resolve the effective model: `agent` (named-agents registry, no catalog)
+ *     or `model` (raw, catalog-validated). Exactly one is required.
+ *  2. Generate a new conversationId (UUID).
+ *  3. Resolve the caller's effective workspace, working directory, computer.
+ *  4. Persist `parentConversationId` + `toolPolicy` (+ the Named Agent
+ *     selection snapshot, when summoning by `agent`) BEFORE calling startTurn
  *     (separate store keys — never pre-create the meta row) so the first turn's
- *     tool-assembly filter chain sees the policy.
- *  4. Call `orchestrator.startTurn(...)` (the orchestrator re-stamps lineage +
+ *     tool-assembly filter chain sees the policy and the conversation carries
+ *     its frozen selection.
+ *  5. Call `orchestrator.startTurn(...)` (the orchestrator re-stamps lineage +
  *     policy idempotently and handles new-conversation workspace/title/system-
  *     prompt setup).
- *  5. Return the conversation id, workspace, status, and started flag.
+ *  6. Return the conversation id, workspace, status, and started flag.
  */
 
 import type { ConversationStore } from "@dispatch/conversation-store";
@@ -29,11 +39,11 @@ import type {
   ConversationToolPolicy,
   EventHookDescriptor,
   Logger,
-  ModelInfo,
 } from "@dispatch/kernel";
+import type { NamedAgentsService } from "@dispatch/named-agents";
 import type { SessionOrchestrator, StartTurnInput } from "@dispatch/session-orchestrator";
 import { conversationOpened } from "@dispatch/session-orchestrator";
-import type { QueuedMessage } from "@dispatch/wire";
+import type { NamedAgent, NamedAgentSelectionSnapshot, QueuedMessage } from "@dispatch/wire";
 import type {
   AgentEntry,
   AgentManagementService,
@@ -43,7 +53,7 @@ import type {
   ListAgentsResult,
   ListModelsInput,
   ListModelsResult,
-  ModelEntry,
+  NamedAgentEntry,
   OpenAgentInput,
   OpenAgentResult,
   ReadAgentInput,
@@ -66,11 +76,10 @@ import {
   extractLastError,
   filterByQuery,
   filterByStatus,
-  filterModelEntries,
+  filterNamedAgentEntries,
   formatFileAttachments,
   parseToolAccess,
   resolveShortId,
-  resolveVision,
   sortByActivityDesc,
   toAgentEntry,
   truncateText,
@@ -81,6 +90,13 @@ import {
 export interface AgentManagementDeps {
   readonly conversationStore: ConversationStore;
   readonly credentialStore: CredentialStore;
+  /**
+   * The Named Agent registry (plan §10.1). `list_agent_models` reads from
+   * `list()` and `summon_agent` resolves an `agent` reference via `resolve()`
+   * — both with ZERO provider-catalog calls (plan §10.2). The raw `model`
+   * summon path still uses `credentialStore` for catalog validation.
+   */
+  readonly namedAgents: NamedAgentsService;
   /** Lazily resolve the session-orchestrator; `undefined` when not loaded. */
   readonly resolveOrchestrator: () => SessionOrchestrator | undefined;
   /** Emit a typed event hook (the `conversationOpened` signal for open_agent). */
@@ -339,6 +355,12 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
   }
 
   // ── listModels ───────────────────────────────────────────────────────────
+  //
+  // Lists ONLY the locally configured Named Agents (plan §8.1) — ZERO
+  // provider-catalog calls. The small local registry list is filtered in
+  // memory by a case-insensitive name substring (`query`) and bounded by
+  // `limit`. Vision filtering is intentionally omitted (no local metadata
+  // supports it; reintroducing it would require the slow catalog scan).
 
   async function listModels(input: ListModelsInput): Promise<Result<ListModelsResult>> {
     if (input.callerConversationId === undefined || input.callerConversationId.length === 0) {
@@ -346,39 +368,27 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     }
     const limit = clampLimit(input.limit, deps.defaultModelLimit, deps.maxModelLimit);
 
-    let catalog: readonly string[];
+    let agents: readonly NamedAgent[];
     try {
-      catalog = await deps.credentialStore.listCatalog();
+      agents = await deps.namedAgents.list();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return err("invalid-input", `failed to read model catalog: ${msg}`);
+      return err("invalid-input", `failed to read named agents: ${msg}`);
     }
 
-    // Build entries with per-model metadata (vision is authoritative-then-
-    // heuristic). Fetching ModelInfo per model is the catalog-failure surface.
-    const entries: ModelEntry[] = [];
-    for (const name of catalog) {
-      let info: ModelInfo | undefined;
-      try {
-        info = await deps.credentialStore.getModelInfo(name);
-      } catch {
-        info = undefined;
-      }
-      const entry: ModelEntry = {
-        name,
-        ...(info?.displayName !== undefined ? { displayName: info.displayName } : {}),
-        ...(info?.contextWindow !== undefined ? { contextWindow: info.contextWindow } : {}),
-        vision: resolveVision(name, info),
-      };
-      entries.push(entry);
-    }
+    // The registry returns records in deterministic case-insensitive name order;
+    // preserve it. Build the Named-Agent-oriented entries the tool exposes.
+    const entries: NamedAgentEntry[] = agents.map((a) => ({
+      namedAgentId: a.id,
+      name: a.name,
+      model: a.model,
+    }));
 
-    const filtered = filterModelEntries(entries, {
+    const filtered = filterNamedAgentEntries(entries, {
       ...(input.query !== undefined ? { query: input.query } : {}),
-      ...(input.vision !== undefined ? { vision: input.vision } : {}),
       limit,
     });
-    log.debug("agent-management.list", {
+    log.debug("agent-management.listModels", {
       callerId: input.callerConversationId,
       count: filtered.length,
     });
@@ -392,9 +402,6 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     if (callerId === undefined || callerId.length === 0) {
       return err("invalid-input", "caller conversation id is required");
     }
-    if (typeof input.model !== "string" || input.model.trim().length === 0) {
-      return err("invalid-input", "'model' is required and must be a non-empty string");
-    }
     if (typeof input.task !== "string" || input.task.trim().length === 0) {
       return err("invalid-input", "'task' is required and must be a non-empty string");
     }
@@ -402,24 +409,87 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     if ("error" in toolAccess) return err("invalid-input", toolAccess.error);
     const accessMode = toolAccess.mode;
 
+    // Exactly one effective selection is required (plan §8.2 step 7): a Named
+    // Agent (`agent`) XOR a raw model (`model`). Whitespace-only / undefined
+    // counts as "not supplied". Both or neither → invalid-input.
+    const hasAgent = typeof input.agent === "string" && input.agent.trim().length > 0;
+    const hasModel = typeof input.model === "string" && input.model.trim().length > 0;
+    if (hasAgent && hasModel) {
+      return err(
+        "invalid-input",
+        "provide exactly one of 'agent' (a named agent name/id) or 'model' (a raw <credential>/<model>) — not both",
+      );
+    }
+    if (!hasAgent && !hasModel) {
+      return err(
+        "invalid-input",
+        "provide exactly one of 'agent' (a named agent name/id) or 'model' (a raw <credential>/<model>); call list_agent_models to discover named agents",
+      );
+    }
+
     const orchestrator = requireOrchestrator();
     if (orchestrator === undefined) {
       return err("invalid-input", "session-orchestrator is not available");
     }
 
-    // Validate the model is an exact catalog name (plan §6.2).
-    let catalog: readonly string[];
-    try {
-      catalog = await deps.credentialStore.listCatalog();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return err("invalid-input", `failed to read model catalog: ${msg}`);
-    }
-    if (!catalog.includes(input.model)) {
-      return err(
-        "unknown-model",
-        `unknown model "${input.model}"; use list_agent_models to discover valid names`,
-      );
+    // Resolve the effective conversation model. The two paths are mutually
+    // exclusive (validated above):
+    //  - `agent` (Named Agent): resolve locally via the registry; use the
+    //    Named Agent's configured raw model. NO catalog validation (plan §8.2
+    //    step 3 / §10.2 / §16). A missing Named Agent → `unknown-agent` with
+    //    the locally available names (plan §8.2 step 5). The selection snapshot
+    //    is frozen onto the conversation after we generate its id.
+    //  - `model` (raw): keep the EXISTING path exactly, including catalog
+    //    validation → `unknown-model` (plan §8.2 step 6 / §13). No snapshot.
+    let effectiveModel: string;
+    let namedSnapshot: NamedAgentSelectionSnapshot | undefined;
+    if (hasAgent) {
+      const ref = input.agent as string;
+      let resolved: NamedAgent | null;
+      try {
+        resolved = await deps.namedAgents.resolve(ref);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return err("invalid-input", `failed to resolve named agent "${ref}": ${msg}`);
+      }
+      if (resolved === null) {
+        let available: readonly NamedAgent[] = [];
+        try {
+          available = await deps.namedAgents.list();
+        } catch {
+          available = [];
+        }
+        const names = available.map((a) => a.name).join(", ");
+        return err(
+          "unknown-agent",
+          names.length > 0
+            ? `unknown named agent "${ref}"; available named agents: ${names}`
+            : `unknown named agent "${ref}"; no named agents are configured (ask the user to add one in the Named Agents sidebar view)`,
+        );
+      }
+      effectiveModel = resolved.model;
+      namedSnapshot = {
+        namedAgentId: resolved.id,
+        namedAgentName: resolved.name,
+        model: resolved.model,
+      };
+    } else {
+      // Raw-model path: validate the model is an exact catalog name (plan §6.2).
+      const rawModel = (input.model as string).trim();
+      let catalog: readonly string[];
+      try {
+        catalog = await deps.credentialStore.listCatalog();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return err("invalid-input", `failed to read model catalog: ${msg}`);
+      }
+      if (!catalog.includes(rawModel)) {
+        return err(
+          "unknown-model",
+          `unknown model "${rawModel}"; use list_agent_models to discover named agents`,
+        );
+      }
+      effectiveModel = rawModel;
     }
 
     // Resolve caller context (plan §5 step 2).
@@ -458,12 +528,21 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     await store.setParentConversationId(conversationId, callerId);
     await store.setToolPolicy(conversationId, toolPolicy);
 
+    // Freeze the Named Agent selection snapshot onto the conversation BEFORE
+    // startTurn (plan §7) — mirrors the lineage + policy persistence above. The
+    // snapshot is independent of the registry record, so later edits/deletes of
+    // the Named Agent never mutate this conversation. Omitted on the raw-model
+    // path (a raw-model conversation carries no snapshot).
+    if (namedSnapshot !== undefined) {
+      await store.setNamedAgentSelection(conversationId, namedSnapshot);
+    }
+
     // Plan §5 step 4: call startTurn (orchestrator re-stamps lineage + policy
     // idempotently and runs new-conversation workspace/title/system-prompt setup).
     const startInput: StartTurnInput = {
       conversationId,
       text: composedText,
-      modelName: input.model,
+      modelName: effectiveModel,
       workspaceId,
       parentConversationId: callerId,
       toolPolicy,
@@ -481,7 +560,8 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     log.info("agent-management.summon", {
       callerId,
       childId: conversationId,
-      model: input.model,
+      model: effectiveModel,
+      ...(namedSnapshot !== undefined ? { namedAgent: namedSnapshot.namedAgentName } : {}),
       workspaceId,
       started,
       wait: input.wait === true,
@@ -853,6 +933,7 @@ export type {
   ListAgentsResult,
   ListModelsInput,
   ListModelsResult,
+  NamedAgentEntry,
   OpenAgentInput,
   OpenAgentResult,
   ReadAgentInput,

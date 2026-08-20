@@ -2,12 +2,17 @@ import type { AgentEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
   computeExpectedCacheRate,
+  isModelParseError,
   isParseError,
   isReasoningEffortParseError,
   isSinceSeqError,
+  isValidNamedAgentSelectionSnapshot,
   isValidReasoningEffort,
   isWindowParamError,
+  mapCreateError,
+  mapUpdateError,
   parseChatBody,
+  parseModelBody,
   parseQueueBody,
   parseReasoningEffortBody,
   parseSinceSeq,
@@ -536,6 +541,172 @@ describe("parseQueueBody", () => {
     expect(isParseError(result)).toBe(false);
     if (!isParseError(result)) {
       expect(result.text).toBe("hello world");
+    }
+  });
+});
+
+// ─── Named Agent snapshot validation + error mapping ─────────────────────────
+
+describe("isValidNamedAgentSelectionSnapshot", () => {
+  it("accepts a conforming snapshot", () => {
+    expect(
+      isValidNamedAgentSelectionSnapshot({
+        namedAgentId: "na-1",
+        namedAgentName: "Coding Agent",
+        model: "umans/umans-glm-5.2",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a non-object", () => {
+    expect(isValidNamedAgentSelectionSnapshot(null)).toBe(false);
+    expect(isValidNamedAgentSelectionSnapshot("x")).toBe(false);
+    expect(isValidNamedAgentSelectionSnapshot(42)).toBe(false);
+  });
+
+  it("rejects an empty namedAgentId", () => {
+    expect(
+      isValidNamedAgentSelectionSnapshot({
+        namedAgentId: "",
+        namedAgentName: "Coding",
+        model: "umans/umans-glm-5.2",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects an empty model", () => {
+    expect(
+      isValidNamedAgentSelectionSnapshot({
+        namedAgentId: "na-1",
+        namedAgentName: "Coding",
+        model: "",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects non-string fields", () => {
+    expect(
+      isValidNamedAgentSelectionSnapshot({
+        namedAgentId: 42,
+        namedAgentName: "Coding",
+        model: "umans/umans-glm-5.2",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("parseChatBody — namedAgent", () => {
+  const fakeId = () => "test-uuid";
+
+  it("extracts a valid namedAgent snapshot", () => {
+    const result = parseChatBody(
+      {
+        message: "hi",
+        namedAgent: { namedAgentId: "na-1", namedAgentName: "Coding", model: "umans/m" },
+      },
+      fakeId,
+    );
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.namedAgent).toEqual({
+        namedAgentId: "na-1",
+        namedAgentName: "Coding",
+        model: "umans/m",
+      });
+    }
+  });
+
+  it("omits namedAgent when absent (backward compatible)", () => {
+    const result = parseChatBody({ message: "hi" }, fakeId);
+    expect(isParseError(result)).toBe(false);
+    if (!isParseError(result)) {
+      expect(result.namedAgent).toBeUndefined();
+    }
+  });
+
+  it("returns an error for a malformed namedAgent", () => {
+    const result = parseChatBody({ message: "hi", namedAgent: { namedAgentId: "x" } }, fakeId);
+    expect(isParseError(result)).toBe(true);
+    if (isParseError(result)) {
+      expect(result.error).toContain("namedAgent");
+    }
+  });
+});
+
+describe("parseModelBody — namedAgent", () => {
+  it("returns model and namedAgent when both present", () => {
+    const result = parseModelBody({
+      model: "umans/umans-glm-5.2",
+      namedAgent: { namedAgentId: "na-1", namedAgentName: "Coding", model: "umans/umans-glm-5.2" },
+    });
+    expect(isModelParseError(result)).toBe(false);
+    if (!isModelParseError(result)) {
+      expect(result.model).toBe("umans/umans-glm-5.2");
+      expect(result.namedAgent).toEqual({
+        namedAgentId: "na-1",
+        namedAgentName: "Coding",
+        model: "umans/umans-glm-5.2",
+      });
+    }
+  });
+
+  it("returns model without namedAgent when absent", () => {
+    const result = parseModelBody({ model: "umans/umans-glm-5.2" });
+    expect(isModelParseError(result)).toBe(false);
+    if (!isModelParseError(result)) {
+      expect(result.model).toBe("umans/umans-glm-5.2");
+      expect(result.namedAgent).toBeUndefined();
+    }
+  });
+
+  it("accepts model: null without namedAgent", () => {
+    const result = parseModelBody({ model: null });
+    expect(isModelParseError(result)).toBe(false);
+    if (!isModelParseError(result)) {
+      expect(result.model).toBeNull();
+      expect(result.namedAgent).toBeUndefined();
+    }
+  });
+
+  it("returns an error for a malformed namedAgent", () => {
+    const result = parseModelBody({ model: "umans/m", namedAgent: { namedAgentId: "" } });
+    expect(isModelParseError(result)).toBe(true);
+  });
+
+  it("returns an error when model is missing", () => {
+    const result = parseModelBody({
+      namedAgent: { namedAgentId: "na-1", namedAgentName: "Coding", model: "umans/m" },
+    });
+    expect(isModelParseError(result)).toBe(true);
+  });
+});
+
+describe("mapCreateError / mapUpdateError", () => {
+  it("maps duplicate-name to 409", () => {
+    expect(mapCreateError("duplicate-name").status).toBe(409);
+    expect(mapUpdateError("duplicate-name").status).toBe(409);
+  });
+
+  it("maps invalid-name to 400", () => {
+    expect(mapCreateError("invalid-name").status).toBe(400);
+    expect(mapUpdateError("invalid-name").status).toBe(400);
+  });
+
+  it("maps invalid-model to 400", () => {
+    expect(mapCreateError("invalid-model").status).toBe(400);
+    expect(mapUpdateError("invalid-model").status).toBe(400);
+  });
+
+  it("maps not-found to 404 (update only)", () => {
+    expect(mapUpdateError("not-found").status).toBe(404);
+  });
+
+  it("returns a non-empty message for every error", () => {
+    for (const e of ["duplicate-name", "invalid-name", "invalid-model"] as const) {
+      expect(mapCreateError(e).message.length).toBeGreaterThan(0);
+    }
+    for (const e of ["duplicate-name", "invalid-name", "invalid-model", "not-found"] as const) {
+      expect(mapUpdateError(e).message.length).toBeGreaterThan(0);
     }
   });
 });

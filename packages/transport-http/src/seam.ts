@@ -12,6 +12,8 @@ export type { LspServerStatus, LspService } from "@dispatch/lsp";
 export { lspServiceHandle } from "@dispatch/lsp";
 export type { McpServerStatus, McpService } from "@dispatch/mcp";
 export { mcpServiceHandle } from "@dispatch/mcp";
+export type { NamedAgentsService } from "@dispatch/named-agents";
+export { namedAgentServiceHandle } from "@dispatch/named-agents";
 export type { ConcurrencyService } from "@dispatch/provider-concurrency";
 export { concurrencyServiceHandle } from "@dispatch/provider-concurrency";
 export type {

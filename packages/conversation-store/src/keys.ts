@@ -72,6 +72,15 @@ export function toolPolicyKey(conversationId: string): string {
   return `conv:${conversationId}:toolpolicy`;
 }
 
+/**
+ * The per-conversation Named Agent selection snapshot (JSON
+ * `NamedAgentSelectionSnapshot`) — freezes HOW a conversation was selected so
+ * later edits/deletes of the Named Agent never change an existing conversation.
+ */
+export function namedAgentSelectionKey(conversationId: string): string {
+  return `conv:${conversationId}:named-agent-selection`;
+}
+
 export function compactThresholdKey(conversationId: string): string {
   return `conv:${conversationId}:compact-percent`;
 }

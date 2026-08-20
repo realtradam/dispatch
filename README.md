@@ -8,7 +8,7 @@ in a separate repo and talks to the same typed contracts over HTTP + a surface W
   the Vercel AI SDK for providers.
 - **Architecture:** `kernel → core extensions → standard extensions`. The kernel touches no I/O
   and names no concrete feature; effects live in extensions, injected through typed contracts.
-- **Tests:** 2268 vitest tests + 124 bun:sqlite integration tests, zero internal mocks on pure-core packages.
+- **Tests:** 2452 vitest tests + 124 bun:sqlite integration tests, zero internal mocks on pure-core packages.
 
 ---
 
@@ -269,13 +269,14 @@ topologically at activation). Every extension also depends implicitly on the ker
 | **provider-openai-compat** | Registers a numbered `opencode-<n>` provider per `OPENCODE_API_KEY_<n>` (streaming chat + `listModels` + `getUsage`); the OpenCode Go path. | — |
 | **conversation-store** | Append-only persistence of the turn/chunk log, with a pure `reconcile` that repairs any interrupted turn on load. | — |
 | **session-orchestrator** | Drives one turn end-to-end: load history → resolve provider/model/tools → call `runTurn` → persist. | conversation-store, credential-store |
-| **transport-http** | Hono HTTP transport exposing `POST /chat` (NDJSON event stream), `GET /models`, and the full conversation/workspace/LSP/system-prompt API. | session-orchestrator |
+| **named-agents** | Owns the user-curated **Named Agent** registry (a friendly name → provider/model preset), persisted in SQLite-backed storage. Exposes a typed `NamedAgentsService` for `list_agent_models`/`summon_agent` and the `/named-agents` HTTP CRUD routes — never touches the provider catalog. | — |
+| **transport-http** | Hono HTTP transport exposing `POST /chat` (NDJSON event stream), `GET /models`, the `/named-agents` CRUD, and the full conversation/workspace/LSP/system-prompt API. | session-orchestrator |
 
 #### Standard extensions (shipped on-by-default)
 
 | Package | Description | Depends on |
 |---|---|---|
-| **agent-management** | Exposes the agent-management tool family for starting/managing **subagent** conversations (`list_agent_models`, `summon_agent`, `list_agents`, `read_agent`, `send_agent_message`, `cancel_agent_message`, `open_agent`) plus a typed `AgentManagementService`. The native-tools alternative to the `dispatch` CLI; the CLI remains the fallback/recovery surface. | conversation-store, credential-store, session-orchestrator |
+| **agent-management** | Exposes the agent-management tool family for starting/managing **subagent** conversations (`list_agent_models`, `summon_agent`, `list_agents`, `read_agent`, `send_agent_message`, `cancel_agent_message`, `open_agent`) plus a typed `AgentManagementService`. `list_agent_models` returns locally configured **Named Agents** (not the raw catalog); `summon_agent` selects by `agent` (a Named Agent) or the backward-compatible raw `model`, snapshoting a Named Agent selection onto the conversation. The native-tools alternative to the `dispatch` CLI; the CLI remains the fallback/recovery surface. | conversation-store, credential-store, named-agents, session-orchestrator |
 | **tool-read-file** | `read_file` tool with offset/limit pagination, directory listing, and workdir containment. | — |
 | **tool-shell** | `run_shell` tool — foreground, streamed output, process-group kill on abort/timeout. | — |
 | **tool-edit-file** | `edit_file` tool — exact-string replacement, `replaceAll` flag, workdir-contained. | — |

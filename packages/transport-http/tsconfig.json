@@ -9,6 +9,7 @@
     { "path": "../kernel" },
     { "path": "../lsp" },
     { "path": "../mcp" },
+    { "path": "../named-agents" },
     { "path": "../provider-concurrency" },
     { "path": "../session-orchestrator" },
     { "path": "../system-prompt" },

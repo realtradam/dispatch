@@ -15,16 +15,23 @@ import type {
   ComputerResponse,
   ComputerStatusResponse,
   ConversationComputerResponse,
+  CreateNamedAgentRequest,
   CwdResponse,
+  DeleteNamedAgentResponse,
   LspServerInfo,
   LspServerState,
   LspStatusResponse,
   McpStatusResponse,
+  ModelResponse,
   ModelsResponse,
+  NamedAgent,
+  NamedAgentResponse,
+  NamedAgentsResponse,
   SetConversationComputerRequest,
   SetCwdRequest,
   SetWorkspaceDefaultComputerRequest,
   TestComputerResponse,
+  UpdateNamedAgentRequest,
 } from "./index.js";
 
 // ─── CwdResponse ─────────────────────────────────────────────────────────────
@@ -373,5 +380,53 @@ describe("transport-contract types compile and are exported", () => {
 
   it("SetWorkspaceDefaultComputerRequest: null clears to local", () => {
     expect(_setDefaultComputer.computerId).toBeNull();
+  });
+
+  // ─── Named Agents ──────────────────────────────────────────────────────
+
+  it("NamedAgentsResponse: lists configured Named Agents", () => {
+    const resp: NamedAgentsResponse = {
+      namedAgents: [
+        { id: "na-1", name: "Coding Agent", model: "opencode-1/claude-sonnet-4.5" },
+        { id: "na-2", name: "Research Agent", model: "umans/umans-glm-5.2" },
+      ],
+    };
+    expect(resp.namedAgents).toHaveLength(2);
+    expect(resp.namedAgents[0]?.name).toBe("Coding Agent");
+  });
+
+  it("NamedAgentResponse: carries a single canonical record", () => {
+    const resp: NamedAgentResponse = {
+      namedAgent: { id: "na-1", name: "Fast Agent", model: "hyper/some-fast-model" },
+    };
+    expect(resp.namedAgent.id).toBe("na-1");
+    expect(resp.namedAgent.model).toBe("hyper/some-fast-model");
+  });
+
+  it("CreateNamedAgentRequest / UpdateNamedAgentRequest: carry name + model", () => {
+    const create: CreateNamedAgentRequest = { name: "Coding Agent", model: "opencode-1/m" };
+    const update: UpdateNamedAgentRequest = { name: "Research Agent", model: "umans/m" };
+    expect(create.name).toBe("Coding Agent");
+    expect(update.model).toBe("umans/m");
+  });
+
+  it("DeleteNamedAgentResponse: carries the stable id", () => {
+    const del: DeleteNamedAgentResponse = { id: "na-1" };
+    expect(del.id).toBe("na-1");
+  });
+
+  it("ModelResponse: namedAgent is a NamedAgentSelectionSnapshot (compile-time assignable)", () => {
+    const namedAgent: NamedAgent = { id: "na-1", name: "Coding", model: "opencode-1/m" };
+    // NamedAgentResponse expects a NamedAgent — satisfies the re-export.
+    const resp: NamedAgentResponse = { namedAgent };
+    expect(resp.namedAgent.id).toBe("na-1");
+
+    // ModelResponse carries the selection snapshot.
+    const modelResp: ModelResponse = {
+      conversationId: "c1",
+      model: "opencode-1/m",
+      namedAgent: { namedAgentId: "na-1", namedAgentName: "Coding", model: "opencode-1/m" },
+    };
+    expect(modelResp.namedAgent?.namedAgentId).toBe("na-1");
   });
 });

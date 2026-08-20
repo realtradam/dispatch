@@ -13,7 +13,7 @@ import type {
   TurnMetrics,
 } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
-import type { Workspace, WorkspaceEntry } from "@dispatch/wire";
+import type { NamedAgentSelectionSnapshot, Workspace, WorkspaceEntry } from "@dispatch/wire";
 import {
   CONVERSATION_INDEX_KEY,
   chunkKey,
@@ -27,6 +27,7 @@ import {
   metricsPrefix,
   metricsSeqKey,
   modelKey,
+  namedAgentSelectionKey,
   parentKey,
   parseSeq,
   reasoningEffortKey,
@@ -100,7 +101,9 @@ export interface ConversationStore {
    * Persist (upsert) the model name for a conversation (a model name in
    * `<credentialName>/<model>` form). Passing an empty string clears the
    * persisted selection (idempotent) — this is how transport-http clears via
-   * `PUT /conversations/:id/model` with a `null` body.
+   * `PUT /conversations/:id/model` with a `null` body. Clearing the model also
+   * clears the conversation's Named Agent selection snapshot (they are set
+   * together and clear together).
    */
   readonly setModel: (conversationId: string, model: string) => Promise<void>;
   /**
@@ -139,6 +142,25 @@ export interface ConversationStore {
   /** Persist (upsert) the per-conversation tool policy. */
   readonly setToolPolicy: (conversationId: string, policy: ConversationToolPolicy) => Promise<void>;
   /**
+   * The persisted Named Agent selection snapshot for a conversation, or `null`
+   * when none was recorded (a raw-model conversation). The snapshot freezes HOW
+   * the conversation was selected (a Named Agent) so later edits/deletes of the
+   * Named Agent never change an existing conversation. A present-but-corrupt
+   * value degrades to `null` (never throws).
+   */
+  readonly getNamedAgentSelection: (
+    conversationId: string,
+  ) => Promise<NamedAgentSelectionSnapshot | null>;
+  /**
+   * Persist (upsert) the Named Agent selection snapshot for a conversation.
+   * A re-selection supersedes the previous snapshot (overwrites). The snapshot
+   * is stored wholesale as JSON (the value is a full snapshot, not a partial).
+   */
+  readonly setNamedAgentSelection: (
+    conversationId: string,
+    snapshot: NamedAgentSelectionSnapshot,
+  ) => Promise<void>;
+  /**
    * List the ids of conversations whose `parentConversationId` equals
    * `parentId` (direct children). Returns an empty array when `parentId` has
    * no children. Scans the conversation index, reading each child's parent
@@ -148,11 +170,12 @@ export interface ConversationStore {
   /**
    * Delete a conversation ENTIRELY: every persisted key in its `conv:{id}:*`
    * namespace (chunks, metrics, meta, cwd, model, computer, reasoning-effort,
-   * compact-percent, image-transcriptions, parent, toolPolicy) and its entry
-   * in the conversation index. This is the normal conversation deletion
-   * lifecycle through which parent/toolPolicy metadata is cleaned. Idempotent
-   * for an unknown conversation. Lineage metadata only at the storage layer —
-   * it does not rewind append-only history semantics of other conversations.
+   * compact-percent, image-transcriptions, parent, toolPolicy,
+   * named-agent-selection) and its entry in the conversation index. This is
+   * the normal conversation deletion lifecycle through which parent/toolPolicy
+   * metadata is cleaned. Idempotent for an unknown conversation. Lineage
+   * metadata only at the storage layer — it does not rewind append-only
+   * history semantics of other conversations.
    */
   readonly deleteConversation: (conversationId: string) => Promise<void>;
   /**
@@ -528,6 +551,41 @@ export function parseToolPolicy(raw: string | null): ConversationToolPolicy | nu
     return { mode, names: [...names] } as ConversationToolPolicy;
   }
   return { mode: "all" };
+}
+
+/**
+ * Parse a persisted {@link NamedAgentSelectionSnapshot} (JSON at
+ * `namedAgentSelectionKey(id)`), returning `null` when absent (never set — a
+ * raw-model conversation) or on ANY parse / shape failure so callers can treat
+ * a corrupt row as "no snapshot" (never throws). A well-formed row requires all
+ * three string fields (`namedAgentId`, `namedAgentName`, `model`).
+ *
+ * Pure (input → output); exported so tests can exercise the degradation rules.
+ */
+export function parseNamedAgentSelectionSnapshot(
+  raw: string | null,
+): NamedAgentSelectionSnapshot | null {
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const row = parsed as { namedAgentId?: unknown; namedAgentName?: unknown; model?: unknown };
+  if (
+    typeof row.namedAgentId !== "string" ||
+    typeof row.namedAgentName !== "string" ||
+    typeof row.model !== "string"
+  ) {
+    return null;
+  }
+  return {
+    namedAgentId: row.namedAgentId,
+    namedAgentName: row.namedAgentName,
+    model: row.model,
+  };
 }
 
 /**
@@ -928,9 +986,13 @@ export function createConversationStore(
 
     async setModel(conversationId, model) {
       if (model === "") {
-        // Idempotent clear: an empty model clears the persisted
-        // selection. Deleting an already-absent key is a no-op.
+        // Idempotent clear: an empty model clears the persisted selection.
+        // Deleting an already-absent key is a no-op. Clearing the model also
+        // clears the Named Agent selection snapshot — the frozen friendly
+        // label is meaningless once the model selection is gone (they are
+        // set together, so they clear together).
         await storage.delete(modelKey(conversationId));
+        await storage.delete(namedAgentSelectionKey(conversationId));
         if (logger !== undefined) {
           logger.debug("model cleared", { conversationId });
         }
@@ -1013,6 +1075,18 @@ export function createConversationStore(
       }
     },
 
+    async getNamedAgentSelection(conversationId) {
+      const raw = await storage.get(namedAgentSelectionKey(conversationId));
+      return parseNamedAgentSelectionSnapshot(raw);
+    },
+
+    async setNamedAgentSelection(conversationId, snapshot) {
+      await storage.set(namedAgentSelectionKey(conversationId), JSON.stringify(snapshot));
+      if (logger !== undefined) {
+        logger.debug("named-agent-selection set", { conversationId });
+      }
+    },
+
     async listChildren(parentId) {
       // Scan the conversation index; for each conversation, read its
       // persisted parent pointer and keep those matching `parentId`.
@@ -1065,6 +1139,7 @@ export function createConversationStore(
         imageTranscriptionsKey(conversationId),
         parentKey(conversationId),
         toolPolicyKey(conversationId),
+        namedAgentSelectionKey(conversationId),
         metricsSeqKey(conversationId),
       ]) {
         await storage.delete(k);
@@ -1282,6 +1357,10 @@ export function createConversationStore(
       if (model !== null) await storage.set(modelKey(targetId), model);
       const computerId = await storage.get(computerKey(sourceId));
       if (computerId !== null) await storage.set(computerKey(targetId), computerId);
+      // Copy the Named Agent selection snapshot so the archive stays faithful to
+      // how the source was selected (a re-selection label frozen at select time).
+      const snapshot = await this.getNamedAgentSelection(sourceId);
+      if (snapshot !== null) await this.setNamedAgentSelection(targetId, snapshot);
     },
 
     async getCompactPercent(conversationId) {

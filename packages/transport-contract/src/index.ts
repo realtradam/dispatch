@@ -27,6 +27,8 @@ import type {
   ConversationMeta,
   ConversationStatus,
   ImageInput,
+  NamedAgent,
+  NamedAgentSelectionSnapshot,
   QueuedMessage,
   ReasoningEffort,
   StoredChunk,
@@ -44,6 +46,8 @@ export type {
   ConversationStatus,
   ImageChunk,
   ImageInput,
+  NamedAgent,
+  NamedAgentSelectionSnapshot,
   QueuedMessage,
   ReasoningEffort,
   StepMetrics,
@@ -138,6 +142,20 @@ export interface ChatRequest {
    * turn (no second round-trip from the client).
    */
   readonly title?: string;
+
+  /**
+   * Named Agent selection snapshot to persist on the conversation at creation.
+   *
+   * When the client starts a conversation via the synthetic **Named Agents**
+   * provider, it resolves the selected Named Agent to its raw `model` and sends
+   * that **plus** this snapshot so the conversation freezes how it was selected
+   * (snapshot semantics — see `NamedAgentSelectionSnapshot` in `@dispatch/wire`).
+   * The server persists it alongside the model; later edits/deletes of the Named
+   * Agent do not change this conversation's selection. Omit for a raw-model-only
+   * conversation (backward compatible). Ignored/overwritten by a subsequent
+   * `PUT /conversations/:id/model` that carries its own snapshot.
+   */
+  readonly namedAgent?: NamedAgentSelectionSnapshot;
 }
 
 /**
@@ -165,6 +183,48 @@ export interface ModelMetadata {
    * vision badge in the model picker. Optional — absent when unknown.
    */
   readonly vision?: boolean;
+}
+
+// ─── Named Agents ────────────────────────────────────────────────────────────
+
+/**
+ * Response body for `GET /named-agents` — the list of configured Named Agents.
+ *
+ * Each record is a user-curated model preset (`id`, friendly `name`, canonical
+ * `<credential>/<model>`). This is the local configuration that drives the
+ * "Named Agents" synthetic provider in the frontend model selector and the
+ * `list_agent_models`/`summon_agent` agent tools — NOT the raw model catalog
+ * (which `GET /models` continues to serve unchanged).
+ */
+export interface NamedAgentsResponse {
+  readonly namedAgents: readonly NamedAgent[];
+}
+
+/** Response body for `POST`/`PUT /named-agents(/:id)` — the canonical saved record. */
+export interface NamedAgentResponse {
+  readonly namedAgent: NamedAgent;
+}
+
+/** Request body for `POST /named-agents` — create a Named Agent. */
+export interface CreateNamedAgentRequest {
+  /** User-chosen friendly name (trimmed; unique case-insensitively). */
+  readonly name: string;
+  /** Canonical `<credential>/<model>` identifier. */
+  readonly model: string;
+}
+
+/** Request body for `PUT /named-agents/:id` — full update of a Named Agent. */
+export interface UpdateNamedAgentRequest {
+  readonly name: string;
+  readonly model: string;
+}
+
+/**
+ * Response body for `DELETE /named-agents/:id` — confirms removal of the record
+ * with the stable id.
+ */
+export interface DeleteNamedAgentResponse {
+  readonly id: string;
 }
 
 /**
@@ -338,10 +398,18 @@ export interface SetReasoningEffortRequest {
  * Response of `GET /conversations/:id/model`. `model` is the persisted model
  * name in `<credentialName>/<model>` form, or null when never set (the server
  * then resolves turns using the default provider + model).
+ *
+ * `namedAgent` is the Named Agent selection snapshot recorded when the
+ * conversation was started/selected via a Named Agent. Present only for
+ * conversations that were created through a Named Agent (snapshot semantics: it
+ * freezes the friendly id/name + resolved model at selection time, so later
+ * edits to the Named Agent do not change this conversation's selection). A
+ * conversation holding only a raw model carries no `namedAgent`.
  */
 export interface ModelResponse {
   readonly conversationId: string;
   readonly model: string | null;
+  readonly namedAgent?: NamedAgentSelectionSnapshot;
 }
 
 /**
@@ -350,9 +418,16 @@ export interface ModelResponse {
  * `ChatRequest.model` override). Pass `null` to clear the persisted selection.
  * An unrecognized model name is not validated here (the provider resolves it
  * at turn time; an unknown model → turn error, not a 400).
+ *
+ * `namedAgent` (optional) is a Named Agent selection snapshot to persist with
+ * the model — sent when the client sets this conversation's model via the
+ * synthetic **Named Agents** provider so the conversation freezes the friendly
+ * selection. When `model` is `null` (clear), the persisted snapshot is also
+ * cleared. Omit entirely for a raw-model selection (backward compatible).
  */
 export interface SetModelRequest {
   readonly model: string | null;
+  readonly namedAgent?: NamedAgentSelectionSnapshot;
 }
 
 // ─── Conversation close (explicit tab close) ──────────────────────────────────

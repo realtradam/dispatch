@@ -7,14 +7,21 @@ import type {
   StorageNamespace,
   TurnMetrics,
 } from "@dispatch/kernel";
+import type { NamedAgentSelectionSnapshot } from "@dispatch/wire";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   CONVERSATION_INDEX_KEY,
   chunkKey,
   metaKey,
+  namedAgentSelectionKey as namedAgentSelectionKeyRaw,
   toolPolicyKey as toolPolicyKeyRaw,
 } from "./keys.js";
-import { createConversationStore, extractTitle, parseToolPolicy } from "./store.js";
+import {
+  createConversationStore,
+  extractTitle,
+  parseNamedAgentSelectionSnapshot,
+  parseToolPolicy,
+} from "./store.js";
 
 interface SpanEvent {
   readonly kind: "span-open" | "span-close";
@@ -1844,6 +1851,190 @@ describe("ConversationStore toolPolicy", () => {
   it("parseToolPolicy: allow/deny copy the names array (does not alias the source)", () => {
     const result = parseToolPolicy(JSON.stringify({ mode: "allow", names: ["a", "b"] }));
     expect(result).toEqual({ mode: "allow", names: ["a", "b"] });
+  });
+});
+
+describe("ConversationStore namedAgentSelection", () => {
+  let storage: StorageNamespace;
+
+  beforeEach(() => {
+    storage = createMemoryStorage();
+  });
+
+  it("getNamedAgentSelection returns null when never set (raw-model conversation)", async () => {
+    const store = createConversationStore(storage);
+    expect(await store.getNamedAgentSelection("conv_unknown")).toBeNull();
+  });
+
+  it("set + get returns the same snapshot (round-trip)", async () => {
+    const store = createConversationStore(storage);
+    const snapshot: NamedAgentSelectionSnapshot = {
+      namedAgentId: "na_abc",
+      namedAgentName: "Coding Agent",
+      model: "opencode-1/claude-sonnet-4.5",
+    };
+    await store.setNamedAgentSelection("conv1", snapshot);
+    expect(await store.getNamedAgentSelection("conv1")).toEqual(snapshot);
+  });
+
+  it("setNamedAgentSelection is an upsert (a re-selection supersedes the previous)", async () => {
+    const store = createConversationStore(storage);
+    await store.setNamedAgentSelection("conv1", {
+      namedAgentId: "na_1",
+      namedAgentName: "Research",
+      model: "umans/umans-glm-5.2",
+    });
+    await store.setNamedAgentSelection("conv1", {
+      namedAgentId: "na_2",
+      namedAgentName: "Fast",
+      model: "hyper/some-fast-model",
+    });
+    expect(await store.getNamedAgentSelection("conv1")).toEqual({
+      namedAgentId: "na_2",
+      namedAgentName: "Fast",
+      model: "hyper/some-fast-model",
+    });
+  });
+
+  it("isolates snapshots by conversation", async () => {
+    const store = createConversationStore(storage);
+    await store.setNamedAgentSelection("convA", {
+      namedAgentId: "na_a",
+      namedAgentName: "A",
+      model: "cred-a/model-a",
+    });
+    await store.setNamedAgentSelection("convB", {
+      namedAgentId: "na_b",
+      namedAgentName: "B",
+      model: "cred-b/model-b",
+    });
+    expect(await store.getNamedAgentSelection("convA")).toEqual({
+      namedAgentId: "na_a",
+      namedAgentName: "A",
+      model: "cred-a/model-a",
+    });
+    expect(await store.getNamedAgentSelection("convB")).toEqual({
+      namedAgentId: "na_b",
+      namedAgentName: "B",
+      model: "cred-b/model-b",
+    });
+  });
+
+  it("snapshot persists across a fresh store instance on the same storage", async () => {
+    const store1 = createConversationStore(storage);
+    const snapshot: NamedAgentSelectionSnapshot = {
+      namedAgentId: "na_1",
+      namedAgentName: "Coding Agent",
+      model: "opencode-1/claude-sonnet-4.5",
+    };
+    await store1.setNamedAgentSelection("conv1", snapshot);
+
+    const store2 = createConversationStore(storage);
+    expect(await store2.getNamedAgentSelection("conv1")).toEqual(snapshot);
+  });
+
+  it("a corrupt persisted snapshot value returns null (not a throw)", async () => {
+    // Write a corrupt JSON value directly to the storage key.
+    await storage.set(namedAgentSelectionKeyRaw("conv1"), "{not valid json");
+    const store = createConversationStore(storage);
+    expect(await store.getNamedAgentSelection("conv1")).toBeNull();
+  });
+
+  it("a malformed-shape snapshot value returns null (not a throw)", async () => {
+    await storage.set(
+      namedAgentSelectionKeyRaw("conv1"),
+      JSON.stringify({ namedAgentId: 123, namedAgentName: "X", model: "m" }),
+    );
+    const store = createConversationStore(storage);
+    expect(await store.getNamedAgentSelection("conv1")).toBeNull();
+  });
+
+  it("a snapshot missing a required field returns null", async () => {
+    await storage.set(
+      namedAgentSelectionKeyRaw("conv1"),
+      JSON.stringify({ namedAgentId: "na_1", namedAgentName: "X" }),
+    );
+    const store = createConversationStore(storage);
+    expect(await store.getNamedAgentSelection("conv1")).toBeNull();
+  });
+
+  it("parseNamedAgentSelectionSnapshot: null raw → null (never set)", () => {
+    expect(parseNamedAgentSelectionSnapshot(null)).toBeNull();
+  });
+
+  it("deleteConversation clears the snapshot (and the other keys still clear)", async () => {
+    const store = createConversationStore(storage);
+    const msg: ChatMessage = { role: "user", chunks: [{ type: "text", text: "hello" }] };
+    await store.append("conv1", [msg]);
+    await store.setModel("conv1", "cred/model");
+    await store.setNamedAgentSelection("conv1", {
+      namedAgentId: "na_1",
+      namedAgentName: "Coding Agent",
+      model: "cred/model",
+    });
+    expect(await store.getNamedAgentSelection("conv1")).not.toBeNull();
+
+    await store.deleteConversation("conv1");
+
+    expect(await store.getNamedAgentSelection("conv1")).toBeNull();
+    // The other keys still clear alongside it.
+    expect(await store.getModel("conv1")).toBeNull();
+    expect(await store.load("conv1")).toEqual([]);
+  });
+
+  it("forkHistory copies the snapshot to the archive", async () => {
+    const store = createConversationStore(storage);
+    await store.append("source", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+    const snapshot: NamedAgentSelectionSnapshot = {
+      namedAgentId: "na_1",
+      namedAgentName: "Coding Agent",
+      model: "opencode-1/claude-sonnet-4.5",
+    };
+    await store.setNamedAgentSelection("source", snapshot);
+
+    await store.forkHistory("source", "target");
+
+    expect(await store.getNamedAgentSelection("target")).toEqual(snapshot);
+  });
+
+  it("forkHistory copies an unset (absent) snapshot as absent (target reads null)", async () => {
+    const store = createConversationStore(storage);
+    await store.append("source", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+    // No snapshot set on source (a raw-model conversation).
+    await store.forkHistory("source", "target");
+    expect(await store.getNamedAgentSelection("target")).toBeNull();
+  });
+
+  it("named-agent-selection keys do not collide with model/cwd/toolPolicy key spaces", async () => {
+    const store = createConversationStore(storage);
+    // A snapshot value persisted for conv1 must not be readable as a model/cwd.
+    await store.setNamedAgentSelection("conv1", {
+      namedAgentId: "na_1",
+      namedAgentName: "Coding Agent",
+      model: "cred/model",
+    });
+    expect(await store.getModel("conv1")).toBeNull();
+    expect(await store.getCwd("conv1")).toBeNull();
+    expect(await store.getToolPolicy("conv1")).toBeNull();
+    // And conversely a model must not be readable as a snapshot.
+    await store.setModel("conv2", "cred/model-2");
+    expect(await store.getNamedAgentSelection("conv2")).toBeNull();
+  });
+
+  it("clearing the model (setModel '') also clears the snapshot", async () => {
+    const store = createConversationStore(storage);
+    await store.setModel("conv1", "cred/model");
+    await store.setNamedAgentSelection("conv1", {
+      namedAgentId: "na_1",
+      namedAgentName: "Coding Agent",
+      model: "cred/model",
+    });
+    expect(await store.getNamedAgentSelection("conv1")).not.toBeNull();
+
+    await store.setModel("conv1", "");
+
+    expect(await store.getModel("conv1")).toBeNull();
+    expect(await store.getNamedAgentSelection("conv1")).toBeNull();
   });
 });
 

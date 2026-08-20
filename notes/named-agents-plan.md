@@ -1,643 +1,656 @@
 # Named Agents — Feature Plan
 
-> **Status:** PLANNING ONLY. No feature code is written. This document lives in
-> the backend worktree on branch `feature/named-agents` and is the single source
-> of truth for the design until implementation waves begin.
+> **Status:** Approved product direction; planning only.
 >
-> **Scope of this doc:** research the current model-discovery + agent-summoning
-> path across BOTH repos, brainstorm product semantics, and produce a concrete
-> cross-repo implementation plan. It distinguishes current behavior, proposed
-> behavior, backend work, frontend work, migration/compat, tests, and the open
-> product questions that need a human decision before any code is written.
-
----
-
-## 0. The problem (in the user's words)
-
-> "Selecting models for an agent when it is summoning a new agent is too
-> difficult. It is too slow (the response takes a long time) and finding the
-> right model is too complex (too many options, selecting strange models that I
-> didn't desire). So what I am proposing is a feature where we can define
-> 'agents' which I select a name, and select a model. Then when the agent asks
-> for a list of models, they will simply instantly get the list of the named
-> agents they can summon, and use those to summon. This would replace the way we
-> list available models now for agents summoning agents."
-
-Two concrete pain points, both confirmed by reading the code:
-
-1. **Too slow** — every `list_agent_models` call fans out to a **live network
-   fetch** against every configured provider's upstream `/models` endpoint (see
-   §1.2). There is no cache and no persisted shortlist, so discovery latency =
-   sum of all provider `/models` round-trips.
-2. **Too complex / wrong picks** — the tool returns **every** model from every
-   provider (often dozens/hundreds), so the model either picks something
-   unsuitable or wastes tokens scanning a huge list.
-
-The proposal: let the user predefine a small, named shortlist (name → model) and
-have `list_agent_models` return *that* instead of the raw catalog. Because the
-shortlist is persisted config, listing it is **instant** (zero network) and
-**small** (only what the user curated).
-
----
-
-## 1. Current behavior (as found in the code)
-
-### 1.1 The agent-management tool family (`packages/agent-management/`)
-
-The `agent-management` standard extension already exists and contributes seven
-AI-callable tools. The two this feature changes:
-
-- **`list_agent_models`** (`src/tools/list_agent_models.ts`) — described to the
-  model as "List the models available for summon_agent … Do NOT use run_shell +
-  'dispatch models'." Parameters: `query?`, `vision?`, `limit?`. It calls
-  `AgentManagementService.listModels`.
-- **`summon_agent`** (`src/tools/summon_agent.ts`) — starts a subagent
-  conversation. `model` is **required** and documented as "Exact model name
-  (`<credential>/<model>`) from `list_agent_models`."
-
-Both tools are thin shells over the typed `AgentManagementService`
-(`src/service.ts`), whose handle is `agentManagementHandle`
-(`defineService<AgentManagementService>("agent-management/service")`). The
-service is wired in `src/extension.ts` by resolving `conversationStoreHandle`,
-`credentialStoreHandle`, and lazily `sessionOrchestratorHandle` from the host.
-
-### 1.2 Why it is slow — the catalog fan-out
-
-`AgentManagementService.listModels` (`service.ts` ~L343) does:
-
-1. `await deps.credentialStore.listCatalog()` — which, in
-   `packages/credential-store/src/registry.ts` (`listCatalogDetailedInternal`),
-   **loops over every credential** and calls `provider.listModels()` — a **live
-   network GET** to each upstream (`/models` or `/v1/models/info`; see
-   `packages/openai-stream/src/listModels.ts`).
-2. Then, for **each** returned model name, calls
-   `credentialStore.getModelInfo(name)` — which **re-invokes** the provider's
-   `listModels()` again (per model!) to look up `ModelInfo`.
-
-So a single `list_agent_models` call triggers `(N credentials) + (M models)`
-upstream `/models` round-trips. That is the latency the user feels. There is no
-caching layer between the tool and the provider endpoints.
-
-`summon_agent` **also** validates the model against the full catalog
-(`service.ts` ~L411: `catalog = await deps.credentialStore.listCatalog()` then
-`catalog.includes(input.model)`), so **every summon pays the same network
-fan-out** just to validate the model name. An invalid model yields
-`unknown-model`.
-
-### 1.3 The credential-store contract (`packages/credential-store/`)
-
-`CredentialStore` (`src/registry.ts`) exposes:
-- `resolve(modelName)` → `{ providerId, model }` (split on first `/`).
-- `listCatalog()` → `readonly string[]` (network-backed, see above).
-- `listCatalogDetailed()` → `readonly CatalogEntry[]` (name + `ModelInfo`).
-- `getModelInfo(modelName)` → `ModelInfo | undefined`.
-
-Credentials are **assembled in the composition root** (`packages/host-bin/src/main.ts`
-~L213–L291) from environment variables (`OPENCODE_API_KEY_<n>`, `UMANS_API_KEY`,
-etc.) and external-provider detection, then passed into
-`createCredentialStoreExtension({ credentials })`. The credential list is
-**hardcoded from env at boot**, not user-editable at runtime. The glossary notes
-credentials are "Defined in config (a TOML, later); the MVP hardcodes one."
-
-### 1.4 The HTTP model catalog (`GET /models`)
-
-`transport-contract` (`src/index.ts` ~L143) defines `ModelsResponse`
-(`{ models: readonly string[]; modelInfo?: Record<string, ModelMetadata> }`).
-`transport-http` (`src/app.ts` ~L341) implements `GET /models` by calling
-`credentialStore.listCatalogDetailed()`. This is the **user-facing** catalog
-(the frontend's own model picker), distinct from the agent-facing
-`list_agent_models` tool — but both currently read the same network-backed
-catalog.
-
-### 1.5 Persistence model (`packages/conversation-store/` + `storage-sqlite`)
-
-`ConversationStore` (`src/store.ts`) is backed by a namespaced key-value
-`StorageNamespace` obtained via `host.storage("conversation-store")`
-(`src/extension.ts`). Keys follow a `conv:<id>:<field>` scheme
-(`src/keys.ts`): `conv:<id>:model`, `conv:<id>:meta`, `conv:<id>:parent`,
-`conv:<id>:toolpolicy`, etc., plus a `conv-index` index key and
-`workspace:<id>` keys. **Global** settings use a bare key, e.g.
-`VISION_SETTINGS_KEY = "vision-settings"`.
-
-The storage backend is `storage-sqlite` (`src/extension.ts`) — a kernel
-bootstrap dep injected via `HostDeps.storageFactory`; it is a no-op extension
-whose `StorageNamespace` is the real KV store. Settings CRUD follows the
-`GET/PUT /settings/vision` pattern (`transport-http/src/app.ts` ~L1883): GET
-reads the store, PUT validates + writes + returns the new state.
-
-### 1.6 Programmatic consumer — `vision-handoff`
-
-`vision-handoff` resolves a vision-capable model **from the raw catalog**
-(`credentialStore.listCatalog` / `resolve`) and summons it via
-`agentManagementHandle.summon` with `toolAccess: "none"` and `images`. It is a
-**programmatic** caller, not an AI tool call. **It must keep access to the raw
-catalog** regardless of what `list_agent_models` returns to models.
-
-### 1.7 Frontend model selection (`../frontend`)
-
-The FE fetches `GET /models` on boot (`src/app/store.svelte.ts` ~L1233) and
-feeds `models` + `modelInfo` to `ModelSelector.svelte` — a two-step picker
-(credential key → model suffix) built on pure helpers in
-`src/features/chat/model-select.ts`. The FE has **no** preset/profile/named-
-agent concept and **no** subagent-lineage UI (no `parentConversationId`
-handling). Settings UI lives in `src/features/settings/` (currently only the
-chat-limit field). The FE consumes backend contracts as pinned `file:` deps and
-mirrors them into `.dispatch/*.reference.md`; cross-repo contract changes are
-**couriered via the user** (`backend-handoff.md`, per FE `AGENTS.md` §"Backend
-seam").
-
----
-
-## 2. Proposed behavior
-
-### 2.1 The core idea — a curated, persisted, named shortlist
-
-Introduce a user-defined registry of **named agents**: each entry binds a
-human-friendly **name** to a **model name** (`<credential>/<model>`) and,
-optionally, summon defaults. The agent-facing `list_agent_models` tool returns
-**this shortlist** (instant, persisted, small) instead of the raw network-
-backed catalog. `summon_agent` is summoned **by named-agent name**, validating
-against the persisted registry (instant) rather than the live catalog.
-
-### 2.2 What changes for the model (agent summoning an agent)
-
-- **`list_agent_models`** returns the **named agents** the caller can summon:
-  `{ name, model, …defaults }`. No network calls; reads persisted config. The
-  `query`/`vision`/`limit` filters still apply over the shortlist. `vision`
-  can still be resolved (from cached `ModelInfo` captured at definition time,
-  or by deferring to the catalog on a best-effort, non-blocking basis — see
-  open question Q5).
-- **`summon_agent`** accepts a **named-agent name** (the `model` field is
-  repurposed, or a new `agent` field is added — see Q2). The service resolves
-  the name → underlying model name from the persisted registry, then starts
-  the turn. Validation is against the persisted registry (instant), not the
-  live catalog. Defaults recorded on the named agent (e.g. `reasoningEffort`,
-  `toolAccess`) apply unless the call overrides them.
-
-### 2.3 What does NOT change
-
-- The **`credential-store` raw catalog** (`listCatalog`/`listCatalogDetailed`/
-  `resolve`/`getModelInfo`) stays exactly as-is. It remains the source of truth
-  for: the **user's own** model picker (`GET /models`), `vision-handoff`'s
-  vision-model resolution, auto-compaction's `contextWindow` lookup, and the
-  `/chat` `model` field. The named-agents feature is **only** about the
-  agent→agent summoning surface.
-- The other five agent-management tools (`list_agents`, `read_agent`,
-  `send_agent_message`, `cancel_agent_message`, `open_agent`) are unchanged —
-  they operate on conversations, not on model selection.
-- The kernel stays provider-agnostic, I/O-free, and unaware of named agents.
-
-### 2.4 Defining named agents is a USER action, not an agent action
-
-Creating/editing/deleting named agents is admin/user configuration (like
-credentials and vision settings), **not** an AI-callable tool. The
-agent-management tool family is for *summoning and managing conversations*;
-defining the shortlist is a separate, user-owned config surface. (See Q7 for
-whether a CLI command is also wanted.)
-
----
-
-## 3. Product semantics & unresolved decisions (brainstorm)
-
-These are the decisions that shape the design. Each is flagged for human
-confirmation; where I have a recommendation, it is marked **(recommendation)**.
-
-### Q1 — Canonical term & glossary entry  *(needs user confirmation)*
-
-"Named agent" risks colliding with the existing vocabulary where **agent** /
-**subagent** = a running *conversation*, and **agent management** = the feature
-that summons/controls them. A "named agent" here is **not** a running agent —
-it is a *reusable, named model preset for summoning*. Existing analogues:
-**credential** (name → provider) and **model name** (`<credential>/<model>`).
-
-Candidate canonical terms:
-- **named agent** (the user's wording) — intuitive but blurs "agent = conversation."
-- **agent preset** / **summon preset** — precise; describes what it is (a preset).
-- **agent profile** — common in tooling; slightly heavier connotation.
-
-**(recommendation):** adopt **named agent** as the user-facing term (honoring the
-user's language) but add a glossary entry that sharply distinguishes it from
-**subagent**: a *named agent* is a persisted **summon preset** (name → model +
-defaults) that agents summon *by*; a *subagent* is the resulting *conversation*.
-Confirm before adding to `GLOSSARY.md` (both repos).
-
-### Q2 — Does `summon_agent` take a named-agent name, a model name, or both?  *(needs user decision)*
-
-Three options:
-- **(A) Replace** — `summon_agent` takes a named-agent **name** only; the raw
-  `model` field is removed/renamed. Cleanest API, but breaks programmatic
-  callers (`vision-handoff`) that summon by raw model name.
-- **(B) Augment** — add an `agent` (named-agent name) field; `model` stays as
-  the raw-model escape hatch. `agent` wins if present; else fall back to
-  `model` (validated against the catalog as today). Backward compatible.
-- **(recommendation): (B) Augment.** It keeps `vision-handoff` and any future
-  programmatic caller working unchanged, lets the AI use the friendly shortlist
-  by default, and retains the raw-model path as an explicit escape hatch. The
-  tool description steers the model toward `agent` (the curated list) and
-  documents `model` as the advanced/raw override.
-
-### Q3 — Empty registry: fallback to catalog, or empty + guidance?  *(needs user decision)*
-
-If the user has defined **zero** named agents, what does `list_agent_models`
-return?
-- **(A) Fall back** to the full catalog (today's behavior). No regression, but
-  re-introduces the slowness/complexity until the user curates a list.
-- **(B) Return empty** with a message like "No named agents defined; ask the
-  user to define some (or use `model` with a raw `<credential>/<model>` name)."
-- **(recommendation): (B) with a raw-model escape hatch.** Returning empty
-  forces curation (the whole point) and avoids the silent slow path; the
-  `model` field (Q2-B) keeps summoning functional for power users. A one-time
-  "seed from catalog" helper (Q8) eases onboarding.
-
-### Q4 — Persistence: SQLite KV vs config file?  *(needs user decision)*
-
-- **(A) SQLite `StorageNamespace`** (a new `host.storage("named-agents")`
-  namespace with a `named-agents` index key + `named-agent:<name>` entries).
-  Matches the vision-settings precedent; CRUD via HTTP; instant reads.
-- **(B) Config file** (TOML/JSON), mirroring where credentials are *headed*
-  ("a TOML, later"). No network, human-editable, but needs a file watcher /
-  reload and a parse layer.
-- **(recommendation): (A) SQLite KV now**, with the type shape designed to map
-  cleanly onto a future TOML. It reuses the proven `StorageNamespace` + HTTP
-  CRUD pattern, needs no new file-watching edge, and the persisted shape can be
-  serialized to TOML later without an API change. (If the user prefers
-  file-based config for parity with the credentials roadmap, that is a valid
-  alternative — flag it.)
-
-### Q5 — Staleness: what if a named agent's underlying model vanishes?  *(needs user decision)*
-
-A named agent binds to a `<credential>/<model>`. If that credential is removed
-or the model is deprecated upstream, the binding goes stale (like the FE
-ModelSelector's "unavailable" state). Options:
-- **(A) Capture `ModelInfo` (contextWindow, vision) at definition time** and
-  keep serving the named agent from the persisted snapshot; flag staleness only
-  on a best-effort, non-blocking catalog refresh. Listing stays instant.
-- **(B) Validate against the live catalog at summon time** — re-introduces the
-  network latency the feature is meant to kill.
-- **(recommendation): (A).** The snapshot makes listing/summon instant and
-  decoupled from upstream churn. Staleness is surfaced (a `stale`/`available`
-  flag on the entry) via an **async, cached, best-effort** catalog check that
-  never blocks `list_agent_models` — e.g. a periodic background refresh or a
-  lazy cache with TTL, populated off the existing `listCatalogDetailed`. The
-  summon itself trusts the persisted binding (instant) and only fails at the
-  provider stream if the model is truly gone (a clear provider error, not a
-  silent wrong model).
-
-### Q6 — Does this also affect the user's OWN model picker (FE)?  *(needs user decision)*
-
-The user's proposal is scoped to *agents summoning agents*. But named agents
-could double as a curated picker for the user's own conversations too.
-- **(recommendation): MVP = agent-summoning surface only.** Leave `GET /models`
-  and the FE ModelSelector untouched. Exposing named agents in the user's own
-  picker is a natural follow-up (Q9) but expands scope and risks confusing
-  "pick a model for me" with "pick a preset for a subagent." Decide later.
-
-### Q7 — CRUD surface: HTTP + FE only, or also a CLI command?  *(needs user decision)*
-
-- **(recommendation): HTTP CRUD (`GET/POST/PUT/DELETE` on named agents) + FE
-  settings UI** as the primary surface. Optionally add a `dispatch agents`
-  CLI subcommand (add/list/remove) for parity with `dispatch models` and
-  scripted setup — but only if the user wants CLI manageability. Flag as a
-  scope add, not MVP-blocker.
-
-### Q8 — Onboarding: seed from catalog?  *(needs user decision)*
-
-A "seed" action that snapshots the current catalog into a few starter named
-agents (or imports selected models) would smooth the empty-registry cold start
-(Q3). **(recommendation):** offer it as a FE/HTTP convenience, not a required
-step.
-
-### Q9 — Future hooks (explicitly out of MVP)
-
-- Named agents carrying fuller summon defaults (`systemPrompt`, `title`,
-  `cwd`, `computerId`, `workspaceId`, a tool allow/deny list). MVP = name +
-  model + (optionally) `reasoningEffort`/`toolAccess`; richer defaults are a
-  follow-up once a concrete consumer justifies them (P4 — earn each mechanism).
-- Surfacing named agents in the user's own model picker (Q6).
-- Per-workspace named-agent sets (today: global, like vision settings).
-- Subagent lineage/parent UI in the FE (no such UI exists today).
-
----
-
-## 4. Backend implementation plan
-
-> Architecture rules honored: kernel stays pure (no I/O, no feature names);
-> cross-extension coupling via **typed `defineService` handles** (no string-
-> keyed lookups); effects injected; pure decision logic separated from the
-> imperative shell; contracts are the only cross-unit surface. One owner per
-> unit; the orchestrator authors shared contracts first, then summons owners in
-> dependency-topological waves (`ORCHESTRATOR.md` §1–§2a).
-
-### 4.1 Unit & boundary decision  *(needs user confirmation per ORCHESTRATOR §1.3)*
-
-**(recommendation):** a **new `named-agents` standard extension**
-(`packages/named-agents/`) that owns the registry + persistence + service, plus
-**edits to the existing `agent-management` extension** (the two tools/service
-methods that switch to consuming it). Rationale: the registry is a distinct
-capability from conversation management; co-locating it would bloat
-`agent-management` and couple two concerns. `named-agents` contributes a
-`NamedAgentRegistry` **service** (typed handle) that `agent-management`
-resolves lazily — exactly the existing `credentialStoreHandle` /
-`sessionOrchestratorHandle` resolution pattern. When `named-agents` is absent,
-`agent-management` degrades gracefully (see §6).
-
-**Alternative (if the user prefers a smaller boundary):** add the registry
-*inside* `agent-management` (one owner, no new package). Less isolation, fewer
-contracts, but a smaller diff. Flag for the user.
-
-### 4.2 New contract surface (kernel contracts — orchestrator-authored)
-
-`named-agents` owns its own typed types (in its package, like
-`agent-management/src/types.ts`), so **no kernel contract change is strictly
-required** — the kernel must not name the feature. The only cross-unit surface
-is the new `NamedAgentRegistry` **service handle** declared inside
-`packages/named-agents/src/types.ts`:
-
-```ts
-// packages/named-agents/src/types.ts (sketch — NOT implemented here)
-export interface NamedAgent {
-  readonly name: string;                 // unique, user-chosen
-  readonly model: string;                // "<credential>/<model>"
-  readonly reasoningEffort?: ReasoningEffort;
-  readonly toolAccess?: "all" | "none";
-  // snapshot captured at definition time (Q5-A):
-  readonly contextWindow?: number;
-  readonly vision?: boolean;
-  readonly displayName?: string;         // optional human label for the model
-}
-export interface NamedAgentRegistry {
-  list(): Promise<readonly NamedAgent[]>;
-  get(name: string): Promise<NamedAgent | undefined>;
-  create(input: NewNamedAgent): Promise<Result<NamedAgent>>;
-  update(name: string, input: Partial<NewNamedAgent>): Promise<Result<NamedAgent>>;
-  remove(name: string): Promise<Result<void>>;
-}
-export const namedAgentRegistryHandle: ServiceHandle<NamedAgentRegistry> =
-  defineService<NamedAgentRegistry>("named-agents/registry");
+> This document describes the intended behavior and implementation plan for the
+> Named Agents feature across the Dispatch backend and frontend. It does not
+> contain feature implementation.
+
+## 1. Problem
+
+Selecting a model when one agent summons another is currently too slow and too
+complex:
+
+- `list_agent_models` exposes a large raw catalog containing models from every
+  configured provider and credential.
+- Discovering the catalog performs live provider requests and can take a long
+  time.
+- The calling agent must choose among too many options and can select a model the
+  user did not intend.
+- `summon_agent` currently validates a raw model against the catalog, adding more
+  provider-discovery latency.
+
+The user should instead curate a small set of reusable **Named Agents**. Each
+Named Agent gives a friendly name to one provider/model combination.
+
+Example:
+
+```text
+Coding Agent   -> opencode-1/claude-sonnet-4.5
+Research Agent -> umans/umans-glm-5.2
+Fast Agent     -> hyper/some-fast-model
 ```
 
-`agent-management` imports `namedAgentRegistryHandle` (typed symbol →
-`lsp references` finds the consumer set) and resolves it **lazily** at call
-time, mirroring its existing `resolveOrchestrator` pattern.
+Agents listing summon options should receive only these curated Named Agents,
+immediately, without querying provider catalogs.
 
-### 4.3 Backend work by unit (dependency-topological waves)
+## 2. Goals
 
-**Wave 0 — orchestrator-authored seam.** Author the `NamedAgent` /
-`NamedAgentRegistry` types + `namedAgentRegistryHandle` inside the new
-`packages/named-agents/src/types.ts` (the contract), so the producer
-(`named-agents`) and consumer (`agent-management`) can be built against the
-fixed type in the same wave.
+1. Let the user create, edit, and remove Named Agents in the frontend.
+2. Store a friendly name and one provider/model selection for each Named Agent.
+3. Auto-save edits without requiring a separate Save button.
+4. Return the locally stored Named Agents from `list_agent_models` instead of
+   returning the full raw model catalog.
+5. Let `summon_agent` select a Named Agent by name and resolve it locally to its
+   configured raw model.
+6. Make Named Agents available in the regular frontend model selector through a
+   synthetic **Named Agents** provider shown at the top of the provider list.
+7. Use snapshot semantics when a Named Agent is selected for a conversation.
+8. Preserve the raw model catalog for configuration, compatibility, and internal
+   backend consumers.
 
-**Wave 1 — `named-agents` extension (producer).**
-- `src/pure.ts` — pure logic: name validation (uniqueness, charset/length
-  bounds, no `/` collision with model-name syntax), default resolution,
-  staleness-snapshot merging, result/error formatting, filtering (query/vision/
-  limit over the shortlist). Zero I/O; unit-tested directly (no internal mocks).
-- `src/store.ts` — persistence over `host.storage("named-agents")`: a
-  `named-agents` index key (JSON array of names) + `named-agent:<name>` entry
-  keys (JSON `NamedAgent`). CRUD with atomic index updates. Follows the
-  conversation-store KV idioms (keys.ts, parse/serialize helpers).
-- `src/service.ts` — the imperative shell: inject the `StorageNamespace` +
-  `credentialStoreHandle` (for snapshotting `ModelInfo` at create/update time —
-  the one place a network call is acceptable: on a user CRUD action, not on
-  listing) + `logger`. Implements `NamedAgentRegistry`. Pure decisions live in
-  `pure.ts`.
-- `src/extension.ts` — manifest (`id: "named-agents"`, `contributes.services:
-  ["named-agents/registry"]`, `dependsOn: ["credential-store"]`), `activate`
-  wires `host.storage` + the credential-store service and calls
-  `host.provideService(namedAgentRegistryHandle, service)`.
-- Tests: `pure.test.ts` (strict, no mocks) + a thin store integration test
-  against an in-memory `StorageNamespace` fake (the outermost edge).
+## 3. Non-goals for the first version
 
-**Wave 1 (parallel) — `agent-management` edits (consumer).**
-- `src/service.ts` `listModels`: resolve `namedAgentRegistryHandle` lazily; if
-  present, **read the persisted shortlist** (instant) and build `ModelEntry[]`
-  from it (using the snapshot's `vision`/`contextWindow`/`displayName`). Apply
-  `filterModelEntries` as today. If the registry is absent OR empty, apply the
-  Q3 policy (recommended: empty + guidance, NOT the slow catalog fan-out).
-- `src/service.ts` `summon`: if the call supplies a named-agent name (Q2-B
-  `agent` field), resolve it from the registry (instant), expand to the
-  underlying `model` + apply recorded defaults, and **skip the live-catalog
-  validation**. If a raw `model` is supplied instead, keep today's catalog
-  validation (the escape hatch).
-- `src/types.ts`: widen `SummonAgentInput` with `agent?: string` (named-agent
-  name). Add `unknown-agent` to the error taxonomy (named-agent name not found)
-  — distinct from `unknown-model`.
-- `src/tools/summon_agent.ts`: add the `agent` parameter to the schema
-  (description steers toward it; `model` becomes the raw override). Keep
-  `model`/`task` handling; relax `model` from **required** to optional **when
-  `agent` is supplied** (one-of validation).
-- `src/tools/list_agent_models.ts`: update the description to "List the named
-  agents available for summon_agent" (no longer "models").
-- `src/extension.ts`: add `named-agents` to `dependsOn` (optional/degrading —
-  resolve lazily so absence is survivable).
-- `src/pure.ts`/`pure.test.ts`: pure helpers for the named-agent-name path
-  (one-of validation, default-merging, `unknown-agent` formatting) + tests.
+The MVP will not add:
 
-**Wave 2 — transport contract + HTTP CRUD.**
-- `transport-contract/src/index.ts`: add the named-agent CRUD request/response
-  types (`GET /named-agents` → `NamedAgentsResponse`; `POST /named-agents`;
-  `PUT /named-agents/:name`; `DELETE /named-agents/:name`). Additive — no
-  existing type changes.
-- `transport-http/src/app.ts` + `extension.ts`: resolve
-  `namedAgentRegistryHandle` (optional, degrades to 503/empty when absent, like
-  `computerService`/`concurrencyService`) and implement the four CRUD routes
-  with validation (name charset/length, model non-empty, `reasoningEffort`
-  enum). `GET /named-agents` is the new agent-facing listing source (the FE
-  settings UI consumes it; `list_agent_models` reads the registry directly, not
-  HTTP).
+- System prompts or task instructions to Named Agent definitions.
+- Per-agent working directories, computers, workspaces, or titles.
+- Tool allow/deny lists beyond existing summon behavior.
+- Background catalog refresh or complex stale-model detection.
+- A CLI for Named Agent management.
+- Automatic generation or seeding of Named Agents.
+- Changes to the provider credential-management system.
 
-**Wave 3 — composition root.**
-- `host-bin/src/main.ts`: add `namedAgentsExt` to the extensions array (after
-  `credential-store`, before/alongside `agent-management` so the service is
-  available when `agent-management` activates; activation is lazy-resolved so
-  order is not strict). No env-var wiring needed (the registry is user-managed
-  via HTTP/FE, not env).
+The initial persisted definition should stay intentionally small:
 
-**Wave 3 (parallel) — test fan-out.** Any `agent-management` test whose
-assertions encode the old "listModels returns the full catalog" behavior must
-be updated by its owner to the new "returns the named-agent shortlist"
-behavior (`ORCHESTRATOR.md` §5a — test fan-out belongs to the test owner).
-`vision-handoff` tests are unaffected (it uses the raw catalog + `summon`
-unchanged).
+```ts
+interface NamedAgent {
+  id: string;
+  name: string;
+  model: string; // Canonical "<provider-or-credential>/<model>" value
+}
+```
 
-### 4.4 Latency guarantee
+The frontend may split `model` into provider and model controls for editing, but
+the persisted model remains the canonical combined model identifier.
 
-After this work, `list_agent_models` does **zero** upstream network calls
-(reads persisted KV), and `summon_agent` by named-agent name does **zero**
-upstream calls for validation (the only network is the actual provider
-`stream`). The single network touchpoint is the user's CRUD action
-(create/update), which snapshots `ModelInfo` from the catalog once — acceptable
-because it is a human-initiated, non-hot-path action.
+## 4. Product terminology
 
----
+### Named Agent
 
-## 5. Frontend implementation plan (`../frontend` — DO NOT modify from backend)
+A **Named Agent** is a user-defined, persisted model preset consisting of a name
+and an underlying model.
 
-> Per the task constraints and FE `AGENTS.md`: the frontend is a separate repo;
-> cross-repo contract changes are **couriered via the user**
-> (`backend-handoff.md`). This section documents the FE work that the FE's own
-> agent will perform once the backend contract is pinned and mirrored; it is
-> **not** executed from here.
+It is not a running agent or conversation.
 
-### 5.1 Contract consumption
+### Subagent
 
-- Re-pin `@dispatch/transport-contract` (`file:` dep) to the version that adds
-  the named-agent CRUD types; regenerate the relevant `.dispatch/*.reference.md`
-  mirror. Read the mirror, never `node_modules/@dispatch/*`.
-- `GET /named-agents` returns the curated list for the settings UI.
+A **subagent** is the conversation created when `summon_agent` is called. A Named
+Agent can determine which model that subagent uses.
 
-### 5.2 FE work by unit
+## 5. Frontend: Named Agents sidebar view
 
-- **New `src/features/named-agents/` feature module** (logic/ui/adapter split):
-  - `logic/view-model.ts` — pure: list formatting, create/edit form validation
-    (name uniqueness + charset, model selection against the existing
-    `GET /models` catalog), default-merging. Zero DOM/Svelte/fetch.
-  - `adapter/` — injected `fetch` effects for the four CRUD endpoints.
-  - `ui/` — a settings panel (list + add/edit/remove) wired into the existing
-    `src/features/settings/` surface, and a model picker that reuses the
-    existing two-step `ModelSelector` helpers (`splitModelName`/`joinModelName`)
-    so the user picks a real `<credential>/<model>` when defining a named agent.
-- **No change to `ModelSelector.svelte` or `GET /models` consumption** (MVP —
-  Q6). The FE's own model picker keeps reading the raw catalog.
-- **No subagent-lineage UI** (out of MVP — Q9).
+Add **Named Agents** as a collapsible dropdown view in the sidebar.
 
-### 5.3 FE verification
+### 5.1 Collapsed state
 
-`bun run typecheck` (svelte-check) / `test` (vitest) / `check` (biome) / `build`
-(vite), per FE `AGENTS.md`. Pure logic tests use no internal `vi.mock`; UI tests
-fake only the outermost fetch edge. A live probe against a running backend
-confirms the CRUD round-trip (FE `AGENTS.md` §"Live integration probe").
+```text
+┌────────────────────────────────────────┐
+│ DISPATCH                               │
+├────────────────────────────────────────┤
+│                                        │
+│ Conversations                      ▾   │
+│   General                              │
+│   Feature planning                     │
+│                                        │
+│ Named Agents                       ▸   │
+│                                        │
+├────────────────────────────────────────┤
+│ Settings                           ▸   │
+└────────────────────────────────────────┘
+```
 
----
+### 5.2 Expanded state
 
-## 6. Migration / compatibility
+```text
+┌────────────────────────────────────────┐
+│ DISPATCH                               │
+├────────────────────────────────────────┤
+│                                        │
+│ Conversations                      ▾   │
+│   General                              │
+│   Feature planning                     │
+│   Bug investigation                    │
+│                                        │
+│ Named Agents                       ▾   │
+│                                        │
+│   ┌────────────────────────────────┐   │
+│   │ Name                           │   │
+│   │ [ Coding Agent               ] │   │
+│   │                                │   │
+│   │ Provider                       │   │
+│   │ [ opencode-1               ▾ ] │   │
+│   │                                │   │
+│   │ Model                          │   │
+│   │ [ claude-sonnet-4.5        ▾ ] │   │
+│   │                                │   │
+│   │ Saved                 [Remove] │   │
+│   └────────────────────────────────┘   │
+│                                        │
+│   ┌────────────────────────────────┐   │
+│   │ Name                           │   │
+│   │ [ Research Agent             ] │   │
+│   │                                │   │
+│   │ Provider                       │   │
+│   │ [ umans                    ▾ ] │   │
+│   │                                │   │
+│   │ Model                          │   │
+│   │ [ umans-glm-5.2            ▾ ] │   │
+│   │                                │   │
+│   │ Saved                 [Remove] │   │
+│   └────────────────────────────────┘   │
+│                                        │
+│   [ + Add Named Agent ]                │
+│                                        │
+├────────────────────────────────────────┤
+│ Settings                           ▸   │
+└────────────────────────────────────────┘
+```
 
-- **Backward compatibility of `summon_agent`.** With Q2-B (augment), the raw
-  `model` field remains valid; existing programmatic callers
-  (`vision-handoff`) and any external automation that summons by raw model name
-  keep working unchanged. The `agent` field is additive.
-- **`list_agent_models` is a breaking change for model behavior** (returns a
-  different, smaller list). This is the *intended* product change. Mitigation:
-  updated tool description + the Q3 empty-registry policy + the `model` escape
-  hatch keep summoning functional during the transition.
-- **No persisted-data migration required** for existing conversations: their
-  `conv:<id>:model` values (raw `<credential>/<model>`) are unrelated to the
-  new named-agent registry (a separate KV namespace). No rewrite of existing
-  rows. (Contrast with the prior `opencode/` → `opencode-1/` model migration,
-  which is already done.)
-- **Graceful degradation:** if `named-agents` is not loaded, `agent-management`
-  resolves the registry to `undefined` and applies the Q3 policy. If the
-  decision is "fall back to catalog when absent," that fallback lives behind
-  the same `undefined` check — keep it isolated so the slow path is opt-in, not
-  the default.
-- **Transport contract is additive** (new endpoints/types only); existing
-  `ModelsResponse` / `GET /models` are untouched, so the FE's current model
-  picker keeps working until the FE ships the settings panel.
-- **Cross-repo sequencing:** backend ships + pins the contract first; the FE
-  re-pins + mirrors + consumes. `lsp references` does not span repos, so the FE
-  side is verified independently after the courier handoff.
+Provider and model controls are stacked vertically because the sidebar is
+narrow and provider/model names can be long.
 
----
+### 5.3 Adding an item
 
-## 7. Tests
+Clicking **Add Named Agent** immediately appends a blank editable card:
 
-**Backend (asymmetric — strict pure, lenient shell):**
-- `named-agents/src/pure.test.ts` — name validation (unique, charset/length,
-  no `/`), default resolution, snapshot merging, query/vision/limit filtering,
-  error formatting. No internal mocks; pure input→output.
-- `named-agents` store integration test — CRUD over an in-memory
-  `StorageNamespace` fake (outermost edge): create/read/update/delete,
-  uniqueness enforcement, index consistency, idempotent delete.
-- `agent-management` updated tests — `listModels` returns the persisted
-  shortlist (instant, no catalog fan-out) when the registry is present; applies
-  the Q3 policy when absent/empty; `summon` by `agent` name resolves + applies
-  defaults + skips catalog validation; `summon` by raw `model` still validates
-  against the catalog; `unknown-agent` error path. (These update the existing
-  assertions that encoded the old full-catalog behavior.)
-- `transport-http` route tests — `GET/POST/PUT/DELETE /named-agents` happy
-  paths + 400 validation + 503/empty when the registry service is absent.
-- `vision-handoff` tests — **unchanged** (regression guard: it still resolves
-  vision models from the raw catalog and summons by raw model name).
+```text
+│ Named Agents                       ▾   │
+│                                        │
+│   ┌────────────────────────────────┐   │
+│   │ Name                           │   │
+│   │ [ Enter a name…              ] │   │
+│   │                                │   │
+│   │ Provider                       │   │
+│   │ [ Select provider…         ▾ ] │   │
+│   │                                │   │
+│   │ Model                          │   │
+│   │ [ Select provider first    ▾ ] │   │
+│   │                                │   │
+│   │ Not saved             [Remove] │   │
+│   └────────────────────────────────┘   │
+│                                        │
+│   [ + Add Named Agent ]                │
+```
 
-**Frontend:**
-- `named-agents/logic/view-model.test.ts` — pure form validation + list
-  formatting, no mocks.
-- `named-agents/ui` component tests — fake only the fetch edge; assert the
-  CRUD round-trip and the model-picker reuse.
-- Live probe against a running backend for the CRUD endpoints.
+The model dropdown remains disabled until a provider is selected. Once a
+provider is selected, the model dropdown contains only models belonging to that
+provider.
 
----
+### 5.4 Editing and auto-save
 
-## 8. Open product questions (human decision required before code)
+There is no explicit Save button.
 
-1. **Q1 — Canonical term.** Adopt "named agent" (with a glossary distinction
-   from *subagent*), or "agent preset"/"agent profile"? *(recommendation: named
-   agent + glossary entry.)*
-2. **Q2 — Summon API shape.** Replace `model` with a named-agent name (A), or
-   augment with an `agent` field + keep `model` as an escape hatch (B)?
-   *(recommendation: B.)*
-3. **Q3 — Empty registry.** Fall back to the full catalog (A), or return empty
-   + guidance (B)? *(recommendation: B + raw-model escape hatch.)*
-4. **Q4 — Persistence.** SQLite KV now (A), or config file/TOML (B)?
-   *(recommendation: A, shape TOML-ready.)*
-5. **Q5 — Staleness.** Snapshot `ModelInfo` at definition + best-effort async
-   refresh (A), or live-validate at summon (B)? *(recommendation: A.)*
-6. **Q6 — User's own picker.** Also surface named agents in the FE
-   `ModelSelector`/`GET /models`, or MVP = agent-summoning only?
-   *(recommendation: MVP = agent-summoning only.)*
-7. **Q7 — CLI.** Add a `dispatch agents` CLI subcommand, or HTTP+FE only?
-   *(recommendation: HTTP+FE; CLI optional add.)*
-8. **Q8 — Onboarding seed.** Provide a "seed from catalog" helper?
-   *(recommendation: yes, as convenience.)*
-9. **Q9 — Richer defaults.** Should named agents carry `systemPrompt`/`title`/
-   `cwd`/`computerId`/tool allow-deny now, or MVP = name+model (+optional
-   `reasoningEffort`/`toolAccess`)? *(recommendation: MVP minimal; earn the
-   rest per P4.)*
-10. **Boundary.** New `named-agents` extension (recommendation) vs. inlining
-    into `agent-management`? *(ORCHESTRATOR §1.3: boundary is the user's call.)*
+- Changing the provider saves immediately after a valid model is selected.
+- Changing the model saves immediately.
+- Editing the name saves after a short debounce, approximately 300–500 ms.
+- The card displays a small status:
+  - `Not saved`
+  - `Saving…`
+  - `Saved`
+  - `Save failed` with an available retry action
+- The frontend should update optimistically where safe, but retain or restore
+  the last persisted value if the request fails.
+- Rapid edits to the same card must not allow an older response to overwrite a
+  newer value.
 
----
+A new card is not a usable Named Agent until all required values are valid:
 
-## 9. Suggested implementation order (once Q1–Q10 are answered)
+- The name is nonempty.
+- The name is unique, case-insensitively.
+- A provider is selected.
+- A model is selected.
 
-1. Confirm decisions Q1–Q10 with the user; update `GLOSSARY.md` (both repos)
-   with the confirmed term.
-2. **Wave 0:** orchestrator authors `packages/named-agents/src/types.ts`
-   (contract + `namedAgentRegistryHandle`).
-3. **Wave 1 (parallel):** `named-agents` extension (producer) +
-   `agent-management` edits (consumer), against the fixed contract.
-4. **Wave 2:** `transport-contract` CRUD types + `transport-http` routes.
-5. **Wave 3:** `host-bin` composition; test fan-out; commit milestone.
-6. **Cross-repo courier:** hand the pinned contract to the FE owner; FE re-pins,
-   mirrors, and ships the settings panel + `named-agents` feature module.
-7. Verify end-to-end: `list_agent_models` is instant + curated; `summon_agent`
-   by named-agent name resolves + defaults + skips catalog validation; raw
-   `model` escape hatch + `vision-handoff` unaffected; FE CRUD round-trips.
+Implementation may either create the record only after the form first becomes
+valid or create a client-only draft and POST it once complete. Incomplete drafts
+must not appear in agent tools or the regular model selector.
 
----
+### 5.5 Changing providers
 
-## 10. Pointers into the existing code (for the implementing owners)
+When the provider changes:
 
-| Concern | Location |
-|---|---|
-| `list_agent_models` tool | `packages/agent-management/src/tools/list_agent_models.ts` |
-| `summon_agent` tool + schema | `packages/agent-management/src/tools/summon_agent.ts` |
-| `listModels` / `summon` shell (catalog fan-out + validation) | `packages/agent-management/src/service.ts` (~L343, ~L411) |
-| Service contract + handle + error taxonomy | `packages/agent-management/src/types.ts` |
-| Pure helpers (filtering, formatting, access) | `packages/agent-management/src/pure.ts` |
-| Extension wiring (service resolution, tool registration) | `packages/agent-management/src/extension.ts` |
-| Credential store (catalog/resolve/getModelInfo) | `packages/credential-store/src/registry.ts` |
-| Live model-list fetch (the latency source) | `packages/openai-stream/src/listModels.ts` |
-| `GET /models` HTTP + `ModelsResponse` | `packages/transport-http/src/app.ts` (~L341); `packages/transport-contract/src/index.ts` (~L143) |
-| Settings CRUD precedent (`GET/PUT /settings/vision`) | `packages/transport-http/src/app.ts` (~L1883) |
-| KV persistence idioms (keys, index, parse/serialize) | `packages/conversation-store/src/keys.ts`, `src/store.ts` |
-| `StorageNamespace` + `host.storage` | `packages/kernel/src/contracts/extension.ts`; `packages/conversation-store/src/extension.ts` |
-| `defineService` / typed handles | `packages/kernel/src/contracts/hooks.ts` |
-| Composition root (credential assembly, extension order) | `packages/host-bin/src/main.ts` (~L213–L305) |
-| Programmatic summon consumer (must keep raw catalog) | `packages/vision-handoff/src/extension.ts`, `src/service.ts` |
-| FE model picker (unchanged in MVP) | `../frontend/src/features/chat/model-select.ts`, `ui/ModelSelector.svelte` |
-| FE boot catalog fetch (unchanged in MVP) | `../frontend/src/app/store.svelte.ts` (~L1233) |
-| FE settings feature (where the CRUD UI lands) | `../frontend/src/features/settings/` |
-| Prior agent-management design + decisions | `notes/agent-management-tools-plan.md` (§6.1, §6.2, §21) |
-| Glossary (subagent/agent-management/tool names) | `GLOSSARY.md` |
+1. Clear the previous model if it does not belong to the new provider.
+2. Populate the model dropdown with models from the new provider only.
+3. Do not persist an invalid provider/model combination.
+4. Show `Not saved` until a valid model is selected.
+
+### 5.6 Removing an item
+
+Each card has a **Remove** button.
+
+Removing a Named Agent should:
+
+- Delete it from persisted configuration.
+- Remove it from the sidebar list.
+- Remove it immediately from the synthetic Named Agents provider in model
+  selectors.
+- Remove it immediately from `list_agent_models` results.
+- Not alter existing conversations that previously selected it, because those
+  conversations use snapshot semantics.
+
+A lightweight confirmation may be used if accidental deletion is a concern, but
+it should not make routine editing cumbersome.
+
+### 5.7 Empty state
+
+When no Named Agents exist, keep the sidebar section and Add button visible:
+
+```text
+│ Named Agents                       ▾   │
+│                                        │
+│   No named agents yet.                 │
+│                                        │
+│   [ + Add Named Agent ]                │
+```
+
+This keeps the feature discoverable.
+
+## 6. Frontend: regular model selector integration
+
+The existing model selector has a provider dropdown followed by a model
+dropdown. Add **Named Agents** as a synthetic provider at the top of the provider
+list.
+
+```text
+Provider
+────────────────
+Named Agents
+opencode-1
+opencode-2
+umans
+hyper
+…
+```
+
+When **Named Agents** is selected, the model dropdown displays Named Agent names
+instead of raw model names:
+
+```text
+Model
+────────────────
+Coding Agent
+Research Agent
+Fast Agent
+Vision Agent
+```
+
+Requirements:
+
+- **Named Agents** is always the first provider option.
+- The remaining providers retain their current ordering and behavior.
+- Selecting a Named Agent resolves it to the configured raw model.
+- The UI displays the selection as `Named Agents -> <name>`.
+- If there are no Named Agents, keep the provider visible and show a disabled
+  `No named agents configured` option in the model dropdown.
+- Named Agent CRUD updates all open selectors without requiring a full page
+  reload.
+
+## 7. Snapshot semantics
+
+Selecting a Named Agent for a conversation creates a snapshot of the selection.
+The conversation should retain:
+
+```ts
+interface NamedAgentSelectionSnapshot {
+  namedAgentId: string;
+  namedAgentName: string;
+  model: string;
+}
+```
+
+The raw `model` is the actual provider/model used by the conversation. The ID and
+name preserve how the user selected it and allow the UI to continue displaying
+the friendly Named Agent label.
+
+After selection:
+
+- Renaming the Named Agent does not rename the selection shown on an existing
+  conversation.
+- Changing the Named Agent's model does not change the model used by an existing
+  conversation.
+- Removing the Named Agent does not break or alter an existing conversation.
+- New conversations receive the latest saved definition.
+
+This avoids retroactively changing conversation behavior when a shared preset is
+edited.
+
+If loading an older or externally created conversation that contains only a raw
+model, the selector continues displaying it through the existing raw provider
+and model behavior.
+
+## 8. Agent-facing tool behavior
+
+### 8.1 `list_agent_models`
+
+Change the agent-facing list operation to return only configured Named Agents.
+It must read local persisted configuration and must not query provider model
+catalogs.
+
+Conceptual result:
+
+```text
+Available named agents (3):
+  coding     (opencode-1/claude-sonnet-4.5)
+  research   (umans/umans-glm-5.2)
+  fast       (hyper/some-fast-model)
+```
+
+The exact tool name can remain `list_agent_models` for compatibility, but its
+description and response must clearly say it lists **Named Agents available for
+summoning**, not the complete raw catalog.
+
+Existing query and limit filtering may be retained if useful, but filtering is
+performed only over the small local Named Agent list. Vision filtering should
+not trigger live provider catalog requests. If no locally available metadata can
+support a filter, omit that filter from the Named Agent tool contract rather
+than reintroducing the slow path.
+
+When no Named Agents are configured, return immediately with clear guidance:
+
+```text
+No named agents are configured. Ask the user to add one in the Named Agents
+sidebar view.
+```
+
+Do not fall back automatically to the full catalog.
+
+### 8.2 `summon_agent`
+
+Add a Named Agent selector to the summon contract:
+
+```ts
+interface SummonAgentInput {
+  agent?: string; // Named Agent name or stable ID, resolved locally
+  model?: string; // Backward-compatible raw-model escape hatch
+  task: string;
+  // Existing summon fields remain unchanged.
+}
+```
+
+Behavior:
+
+1. When `agent` is supplied, resolve it from local Named Agent storage.
+2. Use its current configured raw model for the newly created subagent.
+3. Do not request the full provider catalog merely to validate the mapping.
+4. Snapshot the Named Agent name, ID, and resolved raw model onto the resulting
+   conversation.
+5. If the Named Agent does not exist, return an `unknown-agent` error with the
+   locally available names.
+6. Keep `model` as a backward-compatible raw-model escape hatch for internal and
+   programmatic callers.
+7. Require exactly one effective selection: a Named Agent or a raw model.
+
+The AI-facing tool description should direct agents to:
+
+1. Call `list_agent_models`.
+2. Select one of the returned Named Agents.
+3. Pass that Named Agent to `summon_agent`.
+
+It should not encourage guessing raw provider/model identifiers.
+
+## 9. Persistence and API
+
+Persist Named Agents in the backend's existing SQLite-backed storage. Named
+Agents are global user configuration in the MVP rather than per-workspace or
+per-conversation records.
+
+Use stable generated IDs so renaming does not require identity-by-name and so
+frontend auto-save operations can safely target one record.
+
+Recommended HTTP surface:
+
+```text
+GET    /named-agents
+POST   /named-agents
+PUT    /named-agents/:id
+DELETE /named-agents/:id
+```
+
+Example record:
+
+```json
+{
+  "id": "named-agent-id",
+  "name": "Coding Agent",
+  "model": "opencode-1/claude-sonnet-4.5"
+}
+```
+
+Example list response:
+
+```json
+{
+  "namedAgents": [
+    {
+      "id": "named-agent-id",
+      "name": "Coding Agent",
+      "model": "opencode-1/claude-sonnet-4.5"
+    }
+  ]
+}
+```
+
+API validation:
+
+- `name` must be trimmed and nonempty.
+- Names must be unique case-insensitively.
+- `model` must be a syntactically valid canonical model identifier.
+- Create/update should reject duplicate names with a specific conflict error.
+- Update and delete should return a specific not-found error for unknown IDs.
+- API responses should return the canonical saved record.
+
+The configuration UI may use the existing full `GET /models` catalog to
+populate provider and model dropdowns. Catalog latency is acceptable during
+human configuration and must not affect the agent-list or named-agent summon hot
+paths.
+
+## 10. Backend architecture plan
+
+### 10.1 Named Agent registry
+
+Add a backend-owned registry responsible for:
+
+- Listing Named Agents from local persistence.
+- Looking up a Named Agent by ID or normalized name.
+- Creating, updating, and deleting records.
+- Enforcing name uniqueness and record validation.
+- Exposing a typed service to agent management and HTTP transport.
+
+Keep validation and normalization as pure logic. Keep storage and HTTP as thin
+imperative boundaries.
+
+Whether this registry lives in a small dedicated package or inside the existing
+agent-management package should follow the backend's established extension
+boundaries. The important contract is that agent-management can read it locally
+without calling the provider catalog.
+
+### 10.2 Agent-management integration
+
+Update agent-management so:
+
+- `list_agent_models` reads from the Named Agent registry.
+- Named Agent listing never calls `credentialStore.listCatalog()` or
+  `getModelInfo()`.
+- `summon_agent` resolves an `agent` locally.
+- Named Agent summon validation never calls the complete provider catalog.
+- The existing raw-model path remains available for compatibility.
+
+### 10.3 Preserve raw catalog consumers
+
+Do not replace the credential store's raw catalog globally. It remains the source
+for:
+
+- Populating provider/model controls while configuring a Named Agent.
+- Existing raw model selection.
+- Internal vision handoff and other programmatic model-resolution behavior.
+- Model metadata needed elsewhere in Dispatch.
+
+Only the agent-facing discovery and Named Agent summon paths switch to local
+Named Agent configuration.
+
+## 11. Frontend architecture plan
+
+Add a focused Named Agents feature module with:
+
+- Pure view-model logic for splitting canonical model names into provider/model
+  controls.
+- Pure validation for required fields and case-insensitive unique names.
+- API adapters for list/create/update/delete.
+- Sidebar accordion/dropdown UI.
+- Reusable local state shared with the regular model selector.
+- Debounced, race-safe auto-save behavior.
+
+Reuse the existing provider/model parsing and selection helpers where possible.
+Do not maintain a second incompatible model-name parser.
+
+The model selector should treat **Named Agents** as a synthetic presentation
+provider. It must not merge Named Agents into the backend's raw provider catalog
+or pretend that Named Agents are real provider credentials.
+
+## 12. Error and edge-case behavior
+
+### Configuration errors
+
+- Duplicate name: keep the card editable, display an inline uniqueness error,
+  and do not overwrite another record.
+- Empty name: show an inline required-field error after interaction.
+- Provider load failure: show the catalog error while retaining persisted cards.
+- Save failure: retain the attempted edit, show `Save failed`, and allow retry.
+- Delete failure: restore or retain the card and show the error.
+
+### Missing or changed models
+
+The MVP does not perform live catalog validation every time a Named Agent is
+listed or summoned. This is intentional.
+
+- If a configured model later disappears, the Named Agent remains visible.
+- A summon attempts the saved raw model directly.
+- If the provider rejects it, surface the provider error clearly.
+- Editing the card lets the user choose a replacement from the current catalog.
+
+This preserves the required instant local list/summon behavior.
+
+### Concurrent changes
+
+- Use stable IDs for updates and deletion.
+- The frontend must prevent stale auto-save responses from replacing newer
+  edits.
+- Backend name uniqueness is authoritative even if two clients edit at once.
+
+## 13. Compatibility and migration
+
+- Existing conversations storing only raw model identifiers remain valid.
+- Existing internal callers of `summon_agent` may continue using `model`.
+- Existing `GET /models` behavior remains unchanged.
+- Existing provider credentials remain unchanged.
+- No existing conversation data must be rewritten.
+- Named Agent selection metadata is additive.
+- An empty registry does not invoke the old slow catalog fallback.
+
+## 14. Testing plan
+
+### Backend
+
+Test:
+
+- Create, list, update, and remove Named Agents.
+- Case-insensitive unique-name enforcement.
+- Required name and model validation.
+- Lookup by stable ID and normalized name.
+- `list_agent_models` returns only persisted Named Agents.
+- Empty Named Agent list returns immediate setup guidance.
+- Listing Named Agents performs zero provider catalog calls.
+- Summoning by Named Agent resolves the saved raw model.
+- Summoning by Named Agent performs zero catalog-validation calls.
+- Unknown Named Agent returns `unknown-agent`.
+- Raw `model` compatibility remains functional.
+- Existing vision/internal raw-catalog consumers remain unchanged.
+- Snapshot metadata is attached to the created conversation.
+- Editing or deleting a Named Agent does not mutate existing conversation
+  snapshots.
+- HTTP CRUD success, validation, conflict, not-found, and storage-error paths.
+
+### Frontend
+
+Test:
+
+- Named Agents sidebar section expands and collapses.
+- Empty state and Add button are visible.
+- Add creates a draft card.
+- Model is disabled until provider is selected.
+- Model options are filtered by provider.
+- Changing provider clears an incompatible model.
+- Name edits debounce before save.
+- Provider/model changes save when the card is valid.
+- `Saving…`, `Saved`, and failure states render correctly.
+- Older save responses cannot overwrite newer edits.
+- Remove updates the card list and selectors.
+- Duplicate and empty names show inline validation.
+- **Named Agents** appears first in the model selector provider list.
+- Selecting it displays Named Agent names in the model dropdown.
+- Empty Named Agents provider displays `No named agents configured`.
+- Selecting a Named Agent records its ID, name, and raw-model snapshot.
+- Editing/removing a definition does not change an existing conversation.
+- Existing raw provider/model selection still works.
+
+### End-to-end acceptance checks
+
+1. Add `Coding Agent` and select a provider/model in the sidebar.
+2. Confirm auto-save reaches `Saved` without clicking a Save button.
+3. Open a regular model selector and confirm **Named Agents** is first.
+4. Select `Named Agents -> Coding Agent` and start a conversation.
+5. Edit `Coding Agent` to use another model.
+6. Confirm the existing conversation retains its original name/model snapshot.
+7. Confirm a new conversation receives the edited model.
+8. Call `list_agent_models` and confirm only locally configured Named Agents are
+   returned quickly.
+9. Summon `Coding Agent` and confirm the saved raw model is used without catalog
+   discovery.
+10. Remove `Coding Agent` and confirm it disappears from new selectors/tool
+    results while existing conversations remain usable.
+
+## 15. Implementation order
+
+1. Define shared Named Agent and selection-snapshot contracts.
+2. Implement backend persistence and validation.
+3. Add backend HTTP CRUD endpoints.
+4. Change `list_agent_models` to use the local registry.
+5. Add Named Agent resolution to `summon_agent`, retaining the raw-model path.
+6. Persist Named Agent snapshot metadata on selected/summoned conversations.
+7. Implement frontend API state and validation logic.
+8. Add the collapsible Named Agents sidebar view and editable cards.
+9. Add debounced, race-safe auto-save and removal behavior.
+10. Add the synthetic **Named Agents** provider to the regular model selector.
+11. Add backend, frontend, and end-to-end tests.
+12. Verify that list and named-agent summon paths perform no catalog network
+    requests.
+
+## 16. Acceptance criteria
+
+The feature is complete when:
+
+- The sidebar has a collapsible **Named Agents** view matching the approved
+  layout.
+- The user can add, edit, and remove Named Agent cards.
+- Each card has a name input and vertically stacked provider/model dropdowns.
+- Valid edits auto-save and visibly report save state.
+- The regular model selector shows **Named Agents** as its first provider.
+- Selecting that provider lists the configured Named Agents.
+- Regular conversations use snapshot semantics.
+- `list_agent_models` returns only locally configured Named Agents without
+  querying providers.
+- `summon_agent` can summon by Named Agent without catalog validation.
+- Empty configuration returns immediate guidance rather than the full catalog.
+- Raw model behavior remains available for compatibility and internal features.
+- Editing or deleting a Named Agent never retroactively changes an existing
+  conversation.

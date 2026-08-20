@@ -44,6 +44,9 @@
       "path": "./packages/credential-store"
     },
     {
+      "path": "./packages/named-agents"
+    },
+    {
       "path": "./packages/vision-handoff"
     },
     {

@@ -13,6 +13,8 @@ import {
   type LspService,
   lspServiceHandle,
   mcpServiceHandle,
+  type NamedAgentsService,
+  namedAgentServiceHandle,
   sessionOrchestratorHandle,
   systemPromptHandle,
   throughputStoreHandle,
@@ -29,6 +31,7 @@ export const manifest: Manifest = {
     "credential-store",
     "heartbeat",
     "mcp",
+    "named-agents",
     "session-orchestrator",
     "throughput-store",
   ],
@@ -64,6 +67,8 @@ export const manifest: Manifest = {
       "/health",
       "/models",
       "/metrics/throughput",
+      "/named-agents",
+      "/named-agents/:id",
       "/system-prompt",
       "/system-prompt/variables",
       "/workspaces",
@@ -128,6 +133,17 @@ export function createTransportHttpExtension(): Extension & {
       } catch {
         concurrencyService = undefined;
       }
+      // The `named-agents` extension provides the Named Agent registry service
+      // (in dependsOn — it activates before transport-http). A direct
+      // getService is therefore fine, but resolve defensively so a host that
+      // somehow did not register the handle degrades to 404/503 on the
+      // /named-agents routes instead of crashing activation.
+      let namedAgentService: NamedAgentsService | undefined;
+      try {
+        namedAgentService = host.getService(namedAgentServiceHandle);
+      } catch {
+        namedAgentService = undefined;
+      }
       const logger = host.logger;
 
       const app = createApp({
@@ -143,6 +159,7 @@ export function createTransportHttpExtension(): Extension & {
         heartbeatService,
         ...(computerService !== undefined ? { computerService } : {}),
         ...(concurrencyService !== undefined ? { concurrencyService } : {}),
+        ...(namedAgentService !== undefined ? { namedAgentService } : {}),
         logger,
         emit: host.emit.bind(host),
         ...(process.env.DISPATCH_WEB_DIR !== undefined

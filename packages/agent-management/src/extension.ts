@@ -18,6 +18,7 @@ import { resolve as resolvePath, sep } from "node:path";
 import { conversationStoreHandle } from "@dispatch/conversation-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
+import { namedAgentServiceHandle } from "@dispatch/named-agents";
 import { sessionOrchestratorHandle } from "@dispatch/session-orchestrator";
 import { type AgentManagementDeps, createAgentManagementService } from "./service.js";
 import {
@@ -54,7 +55,7 @@ export const manifest: Manifest = {
   trust: "bundled",
   activation: "eager",
   capabilities: { network: false },
-  dependsOn: ["conversation-store", "credential-store", "session-orchestrator"],
+  dependsOn: ["conversation-store", "credential-store", "named-agents", "session-orchestrator"],
   contributes: {
     services: ["agent-management/service"],
     tools: [
@@ -98,10 +99,12 @@ async function readFileContent(filePath: string, cwd: string | undefined): Promi
 export function activate(host: HostAPI): void {
   const conversationStore = host.getService(conversationStoreHandle);
   const credentialStore = host.getService(credentialStoreHandle);
+  const namedAgents = host.getService(namedAgentServiceHandle);
 
   const deps: AgentManagementDeps = {
     conversationStore,
     credentialStore,
+    namedAgents,
     // Lazily resolve the session-orchestrator. Checked via the activated-
     // manifests list so `host.getService` is only called when the service is
     // registered (mirrors the orchestrator's own lazy `resolveQueue`). The

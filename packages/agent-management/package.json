@@ -13,6 +13,7 @@
     "@dispatch/wire": "workspace:*",
     "@dispatch/conversation-store": "workspace:*",
     "@dispatch/credential-store": "workspace:*",
+    "@dispatch/named-agents": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*"
   }
 }

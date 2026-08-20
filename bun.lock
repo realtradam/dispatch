@@ -18,6 +18,7 @@
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/named-agents": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/wire": "workspace:*",
       },
@@ -88,6 +89,7 @@
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
+        "@dispatch/named-agents": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/provider-hyper": "workspace:*",
         "@dispatch/provider-longcat": "workspace:*",
@@ -149,6 +151,14 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
         "@dispatch/ui-contract": "workspace:*",
+        "@dispatch/wire": "workspace:*",
+      },
+    },
+    "packages/named-agents": {
+      "name": "@dispatch/named-agents",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
         "@dispatch/wire": "workspace:*",
       },
     },
@@ -371,6 +381,7 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
+        "@dispatch/named-agents": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/system-prompt": "workspace:*",
@@ -457,6 +468,8 @@
     "@dispatch/mcp": ["@dispatch/mcp@workspace:packages/mcp"],
 
     "@dispatch/message-queue": ["@dispatch/message-queue@workspace:packages/message-queue"],
+
+    "@dispatch/named-agents": ["@dispatch/named-agents@workspace:packages/named-agents"],
 
     "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
 

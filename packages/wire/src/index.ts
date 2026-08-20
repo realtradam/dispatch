@@ -738,3 +738,42 @@ export interface ComputerEntry extends Computer {
   /** Number of conversations/workspaces whose `computerId` resolves to this alias. */
   readonly usageCount: number;
 }
+
+// ─── Named Agents ────────────────────────────────────────────────────────────
+
+/**
+ * A user-defined, persisted model preset: a friendly name bound to one
+ * provider/model combination. NOT a running agent or conversation — it is the
+ * configuration a caller curates so it can summon a subagent by name instead of
+ * picking from the full raw model catalog (§ problem/goals).
+ *
+ * Named Agents are global user configuration (not per-workspace or
+ * per-conversation). `model` is the canonical `<provider-or-credential>/<model>`
+ * value — the exact string a raw-model caller passes to summon.
+ */
+export interface NamedAgent {
+  /** Stable generated id — identity survives renames and drives safe CRUD. */
+  readonly id: string;
+  /** User-chosen friendly name. Unique case-insensitively. */
+  readonly name: string;
+  /** Canonical `<provider-or-credential>/<model>` identifier. */
+  readonly model: string;
+}
+
+/**
+ * Snapshot of a Named Agent selection recorded onto a conversation at
+ * selection/summon time. Preserves how the user picked the model so the UI can
+ * keep showing the friendly label and so later edits to the Named Agent do not
+ * retroactively change an existing conversation (§ snapshot semantics).
+ *
+ * `model` is the ACTUAL raw provider/model the conversation uses — frozen at
+ * selection time. The id + name preserve the friendly selection for display.
+ */
+export interface NamedAgentSelectionSnapshot {
+  /** The Named Agent's id at selection time. */
+  readonly namedAgentId: string;
+  /** The Named Agent's name at selection time (immutable on the conversation). */
+  readonly namedAgentName: string;
+  /** The resolved raw `<credential>/<model>` actually used by the conversation. */
+  readonly model: string;
+}

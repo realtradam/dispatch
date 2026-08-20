@@ -26,6 +26,7 @@ import {
 // import { extension as lspExt } from "@dispatch/lsp";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
+import { extension as namedAgentsExt } from "@dispatch/named-agents";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
 import { extension as providerHyperExt } from "@dispatch/provider-hyper";
 import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
@@ -114,6 +115,13 @@ const CORE_EXTENSIONS: readonly Extension[] = [
   skillsExt,
   systemPromptExt,
   cacheWarmingExt,
+  // named-agents provides the Named Agent registry service. It depends only on
+  // the kernel + storage (host.storage), so it can live alongside the other
+  // service-providing core extensions. It MUST activate before transport-http
+  // (whose activate getService's it) and before agent-management (which
+  // declares dependsOn: ["named-agents"]). The host resolves activation order
+  // by manifest dependsOn.
+  namedAgentsExt,
   // lspExt,  // LSP temporarily disabled — see import above
   // ssh declares `dependsOn: ["exec-backend"]` and PROVIDES the remote
   // exec-backend factory + the ComputerService the HTTP routes delegate to.

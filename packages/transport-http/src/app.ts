@@ -17,7 +17,9 @@ import type {
   ConversationListResponse,
   ConversationMetricsResponse,
   ConversationStatusResponse,
+  CreateNamedAgentRequest,
   CwdResponse,
+  DeleteNamedAgentResponse,
   DeleteWorkspaceResponse,
   HeartbeatConfig,
   HeartbeatRunsResponse,
@@ -28,6 +30,8 @@ import type {
   McpStatusResponse,
   ModelResponse,
   ModelsResponse,
+  NamedAgentResponse,
+  NamedAgentsResponse,
   OpenConversationResponse,
   QueueCancelResponse,
   QueueResponse,
@@ -45,6 +49,7 @@ import type {
   ThroughputResponse,
   TitleResponse,
   UpdateHeartbeatRequest,
+  UpdateNamedAgentRequest,
   VisionSettingsResponse,
   WarmResponse,
   WorkspaceListResponse,
@@ -62,6 +67,8 @@ import {
   isSinceSeqError,
   isValidReasoningEffort,
   isWindowParamError,
+  mapCreateError,
+  mapUpdateError,
   parseChatBody,
   parseModelBody,
   parseQueueBody,
@@ -85,6 +92,7 @@ import {
   type LspService,
   type McpServerStatus,
   type McpService,
+  type NamedAgentsService,
   type SessionOrchestrator,
   type SystemPromptService,
   ThroughputQueryError,
@@ -126,6 +134,14 @@ export interface CreateServerOptions {
    * empty, PUT returns 503.
    */
   readonly concurrencyService?: ConcurrencyService;
+  /**
+   * Optional — the Named Agent registry service (provided by the
+   * `named-agents` extension). When absent (extension not loaded), the
+   * `/named-agents*` routes degrade: GET/POST/PUT/DELETE return 503. When
+   * present, the routes delegate to this typed service — never a raw store —
+   * and perform ZERO provider-catalog calls (the registry is local config).
+   */
+  readonly namedAgentService?: NamedAgentsService;
   readonly logger?: Logger;
   readonly generateId?: () => string;
   /** Injectable clock for sample timestamps (default Date.now). */
@@ -363,6 +379,130 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
   });
 
+  // ─── Named Agents (CRUD over the local registry) ───────────────────────────
+  // The four routes delegate to `opts.namedAgentService` (a typed service, never
+  // a raw store) provided by the `named-agents` extension. They read/write ONLY
+  // the local registry — they NEVER call the provider catalog (plan §10.2, §14).
+  // When the service is absent (extension not loaded) every route degrades to
+  // 503. Service typed errors map to HTTP statuses: duplicate-name → 409,
+  // invalid-name/invalid-model → 400, not-found → 404; anything else → 500.
+
+  app.get("/named-agents", async (c) => {
+    if (opts.namedAgentService === undefined) {
+      return c.json({ error: "Named Agents service not available" }, 503);
+    }
+    try {
+      const namedAgents = await opts.namedAgentService.list();
+      log.info("named-agents: list", { count: namedAgents.length });
+      const body: NamedAgentsResponse = { namedAgents };
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("named-agents: list failure", { err });
+      return c.json({ error: "Failed to list Named Agents" }, 500);
+    }
+  });
+
+  app.post("/named-agents", async (c) => {
+    if (opts.namedAgentService === undefined) {
+      return c.json({ error: "Named Agents service not available" }, 503);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      log.warn("named-agents: invalid JSON body");
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (body === null || typeof body !== "object") {
+      return c.json({ error: "Request body must be a JSON object" }, 400);
+    }
+    const obj = body as Record<string, unknown>;
+    // Basic shape validation; semantic validation (non-empty name, canonical
+    // model, uniqueness) is owned by the registry service and mapped below.
+    if (typeof obj.name !== "string") {
+      return c.json({ error: "Field 'name' is required and must be a string" }, 400);
+    }
+    if (typeof obj.model !== "string") {
+      return c.json({ error: "Field 'model' is required and must be a string" }, 400);
+    }
+    const input = body as CreateNamedAgentRequest;
+
+    let result: Awaited<ReturnType<NamedAgentsService["create"]>>;
+    try {
+      result = await opts.namedAgentService.create(input);
+    } catch (err) {
+      log.error("named-agents: create failure", { err });
+      return c.json({ error: "Failed to create Named Agent" }, 500);
+    }
+    if (!result.ok) {
+      const { status, message } = mapCreateError(result.error);
+      log.warn("named-agents: create rejected", { error: result.error });
+      return c.json({ error: message }, status);
+    }
+    const response: NamedAgentResponse = { namedAgent: result.agent };
+    return c.json(response, 200);
+  });
+
+  app.put("/named-agents/:id", async (c) => {
+    const id = c.req.param("id");
+    if (opts.namedAgentService === undefined) {
+      return c.json({ error: "Named Agents service not available" }, 503);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      log.warn("named-agents: invalid JSON body");
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (body === null || typeof body !== "object") {
+      return c.json({ error: "Request body must be a JSON object" }, 400);
+    }
+    const obj = body as Record<string, unknown>;
+    if (typeof obj.name !== "string") {
+      return c.json({ error: "Field 'name' is required and must be a string" }, 400);
+    }
+    if (typeof obj.model !== "string") {
+      return c.json({ error: "Field 'model' is required and must be a string" }, 400);
+    }
+    const input = body as UpdateNamedAgentRequest;
+
+    let result: Awaited<ReturnType<NamedAgentsService["update"]>>;
+    try {
+      result = await opts.namedAgentService.update(id, input);
+    } catch (err) {
+      log.error("named-agents: update failure", { err, id });
+      return c.json({ error: "Failed to update Named Agent" }, 500);
+    }
+    if (!result.ok) {
+      const { status, message } = mapUpdateError(result.error);
+      log.warn("named-agents: update rejected", { id, error: result.error });
+      return c.json({ error: message }, status);
+    }
+    const response: NamedAgentResponse = { namedAgent: result.agent };
+    return c.json(response, 200);
+  });
+
+  app.delete("/named-agents/:id", async (c) => {
+    const id = c.req.param("id");
+    if (opts.namedAgentService === undefined) {
+      return c.json({ error: "Named Agents service not available" }, 503);
+    }
+    let result: Awaited<ReturnType<NamedAgentsService["delete"]>>;
+    try {
+      result = await opts.namedAgentService.delete(id);
+    } catch (err) {
+      log.error("named-agents: delete failure", { err, id });
+      return c.json({ error: "Failed to delete Named Agent" }, 500);
+    }
+    if (!result.ok) {
+      log.warn("named-agents: delete rejected", { id, error: result.error });
+      return c.json({ error: "Named Agent not found" }, 404);
+    }
+    const response: DeleteNamedAgentResponse = { id: result.id };
+    return c.json(response, 200);
+  });
+
   // ─── Computers (discovery + live state) ───────────────────────────────────
   // Read-only discovery + connection state is delegated to the ComputerService
   // (provided by the `ssh` extension). When ssh is NOT loaded the routes
@@ -459,6 +599,7 @@ export function createApp(opts: CreateServerOptions): Hono {
       workspaceId,
       images,
       title,
+      namedAgent,
     } = result;
     log.info("chat: request accepted", {
       conversationId,
@@ -468,7 +609,24 @@ export function createApp(opts: CreateServerOptions): Hono {
       hasReasoningEffort: reasoningEffort !== undefined,
       hasWorkspaceId: workspaceId !== undefined,
       imageCount: images?.length ?? 0,
+      hasNamedAgent: namedAgent !== undefined,
     });
+
+    // Persist the Named Agent selection snapshot alongside the model when the
+    // client started this conversation via the synthetic Named Agents provider
+    // (additive). Fail-open: a snapshot write error must NOT fail the chat
+    // turn — log and continue. The model itself is forwarded to the
+    // orchestrator below and persisted by it.
+    if (namedAgent !== undefined) {
+      try {
+        await opts.conversationStore.setNamedAgentSelection(conversationId, namedAgent);
+      } catch (err) {
+        log.warn("chat: failed to persist Named Agent selection snapshot", {
+          conversationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     const events: AgentEvent[] = [];
     let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -1024,11 +1182,20 @@ export function createApp(opts: CreateServerOptions): Hono {
     const conversationId = c.req.param("id");
     try {
       const model = await opts.conversationStore.getModel(conversationId);
+      // The Named Agent selection snapshot (present only for conversations
+      // created/selected via a Named Agent). Additive — omitted when null
+      // (exactOptionalPropertyTypes).
+      const namedAgent = await opts.conversationStore.getNamedAgentSelection(conversationId);
       log.info("conversations: model read", {
         conversationId,
         hasModel: model !== null,
+        hasNamedAgent: namedAgent !== null,
       });
-      const body: ModelResponse = { conversationId, model };
+      const body: ModelResponse = {
+        conversationId,
+        model,
+        ...(namedAgent !== null ? { namedAgent } : {}),
+      };
       return c.json(body, 200);
     } catch (err) {
       log.error("conversations: model read failure", { err });
@@ -1056,13 +1223,40 @@ export function createApp(opts: CreateServerOptions): Hono {
     // string clears the key (the store treats an empty string as "delete").
     // The response carries the resulting value: the model name, or null when
     // cleared (mirroring how `getModel` returns null after a clear).
-    const resultModel = parsed !== null && parsed.length > 0 ? parsed : null;
+    const resultModel = parsed.model !== null && parsed.model.length > 0 ? parsed.model : null;
     const persistedValue = resultModel !== null ? resultModel : "";
 
     try {
+      if (resultModel !== null) {
+        // Set a real model. When a namedAgent snapshot accompanies it, persist
+        // it too; when omitted, leave any existing snapshot UNCHANGED (a
+        // raw-model set must not clear a prior Named Agent selection).
+        await opts.conversationStore.setModel(conversationId, persistedValue);
+        if (parsed.namedAgent !== undefined) {
+          await opts.conversationStore.setNamedAgentSelection(conversationId, parsed.namedAgent);
+        }
+        // Read back the persisted snapshot so the response reflects the
+        // resulting state (the just-set snapshot, or the left-unchanged one).
+        const namedAgent = await opts.conversationStore.getNamedAgentSelection(conversationId);
+        log.debug("conversations: model set", {
+          conversationId,
+          model: resultModel,
+          hasNamedAgent: namedAgent !== null,
+        });
+        const response: ModelResponse = {
+          conversationId,
+          model: resultModel,
+          ...(namedAgent !== null ? { namedAgent } : {}),
+        };
+        return c.json(response, 200);
+      }
+      // Clear: model is null/empty → clear the persisted model. The store's
+      // setModel("") clear path also deletes the named-agent-selection snapshot
+      // (CR: conversation-store — clearing a conversation's model clears its
+      // Named Agent selection). The response therefore carries no namedAgent.
       await opts.conversationStore.setModel(conversationId, persistedValue);
-      log.debug("conversations: model set", { conversationId, model: resultModel });
-      const response: ModelResponse = { conversationId, model: resultModel };
+      log.debug("conversations: model cleared", { conversationId });
+      const response: ModelResponse = { conversationId, model: null };
       return c.json(response, 200);
     } catch (err) {
       log.error("conversations: model set failure", { err });

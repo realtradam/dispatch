@@ -60,13 +60,18 @@
 | **agent management** | The feature that starts and controls related agent conversations: summon, list, read, send, queue, cancel, and open. The tool family exposed to agents. | subagent orchestration, agent control |
 | **agent-management** | The standard extension (package `agent-management`) that exposes the management tool family and the typed `AgentManagementService`. The extension name (kebab-case); the feature is **agent management**. | (not the feature; the feature is agent management) |
 | **agent management tool** | One of the seven AI-callable tools contributed by `agent-management`: `list_agent_models`, `summon_agent`, `list_agents`, `read_agent`, `send_agent_message`, `cancel_agent_message`, `open_agent`. | (see each tool name below) |
-| **list_agent_models** | Management tool: returns catalog model names suitable for `summon_agent`, with optional query / vision / limit filters. | — |
-| **summon_agent** | Management tool: starts a new `subagent` conversation (inheriting the caller's workspace, working directory, and computer by default) and kicks off its first turn. | start agent, spawn |
+| **list_agent_models** | Management tool: returns the locally configured **named agents** suitable for `summon_agent` (NOT the raw catalog). Optional query / limit filters over the small local list; empty configuration returns immediate setup guidance. | — |
+| **summon_agent** | Management tool: starts a new `subagent` conversation (inheriting the caller's workspace, working directory, and computer by default) and kicks off its first turn. Selects the model by `agent` (a named agent) or the backward-compatible raw `model`; a named-agent selection snapshots its id/name/model onto the conversation. | start agent, spawn |
 | **list_agents** | Management tool: lists manageable conversations (defaulting to the caller's workspace and direct children). | — |
 | **read_agent** | Management tool: reads a subagent's latest assistant **text** (never its tool history or reasoning) or its status. | — |
 | **send_agent_message** | Management tool: sends a message to a managed conversation — starts a new turn when idle, queues for mid-turn steering when active. | — |
 | **cancel_agent_message** | Management tool: cancels one queued message on a managed conversation. | — |
 | **open_agent** | Management tool: signals connected frontends to open/focus a managed conversation. | — |
+
+| **named agent** | A user-curated, persisted model preset: a friendly **name** bound to one provider/model combination (`NamedAgent {id, name, model}`). Not a running agent or conversation. Curated in the Named Agents sidebar; drives the "Named Agents" synthetic provider in model selectors and the `list_agent_models`/`summon_agent` tools. | model preset, named model |
+| **summon selection (named agent)** | The `summon_agent` field that names a `named agent` (by stable id or normalized name), resolved locally to its configured raw model — never via the live provider catalog. | — |
+| **selection snapshot (named agent)** | The frozen `NamedAgentSelectionSnapshot {namedAgentId, namedAgentName, model}` recorded on a conversation at selection/summon time, so later edits/deletes of the named agent do not change that conversation. | — |
+| **named agents provider** | The synthetic (frontend-presentation-only) provider listed first in the model selector that presents configured named agents as model options. It is NOT a real provider credential. | — |
 
 | **MCP** | Model Context Protocol — the JSON-RPC 2.0-over-stdio/HTTP protocol an `MCP server` speaks. Used as the adjective for the feature (the `mcp` extension). | — |
 | **MCP server** | A process/service speaking MCP that exposes Tools, Resources, and/or Prompts. Spawned (stdio) or connected (HTTP) by Dispatch acting as `MCP host`. Configured per-cwd via `.dispatch/mcp.json` or `opencode.json`'s `mcp` key. | MCP provider (that's a Dispatch provider) |
@@ -83,3 +88,10 @@
   human-confirmed decisions in `notes/agent-management-tools-plan.md` §21. The
   aliases `child session`, `worker agent`, `spawned chat`, and `agent tab` map
   back to **subagent** and must not be used.
+- The named-agents feature introduced new confirmed terms — **named agent**,
+  **summon selection (named agent)**, **selection snapshot (named agent)**, and
+  the **named agents provider** — per the human-approved direction in
+  `notes/named-agents-plan.md`. The aliases **model preset**, **named model**,
+  and **model preset** map back to **named agent** and must not be used. Does
+  NOT change the meaning of the existing **model** / **model name** / **model
+  catalog** terms — the raw provider catalog is preserved for configuration.

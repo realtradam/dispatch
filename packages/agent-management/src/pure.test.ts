@@ -14,22 +14,20 @@ import {
   extractLastError,
   filterByQuery,
   filterByStatus,
-  filterModelEntries,
+  filterNamedAgentEntries,
   formatFileAttachments,
   formatListAgentsResult,
   formatListModelsResult,
   formatSummonResult,
-  heuristicVisionCapable,
   MIN_SHORT_ID_LEN,
   parseToolAccess,
   resolveShortId,
-  resolveVision,
   shortId,
   sortByActivityDesc,
   toAgentEntry,
   truncateText,
 } from "./pure.js";
-import type { ModelEntry } from "./types.js";
+import type { NamedAgentEntry } from "./types.js";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -167,63 +165,38 @@ describe("truncateText", () => {
   });
 });
 
-// ─── vision heuristic ───────────────────────────────────────────────────────
+// ─── Named Agent list filtering ─────────────────────────────────────────────
 
-describe("resolveVision", () => {
-  it("authoritative ModelInfo.vision wins", () => {
-    expect(resolveVision("anything", { id: "x", vision: true })).toBe(true);
-    expect(resolveVision("claude-3-sonnet", { id: "x", vision: false })).toBe(false);
-  });
-  it("falls back to the name heuristic when metadata is absent", () => {
-    expect(resolveVision("provider/gpt-4o", undefined)).toBe(true);
-    expect(resolveVision("provider/claude-3-opus", undefined)).toBe(true);
-    expect(resolveVision("provider/some-text-model", undefined)).toBe(false);
-  });
-  it("heuristic matches known vision families", () => {
-    expect(heuristicVisionCapable("vision-pro")).toBe(true);
-    expect(heuristicVisionCapable("kimi-latest")).toBe(true);
-    expect(heuristicVisionCapable("gemini-1.5")).toBe(true);
-    expect(heuristicVisionCapable("plain-llm")).toBe(false);
-  });
-});
-
-// ─── filterModelEntries ─────────────────────────────────────────────────────
-
-const ALL_MODELS: ModelEntry[] = [
-  { name: "a/gpt-4o", vision: true, contextWindow: 128000 },
-  { name: "a/text-only", vision: false },
-  { name: "b/claude-3", vision: true, displayName: "Claude 3" },
+const ALL_NAMED: NamedAgentEntry[] = [
+  { namedAgentId: "id-1", name: "Coding Agent", model: "opencode-1/claude-sonnet-4.5" },
+  { namedAgentId: "id-2", name: "Research Agent", model: "umans/umans-glm-5.2" },
+  { namedAgentId: "id-3", name: "Fast Agent", model: "hyper/some-fast-model" },
 ];
 
-describe("filterModelEntries", () => {
-  it("preserves catalog order with no filters", () => {
-    expect(filterModelEntries(ALL_MODELS, { limit: 10 }).map((m) => m.name)).toEqual([
-      "a/gpt-4o",
-      "a/text-only",
-      "b/claude-3",
+describe("filterNamedAgentEntries", () => {
+  it("preserves registry order with no filters", () => {
+    expect(filterNamedAgentEntries(ALL_NAMED, { limit: 10 }).map((m) => m.name)).toEqual([
+      "Coding Agent",
+      "Research Agent",
+      "Fast Agent",
     ]);
   });
-  it("vision:true keeps only vision models", () => {
-    expect(filterModelEntries(ALL_MODELS, { vision: true, limit: 10 }).map((m) => m.name)).toEqual([
-      "a/gpt-4o",
-      "b/claude-3",
-    ]);
-  });
-  it("vision:false keeps only non-vision models", () => {
-    expect(filterModelEntries(ALL_MODELS, { vision: false, limit: 10 }).map((m) => m.name)).toEqual(
-      ["a/text-only"],
-    );
-  });
-  it("query filters over name and display name (case-insensitive)", () => {
+  it("query filters over the Named Agent name (case-insensitive)", () => {
     expect(
-      filterModelEntries(ALL_MODELS, { query: "claude", limit: 10 }).map((m) => m.name),
-    ).toEqual(["b/claude-3"]);
-    expect(filterModelEntries(ALL_MODELS, { query: "gpt", limit: 10 }).map((m) => m.name)).toEqual([
-      "a/gpt-4o",
-    ]);
+      filterNamedAgentEntries(ALL_NAMED, { query: "cod", limit: 10 }).map((m) => m.name),
+    ).toEqual(["Coding Agent"]);
+    expect(
+      filterNamedAgentEntries(ALL_NAMED, { query: "AGENT", limit: 10 }).map((m) => m.name),
+    ).toEqual(["Coding Agent", "Research Agent", "Fast Agent"]);
+  });
+  it("query does NOT match the raw model (agents summon by friendly name)", () => {
+    expect(filterNamedAgentEntries(ALL_NAMED, { query: "claude", limit: 10 })).toHaveLength(0);
+  });
+  it("a whitespace-only query applies no filter", () => {
+    expect(filterNamedAgentEntries(ALL_NAMED, { query: "   ", limit: 10 })).toHaveLength(3);
   });
   it("limit caps the result count", () => {
-    expect(filterModelEntries(ALL_MODELS, { limit: 1 })).toHaveLength(1);
+    expect(filterNamedAgentEntries(ALL_NAMED, { limit: 1 })).toHaveLength(1);
   });
 });
 
@@ -368,13 +341,16 @@ describe("parseToolAccess", () => {
 // ─── result formatters ──────────────────────────────────────────────────────
 
 describe("formatters", () => {
-  it("formatListModelsResult lists models", () => {
-    const s = formatListModelsResult({ models: ALL_MODELS });
-    expect(s).toContain("a/gpt-4o");
-    expect(s).toContain("vision");
+  it("formatListModelsResult lists named agents available for summoning", () => {
+    const s = formatListModelsResult({ models: ALL_NAMED });
+    expect(s).toContain("Available named agents");
+    expect(s).toContain("Coding Agent (opencode-1/claude-sonnet-4.5)");
+    expect(s).toContain("Research Agent (umans/umans-glm-5.2)");
   });
-  it("formatListModelsResult handles empty", () => {
-    expect(formatListModelsResult({ models: [] })).toContain("No models");
+  it("formatListModelsResult empty → setup guidance (not the raw catalog)", () => {
+    const s = formatListModelsResult({ models: [] });
+    expect(s).toContain("No named agents are configured");
+    expect(s).toContain("Named Agents sidebar view");
   });
   it("formatSummonResult non-wait is concise", () => {
     const s = formatSummonResult({

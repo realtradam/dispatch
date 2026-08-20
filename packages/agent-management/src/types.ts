@@ -17,7 +17,6 @@ import type {
   ConversationToolPolicy,
   EventHookDescriptor,
   ImageInput,
-  ModelInfo,
   ReasoningEffort,
   ServiceHandle,
 } from "@dispatch/kernel";
@@ -31,6 +30,7 @@ export type AgentManagementErrorCode =
   | "ambiguous-conversation"
   | "forbidden"
   | "unknown-model"
+  | "unknown-agent"
   | "workspace-not-found"
   | "queue-unavailable"
   | "wait-timeout"
@@ -65,31 +65,59 @@ export function err(
 }
 
 // ─── list_agent_models ──────────────────────────────────────────────────────
+//
+// `list_agent_models` returns ONLY the locally configured Named Agents
+// (plan §8.1) — never the raw provider catalog. Zero catalog calls on this
+// path; the small local list is filtered in-memory by name substring + a
+// bounded limit. Vision filtering is intentionally omitted: no local
+// metadata supports it, and reintroducing it would require the slow catalog
+// scan the Named Agent path exists to avoid (plan §8.1).
 
 export interface ListModelsInput {
   readonly callerConversationId: string;
   readonly query?: string;
-  readonly vision?: boolean;
   readonly limit?: number;
 }
 
-export interface ModelEntry {
-  /** Exact model name (`<credentialName>/<model>`) usable in `summon_agent`. */
+/**
+ * A Named Agent entry in `list_agent_models` output — the curated presets
+ * available for `summon_agent`. `model` is the resolved canonical
+ * `<credential>/<model>` the Named Agent is bound to (what a raw-model caller
+ * would pass to summon). Pass the `name` (or `namedAgentId`) to `summon_agent`
+ * as `agent`; do not guess raw provider/model identifiers.
+ */
+export interface NamedAgentEntry {
+  /** Stable id of the Named Agent — also accepted by `summon_agent` as `agent`. */
+  readonly namedAgentId: string;
+  /** Friendly name — also accepted by `summon_agent` as `agent`. */
   readonly name: string;
-  readonly displayName?: string;
-  readonly contextWindow?: number;
-  readonly vision: boolean;
+  /** Resolved canonical `<credential>/<model>` the Named Agent is bound to. */
+  readonly model: string;
 }
 
 export interface ListModelsResult {
-  readonly models: readonly ModelEntry[];
+  readonly models: readonly NamedAgentEntry[];
 }
 
 // ─── summon_agent ───────────────────────────────────────────────────────────
 
 export interface SummonAgentInput {
   readonly callerConversationId: string;
-  readonly model: string;
+  /**
+   * A Named Agent name or stable id, resolved locally to its configured raw
+   * model (plan §8.2). When supplied, the Named Agent's resolved `model` is
+   * used for the subagent and a {@link NamedAgentSelectionSnapshot} is frozen
+   * onto the conversation. Exactly one of `agent` / `model` must be supplied
+   * — both or neither is an `invalid-input` error.
+   */
+  readonly agent?: string;
+  /**
+   * Backward-compatible raw-model escape hatch (plan §13): the exact
+   * `<credential>/<model>` validated against the provider catalog. When
+   * supplied (and `agent` is not), the existing raw-model path runs,
+   * including catalog validation → `unknown-model`. No snapshot is written.
+   */
+  readonly model?: string;
   readonly task: string;
   readonly files?: readonly string[];
   readonly cwd?: string;
@@ -249,4 +277,4 @@ export const agentManagementHandle: ServiceHandle<AgentManagementService> =
   defineService<AgentManagementService>("agent-management/service");
 
 /** Re-exported so consumers can emit the open signal via the typed hook. */
-export type { ConversationToolPolicy, EventHookDescriptor, ModelInfo };
+export type { ConversationToolPolicy, EventHookDescriptor };

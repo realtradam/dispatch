@@ -4,6 +4,7 @@ import type {
   ConversationStatus,
   ReasoningEffort,
 } from "@dispatch/kernel";
+import type { NamedAgentSelectionSnapshot } from "@dispatch/wire";
 
 const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
   "low",
@@ -41,6 +42,27 @@ export function isValidReasoningEffort(value: unknown): value is ReasoningEffort
   return typeof value === "string" && VALID_REASONING_EFFORTS.includes(value as ReasoningEffort);
 }
 
+/**
+ * Pure: validate that a value is a conforming `NamedAgentSelectionSnapshot` —
+ * an object with non-empty string `namedAgentId`, `namedAgentName`, and
+ * `model` (the resolved raw `<credential>/<model>` frozen at selection time).
+ * Used by the chat + set-model body parsers to reject a malformed snapshot
+ * with a 400 rather than persisting garbage.
+ */
+export function isValidNamedAgentSelectionSnapshot(
+  value: unknown,
+): value is NamedAgentSelectionSnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const snap = value as Record<string, unknown>;
+  return (
+    typeof snap.namedAgentId === "string" &&
+    snap.namedAgentId.length > 0 &&
+    typeof snap.namedAgentName === "string" &&
+    typeof snap.model === "string" &&
+    snap.model.length > 0
+  );
+}
+
 export interface ChatCommand {
   readonly conversationId: string;
   readonly message: string;
@@ -72,6 +94,15 @@ export interface ChatCommand {
    * string `url`; `mimeType` is optional.
    */
   readonly images?: readonly { readonly url: string; readonly mimeType?: string }[];
+  /**
+   * Named Agent selection snapshot to persist on the conversation at creation
+   * (parsed from `ChatRequest.namedAgent`). When present, the chat route
+   * persists it alongside the model via `setNamedAgentSelection` (fail-open —
+   * a snapshot write error never fails the turn). Omit for a raw-model
+   * conversation (backward compatible). Validated by
+   * {@link isValidNamedAgentSelectionSnapshot}.
+   */
+  readonly namedAgent?: NamedAgentSelectionSnapshot;
 }
 
 export interface ParseError {
@@ -175,6 +206,16 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
     if (images.length > 0) {
       (result as { images?: readonly { url: string; mimeType?: string }[] }).images = images;
     }
+  }
+
+  if (obj.namedAgent !== undefined) {
+    if (!isValidNamedAgentSelectionSnapshot(obj.namedAgent)) {
+      return {
+        error:
+          "Field 'namedAgent' must be a NamedAgentSelectionSnapshot with non-empty string namedAgentId, namedAgentName, and model",
+      };
+    }
+    (result as { namedAgent?: NamedAgentSelectionSnapshot }).namedAgent = obj.namedAgent;
   }
 
   return result;
@@ -340,15 +381,25 @@ export function isReasoningEffortParseError(
 }
 
 /**
- * Parse + validate a `PUT /conversations/:id/model` body (`SetModelRequest`).
- * `model` must be present and either a string (any value, including the empty
- * string — which clears the persisted selection) or `null`. A missing field or
- * a non-string/non-null value → {@link ParseError}. There is no enum
- * validation (the provider resolves model names at turn time).
- *
- * Returns the validated `model` value (`string | null`) on success.
+ * Parsed body for `PUT /conversations/:id/model` (`SetModelRequest`): the
+ * validated `model` (`string | null`) plus an optional Named Agent selection
+ * snapshot. `model` must be present and either a string (any value, including
+ * the empty string — which clears the persisted selection) or `null`. A missing
+ * field or a non-string/non-null value → {@link ParseError}. There is no enum
+ * validation (the provider resolves model names at turn time). `namedAgent`,
+ * when present, must be a conforming {@link NamedAgentSelectionSnapshot}.
  */
-export function parseModelBody(body: unknown): string | null | ParseError {
+export interface SetModelBodyParsed {
+  readonly model: string | null;
+  readonly namedAgent?: NamedAgentSelectionSnapshot;
+}
+
+/**
+ * Parse + validate a `PUT /conversations/:id/model` body (`SetModelRequest`).
+ * Returns the validated `model` plus any `namedAgent` snapshot on success, or a
+ * {@link ParseError} for a malformed body.
+ */
+export function parseModelBody(body: unknown): SetModelBodyParsed | ParseError {
   if (body === null || typeof body !== "object") {
     return { error: "Request body must be a JSON object" };
   }
@@ -359,11 +410,76 @@ export function parseModelBody(body: unknown): string | null | ParseError {
   if (obj.model !== null && typeof obj.model !== "string") {
     return { error: "Field 'model' must be a string or null" };
   }
-  return obj.model as string | null;
+  const model = obj.model as string | null;
+  if (obj.namedAgent !== undefined) {
+    if (!isValidNamedAgentSelectionSnapshot(obj.namedAgent)) {
+      return {
+        error:
+          "Field 'namedAgent' must be a NamedAgentSelectionSnapshot with non-empty string namedAgentId, namedAgentName, and model",
+      };
+    }
+    return { model, namedAgent: obj.namedAgent };
+  }
+  return { model };
 }
 
-export function isModelParseError(result: string | null | ParseError): result is ParseError {
+export function isModelParseError(result: SetModelBodyParsed | ParseError): result is ParseError {
   return typeof result === "object" && result !== null && "error" in result;
+}
+
+// ─── Named Agent service error → HTTP status mapping (pure) ──────────────────
+
+/** The typed error strings the Named Agent registry returns from `create`. */
+export type NamedAgentCreateError = "duplicate-name" | "invalid-name" | "invalid-model";
+
+/**
+ * The typed error strings the registry returns from `update` — `create`'s set
+ * plus `not-found` (the targeted id does not exist).
+ */
+export type NamedAgentUpdateError = NamedAgentCreateError | "not-found";
+
+/**
+ * Pure: map a Named Agent registry `create` error to an HTTP status + message.
+ * `duplicate-name` → 409; `invalid-name`/`invalid-model` → 400. The caller
+ * wraps a non-typed (storage) failure as 500 separately. The `status` is a
+ * literal union (not `number`) so it satisfies Hono's `ContentfulStatusCode`
+ * without the pure core importing a web framework type.
+ */
+export function mapCreateError(error: NamedAgentCreateError): {
+  readonly status: 400 | 409;
+  readonly message: string;
+} {
+  switch (error) {
+    case "duplicate-name":
+      return {
+        status: 409,
+        message: "A Named Agent with this name already exists",
+      };
+    case "invalid-name":
+      return {
+        status: 400,
+        message: "Field 'name' is required and must be a non-empty string",
+      };
+    case "invalid-model":
+      return {
+        status: 400,
+        message: "Field 'model' must be a valid canonical model identifier (<provider>/<model>)",
+      };
+  }
+}
+
+/**
+ * Pure: map a Named Agent registry `update` error to an HTTP status + message.
+ * `not-found` → 404; otherwise delegates to {@link mapCreateError}.
+ */
+export function mapUpdateError(error: NamedAgentUpdateError): {
+  readonly status: 400 | 404 | 409;
+  readonly message: string;
+} {
+  if (error === "not-found") {
+    return { status: 404, message: "Named Agent not found" };
+  }
+  return mapCreateError(error);
 }
 
 /**

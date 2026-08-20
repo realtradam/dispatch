@@ -15,6 +15,7 @@ import { DEFAULT_TEMPLATE } from "@dispatch/system-prompt";
 import { createThroughputStore, dayKeyOf } from "@dispatch/throughput-store";
 import type {
   DeleteWorkspaceResponse,
+  NamedAgentSelectionSnapshot,
   QueueCancelResponse,
   QueuedMessage,
   QueueResponse,
@@ -105,6 +106,7 @@ function createFakeConversationStore(
   reasoningEffortStore: Map<string, ReasoningEffort> = new Map(),
   modelStore: Map<string, string> = new Map(),
   computerStore: Map<string, string> = new Map(),
+  namedAgentStore: Map<string, NamedAgentSelectionSnapshot> = new Map(),
 ): ConversationStore {
   const sampleWorkspace = {
     id: "default",
@@ -175,6 +177,12 @@ function createFakeConversationStore(
       } else {
         modelStore.set(conversationId, model);
       }
+    },
+    async getNamedAgentSelection(conversationId) {
+      return namedAgentStore.get(conversationId) ?? null;
+    },
+    async setNamedAgentSelection(conversationId, snapshot) {
+      namedAgentStore.set(conversationId, snapshot);
     },
     async listConversations() {
       return [];

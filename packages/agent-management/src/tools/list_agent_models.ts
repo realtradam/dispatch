@@ -1,9 +1,16 @@
 /**
- * list_agent_models — returns the model catalog available for `summon_agent`
- * (plan §6.1). Reads the catalog through the typed `credential-store` service;
- * never calls the HTTP endpoint or CLI. Returns exact model names plus
- * metadata (context window, vision). `vision` restricts by authoritative
- * `ModelInfo.vision` with the name heuristic as a fallback only.
+ * list_agent_models — returns ONLY the locally configured Named Agents
+ * available for `summon_agent` (plan §8.1). Reads the Named Agent registry
+ * directly; performs ZERO provider-catalog calls. Returns each Named Agent's
+ * friendly name, stable id, and the resolved canonical `<credential>/<model>`
+ * it is bound to. Pass a returned Named Agent's `name` (or id) to
+ * `summon_agent` as `agent`; do not guess raw provider/model identifiers.
+ *
+ * `query` is a case-insensitive substring filter over the Named Agent name;
+ * `limit` caps the result count. Vision filtering is intentionally omitted
+ * (no local metadata supports it). When no Named Agents are configured the
+ * result carries immediate setup guidance — it never falls back to the raw
+ * catalog.
  */
 
 import type { ToolContract, ToolResult } from "@dispatch/kernel";
@@ -14,28 +21,24 @@ export function createListAgentModelsTool(service: AgentManagementService): Tool
   return {
     name: "list_agent_models",
     description:
-      "List the models available for summon_agent. Returns exact model names " +
-      "(<credential>/<model>) plus context window and vision metadata. Use " +
-      "'query' to filter by name, 'vision' to restrict to vision-capable " +
-      "models, and 'limit' to cap the result count. Do NOT use run_shell + " +
-      "'dispatch models' — this tool is the supported way to discover a valid " +
-      "model name.",
+      "List the Named Agents available for summon_agent. Returns the locally " +
+      "configured Named Agents (a friendly name bound to one provider/model) — " +
+      "NOT the full raw provider catalog. Pass a returned Named Agent's name " +
+      "or id to summon_agent as 'agent'. Use 'query' to filter by name and " +
+      "'limit' to cap the result count. Do NOT use run_shell + 'dispatch " +
+      "models' — this tool is the supported way to discover a Named Agent to " +
+      "summon. When no Named Agents are configured, ask the user to add one " +
+      "in the Named Agents sidebar view.",
     parameters: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "Case-insensitive substring filter over model name/display name.",
-        },
-        vision: {
-          type: "boolean",
-          description:
-            "true = only vision-capable models; false = only non-vision models; " +
-            "omit = no vision filter.",
+          description: "Case-insensitive substring filter over the Named Agent name.",
         },
         limit: {
           type: "number",
-          description: "Maximum number of models to return (bounded).",
+          description: "Maximum number of Named Agents to return (bounded).",
         },
       },
     },
@@ -49,11 +52,10 @@ export function createListAgentModelsTool(service: AgentManagementService): Tool
           isError: true,
         };
       }
-      const input = args as { query?: unknown; vision?: unknown; limit?: unknown } | null;
+      const input = args as { query?: unknown; limit?: unknown } | null;
       const result = await service.listModels({
         callerConversationId,
         ...(typeof input?.query === "string" ? { query: input.query } : {}),
-        ...(typeof input?.vision === "boolean" ? { vision: input.vision } : {}),
         ...(typeof input?.limit === "number" ? { limit: input.limit } : {}),
       });
       if (!result.ok) return { content: formatError(result.error), isError: true };
