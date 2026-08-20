@@ -88,6 +88,50 @@ describe("listModels — vision capability detection", () => {
       { id: "umans-coder" },
     ]);
   });
+
+  it("parseModelList honors explicit capabilities.vision: true", () => {
+    const result = parseModelList([{ id: "deepseek-v4-flash", capabilities: { vision: true } }]);
+    expect(result).toEqual([{ id: "deepseek-v4-flash", vision: true }]);
+  });
+
+  it("parseModelList honors explicit capabilities.vision: false — metadata wins over the name heuristic", () => {
+    // "umans-kimi-*" would be marked vision:true by the name heuristic; the
+    // authoritative boolean must win.
+    const result = parseModelList([{ id: "umans-kimi-k2.7", capabilities: { vision: false } }]);
+    expect(result).toEqual([{ id: "umans-kimi-k2.7", vision: false }]);
+  });
+
+  it("parseModelList falls back to the name heuristic when capabilities.vision is absent", () => {
+    // no capabilities field — heuristic still applies (backward compatible)
+    const heuristic = parseModelList([{ id: "umans-kimi-k2.7" }, { id: "deepseek-v4-flash" }]);
+    expect(heuristic).toEqual([
+      { id: "umans-kimi-k2.7", vision: true },
+      { id: "deepseek-v4-flash" },
+    ]);
+
+    // capabilities present but vision undefined → falls through to heuristic
+    const emptyCap = parseModelList([{ id: "umans-kimi-k2.7", capabilities: {} }]);
+    expect(emptyCap).toEqual([{ id: "umans-kimi-k2.7", vision: true }]);
+  });
+
+  it("parseModelList maps a Hyper-shaped entry with context_window + explicit vision", () => {
+    const result = parseModelList([
+      {
+        id: "hyper-deepseek-v4-flash",
+        context_window: 64000,
+        capabilities: { vision: false },
+      },
+      {
+        id: "hyper-kimi-k2.7",
+        context_window: 262144,
+        capabilities: { vision: true },
+      },
+    ]);
+    expect(result).toEqual([
+      { id: "hyper-deepseek-v4-flash", contextWindow: 64000, vision: false },
+      { id: "hyper-kimi-k2.7", contextWindow: 262144, vision: true },
+    ]);
+  });
 });
 
 describe("listModels — vision capability mapping (visionFromUmansCapability)", () => {

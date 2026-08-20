@@ -15,6 +15,7 @@
     "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/provider-umans": "workspace:*",
     "@dispatch/provider-longcat": "workspace:*",
+    "@dispatch/provider-hyper": "workspace:*",
     "@dispatch/message-queue": "workspace:*",
     "@dispatch/mcp": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*",

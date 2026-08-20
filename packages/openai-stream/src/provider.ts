@@ -50,6 +50,16 @@ export interface CreateOpenAICompatProviderOpts {
    * (openai-compat, longcat) keep their existing behavior unchanged.
    */
   readonly listModels?: () => Promise<readonly ModelInfo[]>;
+  /**
+   * Set `false` to OMIT the `getUsage` method entirely from the returned
+   * `ProviderContract`. Providers that document no usable upstream concurrency
+   * endpoint (e.g. Hyper documents `/v1/credits`, not the `/usage`
+   * `concurrent_sessions` shape) pass `false` so the concurrency limiter never
+   * polls a pointless authenticated endpoint. Default (absent / `true`):
+   * include the generic `/usage` implementation for all existing providers,
+   * preserving current behavior.
+   */
+  readonly getUsage?: boolean;
 }
 
 export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts): ProviderContract {
@@ -82,12 +92,16 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
             providerId: opts.id,
             ...(fetchFn !== undefined ? { fetchFn } : {}),
           }),
-    getUsage: (): Promise<ProviderUsage | undefined> =>
-      fetchUsage({
-        baseURL,
-        apiKey,
-        providerId: opts.id,
-        ...(fetchFn !== undefined ? { fetchFn } : {}),
-      }),
+    ...(opts.getUsage !== false
+      ? {
+          getUsage: (): Promise<ProviderUsage | undefined> =>
+            fetchUsage({
+              baseURL,
+              apiKey,
+              providerId: opts.id,
+              ...(fetchFn !== undefined ? { fetchFn } : {}),
+            }),
+        }
+      : {}),
   };
 }

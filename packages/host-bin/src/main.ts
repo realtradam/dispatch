@@ -27,6 +27,7 @@ import {
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
+import { extension as providerHyperExt } from "@dispatch/provider-hyper";
 import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
 import {
   parseNumberedOpenCodeEnv,
@@ -92,6 +93,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
   conversationStoreExt,
   providerUmansExt,
   providerLongcatExt,
+  providerHyperExt,
   providerConcurrencyExt,
   // exec-backend must precede the tool extensions that
   // `dependsOn: ["exec-backend"]` (tool-edit-file/read/shell/write). It
@@ -258,6 +260,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
   if (process.env.LONGCAT_API_KEY) {
     credentials.push({ name: "longcat", providerId: "longcat" });
     logger.info(`Registered credential "longcat" → longcat provider`);
+  }
+  if (process.env.HYPER_API_KEY) {
+    credentials.push({ name: "hyper", providerId: "hyper" });
+    logger.info(`Registered credential "hyper" → hyper provider`);
   }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),

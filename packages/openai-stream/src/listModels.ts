@@ -17,6 +17,15 @@ interface OpenAIModelEntry {
   readonly context_window?: number;
   readonly max_context_length?: number;
   readonly max_tokens?: number;
+  /**
+   * Authoritative per-model capability metadata. `capabilities.vision` is set
+   * by providers that report verifiable vision support (e.g. Hyper's
+   * `/v1/models`), taking precedence over the {@link isVisionModelId} name
+   * heuristic in {@link parseModelList}.
+   */
+  readonly capabilities?: {
+    readonly vision?: boolean;
+  };
 }
 
 interface OpenAIModelListResponse {
@@ -95,18 +104,27 @@ export function isVisionModelId(id: string): boolean {
 /**
  * Pure mapping: raw OpenAI-compatible model list → ModelInfo[].
  * Extracts `contextWindow` from common field names (providers vary) and
- * detects vision capability via {@link isVisionModelId}. Extracted for direct
- * unit testing with no I/O.
+ * detects vision capability via an EXPLICIT `capabilities.vision` boolean when
+ * the provider reports one (authoritative, e.g. Hyper's `/v1/models`), falling
+ * back to the {@link isVisionModelId} name heuristic only when that field is
+ * absent (backward compatibility for providers with no capability signal).
+ * Extracted for direct unit testing with no I/O.
  */
 export function parseModelList(data: readonly OpenAIModelEntry[]): readonly ModelInfo[] {
   return data.map((entry) => {
     const contextWindow =
       entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_tokens;
-    const vision = isVisionModelId(entry.id);
+    const explicitVision = entry.capabilities?.vision;
+    const fallbackVision = isVisionModelId(entry.id);
+    // Precedence: an explicit boolean capability wins; otherwise the name-based
+    // heuristic (vision only reported when true — a non-vision-looking id emits
+    // no vision key).
+    const vision = typeof explicitVision === "boolean" ? explicitVision : fallbackVision;
+    const hasVision = typeof explicitVision === "boolean" || vision === true;
     return {
       id: entry.id,
       ...(contextWindow !== undefined ? { contextWindow } : {}),
-      ...(vision ? { vision } : {}),
+      ...(hasVision ? { vision } : {}),
     };
   });
 }

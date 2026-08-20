@@ -102,6 +102,25 @@ describe("createOpenAICompatProvider stamps the given id on the ProviderContract
     const usage = await getUsage();
     expect(usage).toEqual({ concurrentSessions: 2 });
   });
+
+  it("default provider (no getUsage opt) exposes getUsage", () => {
+    const provider = createOpenAICompatProvider({
+      credentials: makeCreds(),
+      model: "test-model",
+      id: "default-provider",
+    });
+    expect(provider.getUsage).toBeTypeOf("function");
+  });
+
+  it("getUsage: false omits the getUsage method entirely (opt-out preserved)", () => {
+    const provider = createOpenAICompatProvider({
+      credentials: makeCreds(),
+      model: "test-model",
+      id: "hyper",
+      getUsage: false,
+    });
+    expect("getUsage" in provider).toBe(false);
+  });
 });
 
 describe("transformBody", () => {

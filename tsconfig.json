@@ -38,6 +38,9 @@
       "path": "./packages/provider-umans"
     },
     {
+      "path": "./packages/provider-hyper"
+    },
+    {
       "path": "./packages/credential-store"
     },
     {
