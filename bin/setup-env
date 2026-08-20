@@ -9,7 +9,7 @@
 #
 # Usage:
 #   sudo bin/setup-env --umans-key "sk-..." --longcat-key "ak-..." \
-#     --opencode-key "1=sk-..." --opencode-key "3=sk-..."
+#     --hyper-key "sk-hyper-..." --opencode-key "1=sk-..." --opencode-key "3=sk-..."
 #   sudo bin/setup-env                          # prompts for keys interactively
 #
 # Numbered OpenCode keys: pass `--opencode-key <number>=<key>` per numbered
@@ -37,6 +37,7 @@ mkdir -p /etc/dispatch /var/lib/dispatch /var/log/dispatch
 # --- Parse arguments ---
 UMANS_KEY=""
 LONGCAT_KEY=""
+HYPER_KEY=""
 # Maps a canonical OpenCode number → value. Empty value means "removal".
 declare -A OPENCODE_MAP=()
 # A helper that validates + records one <number>=<key> argument. Last-wins for
@@ -82,6 +83,14 @@ while [[ $# -gt 0 ]]; do
 			LONGCAT_KEY="${1#--longcat-key=}"
 			shift
 			;;
+		--hyper-key)
+			HYPER_KEY="$2"
+			shift 2
+			;;
+		--hyper-key=*)
+			HYPER_KEY="${1#--hyper-key=}"
+			shift
+			;;
 		--opencode-key)
 			add_opencode "$2"
 			shift 2
@@ -92,7 +101,7 @@ while [[ $# -gt 0 ]]; do
 			;;
 		*)
 			echo "setup-env: unknown argument: $1" >&2
-			echo "Usage: sudo bin/setup-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--opencode-key \"1=sk-...\"]" >&2
+			echo "Usage: sudo bin/setup-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--hyper-key \"sk-hyper-...\"] [--opencode-key \"1=sk-...\"]" >&2
 			exit 1
 			;;
 	esac
@@ -106,6 +115,10 @@ fi
 if [ -z "$LONGCAT_KEY" ] && [ -t 0 ]; then
 	echo -n "Enter LONGCAT_API_KEY (or press Enter to skip): "
 	read -r LONGCAT_KEY
+fi
+if [ -z "$HYPER_KEY" ] && [ -t 0 ]; then
+	echo -n "Enter HYPER_API_KEY (or press Enter to skip): "
+	read -r HYPER_KEY
 fi
 
 # Resolve the real user's home dir (the service runs as this user — see bin/install)
@@ -193,6 +206,9 @@ ${UMANS_KEY:+UMANS_API_KEY=$UMANS_KEY}
 # ─── LongCat provider ────────────────────────────────────────────────────────
 ${LONGCAT_KEY:+LONGCAT_API_KEY=$LONGCAT_KEY}
 
+# ─── Hyper provider (optional, set key to enable) ────────────────────────────
+${HYPER_KEY:+HYPER_API_KEY=$HYPER_KEY}
+
 # ─── Data paths ──────────────────────────────────────────────────────────────
 DISPATCH_DB=/var/lib/dispatch/dispatch.db
 DISPATCH_TRACE_DB=/var/lib/dispatch/traces.db
@@ -207,6 +223,7 @@ echo "[setup-env] wrote $ENV_FILE"
 echo "  HOME=$REAL_HOME (skills: $REAL_HOME/.skills/)"
 ${UMANS_KEY:+echo "  UMANS_API_KEY configured (value not echoed)"}
 ${LONGCAT_KEY:+echo "  LONGCAT_API_KEY configured (value not echoed)"}
+${HYPER_KEY:+echo "  HYPER_API_KEY configured (value not echoed)"}
 if [ "${#OPENCODE_MAP[@]}" -gt 0 ]; then
 	echo "  OpenCode numbered keys: ${OPENCODE_NUMBERS[*]} (values not echoed)"
 fi

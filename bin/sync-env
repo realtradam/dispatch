@@ -7,9 +7,10 @@
 # credential NUMBER is reported).
 #
 # Usage:
-#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..." --opencode-key "1=sk-..."
+#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..." --hyper-key "sk-hyper-..." --opencode-key "1=sk-..."
 #   sudo bin/sync-env                          # prompts for keys interactively
 #   sudo bin/sync-env --umans-key ""           # removes the umans key (writes UMANS_API_KEY=)
+#   sudo bin/sync-env --hyper-key ""           # removes the hyper key (disables the provider)
 #   sudo bin/sync-env --opencode-key "1="      # removes numbered OpenCode key #1
 #
 # Numbered OpenCode keys: `--opencode-key <number>=<key>`. An empty value
@@ -36,6 +37,10 @@ fi
 # --- Parse arguments ---
 UMANS_KEY=""
 LONGCAT_KEY=""
+HYPER_KEY=""
+# Whether --hyper-key was explicitly supplied on this run. Unlike umans/longcat
+# (empty = skip), an explicitly empty --hyper-key means REMOVE the key.
+HYPER_KEY_SET=0
 # Maps a canonical OpenCode number → value. Empty value means "removal".
 declare -A OPENCODE_MAP=()
 add_opencode() {
@@ -76,6 +81,16 @@ while [[ $# -gt 0 ]]; do
 			LONGCAT_KEY="${1#--longcat-key=}"
 			shift
 			;;
+		--hyper-key)
+			HYPER_KEY="$2"
+			HYPER_KEY_SET=1
+			shift 2
+			;;
+		--hyper-key=*)
+			HYPER_KEY="${1#--hyper-key=}"
+			HYPER_KEY_SET=1
+			shift
+			;;
 		--opencode-key)
 			add_opencode "$2"
 			shift 2
@@ -86,7 +101,7 @@ while [[ $# -gt 0 ]]; do
 			;;
 		*)
 			echo "sync-env: unknown argument: $1" >&2
-			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--opencode-key \"1=sk-...\"]" >&2
+			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--hyper-key \"sk-hyper-...\"] [--opencode-key \"1=sk-...\"]" >&2
 			exit 1
 			;;
 	esac
@@ -100,6 +115,15 @@ fi
 if [ -z "$LONGCAT_KEY" ] && [ -t 0 ]; then
 	echo -n "Enter LONGCAT_API_KEY (or press Enter to skip): " >&2
 	read -r LONGCAT_KEY
+fi
+if [ -z "$HYPER_KEY" ] && [ -t 0 ]; then
+	echo -n "Enter HYPER_API_KEY (or press Enter to skip): " >&2
+	read -r HYPER_KEY
+	# An interactive empty value means "skip" (leave any existing key as-is) —
+	# only an explicit `--hyper-key ""` argument removes the key.
+	if [ -n "$HYPER_KEY" ]; then
+		HYPER_KEY_SET=1
+	fi
 fi
 
 # --- Update PATH ---
@@ -131,6 +155,23 @@ if [ -n "$LONGCAT_KEY" ]; then
 fi
 if [ -n "$LONGCAT_KEY" ]; then
 	echo "  LONGCAT_API_KEY ${LONGCAT_KEY:+configured} (value not echoed)" >&2
+fi
+
+# --- Update HYPER_API_KEY. Distinguish "flag omitted" from "--hyper-key ''".
+# --- Omitted → leave the key as-is. Non-empty value → update/append. Explicitly
+# --- empty value → REMOVE the key (disables the provider).
+if [ "$HYPER_KEY_SET" -eq 1 ]; then
+	if [ -n "$HYPER_KEY" ]; then
+		if grep -q "^HYPER_API_KEY=" "$ENV_FILE"; then
+			sed -i "s|^HYPER_API_KEY=.*|HYPER_API_KEY=$HYPER_KEY|" "$ENV_FILE"
+		else
+			echo "HYPER_API_KEY=$HYPER_KEY" >> "$ENV_FILE"
+		fi
+		echo "  HYPER_API_KEY configured (value not echoed)" >&2
+	else
+		sed -i "/^HYPER_API_KEY=/d" "$ENV_FILE"
+		echo "  removed HYPER_API_KEY" >&2
+	fi
 fi
 
 # --- Update numbered OpenCode keys (OPENCODE_API_KEY_<n>). Last-wins +
