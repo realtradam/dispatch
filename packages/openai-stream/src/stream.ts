@@ -90,6 +90,11 @@ export async function* streamChat(
   const url = `${config.baseURL}/chat/completions`;
   const bodyString = JSON.stringify(body);
 
+  // Already-aborted before any I/O starts: short-circuit so no request is sent.
+  if (opts?.signal?.aborted) {
+    return;
+  }
+
   let reqSpan: Span | undefined;
   let totalInputTokens: number | undefined;
   let totalOutputTokens: number | undefined;
@@ -158,8 +163,25 @@ export async function* streamChat(
         Authorization: `Bearer ${config.apiKey}`,
       },
       body: bodyString,
+      ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
     });
   } catch (err) {
+    // A deliberate stop aborts the fetch — this is cancellation, not a
+    // retryable provider failure. Do not yield an error event (the kernel
+    // barrier seals the turn as aborted).
+    if (opts?.signal?.aborted) {
+      if (reqSpan) {
+        try {
+          reqSpan.end({
+            err: new Error("aborted"),
+            attrs: { status: 0, aborted: true },
+          });
+        } catch {
+          // Fail-safe.
+        }
+      }
+      return;
+    }
     if (reqSpan) {
       try {
         reqSpan.end({
@@ -179,6 +201,22 @@ export async function* streamChat(
   }
 
   if (!response.ok) {
+    // If the signal aborts during the error-body read, treat it as
+    // cancellation (skip the read + yield nothing) rather than a retryable
+    // HTTP error.
+    if (opts?.signal?.aborted) {
+      if (reqSpan) {
+        try {
+          reqSpan.end({
+            err: new Error("aborted"),
+            attrs: { status: response.status, aborted: true },
+          });
+        } catch {
+          // Fail-safe.
+        }
+      }
+      return;
+    }
     const text = await response.text().catch(() => "unknown");
     if (reqSpan) {
       try {
@@ -219,12 +257,16 @@ export async function* streamChat(
   }
 
   try {
-    yield* readSSEStream(response.body, (usage) => {
-      totalInputTokens = usage.inputTokens;
-      totalOutputTokens = usage.outputTokens;
-      totalCacheReadTokens = usage.cacheReadTokens;
-      totalCacheWriteTokens = usage.cacheWriteTokens;
-    });
+    yield* readSSEStream(
+      response.body,
+      (usage) => {
+        totalInputTokens = usage.inputTokens;
+        totalOutputTokens = usage.outputTokens;
+        totalCacheReadTokens = usage.cacheReadTokens;
+        totalCacheWriteTokens = usage.cacheWriteTokens;
+      },
+      opts?.signal,
+    );
   } catch (err) {
     if (reqSpan) {
       try {
@@ -271,6 +313,7 @@ async function* readSSEStream(
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   }) => void,
+  signal?: AbortSignal,
 ): AsyncIterable<ProviderEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -279,7 +322,40 @@ async function* readSSEStream(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      // Race each body read against the abort signal so a signal that fires
+      // while read() is pending (or a provider that never sends more bytes)
+      // can't keep the turn pending after Stop. Uses the same promise-coordination
+      // technique as the kernel's abortableIteration (no I/O here beyond the
+      // underlying read already in flight).
+      type ReadResult = Awaited<ReturnType<typeof reader.read>>;
+      const readPromise: Promise<ReadResult> = reader.read();
+      let result: ReadResult;
+      if (signal !== undefined) {
+        result = await new Promise<ReadResult>((resolve) => {
+          const onAbort = () => {
+            // Best-effort cancel the reader; releaseLock is handled in finally.
+            try {
+              void reader.cancel().catch(() => {});
+            } catch {
+              // swallow
+            }
+            resolve({ done: true, value: undefined });
+          };
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          void readPromise.catch(() => {});
+          signal.addEventListener("abort", onAbort, { once: true });
+          void readPromise.then((r) => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(r);
+          });
+        });
+      } else {
+        result = await readPromise;
+      }
+      const { done, value } = result;
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });

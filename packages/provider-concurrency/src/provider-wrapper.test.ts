@@ -1,6 +1,7 @@
 import type { ProviderContract, ProviderEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import type { ConcurrencyLimiter } from "./concurrency-manager.js";
+import { ConcurrencyAcquireAbortedError } from "./concurrency-manager.js";
 import { wrapProviderWithConcurrency } from "./provider-wrapper.js";
 
 /** Build a fake provider that yields a sequence of events. */
@@ -281,5 +282,102 @@ describe("wrapProviderWithConcurrency", () => {
     expect(receivedArgs?.messages).toBe(messages);
     expect(receivedArgs?.tools).toBe(tools);
     expect(receivedArgs?.opts).toBe(opts);
+  });
+
+  it("forwards opts.signal to acquire and yields no events when already aborted", async () => {
+    let acquireSignal: AbortSignal | undefined;
+    const ac = new AbortController();
+    ac.abort();
+    const limiter: ConcurrencyLimiter = {
+      acquire(_providerId, _convId, _wsId, _promptAt, _onQueued, signal) {
+        acquireSignal = signal;
+        return Promise.resolve(() => {});
+      },
+      reportRateLimit() {},
+    };
+    const provider = fakeProvider([
+      { type: "text-delta", delta: "should not appear" },
+      { type: "finish", reason: "stop" },
+    ]);
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
+
+    const events: ProviderEvent[] = [];
+    for await (const e of wrapped.stream([], [], { signal: ac.signal })) {
+      events.push(e);
+    }
+    expect(acquireSignal).toBe(ac.signal);
+    expect(events).toHaveLength(0);
+  });
+
+  it("never starts the inner provider and does not call onAcquired when acquisition is cancelled", async () => {
+    let innerCalls = 0;
+    let onAcquiredCalled = false;
+    const ac = new AbortController();
+    const limiter: ConcurrencyLimiter = {
+      acquire() {
+        ac.abort(); // simulate the signal firing while queued
+        return Promise.reject(new ConcurrencyAcquireAbortedError());
+      },
+      reportRateLimit() {},
+    };
+    const provider: ProviderContract = {
+      id: "inner",
+      stream: async function* (): AsyncIterable<ProviderEvent> {
+        innerCalls++;
+        yield { type: "finish", reason: "stop" };
+      },
+    };
+    const wrapped = wrapProviderWithConcurrency(
+      provider,
+      limiter,
+      "conv1",
+      "default",
+      0,
+      undefined,
+      () => {
+        onAcquiredCalled = true;
+      },
+    );
+
+    const events: ProviderEvent[] = [];
+    for await (const e of wrapped.stream([], [], { signal: ac.signal })) {
+      events.push(e);
+    }
+    expect(events).toHaveLength(0);
+    expect(innerCalls).toBe(0);
+    expect(onAcquiredCalled).toBe(false);
+  });
+
+  it("releases immediately when the signal aborts between grant and stream start", async () => {
+    let releaseCalls = 0;
+    let innerCalls = 0;
+    const ac = new AbortController();
+    const limiter: ConcurrencyLimiter = {
+      acquire() {
+        // Grant the slot, then abort before the inner stream starts.
+        const release = () => {
+          releaseCalls++;
+        };
+        queueMicrotask(() => ac.abort());
+        return Promise.resolve(release);
+      },
+      reportRateLimit() {},
+    };
+    const provider: ProviderContract = {
+      id: "inner",
+      stream: async function* (): AsyncIterable<ProviderEvent> {
+        innerCalls++;
+        yield { type: "finish", reason: "stop" };
+      },
+    };
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
+
+    const events: ProviderEvent[] = [];
+    for await (const e of wrapped.stream([], [], { signal: ac.signal })) {
+      events.push(e);
+    }
+    expect(events).toHaveLength(0);
+    expect(innerCalls).toBe(0);
+    expect(releaseCalls).toBe(1);
   });
 });

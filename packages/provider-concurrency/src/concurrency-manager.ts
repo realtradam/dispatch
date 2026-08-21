@@ -35,6 +35,20 @@ import type { ProviderUsage } from "@dispatch/kernel";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/**
+ * Thrown/rejected when a queued `acquire()` is cancelled via its abort signal
+ * before a slot could be granted. The provider wrapper catches this to avoid
+ * starting the inner provider stream; the kernel's consumer barrier seals the
+ * turn as aborted. Kept distinct from provider errors so a deliberate abort is
+ * never misclassified as a retryable provider failure.
+ */
+export class ConcurrencyAcquireAbortedError extends Error {
+  constructor() {
+    super("concurrency acquire aborted");
+    this.name = "ConcurrencyAcquireAbortedError";
+  }
+}
+
 /** Status snapshot for a single provider's concurrency state. */
 export interface ProviderConcurrencyStatus {
   readonly providerId: string;
@@ -105,6 +119,14 @@ export interface ConcurrencyLimiter {
    *                        within each starred group.
    * @param onQueued       Called synchronously when the request is enqueued
    *                       (not granted immediately). Optional.
+   * @param signal         Optional cancellation signal. When the signal fires
+   *                       while the request is queued, `acquire()` rejects with
+   *                       {@link ConcurrencyAcquireAbortedError}: the waiter is
+   *                       removed from the queue by identity, its listener is
+   *                       detached, and it is never granted a later slot. If the
+   *                       signal is already aborted when `acquire()` is called,
+   *                       it rejects immediately without calling `onQueued`,
+   *                       granting a slot, or changing any accounting.
    */
   acquire(
     providerId: string,
@@ -112,6 +134,7 @@ export interface ConcurrencyLimiter {
     workspaceId: string,
     promptStartedAt: number,
     onQueued?: () => void,
+    signal?: AbortSignal,
   ): Promise<() => void>;
 
   /**
@@ -184,6 +207,11 @@ interface QueuedWaiter {
   readonly workspaceId: string;
   readonly promptStartedAt: number;
   readonly resolve: (release: () => void) => void;
+  readonly reject: (err: unknown) => void;
+  /** Removes the waiter's abort listener; called when it is settled or removed. */
+  detach: () => void;
+  /** Set once the waiter has been settled (granted or cancelled) — guards the abort/grant race. */
+  settled: boolean;
 }
 
 interface ProviderState {
@@ -396,6 +424,50 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
    * (starred-workspace-first, then oldest-agent-first) before granting so a
    * workspace starred AFTER an agent queued is re-evaluated.
    */
+  /**
+   * Grant a queued waiter: mark settled, detach its abort listener, and resolve
+   * with the slot's release function. Atomic in the sense that the synchronous
+   * transition (settled flag + detach + resolve) all happen before any
+   * microtask can observe an inconsistent state. If the waiter was already
+   * settled (cancelled while a grant was in flight), this is a no-op.
+   */
+  function settleGranted(waiter: QueuedWaiter, releaseFn: () => void): void {
+    if (waiter.settled) return;
+    waiter.settled = true;
+    waiter.detach();
+    waiter.resolve(releaseFn);
+  }
+
+  /**
+   * Cancel a queued waiter: mark settled, detach its abort listener, and reject
+   * with {@link ConcurrencyAcquireAbortedError}. Never grants a slot later.
+   * Idempotent — guarded by `settled`.
+   */
+  function settleCancelled(waiter: QueuedWaiter): void {
+    if (waiter.settled) return;
+    waiter.settled = true;
+    waiter.detach();
+    waiter.reject(new ConcurrencyAcquireAbortedError());
+  }
+
+  /**
+   * Remove an exact waiter (by identity) from the queue and settle it cancelled.
+   * Used when a queued waiter's abort signal fires. Returns true if found.
+   */
+  function cancelQueuedWaiter(state: ProviderState, waiter: QueuedWaiter): boolean {
+    const idx = state.queue.indexOf(waiter);
+    if (idx === -1) return false;
+    state.queue.splice(idx, 1);
+    settleCancelled(waiter);
+    // If the queue drained, disarm the usage-gate fallback timer — no waiters
+    // left to re-check.
+    if (state.queue.length === 0 && state.gateRepollTimer !== undefined) {
+      clearTimeout(state.gateRepollTimer);
+      state.gateRepollTimer = undefined;
+    }
+    return true;
+  }
+
   function grantLoop(state: ProviderState, providerId: string): void {
     // Re-sort before granting: a workspace may have been starred/unstarred
     // since the waiters were enqueued, so priority may have changed.
@@ -405,7 +477,7 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
       if (waiter === undefined) break;
       state.queue.shift();
       const releaseFn = grantSlot(state, providerId, waiter.conversationId);
-      waiter.resolve(releaseFn);
+      settleGranted(waiter, releaseFn);
     }
     // If the queue drained, no need to keep the usage-gate fallback timer armed.
     if (state.queue.length === 0 && state.gateRepollTimer !== undefined) {
@@ -432,7 +504,7 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
     if (waiter === undefined) return;
     state.queue.shift();
     const releaseFn = grantSlot(state, providerId, waiter.conversationId);
-    waiter.resolve(releaseFn);
+    settleGranted(waiter, releaseFn);
     // If the queue drained, disarm the fallback timer.
     if (state.queue.length === 0 && state.gateRepollTimer !== undefined) {
       clearTimeout(state.gateRepollTimer);
@@ -594,11 +666,17 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
   // ── Public API ─────────────────────────────────────────────────────────────
 
   const manager: ConcurrencyService = {
-    acquire(providerId, conversationId, workspaceId, promptStartedAt, onQueued) {
+    acquire(providerId, conversationId, workspaceId, promptStartedAt, onQueued, signal) {
       const state = states.get(providerId);
       if (state === undefined) {
         // No limit configured → unlimited.
         return Promise.resolve(noopRelease);
+      }
+
+      // Already-abororned before we even check availability: reject immediately
+      // without calling onQueued, granting a slot, or changing any accounting.
+      if (signal?.aborted === true) {
+        return Promise.reject(new ConcurrencyAcquireAbortedError());
       }
 
       if (!state.paused && state.inFlight < state.limit) {
@@ -623,11 +701,33 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
       onQueued?.();
 
       // Queue (starred-workspace-first, then oldest-agent-first).
-      return new Promise<() => void>((resolve) => {
-        state.queue.push({ conversationId, workspaceId, promptStartedAt, resolve });
+      return new Promise<() => void>((resolve, reject) => {
+        const waiter: QueuedWaiter = {
+          conversationId,
+          workspaceId,
+          promptStartedAt,
+          resolve,
+          reject,
+          detach: () => {},
+          settled: false,
+        };
+        const detach = () => {
+          if (signal !== undefined) {
+            signal.removeEventListener("abort", onAbort);
+          }
+        };
+        const onAbort = (): void => {
+          cancelQueuedWaiter(state, waiter);
+        };
+        waiter.detach = detach;
+
+        state.queue.push(waiter);
         // Keep sorted by priority (starred first, then oldest-agent-first).
         // The queue is typically tiny (<20), so a simple sort is fine.
         state.queue.sort(compareWaiters);
+        if (signal !== undefined) {
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
         // If the usage gate is active, ensure the fallback repoll timer is
         // armed (a release may not come for a while; the 1s timer covers an
         // upstream count that drops on its own).
@@ -739,7 +839,7 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
         if (waiter === undefined) break;
         state.queue.shift();
         const releaseFn = grantSlot(state, providerId, waiter.conversationId);
-        waiter.resolve(releaseFn);
+        settleGranted(waiter, releaseFn);
       }
 
       // Remove the state. In-flight slots' release functions still work —

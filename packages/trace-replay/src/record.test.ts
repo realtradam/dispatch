@@ -109,4 +109,22 @@ describe("recordFetch", () => {
     expect(called).toBe(true);
     expect(res.status).toBe(201);
   });
+
+  it("preserves RequestInit.signal through to the underlying fetch", async () => {
+    const ac = new AbortController();
+    let capturedInit: RequestInit | undefined;
+    const fakeFetch: FetchLike = async (_input, init) => {
+      capturedInit = init;
+      return new Response("{}", { status: 200 });
+    };
+    const recorded = recordFetch(fakeFetch, () => {});
+
+    await recorded("https://x", {
+      method: "POST",
+      body: "{}",
+      signal: ac.signal,
+    });
+
+    expect(capturedInit?.signal).toBe(ac.signal);
+  });
 });

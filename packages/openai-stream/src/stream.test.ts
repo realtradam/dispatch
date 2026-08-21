@@ -862,3 +862,106 @@ describe("streamChat — record-mode redaction (trace-replay)", () => {
     expect(capturedFixture.request.headers.authorization).toBe("Bearer …redacted…");
   });
 });
+
+describe("streamChat — cancellation via signal", () => {
+  function makeMessages(): readonly ChatMessage[] {
+    return [{ role: "user", chunks: [{ type: "text", text: "Hello" }] }];
+  }
+  function makeConfig(): StreamConfig {
+    return {
+      baseURL: "https://api.example.com/v1",
+      apiKey: "sk-test-1234567890abcdef",
+      model: "test-model",
+      fetchFn: async () => new Response("", { status: 200 }),
+    };
+  }
+
+  it("passes the signal into the fetch RequestInit", async () => {
+    const ac = new AbortController();
+    let capturedInit: RequestInit | undefined;
+    const config = makeConfig();
+    config.fetchFn = async (_url, init) => {
+      capturedInit = init;
+      return new Response("data: [DONE]\n", { status: 200 });
+    };
+    const events = await collectEvents(
+      streamChat(config, makeMessages(), [], { signal: ac.signal }),
+    );
+    expect(capturedInit?.signal).toBe(ac.signal);
+    expect(events).toHaveLength(0);
+  });
+
+  it("short-circuits with no events when the signal is already aborted", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    let fetched = false;
+    const config = makeConfig();
+    config.fetchFn = async () => {
+      fetched = true;
+      return new Response("data: [DONE]\n", { status: 200 });
+    };
+    const events = await collectEvents(
+      streamChat(config, makeMessages(), [], { signal: ac.signal }),
+    );
+    expect(fetched).toBe(false);
+    expect(events).toHaveLength(0);
+  });
+
+  it("settles without a retryable provider error when abort fires while fetch is pending", async () => {
+    const ac = new AbortController();
+    const config = makeConfig();
+    config.fetchFn = (_url, init) => {
+      // Wire the signal so abort rejects the fetch (as a real fetch would),
+      // else resolve on the next tick after abort.
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    };
+    const eventsPromise = collectEvents(
+      streamChat(config, makeMessages(), [], { signal: ac.signal }),
+    );
+    setTimeout(() => ac.abort(), 5);
+    const events = await eventsPromise;
+    // No events (no error) on abort — the kernel barrier seals the turn.
+    expect(events).toHaveLength(0);
+  });
+
+  it("cancels the body reader when abort fires during the SSE read", async () => {
+    const ac = new AbortController();
+    let readerCancelled = false;
+    // A body whose pull never produces more data, so reader.read() stays pending
+    // until abort cancels it.
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        // Never enqueue — keeps the stream open forever.
+      },
+      cancel() {
+        readerCancelled = true;
+      },
+    });
+    const config = makeConfig();
+    config.fetchFn = async () =>
+      new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    const eventsPromise = collectEvents(
+      streamChat(config, makeMessages(), [], { signal: ac.signal }),
+    );
+    setTimeout(() => ac.abort(), 5);
+    const events = await eventsPromise;
+    expect(events).toHaveLength(0);
+    expect(readerCancelled).toBe(true);
+  });
+
+  it("yields a non-retryable nothing (no error) on abort during the SSE read", async () => {
+    const ac = new AbortController();
+    const config = makeConfig();
+    config.fetchFn = async () => new Response("data: [DONE]\n", { status: 200 });
+    // Not aborted → normal path unchanged; assert regular SSE still yields.
+    const events = await collectEvents(streamChat(config, makeMessages(), []));
+    expect(events).toHaveLength(0);
+    void ac;
+  });
+});

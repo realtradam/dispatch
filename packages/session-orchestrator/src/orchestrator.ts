@@ -20,7 +20,12 @@ import type {
   ToolDispatchPolicy,
   UsageEvent,
 } from "@dispatch/kernel";
-import { defineEventHook, defineService, type ServiceHandle } from "@dispatch/kernel";
+import {
+  abortableIteration,
+  defineEventHook,
+  defineService,
+  type ServiceHandle,
+} from "@dispatch/kernel";
 import type { MessageQueueService, QueuedMessage } from "@dispatch/message-queue";
 import type { ConcurrencyLimiter } from "@dispatch/provider-concurrency";
 import { wrapProviderWithConcurrency } from "@dispatch/provider-concurrency";
@@ -1126,6 +1131,10 @@ export function createSessionOrchestrator(
                   : {}),
                 ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
                 ...(deps.now !== undefined ? { now: deps.now } : {}),
+                // Cancellation signal for the in-flight path — abort while
+                // compacting removes the concurrency waiter / stops the
+                // summarization stream / skips replace.
+                signal: controller.signal,
                 // emit is required by performCompaction; fall back to a no-op
                 // when the orchestrator was constructed without one (tests).
                 emit: deps.emit ?? noopEmit,
@@ -1213,13 +1222,19 @@ export function createSessionOrchestrator(
         emitToHub(conversationId, { type: "turn-sealed", conversationId, turnId });
         sealed = true;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        emitToHub(conversationId, {
-          type: "error",
-          conversationId,
-          turnId,
-          message,
-        });
+        // A deliberate stop aborts the turn. The kernel already sealed a single
+        // `done("aborted")` event (its terminal). Do NOT emit an additional
+        // `error` — the client would see both an error and the aborted done
+        // event. Skipping here leaves `done("aborted")` as the sole terminal.
+        if (!controller.signal.aborted) {
+          const message = err instanceof Error ? err.message : String(err);
+          emitToHub(conversationId, {
+            type: "error",
+            conversationId,
+            turnId,
+            message,
+          });
+        }
       } finally {
         activeTurns.delete(conversationId);
         // Post-seal carry: if the turn sealed with a non-empty steering queue
@@ -1626,6 +1641,14 @@ interface PerformCompactionDeps {
   readonly logger?: Logger;
   readonly now?: () => number;
   readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
+  /**
+   * Optional cancellation signal for the in-flight path. When provided, an
+   * abort prevents compaction from starting new work (provider stream,
+   * fork/replace), and causes the provider consumption to be raced against the
+   * signal. Manual / post-seal / background callers omit it — cancellation is
+   * only supplied by the active-turn caller.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** Result of a successful {@link performCompaction}. */
@@ -1682,6 +1705,7 @@ async function performCompaction(
     readonly messages?: readonly ChatMessage[];
   },
 ): Promise<PerformCompactionResult | { readonly error: string }> {
+  const { signal } = deps;
   // Use the caller-supplied live messages (in-flight) or load the store
   // (post-seal/manual — the store is stable once the turn has ended).
   const history = opts.messages ?? (await deps.conversationStore.load(conversationId));
@@ -1689,6 +1713,12 @@ async function performCompaction(
 
   if (history.length <= keepLastN) {
     return { error: "conversation too short to compact" };
+  }
+
+  // Abort before any summarization work: don't start a provider call or WOTE
+  // fork/replace after cancellation.
+  if (signal?.aborted) {
+    return { error: "aborted" };
   }
 
   // Split: old messages to summarize + recent messages to keep.
@@ -1761,21 +1791,46 @@ async function performCompaction(
     compactionSystemPrompt = COMPACTION_SYSTEM_PROMPT;
   }
 
-  // Call the provider and accumulate the summary
-  let summary = "";
-  for await (const event of provider.stream([summaryRequest], [], {
+  // Call the provider and accumulate the summary. Thread the signal into the
+  // ProviderStreamOptions (so the concurrency wrapper's acquire is cancellable)
+  // AND race the iterator consumption against it (defensive barrier).
+  const compactionOpts: ProviderStreamOptions = {
     ...providerOpts,
     systemPrompt: compactionSystemPrompt,
-  })) {
-    if ((event as ProviderEvent).type === "text-delta") {
-      summary += (event as { delta: string }).delta;
-    } else if ((event as ProviderEvent).type === "error") {
-      return { error: (event as { message: string }).message };
+    ...(signal !== undefined ? { signal } : {}),
+  };
+  let summary = "";
+  if (signal !== undefined) {
+    const stream = provider.stream([summaryRequest], [], compactionOpts);
+    const iterator = stream[Symbol.asyncIterator]();
+    for await (const event of abortableIteration(iterator, signal)) {
+      if ((event as ProviderEvent).type === "text-delta") {
+        summary += (event as { delta: string }).delta;
+      } else if ((event as ProviderEvent).type === "error") {
+        // A deliberate abort is cancellation, not a provider error.
+        if (signal.aborted) return { error: "aborted" };
+        return { error: (event as { message: string }).message };
+      }
+    }
+  } else {
+    for await (const event of provider.stream([summaryRequest], [], compactionOpts)) {
+      if ((event as ProviderEvent).type === "text-delta") {
+        summary += (event as { delta: string }).delta;
+      } else if ((event as ProviderEvent).type === "error") {
+        return { error: (event as { message: string }).message };
+      }
     }
   }
 
   if (summary.trim().length === 0) {
     return { error: "model produced empty summary" };
+  }
+
+  // Abort after summarization but before fork/replace: do not fork or replace
+  // history (the archive would be orphaned and the live history untouched,
+  // which is safe, but skipping is cleaner — nothing was modified yet).
+  if (signal?.aborted) {
+    return { error: "aborted" };
   }
 
   // Non-destructive: fork the full pre-compaction history to a new
@@ -1785,6 +1840,14 @@ async function performCompaction(
   // creating a chain: A → Y → X → ...
   const archiveId = crypto.randomUUID();
   await deps.conversationStore.forkHistory(conversationId, archiveId);
+
+  // Commit boundary: if the signal fires after forkHistory starts, let the
+  // fork settle (it writes to a NEW archive ID, not the live conversation —
+  // harmless if orphaned), then skip replaceHistory/setCompactedFrom. The
+  // archive is orphaned but the LIVE history is untouched, which is safe.
+  if (signal?.aborted) {
+    return { error: "aborted" };
+  }
 
   // Replace history: [system: summary] + the recent kept messages. `toKeep`
   // is sliced from the caller-supplied live `messages` (in-flight) — the SAME

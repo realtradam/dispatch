@@ -1,3 +1,4 @@
+export { abortableIteration } from "./abortable-iteration.js";
 export type { StepDispatcher } from "./dispatch.js";
 export { createStepDispatcher, executeToolCall } from "./dispatch.js";
 export {

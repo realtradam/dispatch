@@ -13,6 +13,7 @@ import type {
   RunTurnResult,
 } from "../contracts/runtime.js";
 import type { ToolCall, ToolContract } from "../contracts/tool.js";
+import { abortableIteration } from "./abortable-iteration.js";
 import { createStepDispatcher, type StepDispatcher } from "./dispatch.js";
 import {
   doneEvent,
@@ -358,10 +359,16 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
       const opts: ProviderStreamOptions = {
         ...ctx.providerOpts,
         ...(ctx.turnSpan !== undefined && stepSpan !== undefined ? { logger: stepSpan.log } : {}),
+        // Cancellation signal — authoritative. Merged LAST so a caller cannot
+        // accidentally substitute a different signal via ctx.providerOpts.
+        signal: ctx.signal,
       };
       const stream = ctx.provider.stream(ctx.messages, ctx.tools, opts);
-      for await (const event of stream) {
-        if (ctx.signal.aborted) break;
+      const iterator = stream[Symbol.asyncIterator]();
+      // Defensive consumer-side abort barrier. The barrier races each next()
+      // against the abort signal, so even a provider that ignores opts.signal
+      // (or whose next() never settles) can't keep the turn pending after Stop.
+      for await (const event of abortableIteration(iterator, ctx.signal)) {
         if (event.type === "error") {
           // Intercept: hold for the retry decision — don't push a chunk
           // or emit yet (a successful retry would leave a stale error).
@@ -774,6 +781,9 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         // (caller emits the `steering` AgentEvent in its own wrapper). The
         // callback MAY return a Promise (the shell persists the injected
         // messages before returning) — `await` handles both sync and async.
+        // Abort check: if the signal fired during onStepComplete (whose write
+        // was already in progress and allowed to settle), do not drain steering.
+        if (signal.aborted) break;
         const steering = (await input.drainSteering?.()) ?? [];
         for (const msg of steering) {
           messages.push(msg);
@@ -787,6 +797,9 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         // caller returns a list, the runtime replaces its working history with
         // it (in place); `undefined`/empty leaves it unchanged. Only reached
         // when there IS a next step (tool calls were produced).
+        // Abort check: if the signal fired during steering drain, do not start
+        // in-flight compaction (onStepBoundary invokes a provider).
+        if (signal.aborted) break;
         if (input.onStepBoundary !== undefined) {
           const replacement = await input.onStepBoundary({
             stepUsage: stepResult.usage,

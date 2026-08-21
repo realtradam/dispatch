@@ -587,6 +587,117 @@ describe("runTurn", () => {
     expect(result.messages).toHaveLength(0);
   });
 
+  it("passes the turn's authoritative signal into provider options", async () => {
+    const ac = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream(_messages, _tools, opts) {
+        receivedSignal = opts?.signal;
+        return (async function* () {
+          yield { type: "text-delta", delta: "hi" } as ProviderEvent;
+          yield { type: "finish", reason: "stop" } as ProviderEvent;
+        })();
+      },
+    };
+
+    const result = await runTurn({
+      provider,
+      messages: [userMessage],
+      tools: [],
+      dispatch: { maxConcurrent: 1, eager: false },
+      conversationId: "tab-test",
+      turnId: "turn-test",
+      emit: () => {},
+      signal: ac.signal,
+    });
+
+    expect(receivedSignal).toBe(ac.signal);
+    expect(result.finishReason).toBe("stop");
+  });
+
+  it("a provider that ignores the signal is still bounded by the consumer barrier", async () => {
+    const ac = new AbortController();
+    // Provider ignores opts.signal entirely and its next() never settles after
+    // the first event — regression guard: the kernel's abortableIteration
+    // barrier must settle the turn anyway.
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        return {
+          [Symbol.asyncIterator]() {
+            let done = false;
+            return {
+              next: () =>
+                done
+                  ? new Promise<IteratorResult<ProviderEvent>>(() => {}) // never settles
+                  : new Promise<IteratorResult<ProviderEvent>>((resolve) => {
+                      done = true;
+                      setTimeout(() => {
+                        resolve({
+                          done: false,
+                          value: { type: "text-delta", delta: "partial" } as ProviderEvent,
+                        });
+                      }, 1);
+                    }),
+              return: () => Promise.resolve({ done: true, value: undefined }),
+            };
+          },
+        };
+      },
+    };
+
+    const resultPromise = runTurn({
+      provider,
+      messages: [userMessage],
+      tools: [],
+      dispatch: { maxConcurrent: 1, eager: false },
+      conversationId: "tab-test",
+      turnId: "turn-test",
+      emit: () => {},
+      signal: ac.signal,
+    });
+
+    // Abort after the first event resolves (partial text) but before the never
+    // settling second next() could complete.
+    setTimeout(() => ac.abort(), 10);
+
+    const result = await resultPromise;
+    expect(result.finishReason).toBe("aborted");
+  });
+
+  it("abort mid-stream preserves partial text and accepts no later event", async () => {
+    const ac = new AbortController();
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        return (async function* () {
+          yield { type: "text-delta", delta: "kept" } as ProviderEvent;
+          // Hangs here; abort must stop iteration before this resolves.
+          yield new Promise<never>(() => {}) as unknown as ProviderEvent;
+        })();
+      },
+    };
+
+    const resultPromise = runTurn({
+      provider,
+      messages: [userMessage],
+      tools: [],
+      dispatch: { maxConcurrent: 1, eager: false },
+      conversationId: "tab-test",
+      turnId: "turn-test",
+      emit: () => {},
+      signal: ac.signal,
+    });
+
+    setTimeout(() => ac.abort(), 10);
+    const result = await resultPromise;
+    expect(result.finishReason).toBe("aborted");
+    expect(result.messages).toHaveLength(1);
+    const chunks = result.messages[0]?.chunks ?? [];
+    expect(chunks[0]).toEqual({ type: "text", text: "kept" });
+  });
+
   it("de-duplicates identical tool calls in a batch", async () => {
     let execCount = 0;
 

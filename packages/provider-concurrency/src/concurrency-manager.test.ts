@@ -1,6 +1,10 @@
 import type { ProviderUsage } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
-import { type ConcurrencyService, createConcurrencyManager } from "./concurrency-manager.js";
+import {
+  ConcurrencyAcquireAbortedError,
+  type ConcurrencyService,
+  createConcurrencyManager,
+} from "./concurrency-manager.js";
 
 // ─── Fake timers ──────────────────────────────────────────────────────────────
 
@@ -1256,5 +1260,196 @@ describe("starred-workspace priority", () => {
     rB();
 
     manager.destroy();
+  });
+});
+
+describe("acquire cancellation", () => {
+  function createManager(opts?: {
+    releaseCooldownMs?: number;
+    fetchUsage?: (providerId: string) => Promise<ProviderUsage | undefined>;
+  }) {
+    const timers = createFakeTimers();
+    const manager = createConcurrencyManager({
+      now: timers.now,
+      slotTimeoutMs: 5000,
+      watchdogIntervalMs: 1000,
+      defaultPauseMs: 30000,
+      ...(opts?.releaseCooldownMs !== undefined
+        ? { releaseCooldownMs: opts.releaseCooldownMs }
+        : {}),
+      ...(opts?.fetchUsage !== undefined ? { fetchUsage: opts.fetchUsage } : {}),
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    return { manager, timers };
+  }
+
+  it("rejects immediately (no queue, no slot) when the signal is already aborted", async () => {
+    const { manager } = createManager();
+    manager.setLimit("umans", 1);
+    const ac = new AbortController();
+    ac.abort();
+    let onQueuedCalled = false;
+    await expect(
+      manager.acquire("umans", "conv1", "default", 0, () => (onQueuedCalled = true), ac.signal),
+    ).rejects.toBeInstanceOf(ConcurrencyAcquireAbortedError);
+    expect(onQueuedCalled).toBe(false);
+    expect(manager.getStatus("umans")?.inFlight).toBe(0);
+    expect(manager.getStatus("umans")?.queued).toBe(0);
+  });
+
+  it("removes a queued waiter immediately when its abort signal fires", async () => {
+    const { manager } = createManager();
+    manager.setLimit("umans", 1);
+    const release1 = await manager.acquire("umans", "conv1", "default", 100);
+    const ac = new AbortController();
+
+    let rejection: unknown;
+    const p2 = manager
+      .acquire("umans", "conv2", "default", 200, undefined, ac.signal)
+      .catch((e) => {
+        rejection = e;
+        return undefined as unknown as () => void;
+      });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(manager.getStatus("umans")?.queued).toBe(1);
+
+    ac.abort();
+    await p2;
+    expect(rejection).toBeInstanceOf(ConcurrencyAcquireAbortedError);
+    expect(manager.getStatus("umans")?.queued).toBe(0);
+    expect(manager.getStatus("umans")?.inFlight).toBe(1); // first slot still held
+
+    release1();
+  });
+
+  it("never grants a cancelled waiter after a later release", async () => {
+    const { manager } = createManager();
+    manager.setLimit("umans", 1);
+    const release1 = await manager.acquire("umans", "conv1", "default", 100);
+    const ac = new AbortController();
+
+    let rejection: unknown;
+    const p2 = manager
+      .acquire("umans", "conv2", "default", 200, undefined, ac.signal)
+      .catch((e) => {
+        rejection = e;
+        return undefined as unknown as () => void;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    ac.abort();
+    await p2;
+    expect(rejection).toBeInstanceOf(ConcurrencyAcquireAbortedError);
+
+    // Now free a slot — the cancelled waiter must NOT be granted.
+    release1();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(manager.getStatus("umans")?.inFlight).toBe(0);
+    expect(manager.getStatus("umans")?.queued).toBe(0);
+  });
+
+  it("preserves ordering of other waiters when one is cancelled", async () => {
+    const { manager } = createManager();
+    manager.setLimit("umans", 1);
+    const release0 = await manager.acquire("umans", "conv0", "default", 50);
+
+    const order: string[] = [];
+    const pA = manager.acquire("umans", "convA", "default", 100).then((r) => {
+      order.push("convA");
+      return r;
+    });
+    const cancelled = new AbortController();
+    const pB = manager
+      .acquire("umans", "convB", "default", 200, undefined, cancelled.signal)
+      .catch((e) => {
+        order.push("convB-cancelled");
+        expect(e).toBeInstanceOf(ConcurrencyAcquireAbortedError);
+        return undefined as unknown as () => void;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Cancel B (the younger waiter) — A must still get the slot on release.
+    cancelled.abort();
+    await pB;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    release0();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const rA = await pA;
+    // Both resolved; the important invariant is A was granted and B cancelled.
+    expect(order).toContain("convA");
+    expect(order).toContain("convB-cancelled");
+    rA();
+  });
+
+  it("frees the queued slot and arms no timer when cancellation empties the queue (usage-gated)", async () => {
+    const { manager } = createManager({
+      fetchUsage: async () => ({ concurrentSessions: 0 }),
+    });
+    manager.setLimit("umans", 1);
+    const release1 = await manager.acquire("umans", "conv1", "default", 100);
+
+    const ac = new AbortController();
+    const p2 = manager
+      .acquire("umans", "conv2", "default", 200, undefined, ac.signal)
+      .catch((e) => {
+        expect(e).toBeInstanceOf(ConcurrencyAcquireAbortedError);
+        return undefined as unknown as () => void;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    ac.abort();
+    await p2;
+    expect(manager.getStatus("umans")?.queued).toBe(0);
+    release1();
+  });
+
+  it("handles a grant/abort race by releasing once and never double-leaking", async () => {
+    const { manager } = createManager();
+    manager.setLimit("umans", 1);
+    const release1 = await manager.acquire("umans", "conv1", "default", 100);
+    const ac = new AbortController();
+
+    let result: (() => void) | "cancelled" = "cancelled";
+    const p2 = manager
+      .acquire("umans", "conv2", "default", 200, undefined, ac.signal)
+      .then((r) => {
+        result = r;
+        return r;
+      })
+      .catch((e) => {
+        expect(e).toBeInstanceOf(ConcurrencyAcquireAbortedError);
+        return undefined as unknown as () => void;
+      });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Release AND abort in the same tick: one settles as granted or cancelled,
+    // never both.
+    release1();
+    ac.abort();
+    await p2;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(manager.getStatus("umans")?.inFlight).toBeLessThanOrEqual(1);
+    if (result !== "cancelled") {
+      result(); // release the granted slot if that branch won
+    }
   });
 });

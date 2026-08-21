@@ -215,6 +215,41 @@ describe("collectTextFromStream", () => {
     const text = await collectTextFromStream(stream([]));
     expect(text).toBe("");
   });
+
+  it("throws an AbortError when the signal is already aborted", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      collectTextFromStream(stream([{ type: "text-delta", delta: "no" }]), ac.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("stops promptly when abort fires mid-stream, throwing an AbortError", async () => {
+    const ac = new AbortController();
+    const hanging = {
+      [Symbol.asyncIterator]() {
+        let yielded = false;
+        return {
+          next: () =>
+            yielded
+              ? new Promise<IteratorResult<ProviderEvent>>(() => {}) // hangs
+              : new Promise<IteratorResult<ProviderEvent>>((resolve) => {
+                  yielded = true;
+                  setTimeout(() => {
+                    resolve({
+                      done: false,
+                      value: { type: "text-delta", delta: "partial" } as ProviderEvent,
+                    });
+                  }, 1);
+                }),
+          return: () => Promise.resolve({ done: true, value: undefined }),
+        };
+      },
+    };
+    const p = collectTextFromStream(hanging, ac.signal);
+    setTimeout(() => ac.abort(), 10);
+    await expect(p).rejects.toMatchObject({ name: "AbortError" });
+  });
 });
 
 describe("formatImagePlaceholder", () => {

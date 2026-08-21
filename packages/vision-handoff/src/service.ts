@@ -328,6 +328,12 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
     const transcriptions = new Map<string, string>(cache);
     const vision = await resolveVisionModel(undefined, opts?.compactionModel ?? undefined);
     for (const entry of toTranscribe) {
+      // Abort check: stop before starting the next image's transcription.
+      // On abort we stop here and let the caller proceed to runTurn, which
+      // seals the turn as aborted (emitting the single done("aborted")).
+      if (opts?.signal?.aborted) {
+        break;
+      }
       if (transcriptions.has(entry.url)) continue;
       if (vision === undefined) {
         // No vision model available for transcription — use a placeholder.
@@ -354,8 +360,9 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
           systemPrompt:
             "You are a vision assistant. Describe images faithfully and thoroughly. " +
             "Do not use any tools — just use your vision to see the image and describe it directly.",
+          ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
         });
-        const description = (await collectTextFromStream(stream)).trim();
+        const description = (await collectTextFromStream(stream, opts?.signal)).trim();
         const text =
           description.length > 0 ? description : "[Image transcription produced no output.]";
         transcriptions.set(entry.url, text);
@@ -373,6 +380,12 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
           }
         }
       } catch (err) {
+        // A deliberate abort during transcription is cancellation, not a
+        // transcription failure: do NOT cache a failure placeholder. Stop the
+        // loop and let the caller proceed to runTurn (which seals aborted).
+        if (opts?.signal?.aborted) {
+          break;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         log?.warn("vision-handoff: image compaction transcription failed", { error: msg });
         transcriptions.set(entry.url, `[Image transcription failed: ${msg}]`);

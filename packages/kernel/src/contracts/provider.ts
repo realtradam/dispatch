@@ -77,6 +77,18 @@ export interface ProviderErrorEvent {
  * Kept minimal — providers may ignore fields they don't support.
  */
 export interface ProviderStreamOptions {
+  /**
+   * Cancellation signal for this turn (the authoritative `RunTurnInput.signal`
+   * for active-turn calls). Providers MUST forward it to abort-capable upstream
+   * I/O (e.g. `fetch(..., { signal })` / a body reader), stop producing events
+   * after it aborts, and clean up response readers/resources. They MUST NOT
+   * convert a deliberate turn abort into an ordinary retryable provider failure.
+   *
+   * Optional so manual/background callers and tests compile unchanged. Callers
+   * may still defensively stop consuming a non-compliant provider even if it
+   * ignores this field.
+   */
+  readonly signal?: AbortSignal;
   /** Model identifier to use. */
   readonly model?: string;
   /** Sampling temperature override. */

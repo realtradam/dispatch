@@ -5,7 +5,7 @@ import type {
   ProviderStreamOptions,
   ToolContract,
 } from "@dispatch/kernel";
-import type { ConcurrencyLimiter } from "./concurrency-manager.js";
+import { ConcurrencyAcquireAbortedError, type ConcurrencyLimiter } from "./concurrency-manager.js";
 
 /**
  * Wrap a provider's `stream` method with concurrency limiting.
@@ -53,13 +53,31 @@ export function wrapProviderWithConcurrency(
       tools: readonly ToolContract[],
       opts?: ProviderStreamOptions,
     ): AsyncIterable<ProviderEvent> {
-      const release = await limiter.acquire(
-        providerId,
-        conversationId,
-        workspaceId,
-        promptStartedAt,
-        onQueued,
-      );
+      let release: (() => void) | undefined;
+      try {
+        release = await limiter.acquire(
+          providerId,
+          conversationId,
+          workspaceId,
+          promptStartedAt,
+          onQueued,
+          opts?.signal,
+        );
+      } catch (err) {
+        // Cancellation while queued: do NOT start the inner provider stream.
+        // The kernel's consumer barrier (abortableIteration) seals the turn as
+        // aborted; a genuine non-abort rejection still passes through.
+        if (err instanceof ConcurrencyAcquireAbortedError) return;
+        throw err;
+      }
+      // Post-acquire re-check: the signal may have fired between grant and here
+      // (grant/abort race). If aborted, release the slot immediately and never
+      // start the inner provider.
+      if (opts?.signal?.aborted === true) {
+        release();
+        release = undefined;
+        return;
+      }
       onAcquired?.();
       try {
         for await (const event of innerStream(messages, tools, opts)) {
@@ -69,7 +87,8 @@ export function wrapProviderWithConcurrency(
           yield event;
         }
       } finally {
-        release();
+        release?.();
+        release = undefined;
       }
     },
     ...(provider.listModels !== undefined ? { listModels: provider.listModels } : {}),

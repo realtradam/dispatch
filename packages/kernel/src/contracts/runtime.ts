@@ -66,9 +66,16 @@ export interface RunTurnInput {
 
   /**
    * Optional per-turn provider options (model, temperature, maxTokens,
-   * systemPrompt). The orchestrator resolves these; the kernel forwards them
-   * verbatim to `provider.stream` and never interprets them. A provider may
-   * also be pre-configured at construction and ignore these.
+   * systemPrompt, plus cancellation via `signal`). The orchestrator resolves
+   * these; the kernel forwards them verbatim to `provider.stream` and never
+   * interprets them. A provider may also be pre-configured at construction and
+   * ignore these.
+   *
+   * Cancellation note: the turn's `RunTurnInput.signal` is authoritative. When
+   * building the options passed to `provider.stream`, the kernel MUST merge
+   * `signal: this.signal` LAST (after spreading `providerOpts`) so a caller
+   * cannot accidentally substitute a different signal. Any value here is
+   * overridden.
    */
   readonly providerOpts?: ProviderStreamOptions;
 

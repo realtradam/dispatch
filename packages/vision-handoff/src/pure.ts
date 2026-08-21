@@ -89,17 +89,60 @@ export async function findVisionModelName(
  * async iterable — collects `text-delta` events, ignores everything else
  * (reasoning, usage, tool-calls). If the stream yields an error event, it is
  * surfaced as a thrown Error so the caller can decide how to degrade.
+ *
+ * When a `signal` is provided, each `next()` is raced against it (promise
+ * coordination only — no I/O). If the signal fires while a `next()` is pending,
+ * the collection stops promptly (no waiting on a hanging provider) and ABORTS
+ * (`throw`s AbortSignal-based) so the caller can propagate cancellation rather
+ * than caching a failure placeholder.
  */
-export async function collectTextFromStream(stream: AsyncIterable<ProviderEvent>): Promise<string> {
+export async function collectTextFromStream(
+  stream: AsyncIterable<ProviderEvent>,
+  signal?: AbortSignal,
+): Promise<string> {
   let text = "";
-  for await (const event of stream) {
+  const iterator = stream[Symbol.asyncIterator]();
+  while (true) {
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+    const nextPromise: Promise<IteratorResult<ProviderEvent>> = iterator.next();
+    let result: IteratorResult<ProviderEvent>;
+    if (signal !== undefined) {
+      void nextPromise.catch(() => {});
+      result = await new Promise<IteratorResult<ProviderEvent>>((resolve) => {
+        const onAbort = () => resolve({ done: true, value: undefined });
+        if (signal.aborted) return onAbort();
+        signal.addEventListener("abort", onAbort, { once: true });
+        void nextPromise.then((r) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(r);
+        });
+      });
+    } else {
+      result = await nextPromise;
+    }
+    if (result.done) break;
+    const event = result.value;
     if (event.type === "text-delta") {
       text += event.delta;
     } else if (event.type === "error") {
       throw new Error(event.message);
     }
   }
+  // Abort-driven completion: the abort race resolved as done. Surface it as a
+  // thrown AbortError so callers treat it as cancellation, not as a normal
+  // end-of-stream (avoids caching a failure placeholder).
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
   return text;
+}
+
+function createAbortError(): Error {
+  const err = new Error("aborted");
+  err.name = "AbortError";
+  return err;
 }
 
 /**
