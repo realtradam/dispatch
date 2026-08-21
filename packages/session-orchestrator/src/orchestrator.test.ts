@@ -4726,6 +4726,115 @@ describe("in-flight compaction", () => {
     expect(kernelSteerIdx).toBe(storeSteerIdx);
     expect(kernelSteerIdx).toBeGreaterThanOrEqual(0);
   });
+
+  it("an abort during the compaction summary stream is classified as 'aborted', not 'model produced empty summary', and the turn seals aborted with no terminal error", async () => {
+    // B1 regression: when Stop fires during the in-flight compaction summary
+    // call BEFORE any summary text is streamed, the empty-summary check used to
+    // run first and misreport the deliberate abort as a model failure. The
+    // abort check must win so the compaction is classified as cancellation.
+    const store = createInMemoryStore();
+    seedHistory(store, "conv-abort-compact", 15); // > keepLastN(10) → compactable
+
+    // contextWindow 1000, default percent 85 → threshold 850.
+    //   call 1 (step 0): tool-call + usage 900 → 910 > 850 → triggers compaction.
+    //   call 2 (compaction summary): hangs forever (never yields) — so Stop's
+    //     abortableIteration race wins and summary stays empty.
+    let callIndex = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        const call = callIndex++;
+        if (call === 0) {
+          return (async function* () {
+            yield {
+              type: "tool-call",
+              toolCallId: "tc1",
+              toolName: "echo",
+              input: {},
+            } as ProviderEvent;
+            yield { type: "usage", usage: { inputTokens: 900, outputTokens: 10 } } as ProviderEvent;
+            yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+          })();
+        }
+        // Compaction summary call — never settles its next().
+        return (async function* () {
+          yield new Promise<never>(() => {}) as unknown as ProviderEvent;
+        })();
+      },
+    };
+
+    const records: LogRecord[] = [];
+    const logDeps: LogDeps = { now: () => 2000, newId: () => `id-${records.length}` };
+    const sink: LogSink = { emit: (r) => records.push(r) };
+    const logger = createLogger({ extensionId: "session-orchestrator" }, sink, logDeps);
+
+    const terminalEvents: AgentEvent[] = [];
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [echoTool()],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveModel: () => ({ provider, model: "model" }),
+      resolveModelInfo: async () => ({ id: "test/model", contextWindow: 1000 }),
+      runTurn,
+      logger,
+      emit: () => {},
+    });
+
+    // Start the turn; it runs detached (async). Wait for step 0 to finish and
+    // the compaction summary hang to begin, then Stop.
+    const turnPromise = orchestrator.handleMessage({
+      conversationId: "conv-abort-compact",
+      text: "hi",
+      onEvent: (e) => {
+        if (e.type === "done" || e.type === "error" || e.type === "turn-sealed") {
+          terminalEvents.push(e);
+        }
+      },
+      modelName: "test/model",
+    });
+
+    // Let step 0 + the compaction summary call start (first two provider calls),
+    // then abort the turn.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    orchestrator.stopTurn("conv-abort-compact");
+
+    await turnPromise;
+
+    // The compaction was classified as an abort, not "model produced empty
+    // summary" (B1 fix), and the turn sealed with exactly one aborted done and
+    // no spurious terminal error.
+    const skipRecords = records.filter(
+      (r) => r.kind === "log" && r.msg === "compaction:in-flight:skipped",
+    );
+    expect(skipRecords.length).toBeGreaterThanOrEqual(1);
+    for (const r of skipRecords) {
+      const attributes = (r as Extract<LogRecord, { kind: "log" }>).attributes ?? {};
+      expect(attributes.error).toBe("aborted");
+    }
+    expect(
+      skipRecords.some(
+        (r) =>
+          (r as Extract<LogRecord, { kind: "log" }>).attributes?.error ===
+          "model produced empty summary",
+      ),
+    ).toBe(false);
+
+    const abortedDones = terminalEvents.filter((e) => e.type === "done" && e.reason === "aborted");
+    expect(abortedDones).toHaveLength(1);
+    expect(terminalEvents.some((e) => e.type === "error")).toBe(false);
+    // No history replacement happened (compaction aborted before fork/replace).
+    const stored = store.data.get("conv-abort-compact") ?? [];
+    expect(
+      stored.some(
+        (m) =>
+          m.role === "system" &&
+          m.chunks.some(
+            (c) => c.type === "text" && String(c.text).startsWith("The following is a summary"),
+          ),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("per-turn memory telemetry", () => {

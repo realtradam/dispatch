@@ -102,41 +102,57 @@ export async function collectTextFromStream(
 ): Promise<string> {
   let text = "";
   const iterator = stream[Symbol.asyncIterator]();
-  while (true) {
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        throw createAbortError();
+      }
+      const nextPromise: Promise<IteratorResult<ProviderEvent>> = iterator.next();
+      let result: IteratorResult<ProviderEvent>;
+      if (signal !== undefined) {
+        void nextPromise.catch(() => {});
+        result = await new Promise<IteratorResult<ProviderEvent>>((resolve) => {
+          const onAbort = () => resolve({ done: true, value: undefined });
+          if (signal.aborted) return onAbort();
+          signal.addEventListener("abort", onAbort, { once: true });
+          void nextPromise.then((r) => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(r);
+          });
+        });
+      } else {
+        result = await nextPromise;
+      }
+      if (result.done) break;
+      const event = result.value;
+      if (event.type === "text-delta") {
+        text += event.delta;
+      } else if (event.type === "error") {
+        throw new Error(event.message);
+      }
+    }
+    // Abort-driven completion: the abort race resolved as done. Surface it as a
+    // thrown AbortError so callers treat it as cancellation, not as a normal
+    // end-of-stream (avoids caching a failure placeholder).
     if (signal?.aborted) {
       throw createAbortError();
     }
-    const nextPromise: Promise<IteratorResult<ProviderEvent>> = iterator.next();
-    let result: IteratorResult<ProviderEvent>;
-    if (signal !== undefined) {
-      void nextPromise.catch(() => {});
-      result = await new Promise<IteratorResult<ProviderEvent>>((resolve) => {
-        const onAbort = () => resolve({ done: true, value: undefined });
-        if (signal.aborted) return onAbort();
-        signal.addEventListener("abort", onAbort, { once: true });
-        void nextPromise.then((r) => {
-          signal.removeEventListener("abort", onAbort);
-          resolve(r);
-        });
-      });
-    } else {
-      result = await nextPromise;
-    }
-    if (result.done) break;
-    const event = result.value;
-    if (event.type === "text-delta") {
-      text += event.delta;
-    } else if (event.type === "error") {
-      throw new Error(event.message);
+    return text;
+  } finally {
+    // Best-effort request upstream cleanup (release reader locks / cancel HTTP
+    // streams). On abort the underlying provider `next()` may still be pending;
+    // never await a hanging `return()` and swallow any rejection so settling as
+    // aborted is never delayed or broken.
+    try {
+      const returnFn = iterator.return;
+      if (returnFn) {
+        const p = returnFn.call(iterator);
+        if (p) void p.catch(() => {});
+      }
+    } catch {
+      // swallow
     }
   }
-  // Abort-driven completion: the abort race resolved as done. Surface it as a
-  // thrown AbortError so callers treat it as cancellation, not as a normal
-  // end-of-stream (avoids caching a failure placeholder).
-  if (signal?.aborted) {
-    throw createAbortError();
-  }
-  return text;
 }
 
 function createAbortError(): Error {

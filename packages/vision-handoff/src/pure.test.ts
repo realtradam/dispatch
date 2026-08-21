@@ -250,6 +250,45 @@ describe("collectTextFromStream", () => {
     setTimeout(() => ac.abort(), 10);
     await expect(p).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  it("calls iterator.return() best-effort on abort (does not hang or reject)", async () => {
+    const ac = new AbortController();
+    let returnCalls = 0;
+    let pendingNext: Promise<IteratorResult<ProviderEvent>> | undefined;
+    const hangingReturn = {
+      [Symbol.asyncIterator]() {
+        let yielded = false;
+        return {
+          next: () => {
+            if (!yielded) {
+              yielded = true;
+              return new Promise<IteratorResult<ProviderEvent>>((resolve) => {
+                setTimeout(() => {
+                  resolve({
+                    done: false,
+                    value: { type: "text-delta", delta: "partial" } as ProviderEvent,
+                  });
+                }, 1);
+              });
+            }
+            // Hangs forever — simulates a next() that never settles.
+            pendingNext = new Promise<IteratorResult<ProviderEvent>>(() => {});
+            return pendingNext;
+          },
+          return: () => {
+            returnCalls++;
+            // Never settles — must NOT delay/break settlement.
+            return new Promise<IteratorResult<ProviderEvent>>(() => {});
+          },
+        };
+      },
+    };
+    const p = collectTextFromStream(hangingReturn, ac.signal);
+    setTimeout(() => ac.abort(), 10);
+    await expect(p).rejects.toMatchObject({ name: "AbortError" });
+    // Despite a hanging return(), the function settled and return() was invoked.
+    expect(returnCalls).toBe(1);
+  });
 });
 
 describe("formatImagePlaceholder", () => {

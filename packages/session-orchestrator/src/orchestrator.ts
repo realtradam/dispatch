@@ -1822,15 +1822,18 @@ async function performCompaction(
     }
   }
 
-  if (summary.trim().length === 0) {
-    return { error: "model produced empty summary" };
-  }
-
   // Abort after summarization but before fork/replace: do not fork or replace
   // history (the archive would be orphaned and the live history untouched,
-  // which is safe, but skipping is cleaner — nothing was modified yet).
+  // which is safe, but skipping is cleaner — nothing was modified yet). Checked
+  // BEFORE the empty-summary check so a deliberate abort is never misreported
+  // as "model produced empty summary" (which can happen when the abort fires
+  // before any summary text is streamed).
   if (signal?.aborted) {
     return { error: "aborted" };
+  }
+
+  if (summary.trim().length === 0) {
+    return { error: "model produced empty summary" };
   }
 
   // Non-destructive: fork the full pre-compaction history to a new
