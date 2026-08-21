@@ -34,6 +34,7 @@ import {
   parseNumberedOpenCodeEnv,
   extension as providerOpenaiCompatExt,
 } from "@dispatch/provider-openai-compat";
+import { extension as providerOpenRouterExt } from "@dispatch/provider-openrouter";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import {
   type MemorySample,
@@ -95,6 +96,7 @@ const CORE_EXTENSIONS: readonly Extension[] = [
   providerUmansExt,
   providerLongcatExt,
   providerHyperExt,
+  providerOpenRouterExt,
   providerConcurrencyExt,
   // exec-backend must precede the tool extensions that
   // `dependsOn: ["exec-backend"]` (tool-edit-file/read/shell/write). It

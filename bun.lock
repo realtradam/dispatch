@@ -94,6 +94,7 @@
         "@dispatch/provider-hyper": "workspace:*",
         "@dispatch/provider-longcat": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
+        "@dispatch/provider-openrouter": "workspace:*",
         "@dispatch/provider-umans": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/skills": "workspace:*",
@@ -210,6 +211,14 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/openai-stream": "workspace:*",
         "@dispatch/trace-replay": "workspace:*",
+      },
+    },
+    "packages/provider-openrouter": {
+      "name": "@dispatch/provider-openrouter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/openai-stream": "workspace:*",
       },
     },
     "packages/provider-umans": {
@@ -482,6 +491,8 @@
     "@dispatch/provider-longcat": ["@dispatch/provider-longcat@workspace:packages/provider-longcat"],
 
     "@dispatch/provider-openai-compat": ["@dispatch/provider-openai-compat@workspace:packages/provider-openai-compat"],
+
+    "@dispatch/provider-openrouter": ["@dispatch/provider-openrouter@workspace:packages/provider-openrouter"],
 
     "@dispatch/provider-umans": ["@dispatch/provider-umans@workspace:packages/provider-umans"],
 

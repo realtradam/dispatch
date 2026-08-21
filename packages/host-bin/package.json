@@ -16,6 +16,7 @@
     "@dispatch/provider-umans": "workspace:*",
     "@dispatch/provider-longcat": "workspace:*",
     "@dispatch/provider-hyper": "workspace:*",
+    "@dispatch/provider-openrouter": "workspace:*",
     "@dispatch/message-queue": "workspace:*",
     "@dispatch/mcp": "workspace:*",
     "@dispatch/named-agents": "workspace:*",
