@@ -858,6 +858,13 @@ export interface ConversationOpenMessage {
    * workspace.
    */
   readonly workspaceId: string;
+  /**
+   * The conversation's persisted per-conversation model when set (absent =
+   * default provider model), so a frontend can stamp the new tab with the
+   * conversation's ACTUAL model rather than the globally-selected one
+   * (fix-toolcall-duplicate-keys plan Part 4).
+   */
+  readonly model?: string;
 }
 
 /**

@@ -343,7 +343,12 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     // "default". Existing/ordinary conversations pass no known workspace, so
     // we still resolve from the store (correct for already-persisted metadata).
     const workspaceId = knownWorkspaceId ?? (await store.getWorkspaceId(conversationId));
-    deps.emit(conversationOpened, { conversationId, workspaceId });
+    const model = await store.getModel(conversationId);
+    deps.emit(conversationOpened, {
+      conversationId,
+      workspaceId,
+      ...(model !== null ? { model } : {}),
+    });
     return workspaceId;
   }
 

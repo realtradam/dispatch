@@ -1201,9 +1201,19 @@ export function createConversationStore(
         }
         metas.push(toMeta(id, row));
       }
+      // Surface the persisted per-conversation model on the list so clients can
+      // stamp a tab for a conversation opened from the backend list with its
+      // ACTUAL model (fix-toolcall-duplicate-keys plan Part 4) — point lookups
+      // alongside the existing meta scans; batched for the (small) index.
+      const withModel = await Promise.all(
+        metas.map(async (m) => {
+          const model = await this.getModel(m.id);
+          return model !== null ? { ...m, model } : m;
+        }),
+      );
       // Sort by lastActivityAt descending (most recent first). Stable sort
       // keeps first-seen (index) order for ties.
-      return metas.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+      return withModel.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
     },
 
     async getConversationMeta(conversationId) {
@@ -1211,7 +1221,11 @@ export function createConversationStore(
       if (raw === null) return null;
       const row = parseMetaRow(raw);
       if (row === null) return null;
-      return toMeta(conversationId, row);
+      const meta = toMeta(conversationId, row);
+      // Consistent with listConversations: surface the persisted per-conversation
+      // model when set (absent = default provider).
+      const model = await this.getModel(conversationId);
+      return model !== null ? { ...meta, model } : meta;
     },
 
     async setConversationTitle(conversationId, title) {

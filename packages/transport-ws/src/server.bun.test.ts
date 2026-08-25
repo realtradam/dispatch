@@ -449,8 +449,13 @@ function startServer(
    * persisted `workspaceId`) to every connected client.
    */
   return Object.assign(server, {
-    triggerConversationOpen(conversationId: string, workspaceId: string): void {
-      broadcast({ type: "conversation.open", conversationId, workspaceId });
+    triggerConversationOpen(conversationId: string, workspaceId: string, model?: string): void {
+      broadcast({
+        type: "conversation.open",
+        conversationId,
+        workspaceId,
+        ...(model !== undefined ? { model } : {}),
+      });
     },
     /**
      * Simulate the `conversationStatusChanged` hook firing — mirrors the
@@ -1105,6 +1110,30 @@ describe("conversation.open broadcast (conversationOpened hook)", () => {
       type: "conversation.open",
       conversationId: "conv-42",
       workspaceId: "ws-7",
+    });
+
+    ws.close();
+  });
+
+  test("conversation.open broadcast carries the persisted model when provided", async () => {
+    const orch = fakeOrchestrator();
+    const registry = fakeRegistry([fakeProvider("demo", "Demo Surface")]);
+    server = startServer(registry, orch);
+    port = server.port as number;
+
+    const ws = new WebSocket(`ws://localhost:${port}`);
+    await waitForMessage(ws); // drain catalog
+
+    // The extension handler forwards the payload's `model` (when set) into the
+    // broadcast — fix-toolcall-duplicate-keys plan Part 4.
+    server.triggerConversationOpen("conv-42", "ws-7", "openrouter/stealth/ox-alpha");
+
+    const msg = await waitForMessage(ws);
+    expect(msg).toEqual({
+      type: "conversation.open",
+      conversationId: "conv-42",
+      workspaceId: "ws-7",
+      model: "openrouter/stealth/ox-alpha",
     });
 
     ws.close();

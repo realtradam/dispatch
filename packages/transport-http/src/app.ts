@@ -1479,7 +1479,15 @@ export function createApp(opts: CreateServerOptions): Hono {
     // `"default"` when no workspaceId is persisted (or the conversation is
     // unknown), so this never throws for a missing conversation.
     const workspaceId = await opts.conversationStore.getWorkspaceId(conversationId);
-    opts.emit(conversationOpened, { conversationId, workspaceId });
+    // Surface the persisted per-conversation model so the frontend can stamp
+    // the opened tab with the conversation's ACTUAL model (not the global
+    // active model) — fix-toolcall-duplicate-keys plan Part 4.
+    const model = await opts.conversationStore.getModel(conversationId);
+    opts.emit(conversationOpened, {
+      conversationId,
+      workspaceId,
+      ...(model !== null ? { model } : {}),
+    });
     log.info("conversations: opened", { conversationId, workspaceId });
     const body: OpenConversationResponse = { conversationId };
     return c.json(body, 200);

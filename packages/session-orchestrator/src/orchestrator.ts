@@ -278,6 +278,13 @@ export interface ConversationOpenedPayload {
    * tab in the correct workspace. Falls back to `"default"`.
    */
   readonly workspaceId: string;
+  /**
+   * The conversation's persisted per-conversation model (`<credential>/<model>`),
+   * when one is set — so a frontend can stamp the newly-opened tab with the
+   * conversation's ACTUAL model instead of the currently-selected global model
+   * (fix-toolcall-duplicate-keys plan Part 4). Absent = default provider model.
+   */
+  readonly model?: string;
 }
 
 /**

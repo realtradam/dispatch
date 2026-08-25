@@ -1394,6 +1394,24 @@ describe("ConversationStore conversation metadata + list + title", () => {
     expect(await store.getConversationMeta("conv1")).toBeNull();
   });
 
+  it("listConversations + getConversationMeta: surface the persisted model when set, omit it when unset", async () => {
+    const store = createConversationStore(storage, undefined, () => 6000);
+    await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "hello" }] }]);
+    await store.setModel("conv1", "openrouter/stealth/ox-alpha");
+
+    const meta = await store.getConversationMeta("conv1");
+    expect(meta?.model).toBe("openrouter/stealth/ox-alpha");
+
+    const list = await store.listConversations();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.model).toBe("openrouter/stealth/ox-alpha");
+
+    // A conversation that never had a model set omits the field entirely.
+    await store.append("conv2", [{ role: "user", chunks: [{ type: "text", text: "no model" }] }]);
+    const list2 = await store.listConversations();
+    expect(list2.find((c) => c.id === "conv2")).not.toHaveProperty("model");
+  });
+
   it("setConversationTitle: updates the title", async () => {
     const store = createConversationStore(storage, undefined, () => 1000);
     await store.append("conv1", [{ role: "user", chunks: [{ type: "text", text: "original" }] }]);

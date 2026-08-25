@@ -138,8 +138,13 @@ export function createTransportWsExtension(): Extension {
       // orchestrator from the store), so a frontend opens/focuses the tab in
       // the correct workspace.
       disposers.push(
-        host.on(conversationOpened, ({ conversationId, workspaceId }) => {
-          broadcast({ type: "conversation.open", conversationId, workspaceId });
+        host.on(conversationOpened, ({ conversationId, workspaceId, model }) => {
+          broadcast({
+            type: "conversation.open",
+            conversationId,
+            workspaceId,
+            ...(model !== undefined ? { model } : {}),
+          });
         }),
       );
 

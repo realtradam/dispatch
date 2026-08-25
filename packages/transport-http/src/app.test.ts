@@ -3520,6 +3520,36 @@ describe("GET /conversations", () => {
     expect(body.conversations.map((c) => c.id)).toEqual(["conv-1", "conv-2", "other-1"]);
   });
 
+  it("includes the persisted per-conversation model when the store returns it", async () => {
+    const convos: ConversationMeta[] = [
+      {
+        id: "conv-m1",
+        createdAt: 1000,
+        lastActivityAt: 2000,
+        title: "With model",
+        status: "idle",
+        workspaceId: "default",
+        model: "openrouter/stealth/ox-alpha",
+      },
+      {
+        id: "conv-m2",
+        createdAt: 1500,
+        lastActivityAt: 2500,
+        title: "No model",
+        status: "idle",
+        workspaceId: "default",
+      },
+    ];
+    const app = appWithList(convos);
+    const res = await app.request("/conversations");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: ConversationMeta[] };
+    expect(body.conversations.find((c) => c.id === "conv-m1")?.model).toBe(
+      "openrouter/stealth/ox-alpha",
+    );
+    expect(body.conversations.find((c) => c.id === "conv-m2")).not.toHaveProperty("model");
+  });
+
   it("?q= filters by id prefix", async () => {
     const app = appWithList(sampleConvos);
     const res = await app.request("/conversations?q=conv-");
