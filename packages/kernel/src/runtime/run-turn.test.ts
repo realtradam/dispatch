@@ -4306,4 +4306,155 @@ describe("runTurn", () => {
       expect((firstBatch[2]?.chunks[0] as ImageChunk).url).toBe("ua");
     });
   });
+
+  // --- Duplicate tool-call hardening (fix-toolcall-duplicate-keys) ---
+  // A provider can emit the SAME toolCallId twice within one step (observed
+  // with openrouter/stealth/ox-alpha). The kernel must keep the first
+  // occurrence and drop the later ones so the transcript never accumulates
+  // duplicate tool-call/result pairs (which crash the FE's keyed each and
+  // re-run tools).
+  describe("duplicate tool-call ProviderEvents", () => {
+    it("drops a repeated tool-call event: one chunk + one result in the transcript", async () => {
+      const tool = createFakeTool("dup", async () => ({ content: "once" }));
+      const provider = createFakeProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "dup", input: { n: 1 } },
+          { type: "tool-call", toolCallId: "tc1", toolName: "dup", input: { n: 2 } },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "Done." },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const { emit } = createCollectingEmit();
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-dup",
+        turnId: "turn-dup",
+        emit,
+      });
+
+      // The assistant message has ONE tool-call chunk (the duplicate is dropped).
+      const assistantMsg = result.messages[0];
+      expect(assistantMsg?.role).toBe("assistant");
+      const callChunks = (assistantMsg?.chunks ?? []).filter((c) => c.type === "tool-call");
+      expect(callChunks).toHaveLength(1);
+      if (callChunks[0]?.type === "tool-call") {
+        expect(callChunks[0].toolCallId).toBe("tc1");
+        expect(callChunks[0].input).toEqual({ n: 1 }); // the FIRST occurrence wins
+      }
+
+      // The tool message has ONE result.
+      const toolMsg = result.messages[1];
+      expect(toolMsg?.role).toBe("tool");
+      const resultChunks = (toolMsg?.chunks ?? []).filter((c) => c.type === "tool-result");
+      expect(resultChunks).toHaveLength(1);
+
+      expect(result.finishReason).toBe("stop");
+    });
+
+    it("runs the tool exactly once even when the provider emits the call twice", async () => {
+      let executions = 0;
+      const tool = createFakeTool("count", async () => {
+        executions++;
+        return { content: "counted" };
+      });
+      const provider = createFakeProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "count", input: {} },
+          { type: "tool-call", toolCallId: "tc1", toolName: "count", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-count",
+        turnId: "turn-count",
+        emit: () => {},
+      });
+
+      expect(executions).toBe(1);
+    });
+
+    it("emits exactly one tool-call AgentEvent per unique id", async () => {
+      const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
+      const provider = createFakeProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const { events, emit } = createCollectingEmit();
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-evt",
+        turnId: "turn-evt",
+        emit,
+      });
+
+      const toolCallEvents = events.filter((e) => e.type === "tool-call");
+      expect(toolCallEvents).toHaveLength(1);
+    });
+
+    it("does not dedupe toolCallIds reused across DIFFERENT steps", async () => {
+      const tool = createFakeTool("again", async () => ({ content: "again" }));
+      const provider = createFakeProvider([
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "again", input: { step: 1 } },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        // Second step reuses the same id — a legitimately separate call.
+        [
+          { type: "tool-call", toolCallId: "tc1", toolName: "again", input: { step: 2 } },
+          { type: "finish", reason: "tool-calls" },
+        ],
+        [
+          { type: "text-delta", delta: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const { events, emit } = createCollectingEmit();
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-steps",
+        turnId: "turn-steps",
+        emit,
+      });
+
+      // Both steps' calls survive: two assistant messages each with one tool-call.
+      const toolCallEvents = events.filter((e) => e.type === "tool-call");
+      expect(toolCallEvents).toHaveLength(2);
+      const assistantMessages = result.messages.filter((m) => m.role === "assistant");
+      const callChunks = assistantMessages.flatMap((m) =>
+        m.chunks.filter((c) => c.type === "tool-call"),
+      );
+      expect(callChunks).toHaveLength(2);
+    });
+  });
 });

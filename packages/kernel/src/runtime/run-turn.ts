@@ -162,6 +162,7 @@ function processEvent(
   event: ProviderEvent,
   chunks: Chunk[],
   toolCalls: ToolCall[],
+  seenToolCallIds: Set<string>,
   dispatcher: StepDispatcher,
   ctx: StepContext,
   stepSpan: Span | undefined,
@@ -212,6 +213,15 @@ function processEvent(
       ctx.emit(reasoningDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
       break;
     case "tool-call": {
+      // Dedupe by toolCallId within the step: a provider can emit the SAME
+      // tool-call event twice (observed with openrouter/stealth/ox-alpha —
+      // fix-toolcall-duplicate-keys). Accumulating duplicates corrupts the
+      // transcript (the FE crashes on duplicate each keys) and re-runs tools.
+      // The first occurrence (stream order) wins; later ones are dropped here,
+      // at the single chokepoint, so they never reach chunks, dispatch, spans,
+      // or the FE event stream.
+      if (seenToolCallIds.has(event.toolCallId)) break;
+      seenToolCallIds.add(event.toolCallId);
       const call: ToolCall = {
         id: event.toolCallId,
         name: event.toolName,
@@ -280,6 +290,7 @@ function processEvent(
 async function executeStep(ctx: StepContext): Promise<StepResult> {
   const chunks: Chunk[] = [];
   const toolCalls: ToolCall[] = [];
+  const seenToolCallIds = new Set<string>();
   const toolDispatchTimes = new Map<string, number>();
   let stepUsage = zeroUsage();
   let finishReason = "stop";
@@ -383,6 +394,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
           event,
           chunks,
           toolCalls,
+          seenToolCallIds,
           dispatcher,
           ctx,
           stepSpan,
