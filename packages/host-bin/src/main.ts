@@ -275,6 +275,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     credentials.push({ name: "hyper", providerId: "hyper" });
     logger.info(`Registered credential "hyper" → hyper provider`);
   }
+  if (process.env.OPENROUTER_API_KEY) {
+    credentials.push({ name: "openrouter", providerId: "openrouter" });
+    logger.info(`Registered credential "openrouter" → openrouter provider`);
+  }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),
   );
