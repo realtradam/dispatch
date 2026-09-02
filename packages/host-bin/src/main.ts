@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { createJournalSink } from "@dispatch/journal-sink";
 import {
@@ -9,6 +10,7 @@ import {
   type EventsEmitter,
   type Extension,
   type HostDeps,
+  KERNEL_API_VERSION,
   type LogDeps,
   type PermissionGate,
   type ScheduledJob,
@@ -28,6 +30,14 @@ import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
 import { loadExternalExtensions } from "./load-external.js";
 import { startMemoryTelemetry } from "./mem-telemetry.js";
+import {
+  ensurePluginsDir,
+  loadPlugin,
+  readPluginOverrides,
+  scanPlugins,
+  toDiscoveredPlugins,
+} from "./plugin-discovery.js";
+import { reconcilePlugins, resolvePluginsDir } from "./plugin-reconcile.js";
 
 function createEmptySecrets(): SecretsAccess {
   return {
@@ -223,6 +233,68 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     for (const d of disabled) {
       logger.warn(`Extension "${d.manifest.id}" disabled: ${d.reason}`);
     }
+  }
+
+  // --- Plugin directory drop-ins (plan 04): discover → reconcile → load ----
+  //
+  // This is the DROP-IN mechanism, complementary to DISPATCH_EXTERNAL_EXTENSIONS
+  // above (the explicit env list loaded BEFORE createHost) — both feed the same
+  // host: plugins land in the same registries and get the same apiVersion /
+  // DAG / capability-gate treatment. Directory plugins get the FULL
+  // validatePluginManifest at scan time; env-loaded externals keep the light
+  // structural check (trusted, developer-loaded — see load-external.ts).
+  //
+  // Boot here is READ-ONLY with respect to override records (§4.7): the
+  // override-store OWNER (plugin-manager, plan 05) does not exist yet, so we
+  // only READ existing records (none until plan 05 lands) and load per the
+  // reconcile plan — no record-writing happens in plan 04.
+  const pluginLogger = logger.child({ extensionId: "plugin-discovery" });
+  const pluginsDir = resolvePluginsDir(
+    process.env as Readonly<Record<string, string | undefined>>,
+    homedir(),
+  );
+  try {
+    await ensurePluginsDir(pluginsDir);
+  } catch {
+    // Best effort — an uncreatable root scans as empty (scanPlugins logs it).
+  }
+  const scan = await scanPlugins(pluginsDir, pluginLogger);
+  for (const p of scan.plugins) {
+    if (p.status.kind === "invalid") {
+      for (const error of p.status.errors) {
+        pluginLogger.error(`Plugin at "${p.dir}" is invalid: ${error}`);
+      }
+    } else if (p.status.kind === "incompatible") {
+      pluginLogger.warn(`Plugin "${p.status.manifest.id}" disabled: ${p.status.reason}`);
+    }
+  }
+  const overrides = await readPluginOverrides(host.getHostAPI(), pluginLogger);
+  const plan = reconcilePlugins(toDiscoveredPlugins(scan), overrides, {
+    kernelApiVersion: KERNEL_API_VERSION,
+    loadedIds: host.getExtensions().map((m) => m.id),
+    mode: "boot", // default-on at boot (§5) — no disable-record means load
+  });
+  for (const p of plan.toLoad) {
+    const ext = await loadPlugin(p.entryPath, pluginLogger);
+    if (ext === undefined) continue; // already logged + skipped by loadPlugin
+    const result = await host.loadExtension(ext);
+    if (!result.ok) pluginLogger.warn(`Plugin "${p.manifest.id}" disabled: ${result.reason}`);
+  }
+  for (const d of plan.disabledByOverride) {
+    pluginLogger.info(
+      `Plugin "${d.manifest.id}" at "${d.dir}" disabled by saved override${d.record.reason ? `: ${d.record.reason}` : ""}`,
+    );
+  }
+  for (const d of plan.disabledWithReason) {
+    pluginLogger.warn(`Plugin "${d.manifest.id}" at "${d.dir}" disabled: ${d.reason}`);
+  }
+  for (const m of plan.missing) {
+    // Greyed-out "missing" row (§6): the plugin is gone but its
+    // disable-record survives so the user notices; clearing the record is
+    // the manager's (plan 05) job.
+    pluginLogger.warn(
+      `Plugin "${m.id}" is MISSING (directory gone) but has a saved disable-record`,
+    );
   }
 
   // Periodic memory telemetry — leak-localization edge effect (AGENTS.md:

@@ -99,7 +99,7 @@ export interface ManifestCapabilities {
  * The REQUIRED set (`id`, `name`, `version`, `apiVersion`, `tier`, `trust`)
  * is the minimum the host needs to classify and gate an extension (identity,
  * compat, tier, origin) — it is non-optional in TS so contract violations
- * surface in `tsc`. The OPTIONAL set (`dependsOn`, `activation`,
+ * surface in `tsc`. The OPTIONAL set (`dependsOn`, `entry`, `activation`,
  * `contributes`, `capabilities`, `frontend`) stays optional: forcing
  * present-but-empty values would burden every manifest and external authors
  * for no benefit.
@@ -127,6 +127,14 @@ export interface Manifest {
 
   /** Ids of extensions this one depends on (resolved topologically). */
   readonly dependsOn?: readonly string[];
+
+  /**
+   * Optional module specifier of the code entry, relative to the plugin
+   * directory (plan 04 packaging). Directory plugins (manifest.json + code)
+   * default to the conventional `index.ts`/`index.js`; `entry` overrides the
+   * convention. Bundled extensions are imported directly and leave it unset.
+   */
+  readonly entry?: string;
 
   /** Activation strategy: "eager" (on boot) or lazy event triggers. */
   readonly activation?: "eager" | string;
