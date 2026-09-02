@@ -475,6 +475,17 @@ function startServer(
         workspaceId,
       });
     },
+    /**
+     * Simulate the `extensionsChanged` hook firing — mirrors the
+     * `host.on(extensionsChanged, ...)` subscription in extension.ts, which
+     * broadcasts the `extensions-changed` wire message (forwarded verbatim)
+     * to every connected client after a plugin-manager mutation (plan 05 §11).
+     */
+    triggerExtensionsChanged(
+      message: Extract<WsServerMessage, { type: "extensions-changed" }>,
+    ): void {
+      broadcast(message);
+    },
   });
 }
 
@@ -1232,6 +1243,60 @@ describe("conversation.statusChanged broadcast (conversationStatusChanged hook)"
       status: "idle",
       workspaceId: "ws-shared",
     });
+
+    ws1.close();
+    ws2.close();
+  });
+});
+
+describe("extensions-changed broadcast (extensionsChanged hook — plan 05 §11)", () => {
+  let server: ReturnType<typeof startServer>;
+  let port: number;
+
+  afterEach(() => {
+    server.stop();
+  });
+
+  test("extensions-changed broadcast when the extensionsChanged hook fires", async () => {
+    const orch = fakeOrchestrator();
+    const registry = fakeRegistry([fakeProvider("demo", "Demo Surface")]);
+    server = startServer(registry, orch);
+    port = server.port as number;
+
+    const ws = new WebSocket(`ws://localhost:${port}`);
+    await waitForMessage(ws); // drain catalog
+
+    // Simulate the extensionsChanged hook firing (extension.ts's
+    // `host.on(extensionsChanged, ...)` handler runs and broadcasts the
+    // wire message verbatim).
+    server.triggerExtensionsChanged({
+      type: "extensions-changed",
+      action: "load",
+      pluginId: "tool-fs",
+    });
+
+    const msg = await waitForMessage(ws);
+    expect(msg).toEqual({ type: "extensions-changed", action: "load", pluginId: "tool-fs" });
+
+    ws.close();
+  });
+
+  test("extensions-changed sent to ALL connected clients (scan has no pluginId)", async () => {
+    const orch = fakeOrchestrator();
+    const registry = fakeRegistry([fakeProvider("demo", "Demo Surface")]);
+    server = startServer(registry, orch);
+    port = server.port as number;
+
+    const ws1 = new WebSocket(`ws://localhost:${port}`);
+    await waitForMessage(ws1); // drain catalog
+    const ws2 = new WebSocket(`ws://localhost:${port}`);
+    await waitForMessage(ws2); // drain catalog
+
+    server.triggerExtensionsChanged({ type: "extensions-changed", action: "scan" });
+
+    const [msg1, msg2] = await Promise.all([waitForMessage(ws1), waitForMessage(ws2)]);
+    expect(msg1).toEqual({ type: "extensions-changed", action: "scan" });
+    expect(msg2).toEqual({ type: "extensions-changed", action: "scan" });
 
     ws1.close();
     ws2.close();

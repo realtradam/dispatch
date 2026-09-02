@@ -7,6 +7,7 @@
  */
 
 import type { Extension, HostAPI } from "@dispatch/kernel";
+import { extensionsChanged } from "@dispatch/plugin-manager";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
 import {
   conversationCompacted,
@@ -180,6 +181,13 @@ export function createTransportWsExtension(): Extension {
           },
         ),
       );
+
+      // Broadcast `extensions-changed` to ALL connected clients after every
+      // plugin-manager mutation (load / unload / reload / scan / forget) so
+      // every connected frontend refetches the extension list AND the
+      // surface catalog (§11 multi-client coherence). The hook payload IS
+      // the wire message — forwarded verbatim.
+      disposers.push(host.on(extensionsChanged, (message) => broadcast(message)));
 
       server = Bun.serve<ConnectionState>({
         port,

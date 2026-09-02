@@ -20,6 +20,9 @@
       "path": "./packages/transport-ws"
     },
     {
+      "path": "./packages/plugin-manager"
+    },
+    {
       "path": "./packages/surface-loaded-extensions"
     },
     {

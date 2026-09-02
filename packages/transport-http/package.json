@@ -13,6 +13,7 @@
     "@dispatch/lsp": "workspace:*",
     "@dispatch/mcp": "workspace:*",
     "@dispatch/named-agents": "workspace:*",
+    "@dispatch/plugin-manager": "workspace:*",
     "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*",
     "@dispatch/throughput-store": "workspace:*",

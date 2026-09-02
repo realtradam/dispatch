@@ -840,7 +840,8 @@ export type WsServerMessage =
   | ChatErrorMessage
   | ConversationOpenMessage
   | ConversationStatusChangedMessage
-  | ConversationCompactedMessage;
+  | ConversationCompactedMessage
+  | ExtensionsChangedMessage;
 
 // ─── Conversation list + metadata ────────────────────────────────────────────
 
@@ -895,6 +896,179 @@ export interface ConversationCompactedMessage {
   readonly newConversationId: string;
   readonly messagesSummarized: number;
   readonly messagesKept: number;
+}
+
+// ─── Plugin manager (plan 05) ────────────────────────────────────────────────
+//
+// The wire shapes for the plugin management API (HTTP routes + the
+// `extensions-changed` broadcast). Tier/trust mirror the kernel's
+// `PluginTier`/`TrustLevel` (stable three-value enums — the manager's
+// manifest→row mapping is the drift detector: any kernel-side change fails
+// the assignment there at compile time).
+
+/** Classification tier of a plugin (mirror of the kernel's `PluginTier`). */
+export type PluginTier = "core" | "providers" | "standard";
+
+/** Trust level of a plugin (mirror of the kernel's `TrustLevel`). */
+export type PluginTrustLevel = "bundled" | "local" | "external";
+
+/** How a persisted override came to be (absent in plan-04-era records). */
+export type PluginOverrideKind = "unloaded" | "disabled";
+
+/** The persisted user override for a discovered plugin (wire shape). */
+export interface PluginOverrideInfo {
+  readonly kind?: PluginOverrideKind;
+  readonly reason?: string;
+  readonly disabledAt?: string;
+}
+
+/** A plugin currently loaded and live — the manager's `loaded` table rows. */
+export interface LoadedPluginRow {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly tier: PluginTier;
+  readonly trust: PluginTrustLevel;
+  /** True for tier "core" — the server refuses to unload it. */
+  readonly locked: boolean;
+  readonly dependsOn: readonly string[];
+}
+
+/** A plugin the system refused or failed to load — disabled-with-reason. */
+export interface DisabledWithReasonRow {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly tier: PluginTier;
+  readonly trust: PluginTrustLevel;
+  readonly reason: string;
+}
+
+/** A plugin present on disk but not loaded — the manager's second table. */
+export interface DiscoveredPluginRow {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly tier: PluginTier;
+  readonly trust: PluginTrustLevel;
+  /** Absolute plugin directory. */
+  readonly dir: string;
+  /**
+   * The persisted user override, if any. Absent = a fresh discovery the
+   * consent gate renders UNCHECKED; present rows distinguish a deliberate
+   * unload (`kind: "unloaded"`) from an explicit disable (`"disabled"`).
+   */
+  readonly override?: PluginOverrideInfo;
+}
+
+/** An override record whose plugin directory is gone — a greyed-out row. */
+export interface MissingPluginRow {
+  readonly id: string;
+  readonly reason?: string;
+  readonly disabledAt?: string;
+}
+
+/** Response for `GET /plugins` — the two manager tables + the missing strip. */
+export interface PluginListResponse {
+  readonly loaded: readonly LoadedPluginRow[];
+  readonly disabledWithReason: readonly DisabledWithReasonRow[];
+  readonly discovered: readonly DiscoveredPluginRow[];
+  readonly missing: readonly MissingPluginRow[];
+}
+
+/** One directory that failed scan validation (manifest missing/unparsable/invalid). */
+export interface InvalidPluginDir {
+  readonly dir: string;
+  readonly errors: readonly string[];
+}
+
+/** One directory whose (valid) manifest is incompatible with the kernel. */
+export interface IncompatiblePluginDir {
+  readonly dir: string;
+  readonly id: string;
+  readonly reason: string;
+}
+
+/**
+ * Response for `POST /plugins/scan` — the manual scan's product (§5): newly
+ * discovered plugins are UNCHECKED (the consent gate — the scan never
+ * auto-loads), broken directories report their validation errors.
+ */
+export interface PluginScanResponse {
+  /** The plugins root that was scanned. */
+  readonly root: string;
+  /** Fresh discoveries: loadable, not loaded, no override. */
+  readonly newPlugins: readonly DiscoveredPluginRow[];
+  /** Directories that failed manifest/entry validation. */
+  readonly invalid: readonly InvalidPluginDir[];
+  /** Valid manifests incompatible with the running kernel. */
+  readonly incompatible: readonly IncompatiblePluginDir[];
+}
+
+/** The mutation a plugin-management route performed. */
+export type PluginAction = "load" | "unload" | "reload" | "forget";
+
+/** Why a plugin operation was refused (HTTP 409/404 — see the route docs). */
+export type PluginBlockReason =
+  /** Core plugins cannot be unloaded (never force-able). */
+  | "core-locked"
+  /** Unloading would leave zero loaded providers (never force-able). */
+  | "last-provider"
+  /** Loaded dependents exist — retry with `force` (the dependents are listed). */
+  | "cascade-needs-force"
+  /** The target plugin is not currently loaded. */
+  | "not-loaded"
+  /** No such plugin was found (no loadable directory with that id). */
+  | "not-found"
+  /** The target is already loaded (load; use reload). */
+  | "already-loaded"
+  /** The engine refused or failed the operation (reason in `message`). */
+  | "engine-refused";
+
+/** Successful plugin-management operation (HTTP 200). */
+export interface PluginOpSuccess {
+  readonly ok: true;
+  readonly action: PluginAction;
+  readonly id: string;
+  /** Forced unload: the dependents that were unloaded before the target. */
+  readonly cascade?: readonly string[];
+  /** Forced reload: dependents unloaded around the target (engine report). */
+  readonly unloadedDependents?: readonly string[];
+  /** Forced reload: dependents reloaded after the target (engine report). */
+  readonly reloadedDependents?: readonly string[];
+  /** Whether a saved override record was removed (load / reload / forget). */
+  readonly clearedOverride?: boolean;
+  /** Forced ops stop ALL agents first — how many in-flight turns aborted. */
+  readonly stoppedAgents?: number;
+}
+
+/** Refused plugin-management operation (HTTP 404 / 409). */
+export interface PluginOpBlocked {
+  readonly ok: false;
+  readonly action: PluginAction;
+  readonly id: string;
+  readonly reason: PluginBlockReason;
+  /** Human-readable reason (server-log grammar) for the UI to surface. */
+  readonly message: string;
+  /** For `cascade-needs-force`: the loaded dependents a force would remove. */
+  readonly dependents?: readonly string[];
+}
+
+/** Response for the plugin-management mutation routes. */
+export type PluginOpResponse = PluginOpSuccess | PluginOpBlocked;
+
+/**
+ * Broadcast to ALL connected WS clients after every plugin-manager mutation
+ * (load / unload / reload / scan / forget) so every connected frontend
+ * refetches the extension list AND the surface catalog (§11 multi-client
+ * coherence). The payload is intentionally minimal — the client refreshes
+ * from `GET /plugins` + the surface catalog rather than diffing here.
+ */
+export interface ExtensionsChangedMessage {
+  readonly type: "extensions-changed";
+  readonly action: "load" | "unload" | "reload" | "scan" | "forget";
+  /** The plugin the action applied to (absent for a scan). */
+  readonly pluginId?: string;
 }
 
 /**

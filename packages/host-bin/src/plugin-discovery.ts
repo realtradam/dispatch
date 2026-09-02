@@ -26,12 +26,14 @@ import {
   type Logger,
   type Manifest,
 } from "@dispatch/kernel";
+import type { ReconciledScanBuckets, ScannedPluginEntry } from "@dispatch/plugin-manager";
 import { isExtension } from "./load-external.js";
 import {
   type DiscoveredPlugin,
   decodeOverrideRecord,
   PLUGIN_OVERRIDES_NAMESPACE,
   type PluginOverrideRecord,
+  type ReconcilePlan,
   validatePluginManifest,
 } from "./plugin-reconcile.js";
 
@@ -302,4 +304,61 @@ export async function readPluginOverrides(
     );
   }
   return overrides;
+}
+
+// ── Plugin-manager view adapters (plan 05) ──────────────────────────────────
+
+/**
+ * Flatten a scan into the manager's kernel-typed entries — the adapter the
+ * composition root hands to the plugin-manager's `PluginEngine`
+ * (`scanPluginsDir`). Pure mapping; the manager never imports host-bin.
+ */
+export function toScannedEntries(scan: ScanResult): ScannedPluginEntry[] {
+  const entries: ScannedPluginEntry[] = [];
+  for (const p of scan.plugins) {
+    switch (p.status.kind) {
+      case "loadable":
+        entries.push({
+          dir: p.dir,
+          kind: "loadable",
+          manifest: p.status.manifest,
+          entryPath: p.status.entryPath,
+        });
+        break;
+      case "invalid":
+        entries.push({ dir: p.dir, kind: "invalid", errors: p.status.errors });
+        break;
+      case "incompatible":
+        entries.push({
+          dir: p.dir,
+          kind: "incompatible",
+          manifest: p.status.manifest,
+          reason: p.status.reason,
+        });
+        break;
+    }
+  }
+  return entries;
+}
+
+/**
+ * Flatten a `mode: "scan"` reconcile plan into the manager's buckets — the
+ * other half of the `PluginEngine.scanPluginsDir` adapter. Pure mapping.
+ */
+export function toReconciledBuckets(plan: ReconcilePlan): ReconciledScanBuckets {
+  return {
+    unchecked: plan.unchecked.map((p) => ({ dir: p.dir, manifest: p.manifest })),
+    alreadyLoaded: plan.alreadyLoaded.map((p) => ({ dir: p.dir, manifest: p.manifest })),
+    disabledByOverride: plan.disabledByOverride.map((d) => ({
+      dir: d.dir,
+      manifest: d.manifest,
+      record: d.record,
+    })),
+    disabledWithReason: plan.disabledWithReason.map((d) => ({
+      dir: d.dir,
+      manifest: d.manifest,
+      reason: d.reason,
+    })),
+    missing: plan.missing.map((m) => ({ id: m.id, record: m.record })),
+  };
 }

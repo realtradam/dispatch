@@ -90,6 +90,7 @@
         "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
         "@dispatch/named-agents": "workspace:*",
+        "@dispatch/plugin-manager": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/provider-hyper": "workspace:*",
         "@dispatch/provider-longcat": "workspace:*",
@@ -178,6 +179,15 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/trace-replay": "workspace:*",
         "@dispatch/wire": "workspace:*",
+      },
+    },
+    "packages/plugin-manager": {
+      "name": "@dispatch/plugin-manager",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
       },
     },
     "packages/provider-concurrency": {
@@ -391,6 +401,7 @@
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
         "@dispatch/named-agents": "workspace:*",
+        "@dispatch/plugin-manager": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/system-prompt": "workspace:*",
@@ -405,6 +416,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/plugin-manager": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
@@ -483,6 +495,8 @@
     "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
 
     "@dispatch/openai-stream": ["@dispatch/openai-stream@workspace:packages/openai-stream"],
+
+    "@dispatch/plugin-manager": ["@dispatch/plugin-manager@workspace:packages/plugin-manager"],
 
     "@dispatch/provider-concurrency": ["@dispatch/provider-concurrency@workspace:packages/provider-concurrency"],
 

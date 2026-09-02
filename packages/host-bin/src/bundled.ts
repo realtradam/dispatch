@@ -28,6 +28,7 @@ import type { Extension } from "@dispatch/kernel";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as namedAgentsExt } from "@dispatch/named-agents";
+import { extension as pluginManagerExt } from "@dispatch/plugin-manager";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
 import { extension as providerHyperExt } from "@dispatch/provider-hyper";
 import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
@@ -81,6 +82,9 @@ export function createBundledExtensions(creds: {
     toolWriteFileExt,
     systemPromptExt,
     sessionOrchestratorExt,
+    // The plugin control plane (plan 05) — activates after the host engine
+    // (provided pre-activation by main.ts) and storage are available.
+    pluginManagerExt,
     surfaceRegistry,
     transportWs,
     transportHttp,

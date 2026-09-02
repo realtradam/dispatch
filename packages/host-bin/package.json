@@ -20,6 +20,7 @@
     "@dispatch/message-queue": "workspace:*",
     "@dispatch/mcp": "workspace:*",
     "@dispatch/named-agents": "workspace:*",
+    "@dispatch/plugin-manager": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*",
     "@dispatch/skills": "workspace:*",
     "@dispatch/ssh": "workspace:*",

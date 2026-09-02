@@ -26,6 +26,9 @@
       "path": "../named-agents"
     },
     {
+      "path": "../plugin-manager"
+    },
+    {
       "path": "../provider-concurrency"
     },
     {

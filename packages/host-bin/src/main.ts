@@ -17,6 +17,7 @@ import {
   type SecretsAccess,
   type StorageNamespace,
 } from "@dispatch/kernel";
+import { pluginEngineHandle } from "@dispatch/plugin-manager";
 import { parseNumberedOpenCodeEnv } from "@dispatch/provider-openai-compat";
 import {
   type MemorySample,
@@ -36,6 +37,8 @@ import {
   readPluginOverrides,
   scanPlugins,
   toDiscoveredPlugins,
+  toReconciledBuckets,
+  toScannedEntries,
 } from "./plugin-discovery.js";
 import { reconcilePlugins, resolvePluginsDir } from "./plugin-reconcile.js";
 
@@ -225,7 +228,50 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     ...externalExtensions,
   ];
 
+  // Resolve the plugins root BEFORE the host activates — the plugin-manager
+  // engine implementation (below) carries it, and the boot drop-in block
+  // reuses it. Creating the dir is best-effort (an uncreatable root scans
+  // as empty — scanPlugins logs it).
+  const pluginLogger = logger.child({ extensionId: "plugin-discovery" });
+  const pluginsDir = resolvePluginsDir(
+    process.env as Readonly<Record<string, string | undefined>>,
+    homedir(),
+  );
+  try {
+    await ensurePluginsDir(pluginsDir);
+  } catch {
+    // Best effort — an uncreatable root scans as empty (scanPlugins logs it).
+  }
+
   const host = createHost(extensions, deps);
+
+  // Provide the plugin lifecycle ENGINE to the plugin-manager (the manager's
+  // consumer-defined `PluginEngine` handle). Provided BEFORE activation so
+  // the manager's activate-time getService is deterministic; the adapter
+  // delegates to the plan-01 engine + plan-04 discovery machinery. The
+  // registration-closed gate on the composition root's host API covers the
+  // define* registries — services are dynamic (plan 03), and this provide
+  // is the designed injection point for the one service only the
+  // composition root can supply.
+  host.getHostAPI().provideService(pluginEngineHandle, {
+    getExtensions: host.getExtensions,
+    getDisabled: host.getDisabled,
+    loadExtension: host.loadExtension,
+    unloadExtension: host.unloadExtension,
+    reloadExtension: host.reloadExtension,
+    importPluginEntry: (entryPath) => loadPlugin(entryPath, pluginLogger),
+    pluginsDir,
+    scanPluginsDir: async (overrides) => {
+      const scan = await scanPlugins(pluginsDir, pluginLogger);
+      const plan = reconcilePlugins(toDiscoveredPlugins(scan), overrides, {
+        kernelApiVersion: KERNEL_API_VERSION,
+        loadedIds: host.getExtensions().map((m) => m.id),
+        mode: "scan", // mid-session scans NEVER auto-load (consent gate, §5)
+      });
+      return { scanned: toScannedEntries(scan), buckets: toReconciledBuckets(plan) };
+    },
+  });
+
   await host.activate();
 
   const disabled = host.getDisabled();
@@ -244,20 +290,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
   // validatePluginManifest at scan time; env-loaded externals keep the light
   // structural check (trusted, developer-loaded — see load-external.ts).
   //
-  // Boot here is READ-ONLY with respect to override records (§4.7): the
-  // override-store OWNER (plugin-manager, plan 05) does not exist yet, so we
-  // only READ existing records (none until plan 05 lands) and load per the
-  // reconcile plan — no record-writing happens in plan 04.
-  const pluginLogger = logger.child({ extensionId: "plugin-discovery" });
-  const pluginsDir = resolvePluginsDir(
-    process.env as Readonly<Record<string, string | undefined>>,
-    homedir(),
-  );
-  try {
-    await ensurePluginsDir(pluginsDir);
-  } catch {
-    // Best effort — an uncreatable root scans as empty (scanPlugins logs it).
-  }
+  // Boot here is READ-ONLY with respect to override records (§4.7): records
+  // are READ to honor saved disables; all record WRITES belong to the
+  // plugin-manager (plan 05) — including the user's consent to load, which
+  // clears a record.
   const scan = await scanPlugins(pluginsDir, pluginLogger);
   for (const p of scan.plugins) {
     if (p.status.kind === "invalid") {

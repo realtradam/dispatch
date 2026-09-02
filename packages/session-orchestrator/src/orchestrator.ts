@@ -434,6 +434,17 @@ export interface SessionOrchestrator {
    * path). Idempotent — stopping an idle/unknown conversation is a no-op.
    */
   stopTurn(conversationId: string): { readonly abortedTurn: boolean };
+  /**
+   * Stop ALL in-flight generations globally — the §8 forced-unload semantic:
+   * unloading a plugin that is in use requires the swap to land immediately,
+   * so every active turn in every workspace dies (plan-00 question 2: the
+   * stop is global by design, not attributed per plugin). Iterates the
+   * active conversations and applies the same per-conversation stop as
+   * `stopTurn` — the kernel finishes each with `finishReason: "aborted"`,
+   * partial messages persist, turns seal normally. Returns how many
+   * conversations had an in-flight turn aborted.
+   */
+  stopAll(): { readonly stopped: number };
   handleMessage(input: {
     conversationId: string;
     text: string;
@@ -1406,6 +1417,14 @@ export function createSessionOrchestrator(
         turn.controller.abort();
       }
       return { abortedTurn };
+    },
+
+    stopAll() {
+      let stopped = 0;
+      for (const conversationId of [...activeConversations]) {
+        if (orchestrator.stopTurn(conversationId).abortedTurn) stopped++;
+      }
+      return { stopped };
     },
 
     async handleMessage({

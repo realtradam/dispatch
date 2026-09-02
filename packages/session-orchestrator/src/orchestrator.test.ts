@@ -2811,6 +2811,110 @@ describe("closeConversation (CR-4c)", () => {
 
 // --- workspace id on conversationOpened / conversationStatusChanged payloads ---
 
+describe("stopAll (plan 05 §8 — forced unload stops ALL agents globally)", () => {
+  it("aborts EVERY in-flight turn: all report aborted, partials persist, none left active", async () => {
+    const store = createInMemoryStore();
+    // Two blocked providers — each turn stalls mid-stream until released.
+    const releaseCalls: Array<() => void> = [];
+    const barrier = (): Promise<void> =>
+      new Promise<void>((resolve) => {
+        releaseCalls.push(resolve);
+      });
+    const stalledProvider: ProviderContract = {
+      id: "fake-stalled",
+      stream() {
+        return (async function* () {
+          yield { type: "text-delta", delta: "partial" } as ProviderEvent;
+          await barrier();
+          yield { type: "text-delta", delta: " never arrives" } as ProviderEvent;
+          yield { type: "finish", reason: "stop" } as ProviderEvent;
+        })();
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => stalledProvider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      emit: () => {},
+    });
+
+    const sealed = {
+      "conv-1": new Promise<void>((resolve) => {
+        orchestrator.subscribe("conv-1", (e) => {
+          if (e.type === "turn-sealed") resolve();
+        });
+      }),
+      "conv-2": new Promise<void>((resolve) => {
+        orchestrator.subscribe("conv-2", (e) => {
+          if (e.type === "turn-sealed") resolve();
+        });
+      }),
+    };
+    orchestrator.startTurn({ conversationId: "conv-1", text: "one" });
+    orchestrator.startTurn({ conversationId: "conv-2", text: "two" });
+    expect(orchestrator.isActive("conv-1")).toBe(true);
+    expect(orchestrator.isActive("conv-2")).toBe(true);
+
+    // stopAll reports both aborted; the orchestrator is left with NO active
+    // conversations (the set drains as the aborted turns settle).
+    const result = orchestrator.stopAll();
+    expect(result.stopped).toBe(2);
+    expect(orchestrator.getActiveConversationCount()).toBe(2); // abort is async until seal
+
+    // Both turns settle normally (aborted), partial messages persisted.
+    await Promise.all([sealed["conv-1"], sealed["conv-2"]]);
+    expect(orchestrator.isActive("conv-1")).toBe(false);
+    expect(orchestrator.isActive("conv-2")).toBe(false);
+
+    const persisted1 = store.data.get("conv-1") ?? [];
+    const persisted2 = store.data.get("conv-2") ?? [];
+    expect(persisted1.length).toBeGreaterThanOrEqual(1);
+    expect(persisted1[0]?.role).toBe("user");
+    expect(persisted2[0]?.role).toBe("user");
+  });
+
+  it("stops conversations whose turns are ACTIVE only; counts no-op stops as zero", async () => {
+    const store = createInMemoryStore();
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => createFakeProvider([]),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      emit: () => {},
+    });
+    // No turns at all — stopAll is a global no-op.
+    expect(orchestrator.stopAll()).toEqual({ stopped: 0 });
+
+    orchestrator.startTurn({ conversationId: "conv-idle", text: "hi" });
+    // Flush microtasks so the fake turn settles to idle first.
+    await new Promise((resolve) => setImmediate(resolve));
+    await orchestrator.handleMessage({
+      conversationId: "conv-idle",
+      text: "again",
+      onEvent: () => {},
+    });
+    // After the turn settles, stopAll finds nothing in flight.
+    expect(orchestrator.stopAll().stopped).toBe(0);
+  });
+
+  it("stopAll is safe to call repeatedly (idempotent)", () => {
+    const store = createInMemoryStore();
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => createFakeProvider([]),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      emit: () => {},
+    });
+    expect(orchestrator.stopAll().stopped).toBe(0);
+    expect(orchestrator.stopAll().stopped).toBe(0);
+  });
+});
+
 describe("workspace id broadcast payloads", () => {
   it("conversationStatusChanged payload carries the workspace id from the store", async () => {
     const base = createInMemoryStore();

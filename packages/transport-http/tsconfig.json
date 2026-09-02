@@ -10,6 +10,7 @@
     { "path": "../lsp" },
     { "path": "../mcp" },
     { "path": "../named-agents" },
+    { "path": "../plugin-manager" },
     { "path": "../provider-concurrency" },
     { "path": "../session-orchestrator" },
     { "path": "../system-prompt" },

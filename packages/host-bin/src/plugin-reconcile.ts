@@ -21,48 +21,20 @@ import {
 
 // --- Override records (§6: the DB records overrides/disables, not full state) ---
 
+export type { PluginOverrideKind, PluginOverrideRecord } from "@dispatch/plugin-manager";
 /**
- * Storage namespace (the namespaced `StorageNamespace` KV) that holds the
- * override records. Key = extension id, value = JSON `PluginOverrideRecord`.
- * Plan 04 only READS this namespace (boot wiring is read-only); the
- * plugin-manager core extension (plan 05) owns writing. The namespace name is
- * defined here so the reader (plan 04) and the future writer (plan 05) cannot
- * drift.
+ * The override-record contract is CANONICAL in `@dispatch/plugin-manager`
+ * (the override-store OWNER — plan 05's manager writes; this module's boot
+ * path only reads). Re-exported here so the plan-04 reader and the plan-05
+ * writer cannot drift and this module's public surface is unchanged.
  */
-export const PLUGIN_OVERRIDES_NAMESPACE = "plugin-overrides";
+export {
+  decodeOverrideRecord,
+  encodeOverrideRecord,
+  PLUGIN_OVERRIDES_NAMESPACE,
+} from "@dispatch/plugin-manager";
 
-/**
- * A persisted user override: "plugin X is disabled". Anything WITHOUT a
- * record here is loaded at boot (§6 — overrides, not full state).
- */
-export interface PluginOverrideRecord {
-  readonly disabled: true;
-  /** Why it was disabled (shown in the manager UI). */
-  readonly reason?: string;
-  /** ISO timestamp of when the override was recorded. */
-  readonly disabledAt?: string;
-}
-
-/** Serialize an override record for the KV store. */
-export function encodeOverrideRecord(record: PluginOverrideRecord): string {
-  return JSON.stringify(record);
-}
-
-/**
- * Parse a stored override record. Returns `undefined` for unparsable /
- * wrong-shaped values so callers can log-and-skip instead of crashing boot.
- */
-export function decodeOverrideRecord(json: string): PluginOverrideRecord | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return undefined;
-  }
-  if (!parsed || typeof parsed !== "object") return undefined;
-  if ((parsed as { disabled?: unknown }).disabled !== true) return undefined;
-  return parsed as PluginOverrideRecord;
-}
+import type { PluginOverrideRecord } from "@dispatch/plugin-manager";
 
 // --- Discovery root resolution (§4.2) ---
 

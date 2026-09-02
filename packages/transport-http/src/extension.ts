@@ -11,6 +11,7 @@ import {
   lspServiceHandle,
   mcpServiceHandle,
   namedAgentServiceHandle,
+  pluginManagerHandle,
   sessionOrchestratorHandle,
   systemPromptHandle,
   throughputStoreHandle,
@@ -65,6 +66,12 @@ export const manifest: Manifest = {
       "/metrics/throughput",
       "/named-agents",
       "/named-agents/:id",
+      "/plugins",
+      "/plugins/scan",
+      "/plugins/:id/load",
+      "/plugins/:id/unload",
+      "/plugins/:id/reload",
+      "/plugins/:id/forget",
       "/system-prompt",
       "/system-prompt/variables",
       "/workspaces",
@@ -129,6 +136,7 @@ export function createTransportHttpExtension(): Extension & {
         computer: { current: host.tryGetService(computerServiceHandle) },
         concurrency: { current: host.tryGetService(concurrencyServiceHandle) },
         namedAgent: { current: host.tryGetService(namedAgentServiceHandle) },
+        pluginManager: { current: host.tryGetService(pluginManagerHandle) },
       };
 
       function watch<T>(handle: ServiceHandle<T>, slot: { current: T | undefined }): () => void {
@@ -152,6 +160,7 @@ export function createTransportHttpExtension(): Extension & {
         watch(computerServiceHandle, slots.computer),
         watch(concurrencyServiceHandle, slots.concurrency),
         watch(namedAgentServiceHandle, slots.namedAgent),
+        watch(pluginManagerHandle, slots.pluginManager),
       ];
 
       const logger = host.logger;
@@ -191,6 +200,9 @@ export function createTransportHttpExtension(): Extension & {
         },
         get namedAgentService() {
           return slots.namedAgent.current;
+        },
+        get pluginManagerService() {
+          return slots.pluginManager.current;
         },
       });
 

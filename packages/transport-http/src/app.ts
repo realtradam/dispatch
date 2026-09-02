@@ -33,6 +33,8 @@ import type {
   NamedAgentResponse,
   NamedAgentsResponse,
   OpenConversationResponse,
+  PluginListResponse,
+  PluginScanResponse,
   QueueCancelResponse,
   QueueResponse,
   ReasoningEffortResponse,
@@ -71,12 +73,14 @@ import {
   mapUpdateError,
   parseChatBody,
   parseModelBody,
+  parsePluginForceBody,
   parseQueueBody,
   parseReasoningEffortBody,
   parseSinceSeq,
   parseStatusFilter,
   parseWarmBody,
   parseWindowParam,
+  pluginOpStatus,
   serializeEventLine,
 } from "./logic.js";
 import {
@@ -93,6 +97,7 @@ import {
   type McpServerStatus,
   type McpService,
   type NamedAgentsService,
+  type PluginManagerService,
   type SessionOrchestrator,
   type SystemPromptService,
   ThroughputQueryError,
@@ -156,6 +161,15 @@ export interface CreateServerOptions {
    * provider-catalog calls (the registry is local config).
    */
   readonly namedAgentService?: NamedAgentsService | undefined;
+  /**
+   * Optional + reactive — the plugin-manager service (provided by the core
+   * `plugin-manager` extension; read per request via a registry slot). When
+   * absent (somehow not activated), the `/plugins*` routes degrade to 503.
+   * Route handlers are thin shells: parse → delegate → map the structured
+   * result to a status (200 ok / 400 invalid body / 404 not-found /
+   * 409 blocked-with-reason / 500 engine failure / 503 absent).
+   */
+  readonly pluginManagerService?: PluginManagerService | undefined;
   readonly logger?: Logger;
   readonly generateId?: () => string;
   /** Injectable clock for sample timestamps (default Date.now). */
@@ -2058,6 +2072,136 @@ export function createApp(opts: CreateServerOptions): Hono {
       }
       log.error("heartbeat: run stop failure", { err, workspaceId, runId });
       return c.json({ error: "Failed to stop heartbeat run" }, 500);
+    }
+  });
+
+  // ─── Plugin manager (plan 05) ─────────────────────────────────────────────
+  // Thin shells over the PluginManagerService (the core `plugin-manager`
+  // extension's typed service): parse → delegate → map the structured result
+  // to a status. All unload POLICY (core lock, last-provider lock, cascade
+  // warning, forced agent stop) is enforced server-side in the manager —
+  // these handlers never re-implement it.
+
+  app.get("/plugins", async (c) => {
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const list = await opts.pluginManagerService.list();
+      log.info("plugins: list", {
+        loaded: list.loaded.length,
+        disabled: list.disabledWithReason.length,
+        discovered: list.discovered.length,
+        missing: list.missing.length,
+      });
+      const body: PluginListResponse = list;
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("plugins: list failure", { err });
+      return c.json({ error: "Failed to list plugins" }, 500);
+    }
+  });
+
+  app.post("/plugins/scan", async (c) => {
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const scan = await opts.pluginManagerService.scan();
+      log.info("plugins: scan", {
+        newPlugins: scan.newPlugins.length,
+        invalid: scan.invalid.length,
+        incompatible: scan.incompatible.length,
+      });
+      const body: PluginScanResponse = scan;
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("plugins: scan failure", { err });
+      return c.json({ error: "Failed to scan plugins" }, 500);
+    }
+  });
+
+  app.post("/plugins/:id/load", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const result = await opts.pluginManagerService.load(id);
+      const status = pluginOpStatus(result);
+      if (!result.ok) log.warn("plugins: load blocked", { id, reason: result.reason });
+      else log.info("plugins: loaded", { id });
+      return c.json(result, status);
+    } catch (err) {
+      log.error("plugins: load failure", { err, id });
+      return c.json({ error: "Failed to load plugin" }, 500);
+    }
+  });
+
+  app.post("/plugins/:id/unload", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    const raw = await c.req.text();
+    const parsed = parsePluginForceBody(raw);
+    if (!parsed.ok) {
+      log.warn("plugins: unload invalid body", { id, error: parsed.error });
+      return c.json({ error: parsed.error }, 400);
+    }
+    try {
+      const result = await opts.pluginManagerService.unload(id, { force: parsed.force });
+      const status = pluginOpStatus(result);
+      if (!result.ok) log.warn("plugins: unload blocked", { id, reason: result.reason });
+      else log.info("plugins: unloaded", { id, force: parsed.force });
+      return c.json(result, status);
+    } catch (err) {
+      log.error("plugins: unload failure", { err, id });
+      return c.json({ error: "Failed to unload plugin" }, 500);
+    }
+  });
+
+  app.post("/plugins/:id/reload", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    const raw = await c.req.text();
+    const parsed = parsePluginForceBody(raw);
+    if (!parsed.ok) {
+      log.warn("plugins: reload invalid body", { id, error: parsed.error });
+      return c.json({ error: parsed.error }, 400);
+    }
+    try {
+      const result = await opts.pluginManagerService.reload(id, { force: parsed.force });
+      const status = pluginOpStatus(result);
+      if (!result.ok) log.warn("plugins: reload blocked", { id, reason: result.reason });
+      else log.info("plugins: reloaded", { id, force: parsed.force });
+      return c.json(result, status);
+    } catch (err) {
+      log.error("plugins: reload failure", { err, id });
+      return c.json({ error: "Failed to reload plugin" }, 500);
+    }
+  });
+
+  app.post("/plugins/:id/forget", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const result = await opts.pluginManagerService.forget(id);
+      if (result.ok) {
+        log.info("plugins: forgot", {
+          id,
+          ...(result.clearedOverride ? { clearedOverride: true } : {}),
+        });
+      }
+      const status = pluginOpStatus(result);
+      return c.json(result, status);
+    } catch (err) {
+      log.error("plugins: forget failure", { err, id });
+      return c.json({ error: "Failed to forget plugin" }, 500);
     }
   });
 
