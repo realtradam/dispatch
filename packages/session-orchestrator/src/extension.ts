@@ -80,61 +80,37 @@ export function activate(host: HostAPI): void {
       };
     },
     resolveQueue: () => {
-      // Lazily resolve the message-queue service. Returns undefined when the
-      // extension isn't loaded (feature degrades off) — checked via the
-      // activated-manifests list so `host.getService` is only called when the
-      // service is registered. Lazy so activation order with message-queue
-      // doesn't matter; called per-turn / per-enqueue, not at activate time.
-      const loaded = host.getExtensions().some((m) => m.id === "message-queue");
-      return loaded ? host.getService(messageQueueHandle) : undefined;
+      // Reactive registry lookup (plan 03): non-throwing, resolved per call —
+      // per-turn/per-enqueue reads always see the CURRENT registry state, so
+      // the message-queue plugin loaded or unloaded mid-session is picked up
+      // on the next turn with no restart. Undefined → queueing degrades off
+      // (the steering message is dropped / nothing to cancel).
+      return host.tryGetService(messageQueueHandle);
     },
     resolveCompaction: () => {
-      // Lazily resolve the compaction service (registered below after
-      // the orchestrator). By the time this is called at runtime
-      // (after a turn settles), the service is registered.
-      try {
-        return host.getService(compactionHandle);
-      } catch {
-        return undefined;
-      }
+      // Reactive registry lookup (plan 03): non-throwing, per call. The
+      // compaction service is core-provided (by this very extension, after
+      // the orchestrator) — registered by the time a turn settles.
+      return host.tryGetService(compactionHandle);
     },
     resolveSystemPrompt: () => {
-      // Lazily resolve the system-prompt service. Returns undefined when
-      // the system-prompt extension isn't loaded (no system prompt sent —
-      // current behavior). Lazy so activation order with system-prompt
-      // doesn't matter; called per-turn / per-compaction, not at activate.
-      try {
-        return host.getService(systemPromptHandle);
-      } catch {
-        return undefined;
-      }
+      // Reactive registry lookup (plan 03): non-throwing, per call. Returns
+      // undefined when the system-prompt extension isn't loaded (no system
+      // prompt sent — current behavior); activation order no longer matters.
+      return host.tryGetService(systemPromptHandle);
     },
     resolveConcurrencyLimiter: () => {
-      // Lazily resolve the concurrency limiter. Returns undefined when the
-      // provider-concurrency extension isn't loaded (no concurrency limiting —
-      // feature degrades off). Lazy so activation order with
-      // provider-concurrency doesn't matter; called per-turn, not at activate.
-      const loaded = host.getExtensions().some((m) => m.id === "provider-concurrency");
-      if (!loaded) return undefined;
-      try {
-        return host.getService(concurrencyServiceHandle);
-      } catch {
-        return undefined;
-      }
+      // Reactive registry lookup (plan 03): non-throwing, per call. Returns
+      // undefined when the provider-concurrency extension isn't loaded (no
+      // concurrency limiting — feature degrades off).
+      return host.tryGetService(concurrencyServiceHandle);
     },
     resolveVisionHandoff: () => {
-      // Lazily resolve the vision-handoff service. Returns undefined when the
-      // vision-handoff extension isn't loaded (images pass through unchanged —
-      // correct for vision-capable models; the feature degrades off cleanly for
-      // text-only turns). Lazy so activation order doesn't matter; the
-      // activated-manifests guard avoids a getService throw when absent.
-      const loaded = host.getExtensions().some((m) => m.id === "vision-handoff");
-      if (!loaded) return undefined;
-      try {
-        return host.getService(visionHandoffLocalHandle);
-      } catch {
-        return undefined;
-      }
+      // Reactive registry lookup (plan 03): non-throwing, per call. Returns
+      // undefined when the vision-handoff extension isn't loaded (images pass
+      // through unchanged — correct for vision-capable models; the feature
+      // degrades off cleanly for text-only turns).
+      return host.tryGetService(visionHandoffLocalHandle);
     },
   });
 
@@ -192,11 +168,8 @@ export function activate(host: HostAPI): void {
         return store.getModelInfo(modelName);
       },
       resolveSystemPrompt: () => {
-        try {
-          return host.getService(systemPromptHandle);
-        } catch {
-          return undefined;
-        }
+        // Reactive registry lookup (plan 03) — non-throwing, per call.
+        return host.tryGetService(systemPromptHandle);
       },
       applyToolsFilter: (assembly) => host.applyFilters(toolsFilter, assembly),
       runTurn,

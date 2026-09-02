@@ -106,42 +106,56 @@ export interface CreateServerOptions {
   readonly credentialStore: CredentialStore;
   readonly warmService?: WarmService;
   readonly compactionService?: CompactionService;
-  readonly lspService?: LspService;
-  readonly mcpService?: McpService;
+  /**
+   * Optional + reactive: read PER REQUEST (the extension passes a live
+   * getter over a registry slot). `| undefined` is explicit so a getter
+   * returning the slot's current value typechecks under
+   * exactOptionalPropertyTypes — an absent service (extension not loaded or
+   * unloaded mid-session) takes the route's degrade path.
+   */
+  readonly lspService?: LspService | undefined;
+  readonly mcpService?: McpService | undefined;
   /** Optional — system prompt builder service (GET/PUT template). */
   readonly systemPromptService?: SystemPromptService;
   /**
-   * Optional — per-workspace heartbeat loop service (provided by the
-   * `heartbeat` extension). When absent (heartbeat not loaded), the
+   * Optional + reactive — per-workspace heartbeat loop service (provided by
+   * the `heartbeat` extension; read per request via a registry slot). When
+   * absent (heartbeat not loaded / unloaded mid-session), the
    * `/workspaces/:id/heartbeat*` routes degrade: GET returns defaults,
    * PUT/POST return 503.
    */
-  readonly heartbeatService?: HeartbeatService;
+  readonly heartbeatService?: HeartbeatService | undefined;
   /**
-   * Optional — computer discovery + live connection service (provided by the
-   * `ssh` extension). When absent (ssh not loaded), the `/computers*` routes
-   * degrade: list returns `[]`, status returns "disconnected", test returns
-   * a not-configured result. The per-conversation / workspace-default computer
+   * Optional + reactive — computer discovery + live connection service
+   * (provided by the `ssh` extension; read per request via a registry slot).
+   * When absent (ssh not loaded), the `/computers*` routes degrade: list
+   * returns `[]`, status returns "disconnected", test returns a
+   * not-configured result. The per-conversation / workspace-default computer
    * endpoints work regardless (they only touch the conversation store).
    */
-  readonly computerService?: ComputerService;
-  /** Optional — defaults to a no-op store (recording disabled, empty reports). */
-  readonly throughputStore?: ThroughputStore;
+  readonly computerService?: ComputerService | undefined;
   /**
-   * Optional — provider concurrency limiter service (provided by the
-   * `provider-concurrency` extension). When absent (extension not loaded),
-   * the `/concurrency/*` routes degrade: limits returns empty, status returns
-   * empty, PUT returns 503.
+   * Optional + reactive — throughput metrics store (provided by the
+   * `throughput-store` extension; read per use via a registry slot). When
+   * absent, recording is a no-op and aggregate reports are empty.
    */
-  readonly concurrencyService?: ConcurrencyService;
+  readonly throughputStore?: ThroughputStore | undefined;
   /**
-   * Optional — the Named Agent registry service (provided by the
-   * `named-agents` extension). When absent (extension not loaded), the
-   * `/named-agents*` routes degrade: GET/POST/PUT/DELETE return 503. When
-   * present, the routes delegate to this typed service — never a raw store —
-   * and perform ZERO provider-catalog calls (the registry is local config).
+   * Optional + reactive — provider concurrency limiter service (provided by
+   * the `provider-concurrency` extension; read per request via a registry
+   * slot). When absent (extension not loaded), the `/concurrency/*` routes
+   * degrade: limits returns empty, status returns empty, PUT returns 503.
    */
-  readonly namedAgentService?: NamedAgentsService;
+  readonly concurrencyService?: ConcurrencyService | undefined;
+  /**
+   * Optional + reactive — the Named Agent registry service (provided by the
+   * `named-agents` extension; read per request via a registry slot). When
+   * absent (extension not loaded / unloaded mid-session), the `/named-agents*`
+   * routes degrade: GET/POST/PUT/DELETE return 503. When present, the routes
+   * delegate to this typed service — never a raw store — and perform ZERO
+   * provider-catalog calls (the registry is local config).
+   */
+  readonly namedAgentService?: NamedAgentsService | undefined;
   readonly logger?: Logger;
   readonly generateId?: () => string;
   /** Injectable clock for sample timestamps (default Date.now). */
@@ -187,12 +201,22 @@ const noopThroughputStore: ThroughputStore = {
   aggregate: async (q) => ({ period: q.period, date: q.date, start: 0, end: 0, models: [] }),
 };
 
+/**
+ * The CURRENT throughput store per use — never captured at app-creation
+ * time. The extension passes `throughputStore` as a live getter over a
+ * registry slot, so a throughput-store loaded/unloaded mid-session is picked
+ * up on the next sample/report (absent → the no-op store records nothing and
+ * aggregates empty).
+ */
+function currentThroughputStore(opts: CreateServerOptions): ThroughputStore {
+  return opts.throughputStore ?? noopThroughputStore;
+}
+
 export function createApp(opts: CreateServerOptions): Hono {
   const app = new Hono();
   const log = opts.logger ?? noopLogger;
   const generateId = opts.generateId ?? (() => crypto.randomUUID());
   const now = opts.now ?? (() => Date.now());
-  const throughputStore = opts.throughputStore ?? noopThroughputStore;
 
   async function recordThroughput(
     turnEvents: readonly AgentEvent[],
@@ -207,7 +231,7 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
     if (genMs <= 0) return; // no generation time → can't compute tok/s
     try {
-      await throughputStore.record({ model, ts: now(), outputTokens, genMs });
+      await currentThroughputStore(opts).record({ model, ts: now(), outputTokens, genMs });
       log.info("throughput: turn recorded", {
         model,
         outputTokens,
@@ -772,7 +796,11 @@ export function createApp(opts: CreateServerOptions): Hono {
     try {
       // Typed against the wire contract: if the store's report shape ever
       // drifts from ThroughputResponse, this assignment fails to compile.
-      const body: ThroughputResponse = await throughputStore.aggregate({ period, date });
+      // Read per request: the current registry slot's store (or the no-op).
+      const body: ThroughputResponse = await currentThroughputStore(opts).aggregate({
+        period,
+        date,
+      });
       return c.json(body);
     } catch (err) {
       if (err instanceof ThroughputQueryError) {

@@ -1,4 +1,8 @@
-import { findCoreToStandardDeps, resolveActivationOrder } from "@dispatch/kernel";
+import {
+  assertNoCoreToStandardDeps,
+  findCoreToStandardDeps,
+  resolveActivationOrder,
+} from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { createBundledExtensions } from "./bundled.js";
 
@@ -52,21 +56,24 @@ describe("bundled extension set (de-curated, plan 02)", () => {
     expect(tierById.get("provider-openai-compat")).toBe("providers");
   });
 
-  // CANARY (plan 03 removes these edges — update this test when it lands).
-  // transport-http is core but still declares standard-tier dependsOn targets
-  // — a core→standard violation the constitutional rule forbids. Plan 02
-  // makes it VISIBLE (machine-checkable); plan 03 fixes it.
-  it("flags the known core→standard edges on transport-http (canary until plan 03)", () => {
-    const violations = findCoreToStandardDeps(bundled().map((e) => e.manifest));
-    const edges = violations
-      .filter((v) => v.id === "transport-http")
-      .map((v) => v.depId)
-      .sort();
-    expect(edges).toEqual(["heartbeat", "mcp", "named-agents", "throughput-store"]);
+  // CANARY FLIPPED (plan 03): the former transport-http core→standard edges
+  // (heartbeat, mcp, named-agents, throughput-store) are gone — those
+  // Standard services are consumed reactively via the kernel's service
+  // registry (tryGetService + availability subscriptions), never via a
+  // dependsOn edge. The constitutional rule ("core depends only on core")
+  // is now enforced on the bundled set by mechanism.
+  it("has NO core→standard edges (the constitutional rule, enforced since plan 03)", () => {
+    const manifests = bundled().map((e) => e.manifest);
+    expect(findCoreToStandardDeps(manifests)).toEqual([]);
+    expect(() => assertNoCoreToStandardDeps(manifests)).not.toThrow();
   });
 
-  it("has no core→standard edges OUTSIDE the known plan-03 debt", () => {
-    const violations = findCoreToStandardDeps(bundled().map((e) => e.manifest));
-    expect(violations.every((v) => v.id === "transport-http")).toBe(true);
+  it("transport-http depends only on core extensions (reactive consumption of Standard services)", () => {
+    const tierById = new Map(bundled().map((e) => [e.manifest.id, e.manifest.tier]));
+    const transportHttp = bundled().find((e) => e.manifest.id === "transport-http");
+    expect(transportHttp).toBeDefined();
+    for (const dep of transportHttp?.manifest.dependsOn ?? []) {
+      expect(tierById.get(dep)).toBe("core");
+    }
   });
 });

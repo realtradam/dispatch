@@ -572,6 +572,73 @@ describe("runtime load/unload/reload", () => {
       expect(scheduler.unregistered).toContain("clean-job");
       expect(() => deps.bus.getService(handle)).toThrow();
     });
+
+    // ── Availability subscriptions (plan 03) ──────────────────────────────
+    // The reactive service registry's subscriptions are ledger-tracked like
+    // any other disposal-capable registration: a plugin's subscriptions stop
+    // firing when the plugin is unloaded — either because its deactivate
+    // disposed them (clean) or because the host force-cleaned them (dangling).
+    it("availability subscriptions are disposed on unload (clean deactivate)", async () => {
+      const handle = defineService<string>("lifecycle/avail-svc");
+      const available: string[] = [];
+      const unavailable: string[] = [];
+      let disposeAvailable: (() => void) | undefined;
+      let disposeUnavailable: (() => void) | undefined;
+
+      const ext = createExtension("reactive", {
+        activate: (host) => {
+          disposeAvailable = host.onServiceAvailable(handle, (impl) => available.push(impl));
+          disposeUnavailable = host.onServiceUnavailable(handle, () => unavailable.push("gone"));
+        },
+        deactivate: () => {
+          disposeAvailable?.();
+          disposeUnavailable?.();
+        },
+      });
+
+      const host = createHost([ext], deps);
+      await host.activate();
+
+      // While loaded, the subscription tracks provide + un-provide.
+      const unprovide = deps.bus.provideService(handle, "v1");
+      expect(available).toEqual(["v1"]);
+      unprovide();
+      expect(unavailable).toEqual(["gone"]);
+
+      const result = await host.unloadExtension("reactive");
+      expect(result.ok).toBe(true);
+      expect(result.dangling).toBeUndefined(); // deactivate disposed them
+
+      // After unload: no notifications reach the unloaded plugin.
+      const unprovide2 = deps.bus.provideService(handle, "v2");
+      expect(available).toEqual(["v1"]);
+      unprovide2();
+      expect(unavailable).toEqual(["gone"]);
+    });
+
+    it("availability subscriptions the deactivate forgot are force-cleaned (dangling, logged)", async () => {
+      const handle = defineService<string>("lifecycle/avail-dangling");
+      const available: string[] = [];
+
+      const sloppy = createExtension("sloppy", {
+        activate: (host) => {
+          host.onServiceAvailable(handle, (impl) => available.push(impl));
+          // deactivate intentionally does NOT dispose the subscription.
+        },
+      });
+
+      const host = createHost([sloppy], deps);
+      await host.activate();
+
+      const result = await host.unloadExtension("sloppy");
+      expect(result.ok).toBe(true);
+      expect(result.dangling).toEqual([{ kind: "subscription", id: "lifecycle/avail-dangling" }]);
+      expect(logger.logs.some((l) => l.message.includes("dangling registration"))).toBe(true);
+
+      // Force-cleaned → the unloaded plugin no longer hears provides.
+      deps.bus.provideService(handle, "v");
+      expect(available).toEqual([]);
+    });
   });
 
   describe("reloadExtension", () => {

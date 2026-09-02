@@ -236,8 +236,9 @@ export interface EventsEmitter {
  * extension is deactivated (unload/reload/shutdown), its `deactivate()` must
  * dispose what it owns:
  * - call the disposer returned by `provideService` for every service it gave,
- * - call the disposers returned by `on` / `addFilter` for every subscription
- *   and filter it added,
+ * - call the disposers returned by `on` / `addFilter` /
+ *   `onServiceAvailable` / `onServiceUnavailable` for every subscription,
+ *   filter, and availability subscription it added,
  * - call `scheduler.unregister` for every job it registered.
  *
  * After `deactivate()` the host verifies these are gone; anything still
@@ -319,6 +320,35 @@ export interface HostAPI {
 
   /** Retrieve the implementation for a typed service handle. */
   readonly getService: <T>(handle: ServiceHandle<T>) => T;
+
+  /**
+   * Non-throwing service lookup: the current implementation for the handle,
+   * or `undefined` when nothing provided it. The consumption pattern for
+   * OPTIONAL services — a core extension consuming a Standard-provided
+   * service looks the current value up (per request / per turn) and degrades
+   * when it is absent, so a Standard plugin can be loaded or unloaded
+   * mid-session with no core edit and no restart (plan 03). `getService`
+   * keeps its throwing behavior for genuine mandatory (core→core) deps.
+   */
+  readonly tryGetService: <T>(handle: ServiceHandle<T>) => T | undefined;
+
+  /**
+   * Subscribe to a service becoming available. Fires immediately (and
+   * error-isolated) with the current implementation when the service is
+   * already provided, then on each subsequent provide. Pair with
+   * `onServiceUnavailable` to keep a local slot fresh; per-request reads can
+   * also skip the slot and call `tryGetService` directly. The returned
+   * disposer is tracked in this extension's registration ledger — a
+   * deactivating extension must dispose it (or the host force-cleans it).
+   */
+  readonly onServiceAvailable: <T>(handle: ServiceHandle<T>, cb: (impl: T) => void) => () => void;
+
+  /**
+   * Subscribe to a service becoming unavailable (its un-provide disposer ran).
+   * Error-isolated; the returned disposer is ledger-tracked like
+   * `onServiceAvailable`'s.
+   */
+  readonly onServiceUnavailable: <T>(handle: ServiceHandle<T>, cb: () => void) => () => void;
 
   /** Get a namespaced storage interface for this extension. */
   readonly storage: (namespace: string) => StorageNamespace;

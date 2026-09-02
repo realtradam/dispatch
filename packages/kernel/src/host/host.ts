@@ -257,6 +257,17 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
       getService<T>(handle: ServiceHandle<T>): T {
         return deps.bus.getService(handle);
       },
+      tryGetService<T>(handle: ServiceHandle<T>): T | undefined {
+        return deps.bus.tryGetService(handle);
+      },
+      onServiceAvailable<T>(handle: ServiceHandle<T>, cb: (impl: T) => void) {
+        const dispose = deps.bus.onServiceAvailable(handle, cb);
+        return ledger.trackDisposal(extensionId, "subscription", handle.id, dispose);
+      },
+      onServiceUnavailable<T>(handle: ServiceHandle<T>, cb: () => void) {
+        const dispose = deps.bus.onServiceUnavailable(handle, cb);
+        return ledger.trackDisposal(extensionId, "subscription", handle.id, dispose);
+      },
       storage(namespace: string): StorageNamespace {
         return deps.storageFactory(namespace);
       },

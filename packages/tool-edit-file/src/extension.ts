@@ -14,28 +14,23 @@ export const extension: Extension = {
     activation: "eager",
     capabilities: { fs: true },
     contributes: { tools: ["edit_file"] },
-    // Host activates exec-backend first → host.getService at activation is safe.
-    // LSP stays lazy (looked up at edit time, not activation): the LSP extension
-    // activates AFTER us in the CORE_EXTENSIONS array, so resolving it here would
-    // throw; the diagnostics hook below defers the lookup to execute().
+    // Core depends only on core (AGENTS.md): exec-backend is the only
+    // dependsOn edge. LSP is a Standard plugin consumed REACTIVELY via the
+    // kernel service registry — looked up (non-throwing) at edit time, so an
+    // lsp loaded/unloaded mid-session is picked up on the next edit with no
+    // restart and no core→standard dependency (plan 03).
     dependsOn: ["exec-backend"],
   },
   activate(host) {
     const resolveBackend = host.getService(execBackendHandle);
 
-    // Lazy LSP lookup: the LSP extension activates AFTER us in the
-    // CORE_EXTENSIONS array, so host.getService would throw at activation
-    // time. Instead, defer the lookup to edit time — by then all extensions
-    // have activated. If LSP isn't loaded, the try/catch returns a no-op
-    // (graceful degradation: edits proceed without diagnostics).
+    // Reactive LSP lookup (plan 03): resolved per edit via the registry's
+    // non-throwing `tryGetService`. If LSP isn't loaded (or was unloaded
+    // mid-session), the hook degrades to a no-op — edits proceed without
+    // diagnostics.
     const diagnostics: DiagnosticsHook = async (opts) => {
-      let lspService: LspService | undefined;
-      try {
-        lspService = host.getService(lspServiceHandle);
-      } catch {
-        return { formatted: "", slow: false, timedOut: false };
-      }
-      if (!lspService) {
+      const lspService: LspService | undefined = host.tryGetService(lspServiceHandle);
+      if (lspService === undefined) {
         return { formatted: "", slow: false, timedOut: false };
       }
       return lspService.getDiagnostics({
