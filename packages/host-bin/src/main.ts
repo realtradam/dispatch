@@ -79,8 +79,11 @@ function createAllowAllPermissions(): PermissionGate {
   };
 }
 
-function createNoopScheduler(): { readonly register: (job: ScheduledJob) => void } {
-  return { register: () => {} };
+function createNoopScheduler(): {
+  readonly register: (job: ScheduledJob) => void;
+  readonly unregister: (jobId: string) => void;
+} {
+  return { register: () => {}, unregister: () => {} };
 }
 
 function createNoopEvents(): EventsEmitter {
@@ -330,7 +333,8 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
 
   // Periodic memory telemetry — leak-localization edge effect (AGENTS.md:
   // timers are edge effects owned by host-bin, the composition root, NOT the
-  // kernel). Logs process.memoryUsage() every 60s tagged with the active-
+  // kernel). Logs process.memoryUsage() every 15s (the DEFAULT_MEMORY_
+  // SAMPLE_INTERVAL_MS in mem-telemetry.ts) tagged with the active-
   // conversation count, and every 5 min runs Bun.gc(true) + logs RSS
   // before/after to distinguish live retained objects from GC fragmentation.
   // The per-turn before/after sampling lives in session-orchestrator; this

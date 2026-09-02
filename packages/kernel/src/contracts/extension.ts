@@ -173,6 +173,30 @@ export interface EventsEmitter {
  *
  * Method signatures are typed contracts; implementations live in the host
  * module (not the kernel contracts).
+ *
+ * ## Disposal contract (enforced by the host)
+ *
+ * Every registration a HostAPI hands out is tracked per extension. When the
+ * extension is deactivated (unload/reload/shutdown), its `deactivate()` must
+ * dispose what it owns:
+ * - call the disposer returned by `provideService` for every service it gave,
+ * - call the disposers returned by `on` / `addFilter` for every subscription
+ *   and filter it added,
+ * - call `scheduler.unregister` for every job it registered.
+ *
+ * After `deactivate()` the host verifies these are gone; anything still
+ * present is force-cleaned and logged ("dangling registration from plugin X").
+ * Tools, providers, and auth have no extension-side removal — the host removes
+ * them itself as part of the unload sweep.
+ *
+ * **Service-mediated registries are NOT tracked by this ledger**: some
+ * registries are themselves services (provided and consumed via typed service
+ * handles — e.g. UI surface registries), so registering into them does not
+ * flow through `define*` and is invisible to the ledger. A plugin that
+ * registers into such a registry via `getService` must deregister through the
+ * same registry in its `deactivate()`; a leaked registration there is caught
+ * by the plugin-verification harness asserting against that registry's
+ * catalog, not by the host ledger.
  */
 export interface HostAPI {
   /** Register a tool with the kernel's tool registry. */
@@ -228,8 +252,14 @@ export interface HostAPI {
     opts?: { readonly failClosed?: boolean },
   ) => Promise<TValue>;
 
-  /** Provide an implementation for a typed service handle. */
-  readonly provideService: <T>(handle: ServiceHandle<T>, impl: T) => void;
+  /**
+   * Provide an implementation for a typed service handle. Returns an
+   * un-provide disposer — call it to revoke the implementation (a later
+   * `getService` for the handle throws again). The disposal contract
+   * requires a deactivating extension to call this disposer for every
+   * service it provided.
+   */
+  readonly provideService: <T>(handle: ServiceHandle<T>, impl: T) => () => void;
 
   /** Retrieve the implementation for a typed service handle. */
   readonly getService: <T>(handle: ServiceHandle<T>) => T;
@@ -267,9 +297,18 @@ export interface HostAPI {
   /** Read-only view of all activated extensions' manifests (what is loaded). */
   readonly getExtensions: () => readonly Manifest[];
 
-  /** Register a scheduled job with the host's scheduler. */
+  /**
+   * Register a scheduled job with the host's scheduler. Returns an
+   * unregister disposer for the job (see `scheduler.unregister`).
+   */
   readonly scheduler: {
     readonly register: (job: ScheduledJob) => void;
+    /**
+     * Remove a previously registered job (by id). The disposal contract
+     * requires a deactivating extension to unregister every job it
+     * registered; the host force-unregisters leftovers and logs them.
+     */
+    readonly unregister: (jobId: string) => void;
   };
 }
 

@@ -261,6 +261,44 @@ describe("services", () => {
     bus.provideService(handle, 1);
     expect(() => bus.provideService(handle, 2)).toThrow("test/double");
   });
+
+  it("un-provide disposer removes the service (getService throws again)", () => {
+    const handle = defineService<number>("test/unprovide");
+
+    const unprovide = bus.provideService(handle, 7);
+    expect(bus.getService(handle)).toBe(7);
+
+    unprovide();
+    expect(() => bus.getService(handle)).toThrow("test/unprovide");
+  });
+
+  it("un-provide disposer is idempotent (double call is a no-op)", () => {
+    const handle = defineService<number>("test/unprovide-twice");
+
+    const unprovide = bus.provideService(handle, 7);
+    unprovide();
+    expect(() => unprovide()).not.toThrow();
+  });
+
+  it("re-provide after un-provide succeeds", () => {
+    const handle = defineService<number>("test/reprovide");
+
+    const unprovide = bus.provideService(handle, 1);
+    unprovide();
+    bus.provideService(handle, 2);
+    expect(bus.getService(handle)).toBe(2);
+  });
+
+  it("a stale un-provide disposer does not evict a newer registration", () => {
+    const handle = defineService<number>("test/stale-disposer");
+
+    const stale = bus.provideService(handle, 1);
+    stale();
+    bus.provideService(handle, 2);
+    // the old disposer must not remove the NEW implementation
+    stale();
+    expect(bus.getService(handle)).toBe(2);
+  });
 });
 
 describe("pure functions", () => {

@@ -32,7 +32,13 @@ export interface Bus {
     value: T,
     opts?: { readonly failClosed?: boolean },
   ) => Promise<T>;
-  readonly provideService: <T>(handle: ServiceHandle<T>, impl: T) => void;
+  /**
+   * Provide an implementation for a typed service handle. Returns an
+   * un-provide disposer: calling it removes the implementation so a later
+   * `getService` for the handle throws again. Idempotent — a disposer for an
+   * already-removed (or replaced) handle is a no-op.
+   */
+  readonly provideService: <T>(handle: ServiceHandle<T>, impl: T) => () => void;
   readonly getService: <T>(handle: ServiceHandle<T>) => T;
 }
 
@@ -117,13 +123,20 @@ export function createBus(logger: Logger): Bus {
       return applyFilterChain(fns, value, logger, hook.id, opts?.failClosed ?? false);
     },
 
-    provideService<T>(handle: ServiceHandle<T>, impl: T): void {
+    provideService<T>(handle: ServiceHandle<T>, impl: T): () => void {
       if (services.has(handle.id)) {
         throw new Error(
           `Service "${handle.id}" is already provided. Only one provider per handle is allowed.`,
         );
       }
       services.set(handle.id, impl);
+      return () => {
+        // Only remove our own registration: if a provider re-provided the
+        // handle after us, the disposer must not evict theirs.
+        if (services.get(handle.id) === impl) {
+          services.delete(handle.id);
+        }
+      };
     },
 
     getService<T>(handle: ServiceHandle<T>): T {

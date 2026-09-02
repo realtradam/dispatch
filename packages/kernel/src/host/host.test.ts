@@ -155,14 +155,23 @@ function createFakePermissions(): PermissionGate {
 
 function createFakeScheduler(): {
   readonly register: (job: ScheduledJob) => void;
+  readonly unregister: (jobId: string) => void;
   readonly jobs: ScheduledJob[];
+  readonly unregistered: string[];
 } {
   const jobs: ScheduledJob[] = [];
+  const unregistered: string[] = [];
   return {
     register: (job: ScheduledJob) => {
       jobs.push(job);
     },
+    unregister: (jobId: string) => {
+      unregistered.push(jobId);
+      const idx = jobs.findIndex((j) => j.id === jobId);
+      if (idx !== -1) jobs.splice(idx, 1);
+    },
     jobs,
+    unregistered,
   };
 }
 
