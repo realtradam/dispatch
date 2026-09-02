@@ -8,6 +8,7 @@ function manifest(id: string, deps?: readonly string[]): Manifest {
     name: id,
     version: "1.0.0",
     apiVersion: "^0.1.0",
+    tier: "standard",
     trust: "bundled",
   };
   if (deps !== undefined) {

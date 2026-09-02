@@ -21,6 +21,7 @@ export const manifest: Manifest = {
   name: "System Prompt",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "core",
   trust: "bundled",
   activation: "eager",
   // exec-backend provides the resolver used to obtain a remote ExecBackend

@@ -48,5 +48,6 @@ describe("provider-umans activation", () => {
   it("declares the umans provider contribution + network capability", () => {
     expect(manifest.contributes?.providers).toEqual(["umans"]);
     expect(manifest.capabilities?.network).toBe(true);
+    expect(manifest.tier).toBe("providers");
   });
 });

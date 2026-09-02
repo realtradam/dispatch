@@ -8,6 +8,7 @@ export const manifest: Manifest = {
   name: "Umans AI Coding Plan",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "providers",
   trust: "bundled",
   activation: "eager",
   capabilities: { network: true },

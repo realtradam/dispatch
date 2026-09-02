@@ -22,6 +22,7 @@ export const manifest: Manifest = {
   name: "Session Orchestrator",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "core",
   trust: "bundled",
   dependsOn: ["conversation-store", "credential-store"],
   activation: "eager",

@@ -15,6 +15,7 @@ export const manifest: Manifest = {
   name: "Named Agents",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "standard",
   trust: "bundled",
   activation: "eager",
   capabilities: { db: true },

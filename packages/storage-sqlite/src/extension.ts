@@ -5,6 +5,7 @@ export const manifest: Manifest = {
   name: "SQLite Storage Backend",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "core",
   trust: "bundled",
   capabilities: { db: true },
   activation: "eager",

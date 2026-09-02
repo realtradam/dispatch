@@ -17,4 +17,6 @@ export type {
   TrackedDisposal,
 } from "./ledger.js";
 export { ExtensionLedger } from "./ledger.js";
+export type { TierViolation } from "./tiers.js";
+export { assertNoCoreToStandardDeps, findCoreToStandardDeps } from "./tiers.js";
 export { isApiVersionCompatible } from "./version.js";

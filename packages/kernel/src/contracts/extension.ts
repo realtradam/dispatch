@@ -28,6 +28,37 @@ import type { ToolContract } from "./tool.js";
 export type TrustLevel = "bundled" | "local" | "external";
 
 /**
+ * Classification tier of a plugin — the machine-checked replacement for the
+ * old array-membership curation in the composition root.
+ *
+ * Exactly THREE tiers are classifiable at runtime:
+ * - `"core"` — load-bearing infrastructure (storage, transports, exec
+ *   backend, session orchestration, credential store). The constitutional
+ *   rule (AGENTS.md): **core depends only on core** — a core→standard
+ *   dependency is a classification bug, detectable via
+ *   `assertNoCoreToStandardDeps`.
+ * - `"providers"` — model provider extensions.
+ * - `"standard"` — everything else (tools, features, surfaces).
+ *
+ * "Kernel" is NOT a tier: the kernel is not an extension (it hosts them), so
+ * it is not a `PluginTier` value.
+ */
+export type PluginTier = "core" | "providers" | "standard";
+
+/**
+ * Reserved frontend section of a manifest. Reserved now, ABI designed later:
+ * the shape is frozen in v1 so external/frontend plugins can already declare
+ * the section, but the host gives it no runtime semantics yet. No bundled
+ * plugin sets it.
+ */
+export interface ManifestFrontend {
+  /** Semver range of frontend API versions this section is compatible with. */
+  readonly apiVersion: string;
+  /** Module specifier of the frontend entry (resolved by the future loader). */
+  readonly entry: string;
+}
+
+/**
  * What an extension contributes to the system. Used by the host for
  * discovery, dependency resolution, and the capability gate.
  */
@@ -62,6 +93,16 @@ export interface ManifestCapabilities {
  * An extension's declaration — what it is, what it provides, and what it
  * requires. The host uses this to resolve dependency DAG, check apiVersion
  * compatibility, and enforce the capability gate.
+ *
+ * ## Required vs optional fields (§10.4)
+ *
+ * The REQUIRED set (`id`, `name`, `version`, `apiVersion`, `tier`, `trust`)
+ * is the minimum the host needs to classify and gate an extension (identity,
+ * compat, tier, origin) — it is non-optional in TS so contract violations
+ * surface in `tsc`. The OPTIONAL set (`dependsOn`, `activation`,
+ * `contributes`, `capabilities`, `frontend`) stays optional: forcing
+ * present-but-empty values would burden every manifest and external authors
+ * for no benefit.
  */
 export interface Manifest {
   /** Unique extension identifier (e.g. "tools-fs", "provider-anthropic"). */
@@ -76,6 +117,14 @@ export interface Manifest {
   /** Semver range of kernel API versions this extension is compatible with. */
   readonly apiVersion: string;
 
+  /**
+   * Classification tier — REQUIRED. Every extension declares which of the
+   * three runtime tiers (`core` | `providers` | `standard`) it belongs to;
+   * the host derives locks/checkboxes and the core-depends-only-on-core rule
+   * from it. `tsc` enforces presence (§10.4).
+   */
+  readonly tier: PluginTier;
+
   /** Ids of extensions this one depends on (resolved topologically). */
   readonly dependsOn?: readonly string[];
 
@@ -87,6 +136,13 @@ export interface Manifest {
 
   /** Capabilities this extension requires from the host. */
   readonly capabilities?: ManifestCapabilities;
+
+  /**
+   * Reserved frontend section (§5: reserve now, ABI designed later). Optional
+   * in v1 — no bundled plugin sets it; the shape is frozen so external /
+   * frontend plugins can declare it.
+   */
+  readonly frontend?: ManifestFrontend;
 
   /** Trust level — bundled (first-party), local (project), or external. */
   readonly trust: TrustLevel;

@@ -32,6 +32,7 @@ export const manifest: Manifest = {
   name: "SSH Remote Execution",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "standard",
   trust: "bundled",
   activation: "eager",
   // exec-backend owns the resolver; ssh provides the remote factory it looks up

@@ -12,6 +12,7 @@ export const manifest: Manifest = {
   name: "Exec Backend",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "core",
   trust: "bundled",
   activation: "eager",
   contributes: { services: ["exec-backend/resolver"] },

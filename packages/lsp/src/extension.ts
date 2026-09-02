@@ -122,6 +122,7 @@ export const extension: Extension = {
     name: "Language Server Protocol",
     version: "0.0.0",
     apiVersion: "^0.1.0",
+    tier: "standard",
     trust: "bundled",
     activation: "eager",
     capabilities: { spawn: true, fs: true },

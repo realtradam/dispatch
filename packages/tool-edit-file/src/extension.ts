@@ -9,6 +9,7 @@ export const extension: Extension = {
     name: "Edit File Tool",
     version: "0.0.0",
     apiVersion: "^0.1.0",
+    tier: "core",
     trust: "bundled",
     activation: "eager",
     capabilities: { fs: true },

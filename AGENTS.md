@@ -33,6 +33,12 @@ SQLite via `bun:sqlite`. AI SDK (`ai` + `@ai-sdk/*`) for providers.
 - **Cross-extension coupling is anchored to exported TYPED symbols** (hook
   descriptors, service handles). No string-keyed cross-feature lookups — they
   must be a compile error, so `lsp references` can find every consumer.
+- **Core depends only on core.** If core needs it, it is core by definition.
+  Standard→core and standard→standard deps are fine; core→standard is a
+  classification bug.
+- **Any change that would create a core→standard dependency, or reclassify a
+  plugin between tiers, must be raised to the user for confirmation before
+  proceeding.**
 
 ## Tool dispatch (kernel turn loop)
 Togglable `{ maxConcurrent, eager }`. `maxConcurrent`: 0=unlimited, 1=sequential,

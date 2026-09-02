@@ -191,6 +191,7 @@ function createExtension(
     name: id,
     version: "1.0.0",
     apiVersion: opts.apiVersion ?? `^${KERNEL_API_VERSION}`,
+    tier: "standard",
     trust: "bundled",
   };
   const manifest: Manifest =

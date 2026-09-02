@@ -75,6 +75,7 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
       name: "Model Context Protocol",
       version: "0.0.0",
       apiVersion: "^0.1.0",
+      tier: "standard",
       trust: "bundled",
       activation: "eager",
       dependsOn: ["session-orchestrator"],

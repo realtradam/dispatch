@@ -78,5 +78,6 @@ describe("provider-openrouter activation", () => {
     expect(manifest.trust).toBe("bundled");
     expect(manifest.capabilities?.network).toBe(true);
     expect(manifest.activation).toBe("eager");
+    expect(manifest.tier).toBe("providers");
   });
 });

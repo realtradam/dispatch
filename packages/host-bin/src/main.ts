@@ -1,11 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { extension as agentManagementExt } from "@dispatch/agent-management";
-import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
-import { extension as conversationStoreExt } from "@dispatch/conversation-store";
-import { createCredentialStoreExtension } from "@dispatch/credential-store";
-import { createExecBackendExtension } from "@dispatch/exec-backend";
-import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import { createJournalSink } from "@dispatch/journal-sink";
 import {
   type ConfigAccess,
@@ -21,44 +15,14 @@ import {
   type SecretsAccess,
   type StorageNamespace,
 } from "@dispatch/kernel";
-// LSP temporarily disabled — crashes (unhandled JSON parse, ENOENT on
-// transient .old_modules dirs) and a memory leak. Re-enable after fix.
-// import { extension as lspExt } from "@dispatch/lsp";
-import { extension as mcpExt } from "@dispatch/mcp";
-import { extension as messageQueueExt } from "@dispatch/message-queue";
-import { extension as namedAgentsExt } from "@dispatch/named-agents";
-import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
-import { extension as providerHyperExt } from "@dispatch/provider-hyper";
-import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
-import {
-  parseNumberedOpenCodeEnv,
-  extension as providerOpenaiCompatExt,
-} from "@dispatch/provider-openai-compat";
-import { extension as providerOpenRouterExt } from "@dispatch/provider-openrouter";
-import { extension as providerUmansExt } from "@dispatch/provider-umans";
+import { parseNumberedOpenCodeEnv } from "@dispatch/provider-openai-compat";
 import {
   type MemorySample,
   memorySampleAttributes,
-  extension as sessionOrchestratorExt,
   sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
-import { extension as skillsExt } from "@dispatch/skills";
-import { extension as sshExt } from "@dispatch/ssh";
-import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
-import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
-import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
-import { extension as systemPromptExt } from "@dispatch/system-prompt";
-import { extension as throughputStoreExt } from "@dispatch/throughput-store";
-import { extension as todoExt } from "@dispatch/todo";
-import { extension as toolEditFileExt } from "@dispatch/tool-edit-file";
-import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
-import { extension as toolShellExt } from "@dispatch/tool-shell";
-import { extension as toolWebSearchExt } from "@dispatch/tool-web-search";
-import { extension as toolWriteFileExt } from "@dispatch/tool-write-file";
-import { extension as toolYoutubeTranscriptExt } from "@dispatch/tool-youtube-transcript";
-import { createTransportHttpExtension } from "@dispatch/transport-http";
-import { createTransportWsExtension } from "@dispatch/transport-ws";
-import { extension as visionHandoffExt } from "@dispatch/vision-handoff";
+import { createSqliteStorage } from "@dispatch/storage-sqlite";
+import { createBundledExtensions } from "./bundled.js";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
@@ -89,62 +53,6 @@ function createNoopScheduler(): {
 function createNoopEvents(): EventsEmitter {
   return { emit: () => {} };
 }
-
-// Core extensions EXCEPT the credential-store, which is assembled in boot() so
-// its credential list can include any credentials backed by external providers
-// (e.g. a `claude` credential once the external Anthropic provider is loaded).
-const CORE_EXTENSIONS: readonly Extension[] = [
-  storageSqliteExt,
-  conversationStoreExt,
-  providerUmansExt,
-  providerLongcatExt,
-  providerHyperExt,
-  providerOpenRouterExt,
-  providerConcurrencyExt,
-  // exec-backend must precede the tool extensions that
-  // `dependsOn: ["exec-backend"]` (tool-edit-file/read/shell/write). It
-  // provides the ExecBackendResolver the tools resolve through; placing it
-  // here keeps the activation DAG honest (it depends only on kernel).
-  createExecBackendExtension(),
-  toolEditFileExt,
-  toolReadFileExt,
-  toolShellExt,
-  toolWriteFileExt,
-  toolWebSearchExt,
-  toolYoutubeTranscriptExt,
-  throughputStoreExt,
-  todoExt,
-  messageQueueExt,
-  mcpExt,
-  sessionOrchestratorExt,
-  skillsExt,
-  systemPromptExt,
-  cacheWarmingExt,
-  // named-agents provides the Named Agent registry service. It depends only on
-  // the kernel + storage (host.storage), so it can live alongside the other
-  // service-providing core extensions. It MUST activate before transport-http
-  // (whose activate getService's it) and before agent-management (which
-  // declares dependsOn: ["named-agents"]). The host resolves activation order
-  // by manifest dependsOn.
-  namedAgentsExt,
-  // lspExt,  // LSP temporarily disabled — see import above
-  // ssh declares `dependsOn: ["exec-backend"]` and PROVIDES the remote
-  // exec-backend factory + the ComputerService the HTTP routes delegate to.
-  // Its lookups are lazy (tool-/request-time), but it is placed after
-  // exec-backend and the tool extensions (alongside the other standard
-  // tool-serving extensions) to keep the DAG honest — and before
-  // transport-http, whose routes consume the ComputerService it provides.
-  sshExt,
-  // heartbeat PROVIDES the HeartbeatService (per-workspace AI loop) the
-  // HTTP routes delegate to. Placed before transport-http (which depends on
-  // it) — mirrors how ssh precedes transport-http for the same reason.
-  heartbeatExt,
-  createTransportHttpExtension(),
-  // Surface extensions — dependency order: surface-registry first, then consumers.
-  createSurfaceRegistryExtension(),
-  createTransportWsExtension(),
-  createLoadedExtensionsExtension(),
-];
 
 /** Parse the comma-separated list of external extension module specifiers. */
 function parseExternalSpecifiers(env: Readonly<Record<string, string | undefined>>): string[] {
@@ -299,25 +207,11 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     logger.info(`Registered credential "${codexName}" → openai provider`);
   }
 
+  // One order-independent bundled set + externally loaded extensions. Ordering
+  // is manifest-declared: the host sorts by the dependsOn DAG and gates by
+  // apiVersion (see bundled.ts — main.ts curates NOTHING).
   const extensions: Extension[] = [
-    ...CORE_EXTENSIONS,
-    // provider-openai-compat registers one numbered OpenCode provider per
-    // OPENCODE_API_KEY_<n>. It is always loaded — when no numbered credentials
-    // are configured it self-degrades (registers nothing; OpenCode unavailable).
-    providerOpenaiCompatExt,
-    createCredentialStoreExtension({ credentials }),
-    // vision-handoff activates AFTER credential-store (it resolves the
-    // credential-store service at activate time to find vision-capable models).
-    // Placed here, not in CORE_EXTENSIONS, so the service is available when it
-    // activates. The session-orchestrator resolves its service LAZILY
-    // (per-turn), so activation order between it and session-orchestrator
-    // doesn't matter.
-    visionHandoffExt,
-    // agent-management activates AFTER session-orchestrator and
-    // conversation-store (it resolves their services at activate time). It
-    // registers the 7 agent-management tools and the AgentManagementService
-    // that vision-handoff will eventually consume for consultations.
-    agentManagementExt,
+    ...createBundledExtensions({ credentials }),
     ...externalExtensions,
   ];
 

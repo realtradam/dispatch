@@ -25,6 +25,7 @@ export const manifest: Manifest = {
   name: "Transport HTTP",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "core",
   trust: "bundled",
   dependsOn: [
     "conversation-store",
