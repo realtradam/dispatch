@@ -192,6 +192,24 @@
         "@dispatch/transport-contract": "workspace:*",
       },
     },
+    "packages/plugin-scaffold": {
+      "name": "@dispatch/plugin-scaffold",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/surface-registry": "workspace:*",
+        "@dispatch/ui-contract": "workspace:*",
+      },
+    },
+    "packages/plugin-verify": {
+      "name": "@dispatch/plugin-verify",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/plugin-scaffold": "workspace:*",
+        "@dispatch/surface-registry": "workspace:*",
+      },
+    },
     "packages/provider-concurrency": {
       "name": "@dispatch/provider-concurrency",
       "version": "0.0.0",
@@ -510,6 +528,10 @@
     "@dispatch/openai-stream": ["@dispatch/openai-stream@workspace:packages/openai-stream"],
 
     "@dispatch/plugin-manager": ["@dispatch/plugin-manager@workspace:packages/plugin-manager"],
+
+    "@dispatch/plugin-scaffold": ["@dispatch/plugin-scaffold@workspace:packages/plugin-scaffold"],
+
+    "@dispatch/plugin-verify": ["@dispatch/plugin-verify@workspace:packages/plugin-verify"],
 
     "@dispatch/provider-concurrency": ["@dispatch/provider-concurrency@workspace:packages/provider-concurrency"],
 

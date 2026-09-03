@@ -22,9 +22,7 @@ import { type Credential, createCredentialStoreExtension } from "@dispatch/crede
 import { createExecBackendExtension } from "@dispatch/exec-backend";
 import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import type { Extension } from "@dispatch/kernel";
-// LSP temporarily disabled — crashes (unhandled JSON parse, ENOENT on
-// transient .old_modules dirs) and a memory leak. Re-enable after fix.
-// import { extension as lspExt } from "@dispatch/lsp";
+import { extension as lspExt } from "@dispatch/lsp";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as namedAgentsExt } from "@dispatch/named-agents";
@@ -118,6 +116,14 @@ export function createBundledExtensions(creds: {
     skillsExt,
     cacheWarmingExt,
     loadedExtensionsSurface,
-    // lspExt, // LSP temporarily disabled — see import above
+    // Plan-08 mechanism pilot (§12): lsp runs through the new system as a
+    // bundled STANDARD plugin with a blank (undefined) per-workspace default —
+    // INERT everywhere until a workspace opts in (the plan-06 tool gate hides
+    // its tool; the surface/model gates do the same for their planes). Still
+    // KNOWN-BROKEN when used (unhandled JSON parse, ENOENT on transient
+    // .old_modules dirs, memory leak — commit 73ff84c); fixing it is out of
+    // scope. The pilot proves the load/unload/enable machinery on a real,
+    // non-trivial plugin.
+    lspExt,
   ];
 }

@@ -56,6 +56,15 @@ describe("bundled extension set (de-curated, plan 02)", () => {
     expect(tierById.get("provider-openai-compat")).toBe("providers");
   });
 
+  // Plan-08 pilot (§12): lsp is BACK in the bundled set as a standard plugin,
+  // inert until a workspace opts in (blank per-workspace default).
+  it("bundles lsp as tier standard (the plan-08 mechanism pilot)", () => {
+    const lsp = bundled().find((e) => e.manifest.id === "lsp");
+    expect(lsp).toBeDefined();
+    expect(lsp?.manifest.tier).toBe("standard");
+    expect(lsp?.manifest.contributes?.tools).toContain("lsp");
+  });
+
   // CANARY FLIPPED (plan 03): the former transport-http core→standard edges
   // (heartbeat, mcp, named-agents, throughput-store) are gone — those
   // Standard services are consumed reactively via the kernel's service

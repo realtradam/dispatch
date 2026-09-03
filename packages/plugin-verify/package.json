@@ -1,0 +1,13 @@
+{
+  "name": "@dispatch/plugin-verify",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/plugin-scaffold": "workspace:*",
+    "@dispatch/surface-registry": "workspace:*"
+  }
+}

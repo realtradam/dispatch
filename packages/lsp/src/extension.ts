@@ -186,22 +186,32 @@ export const extension: Extension = {
         return { formatted: agg.formatted, slow: false, timedOut: agg.timedOut };
       },
     };
-    host.provideService(lspServiceHandle, service);
+    const unprovide = host.provideService(lspServiceHandle, service);
+    // NOTE: `provideService` returns the un-provide disposer — the disposal
+    // contract (HostAPI doc, plan 01) requires deactivate() to call it. It is
+    // captured in the store below (previously dropped, which made every
+    // unload force-clean the service registration and report it as dangling —
+    // surfaced by the plan-08 lsp pilot / verify-plugin machinery).
 
     host.logger.info("LSP extension activated");
 
-    // Store manager for deactivate
-    (lspManagerStore as { manager: LspManager | null }).manager = manager;
+    // Store manager + service disposer for deactivate
+    lspManagerStore.manager = manager;
+    lspManagerStore.unprovide = unprovide;
   },
   deactivate() {
-    const store = lspManagerStore as { manager: LspManager | null };
-    store.manager?.shutdownAll();
-    store.manager = null;
+    lspManagerStore.manager?.shutdownAll();
+    lspManagerStore.unprovide?.();
+    lspManagerStore.manager = null;
+    lspManagerStore.unprovide = null;
   },
 };
 
 // Module-scoped store for deactivate
-const lspManagerStore: { manager: LspManager | null } = { manager: null };
+const lspManagerStore: { manager: LspManager | null; unprovide: (() => void) | null } = {
+  manager: null,
+  unprovide: null,
+};
 
 /**
  * Test-only re-export of the production `realFileWatcher` adapter, so the

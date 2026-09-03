@@ -113,6 +113,12 @@
       "path": "./packages/lsp"
     },
     {
+      "path": "./packages/plugin-scaffold"
+    },
+    {
+      "path": "./packages/plugin-verify"
+    },
+    {
       "path": "./packages/heartbeat"
     },
     {
