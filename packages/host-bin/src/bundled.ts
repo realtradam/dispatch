@@ -53,6 +53,7 @@ import { extension as toolYoutubeTranscriptExt } from "@dispatch/tool-youtube-tr
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
 import { extension as visionHandoffExt } from "@dispatch/vision-handoff";
+import { extension as workspacePluginConfigExt } from "@dispatch/workspace-plugin-config";
 
 // Factory extensions are constructed once at module load (pure configuration
 // — no I/O happens until the host activates them).
@@ -81,6 +82,11 @@ export function createBundledExtensions(creds: {
     toolShellExt,
     toolWriteFileExt,
     systemPromptExt,
+    // The per-workspace plugin enablement store (plan 06, tier core): the
+    // enforcement plane (tool gate, model gate, surface filter) reads it
+    // every turn, so it must always be loaded. Activates anywhere — every
+    // consumer reads it reactively (plan 03).
+    workspacePluginConfigExt,
     sessionOrchestratorExt,
     // The plugin control plane (plan 05) — activates after the host engine
     // (provided pre-activation by main.ts) and storage are available.

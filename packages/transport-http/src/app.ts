@@ -1,5 +1,5 @@
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
-import type { AgentEvent, HostAPI, Logger } from "@dispatch/kernel";
+import type { AgentEvent, HostAPI, Logger, PluginTier } from "@dispatch/kernel";
 import { DEFAULT_TEMPLATE, getVariableCatalog } from "@dispatch/system-prompt";
 import type {
   CloseConversationResponse,
@@ -44,6 +44,7 @@ import type {
   SetConversationComputerRequest,
   SetSystemPromptTemplateRequest,
   SetWorkspaceDefaultComputerRequest,
+  SetWorkspacePluginStateRequest,
   StopHeartbeatRunResponse,
   SystemPromptTemplateResponse,
   SystemPromptVariablesResponse,
@@ -55,6 +56,9 @@ import type {
   VisionSettingsResponse,
   WarmResponse,
   WorkspaceListResponse,
+  WorkspacePluginProvidersStatusResponse,
+  WorkspacePluginStateValue,
+  WorkspacePluginsResponse,
   WorkspaceResponse,
 } from "@dispatch/transport-contract";
 import { Hono } from "hono";
@@ -83,6 +87,7 @@ import {
   pluginOpStatus,
   serializeEventLine,
 } from "./logic.js";
+import type { PluginOwnership } from "./seam.js";
 import {
   type CompactionService,
   type ComputerService,
@@ -102,7 +107,9 @@ import {
   type SystemPromptService,
   ThroughputQueryError,
   type ThroughputStore,
+  usablePluginsInWorkspace,
   type WarmService,
+  type WorkspacePluginConfigService,
 } from "./seam.js";
 
 export interface CreateServerOptions {
@@ -170,6 +177,31 @@ export interface CreateServerOptions {
    * 409 blocked-with-reason / 500 engine failure / 503 absent).
    */
   readonly pluginManagerService?: PluginManagerService | undefined;
+  /**
+   * Optional + reactive — the per-workspace plugin enablement store
+   * (provided by the core `workspace-plugin-config` extension; read per
+   * request via a registry slot). When absent, the
+   * `/workspaces/:id/plugins*` routes degrade to 503 and `GET /models` with
+   * a `workspaceId` query degrades to 503 (without the param `/models`
+   * stays global and needs NO service — backward compatible). Route
+   * handlers are thin shells: parse → delegate to the service → map to
+   * HTTP (the state-transition + validation logic lives in the service).
+   */
+  readonly workspacePluginConfigService?: WorkspacePluginConfigService | undefined;
+  /**
+   * Optional + reactive — the plan-06 `PluginOwnership` seam (the
+   * composition root adapts it from the kernel host's registration-ledger
+   * views). `GET /models?workspaceId=` uses it to attribute each provider
+   * to its owning plugin; absent → that route degrades to 503 (the
+   * per-workspace gate must not silently over- or under-filter).
+   */
+  readonly pluginOwnership?: PluginOwnership | undefined;
+  /**
+   * Live tier lookup over the host's loaded manifests (wired by the
+   * extension from `host.getExtensions()`). Used by `GET /models?workspaceId=`
+   * to classify a provider's owning plugin; `undefined` tier → fail-open.
+   */
+  readonly pluginTierOf?: (pluginId: string) => PluginTier | undefined;
   readonly logger?: Logger;
   readonly generateId?: () => string;
   /** Injectable clock for sample timestamps (default Date.now). */
@@ -393,11 +425,68 @@ export function createApp(opts: CreateServerOptions): Hono {
   });
 
   app.get("/models", async (c) => {
+    // Per-workspace provider gate (plan 06 §6.5): with `workspaceId` the
+    // catalog is filtered to providers whose OWNING plugin is usable in that
+    // workspace (loaded globally AND enabled there — `isPluginUsable`).
+    // Attribution via the plan-01 ledger (`PluginOwnership.ownerOfProvider`),
+    // NOT manifests. WITHOUT the param the route is the global catalog —
+    // backward compatible, no service needed. With the param, an absent
+    // config/ownership service degrades to 503 (never silently unfiltered).
+    const workspaceId = c.req.query("workspaceId");
     try {
       const entries = await opts.credentialStore.listCatalogDetailed();
-      const models = entries.map((e) => e.name);
+      let visible = entries;
+      if (workspaceId !== undefined) {
+        const config = opts.workspacePluginConfigService;
+        const ownership = opts.pluginOwnership;
+        const tierOf = opts.pluginTierOf;
+        if (config === undefined || ownership === undefined || tierOf === undefined) {
+          return c.json({ error: "Workspace plugin config service not available" }, 503);
+        }
+        // Provider id per catalog entry (`resolve` is a local map lookup —
+        // no I/O). An unresolvable entry is KEPT (fail-open — it has no
+        // attributable provider to gate).
+        const providerIdOfEntry = new Map<string, string>();
+        const providerIds = new Set<string>();
+        for (const entry of entries) {
+          const resolved = opts.credentialStore.resolve(entry.name);
+          if (resolved === undefined) continue;
+          providerIdOfEntry.set(entry.name, resolved.providerId);
+          providerIds.add(resolved.providerId);
+        }
+        // Provider → owning plugin → usable set (the ONE pure rule shared
+        // with the tool gate + surface filter). An UNATTRIBUTABLE provider
+        // (no ledger owner, or owner not classifiable) is KEPT — fail-open;
+        // global loaded/unloaded state already gates it.
+        const ownerOf = new Map<string, string>();
+        for (const providerId of providerIds) {
+          const owner = ownership.ownerOfProvider(providerId);
+          if (owner !== undefined) ownerOf.set(providerId, owner);
+        }
+        const usableOwners = await usablePluginsInWorkspace(
+          workspaceId,
+          [...new Set(ownerOf.values())],
+          config,
+          tierOf,
+        );
+        const usableProviders = new Set<string>();
+        for (const providerId of providerIds) {
+          const owner = ownerOf.get(providerId);
+          if (owner === undefined) {
+            usableProviders.add(providerId); // unattributable → fail-open
+          } else if (usableOwners.has(owner)) {
+            usableProviders.add(providerId);
+          }
+        }
+        visible = entries.filter((entry) => {
+          const providerId = providerIdOfEntry.get(entry.name);
+          if (providerId === undefined) return true; // unresolvable → fail-open
+          return usableProviders.has(providerId);
+        });
+      }
+      const models = visible.map((e) => e.name);
       const modelInfo: Record<string, { contextWindow?: number; vision?: boolean }> = {};
-      for (const entry of entries) {
+      for (const entry of visible) {
         if (entry.info.contextWindow !== undefined || entry.info.vision === true) {
           const infoEntry: { contextWindow?: number; vision?: boolean } = {};
           if (entry.info.contextWindow !== undefined)
@@ -1884,6 +1973,114 @@ export function createApp(opts: CreateServerOptions): Hono {
     } catch (err) {
       log.error("workspaces: unstar failure", { err, workspaceId });
       return c.json({ error: "Failed to unstar workspace" }, 500);
+    }
+  });
+
+  // ─── Per-workspace plugin enablement (plan 06 §6.6) ────────────────────────
+  // The workspace modal's read+write contract for "is this plugin used HERE".
+  // Delegated to the WorkspacePluginConfigService (provided by the CORE
+  // `workspace-plugin-config` extension) — route handlers are thin shells
+  // (parse → delegate → map to HTTP); the state-transition + validation
+  // logic lives in the service. When the service is absent (somehow not
+  // activated), every route degrades to 503. The GET's read-through
+  // materialization (§6.1) is what lazily registers a workspace.
+
+  app.get("/workspaces/:id/plugins", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (opts.workspacePluginConfigService === undefined) {
+      return c.json({ error: "Workspace plugin config service not available" }, 503);
+    }
+    try {
+      const view = await opts.workspacePluginConfigService.view(workspaceId);
+      log.info("workspaces: plugin states read", {
+        workspaceId,
+        plugins: view.plugins.length,
+        enabledProviderCount: view.enabledProviderCount,
+      });
+      const body: WorkspacePluginsResponse = {
+        workspaceId,
+        plugins: view.plugins,
+        enabledProviderCount: view.enabledProviderCount,
+      };
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("workspaces: plugin states read failure", { err, workspaceId });
+      return c.json({ error: "Failed to read workspace plugin states" }, 500);
+    }
+  });
+
+  app.get("/workspaces/:id/plugins/providers-status", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (opts.workspacePluginConfigService === undefined) {
+      return c.json({ error: "Workspace plugin config service not available" }, 503);
+    }
+    try {
+      const enabledProviderCount =
+        await opts.workspacePluginConfigService.enabledProviderCount(workspaceId);
+      const body: WorkspacePluginProvidersStatusResponse = { workspaceId, enabledProviderCount };
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("workspaces: providers-status failure", { err, workspaceId });
+      return c.json({ error: "Failed to read workspace provider status" }, 500);
+    }
+  });
+
+  app.put("/workspaces/:id/plugins/:pluginId", async (c) => {
+    const workspaceId = c.req.param("id");
+    const pluginId = c.req.param("pluginId");
+    if (opts.workspacePluginConfigService === undefined) {
+      return c.json({ error: "Workspace plugin config service not available" }, 503);
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      log.warn("workspaces: plugin state invalid JSON body", { workspaceId, pluginId });
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (body === null || typeof body !== "object") {
+      return c.json({ error: "Request body must be a JSON object" }, 400);
+    }
+    const rawState = (body as Record<string, unknown>).state;
+    if (rawState !== "enabled" && rawState !== "disabled" && rawState !== "unset") {
+      return c.json({ error: "Field 'state' must be one of: enabled, disabled, unset" }, 400);
+    }
+    const request: SetWorkspacePluginStateRequest = { state: rawState };
+
+    try {
+      const result = await opts.workspacePluginConfigService.setState(
+        workspaceId,
+        pluginId,
+        request.state,
+      );
+      if (!result.ok) {
+        // Strict layering (§7): only the global plugin-manager loads code —
+        // the per-workspace surface refuses unloaded (greyed) and core
+        // (locked) plugins with 409.
+        log.warn("workspaces: plugin state change refused", {
+          workspaceId,
+          pluginId,
+          reason: result.reason,
+        });
+        const blocked = {
+          workspaceId,
+          pluginId,
+          reason: result.reason,
+          message:
+            result.reason === "core-locked"
+              ? "Core plugins cannot be changed per workspace"
+              : "Plugin is not loaded — load it globally first",
+        };
+        return c.json(blocked, 409);
+      }
+      const stateValue: WorkspacePluginStateValue = result.state ?? "undefined";
+      log.info("workspaces: plugin state set", { workspaceId, pluginId, state: stateValue });
+      const response = { workspaceId, pluginId, state: stateValue };
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("workspaces: plugin state set failure", { err, workspaceId, pluginId });
+      return c.json({ error: "Failed to set workspace plugin state" }, 500);
     }
   });
 

@@ -819,6 +819,21 @@ export interface ChatQueueCancelMessage {
 }
 
 /**
+ * Client → server: declare THIS connection's active workspace (plan 06
+ * §6.4). Workspace switching is instant and client-side, so the server
+ * must be told explicitly — on receipt the server records the
+ * connection's workspace and RE-PUSHES the surface catalog filtered to
+ * that workspace (surfaces contributed by plugins that are not usable in
+ * the workspace are omitted). Clients that never send it keep the
+ * unfiltered (global) catalog — backward compatible. Owned by plan 06
+ * (backend contract + server handling); plan 07 sends it from the client.
+ */
+export interface WorkspaceSetMessage {
+  readonly type: "workspace.set";
+  readonly workspaceId: string;
+}
+
+/**
  * Every client → server WS message: surface ops (`@dispatch/ui-contract`) + chat
  * ops. A server discriminates on `type`.
  */
@@ -828,7 +843,8 @@ export type WsClientMessage =
   | ChatSubscribeMessage
   | ChatUnsubscribeMessage
   | ChatQueueMessage
-  | ChatQueueCancelMessage;
+  | ChatQueueCancelMessage
+  | WorkspaceSetMessage;
 
 /**
  * Every server → client WS message: surface ops (`@dispatch/ui-contract`) + chat
@@ -1069,6 +1085,93 @@ export interface ExtensionsChangedMessage {
   readonly action: "load" | "unload" | "reload" | "scan" | "forget";
   /** The plugin the action applied to (absent for a scan). */
   readonly pluginId?: string;
+}
+
+// ─── Per-workspace plugin enablement (plan 06 §6.6) ─────────────────────────
+//
+// The workspace modal's read+write contract for "is this plugin used HERE".
+// The routes are thin shells over the workspace-plugin-config core service;
+// the state-transition + validation logic lives THERE (pure, unit-tested).
+
+/**
+ * The wire form of a per-workspace plugin state: `"enabled"` / `"disabled"`
+ * — an explicit record — or the string `"undefined"` for NO record (the
+ * blank slate, §7). The triple is spelled out on the wire (rather than
+ * omitting the field) so a client can render all three states uniformly.
+ */
+export type WorkspacePluginStateValue = "enabled" | "disabled" | "undefined";
+
+/**
+ * One row of `GET /workspaces/:id/plugins` — a plugin's effective state in
+ * the workspace plus the metadata the modal needs (unloaded → greyed;
+ * core → locked).
+ */
+export interface WorkspacePluginRow {
+  readonly pluginId: string;
+  readonly tier: PluginTier;
+  readonly state: WorkspacePluginStateValue;
+  /** Whether the plugin is currently loaded globally (plan 05). */
+  readonly loaded: boolean;
+  /** True for tier "core" — the per-workspace state cannot be changed. */
+  readonly locked: boolean;
+}
+
+/**
+ * Response for `GET /workspaces/:id/plugins` — this workspace's effective
+ * plugin states. READING triggers read-through materialization (§6.1):
+ * the first read snapshots inherited records from the default workspace
+ * (Core → `enabled` always). `enabledProviderCount` is folded in for
+ * convenience; the dedicated `providers-status` route reports the same
+ * signal without parsing the full list.
+ */
+export interface WorkspacePluginsResponse {
+  readonly workspaceId: string;
+  readonly plugins: readonly WorkspacePluginRow[];
+  /** Loaded provider-tier plugins effectively enabled here (§6.5 guardrail). */
+  readonly enabledProviderCount: number;
+}
+
+/**
+ * Request body for `PUT /workspaces/:id/plugins/:pluginId` — set/clear
+ * this workspace's state for one plugin. `"unset"` returns it to the
+ * blank slate (no record). The server refuses (`core-locked` /
+ * `unloaded`, HTTP 409) changes for CORE plugins and for plugins that are
+ * not currently loaded — strict layering: only the global plugin-manager
+ * loads code (§7).
+ */
+export interface SetWorkspacePluginStateRequest {
+  readonly state: "enabled" | "disabled" | "unset";
+}
+
+/** Response for `PUT /workspaces/:id/plugins/:pluginId` (HTTP 200). */
+export interface SetWorkspacePluginStateResponse {
+  readonly workspaceId: string;
+  readonly pluginId: string;
+  /** The resulting effective state (`"undefined"` after `"unset"`). */
+  readonly state: WorkspacePluginStateValue;
+}
+
+/** Why a `PUT /workspaces/:id/plugins/:pluginId` was refused (HTTP 409). */
+export type SetWorkspacePluginStateBlockReason = "core-locked" | "unloaded";
+
+/** Refused per-workspace state change (HTTP 409). */
+export interface SetWorkspacePluginStateBlocked {
+  readonly workspaceId: string;
+  readonly pluginId: string;
+  readonly reason: SetWorkspacePluginStateBlockReason;
+  /** Human-readable reason (server-log grammar) for the UI to surface. */
+  readonly message: string;
+}
+
+/** Response for `GET /workspaces/:id/plugins/providers-status` (§6.5). */
+export interface WorkspacePluginProvidersStatusResponse {
+  readonly workspaceId: string;
+  /**
+   * Loaded provider-tier plugins effectively `enabled` in this workspace.
+   * `0` is the first-boot guardrail signal (§7): show a visible "no
+   * providers enabled" prompt instead of a silently empty model picker.
+   */
+  readonly enabledProviderCount: number;
 }
 
 /**

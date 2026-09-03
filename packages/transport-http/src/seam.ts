@@ -20,6 +20,7 @@ export type { ConcurrencyService } from "@dispatch/provider-concurrency";
 export { concurrencyServiceHandle } from "@dispatch/provider-concurrency";
 export type {
   CompactionService,
+  PluginOwnership,
   SessionOrchestrator,
   WarmService,
 } from "@dispatch/session-orchestrator";
@@ -27,12 +28,18 @@ export {
   cacheWarmHandle,
   compactionHandle,
   conversationOpened,
+  pluginOwnershipHandle,
   sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
 export type { SystemPromptService } from "@dispatch/system-prompt";
 export { systemPromptHandle } from "@dispatch/system-prompt";
 export type { ThroughputStore } from "@dispatch/throughput-store";
 export { ThroughputQueryError, throughputStoreHandle } from "@dispatch/throughput-store";
+export type { WorkspacePluginConfigService } from "@dispatch/workspace-plugin-config";
+export {
+  usablePluginsInWorkspace,
+  workspacePluginConfigHandle,
+} from "@dispatch/workspace-plugin-config";
 
 // ─── ComputerService seam ─────────────────────────────────────────────────────
 //

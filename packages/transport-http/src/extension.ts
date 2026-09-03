@@ -12,9 +12,11 @@ import {
   mcpServiceHandle,
   namedAgentServiceHandle,
   pluginManagerHandle,
+  pluginOwnershipHandle,
   sessionOrchestratorHandle,
   systemPromptHandle,
   throughputStoreHandle,
+  workspacePluginConfigHandle,
 } from "./seam.js";
 
 export const manifest: Manifest = {
@@ -81,6 +83,9 @@ export const manifest: Manifest = {
       "/workspaces/:id/heartbeat",
       "/workspaces/:id/heartbeat/runs",
       "/workspaces/:id/heartbeat/runs/:runId/stop",
+      "/workspaces/:id/plugins",
+      "/workspaces/:id/plugins/providers-status",
+      "/workspaces/:id/plugins/:pluginId",
       "/workspaces/:id/star",
       "/workspaces/:id/title",
     ],
@@ -137,6 +142,8 @@ export function createTransportHttpExtension(): Extension & {
         concurrency: { current: host.tryGetService(concurrencyServiceHandle) },
         namedAgent: { current: host.tryGetService(namedAgentServiceHandle) },
         pluginManager: { current: host.tryGetService(pluginManagerHandle) },
+        workspacePluginConfig: { current: host.tryGetService(workspacePluginConfigHandle) },
+        pluginOwnership: { current: host.tryGetService(pluginOwnershipHandle) },
       };
 
       function watch<T>(handle: ServiceHandle<T>, slot: { current: T | undefined }): () => void {
@@ -161,6 +168,8 @@ export function createTransportHttpExtension(): Extension & {
         watch(concurrencyServiceHandle, slots.concurrency),
         watch(namedAgentServiceHandle, slots.namedAgent),
         watch(pluginManagerHandle, slots.pluginManager),
+        watch(workspacePluginConfigHandle, slots.workspacePluginConfig),
+        watch(pluginOwnershipHandle, slots.pluginOwnership),
       ];
 
       const logger = host.logger;
@@ -204,6 +213,16 @@ export function createTransportHttpExtension(): Extension & {
         get pluginManagerService() {
           return slots.pluginManager.current;
         },
+        get workspacePluginConfigService() {
+          return slots.workspacePluginConfig.current;
+        },
+        get pluginOwnership() {
+          return slots.pluginOwnership.current;
+        },
+        // Live tier lookup over the loaded manifests (plan 06 §6.5) — read
+        // per call so mid-session loads/unloads are seen on the next
+        // request. `undefined` tier → the route's fail-open path.
+        pluginTierOf: (pluginId) => host.getExtensions().find((m) => m.id === pluginId)?.tier,
       });
 
       const port = host.config.get<number>("httpPort") ?? 24203;

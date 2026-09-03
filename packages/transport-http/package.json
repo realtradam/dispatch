@@ -19,6 +19,7 @@
     "@dispatch/throughput-store": "workspace:*",
     "@dispatch/transport-contract": "workspace:*",
     "@dispatch/wire": "workspace:*",
+    "@dispatch/workspace-plugin-config": "workspace:*",
     "hono": "^4.0.0",
     "@dispatch/system-prompt": "workspace:*"
   }

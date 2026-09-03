@@ -1530,6 +1530,233 @@ describe("tools filter", () => {
   });
 });
 
+// ── Per-workspace tool gate (plan 06 §6.3) ──────────────────────────────────
+
+describe("per-workspace tool gate", () => {
+  it("threads the conversation's PERSISTED workspaceId into the tool assembly", async () => {
+    const store = createInMemoryStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captureRunTurn } = createCapturingRunTurn();
+
+    let receivedAssembly: ToolAssembly | undefined;
+    const capturingFilter = (assembly: ToolAssembly): Promise<ToolAssembly> => {
+      receivedAssembly = assembly;
+      return Promise.resolve(assembly);
+    };
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: capturingFilter,
+      runTurn: captureRunTurn,
+    });
+
+    await store.setWorkspaceId("conv-ws-thread", "team-a");
+    await orchestrator.handleMessage({
+      conversationId: "conv-ws-thread",
+      text: "hi",
+      onEvent: () => {},
+    });
+
+    expect(receivedAssembly).toBeDefined();
+    expect(receivedAssembly?.workspaceId).toBe("team-a");
+  });
+
+  it("applies the workspace gate AFTER the whole toolsFilter chain (an injection filter cannot re-add) and BEFORE applyToolPolicy", async () => {
+    const store = createInMemoryStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+
+    const toolA = createFakeTool("read_file", async () => ({ content: "a" }));
+    const mcpInjected = createFakeTool("myserver__query", async () => ({ content: "mcp" }));
+
+    // The injection filter ADDS an MCP tool after resolveTools (mirrors mcp).
+    const injectingFilter = (assembly: ToolAssembly): Promise<ToolAssembly> =>
+      Promise.resolve({ ...assembly, tools: [...assembly.tools, mcpInjected] });
+
+    // The workspace gate: `mcp` is NOT usable in team-a (ledger attribution:
+    // `myserver__query` → mcp), so the gate drops it — AFTER the injector ran.
+    const { gateToolsForWorkspace } = await import("./tools-filter.js");
+    const ownerOfTool = (name: string) =>
+      name === "myserver__query" ? "mcp" : name === "read_file" ? "tool-read-file" : undefined;
+    const workspaceGate = (assembly: ToolAssembly): Promise<ToolAssembly> =>
+      Promise.resolve(gateToolsForWorkspace(assembly, new Set(["tool-read-file"]), ownerOfTool));
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [toolA],
+      applyToolsFilter: injectingFilter,
+      applyWorkspaceGate: workspaceGate,
+      runTurn: captureRunTurn,
+    });
+
+    await store.setWorkspaceId("conv-ws-gate", "team-a");
+    await orchestrator.handleMessage({
+      conversationId: "conv-ws-gate",
+      text: "hi",
+      onEvent: () => {},
+    });
+
+    expect(captured).toHaveLength(1);
+    const names = captured[0]?.tools.map((t) => t.name) ?? [];
+    // The MCP-injected tool was dropped by the workspace gate even though
+    // the injection filter added it AFTER resolveTools — the gate runs last
+    // in the chain (§7: nothing can re-add a restricted tool).
+    expect(names).toEqual(["read_file"]);
+  });
+
+  it("applyToolPolicy is the FINAL word: a mode:none conversation gets an empty set even after the gate", async () => {
+    const store = createInMemoryStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+
+    const toolA = createFakeTool("read_file", async () => ({ content: "a" }));
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [toolA],
+      applyToolsFilter: identityApplyToolsFilter,
+      applyWorkspaceGate: (assembly) => Promise.resolve(assembly), // passthrough gate
+      runTurn: captureRunTurn,
+    });
+
+    await store.setToolPolicy("conv-ws-policy", { mode: "none" });
+    await orchestrator.handleMessage({
+      conversationId: "conv-ws-policy",
+      text: "hi",
+      onEvent: () => {},
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.tools).toEqual([]);
+  });
+
+  it("omitted applyWorkspaceGate → no workspace gating (degrade open)", async () => {
+    const store = createInMemoryStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+
+    const toolA = createFakeTool("read_file", async () => ({ content: "a" }));
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [toolA],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+    });
+
+    await store.setWorkspaceId("conv-ws-absent", "team-a");
+    await orchestrator.handleMessage({
+      conversationId: "conv-ws-absent",
+      text: "hi",
+      onEvent: () => {},
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.tools.map((t) => t.name)).toEqual(["read_file"]);
+  });
+});
+
+// ── Model-unavailable rule (plan 06 §6.5, big_plan §8) ──────────────────────
+
+describe("per-workspace model availability", () => {
+  it("a KNOWN model that is NOT usable in the conversation's workspace errors immediately — no runTurn, NO fallback", async () => {
+    const store = createInMemoryStore();
+    const fallbackProvider: ProviderContract = { id: "fallback", stream: async function* () {} };
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+    const events: AgentEvent[] = [];
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => fallbackProvider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveModel: () => ({
+        provider: { id: "should-never-stream", stream: async function* () {} },
+        model: "gpt-4",
+      }),
+      resolveModelUsability: () => Promise.resolve(false),
+      runTurn: captureRunTurn,
+    });
+
+    await store.setWorkspaceId("conv-model-unusable", "team-a");
+    await orchestrator.handleMessage({
+      conversationId: "conv-model-unusable",
+      text: "hi",
+      onEvent: (e) => events.push(e),
+      modelName: "cred/gpt-4",
+    });
+
+    expect(captured).toHaveLength(0); // NEVER a silent fallback
+    const errorEvents = events.filter((e) => e.type === "error");
+    expect(errorEvents).toHaveLength(1);
+    expect((errorEvents[0] as AgentEvent & { type: "error" }).message).toBe(
+      "model cred/gpt-4 unavailable — pick another",
+    );
+  });
+
+  it("a model usable in the workspace proceeds normally", async () => {
+    const store = createInMemoryStore();
+    const provider: ProviderContract = { id: "p", stream: async function* () {} };
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveModel: () => ({
+        provider: { id: "resolved", stream: async function* () {} },
+        model: "gpt-4",
+      }),
+      resolveModelUsability: () => Promise.resolve(true),
+      runTurn: captureRunTurn,
+    });
+
+    await store.setWorkspaceId("conv-model-ok", "team-a");
+    await orchestrator.handleMessage({
+      conversationId: "conv-model-ok",
+      text: "hi",
+      onEvent: () => {},
+      modelName: "cred/gpt-4",
+    });
+
+    expect(captured).toHaveLength(1);
+  });
+
+  it("no resolveModelUsability dep → the unknown-model error path is unchanged", async () => {
+    const store = createInMemoryStore();
+    const fallbackProvider: ProviderContract = { id: "fallback", stream: async function* () {} };
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+    const events: AgentEvent[] = [];
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => fallbackProvider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveModel: () => undefined,
+      runTurn: captureRunTurn,
+    });
+
+    await store.setWorkspaceId("conv-legacy", "team-a");
+    await orchestrator.handleMessage({
+      conversationId: "conv-legacy",
+      text: "hi",
+      onEvent: (e) => events.push(e),
+      modelName: "cred/nonexistent",
+    });
+
+    expect(captured).toHaveLength(0);
+    const errorEvents = events.filter((e) => e.type === "error");
+    expect((errorEvents[0] as AgentEvent & { type: "error" }).message).toBe(
+      "unknown model: cred/nonexistent",
+    );
+  });
+});
+
 function createCounterNow(): { now: () => number; tick: (ms: number) => void } {
   let t = 0;
   return {

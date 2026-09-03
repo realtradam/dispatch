@@ -34,6 +34,7 @@ export {
   type WarmServiceDeps,
   warmCompleted,
 } from "./orchestrator.js";
+export { type PluginOwnership, pluginOwnershipHandle } from "./ownership.js";
 export {
   buildUserMessage,
   cumulativeSleepMs,
@@ -49,4 +50,4 @@ export {
   resolveReasoningEffort,
   selectFirstProvider,
 } from "./pure.js";
-export { type ToolAssembly, toolsFilter } from "./tools-filter.js";
+export { gateToolsForWorkspace, type ToolAssembly, toolsFilter } from "./tools-filter.js";

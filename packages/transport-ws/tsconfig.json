@@ -8,6 +8,7 @@
     { "path": "../session-orchestrator" },
     { "path": "../surface-registry" },
     { "path": "../transport-contract" },
-    { "path": "../ui-contract" }
+    { "path": "../ui-contract" },
+    { "path": "../workspace-plugin-config" }
   ]
 }

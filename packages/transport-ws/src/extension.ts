@@ -18,8 +18,12 @@ import {
 import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
 import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 import type { WsClientMessage, WsServerMessage } from "@dispatch/transport-contract";
+import {
+  usablePluginsInWorkspace,
+  workspacePluginConfigHandle,
+} from "@dispatch/workspace-plugin-config";
 import { manifest } from "./manifest.js";
-import { catalogMessage, routeClientMessage, subKey } from "./router.js";
+import { catalogMessageFiltered, routeClientMessage, subKey } from "./router.js";
 
 /** Active provider subscriptions + chat subscription disposers for a single WS connection. */
 interface ConnectionState {
@@ -27,6 +31,12 @@ interface ConnectionState {
   readonly providerDisposers: Map<string, () => void>;
   /** Per-conversation chat subscription disposers (orchestrator.subscribe). */
   readonly chatSubscriptions: Map<string, () => void>;
+  /**
+   * THIS connection's active workspace, declared by the client via
+   * `workspace.set` (plan 06 §6.4). `undefined` (never declared) → the
+   * unfiltered global catalog — backward compatible.
+   */
+  workspaceId: string | undefined;
 }
 
 type Ws = Bun.ServerWebSocket<ConnectionState>;
@@ -58,6 +68,48 @@ export function createTransportWsExtension(): Extension {
       function broadcast(msg: WsServerMessage): void {
         for (const ws of connections) {
           send(ws, msg);
+        }
+      }
+
+      /**
+       * The catalog message for ONE connection (plan 06 §6.4): unfiltered
+       * (global) when the connection declared no workspace or the
+       * workspace-plugin-config service is absent (degrade open);
+       * otherwise filtered to the surfaces whose contributing plugins are
+       * usable in the connection's workspace (via the shared
+       * `usablePluginsInWorkspace` rule + `SurfaceCatalogEntry.pluginId`).
+       */
+      async function catalogForConnection(state: ConnectionState) {
+        if (state.workspaceId === undefined) {
+          return catalogMessageFiltered(registry, undefined);
+        }
+        const config = host.tryGetService(workspacePluginConfigHandle);
+        if (config === undefined) {
+          return catalogMessageFiltered(registry, undefined); // degrade open
+        }
+        const manifests = host.getExtensions();
+        const tierOf = (pluginId: string) => manifests.find((m) => m.id === pluginId)?.tier;
+        const contributed = [
+          ...new Set(
+            registry
+              .getCatalog()
+              .map((entry) => entry.pluginId)
+              .filter((id): id is string => id !== undefined),
+          ),
+        ];
+        const usable = await usablePluginsInWorkspace(
+          state.workspaceId,
+          contributed,
+          config,
+          tierOf,
+        );
+        return catalogMessageFiltered(registry, usable);
+      }
+
+      /** Re-push every connection's workspace-filtered catalog (§6.4). */
+      async function repushCatalogs(): Promise<void> {
+        for (const ws of connections) {
+          send(ws, await catalogForConnection(ws.data));
         }
       }
 
@@ -186,8 +238,19 @@ export function createTransportWsExtension(): Extension {
       // plugin-manager mutation (load / unload / reload / scan / forget) so
       // every connected frontend refetches the extension list AND the
       // surface catalog (§11 multi-client coherence). The hook payload IS
-      // the wire message — forwarded verbatim.
-      disposers.push(host.on(extensionsChanged, (message) => broadcast(message)));
+      // the wire message — forwarded verbatim. The catalog itself is ALSO
+      // re-pushed per connection, workspace-filtered (plan 06 §6.4): a
+      // load/unload changes which surfaces exist, so every workspace view
+      // must refresh even if the client never re-sends `workspace.set`.
+      disposers.push(
+        host.on(extensionsChanged, (message) => {
+          broadcast(message);
+          void repushCatalogs().catch(() => {
+            // Catalog re-push is best-effort — a failed config read must
+            // never break the extensions-changed fan-out.
+          });
+        }),
+      );
 
       server = Bun.serve<ConnectionState>({
         port,
@@ -196,6 +259,7 @@ export function createTransportWsExtension(): Extension {
             subs: new Set(),
             providerDisposers: new Map(),
             chatSubscriptions: new Map(),
+            workspaceId: undefined,
           };
           if (srv.upgrade(req, { data: initial })) return;
           return new Response("expected websocket", { status: 426 });
@@ -204,7 +268,10 @@ export function createTransportWsExtension(): Extension {
           open(ws) {
             connections.add(ws);
             logger.debug("transport-ws: connection open");
-            send(ws, catalogMessage(registry));
+            // Initial catalog push (plan 06 §6.4): a connection that has not
+            // declared a workspace (none can have yet) gets the unfiltered
+            // global catalog — backward compatible.
+            void catalogForConnection(ws.data).then((msg) => send(ws, msg));
           },
 
           message(ws, message) {
@@ -388,6 +455,29 @@ export function createTransportWsExtension(): Extension {
                     ? { conversationId: result.conversationId }
                     : {}),
                   message: result.errorMessage,
+                });
+                break;
+              }
+
+              case "workspace-set": {
+                // Record THIS connection's active workspace (plan 06 §6.4)
+                // and RE-PUSH the catalog filtered to it — workspace
+                // switching is instant + client-side, so the server must be
+                // told explicitly.
+                state.workspaceId = result.workspaceId;
+                logger.info?.("transport-ws: workspace.set", {
+                  workspaceId: result.workspaceId,
+                });
+                void catalogForConnection(state).then((msg) => send(ws, msg));
+                break;
+              }
+
+              case "workspace-error": {
+                // Malformed workspace.set: log + send NOTHING (no
+                // workspace-scoped error message type); the connection keeps
+                // its previous workspace.
+                logger.warn?.("transport-ws: malformed workspace.set", {
+                  reason: result.errorMessage,
                 });
                 break;
               }

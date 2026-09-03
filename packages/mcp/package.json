@@ -7,6 +7,7 @@
   "types": "dist/index.d.ts",
   "dependencies": {
     "@dispatch/kernel": "workspace:*",
-    "@dispatch/session-orchestrator": "workspace:*"
+    "@dispatch/session-orchestrator": "workspace:*",
+    "@dispatch/workspace-plugin-config": "workspace:*"
   }
 }

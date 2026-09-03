@@ -125,6 +125,39 @@ export class ExtensionLedger {
     return this.entries.get(extensionId);
   }
 
+  /**
+   * The full tool-name → extension-id attribution map (plan-01 ledger view).
+   * Built on demand from the tracked `defineTool` registrations — the
+   * authoritative "which plugin owns this tool" source for per-workspace
+   * enforcement (plan 06): filter-injected tools (e.g. MCP's
+   * `<serverId>__<toolName>`) are attributed to the extension that defined
+   * them, which no manifest's static `contributes.tools` can name.
+   */
+  toolOwners(): ReadonlyMap<string, string> {
+    const map = new Map<string, string>();
+    for (const entry of this.entries.values()) {
+      for (const name of entry.tools) {
+        map.set(name, entry.extensionId);
+      }
+    }
+    return map;
+  }
+
+  /**
+   * The full provider-id → extension-id attribution map (plan-01 ledger
+   * view) — the authoritative "which plugin owns this provider" source for
+   * per-workspace provider gating (plan 06 §6.5).
+   */
+  providerOwners(): ReadonlyMap<string, string> {
+    const map = new Map<string, string>();
+    for (const entry of this.entries.values()) {
+      for (const id of entry.providers) {
+        map.set(id, entry.extensionId);
+      }
+    }
+    return map;
+  }
+
   has(extensionId: string): boolean {
     return this.entries.has(extensionId);
   }

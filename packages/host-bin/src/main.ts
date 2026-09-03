@@ -22,6 +22,7 @@ import { parseNumberedOpenCodeEnv } from "@dispatch/provider-openai-compat";
 import {
   type MemorySample,
   memorySampleAttributes,
+  pluginOwnershipHandle,
   sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
 import { createSqliteStorage } from "@dispatch/storage-sqlite";
@@ -270,6 +271,19 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
       });
       return { scanned: toScannedEntries(scan), buckets: toReconciledBuckets(plan) };
     },
+  });
+
+  // Provide the plan-06 PluginOwnership seam (session-orchestrator's
+  // consumer-defined handle) — the composition root is the one unit that can
+  // see the kernel host's plan-01 registration ledger, so it adapts the
+  // ledger's owner views into the service. Provided BEFORE activation (same
+  // injection point as the engine above): session-orchestrator's workspace
+  // tool gate + model-usability check and transport-http's /models
+  // workspace filter read it. Live views — loads/unloads are reflected on
+  // the next call (the maps are rebuilt from the ledger per call).
+  host.getHostAPI().provideService(pluginOwnershipHandle, {
+    ownerOfTool: (toolName) => host.getToolOwners().get(toolName),
+    ownerOfProvider: (providerId) => host.getProviderOwners().get(providerId),
   });
 
   await host.activate();

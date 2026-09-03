@@ -128,6 +128,22 @@ export interface Host {
   readonly getExtensions: () => readonly Manifest[];
   readonly getHostAPI: () => HostAPI;
   /**
+   * Tool name → registering extension id, derived from the plan-01
+   * registration ledger (every `defineTool` is tracked under the caller's
+   * extension id — including filter-injected tools with runtime names no
+   * manifest can enumerate, e.g. MCP's `<serverId>__<toolName>`). The
+   * authoritative tool→plugin attribution for per-workspace enforcement
+   * (plan 06 §6.3). Live view: reflects loads/unloads.
+   */
+  readonly getToolOwners: () => ReadonlyMap<string, string>;
+  /**
+   * Provider id → registering extension id, derived from the plan-01
+   * registration ledger (every `defineProvider` is tracked under the
+   * caller's extension id). The authoritative provider→plugin attribution
+   * for per-workspace provider gating (plan 06 §6.5). Live view.
+   */
+  readonly getProviderOwners: () => ReadonlyMap<string, string>;
+  /**
    * Activate a new extension into the running host. Refuses an id that is
    * already loaded (use `reloadExtension`), an apiVersion-incompatible
    * manifest, and unmet dependencies — each lands in `getDisabled()`
@@ -581,6 +597,12 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
     },
     getExtensions() {
       return Object.freeze(activated.map((e) => e.manifest));
+    },
+    getToolOwners() {
+      return ledger.toolOwners();
+    },
+    getProviderOwners() {
+      return ledger.providerOwners();
     },
     getHostAPI() {
       return buildHostAPI("__host__", { registrationClosed: true });

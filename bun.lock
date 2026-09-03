@@ -115,6 +115,7 @@
         "@dispatch/transport-http": "workspace:*",
         "@dispatch/transport-ws": "workspace:*",
         "@dispatch/vision-handoff": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
     "packages/journal-sink": {
@@ -144,6 +145,7 @@
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
     "packages/message-queue": {
@@ -249,6 +251,7 @@
         "@dispatch/message-queue": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/system-prompt": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
     "packages/skills": {
@@ -408,6 +411,7 @@
         "@dispatch/throughput-store": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
         "hono": "^4.0.0",
       },
     },
@@ -421,6 +425,7 @@
         "@dispatch/surface-registry": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
         "@dispatch/ui-contract": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
     "packages/ui-contract": {
@@ -443,6 +448,14 @@
     "packages/wire": {
       "name": "@dispatch/wire",
       "version": "0.12.0",
+    },
+    "packages/workspace-plugin-config": {
+      "name": "@dispatch/workspace-plugin-config",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
+      },
     },
   },
   "packages": {
@@ -555,6 +568,8 @@
     "@dispatch/vision-handoff": ["@dispatch/vision-handoff@workspace:packages/vision-handoff"],
 
     "@dispatch/wire": ["@dispatch/wire@workspace:packages/wire"],
+
+    "@dispatch/workspace-plugin-config": ["@dispatch/workspace-plugin-config@workspace:packages/workspace-plugin-config"],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.27.7", "", { "os": "aix", "cpu": "ppc64" }, "sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg=="],
 

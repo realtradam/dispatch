@@ -23,6 +23,9 @@
       "path": "./packages/plugin-manager"
     },
     {
+      "path": "./packages/workspace-plugin-config"
+    },
+    {
       "path": "./packages/surface-loaded-extensions"
     },
     {

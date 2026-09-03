@@ -531,6 +531,24 @@ export interface SessionOrchestratorDeps {
   readonly resolveVisionHandoff?: () => VisionHandoffService | undefined;
   /** Apply the per-turn tools filter chain. Injected for testability. */
   readonly applyToolsFilter: (assembly: ToolAssembly) => Promise<ToolAssembly>;
+  /**
+   * Per-workspace tool gate (plan 06 §6.3). Applied AFTER the entire
+   * `applyToolsFilter` chain (so no injection filter can re-add a dropped
+   * tool) and BEFORE `applyToolPolicy` (the persisted conversation policy
+   * stays the final word). Injected by the extension (which resolves the
+   * ledger ownership + workspace-plugin-config services reactively);
+   * omitted/absent → no workspace gating (degrade open, e.g. tests).
+   */
+  readonly applyWorkspaceGate?: (assembly: ToolAssembly) => Promise<ToolAssembly>;
+  /**
+   * Per-workspace model-usability check (plan 06 §6.5): whether the named
+   * model is usable in the given workspace — its provider is loaded AND
+   * usable there. `false` → the turn errors immediately and explicitly
+   * ("model X unavailable — pick another", §8) — NEVER a silent fallback.
+   * Injected by the extension; omitted → no workspace model check (the
+   * unknown-model error path is unchanged).
+   */
+  readonly resolveModelUsability?: (modelName: string, workspaceId: string) => Promise<boolean>;
   /** Base logger (auto-scoped to this extension); childed per turn for span capture. */
   readonly logger?: Logger;
   /** Injected monotonic-ish clock (ms) forwarded to RunTurnInput for timing events. */
@@ -824,6 +842,12 @@ export function createSessionOrchestrator(
         // the caller had passed it explicitly.
         const effectiveModelName = resolveModelName(modelName, storedModel);
 
+        // The conversation's PERSISTED workspace (§6.3) — the enforcement
+        // context for this turn. getWorkspaceId synthesizes "default" for
+        // conversations with no persisted workspace, so this is always
+        // known once the workspace setup has run.
+        const turnWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
+
         const history = await deps.conversationStore.load(conversationId);
 
         // Store images to tmp files (compact URLs) BEFORE building the user
@@ -846,6 +870,30 @@ export function createSessionOrchestrator(
 
         let provider: ProviderContract;
         let modelOverride: string | undefined;
+
+        // Per-workspace model-unavailable rule (§8, plan 06 §6.5): a model
+        // that is KNOWN but whose provider is not usable in this
+        // conversation's workspace (disabled there, or globally unloaded)
+        // is an IMMEDIATE, EXPLICIT error surfaced in the conversation —
+        // NEVER a silent fallback to another model. The check runs before
+        // resolveModel so a globally-unloaded provider surfaces as
+        // "unavailable" rather than the (misleading) "unknown model".
+        if (
+          effectiveModelName !== undefined &&
+          turnWorkspaceId !== undefined &&
+          deps.resolveModelUsability !== undefined
+        ) {
+          const usable = await deps.resolveModelUsability(effectiveModelName, turnWorkspaceId);
+          if (!usable) {
+            emitToHub(conversationId, {
+              type: "error",
+              conversationId,
+              turnId,
+              message: `model ${effectiveModelName} unavailable — pick another`,
+            });
+            return;
+          }
+        }
 
         if (effectiveModelName !== undefined && deps.resolveModel !== undefined) {
           const resolved = deps.resolveModel(effectiveModelName);
@@ -921,15 +969,31 @@ export function createSessionOrchestrator(
           // Omitted (undefined) on the default-provider fallthrough — model-
           // aware filters treat absence as "unknown metadata".
           ...(effectiveModelName !== undefined ? { modelName: effectiveModelName } : {}),
+          // Thread the conversation's persisted workspace into the assembly
+          // so workspace-aware filters (the MCP injection short-circuit) and
+          // the workspace tool gate below see the enforcement context (§6.3).
+          ...(turnWorkspaceId !== undefined ? { workspaceId: turnWorkspaceId } : {}),
           // Thread the turn's abort signal into the filter chain so a filter
           // awaiting slow I/O (the MCP tools filter connecting to MCP servers)
           // can be interrupted by POST /conversations/:id/stop instead of
           // blocking the turn until its own timeout fires.
           signal: controller.signal,
         });
+        // Per-workspace tool gate (plan 06 §6.3) — runs AFTER the entire
+        // toolsFilter chain (so no injection filter can re-add a dropped
+        // tool) and BEFORE applyToolPolicy (the conversation policy below
+        // stays the final word). Absent dep → no workspace gating (degrade
+        // open; the extension wires the ledger + workspace-plugin-config
+        // services reactively).
+        const gated =
+          deps.applyWorkspaceGate !== undefined
+            ? await deps.applyWorkspaceGate(filtered)
+            : filtered;
         // Apply the persisted conversation tool policy LAST — after the entire
-        // toolsFilter chain — so NO extension filter can re-add a tool into a
-        // restricted conversation (plan §10.2). A `mode: "none"` conversation
+        // toolsFilter chain AND the workspace tool gate — so NO extension
+        // filter can re-add a tool into a restricted conversation (plan §10.2),
+        // and no workspace-gated tool can sneak back via the policy either
+        // (the policy narrows the GATED set). A `mode: "none"` conversation
         // (e.g. a vision consultation) receives an empty tool set on every
         // turn; legacy/ordinary conversations without a persisted policy resolve
         // to `{ mode: "all" }` (passthrough — byte-identical to today). The
@@ -939,7 +1003,7 @@ export function createSessionOrchestrator(
         // filter could re-introduce a restricted tool.
         const persistedPolicy = await deps.conversationStore.getToolPolicy(conversationId);
         const policy = persistedPolicy ?? ({ mode: "all" } as const);
-        const assembled = applyToolPolicy(filtered, policy);
+        const assembled = applyToolPolicy(gated, policy);
         const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
         const turnLogger = deps.logger?.child({ conversationId, turnId });
         const metrics = createMetricsAccumulator();
@@ -1521,10 +1585,22 @@ export function createWarmService(
         provider = deps.resolveProvider();
       }
 
+      // Per-workspace model-unavailable rule (§8) — the warm probe warms the
+      // SAME model the next real turn would use; when that model is not
+      // usable in this conversation's workspace the real turn will error
+      // immediately, so warming it would be a wasted provider round-trip.
+      const warmWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
+      if (
+        effectiveModelName !== undefined &&
+        deps.resolveModelUsability !== undefined &&
+        !(await deps.resolveModelUsability(effectiveModelName, warmWorkspaceId))
+      ) {
+        return { error: `model ${effectiveModelName} unavailable — pick another` };
+      }
+
       // Wrap with concurrency limiting (same as the main turn path).
       const warmLimiter = deps.resolveConcurrencyLimiter?.();
       if (warmLimiter !== undefined) {
-        const warmWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
         provider = wrapProviderWithConcurrency(
           provider,
           warmLimiter,
@@ -1544,11 +1620,20 @@ export function createWarmService(
       // wrong prefix. See notes/observability-design.md §3.1.
       const cwd =
         (await deps.conversationStore.getEffectiveCwd(conversationId, opts?.cwd)) ?? undefined;
-      const assembled = await deps.applyToolsFilter({
+      const filtered = await deps.applyToolsFilter({
         tools: baseTools,
         conversationId,
         ...(cwd !== undefined ? { cwd } : {}),
+        // Same workspace context as the real turn's assembly, so
+        // workspace-aware filters (the MCP injection short-circuit) behave
+        // identically during a warm (§6.3).
+        ...(warmWorkspaceId !== undefined ? { workspaceId: warmWorkspaceId } : {}),
       });
+      // Same per-workspace tool gate as the real turn — a warm prefix that
+      // includes workspace-gated tools the real turn drops would cache-miss
+      // on the next real turn (coherence, §6.3).
+      const assembled =
+        deps.applyWorkspaceGate !== undefined ? await deps.applyWorkspaceGate(filtered) : filtered;
 
       // Resolve reasoning effort the SAME way the real turn does (stored → "high";
       // no per-turn override on warm). A mismatch here silently busts the prompt cache.
