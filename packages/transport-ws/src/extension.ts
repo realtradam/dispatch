@@ -7,6 +7,7 @@
  */
 
 import type { Extension, HostAPI } from "@dispatch/kernel";
+import { layoutChanged } from "@dispatch/layout-provider-contract";
 import { extensionsChanged } from "@dispatch/plugin-manager";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
 import {
@@ -249,6 +250,18 @@ export function createTransportWsExtension(): Extension {
             // Catalog re-push is best-effort — a failed config read must
             // never break the extensions-changed fan-out.
           });
+        }),
+      );
+
+      // Broadcast `layout` to ALL connected clients after every successful
+      // layout write (plan 02 §2.5 — the layout-chat provider's PUT /
+      // setTree / DELETE / ops). Pure verbatim ferrying of a TYPED wire
+      // message, exactly like `extensions-changed`: the transport learns
+      // nothing about trees (D-L6) — clients filter by their active
+      // workspace (the workspaceId rides the payload; decision 7 full-tree).
+      disposers.push(
+        host.on(layoutChanged, (message) => {
+          broadcast(message);
         }),
       );
 

@@ -1,0 +1,14 @@
+{
+  "name": "@dispatch/layout-chat",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/layout-contract": "workspace:*",
+    "@dispatch/layout-provider-contract": "workspace:*"
+  }
+}

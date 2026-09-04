@@ -86,6 +86,7 @@
         "@dispatch/heartbeat": "workspace:*",
         "@dispatch/journal-sink": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-chat": "workspace:*",
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
@@ -130,6 +131,28 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/wire": "workspace:*",
+      },
+    },
+    "packages/layout-chat": {
+      "name": "@dispatch/layout-chat",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/layout-provider-contract": "workspace:*",
+      },
+    },
+    "packages/layout-contract": {
+      "name": "@dispatch/layout-contract",
+      "version": "0.1.0",
+    },
+    "packages/layout-provider-contract": {
+      "name": "@dispatch/layout-provider-contract",
+      "version": "0.1.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
       },
     },
     "packages/lsp": {
@@ -407,6 +430,7 @@
       "name": "@dispatch/transport-contract",
       "version": "0.24.0",
       "dependencies": {
+        "@dispatch/layout-contract": "workspace:*",
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
       },
@@ -419,6 +443,8 @@
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/heartbeat": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/layout-provider-contract": "workspace:*",
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
         "@dispatch/named-agents": "workspace:*",
@@ -438,6 +464,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-provider-contract": "workspace:*",
         "@dispatch/plugin-manager": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
@@ -514,6 +541,12 @@
     "@dispatch/journal-sink": ["@dispatch/journal-sink@workspace:packages/journal-sink"],
 
     "@dispatch/kernel": ["@dispatch/kernel@workspace:packages/kernel"],
+
+    "@dispatch/layout-chat": ["@dispatch/layout-chat@workspace:packages/layout-chat"],
+
+    "@dispatch/layout-contract": ["@dispatch/layout-contract@workspace:packages/layout-contract"],
+
+    "@dispatch/layout-provider-contract": ["@dispatch/layout-provider-contract@workspace:packages/layout-provider-contract"],
 
     "@dispatch/lsp": ["@dispatch/lsp@workspace:packages/lsp"],
 

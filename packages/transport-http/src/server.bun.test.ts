@@ -7,7 +7,10 @@ import {
   type HostAPI,
   type Logger,
   type ServiceHandle,
+  type StorageNamespace,
 } from "@dispatch/kernel";
+import { DEFAULT_LAYOUT, type LayoutTree } from "@dispatch/layout-contract";
+import { createLayoutProvider, layoutProviderHandle } from "@dispatch/layout-provider-contract";
 import { createApp } from "./app.js";
 import { createTransportHttpExtension } from "./index.js";
 import {
@@ -30,6 +33,22 @@ import {
   systemPromptHandle,
   throughputStoreHandle,
 } from "./seam.js";
+
+/** An in-memory StorageNamespace (the kernel-test shape) for the kit. */
+function memoryNamespace(): StorageNamespace {
+  const store = new Map<string, string>();
+  return {
+    get: async (key) => store.get(key) ?? null,
+    set: async (key, value) => {
+      store.set(key, value);
+    },
+    delete: async (key) => {
+      store.delete(key);
+    },
+    has: async (key) => store.has(key),
+    keys: async () => [...store.keys()],
+  };
+}
 
 function fakeLogger(): Logger {
   return {
@@ -491,6 +510,86 @@ describe("reactive service registry (plan 03)", () => {
       expect(((await res.json()) as { enabled: boolean }).enabled).toBe(false);
       res = await fetch(`${base}/conversations/c1/mcp`);
       expect(res.status).toBe(503);
+    } finally {
+      ext.deactivate?.();
+    }
+  });
+
+  test("layout routes (plan 02): 404 with no provider, serve a mid-session load, 404 again after un-provide", async () => {
+    const host = createBusHostAPI(coreServices(fakeConversationStore()), { httpPort: 0 });
+    const ext = createTransportHttpExtension();
+    await ext.activate(host);
+    const server = ext._testServer;
+    expect(server).toBeDefined();
+    const base = `http://localhost:${server?.port as number}`;
+
+    try {
+      // ── absent: every layout route 404s (the frontend's no-provider signal) ──
+      let res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "No layout provider is active" });
+
+      res = await fetch(`${base}/workspaces/w/layout`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tree: DEFAULT_LAYOUT }),
+      });
+      expect(res.status).toBe(404);
+
+      res = await fetch(`${base}/workspaces/w/layout`, { method: "DELETE" });
+      expect(res.status).toBe(404);
+
+      // ── mid-session load: a provider (the kit's impl) serves with NO restart ──
+      const emitted: unknown[] = [];
+      const unprovide = host.provideService(
+        layoutProviderHandle,
+        createLayoutProvider({
+          storage: memoryNamespace(),
+          defaultTree: DEFAULT_LAYOUT,
+          emitChange: (message) => {
+            emitted.push(message);
+          },
+          logger: fakeLogger(),
+        }),
+      );
+
+      res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: DEFAULT_LAYOUT });
+
+      // PUT a valid tree → 200 { tree }.
+      const swapped: LayoutTree = { version: 1, root: { kind: "leaf", view: "tabs" } };
+      res = await fetch(`${base}/workspaces/w/layout`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tree: swapped }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: swapped });
+
+      // PUT a structurally invalid tree → 400 { error }.
+      res = await fetch(`${base}/workspaces/w/layout`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tree: { version: 1, root: { kind: "split", dir: "row", children: [] } },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()) as { error: string }).toEqual({ error: expect.any(String) });
+
+      // DELETE → 200 { tree: freshSeed }, and a following GET re-seeds.
+      res = await fetch(`${base}/workspaces/w/layout`, { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: DEFAULT_LAYOUT });
+      res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: DEFAULT_LAYOUT });
+
+      // ── un-provide: routes 404 again (the degrade path) ──
+      unprovide();
+      res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(404);
     } finally {
       ext.deactivate?.();
     }

@@ -22,6 +22,7 @@ import { type Credential, createCredentialStoreExtension } from "@dispatch/crede
 import { createExecBackendExtension } from "@dispatch/exec-backend";
 import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import type { Extension } from "@dispatch/kernel";
+import { extension as layoutChatExt } from "@dispatch/layout-chat";
 import { extension as lspExt } from "@dispatch/lsp";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
@@ -125,5 +126,11 @@ export function createBundledExtensions(creds: {
     // scope. The pilot proves the load/unload/enable machinery on a real,
     // non-trivial plugin.
     lspExt,
+    // The default-layout provider (plan 02, D-L3): a bundled STANDARD plugin
+    // that owns per-workspace tile trees (its own storage namespace), serves
+    // the well-known /workspaces/:id/layout routes, and broadcasts `layout`
+    // WS changes. Unloading it degrades the system gracefully — routes 404
+    // and clients render their built-in default with ephemeral edits.
+    layoutChatExt,
   ];
 }

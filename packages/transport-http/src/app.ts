@@ -1,5 +1,7 @@
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
 import type { AgentEvent, HostAPI, Logger, PluginTier } from "@dispatch/kernel";
+import type { LayoutProvider } from "@dispatch/layout-contract";
+import { createLayoutRouteHandlers } from "@dispatch/layout-provider-contract";
 import { DEFAULT_TEMPLATE, getVariableCatalog } from "@dispatch/system-prompt";
 import type {
   CloseConversationResponse,
@@ -196,6 +198,17 @@ export interface CreateServerOptions {
    * per-workspace gate must not silently over- or under-filter).
    */
   readonly pluginOwnership?: PluginOwnership | undefined;
+  /**
+   * Optional + reactive — the ACTIVE layout provider (plan 02; provided by
+   * the bundled standard `layout-chat` plugin via the provider kit; read per
+   * request via a registry slot). When absent (no layout plugin loaded /
+   * unloaded mid-session), the `/workspaces/:id/layout` routes degrade to
+   * 404 — the frontend's no-provider signal — and the decision logic
+   * (status mapping, body validation) lives in the provider kit; this
+   * transport mounts the handlers as thin shells (D-L6: no layout knowledge
+   * here).
+   */
+  readonly layoutProvider?: LayoutProvider | undefined;
   /**
    * Live tier lookup over the host's loaded manifests (wired by the
    * extension from `host.getExtensions()`). Used by `GET /models?workspaceId=`
@@ -2082,6 +2095,40 @@ export function createApp(opts: CreateServerOptions): Hono {
       log.error("workspaces: plugin state set failure", { err, workspaceId, pluginId });
       return c.json({ error: "Failed to set workspace plugin state" }, 500);
     }
+  });
+
+  // ─── Layout (plan 02 — the ACTIVE layout provider's well-known routes) ─────
+  // Owned by whichever layout plugin is active (D-L6: a plugin's domain, not
+  // core's). The provider is consumed REACTIVELY (per-request registry slot);
+  // the decision logic — absent→404, body validation, status mapping — lives
+  // in the provider kit (`createLayoutRouteHandlers`), so these handlers are
+  // thin shells. While no provider is active every route 404s (the
+  // frontend's no-provider signal); a mid-session load starts serving with
+  // no restart.
+  const layoutRoutes = createLayoutRouteHandlers({
+    getProvider: () => opts.layoutProvider,
+    logger: log,
+  });
+
+  app.get("/workspaces/:id/layout", async (c) => {
+    const result = await layoutRoutes.get(c.req.param("id"));
+    return c.json(result.body, result.status);
+  });
+
+  app.put("/workspaces/:id/layout", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const result = await layoutRoutes.put(c.req.param("id"), body);
+    return c.json(result.body, result.status);
+  });
+
+  app.delete("/workspaces/:id/layout", async (c) => {
+    const result = await layoutRoutes.delete(c.req.param("id"));
+    return c.json(result.body, result.status);
   });
 
   // ─── Heartbeat (per-workspace AI loop) ─────────────────────────────────────

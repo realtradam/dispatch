@@ -17,6 +17,12 @@
       "path": "./packages/layout-contract"
     },
     {
+      "path": "./packages/layout-provider-contract"
+    },
+    {
+      "path": "./packages/layout-chat"
+    },
+    {
       "path": "./packages/surface-registry"
     },
     {

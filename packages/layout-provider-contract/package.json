@@ -1,0 +1,14 @@
+{
+  "name": "@dispatch/layout-provider-contract",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/layout-contract": "workspace:*",
+    "@dispatch/transport-contract": "workspace:*"
+  }
+}

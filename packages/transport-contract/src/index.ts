@@ -19,6 +19,7 @@
  * is unchanged.
  */
 
+import type { LayoutTree } from "@dispatch/layout-contract";
 import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
 import type {
   AgentEvent,
@@ -37,6 +38,7 @@ import type {
   WorkspaceEntry,
 } from "@dispatch/wire";
 
+export type { LayoutTree } from "@dispatch/layout-contract";
 export type {
   AgentEvent,
   CompactionResult,
@@ -834,6 +836,22 @@ export interface WorkspaceSetMessage {
 }
 
 /**
+ * Broadcast to all connected WS clients after every successful layout write
+ * (plan 02 §2.5 — the `layout-chat` provider's PUT / setTree / DELETE / ops).
+ * Carries the FULL tree for ONE workspace (decision 7 — no patch protocol);
+ * the broadcast is a global fan-out and CLIENTS FILTER by their active
+ * workspace (the workspaceId is the payload, not a subscription). Additive to
+ * `WsServerMessage` — next to `extensions-changed`, a contract addition, not
+ * core layout knowledge (D-L6: no core extension or transport learns the
+ * layout domain; the transport ferries the message verbatim).
+ */
+export interface LayoutChangedMessage {
+  readonly type: "layout";
+  readonly workspaceId: string;
+  readonly tree: LayoutTree;
+}
+
+/**
  * Every client → server WS message: surface ops (`@dispatch/ui-contract`) + chat
  * ops. A server discriminates on `type`.
  */
@@ -857,7 +875,8 @@ export type WsServerMessage =
   | ConversationOpenMessage
   | ConversationStatusChangedMessage
   | ConversationCompactedMessage
-  | ExtensionsChangedMessage;
+  | ExtensionsChangedMessage
+  | LayoutChangedMessage;
 
 // ─── Conversation list + metadata ────────────────────────────────────────────
 

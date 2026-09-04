@@ -1,8 +1,8 @@
 /**
  * `@dispatch/layout-contract` — the layout tile-tree schema, its pure
- * operations, and the default tree. Zero `@dispatch/*` dependencies; consumed
- * by the frontend via `file:` (like `@dispatch/ui-contract`) and by backend
- * layout plugins (plan 02+).
+ * operations, the default tree, and the `LayoutProvider` service contract.
+ * Zero `@dispatch/*` dependencies; consumed by the frontend via `file:` (like
+ * `@dispatch/ui-contract`) and by backend layout plugins (plan 02+).
  */
 
 export {
@@ -25,6 +25,7 @@ export {
   setSizes,
   splitLeaf,
 } from "./ops";
+export type { LayoutProvider, SetTreeResult } from "./provider";
 export type {
   EnsureResult,
   LayoutNode,

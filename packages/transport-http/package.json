@@ -10,6 +10,8 @@
     "@dispatch/credential-store": "workspace:*",
     "@dispatch/heartbeat": "workspace:*",
     "@dispatch/kernel": "workspace:*",
+    "@dispatch/layout-contract": "workspace:*",
+    "@dispatch/layout-provider-contract": "workspace:*",
     "@dispatch/lsp": "workspace:*",
     "@dispatch/mcp": "workspace:*",
     "@dispatch/named-agents": "workspace:*",

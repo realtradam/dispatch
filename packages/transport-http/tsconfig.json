@@ -7,6 +7,8 @@
     { "path": "../credential-store" },
     { "path": "../heartbeat" },
     { "path": "../kernel" },
+    { "path": "../layout-contract" },
+    { "path": "../layout-provider-contract" },
     { "path": "../lsp" },
     { "path": "../mcp" },
     { "path": "../named-agents" },

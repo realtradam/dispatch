@@ -8,6 +8,7 @@ import {
   conversationStoreHandle,
   credentialStoreHandle,
   heartbeatServiceHandle,
+  layoutProviderHandle,
   lspServiceHandle,
   mcpServiceHandle,
   namedAgentServiceHandle,
@@ -86,6 +87,7 @@ export const manifest: Manifest = {
       "/workspaces/:id/plugins",
       "/workspaces/:id/plugins/providers-status",
       "/workspaces/:id/plugins/:pluginId",
+      "/workspaces/:id/layout",
       "/workspaces/:id/star",
       "/workspaces/:id/title",
     ],
@@ -144,6 +146,7 @@ export function createTransportHttpExtension(): Extension & {
         pluginManager: { current: host.tryGetService(pluginManagerHandle) },
         workspacePluginConfig: { current: host.tryGetService(workspacePluginConfigHandle) },
         pluginOwnership: { current: host.tryGetService(pluginOwnershipHandle) },
+        layoutProvider: { current: host.tryGetService(layoutProviderHandle) },
       };
 
       function watch<T>(handle: ServiceHandle<T>, slot: { current: T | undefined }): () => void {
@@ -170,6 +173,7 @@ export function createTransportHttpExtension(): Extension & {
         watch(pluginManagerHandle, slots.pluginManager),
         watch(workspacePluginConfigHandle, slots.workspacePluginConfig),
         watch(pluginOwnershipHandle, slots.pluginOwnership),
+        watch(layoutProviderHandle, slots.layoutProvider),
       ];
 
       const logger = host.logger;
@@ -218,6 +222,9 @@ export function createTransportHttpExtension(): Extension & {
         },
         get pluginOwnership() {
           return slots.pluginOwnership.current;
+        },
+        get layoutProvider() {
+          return slots.layoutProvider.current;
         },
         // Live tier lookup over the loaded manifests (plan 06 §6.5) — read
         // per call so mid-session loads/unloads are seen on the next

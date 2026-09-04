@@ -4,6 +4,7 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../kernel" },
+    { "path": "../layout-provider-contract" },
     { "path": "../plugin-manager" },
     { "path": "../session-orchestrator" },
     { "path": "../surface-registry" },

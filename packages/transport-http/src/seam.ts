@@ -76,3 +76,17 @@ export interface ComputerService {
  */
 export const computerServiceHandle: ServiceHandle<ComputerService> =
   defineService<ComputerService>("ssh");
+
+// ─── LayoutProvider seam (plan 02) ─────────────────────────────────────────────
+//
+// The ACTIVE layout provider (a STANDARD plugin — `layout-chat` — provides it
+// via the provider kit). Consumed REACTIVELY like every optional Standard
+// service: the routes read the live registry slot per request and 404 while
+// absent (the frontend's no-provider signal); a mid-session load starts
+// serving with no restart. The route DECISION logic (status mapping, body
+// validation) lives in the provider kit (`@dispatch/layout-provider-contract`)
+// — the transport mounts the handlers as thin shells and learns nothing about
+// trees (D-L6).
+
+export type { LayoutProvider } from "@dispatch/layout-contract";
+export { layoutProviderHandle } from "@dispatch/layout-provider-contract";
