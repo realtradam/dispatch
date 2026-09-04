@@ -46,10 +46,13 @@ export type TrustLevel = "bundled" | "local" | "external";
 export type PluginTier = "core" | "providers" | "standard";
 
 /**
- * Reserved frontend section of a manifest. Reserved now, ABI designed later:
- * the shape is frozen in v1 so external/frontend plugins can already declare
- * the section, but the host gives it no runtime semantics yet. No bundled
- * plugin sets it.
+ * Reserved frontend section of a manifest. The SHAPE is frozen in v1 (plan 03
+ * gives it runtime semantics): `apiVersion` is the semver range of FRONTEND
+ * ABI versions the plugin supports (the client handshakes it against its
+ * FRONTEND_ABI_VERSION — a mismatch lists the plugin as "incompatible
+ * frontend plugin" and never imports its module); `entry` is the prebuilt
+ * ESM file the backend serves at `GET /plugins/:id/frontend` (resolved
+ * relative to the plugin directory, traversal-checked).
  */
 export interface ManifestFrontend {
   /** Semver range of frontend API versions this section is compatible with. */
@@ -146,9 +149,8 @@ export interface Manifest {
   readonly capabilities?: ManifestCapabilities;
 
   /**
-   * Reserved frontend section (§5: reserve now, ABI designed later). Optional
-   * in v1 — no bundled plugin sets it; the shape is frozen so external /
-   * frontend plugins can declare it.
+   * Frontend section (plan 03: the frontend ABI). Optional — only plugins
+   * shipping a prebuilt ESM frontend module set it (see `ManifestFrontend`).
    */
   readonly frontend?: ManifestFrontend;
 

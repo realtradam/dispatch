@@ -131,9 +131,15 @@ export const manifest: Manifest = {
   // as a string; keep "eager" unless you know you need otherwise.
   activation: "eager",
 
-  // OPTIONAL, RESERVED (frozen shape, no runtime semantics yet): the
-  // frontend section for the future frontend ABI. Do not set it.
-  // frontend: { apiVersion: "^0.1.0", entry: "./frontend/index.js" },
+  // OPTIONAL (plan 03 — the frontend ABI): ship a prebuilt ESM frontend
+  // module the web client imports at runtime. `apiVersion` is the semver
+  // RANGE of frontend ABI versions you support (the handshake: it must
+  // include the host's FRONTEND_ABI_VERSION = "1", so "^1" tracks v1);
+  // `entry` is the built module file, relative to the plugin directory —
+  // build it with `bun run build:frontend` (the vite lib config next to
+  // this file, svelte fully externalized). The module default-exports
+  // `{ activate(api) }` — see `src/frontend.ts`.
+  frontend: { apiVersion: "^1", entry: "frontend.js" },
 };
 
 // ── 4. The extension — activate / deactivate ─────────────────────────────────

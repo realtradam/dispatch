@@ -2346,6 +2346,47 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
   });
 
+  // ─── Plugin frontend entry (plan 03 §3.1) ─────────────────────────────────
+  // Serves a loaded plugin's declared `frontend.entry` file — the prebuilt
+  // ESM the web client dynamically imports. ALL gating is the manager
+  // service's decision (unknown / unloaded / frontend-less /
+  // disabled-in-the-caller's-active-workspace / traversal) — every block is
+  // 404, so the response never leaks WHICH case hit (a disabled plugin's
+  // code must not be fetchable). `workspace` is the caller's ACTIVE
+  // workspace (absent → the default workspace); `v` is the client's
+  // cache-bust version (learned from the additive `GET /plugins` field — the
+  // entry's mtimeMs, the same value the backend loader uses) — the route
+  // always serves current content and lets `v` pick the HTTP cache policy:
+  // versioned URLs are immutable, unversioned requests revalidate.
+  app.get("/plugins/:id/frontend", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const result = await opts.pluginManagerService.frontendEntry(id, c.req.query("workspace"));
+      if (!result.ok) {
+        log.warn("plugins: frontend entry blocked", { id, reason: result.reason });
+        return c.json({ error: "No frontend module for this plugin" }, 404);
+      }
+      log.info("plugins: frontend entry served", { id, bust: result.bust });
+      const headers: Record<string, string> = {
+        "Content-Type": "text/javascript; charset=utf-8",
+      };
+      if (c.req.query("v") !== undefined) {
+        // The URL is content-versioned (v = entry mtimeMs) — safe to cache
+        // for as long as the URL exists.
+        headers["Cache-Control"] = "public, max-age=31536000, immutable";
+      } else {
+        headers["Cache-Control"] = "no-cache";
+      }
+      return new Response(result.code, { status: 200, headers });
+    } catch (err) {
+      log.error("plugins: frontend entry failure", { err, id });
+      return c.json({ error: "Failed to read plugin frontend entry" }, 500);
+    }
+  });
+
   app.post("/plugins/scan", async (c) => {
     if (opts.pluginManagerService === undefined) {
       return c.json({ error: "Plugin manager service not available" }, 503);

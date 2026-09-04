@@ -27,6 +27,10 @@ export {
   toMissingRow,
   toOverrideInfo,
 } from "./pure.js";
-export type { PluginManagerService, PluginManagerServiceDeps } from "./service.js";
+export type {
+  FrontendEntryResult,
+  PluginManagerService,
+  PluginManagerServiceDeps,
+} from "./service.js";
 export { createPluginManagerService } from "./service.js";
 export { extensionsChanged, pluginManagerHandle } from "./service-handle.js";

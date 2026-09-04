@@ -14,6 +14,8 @@
  *   `stopAllAgents` before the engine calls — §8).
  */
 
+import * as path from "node:path";
+
 import type { Manifest } from "@dispatch/kernel";
 import type {
   DisabledWithReasonRow,
@@ -31,7 +33,11 @@ import type { PluginOverrideRecord } from "./overrides.js";
 // ── Manifest → wire-row mapping ─────────────────────────────────────────────
 
 /** Map a live manifest to its `loaded` table row (`locked` = core tier). */
-export function toLoadedRow(manifest: Manifest): LoadedPluginRow {
+export function toLoadedRow(
+  manifest: Manifest,
+  frontendBusts?: ReadonlyMap<string, string>,
+): LoadedPluginRow {
+  const bust = frontendBusts?.get(manifest.id);
   return {
     id: manifest.id,
     name: manifest.name,
@@ -40,6 +46,18 @@ export function toLoadedRow(manifest: Manifest): LoadedPluginRow {
     trust: manifest.trust,
     locked: manifest.tier === "core",
     dependsOn: [...(manifest.dependsOn ?? [])],
+    // Additive (plan 03): present only when the plugin declares a frontend
+    // section AND its entry file was stat-able at list time (an unservable
+    // entry is omitted — the route would 404 it anyway).
+    ...(manifest.frontend !== undefined && bust !== undefined
+      ? {
+          frontend: {
+            apiVersion: manifest.frontend.apiVersion,
+            entry: manifest.frontend.entry,
+            bust,
+          },
+        }
+      : {}),
   };
 }
 
@@ -278,6 +296,83 @@ export function classifyReload(input: UnloadDecisionInput): LifecycleDecision {
   return { kind: "allowed", cascade, stopAgents: input.force };
 }
 
+// ── Frontend entry access (plan 03) ─────────────────────────────────────────
+
+/** Why `GET /plugins/:id/frontend` refuses to serve (all map to 404 — a
+ * disabled plugin's code must not be fetchable, and the refusal reason must
+ * not leak which case hit). */
+export type FrontendEntryBlockReason =
+  | "not-found"
+  | "not-loaded"
+  | "no-frontend"
+  | "workspace-disabled"
+  | "entry-escapes";
+
+/** The verdict for one frontend-entry request (pure — the service adds I/O). */
+export type FrontendEntryVerdict =
+  | {
+      readonly kind: "allowed";
+      /** Absolute plugin directory (from the scan). */
+      readonly dir: string;
+      /** Absolute entry-file path (resolved + prefix-checked). */
+      readonly entryPath: string;
+    }
+  | { readonly kind: "blocked"; readonly reason: FrontendEntryBlockReason };
+
+export interface FrontendAccessInput {
+  /** Live loaded manifests (engine `getExtensions()` snapshot). */
+  readonly loaded: readonly Manifest[];
+  /** The current scan (provides plugin DIRECTORIES — loaded manifests don't carry them). */
+  readonly scanned: readonly ScannedPluginEntry[];
+  readonly targetId: string;
+  /** Whether the plugin is enabled in the requesting client's active workspace. */
+  readonly workspaceEnabled: boolean;
+}
+
+/**
+ * The `GET /plugins/:id/frontend` access verdict (plan 03 §3.1):
+ * 1. unknown id (never scanned) → `not-found`;
+ * 2. scanned but not loaded → `not-loaded`;
+ * 3. no `frontend` manifest section → `no-frontend`;
+ * 4. disabled in the caller's active workspace → `workspace-disabled`
+ *    (a disabled plugin's code must not be fetchable);
+ * 5. `frontend.entry` resolved OUTSIDE the plugin directory →
+ *    `entry-escapes` (traversal-safe: resolve + prefix check, the same rule
+ *    as the code-entry resolver in plan-04 discovery).
+ * The target id itself is NEVER used as a path — the directory comes from
+ * the scan, keyed by manifest id.
+ */
+export function classifyFrontendAccess(input: FrontendAccessInput): FrontendEntryVerdict {
+  const scannedEntry = input.scanned.find(
+    (e) => e.kind === "loadable" && e.manifest?.id === input.targetId,
+  );
+  if (scannedEntry === undefined) {
+    // Never seen on disk at all, or a broken dir — indistinguishable from
+    // "no such plugin" for a client.
+    return { kind: "blocked", reason: "not-found" };
+  }
+  if (!input.loaded.some((m) => m.id === input.targetId)) {
+    return { kind: "blocked", reason: "not-loaded" };
+  }
+  const manifest = scannedEntry.manifest;
+  const frontend = manifest?.frontend;
+  if (manifest === undefined || frontend === undefined) {
+    return { kind: "blocked", reason: "no-frontend" };
+  }
+  if (!input.workspaceEnabled) {
+    return { kind: "blocked", reason: "workspace-disabled" };
+  }
+  // Traversal-safe entry resolution: the entry must stay INSIDE the plugin
+  // directory (the same rule the plan-04 entry resolver enforces).
+  const dir = scannedEntry.dir;
+  const entryPath = path.resolve(dir, frontend.entry);
+  const rel = path.relative(dir, entryPath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    return { kind: "blocked", reason: "entry-escapes" };
+  }
+  return { kind: "allowed", dir, entryPath };
+}
+
 // ── Scan views ──────────────────────────────────────────────────────────────
 
 /** The loadable entry for a plugin id, from a scan's flat entries. */
@@ -313,6 +408,13 @@ export interface DeriveListInput {
   readonly engineDisabled: readonly { readonly manifest: Manifest; readonly reason: string }[];
   /** The current scan-and-reconcile pass (the manager just ran it). */
   readonly scan: PluginScanResult;
+  /**
+   * Frontend-entry cache-bust values (entry mtimeMs) per loaded plugin id
+   * (plan 03) — collected by the service shell (I/O); rows for plugins
+   * absent from the map (no frontend section, or an unservable entry) omit
+   * the additive `frontend` field.
+   */
+  readonly frontendBusts?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -330,7 +432,7 @@ export interface DeriveListInput {
  * row on) — the scan response is their diagnostic surface.
  */
 export function deriveListView(input: DeriveListInput): PluginListResponse {
-  const loaded = input.loaded.map(toLoadedRow);
+  const loaded = input.loaded.map((m) => toLoadedRow(m, input.frontendBusts));
   const loadedIds = new Set(input.loaded.map((m) => m.id));
 
   // Disabled-with-reason: engine-recorded attempts first (they carry

@@ -21,3 +21,8 @@ reports/
 # Local observability journal (runtime artifact)
 .dispatch/journal/
 ai-review-report.md
+
+# Built frontend-plugin modules (plan 03 — `bun run build:frontend` in the
+# scaffold; the verify-harness build test produces it).
+packages/plugin-scaffold/frontend.js
+scaffold-frontend.config.ts.timestamp-*

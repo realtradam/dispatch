@@ -967,6 +967,21 @@ export interface LoadedPluginRow {
   /** True for tier "core" — the server refuses to unload it. */
   readonly locked: boolean;
   readonly dependsOn: readonly string[];
+  /**
+   * The plugin's frontend section (plan 03), present when the loaded plugin
+   * declares one AND its entry file is servable (resolved inside the plugin
+   * directory). `apiVersion`/`entry` mirror the manifest; `bust` is the entry
+   * file's mtimeMs — the SAME value the backend loader uses as its `?v=`
+   * cache-bust query — so clients can build content-versioned import URLs.
+   */
+  readonly frontend?: LoadedPluginFrontend;
+}
+
+/** The wire shape of a servable frontend section (plan 03). */
+export interface LoadedPluginFrontend {
+  readonly apiVersion: string;
+  readonly entry: string;
+  readonly bust: string;
 }
 
 /** A plugin the system refused or failed to load — disabled-with-reason. */

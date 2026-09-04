@@ -131,6 +131,9 @@ async function main(): Promise<number> {
 
   const report: VerifyReport = await verifyPlugin(ext, {
     setManifests,
+    // The frontend checks (plan 03) need the plugin's directory — a
+    // manifest declaring `frontend` must have a resolvable entry file.
+    pluginDir: target,
     ...(environment !== undefined ? { environment } : {}),
   });
   if (report.ok) {

@@ -23,8 +23,15 @@
  * disabled-with-reason "depends on B"). Neither is a stuck state.
  */
 
+import { readFile, stat } from "node:fs/promises";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { sessionOrchestratorHandle } from "@dispatch/session-orchestrator";
+import {
+  DEFAULT_WORKSPACE_ID,
+  isPluginUsable,
+  type WorkspacePluginConfigService,
+  workspacePluginConfigHandle,
+} from "@dispatch/workspace-plugin-config";
 import { pluginEngineHandle } from "./engine.js";
 import { PLUGIN_OVERRIDES_NAMESPACE } from "./overrides.js";
 import { createPluginManagerService } from "./service.js";
@@ -45,7 +52,7 @@ export const manifest: Manifest = {
   },
 };
 
-/** The availability-subscription disposer (disposed on deactivate). */
+/** The availability-subscription disposers (disposed on deactivate). */
 let watchDisposer: (() => void) | undefined;
 
 export function activate(host: HostAPI): void {
@@ -60,6 +67,13 @@ export function activate(host: HostAPI): void {
   // "zero agents stopped" instead of blocking the manager.
   let orchestrator: { readonly stopAll: () => { readonly stopped: number } } | undefined =
     host.tryGetService(sessionOrchestratorHandle);
+  // The workspace-plugin-config store too (plan 03): the frontend-entry
+  // route gates on per-workspace enablement; an absent store degrades
+  // FAIL-OPEN (the usable.ts philosophy — the store is tier core and in
+  // practice always present).
+  const workspaceConfig: WorkspacePluginConfigService | undefined = host.tryGetService(
+    workspacePluginConfigHandle,
+  );
   watchDisposer = host.onServiceAvailable(sessionOrchestratorHandle, (impl) => {
     orchestrator = impl;
   });
@@ -71,6 +85,20 @@ export function activate(host: HostAPI): void {
     now: () => new Date().toISOString(),
     emitExtensionsChanged: (message) => host.emit(extensionsChanged, message),
     stopAllAgents: () => orchestrator?.stopAll() ?? { stopped: 0 },
+    isPluginEnabledInWorkspace: async (workspaceId, pluginId, tier) => {
+      const config = workspaceConfig;
+      if (config === undefined) return true; // fail-open (usable.ts philosophy)
+      const state = await config.stateOf(workspaceId ?? DEFAULT_WORKSPACE_ID, pluginId);
+      return isPluginUsable(tier, state);
+    },
+    readTextFile: (path) => readFile(path, "utf8").catch(() => null),
+    statMtimeMs: async (path) => {
+      try {
+        return String((await stat(path)).mtimeMs);
+      } catch {
+        return null;
+      }
+    },
   });
 
   host.provideService(pluginManagerHandle, service);

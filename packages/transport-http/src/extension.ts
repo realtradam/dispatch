@@ -71,6 +71,7 @@ export const manifest: Manifest = {
       "/named-agents/:id",
       "/plugins",
       "/plugins/scan",
+      "/plugins/:id/frontend",
       "/plugins/:id/load",
       "/plugins/:id/unload",
       "/plugins/:id/reload",

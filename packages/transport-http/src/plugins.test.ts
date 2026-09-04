@@ -6,7 +6,12 @@ import type {
 } from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
-import type { ConversationStore, CredentialStore, PluginManagerService } from "./seam.js";
+import type {
+  ConversationStore,
+  CredentialStore,
+  FrontendEntryResult,
+  PluginManagerService,
+} from "./seam.js";
 
 /** Minimal store/credential fakes — the plugin routes never touch them. */
 function fakeStore(): ConversationStore {
@@ -99,6 +104,7 @@ function fakeService(
     readonly unload?: (id: string, opts?: { force?: boolean }) => Promise<PluginOpResponse>;
     readonly reload?: (id: string, opts?: { force?: boolean }) => Promise<PluginOpResponse>;
     readonly forget?: (id: string) => Promise<PluginOpResponse>;
+    readonly frontendEntry?: (id: string, workspaceId?: string) => Promise<FrontendEntryResult>;
   } = {},
 ): PluginManagerService & {
   readonly calls: { readonly unload: { id: string; force: boolean }[] };
@@ -120,6 +126,7 @@ function fakeService(
     forget:
       overrides.forget ??
       (async (id) => ({ ok: true, action: "forget", id, clearedOverride: true })),
+    frontendEntry: overrides.frontendEntry ?? (async () => ({ ok: false, reason: "not-found" })),
   };
 }
 
@@ -335,5 +342,122 @@ describe("POST /plugins/:id/forget", () => {
   it("returns 503 when the manager service is absent", async () => {
     const res = await appWith().request("/plugins/x/forget", { method: "POST" });
     expect(res.status).toBe(503);
+  });
+});
+
+// ─── GET /plugins/:id/frontend (plan 03 §3.1) ───────────────────────────────
+
+describe("GET /plugins/:id/frontend", () => {
+  it("serves the entry bytes as text/javascript", async () => {
+    const svc = fakeService({
+      frontendEntry: async () => ({ ok: true, code: "export default 1;\n", bust: "1727100000000" }),
+    });
+    const res = await appWith(svc).request(
+      "/plugins/with-fe/frontend?workspace=team-a&v=1727100000000",
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/javascript");
+    expect(res.headers.get("Cache-Control")).toContain("immutable");
+    expect(await res.text()).toBe("export default 1;\n");
+  });
+
+  it("passes the workspace query to the service (the caller's ACTIVE workspace)", async () => {
+    let seen: { id: string; workspaceId?: string } | undefined;
+    const svc = fakeService({
+      frontendEntry: async (id, workspaceId) => {
+        seen = { id, workspaceId };
+        return { ok: true, code: "x", bust: "1" };
+      },
+    });
+    await appWith(svc).request("/plugins/with-fe/frontend?workspace=team-a");
+    expect(seen).toEqual({ id: "with-fe", workspaceId: "team-a" });
+  });
+
+  it("unversioned requests revalidate (no-cache)", async () => {
+    const svc = fakeService({
+      frontendEntry: async () => ({ ok: true, code: "x", bust: "1" }),
+    });
+    const res = await appWith(svc).request("/plugins/with-fe/frontend?workspace=w");
+    expect(res.headers.get("Cache-Control")).toBe("no-cache");
+  });
+
+  it("maps every block reason to a bare 404 (no reason leakage)", async () => {
+    for (const reason of [
+      "not-found",
+      "not-loaded",
+      "no-frontend",
+      "workspace-disabled",
+      "entry-escapes",
+    ]) {
+      const svc = fakeService({ frontendEntry: async () => ({ ok: false, reason }) });
+      const res = await appWith(svc).request(`/plugins/p/frontend?workspace=w`);
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error?: string; reason?: string };
+      expect(body.error).toBeDefined();
+      expect(body.reason).toBeUndefined();
+    }
+  });
+
+  it("absent workspace query still reaches the service (undefined → default-workspace resolution)", async () => {
+    let seen: { workspaceId?: string } | undefined;
+    const svc = fakeService({
+      frontendEntry: async (_id, workspaceId) => {
+        seen = { workspaceId };
+        return { ok: true, code: "x", bust: "1" };
+      },
+    });
+    await appWith(svc).request("/plugins/p/frontend");
+    expect(seen).toEqual({ workspaceId: undefined });
+  });
+
+  it("503 when the manager service is absent", async () => {
+    const res = await appWith().request("/plugins/p/frontend");
+    expect(res.status).toBe(503);
+  });
+
+  it("500 when the service throws", async () => {
+    const svc = fakeService({
+      frontendEntry: async () => {
+        throw new Error("disk gone");
+      },
+    });
+    const res = await appWith(svc).request("/plugins/p/frontend?workspace=w");
+    expect(res.status).toBe(500);
+  });
+});
+
+// ─── GET /plugins — the additive frontend field (plan 03) ───────────────────
+
+describe("GET /plugins — additive frontend field", () => {
+  it("passes loaded rows with their frontend field through untouched", async () => {
+    const listWithFe: PluginListResponse = {
+      loaded: [
+        {
+          id: "with-fe",
+          name: "With FE",
+          version: "1.0.0",
+          tier: "standard",
+          trust: "local",
+          locked: false,
+          dependsOn: [],
+          frontend: { apiVersion: "^1", entry: "frontend.js", bust: "1727100000000" },
+        },
+        ...fakeList.loaded,
+      ],
+      disabledWithReason: [],
+      discovered: [],
+      missing: [],
+    };
+    const res = await appWith(fakeService({ list: async () => listWithFe })).request("/plugins");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PluginListResponse;
+    const row = body.loaded.find((r) => r.id === "with-fe");
+    expect(row?.frontend).toEqual({
+      apiVersion: "^1",
+      entry: "frontend.js",
+      bust: "1727100000000",
+    });
+    // Additive: rows without the field are unchanged.
+    expect(body.loaded.find((r) => r.id === "tool-fs")?.frontend).toBeUndefined();
   });
 });

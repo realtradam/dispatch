@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   DisabledExtension,
   Extension,
@@ -9,7 +12,7 @@ import type {
   UnloadResult,
 } from "@dispatch/kernel";
 import type { ExtensionsChangedMessage, PluginOpResponse } from "@dispatch/transport-contract";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type {
   PluginEngine,
   PluginScanResult,
@@ -167,7 +170,11 @@ interface ServiceHarness {
 }
 
 function harness(
-  opts: FakeEngineOpts & { readonly overrides?: Record<string, PluginOverrideRecord> } = {},
+  opts: FakeEngineOpts & {
+    readonly overrides?: Record<string, PluginOverrideRecord>;
+    /** Per-workspace enablement (plan 03) — default: everything enabled. */
+    readonly enabledInWorkspace?: (workspaceId: string | undefined, pluginId: string) => boolean;
+  } = {},
 ): ServiceHarness {
   const e = fakeEngine(opts);
   const initial = new Map<string, string>();
@@ -187,6 +194,16 @@ function harness(
     stopAllAgents: () => {
       stopCalls++;
       return { stopped: activeTurns };
+    },
+    isPluginEnabledInWorkspace: async (workspaceId, pluginId) =>
+      opts.enabledInWorkspace?.(workspaceId, pluginId) ?? true,
+    readTextFile: (path) => readFile(path, "utf8").catch(() => null),
+    statMtimeMs: async (path) => {
+      try {
+        return String((await stat(path)).mtimeMs);
+      } catch {
+        return null;
+      }
     },
   });
   return { svc, engine: e, storage, emits, stopped: () => stopCalls };
@@ -529,5 +546,152 @@ describe("PluginManagerService.forget", () => {
     const h = harness();
     const result = await h.svc.forget("ghost");
     expect(result).toEqual({ ok: true, action: "forget", id: "ghost", clearedOverride: false });
+  });
+});
+
+// ── frontendEntry (plan 03) ─────────────────────────────────────────────────
+
+describe("PluginManagerService.frontendEntry", () => {
+  /** A REAL temp plugin dir — the served bytes must be the file's bytes. */
+  const tempDirs: string[] = [];
+  afterEach(async () => {
+    for (const dir of tempDirs.splice(0)) {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  async function tempPlugin(files: Record<string, string>): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "plugin-fe-"));
+    tempDirs.push(dir);
+    for (const [name, content] of Object.entries(files)) {
+      const file = join(dir, name);
+      await mkdir(join(file, ".."), { recursive: true });
+      await writeFile(file, content, "utf8");
+    }
+    return dir;
+  }
+
+  const feManifest = (id: string, entry = "frontend.js"): Manifest =>
+    manifest(id, { frontend: { apiVersion: "^1", entry } });
+
+  it("serves the entry file's exact bytes + its mtime bust", async () => {
+    const dir = await tempPlugin({ "frontend.js": "export default 1;\n" });
+    const h = harness({
+      loaded: [feManifest("fe")],
+      scanned: [{ dir, kind: "loadable", manifest: feManifest("fe") }],
+    });
+    const result = await h.svc.frontendEntry("fe", "team-a");
+    expect(result).toEqual({ ok: true, code: "export default 1;\n", bust: expect.any(String) });
+    if (result.ok) expect(Number(result.bust)).not.toBeNaN();
+  });
+
+  it("404-matrix: unknown id → not-found", async () => {
+    const h = harness({ loaded: [], scanned: [] });
+    expect(await h.svc.frontendEntry("ghost", "w")).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
+  });
+
+  it("404-matrix: scanned but not loaded → not-loaded", async () => {
+    const h = harness({
+      loaded: [],
+      scanned: [{ dir: "/plugins/fe", kind: "loadable", manifest: feManifest("fe") }],
+    });
+    expect(await h.svc.frontendEntry("fe", "w")).toEqual({ ok: false, reason: "not-loaded" });
+  });
+
+  it("404-matrix: loaded without a frontend section → no-frontend", async () => {
+    const h = harness({
+      loaded: [manifest("plain")],
+      scanned: [{ dir: "/plugins/plain", kind: "loadable", manifest: manifest("plain") }],
+    });
+    expect(await h.svc.frontendEntry("plain", "w")).toEqual({
+      ok: false,
+      reason: "no-frontend",
+    });
+  });
+
+  it("404-matrix: disabled in the caller's active workspace → workspace-disabled", async () => {
+    const dir = await tempPlugin({ "frontend.js": "export default 1;\n" });
+    const h = harness({
+      loaded: [feManifest("fe")],
+      scanned: [{ dir, kind: "loadable", manifest: feManifest("fe") }],
+      enabledInWorkspace: (_ws, id) => id !== "fe",
+    });
+    expect(await h.svc.frontendEntry("fe", "team-a")).toEqual({
+      ok: false,
+      reason: "workspace-disabled",
+    });
+  });
+
+  it("404-matrix: traversal entry → entry-escapes (never serves outside the dir)", async () => {
+    const dir = await tempPlugin({});
+    await mkdir(join(dir, "sub"), { recursive: true });
+    const h = harness({
+      loaded: [feManifest("evil", "../../outside.js")],
+      scanned: [{ dir, kind: "loadable", manifest: feManifest("evil", "../../outside.js") }],
+    });
+    expect(await h.svc.frontendEntry("evil", "w")).toEqual({
+      ok: false,
+      reason: "entry-escapes",
+    });
+  });
+
+  it("resolves a subdirectory entry INSIDE the plugin dir", async () => {
+    const dir = await tempPlugin({ "dist/frontend.js": "export const v = 2;\n" });
+    const h = harness({
+      loaded: [feManifest("fe", "dist/frontend.js")],
+      scanned: [{ dir, kind: "loadable", manifest: feManifest("fe", "dist/frontend.js") }],
+    });
+    const result = await h.svc.frontendEntry("fe", "w");
+    expect(result).toEqual({ ok: true, code: "export const v = 2;\n", bust: expect.any(String) });
+  });
+
+  it("absent workspace id falls through to the enablement check (default-workspace resolution)", async () => {
+    const dir = await tempPlugin({ "frontend.js": "x" });
+    const h = harness({
+      loaded: [feManifest("fe")],
+      scanned: [{ dir, kind: "loadable", manifest: feManifest("fe") }],
+      enabledInWorkspace: (ws) => ws === undefined,
+    });
+    expect(await h.svc.frontendEntry("fe")).toEqual({
+      ok: true,
+      code: "x",
+      bust: expect.any(String),
+    });
+    expect(await h.svc.frontendEntry("fe", "team-a")).toEqual({
+      ok: false,
+      reason: "workspace-disabled",
+    });
+  });
+
+  it("list() carries the additive frontend field for servable entries only", async () => {
+    const dir = await tempPlugin({ "frontend.js": "x", "missing.js": "y" });
+    const h = harness({
+      loaded: [
+        feManifest("fe"),
+        manifest("plain"),
+        manifest("broken", { frontend: { apiVersion: "^1", entry: "nope.js" } }),
+      ],
+      scanned: [
+        { dir, kind: "loadable", manifest: feManifest("fe") },
+        { dir, kind: "loadable", manifest: manifest("plain") },
+        {
+          dir,
+          kind: "loadable",
+          manifest: manifest("broken", { frontend: { apiVersion: "^1", entry: "nope.js" } }),
+        },
+      ],
+    });
+    const view = await h.svc.list();
+    const fe = view.loaded.find((r) => r.id === "fe");
+    expect(fe?.frontend).toEqual({
+      apiVersion: "^1",
+      entry: "frontend.js",
+      bust: expect.any(String),
+    });
+    expect(view.loaded.find((r) => r.id === "plain")?.frontend).toBeUndefined();
+    expect(view.loaded.find((r) => r.id === "broken")?.frontend).toBeUndefined();
   });
 });

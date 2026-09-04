@@ -14,14 +14,16 @@
  * with the full list instead of silently at boot (§10.3).
  */
 
+import { stat } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { Extension, Manifest } from "@dispatch/kernel";
 import { type CheckResult, checkManifest, checkTierDeps } from "./checks.js";
 import { type VerifyDisposalOpts, verifyDisposal } from "./disposal.js";
 
 /** One failed check, attributed. */
 export interface VerifyProblem {
-  /** Which check failed: "manifest" | "tier-deps" | "disposal". */
-  readonly check: "manifest" | "tier-deps" | "disposal";
+  /** Which check failed: "manifest" | "tier-deps" | "disposal" | "frontend". */
+  readonly check: "manifest" | "tier-deps" | "disposal" | "frontend";
   /** The specific, human-readable failure message. */
   readonly message: string;
 }
@@ -43,10 +45,67 @@ export interface VerifyPluginOpts extends VerifyDisposalOpts {
   readonly setManifests?: readonly Manifest[];
   /** Skip the test-host disposal round-trip (manifest + tier checks only). */
   readonly skipDisposal?: boolean;
+  /**
+   * The plugin's DIRECTORY (plan 03) — enables the frontend checks: a
+   * manifest declaring `frontend` must have its `entry` file RESOLVABLE
+   * inside the directory (traversal-safe). The CLI passes the target dir.
+   */
+  readonly pluginDir?: string;
 }
 
 function toProblems(check: VerifyProblem["check"], result: CheckResult): VerifyProblem[] {
   return result.errors.map((message) => ({ check, message }));
+}
+
+/**
+ * The frontend-entry checks (plan 03) — the I/O half of the harness's
+ * frontend assertions (the range grammar is checked purely in
+ * `checkManifest`). `undefined` problems = nothing to report.
+ */
+async function checkFrontendEntry(
+  manifest: Manifest,
+  pluginDir: string | undefined,
+): Promise<VerifyProblem[]> {
+  if (manifest.frontend === undefined) return [];
+  if (pluginDir === undefined) {
+    return [
+      {
+        check: "frontend",
+        message:
+          'the manifest declares "frontend" but no plugin directory was given — pass pluginDir (the CLI does) so the entry can be resolved',
+      },
+    ];
+  }
+  const entry = manifest.frontend.entry;
+  const entryPath = resolve(pluginDir, entry);
+  const rel = relative(pluginDir, entryPath);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    return [
+      {
+        check: "frontend",
+        message: `"frontend.entry" ("${entry}") escapes the plugin directory — a traversal entry is an authoring error (the host refuses it)`,
+      },
+    ];
+  }
+  try {
+    const s = await stat(entryPath);
+    if (!s.isFile()) {
+      return [
+        {
+          check: "frontend",
+          message: `"frontend.entry" ("${entry}") is not a file (resolved ${entryPath}) — build it with the scaffold's \`build:frontend\``,
+        },
+      ];
+    }
+  } catch {
+    return [
+      {
+        check: "frontend",
+        message: `"frontend.entry" ("${entry}") does not exist (expected ${entryPath}) — build it with the scaffold's \`build:frontend\` before shipping`,
+      },
+    ];
+  }
+  return [];
 }
 
 /**
@@ -70,7 +129,11 @@ export async function verifyPlugin(
   const tiers = checkTierDeps(ext.manifest, opts.setManifests ?? []);
   problems.push(...toProblems("tier-deps", tiers));
 
-  // 3. Disposal contract + surface leak, in a throwaway test host.
+  // 3. Frontend entry (plan 03): a manifest declaring `frontend` must have a
+  //    resolvable entry inside the plugin directory (when the dir is known).
+  problems.push(...(await checkFrontendEntry(ext.manifest, opts.pluginDir)));
+
+  // 4. Disposal contract + surface leak, in a throwaway test host.
   if (opts.skipDisposal !== true) {
     const disposal = await verifyDisposal(ext, opts);
     problems.push(...toProblems("disposal", disposal));

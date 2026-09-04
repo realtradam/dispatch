@@ -14,7 +14,7 @@ export type { McpServerStatus, McpService } from "@dispatch/mcp";
 export { mcpServiceHandle } from "@dispatch/mcp";
 export type { NamedAgentsService } from "@dispatch/named-agents";
 export { namedAgentServiceHandle } from "@dispatch/named-agents";
-export type { PluginManagerService } from "@dispatch/plugin-manager";
+export type { FrontendEntryResult, PluginManagerService } from "@dispatch/plugin-manager";
 export { pluginManagerHandle } from "@dispatch/plugin-manager";
 export type { ConcurrencyService } from "@dispatch/provider-concurrency";
 export { concurrencyServiceHandle } from "@dispatch/provider-concurrency";

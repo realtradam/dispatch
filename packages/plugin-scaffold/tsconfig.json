@@ -1,7 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
+  // `src/frontend.ts` + `src/scaffold-view.svelte` are the FRONTEND module —
+  // built by vite (`scaffold-frontend.config.ts`), NOT by tsc (the backend
+  // workspace has no svelte types by design).
   "include": ["src/**/*.ts"],
+  "exclude": ["src/frontend.ts", "src/scaffold-view.svelte"],
   "references": [
     { "path": "../kernel" },
     { "path": "../surface-registry" },

@@ -4,6 +4,8 @@
  * into `bun run test` — wrong plugins fail at test time, not at boot.
  */
 
+import { execSync } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { defineFilter, type Extension, type Manifest } from "@dispatch/kernel";
 import { extension as scaffold, manifest as scaffoldManifest } from "@dispatch/plugin-scaffold";
 import { describe, expect, it } from "vitest";
@@ -14,8 +16,20 @@ import { verifyPlugin } from "./verify.js";
 // ── The scaffold passes (the drift-proof fixture guarantee) ───────────────────
 
 describe("verifyPlugin — the canonical scaffold (plan 08 §8.1)", () => {
-  it("passes every check: manifest, tier-deps, disposal (zero dangling, zero leaked surfaces)", async () => {
-    const report = await verifyPlugin(scaffold);
+  it("passes every check: manifest, tier-deps, frontend, disposal (zero dangling, zero leaked surfaces)", async () => {
+    // pluginDir: the scaffold package root — its frontend entry
+    // (`frontend.js`) must be BUILT first (the scaffold's frontend-build
+    // test builds it; the vitest file order in CI is not guaranteed, so
+    // build here when missing). The scaffold is the drift-proof fixture:
+    // a manifest declaring `frontend` must have a resolvable entry.
+    const { join } = await import("node:path");
+    const dir = join(import.meta.dirname, "..", "..", "plugin-scaffold");
+    try {
+      await stat(join(dir, "frontend.js"));
+    } catch {
+      execSync("bun run build:frontend", { cwd: dir, stdio: "pipe" });
+    }
+    const report = await verifyPlugin(scaffold, { pluginDir: dir });
     expect(report.pluginId).toBe("plugin-scaffold");
     expect(report.problems).toEqual([]);
     expect(report.ok).toBe(true);
@@ -38,6 +52,11 @@ describe("verifyPlugin — the canonical scaffold (plan 08 §8.1)", () => {
 
 function makeExtension(manifest: Manifest, activate: Extension["activate"]): Extension {
   return { manifest, activate };
+}
+
+/** A scaffold manifest with the frontend section swapped in (plan 03 fixtures). */
+function manifestWithFrontend(frontend: { apiVersion: string; entry: string }): Manifest {
+  return { ...scaffoldManifest, frontend };
 }
 
 const baseManifest: Manifest = {
@@ -189,5 +208,65 @@ describe("verifyPlugin — negative fixtures (fail loudly, plan 08 §8.3)", () =
     expect(report.ok).toBe(false);
     expect(report.problems.map((p) => p.check)).toContain("manifest");
     expect(report.problems.some((p) => p.message.includes('"version"'))).toBe(true);
+  });
+});
+
+// ── Frontend fixtures (plan 03) — bad ranges / missing entries fail loudly ──
+
+describe("verifyPlugin — frontend assertions (plan 03)", () => {
+  it("an unparseable frontend.apiVersion range fails loudly (the checkManifest mirror)", () => {
+    const result = checkManifest(
+      manifestWithFrontend({ apiVersion: "^one", entry: "frontend.js" }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toContain("not a parseable frontend semver range");
+  });
+
+  it("an absolute frontend.entry fails the manifest check", () => {
+    const result = checkManifest(manifestWithFrontend({ apiVersion: "^1", entry: "/etc/x.js" }));
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toContain("must be relative to the plugin directory");
+  });
+
+  it("a missing entry FILE fails the frontend check, naming the expected path", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = await mkdtemp(join(tmpdir(), "verify-fe-"));
+    try {
+      const report = await verifyPlugin(
+        makeExtension(
+          { ...scaffoldManifest, frontend: { apiVersion: "^1", entry: "missing.js" } },
+          () => {},
+        ),
+        { pluginDir: dir, skipDisposal: true },
+      );
+      expect(report.ok).toBe(false);
+      expect(report.problems[0]?.check).toBe("frontend");
+      expect(report.problems[0]?.message).toContain("does not exist");
+      expect(report.problems[0]?.message).toContain("build:frontend");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a traversal entry (../) fails the frontend check (the host refuses it too)", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = await mkdtemp(join(tmpdir(), "verify-fe-"));
+    try {
+      const report = await verifyPlugin(
+        makeExtension(
+          { ...scaffoldManifest, frontend: { apiVersion: "^1", entry: "../evil.js" } },
+          () => {},
+        ),
+        { pluginDir: dir, skipDisposal: true },
+      );
+      expect(report.ok).toBe(false);
+      expect(report.problems[0]?.message).toContain("escapes the plugin directory");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

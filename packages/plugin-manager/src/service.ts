@@ -10,7 +10,8 @@
  * a Dispatch module.
  */
 
-import type { Logger, StorageNamespace } from "@dispatch/kernel";
+import * as path from "node:path";
+import type { Logger, Manifest, PluginTier, StorageNamespace } from "@dispatch/kernel";
 import type {
   PluginAction,
   PluginBlockReason,
@@ -25,6 +26,7 @@ import {
   type PluginOverrideRecord,
 } from "./overrides.js";
 import {
+  classifyFrontendAccess,
   classifyReload,
   classifyUnload,
   deriveListView,
@@ -53,7 +55,36 @@ export interface PluginManagerServiceDeps {
    * design). Partial turns persist per the durability rule.
    */
   readonly stopAllAgents: () => { readonly stopped: number };
+  /**
+   * Per-workspace enablement check (plan 03) — is `pluginId` usable in
+   * `workspaceId`, given its loaded tier? Implemented by the extension from
+   * the workspace-plugin-config service (`stateOf` + `isPluginUsable`,
+   * fail-open when that service is absent — the usable.ts philosophy).
+   * `workspaceId` may be `undefined` (the route's query param is optional);
+   * the implementation resolves that to the default workspace.
+   */
+  readonly isPluginEnabledInWorkspace: (
+    workspaceId: string | undefined,
+    pluginId: string,
+    tier: PluginTier,
+  ) => Promise<boolean>;
+  /**
+   * Read a text file (plan 03 frontend entry) — the ONLY file I/O the
+   * manager does; injected so the service stays an effect shell.
+   * `null` on any read failure (missing/unreadable file).
+   */
+  readonly readTextFile: (path: string) => Promise<string | null>;
+  /**
+   * The entry file's mtimeMs (plan 03 cache-bust version — the SAME value
+   * the backend loader uses as its `?v=` query). `null` on stat failure.
+   */
+  readonly statMtimeMs: (path: string) => Promise<string | null>;
 }
+
+/** Outcome of `frontendEntry` (the HTTP route maps it to a status). */
+export type FrontendEntryResult =
+  | { readonly ok: true; readonly code: string; readonly bust: string }
+  | { readonly ok: false; readonly reason: string };
 
 export interface PluginManagerService {
   /** The manager view: loaded + disabled-with-reason + discovered + missing. */
@@ -76,6 +107,16 @@ export interface PluginManagerService {
    * the user notices, and forgetting it acknowledges the plugin is gone).
    */
   forget(id: string): Promise<PluginOpResponse>;
+  /**
+   * Serve a loaded plugin's frontend entry file (plan 03 §3.1) — the exact
+   * bytes of `manifest.frontend.entry`, with the cache-bust version (the
+   * entry's mtimeMs, the loader's `?v=`). Blocked (404 at the route) when
+   * the plugin is unknown/unloaded/frontend-less/disabled in the caller's
+   * active workspace, or when the entry escapes the plugin directory.
+   * `workspaceId` is the requesting client's ACTIVE workspace (optional —
+   * resolved to the default workspace when absent).
+   */
+  frontendEntry(id: string, workspaceId?: string): Promise<FrontendEntryResult>;
 }
 
 function blocked(
@@ -128,6 +169,35 @@ export function createPluginManagerService(deps: PluginManagerServiceDeps): Plug
     return engine.scanPluginsDir(overrides);
   }
 
+  /**
+   * Cache-bust values (entry mtimeMs) for every LOADED plugin that declares
+   * a frontend section and whose entry file resolves on disk (plan 03). The
+   * additive `GET /plugins` field carries these so clients can build
+   * content-versioned import URLs.
+   */
+  async function frontendBusts(
+    loaded: readonly Manifest[],
+    scan: PluginScanResult,
+  ): Promise<Map<string, string>> {
+    const dirs = new Map(
+      scan.scanned.flatMap((e) =>
+        e.kind === "loadable" && e.manifest !== undefined ? [[e.manifest.id, e.dir] as const] : [],
+      ),
+    );
+    const busts = new Map<string, string>();
+    for (const manifest of loaded) {
+      if (manifest.frontend === undefined) continue;
+      const dir = dirs.get(manifest.id);
+      if (dir === undefined) continue; // bundled / dir gone — not servable
+      const entryPath = path.resolve(dir, manifest.frontend.entry);
+      const rel = path.relative(dir, entryPath);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) continue; // traversal — not servable
+      const bust = await deps.statMtimeMs(entryPath);
+      if (bust !== null) busts.set(manifest.id, bust);
+    }
+    return busts;
+  }
+
   return {
     async list() {
       const scan = await scanNow();
@@ -137,7 +207,42 @@ export function createPluginManagerService(deps: PluginManagerServiceDeps): Plug
           .getDisabled()
           .map((d) => ({ manifest: d.manifest, reason: d.reason })),
         scan,
+        ...(await (async () => {
+          const busts = await frontendBusts(engine.getExtensions(), scan);
+          return busts.size > 0 ? { frontendBusts: busts } : {};
+        })()),
       });
+    },
+
+    async frontendEntry(id, workspaceId) {
+      const [scan, loaded] = [await scanNow(), engine.getExtensions()];
+      const manifest = loaded.find((m) => m.id === id);
+      const verdict = classifyFrontendAccess({
+        loaded,
+        scanned: scan.scanned,
+        targetId: id,
+        workspaceEnabled:
+          manifest === undefined
+            ? false
+            : await deps.isPluginEnabledInWorkspace(workspaceId, id, manifest.tier),
+      });
+      if (verdict.kind === "blocked") {
+        // All reasons map to 404 at the route — the reason is for the LOG
+        // only (it must not leak which case hit to the client).
+        logger.warn(`plugin-manager: frontend entry for "${id}" blocked: ${verdict.reason}`);
+        return { ok: false, reason: verdict.reason };
+      }
+      const bust = await deps.statMtimeMs(verdict.entryPath);
+      if (bust === null) {
+        logger.warn(`plugin-manager: frontend entry for "${id}" unreadable`);
+        return { ok: false, reason: "unreadable" };
+      }
+      const code = await deps.readTextFile(verdict.entryPath);
+      if (code === null) {
+        logger.warn(`plugin-manager: frontend entry for "${id}" read failed`);
+        return { ok: false, reason: "unreadable" };
+      }
+      return { ok: true, code, bust };
     },
 
     async scan() {

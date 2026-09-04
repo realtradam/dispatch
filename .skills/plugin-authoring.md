@@ -62,8 +62,8 @@ Optional fields: `dependsOn` (declare EVERY plugin whose service you
 unmet deps with a reason), `contributes` (declare what your activate registers:
 `tools`, `services`, … — machine-readable for discovery/gating), `capabilities`
 (fs/shell/network/secrets/db/spawn — declare only what you use), `activation`
-(`"eager"` at boot), `entry`, `frontend` (**reserved — do not set it**; frozen
-shape, no runtime semantics yet).
+(`"eager"` at boot), `entry`, `frontend` (plan 03 — a prebuilt ESM frontend
+module; see Step 7).
 
 Rules that are machine-enforced:
 
@@ -157,3 +157,81 @@ YOUR tools to that workspace's turns (the plan-06 tool gate attributes every
 tool to its owning plugin via the registration ledger); disabling removes them.
 Nothing in your plugin code participates — this is the mechanism, not your
 responsibility.
+
+## Step 7 — Frontend modules (plan 03): the frontend ABI
+
+A plugin MAY ship a **frontend module** — ONE prebuilt ESM file the web client
+dynamically imports at runtime, whose views render inside the app's tile tree.
+
+### The manifest section
+
+```json
+{ "frontend": { "apiVersion": "^1", "entry": "frontend.js" } }
+```
+
+- `apiVersion` — the semver RANGE of frontend ABI versions you support. The
+  HANDSHAKE: the client checks the range against its `FRONTEND_ABI_VERSION`
+  (currently `"1"`). A mismatch lists the plugin as **"incompatible frontend
+  plugin"** in the manager UI and your module is NEVER imported. `"^1"`
+  tracks the v1 ABI.
+- `entry` — the built ESM file, relative to your plugin directory. The
+  backend serves it at `GET /plugins/:id/frontend` (404 when unloaded or
+  disabled in the requesting client's active workspace — a disabled plugin's
+  code is not fetchable).
+
+### The module contract
+
+Default-export `{ activate(api) }` — see `packages/plugin-scaffold/src/frontend.ts`
+(the canonical, compiling reference):
+
+- `api.registerView({ id, label, component, panelEligible? })` — register a
+  view into the SAME registry the built-in views use. The host FORCES your
+  plugin's `pluginId` attribution on every registration (you cannot
+  misattribute). The returned disposer removes the view. The `id` is what a
+  tile leaf's `view` field names — place the view via a layout plugin (plan
+  02's layout-chat) or the panel dropdowns.
+- `api.surfaces` — **surfaces are the data path** (the ui-contract
+  philosophy): views get data via `getSpec`/`subscribe` and act via `invoke`
+  against the backend surfaces your plugin's backend half declares — NEVER
+  through app stores or internals.
+- `api.logger` — a plugin-prefixed console.
+- `activate` MAY return a **deactivate disposer** — run on unload/disable
+  BEFORE the host's unregister-by-pluginId sweep (the sweep is the safety
+  net, not the primary path). Keep it complete.
+
+### The deactivate contract + the no-unfetch limitation (honest semantics)
+
+On unload/disable the host runs your disposer and sweeps your views, so the
+UI is IMMEDIATELY correct — but ESM **cannot be un-fetched**: your module's
+bytes linger in the browser's module cache. Re-enabling re-runs `activate`
+on the CACHED module (same URL ⇒ no re-fetch, closure state is fresh). A
+backend-side `reload` changes the content bust (the entry's mtime, carried
+in `GET /plugins`' additive `frontend.bust`) ⇒ a NEW import URL ⇒ a fresh
+module instance. There is no hot-reload: to pick up new frontend code,
+reload the plugin (new bust) — the client's next sync re-imports.
+
+### The build (one file, svelte externalized)
+
+Views are Svelte 5 (runes). Build with the scaffold's canned vite lib config
+(`packages/plugin-scaffold/scaffold-frontend.config.ts` + `bun run
+build:frontend`): ONE standalone ESM file with the whole `svelte` package
+EXTERNALIZED. The host's import map resolves the output's bare `svelte` /
+`svelte/internal/client` imports to the app's OWN Svelte 5 runtime — one
+shared runtime. **Never bundle svelte**: two runtimes = broken cross-component
+reactivity (verified by the plan-03 spike; the host build emits
+`svelte-api`/`svelte-internal-client` runtime chunks for exactly this map).
+
+Build rules the spike established:
+- `compilerOptions: { discloseVersion: false }` (svelte 5.56 otherwise emits
+  `svelte/internal/disclose-version` even in production compiles);
+- never name a destructured prop `state` — svelte 5.56 mis-compiles the
+  `$state` rune as a legacy auto-subscription of that prop;
+- the verify-plugin harness FAILS a manifest whose `frontend.entry` does not
+  resolve inside the plugin directory (run the build before shipping).
+
+### Trust (documented, no sandbox)
+
+Frontend plugin code runs with FULL page privileges — there is no
+sandboxing/iframe/CSP isolation in v1 (a documented non-goal, consistent
+with backend plugins running in-process). The trust signal is the manifest's
+`trust` field (`bundled` / `local` / `external`), rendered in the manager UI.

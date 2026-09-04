@@ -44,6 +44,36 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
 }
 
+/**
+ * Parse a 1–3 component semver ("1", "1.0", "1.0.0") — the FRONTEND ABI's
+ * version grammar (plan 03). Mirrors the web repo's handshake parser
+ * (`src/core/plugin-abi/version.ts`); duplicated rather than imported
+ * because plugin-verify must stay a leaf package (see the file doc).
+ */
+function parseFrontendSemver(version: string): boolean {
+  return /^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.test(version.trim());
+}
+
+/**
+ * Whether a `frontend.apiVersion` range is PARSEABLE by the frontend
+ * handshake (`*`, `^x[.y[.z]]`, `~x[.y[.z]]`, `>=x[.y[.z]]`, exact
+ * `x[.y[.z]]`). Compatibility with the running host is a CLIENT-side
+ * handshake verdict, not a validation error — mirrors the kernel-apiVersion
+ * check above.
+ */
+export function isFrontendApiRangeParseable(range: string): boolean {
+  const trimmed = range.trim();
+  if (trimmed === "*") return true;
+  const body = trimmed.startsWith("^")
+    ? trimmed.slice(1)
+    : trimmed.startsWith("~")
+      ? trimmed.slice(1)
+      : trimmed.startsWith(">=")
+        ? trimmed.slice(2)
+        : trimmed;
+  return parseFrontendSemver(body);
+}
+
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((s) => typeof s === "string" && s.length > 0);
 }
@@ -92,6 +122,28 @@ export function checkManifest(value: unknown): CheckResult {
   }
   if (raw.dependsOn !== undefined && !isStringArray(raw.dependsOn)) {
     errors.push('"dependsOn" must be an array of non-empty strings');
+  }
+  if (raw.frontend !== undefined) {
+    // The frontend section (plan 03): parseable ABI range + well-formed entry.
+    if (!raw.frontend || typeof raw.frontend !== "object" || Array.isArray(raw.frontend)) {
+      errors.push('"frontend" must be an object');
+    } else {
+      const fe = raw.frontend as Record<string, unknown>;
+      if (!isNonEmptyString(fe.apiVersion)) {
+        errors.push('missing or invalid required field "frontend.apiVersion"');
+      } else if (!isFrontendApiRangeParseable(fe.apiVersion)) {
+        errors.push(
+          `invalid "frontend.apiVersion" range "${fe.apiVersion}" — not a parseable frontend semver range (*, ^1, ~1.0, >=1.0.0, or exact)`,
+        );
+      }
+      if (!isNonEmptyString(fe.entry)) {
+        errors.push('missing or invalid required field "frontend.entry"');
+      } else if (fe.entry.startsWith("/")) {
+        errors.push(
+          `"frontend.entry" ("${fe.entry}") must be relative to the plugin directory (it is resolved + traversal-checked by the host)`,
+        );
+      }
+    }
   }
   if (raw.contributes !== undefined) {
     if (!raw.contributes || typeof raw.contributes !== "object" || Array.isArray(raw.contributes)) {

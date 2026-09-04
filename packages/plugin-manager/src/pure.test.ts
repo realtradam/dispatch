@@ -2,6 +2,7 @@ import type { Manifest } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import type { ReconciledScanBuckets, ScannedPluginEntry } from "./engine.js";
 import {
+  classifyFrontendAccess,
   classifyReload,
   classifyUnload,
   computeUnloadCascade,
@@ -385,5 +386,144 @@ describe("deriveScanResponse", () => {
     expect(response.incompatible).toEqual([
       { dir: "/plugins/old", id: "old", reason: "incompatible" },
     ]);
+  });
+});
+
+// ── classifyFrontendAccess (plan 03) ────────────────────────────────────────
+
+describe("classifyFrontendAccess", () => {
+  const dir = "/plugins/with-fe";
+  const scanned = (id: string, extra: Partial<Manifest> = {}, entryDir = `/plugins/${id}`) => ({
+    dir: entryDir,
+    kind: "loadable" as const,
+    manifest: manifest(id, extra),
+  });
+
+  it("allows a loaded, frontend-declaring, workspace-enabled plugin", () => {
+    const verdict = classifyFrontendAccess({
+      loaded: [manifest("with-fe", { frontend: { apiVersion: "^1", entry: "frontend.js" } })],
+      scanned: [scanned("with-fe", { frontend: { apiVersion: "^1", entry: "frontend.js" } })],
+      targetId: "with-fe",
+      workspaceEnabled: true,
+    });
+    expect(verdict).toEqual({
+      kind: "allowed",
+      dir,
+      entryPath: `${dir}/frontend.js`,
+    });
+  });
+
+  it("blocks an id the scan has never seen as not-found", () => {
+    const verdict = classifyFrontendAccess({
+      loaded: [],
+      scanned: [],
+      targetId: "ghost",
+      workspaceEnabled: true,
+    });
+    expect(verdict).toEqual({ kind: "blocked", reason: "not-found" });
+  });
+
+  it("blocks a scanned-but-unloaded plugin as not-loaded", () => {
+    const verdict = classifyFrontendAccess({
+      loaded: [],
+      scanned: [scanned("unloaded")],
+      targetId: "unloaded",
+      workspaceEnabled: true,
+    });
+    expect(verdict).toEqual({ kind: "blocked", reason: "not-loaded" });
+  });
+
+  it("blocks a loaded plugin without a frontend section as no-frontend", () => {
+    const verdict = classifyFrontendAccess({
+      loaded: [manifest("plain")],
+      scanned: [scanned("plain")],
+      targetId: "plain",
+      workspaceEnabled: true,
+    });
+    expect(verdict).toEqual({ kind: "blocked", reason: "no-frontend" });
+  });
+
+  it("blocks a workspace-disabled plugin (its code must not be fetchable)", () => {
+    const verdict = classifyFrontendAccess({
+      loaded: [manifest("with-fe", { frontend: { apiVersion: "^1", entry: "frontend.js" } })],
+      scanned: [scanned("with-fe", { frontend: { apiVersion: "^1", entry: "frontend.js" } })],
+      targetId: "with-fe",
+      workspaceEnabled: false,
+    });
+    expect(verdict).toEqual({ kind: "blocked", reason: "workspace-disabled" });
+  });
+
+  it("rejects a traversal entry (../ escaping the plugin dir)", () => {
+    const verdict = classifyFrontendAccess({
+      loaded: [manifest("evil", { frontend: { apiVersion: "^1", entry: "../../evil.js" } })],
+      scanned: [scanned("evil", { frontend: { apiVersion: "^1", entry: "../../evil.js" } })],
+      targetId: "evil",
+      workspaceEnabled: true,
+    });
+    expect(verdict).toEqual({ kind: "blocked", reason: "entry-escapes" });
+  });
+
+  it("rejects an absolute entry outside the plugin dir", () => {
+    const verdict = classifyFrontendAccess({
+      loaded: [manifest("abs", { frontend: { apiVersion: "^1", entry: "/etc/passwd" } })],
+      scanned: [scanned("abs", { frontend: { apiVersion: "^1", entry: "/etc/passwd" } })],
+      targetId: "abs",
+      workspaceEnabled: true,
+    });
+    expect(verdict).toEqual({ kind: "blocked", reason: "entry-escapes" });
+  });
+
+  it("does not treat the target id as a path (dot-dot id is just not-found)", () => {
+    const verdict = classifyFrontendAccess({
+      loaded: [manifest("../..", { frontend: { apiVersion: "^1", entry: "x.js" } })],
+      scanned: [scanned("../..", {}, "/etc")],
+      targetId: "../../etc/passwd",
+      workspaceEnabled: true,
+    });
+    expect(verdict).toEqual({ kind: "blocked", reason: "not-found" });
+  });
+});
+
+// ── toLoadedRow + deriveListView: the additive frontend field (plan 03) ─────
+
+describe("toLoadedRow — frontend field", () => {
+  it("omits the frontend field when the manifest declares none", () => {
+    const row = toLoadedRow(manifest("plain"));
+    expect(row.frontend).toBeUndefined();
+  });
+
+  it("carries apiVersion + entry + bust when the entry is servable", () => {
+    const row = toLoadedRow(
+      manifest("fe", { frontend: { apiVersion: "^1", entry: "frontend.js" } }),
+      new Map([["fe", "1727100000000"]]),
+    );
+    expect(row.frontend).toEqual({
+      apiVersion: "^1",
+      entry: "frontend.js",
+      bust: "1727100000000",
+    });
+  });
+
+  it("omits the field when the entry is NOT servable (no bust collected)", () => {
+    const row = toLoadedRow(
+      manifest("fe", { frontend: { apiVersion: "^1", entry: "frontend.js" } }),
+    );
+    expect(row.frontend).toBeUndefined();
+  });
+});
+
+describe("deriveListView — frontend busts", () => {
+  it("passes the bust map through to the loaded rows only", () => {
+    const response = deriveListView({
+      loaded: [
+        manifest("fe", { frontend: { apiVersion: "^1", entry: "frontend.js" } }),
+        manifest("plain"),
+      ],
+      engineDisabled: [],
+      scan: { scanned: [], buckets: emptyBuckets },
+      frontendBusts: new Map([["fe", "123"]]),
+    });
+    expect(response.loaded.find((r) => r.id === "fe")?.frontend?.bust).toBe("123");
+    expect(response.loaded.find((r) => r.id === "plain")?.frontend).toBeUndefined();
   });
 });
