@@ -33,7 +33,9 @@ export const manifest: Manifest = {
   contributes: {
     // The typed service other units consume via `layoutProviderHandle` —
     // same handle as every layout provider (exactly one may be active,
-    // decision 8: first-provider-wins).
+    // decision 8: first-provider-wins; while another layout provider holds
+    // the handle, this plugin is a loaded HOT STANDBY that takes over the
+    // moment that provider unloads).
     services: ["layout/provider"],
 
     // The well-known HTTP routes this plugin OWNS while active (the same

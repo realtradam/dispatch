@@ -3,16 +3,15 @@
  * diagnostic provider (a REAL kernel host: createBus + createHost +
  * in-memory storage, the plugin-verify pattern — zero Dispatch mocks):
  *
- * - activation provides the `layout/provider` service;
- * - a fresh workspace GETS DIAGNOSTIC_LAYOUT (the derived default + the two
- *   root-tile markers) through the live service, materialized in the
- *   plugin's OWN storage namespace;
+ * - activation provides the `layout/provider` service (when the handle is
+ *   free) and a fresh workspace GETS DIAGNOSTIC_LAYOUT (the derived default
+ *   + the two root-tile markers) through the live service, materialized in
+ *   the plugin's OWN storage namespace;
  * - deactivation (unload) un-provides the service (tryGetService →
  *   undefined) and leaves ZERO dangling registrations;
- * - decision 8 (one provider at a time): when a layout provider got there
- *   first, THIS plugin's activation fails LOUDLY into the
- *   disabled-with-reason grammar — and once that provider is unloaded,
- *   enabling this one takes over and serves the marked tree. (The first
+ * - decision 8 (one provider at a time): when another layout provider got
+ *   there first, THIS plugin loads as a HOT STANDBY — no error, no service —
+ *   and provides automatically the moment that provider unloads. (The first
  *   provider is the layout-chat impostor pattern — a minimal inline
  *   provider — because layout plugins never import one another; the handle
  *   package exists so consumers and providers meet ONLY there.)
@@ -121,7 +120,7 @@ describe("layout-diagnostic — integration (real host, plugin active)", () => {
   });
 });
 
-describe("decision 8 — one provider at a time (first-provider-wins, loud loser)", () => {
+describe("decision 8 — one provider at a time (hot standby while another provider is active)", () => {
   /** A minimal provider that got there FIRST (the layout-chat impostor pattern). */
   function firstProviderPlugin(): Extension {
     const manifest: Manifest = {
@@ -146,41 +145,62 @@ describe("decision 8 — one provider at a time (first-provider-wins, loud loser
     };
   }
 
-  it("loaded after an active provider, THIS plugin's activation fails LOUDLY (disabled-with-reason), and the first provider keeps serving the plain default", async () => {
+  it("activated alongside an active provider, THIS plugin loads WITHOUT error as a hot standby (no service, no disabled entry)", async () => {
     const deps = makeHostDeps();
     // The bundled array order puts layout-chat first, so the diagnostic
-    // plugin is the expected loser at boot (first-provider-wins).
+    // plugin boots as the standby (first-provider-wins).
     const host = createHost([firstProviderPlugin(), layoutDiagnostic], deps);
     await host.activate();
 
-    // The diagnostic provider's activation failed LOUDLY into the disabled
-    // grammar ("another layout provider is active")…
-    const disabled = host.getDisabled();
-    expect(disabled.map((d) => d.manifest.id)).toEqual(["layout-diagnostic"]);
-    expect(disabled[0]?.reason).toContain("Activation failed");
-    expect(disabled[0]?.reason).toContain("already provided");
+    // No loud failure: the plugin is LOADED, not in the disabled grammar…
+    expect(host.getDisabled()).toEqual([]);
 
-    // …and the FIRST provider keeps ownership, serving the PLAIN default.
+    // …and the FIRST provider keeps ownership (exactly one provider, and it
+    // is not this plugin).
     const provider = host.getHostAPI().tryGetService(layoutProviderHandle);
     expect(provider).toBeDefined();
     expect(await provider?.getTree("ws-a")).toEqual(DEFAULT_LAYOUT);
   });
 
-  it("enabled AFTER the active provider is unloaded, the diagnostic provider takes over and serves the marked tree", async () => {
+  it("the moment the active provider unloads, the standby takes over and serves the marked tree", async () => {
     const deps = makeHostDeps();
     const host = createHost([firstProviderPlugin(), layoutDiagnostic], deps);
     await host.activate();
 
-    // The human's flow: disable layout-chat (whichever provider is active),
-    // then enable the diagnostic one.
+    // The human's flow: unload the active layout provider in the plugin UI —
+    // the standby provides automatically (no second UI step).
     const unloadFirst = await host.unloadExtension("layout-first");
     expect(unloadFirst.ok).toBe(true);
-    const loadDiagnostic = await host.loadExtension(layoutDiagnostic);
-    expect(loadDiagnostic.ok).toBe(true);
 
     const provider = host.getHostAPI().tryGetService(layoutProviderHandle);
     expect(provider).toBeDefined();
     expect(await provider?.getTree("ws-a")).toEqual(DIAGNOSTIC_LAYOUT);
+  });
+
+  it("a standby that unloads while waiting reports ZERO dangling registrations (the ledger-tracked standby subscription is disposed)", async () => {
+    const deps = makeHostDeps();
+    const host = createHost([firstProviderPlugin(), layoutDiagnostic], deps);
+    await host.activate();
+
+    const unload = await host.unloadExtension("layout-diagnostic");
+    expect(unload.ok).toBe(true);
+    expect(unload.dangling ?? []).toEqual([]);
+    // The first provider was never disturbed.
+    const provider = host.getHostAPI().tryGetService(layoutProviderHandle);
+    expect(await provider?.getTree("ws-a")).toEqual(DEFAULT_LAYOUT);
+  });
+
+  it("a standby takeover is disposed on unload: after taking over, unloading THIS plugin frees the handle with zero dangling", async () => {
+    const deps = makeHostDeps();
+    const host = createHost([firstProviderPlugin(), layoutDiagnostic], deps);
+    await host.activate();
+    await host.unloadExtension("layout-first");
+    expect(host.getHostAPI().tryGetService(layoutProviderHandle)).toBeDefined();
+
+    const unload = await host.unloadExtension("layout-diagnostic");
+    expect(unload.ok).toBe(true);
+    expect(unload.dangling ?? []).toEqual([]);
+    expect(host.getHostAPI().tryGetService(layoutProviderHandle)).toBeUndefined();
   });
 });
 

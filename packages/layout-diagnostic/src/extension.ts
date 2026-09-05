@@ -8,11 +8,24 @@
  * It exists purely so a human can SEE the layout system's tiles in the
  * browser; it changes nothing else about the layout system.
  *
- * Disabling/unloading this plugin removes layout persistence exactly like
- * layout-chat's unload does: the service is un-provided, the well-known
- * routes 404, and clients render their built-in default while edits become
- * ephemeral until a layout plugin is enabled — the system degrades, it never
- * breaks (§2.3).
+ * ONE PROVIDER AT A TIME (decision 8) — this plugin's boot semantics:
+ * bundled alongside layout-chat, BOTH are eager, and the kernel's registry
+ * is first-provider-wins. Rather than fail its activation loudly into the
+ * disabled-with-reason grammar (which would only repeat at every boot —
+ * and a FAILED bundled plugin cannot be re-loaded from the plugin UI, whose
+ * load path is directory-scan-based), this plugin activates as a HOT
+ * STANDBY when another layout provider holds the handle: it subscribes
+ * `onServiceUnavailable` and provides automatically the MOMENT that
+ * provider unloads (the bus frees the registry slot before the unavailable
+ * callbacks run, so the takeover inside the callback is safe). Unchecking
+ * the active layout provider in the plugin UI therefore hands the layout to
+ * this plugin with no further steps; a restart hands it back to layout-chat.
+ *
+ * Disabling/unloading THIS plugin while it provides removes layout
+ * persistence exactly like layout-chat's unload does: the service is
+ * un-provided, the well-known routes 404, and clients render their built-in
+ * default while edits become ephemeral until a layout plugin provides —
+ * the system degrades, it never breaks (§2.3).
  */
 
 import type { Extension, HostAPI } from "@dispatch/kernel";
@@ -26,8 +39,10 @@ import { DIAGNOSTIC_LAYOUT } from "./tree.js";
 
 export { manifest };
 
-/** The un-provide disposer captured at activate time (the disposal contract). */
+/** The un-provide disposer captured when this plugin provides (the disposal contract). */
 let disposeService: (() => void) | undefined;
+/** The standby subscription — ledger-tracked, disposed in deactivate. */
+let disposeStandby: (() => void) | undefined;
 
 export function activate(host: HostAPI): void {
   const provider = createLayoutProvider({
@@ -42,24 +57,39 @@ export function activate(host: HostAPI): void {
     logger: host.logger,
   });
 
-  // First-provider-wins (decision 8): the kernel's registry throws when the
-  // handle is already taken, failing THIS activation into the manager's
-  // disabled-with-reason grammar ("another layout provider is active").
-  // With layout-chat bundled alongside, whoever activates first owns the
-  // handle — enabling this one after disabling layout-chat is the expected
-  // flow, and the loud failure is correct behavior, not a bug.
-  disposeService = host.provideService(layoutProviderHandle, provider);
+  const takeOver = (): void => {
+    // Defensive: the unavailable callback runs after the slot frees, but a
+    // race-loss must be a no-op, never a thrown error inside the bus's
+    // error-isolated callback dispatch.
+    if (host.tryGetService(layoutProviderHandle) !== undefined) return;
+    disposeService = host.provideService(layoutProviderHandle, provider);
+    host.logger.info("layout-diagnostic: diagnostic layout provider active");
+  };
 
-  host.logger.info("layout-diagnostic: diagnostic layout provider active");
+  if (host.tryGetService(layoutProviderHandle) === undefined) {
+    // No layout provider yet — provide immediately.
+    takeOver();
+  } else {
+    // Another layout provider is active (layout-chat at boot): stand by and
+    // take over the moment it unloads.
+    disposeStandby = host.onServiceUnavailable(layoutProviderHandle, takeOver);
+    host.logger.info(
+      "layout-diagnostic: another layout provider is active — standing by (unload it to activate the diagnostic layout)",
+    );
+  }
 }
 
 export const extension: Extension = {
   manifest,
   activate,
   deactivate() {
-    // Disposal contract: un-provide the service. verify-plugin asserts ZERO
-    // dangling registrations after this runs (services ARE ledger-tracked,
-    // unlike service-mediated registry writes).
+    // Disposal contract: EVERYTHING this plugin registered goes now — the
+    // standby subscription FIRST (so the service disposal below cannot
+    // re-enter a takeover), then the service un-provide. verify-plugin
+    // asserts ZERO dangling registrations after this runs (subscriptions and
+    // services ARE ledger-tracked).
+    disposeStandby?.();
+    disposeStandby = undefined;
     disposeService?.();
     disposeService = undefined;
   },

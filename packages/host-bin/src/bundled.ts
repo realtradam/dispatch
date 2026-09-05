@@ -137,10 +137,9 @@ export function createBundledExtensions(creds: {
     // kit, same routes, same handle) seeding the default tree with border
     // markers on the two root tiles (main = red, side = green) so a human can
     // SEE which tile is which in the browser. Exactly one layout provider can
-    // be active (decision 8, first-provider-wins): kept AFTER layout-chat so
-    // the running default is untouched at boot — enabling this one means
-    // disabling layout-chat first, and the failed boot activation lands
-    // loudly in the manager's disabled-with-reason list (correct, not a bug).
+    // be active (decision 8, first-provider-wins): kept AFTER layout-chat, it
+    // boots as a loaded HOT STANDBY — unloading layout-chat in the plugin UI
+    // hands the layout to it automatically; a restart hands it back.
     layoutDiagnosticExt,
   ];
 }
