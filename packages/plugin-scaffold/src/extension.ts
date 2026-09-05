@@ -21,6 +21,8 @@
 
 import type { Extension, HostAPI, Manifest, ServiceHandle, ToolContract } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
+import type { LayoutOp, LayoutProvider } from "@dispatch/layout-contract";
+import { layoutProviderHandle } from "@dispatch/layout-provider-contract";
 import type { SurfaceProvider } from "@dispatch/surface-registry";
 import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 
@@ -49,6 +51,14 @@ export const scaffoldServiceHandle: ServiceHandle<ScaffoldService> = defineServi
 // and calls `execute` with parsed input. Tools have NO extension-side
 // removal — on unload the HOST removes them for you (you never dispose a
 // tool; the host's registration ledger sweeps it).
+
+/**
+ * The workspace the scaffold's demo ops target. A REAL layout-writing plugin
+ * would resolve the workspaces it is enabled in (per-workspace enablement,
+ * plan 06) and apply its ops to each — the scaffold demonstrates the API
+ * against the always-present `"default"` workspace.
+ */
+const SCAFFOLD_WORKSPACE_ID = "default";
 
 function createScaffoldTool(): ToolContract {
   return {
@@ -153,6 +163,8 @@ export function createScaffoldExtension(): Extension {
   // on any dangling registration, so keep this list complete.
   let disposeService: (() => void) | undefined;
   let disposeSurface: (() => void) | undefined;
+  /** The `onServiceAvailable` subscription taken when the provider was absent at activate. */
+  let disposeLayoutSubscription: (() => void) | undefined;
 
   return {
     manifest,
@@ -212,6 +224,65 @@ export function createScaffoldExtension(): Extension {
 
       disposeSurface = registry.register(provider);
 
+      // 4d. Place the view with a LAYOUT OP (plan 04) — the composable write
+      // path. Registering a view makes it RENDERABLE; an op makes it PLACED.
+      // The op vocabulary lives in `@dispatch/layout-contract`; the provider
+      // (another plugin's service) applies it atomically.
+      //
+      // The PROVIDER MAY BE ABSENT rule: `layoutProviderHandle` is provided
+      // by whichever layout plugin is active (layout-chat) — a STANDARD
+      // plugin that may not be loaded. Consume it REACTIVELY:
+      // - present → apply the ops now;
+      // - absent  → subscribe to `onServiceAvailable` and apply when (if) a
+      //   provider loads. The subscription is a ledger-tracked registration —
+      //   its disposer MUST be disposed in deactivate().
+      // - never arrives → the ops never run; the plugin degrades gracefully.
+      //
+      // The op itself is the ENSURE-FIRST pattern: `ensurePanel` is idempotent
+      // (a no-op when the view is already in the panels node), so
+      // re-activations, reloads, and multi-client races stay convergent.
+      // Address the target by ID ("side" — the default tree's panels node;
+      // its ids are part of its contract), never by numeric path (paths shift
+      // as trees are edited).
+      //
+      // NO-REVERT (decision 6): deactivate does NOTHING to the tree below —
+      // the panel STAYS after this plugin unloads. Layout edits are permanent
+      // edits to the workspace tree; recovery is the reset-to-default
+      // affordance, not a revert graph.
+      const layoutOps: readonly LayoutOp[] = [
+        { type: "ensurePanel", panels: "side", view: "plugin-scaffold" },
+      ];
+
+      /** Apply the ops against one provider implementation (fail-soft, logged). */
+      const applyLayoutOps = (provider: LayoutProvider): void => {
+        void provider
+          .applyOps(SCAFFOLD_WORKSPACE_ID, layoutOps)
+          .then((result) => {
+            if (!result.ok) {
+              host.logger.warn(
+                `plugin-scaffold: layout ops rejected — ${result.error ?? "unknown error"}`,
+              );
+            }
+          })
+          .catch((err: unknown) => {
+            host.logger.warn(`plugin-scaffold: layout ops failed — ${String(err)}`);
+          });
+      };
+
+      const providerNow = host.tryGetService(layoutProviderHandle);
+      if (providerNow !== undefined) {
+        applyLayoutOps(providerNow);
+        host.logger.info("plugin-scaffold: layout provider present — ops applied");
+      } else {
+        disposeLayoutSubscription = host.onServiceAvailable(
+          layoutProviderHandle,
+          (lateProvider) => {
+            applyLayoutOps(lateProvider);
+            host.logger.info("plugin-scaffold: layout provider loaded later — ops applied");
+          },
+        );
+      }
+
       host.logger.info("plugin-scaffold activated");
     },
 
@@ -221,6 +292,12 @@ export function createScaffoldExtension(): Extension {
     deactivate() {
       disposeSurface?.();
       disposeService?.();
+      // The layout subscription is a ledger-tracked registration — dispose it
+      // like any other. The TREE EDITS STAY (no-revert, decision 6): this is
+      // deliberately NOT "remove my panel" — layout edits are permanent;
+      // recovery is the reset-to-default affordance, not a revert graph.
+      disposeLayoutSubscription?.();
+      disposeLayoutSubscription = undefined;
     },
   };
 }

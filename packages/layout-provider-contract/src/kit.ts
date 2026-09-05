@@ -10,6 +10,10 @@
  * - structural `validateTree` on every write (the backend never knows the
  *   frontend's view registry — unknown view ids are the renderer's
  *   fallback-tile concern, NOT a validation failure);
+ * - ATOMIC `applyOps` (plan 04 §4.2): the op vocabulary folds PURELY over the
+ *   tree as read at apply time; the folded result validates; only then does
+ *   it persist + broadcast ONCE (a failed op persists nothing and names its
+ *   index). Implemented here ONCE — every provider inherits it;
  * - outward `layout` change events after every successful write (§2.5) —
  *   full tree, no patch protocol (decision 7);
  * - route handlers for the well-known HTTP routes (§2.3): GET/PUT/DELETE
@@ -33,8 +37,14 @@
  */
 
 import type { Logger, StorageNamespace } from "@dispatch/kernel";
-import type { LayoutProvider, LayoutTree, SetTreeResult } from "@dispatch/layout-contract";
-import { validateTree } from "@dispatch/layout-contract";
+import type {
+  ApplyOpsResult,
+  LayoutOp,
+  LayoutProvider,
+  LayoutTree,
+  SetTreeResult,
+} from "@dispatch/layout-contract";
+import { applyOp, validateTree } from "@dispatch/layout-contract";
 import type { LayoutChangedMessage } from "@dispatch/transport-contract";
 
 /** Storage-key prefix — `tree:<workspaceId>` holds the workspace's JSON tree. */
@@ -71,12 +81,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Best-effort op label for error messages (wire ops may be junk). */
+function opTypeName(op: LayoutOp): string {
+  return typeof op === "object" && op !== null && "type" in op ? String(op.type) : "unknown";
+}
+
 /**
  * Build the `LayoutProvider` implementation. Pure decision logic over the
  * injected edges — no ambient state beyond the plugin's own storage.
  */
 export function createLayoutProvider(deps: LayoutProviderDeps): LayoutProvider {
   const { storage, defaultTree, emitChange, logger } = deps;
+
+  /** Persist + emit the change event EXACTLY ONCE per successful write. */
+  async function persist(workspaceId: string, tree: LayoutTree): Promise<void> {
+    await storage.set(storageKey(workspaceId), JSON.stringify(tree));
+    // The kernel's hook bus is error-isolated; the guard keeps "never throws
+    // for bad luck" true even for a misbehaving injected emitter.
+    try {
+      emitChange({ type: "layout", workspaceId, tree });
+    } catch (err) {
+      logger.error("layout-provider: change emitter threw (write persisted)", { err });
+    }
+  }
 
   /** Read-through miss handling: return null for absent AND corrupt records. */
   async function readStored(workspaceId: string): Promise<LayoutTree | null> {
@@ -120,16 +147,54 @@ export function createLayoutProvider(deps: LayoutProviderDeps): LayoutProvider {
       if (!validation.ok) {
         return { ok: false, error: validation.errors.join("; ") };
       }
-      await storage.set(storageKey(workspaceId), JSON.stringify(tree));
-      // Exactly one change event per successful write. The kernel's hook bus
-      // is error-isolated; the guard keeps "never throws for bad luck" true
-      // even for a misbehaving injected emitter.
-      try {
-        emitChange({ type: "layout", workspaceId, tree });
-      } catch (err) {
-        logger.error("layout-provider: change emitter threw (write persisted)", { err });
-      }
+      await persist(workspaceId, tree);
       return { ok: true, tree };
+    },
+
+    async applyOps(workspaceId: string, ops: readonly LayoutOp[]): Promise<ApplyOpsResult> {
+      // ATOMIC (plan 04 §4.2): fold the ops over the tree AS READ at apply
+      // time (read-through — a fresh workspace is seeded first), purely, with
+      // per-op failure capture. Nothing touches storage until every op has
+      // folded and the folded result validates.
+      const current = await this.getTree(workspaceId);
+      let folded = current;
+      for (const [index, op] of ops.entries()) {
+        let result: ReturnType<typeof applyOp>;
+        try {
+          // The op vocabulary is TOTAL for well-typed ops, but ops arriving
+          // over the wire (or from plugin JS) are untyped at this boundary —
+          // junk (a missing/garbage ref, a bad shape) surfaces as a THROW
+          // from the pure op, and must become a failed op, never a crash.
+          result = applyOp(folded, op);
+        } catch (err) {
+          return {
+            ok: false,
+            error: `op ${index} (${opTypeName(op)}) failed: ${err instanceof Error ? err.message : String(err)}`,
+            failedOp: index,
+          };
+        }
+        if (!result.ok) {
+          return { ok: false, error: `op ${index} failed: ${result.error}`, failedOp: index };
+        }
+        folded = result.tree;
+      }
+      // Validate the FOLDED result before anything persists: ops are locally
+      // correct but their composition could still violate the schema.
+      const validation = validateTree(folded);
+      if (!validation.ok) {
+        return {
+          ok: false,
+          error: `ops produced an invalid tree: ${validation.errors.join("; ")}`,
+          ...(ops.length > 0 ? { failedOp: ops.length - 1 } : {}),
+        };
+      }
+      // An empty batch is a successful READ, not a write: nothing changed, so
+      // nothing persists and nothing broadcasts (one event per WRITE).
+      if (ops.length === 0) {
+        return { ok: true, tree: folded, applied: 0 };
+      }
+      await persist(workspaceId, folded);
+      return { ok: true, tree: folded, applied: ops.length };
     },
 
     async resetTree(workspaceId: string): Promise<LayoutTree> {
@@ -148,10 +213,15 @@ export function createLayoutProvider(deps: LayoutProviderDeps): LayoutProvider {
 
 // ── Well-known HTTP route handlers (§2.3) ───────────────────────────────────
 
-/** One route outcome: an HTTP status + a JSON body ({ tree } or { error }). */
+/**
+ * One route outcome: an HTTP status + a JSON body — `{ tree }` (GET/PUT/
+ * DELETE), `{ tree, applied }` (POST ops), or `{ error, failedOp? }`.
+ */
 export interface LayoutRouteResult {
   readonly status: 200 | 400 | 404 | 500;
-  readonly body: { readonly tree: LayoutTree } | { readonly error: string };
+  readonly body:
+    | { readonly tree: LayoutTree; readonly applied?: number }
+    | { readonly error: string; readonly failedOp?: number };
 }
 
 export interface LayoutRouteHandlers {
@@ -161,6 +231,12 @@ export interface LayoutRouteHandlers {
   readonly put: (workspaceId: string, body: unknown) => Promise<LayoutRouteResult>;
   /** DELETE /workspaces/:id/layout — re-seed on next read; returns the fresh seed. */
   readonly delete: (workspaceId: string) => Promise<LayoutRouteResult>;
+  /**
+   * POST /workspaces/:id/layout/ops — body `{ ops: LayoutOp[] }` (plan 04);
+   * the SAME kit `applyOps` as the service (one code path, two doors).
+   * 200 `{ tree, applied }` / 400 `{ error, failedOp? }` / 404 no provider.
+   */
+  readonly ops: (workspaceId: string, body: unknown) => Promise<LayoutRouteResult>;
 }
 
 const NO_PROVIDER_BODY = { error: "No layout provider is active" } as const;
@@ -176,6 +252,43 @@ export function parseTreeBody(
     return { ok: false, error: "Body must be { tree: { version: 1, root: … } }" };
   }
   return { ok: true, tree: body.tree };
+}
+
+/** The op-vocabulary discriminants accepted at the ops door (plan 04 §4.1). */
+const KNOWN_OP_TYPES: ReadonlySet<string> = new Set([
+  "replaceView",
+  "insertLeaf",
+  "insertPanel",
+  "removeNode",
+  "moveNode",
+  "setSizes",
+  "splitLeaf",
+  "ensureLeaf",
+  "ensurePanel",
+]);
+
+/**
+ * Validate a POST ops body's shape: `{ ops: LayoutOp[] }` where every entry
+ * is an object with a KNOWN `type` discriminant. Deep validation (refs,
+ * indices, sizes) is the fold's job — a known-typed op with junk fields is a
+ * `failedOp` 400 from `applyOps`, not a body rejection.
+ */
+export function parseOpsBody(
+  body: unknown,
+):
+  | { readonly ok: true; readonly ops: readonly LayoutOp[] }
+  | { readonly ok: false; readonly error: string } {
+  if (!isRecord(body)) return { ok: false, error: "Request body must be a JSON object" };
+  if (!Array.isArray(body.ops)) return { ok: false, error: "Body must be { ops: [...] }" };
+  for (const [index, op] of body.ops.entries()) {
+    if (!isRecord(op) || typeof op.type !== "string" || !KNOWN_OP_TYPES.has(op.type)) {
+      return {
+        ok: false,
+        error: `ops[${index}] is not a layout op (unknown or missing "type" discriminant)`,
+      };
+    }
+  }
+  return { ok: true, ops: body.ops as readonly LayoutOp[] };
 }
 
 /**
@@ -229,5 +342,21 @@ export function createLayoutRouteHandlers(deps: {
         status: 200 as const,
         body: { tree: await provider.resetTree(workspaceId) },
       })),
+
+    ops: (workspaceId, body) =>
+      withProvider(workspaceId, async (provider) => {
+        const parsed = parseOpsBody(body);
+        if (!parsed.ok) return { status: 400 as const, body: { error: parsed.error } };
+        const result = await provider.applyOps(workspaceId, parsed.ops);
+        return result.ok
+          ? { status: 200 as const, body: { tree: result.tree, applied: result.applied } }
+          : {
+              status: 400 as const,
+              body: {
+                error: result.error,
+                ...(result.failedOp === undefined ? {} : { failedOp: result.failedOp }),
+              },
+            };
+      }),
   };
 }

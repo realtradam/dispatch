@@ -8,6 +8,8 @@
   "exclude": ["src/frontend.ts", "src/scaffold-view.svelte"],
   "references": [
     { "path": "../kernel" },
+    { "path": "../layout-contract" },
+    { "path": "../layout-provider-contract" },
     { "path": "../surface-registry" },
     { "path": "../ui-contract" }
   ]

@@ -221,6 +221,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/layout-provider-contract": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
         "@dispatch/ui-contract": "workspace:*",
       },
@@ -235,6 +237,9 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-chat": "workspace:*",
+        "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/layout-provider-contract": "workspace:*",
         "@dispatch/plugin-scaffold": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
       },

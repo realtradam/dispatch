@@ -89,6 +89,7 @@ export const manifest: Manifest = {
       "/workspaces/:id/plugins/providers-status",
       "/workspaces/:id/plugins/:pluginId",
       "/workspaces/:id/layout",
+      "/workspaces/:id/layout/ops",
       "/workspaces/:id/star",
       "/workspaces/:id/title",
     ],

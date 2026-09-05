@@ -16,5 +16,6 @@ export {
   type LayoutProviderDeps,
   type LayoutRouteHandlers,
   type LayoutRouteResult,
+  parseOpsBody,
   parseTreeBody,
 } from "./kit";

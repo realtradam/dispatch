@@ -235,3 +235,81 @@ Frontend plugin code runs with FULL page privileges — there is no
 sandboxing/iframe/CSP isolation in v1 (a documented non-goal, consistent
 with backend plugins running in-process). The trust signal is the manifest's
 `trust` field (`bundled` / `local` / `external`), rendered in the manager UI.
+
+## Step 8 — Layout ops (plan 04): editing the workspace tree
+
+Your plugin can EDIT the active layout instead of replacing it. The op
+vocabulary lives in `@dispatch/layout-contract` (pure, serialisable data —
+the same shapes the frontend renderer emits); the ACTIVE layout provider
+(whichever plugin provides `layoutProviderHandle`, e.g. `layout-chat`)
+applies them ATOMICALLY. Import both handles from
+`@dispatch/layout-provider-contract`.
+
+### The vocabulary + the ensure-first pattern
+
+```ts
+import { layoutProviderHandle } from "@dispatch/layout-provider-contract";
+import type { LayoutOp } from "@dispatch/layout-contract";
+
+const ops: readonly LayoutOp[] = [
+  // ENSURE-FIRST: idempotent ops are the composition primitive. Re-activate,
+  // reload, multi-client race → the panel is added exactly once.
+  { type: "ensurePanel", panels: "side", view: "your-view-id" },
+];
+```
+
+`replaceView` / `insertLeaf` / `insertPanel` / `removeNode` / `moveNode` /
+`setSizes` / `splitLeaf` are the surgical edits; `ensureLeaf` / `ensurePanel`
+are their idempotent counterparts. A blind `insert*` on every activation
+duplicates panels; `ensure*` cannot.
+
+### Address by ID, never by numeric path
+
+Paths (`[1, 0]`) shift every time the tree is edited; ids are stable. The
+default tree's ids — `"root"` (the main split), `"main"` (the left stack),
+`"side"` (the right panels node) — are part of its contract. Target those:
+`{ type: "ensurePanel", panels: "side", … }`.
+
+### The provider may be absent — consume reactively
+
+`layoutProviderHandle` is provided by a STANDARD plugin that may not be
+loaded. NEVER `getService` it (that throws) — consume it like the scaffold
+does (`packages/plugin-scaffold/src/extension.ts`, section 4d):
+
+- `host.tryGetService(layoutProviderHandle)` → present? apply now.
+- absent → `host.onServiceAvailable(layoutProviderHandle, cb)` and apply in
+  the callback when a provider loads. Dispose the subscription in
+  `deactivate()` (it is a ledger-tracked registration).
+- absent forever → your ops never run; degrade gracefully (ephemeral
+  frontend layouts are the no-provider mode).
+
+### Atomicity + failure handling
+
+`applyOps(workspaceId, ops)` returns
+`{ ok: true, tree, applied } | { ok: false, error, failedOp }` — it NEVER
+throws for bad ops. The whole batch is atomic: the ops fold over the tree as
+read at apply time, the folded result validates, and only then does it
+persist + broadcast ONCE. A failure (at `failedOp`) persists NOTHING. Tread
+`!result.ok` as log-worthy, not crash-worthy. Concurrency is
+last-writer-wins (no CAS in v1) — trees are small and edits are rare.
+
+### Changes are events; tolerate your own writes
+
+After every successful write (set / ops / reset) the provider emits the
+`layoutChanged` hook (payload `{ workspaceId, tree }`); the WS broadcasts it
+to every client. React with `host.on(layoutChanged, cb)` (dispose in
+`deactivate()`); there is no caller attribution, so your reactor WILL see
+your own writes — compare trees before re-asserting if a loop matters.
+
+### NO-REVERT on unload + the reset affordance (documented semantics)
+
+Unloading your plugin does NOT revert its layout edits — the edits are
+permanent changes to the workspace tree (later edits may have built on them;
+a revert graph is unbounded). `deactivate()` must NOT try to "remove my
+panel". Recovery is the user-facing **"Reset layout to default"** button in
+the workspace plugins modal (`DELETE /workspaces/:id/layout` → re-seed →
+broadcast) — the plugins modal is where users manage layout plugins, and it
+is the ONLY reset affordance. Note the asymmetry: unloading the *provider*
+plugin removes persistence (clients fall back to the built-in default),
+while unloading an *op-writing* plugin leaves its edits behind. Both are
+intended.

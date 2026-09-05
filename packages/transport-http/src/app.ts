@@ -2126,6 +2126,22 @@ export function createApp(opts: CreateServerOptions): Hono {
     return c.json(result.body, result.status);
   });
 
+  // POST /workspaces/:id/layout/ops (plan 04 §4.2) — the op vocabulary over
+  // HTTP, the SAME kit applyOps the service exposes (one code path, two
+  // doors). 404 while no provider is active (the FE ABI's no-provider
+  // signal); 400 for a bad body/op (failedOp names the offending op); 200
+  // `{ tree, applied }` on success.
+  app.post("/workspaces/:id/layout/ops", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const result = await layoutRoutes.ops(c.req.param("id"), body);
+    return c.json(result.body, result.status);
+  });
+
   app.delete("/workspaces/:id/layout", async (c) => {
     const result = await layoutRoutes.delete(c.req.param("id"));
     return c.json(result.body, result.status);

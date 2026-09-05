@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@dispatch/kernel": "workspace:*",
+    "@dispatch/layout-contract": "workspace:*",
+    "@dispatch/layout-provider-contract": "workspace:*",
     "@dispatch/surface-registry": "workspace:*",
     "@dispatch/ui-contract": "workspace:*"
   },

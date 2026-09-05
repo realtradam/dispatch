@@ -4,6 +4,9 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../kernel" },
+    { "path": "../layout-chat" },
+    { "path": "../layout-contract" },
+    { "path": "../layout-provider-contract" },
     { "path": "../plugin-scaffold" },
     { "path": "../surface-registry" }
   ]

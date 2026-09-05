@@ -594,6 +594,86 @@ describe("reactive service registry (plan 03)", () => {
       ext.deactivate?.();
     }
   });
+
+  test("POST /workspaces/:id/layout/ops (plan 04): 404 no provider, 400 bad op, 200 { tree, applied }", async () => {
+    const host = createBusHostAPI(coreServices(fakeConversationStore()), { httpPort: 0 });
+    const ext = createTransportHttpExtension();
+    await ext.activate(host);
+    const server = ext._testServer;
+    expect(server).toBeDefined();
+    const base = `http://localhost:${server?.port as number}`;
+
+    try {
+      // ── absent: the ops route 404s like its sibling layout routes ──
+      let res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [] }),
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "No layout provider is active" });
+
+      // ── a live provider (the kit's impl) ──
+      const unprovide = host.provideService(
+        layoutProviderHandle,
+        createLayoutProvider({
+          storage: memoryNamespace(),
+          defaultTree: DEFAULT_LAYOUT,
+          emitChange: () => {},
+          logger: fakeLogger(),
+        }),
+      );
+
+      // Malformed body (unknown op type) → 400 { error }.
+      res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [{ type: "teleport" }] }),
+      });
+      expect(res.status).toBe(400);
+      const badBody = (await res.json()) as { error: string; failedOp?: number };
+      expect(badBody.error).toContain("ops[0]");
+
+      // A known-typed op with junk fields → 400 { error, failedOp }.
+      res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [{ type: "ensurePanel", view: "tasks" }] }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: expect.stringContaining("op 0"),
+        failedOp: 0,
+      });
+
+      // A valid batch → 200 { tree, applied }; a follow-up GET sees the result.
+      res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ops: [{ type: "ensurePanel", panels: "side", view: "tasks" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: expect.anything(), applied: 1 });
+
+      res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(200);
+      const { tree } = (await res.json()) as { tree: LayoutTree };
+      expect(JSON.stringify(tree)).toContain('"tasks"');
+
+      // ── un-provide: the ops route 404s again ──
+      unprovide();
+      res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [] }),
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      ext.deactivate?.();
+    }
+  });
   test("deactivate is idempotent and a re-activation boots cleanly (subscriptions re-registered, none leaked)", async () => {
     const host = createBusHostAPI(coreServices(fakeConversationStore()), { httpPort: 0 });
     const ext = createTransportHttpExtension();

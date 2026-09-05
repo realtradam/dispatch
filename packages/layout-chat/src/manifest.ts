@@ -37,7 +37,9 @@ export const manifest: Manifest = {
     // discovery/gating; mounted by the core transport-http over the live
     // registry slot — the route handlers come from the provider kit). While
     // the plugin is active the routes serve; after deactivation they 404.
-    routes: ["/workspaces/:id/layout"],
+    // The ops route (plan 04) shares the kit code path — the service's
+    // `applyOps` over HTTP.
+    routes: ["/workspaces/:id/layout", "/workspaces/:id/layout/ops"],
   },
 
   // No fs/shell/network/secrets/db needs — a storage namespace rides `db`.

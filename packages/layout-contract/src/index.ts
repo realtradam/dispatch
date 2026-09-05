@@ -25,7 +25,11 @@ export {
   setSizes,
   splitLeaf,
 } from "./ops";
-export type { LayoutProvider, SetTreeResult } from "./provider";
+export type {
+  ApplyOpsResult,
+  LayoutProvider,
+  SetTreeResult,
+} from "./provider";
 export type {
   EnsureResult,
   LayoutNode,

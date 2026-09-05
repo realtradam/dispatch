@@ -13,13 +13,14 @@
 
 import type { StorageNamespace } from "@dispatch/kernel";
 import { createLogger } from "@dispatch/kernel";
-import { DEFAULT_LAYOUT, type LayoutTree } from "@dispatch/layout-contract";
+import { DEFAULT_LAYOUT, findById, type LayoutTree } from "@dispatch/layout-contract";
 import type { LayoutChangedMessage } from "@dispatch/transport-contract";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   createLayoutProvider,
   createLayoutRouteHandlers,
   type LayoutRouteResult,
+  parseOpsBody,
   parseTreeBody,
 } from "./kit";
 
@@ -360,6 +361,346 @@ describe("parseTreeBody", () => {
   it("rejects non-objects, missing trees, and wrong versions with specific errors", () => {
     for (const bad of [null, "x", [], {}, { tree: "x" }, { tree: { version: 2, root: {} } }]) {
       const parsed = parseTreeBody(bad);
+      expect(parsed.ok).toBe(false);
+      if (!parsed.ok) expect(parsed.error.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ── applyOps (plan 04 §4.2) — atomic op batches ─────────────────────────────
+//
+// DEFAULT_LAYOUT (the harness seed): root split "root" [ stack "main"
+// (chat, message-queue, composer) | panels "side" (tabs, model) ]. Paths:
+// "main" = [0], "side" = [1].
+
+describe("createLayoutProvider — applyOps (plan 04)", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = makeHarness();
+  });
+
+  it("the op vocabulary folds through the dispatcher and persists + broadcasts EXACTLY ONCE", async () => {
+    await h.provider.getTree("ws-a"); // seed first (a known baseline)
+    h.events.length = 0;
+
+    const result = await h.provider.applyOps("ws-a", [
+      { type: "ensurePanel", panels: "side", view: "tabs" }, // no-op (already present)
+      { type: "insertLeaf", container: "main", view: "tasks" }, // stack append
+      { type: "replaceView", target: [0, 0], view: "notes" }, // main's first leaf
+      { type: "setSizes", split: "root", sizes: [2, 1] }, // root split sizes
+      { type: "splitLeaf", target: [0, 1], view: "status", dir: "col" }, // split main's 2nd leaf
+      { type: "moveNode", target: [0, 3], container: "side" }, // move the tasks leaf into the panels
+      { type: "removeNode", target: [0, 2] }, // drop the composer leaf
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.applied).toBe(7);
+    // The batch is ONE write: exactly one change event, carrying the FOLDED tree.
+    expect(h.events.length).toBe(1);
+    expect(h.events[0]?.workspaceId).toBe("ws-a");
+    expect(h.events[0]?.tree).toEqual(result.tree);
+    // Persisted (the folded tree, byte for byte).
+    expect(h.storage.store.get("tree:ws-a")).toBe(JSON.stringify(result.tree));
+  });
+
+  it("atomicity: a failing op N rejects the whole batch — the stored tree is byte-identical and NOTHING broadcasts", async () => {
+    await h.provider.getTree("ws-a");
+    h.events.length = 0;
+    const before = h.storage.store.get("tree:ws-a");
+
+    const result = await h.provider.applyOps("ws-a", [
+      { type: "insertPanel", panels: "side", view: "tasks" }, // WOULD change the tree
+      { type: "removeNode", target: "root" }, // fails: the root cannot be removed
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failedOp).toBe(1);
+    expect(result.error).toContain("op 1");
+    // Byte-identical storage + zero events: the fold never reached persistence.
+    expect(h.storage.store.get("tree:ws-a")).toBe(before);
+    expect(h.events.length).toBe(0);
+  });
+
+  it("a failing op's error names the op's index; ensure-ops count as applied-but-unchanged", async () => {
+    await h.provider.getTree("ws-a");
+
+    const bad = await h.provider.applyOps("ws-a", [
+      { type: "insertPanel", panels: "side", view: "tasks" },
+      { type: "insertPanel", panels: "no-such-node", view: "tasks" }, // unknown id → fails at index 1
+    ]);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) {
+      expect(bad.failedOp).toBe(1);
+      expect(bad.error).toContain("op 1");
+    }
+
+    const first = await h.provider.applyOps("ws-a", [
+      { type: "ensurePanel", panels: "side", view: "tasks" },
+    ]);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.applied).toBe(1); // applied (created)
+
+    // Re-run: the view is present → applied-but-UNCHANGED (still counts).
+    const second = await h.provider.applyOps("ws-a", [
+      { type: "ensurePanel", panels: "side", view: "tasks" },
+    ]);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.applied).toBe(1);
+    expect(second.tree).toEqual(first.tree);
+  });
+
+  it("id-first addressing survives structural edits that invalidate numeric paths", async () => {
+    await h.provider.getTree("ws-a");
+
+    // By ID: "side" is the default tree's panels node (its ids are contract).
+    const byId = await h.provider.applyOps("ws-a", [
+      { type: "ensurePanel", panels: "side", view: "tasks" },
+    ]);
+    expect(byId.ok).toBe(true);
+
+    // By PATH: [1] addresses the same panels node today…
+    const byPath = await h.provider.applyOps("ws-a", [
+      { type: "ensurePanel", panels: [1], view: "composer" },
+    ]);
+    expect(byPath.ok).toBe(true);
+    if (byPath.ok) {
+      const side = findById(byPath.tree, "side");
+      expect(side?.node.kind).toBe("panels");
+      if (side?.node.kind === "panels") {
+        expect(side.node.panels.some((p) => p.view === "composer")).toBe(true);
+      }
+    }
+
+    // …but a structural edit upstream SHIFTS paths: prepending a root child
+    // moves "side" from [1] to [2], so the old path now addresses the stack —
+    // the path batch fails (atomic, nothing persisted) while the id stays true.
+    const afterEdit = await h.provider.applyOps("ws-a", [
+      { type: "insertLeaf", container: "root", index: 0, view: "tasks" },
+      { type: "ensurePanel", panels: [1], view: "message-queue" }, // [1] is now the stack "main"
+    ]);
+    expect(afterEdit.ok).toBe(false);
+    if (!afterEdit.ok) expect(afterEdit.failedOp).toBe(1);
+
+    const check = await h.provider.getTree("ws-a");
+    const side = findById(check, "side");
+    expect(side?.node.kind).toBe("panels");
+    if (side?.node.kind === "panels") {
+      expect(side.node.panels.some((p) => p.view === "tasks")).toBe(true);
+    }
+  });
+
+  it("the FOLDED result is validated before persist: a drifted (invalid) stored tree is rejected", async () => {
+    // Bypass the validated writes: simulate a drifted record (the storage
+    // shape-check only guards version+root, so a structurally invalid tree
+    // can be planted here — exactly what the folded validation defends
+    // against at apply time).
+    h.storage.store.set(
+      "tree:ws-a",
+      JSON.stringify({ version: 1, root: { kind: "split", dir: "row", children: [] } }),
+    );
+    const result = await h.provider.applyOps("ws-a", []);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("invalid tree");
+  });
+
+  it("an EMPTY ops list succeeds with applied: 0 and is NOT a write (no persist, no event)", async () => {
+    await h.provider.getTree("ws-a");
+    h.events.length = 0;
+    const before = h.storage.store.get("tree:ws-a");
+
+    const result = await h.provider.applyOps("ws-a", []);
+    expect(result).toEqual({ ok: true, tree: expect.anything(), applied: 0 });
+    expect(h.events.length).toBe(0);
+    expect(h.storage.store.get("tree:ws-a")).toBe(before);
+  });
+
+  it("wire junk (a malformed op) becomes a failedOp — never a crash", async () => {
+    await h.provider.getTree("ws-a");
+    // A missing/garbage ref makes the pure op THROW at this untyped boundary;
+    // the provider converts it into a failed-op result.
+    const junk = await h.provider.applyOps("ws-a", [
+      { type: "ensurePanel", panels: undefined as unknown as string, view: "tasks" },
+    ]);
+    expect(junk.ok).toBe(false);
+    if (!junk.ok) {
+      expect(junk.failedOp).toBe(0);
+      expect(junk.error).toContain("op 0");
+    }
+  });
+
+  it("applies against the tree as read at apply time: a fresh workspace is seeded first (read-through)", async () => {
+    // No prior getTree — applyOps itself must seed, then fold over the seed.
+    const result = await h.provider.applyOps("ws-a", [
+      { type: "ensurePanel", panels: "side", view: "tasks" },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(findById(result.tree, "side")?.node.kind).toBe("panels");
+    const stored = h.storage.store.get("tree:ws-a");
+    expect(stored).toBe(JSON.stringify(result.tree));
+  });
+});
+
+describe("createLayoutRouteHandlers — POST ops (plan 04, the second door)", () => {
+  it("404s while no provider is active (before body validation)", async () => {
+    const routes = createLayoutRouteHandlers({
+      getProvider: () => undefined,
+      logger: silentLogger,
+    });
+    const result = await routes.ops("ws-a", { ops: [] });
+    expect(result.status).toBe(404);
+    expect(result.body).toEqual({ error: "No layout provider is active" });
+  });
+
+  it("a malformed body → 400; a known-typed op with junk fields → 400 with failedOp", async () => {
+    const h = makeHarness();
+    const routes = createLayoutRouteHandlers({
+      getProvider: () => h.provider,
+      logger: silentLogger,
+    });
+
+    const noArray = await routes.ops("ws-a", { ops: "junk" });
+    expect(noArray.status).toBe(400);
+
+    const badType = await routes.ops("ws-a", { ops: [{ type: "teleport" }] });
+    expect(badType.status).toBe(400);
+    expect(badType.body).toEqual({ error: expect.stringContaining("ops[0]") });
+
+    const junkFields = await routes.ops("ws-a", { ops: [{ type: "ensurePanel", view: "x" }] });
+    expect(junkFields.status).toBe(400);
+    expect(junkFields.body).toEqual({
+      error: expect.stringContaining("op 0"),
+      failedOp: 0,
+    });
+  });
+
+  it("200 { tree, applied } on success — the SAME kit applyOps (one code path, two doors)", async () => {
+    const h = makeHarness();
+    const routes = createLayoutRouteHandlers({
+      getProvider: () => h.provider,
+      logger: silentLogger,
+    });
+    const result = await routes.ops("ws-a", {
+      ops: [{ type: "ensurePanel", panels: "side", view: "tasks" }],
+    });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ tree: expect.anything(), applied: 1 });
+    if ("tree" in result.body) {
+      expect(findById(result.body.tree, "side")?.node.kind).toBe("panels");
+    }
+    // Exactly one broadcast for the write.
+    expect(h.events.length).toBe(1);
+  });
+});
+
+describe("parseOpsBody", () => {
+  it("accepts { ops: [...] } with known op types", () => {
+    const parsed = parseOpsBody({
+      ops: [
+        { type: "ensurePanel", panels: "side", view: "tasks" },
+        { type: "setSizes", split: [0], sizes: [1, 2] },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.ops.length).toBe(2);
+  });
+
+  it("rejects non-objects, a missing/non-array ops, and unknown op types", () => {
+    for (const bad of [
+      null,
+      "x",
+      42,
+      {},
+      { ops: "junk" },
+      { ops: [{}] },
+      { ops: [{ type: 3 }] },
+      { ops: [{ type: "teleport" }] },
+    ]) {
+      const parsed = parseOpsBody(bad);
+      expect(parsed.ok).toBe(false);
+      if (!parsed.ok) expect(parsed.error.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("createLayoutRouteHandlers — POST ops (plan 04, the second door)", () => {
+  it("404s while no provider is active (before body validation)", async () => {
+    const routes = createLayoutRouteHandlers({
+      getProvider: () => undefined,
+      logger: silentLogger,
+    });
+    const result = await routes.ops("ws-a", { ops: [] });
+    expect(result.status).toBe(404);
+    expect(result.body).toEqual({ error: "No layout provider is active" });
+  });
+
+  it("a malformed body → 400; a known-typed op with junk fields → 400 with failedOp", async () => {
+    const h = makeHarness();
+    const routes = createLayoutRouteHandlers({
+      getProvider: () => h.provider,
+      logger: silentLogger,
+    });
+
+    const noArray = await routes.ops("ws-a", { ops: "junk" });
+    expect(noArray.status).toBe(400);
+
+    const badType = await routes.ops("ws-a", { ops: [{ type: "teleport" }] });
+    expect(badType.status).toBe(400);
+    expect(badType.body).toEqual({ error: expect.stringContaining("ops[0]") });
+
+    const junkFields = await routes.ops("ws-a", { ops: [{ type: "ensurePanel", view: "x" }] });
+    expect(junkFields.status).toBe(400);
+    expect(junkFields.body).toEqual({
+      error: expect.stringContaining("op 0"),
+      failedOp: 0,
+    });
+  });
+
+  it("200 { tree, applied } on success — the same kit applyOps (one code path)", async () => {
+    const h = makeHarness();
+    const routes = createLayoutRouteHandlers({
+      getProvider: () => h.provider,
+      logger: silentLogger,
+    });
+    const result = await routes.ops("ws-a", {
+      ops: [{ type: "ensurePanel", panels: "side", view: "tasks" }],
+    });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ tree: expect.anything(), applied: 1 });
+    if ("tree" in result.body) {
+      expect(findById(result.body.tree, "side")?.node.kind).toBe("panels");
+    }
+    // Exactly one broadcast for the write.
+    expect(h.events.length).toBe(1);
+  });
+});
+
+describe("parseOpsBody", () => {
+  it("accepts { ops: [...] } with known op types", () => {
+    const parsed = parseOpsBody({
+      ops: [
+        { type: "ensurePanel", panels: "side", view: "tasks" },
+        { type: "setSizes", split: [0], sizes: [1, 2] },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.ops.length).toBe(2);
+  });
+
+  it("rejects non-objects, a missing/non-array ops, and unknown op types (with the index)", () => {
+    for (const bad of [
+      null,
+      "x",
+      42,
+      {},
+      { ops: "junk" },
+      { ops: [{}] },
+      { ops: [{ type: 3 }] },
+      { ops: [{ type: "teleport" }] },
+    ]) {
+      const parsed = parseOpsBody(bad);
       expect(parsed.ok).toBe(false);
       if (!parsed.ok) expect(parsed.error.length).toBeGreaterThan(0);
     }

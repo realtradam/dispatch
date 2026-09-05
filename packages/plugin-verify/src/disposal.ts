@@ -67,7 +67,7 @@ function makeLogger(): Logger {
 }
 
 /** In-memory host deps — same shape the kernel's own tests use (no Dispatch mocks). */
-function makeHostDeps(logger: Logger) {
+export function makeHostDeps(logger: Logger) {
   const stores = new Map<string, Map<string, string>>();
   return {
     logger,
