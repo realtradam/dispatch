@@ -44,6 +44,7 @@ export type {
   SplitNode,
   StackChild,
   StackNode,
+  TileMarker,
   TreeResult,
 } from "./tree";
 export { type ValidationResult, validateTree } from "./validate";

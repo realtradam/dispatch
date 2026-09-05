@@ -13,6 +13,7 @@
     "@dispatch/journal-sink": "workspace:*",
     "@dispatch/kernel": "workspace:*",
     "@dispatch/layout-chat": "workspace:*",
+    "@dispatch/layout-diagnostic": "workspace:*",
     "@dispatch/lsp": "workspace:*",
     "@dispatch/mcp": "workspace:*",
     "@dispatch/message-queue": "workspace:*",

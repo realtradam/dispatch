@@ -87,6 +87,7 @@
         "@dispatch/journal-sink": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-chat": "workspace:*",
+        "@dispatch/layout-diagnostic": "workspace:*",
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
@@ -145,6 +146,15 @@
     "packages/layout-contract": {
       "name": "@dispatch/layout-contract",
       "version": "0.1.0",
+    },
+    "packages/layout-diagnostic": {
+      "name": "@dispatch/layout-diagnostic",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/layout-provider-contract": "workspace:*",
+      },
     },
     "packages/layout-provider-contract": {
       "name": "@dispatch/layout-provider-contract",
@@ -556,6 +566,8 @@
     "@dispatch/layout-chat": ["@dispatch/layout-chat@workspace:packages/layout-chat"],
 
     "@dispatch/layout-contract": ["@dispatch/layout-contract@workspace:packages/layout-contract"],
+
+    "@dispatch/layout-diagnostic": ["@dispatch/layout-diagnostic@workspace:packages/layout-diagnostic"],
 
     "@dispatch/layout-provider-contract": ["@dispatch/layout-provider-contract@workspace:packages/layout-provider-contract"],
 

@@ -29,6 +29,11 @@ export function validateTree(
       else if (ids.has(node.id)) errors.push(`${where}: duplicate node id "${node.id}"`);
       else ids.add(node.id);
     }
+    if (node.marker !== undefined && node.marker !== "main" && node.marker !== "side") {
+      errors.push(
+        `${where}: node marker must be "main" or "side", got ${JSON.stringify(node.marker)}`,
+      );
+    }
     switch (node.kind) {
       case "split": {
         if (node.children.length === 0) {

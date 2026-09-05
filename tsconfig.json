@@ -23,6 +23,9 @@
       "path": "./packages/layout-chat"
     },
     {
+      "path": "./packages/layout-diagnostic"
+    },
+    {
       "path": "./packages/surface-registry"
     },
     {

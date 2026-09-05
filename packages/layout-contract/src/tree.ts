@@ -24,12 +24,24 @@ export interface SplitChild {
   readonly collapsible?: boolean;
 }
 
+/**
+ * Diagnostic border marker (additive, optional): a purely PRESENTATIONAL hint
+ * that the renderer outlines the tile with a fixed color — `"main"` red,
+ * `"side"` green. No behavioral meaning anywhere else (the layout-diagnostic
+ * plugin's default tree marks its two root tiles so a human can SEE which
+ * tile is which). `validateTree` rejects unknown values; the renderer ignores
+ * anything it does not know (no border).
+ */
+export type TileMarker = "main" | "side";
+
 /** A row (`dir: "row"`) or column (`dir: "col"`) split of its child subtrees. */
 export interface SplitNode {
   readonly kind: "split";
   readonly id?: string;
   readonly dir: "row" | "col";
   readonly children: readonly SplitChild[];
+  /** Optional diagnostic border marker (see {@link TileMarker}). */
+  readonly marker?: TileMarker;
 }
 
 /** A child of a plain vertical container. `grow` = flex-grow (0 = natural size). */
@@ -43,6 +55,8 @@ export interface StackNode {
   readonly kind: "stack";
   readonly id?: string;
   readonly children: readonly StackChild[];
+  /** Optional diagnostic border marker (see {@link TileMarker}). */
+  readonly marker?: TileMarker;
 }
 
 /**
@@ -53,6 +67,8 @@ export interface PanelsNode {
   readonly kind: "panels";
   readonly id?: string;
   readonly panels: readonly LeafNode[];
+  /** Optional diagnostic border marker (see {@link TileMarker}). */
+  readonly marker?: TileMarker;
 }
 
 /** Mounts a registered view (see the frontend's view registry). */
@@ -60,6 +76,8 @@ export interface LeafNode {
   readonly kind: "leaf";
   readonly id?: string;
   readonly view: string;
+  /** Optional diagnostic border marker (see {@link TileMarker}). */
+  readonly marker?: TileMarker;
 }
 
 export type LayoutNode = SplitNode | StackNode | PanelsNode | LeafNode;

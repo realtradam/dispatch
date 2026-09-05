@@ -112,6 +112,38 @@ describe("validateTree", () => {
     if (!result.ok) expect(result.errors[0]).toContain('unknown view "chat"');
   });
 
+  it("accepts the known diagnostic markers on any node kind", () => {
+    const tree = treeOf({
+      kind: "split",
+      id: "root",
+      dir: "row",
+      children: [
+        {
+          size: 1,
+          node: {
+            kind: "stack",
+            id: "main",
+            marker: "main",
+            children: [{ grow: 1, node: { ...leafOf("chat"), marker: "side" } }],
+          },
+        },
+        {
+          size: 0,
+          basis: 320,
+          node: { kind: "panels", id: "side", marker: "side", panels: [leafOf("tabs")] },
+        },
+      ],
+    });
+    expect(validateTree(tree)).toEqual({ ok: true });
+  });
+
+  it("rejects an unknown marker value", () => {
+    const junk = { ...leafOf("chat"), marker: "purple" } as unknown as LeafNode;
+    const result = validateTree(treeOf(junk));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors[0]).toContain('marker must be "main" or "side"');
+  });
+
   it("validates the titlebar slot when set", () => {
     const tree: LayoutTree = { version: 1, titlebar: leafOf(""), root: leafOf("chat") };
     const result = validateTree(tree);

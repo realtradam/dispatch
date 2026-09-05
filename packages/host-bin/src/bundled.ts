@@ -23,6 +23,7 @@ import { createExecBackendExtension } from "@dispatch/exec-backend";
 import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import type { Extension } from "@dispatch/kernel";
 import { extension as layoutChatExt } from "@dispatch/layout-chat";
+import { extension as layoutDiagnosticExt } from "@dispatch/layout-diagnostic";
 import { extension as lspExt } from "@dispatch/lsp";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
@@ -132,5 +133,14 @@ export function createBundledExtensions(creds: {
     // WS changes. Unloading it degrades the system gracefully — routes 404
     // and clients render their built-in default with ephemeral edits.
     layoutChatExt,
+    // The DIAGNOSTIC layout provider: the same generic machinery (plan-02
+    // kit, same routes, same handle) seeding the default tree with border
+    // markers on the two root tiles (main = red, side = green) so a human can
+    // SEE which tile is which in the browser. Exactly one layout provider can
+    // be active (decision 8, first-provider-wins): kept AFTER layout-chat so
+    // the running default is untouched at boot — enabling this one means
+    // disabling layout-chat first, and the failed boot activation lands
+    // loudly in the manager's disabled-with-reason list (correct, not a bug).
+    layoutDiagnosticExt,
   ];
 }

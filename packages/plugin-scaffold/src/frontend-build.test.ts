@@ -8,10 +8,10 @@
  * canonical fixture.
  */
 import { execSync } from "node:child_process";
-import { readFile, rm, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const frontendJs = join(pkgRoot, "frontend.js");
@@ -19,10 +19,6 @@ const frontendJs = join(pkgRoot, "frontend.js");
 async function build(): Promise<void> {
   execSync("bun run build:frontend", { cwd: pkgRoot, stdio: "pipe" });
 }
-
-beforeEach(async () => {
-  await rm(frontendJs, { force: true });
-});
 
 describe("the scaffold's frontend module (plan 03)", () => {
   it("builds to ONE standalone ESM with svelte externalized", async () => {
