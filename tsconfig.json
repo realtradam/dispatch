@@ -14,10 +14,31 @@
       "path": "./packages/ui-contract"
     },
     {
+      "path": "./packages/layout-contract"
+    },
+    {
+      "path": "./packages/layout-provider-contract"
+    },
+    {
+      "path": "./packages/layout-chat"
+    },
+    {
+      "path": "./packages/layout-diagnostic"
+    },
+    {
+      "path": "./packages/layout-provider-registry"
+    },
+    {
       "path": "./packages/surface-registry"
     },
     {
       "path": "./packages/transport-ws"
+    },
+    {
+      "path": "./packages/plugin-manager"
+    },
+    {
+      "path": "./packages/workspace-plugin-config"
     },
     {
       "path": "./packages/surface-loaded-extensions"
@@ -39,6 +60,9 @@
     },
     {
       "path": "./packages/provider-hyper"
+    },
+    {
+      "path": "./packages/provider-openrouter"
     },
     {
       "path": "./packages/credential-store"
@@ -102,6 +126,12 @@
     },
     {
       "path": "./packages/lsp"
+    },
+    {
+      "path": "./packages/plugin-scaffold"
+    },
+    {
+      "path": "./packages/plugin-verify"
     },
     {
       "path": "./packages/heartbeat"

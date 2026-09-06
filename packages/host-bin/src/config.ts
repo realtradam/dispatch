@@ -75,6 +75,14 @@ export function envToConfigMap(
     }
   }
 
+  // Plugin discovery root override (plan 04). The boot path resolves the
+  // effective root via resolvePluginsDir (DISPATCH_PLUGINS_DIR → XDG_DATA_HOME
+  // → ~/.local/share/dispatch/plugins); this key merely SURFACES the override
+  // to extensions' ConfigAccess for parity with the other env-based config.
+  if (env.DISPATCH_PLUGINS_DIR !== undefined) {
+    map["plugins.dir"] = env.DISPATCH_PLUGINS_DIR;
+  }
+
   return map;
 }
 

@@ -1,0 +1,22 @@
+{
+  "name": "@dispatch/plugin-verify",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/layout-chat": "workspace:*",
+    "@dispatch/layout-contract": "workspace:*",
+    "@dispatch/layout-diagnostic": "workspace:*",
+    "@dispatch/layout-provider-contract": "workspace:*",
+    "@dispatch/layout-provider-registry": "workspace:*",
+    "@dispatch/plugin-scaffold": "workspace:*",
+    "@dispatch/surface-registry": "workspace:*",
+    "@dispatch/workspace-plugin-config": "workspace:*"
+  }
+}

@@ -28,6 +28,40 @@ import type { ToolContract } from "./tool.js";
 export type TrustLevel = "bundled" | "local" | "external";
 
 /**
+ * Classification tier of a plugin — the machine-checked replacement for the
+ * old array-membership curation in the composition root.
+ *
+ * Exactly THREE tiers are classifiable at runtime:
+ * - `"core"` — load-bearing infrastructure (storage, transports, exec
+ *   backend, session orchestration, credential store). The constitutional
+ *   rule (AGENTS.md): **core depends only on core** — a core→standard
+ *   dependency is a classification bug, detectable via
+ *   `assertNoCoreToStandardDeps`.
+ * - `"providers"` — model provider extensions.
+ * - `"standard"` — everything else (tools, features, surfaces).
+ *
+ * "Kernel" is NOT a tier: the kernel is not an extension (it hosts them), so
+ * it is not a `PluginTier` value.
+ */
+export type PluginTier = "core" | "providers" | "standard";
+
+/**
+ * Reserved frontend section of a manifest. The SHAPE is frozen in v1 (plan 03
+ * gives it runtime semantics): `apiVersion` is the semver range of FRONTEND
+ * ABI versions the plugin supports (the client handshakes it against its
+ * FRONTEND_ABI_VERSION — a mismatch lists the plugin as "incompatible
+ * frontend plugin" and never imports its module); `entry` is the prebuilt
+ * ESM file the backend serves at `GET /plugins/:id/frontend` (resolved
+ * relative to the plugin directory, traversal-checked).
+ */
+export interface ManifestFrontend {
+  /** Semver range of frontend API versions this section is compatible with. */
+  readonly apiVersion: string;
+  /** Module specifier of the frontend entry (resolved by the future loader). */
+  readonly entry: string;
+}
+
+/**
  * What an extension contributes to the system. Used by the host for
  * discovery, dependency resolution, and the capability gate.
  */
@@ -62,6 +96,16 @@ export interface ManifestCapabilities {
  * An extension's declaration — what it is, what it provides, and what it
  * requires. The host uses this to resolve dependency DAG, check apiVersion
  * compatibility, and enforce the capability gate.
+ *
+ * ## Required vs optional fields (§10.4)
+ *
+ * The REQUIRED set (`id`, `name`, `version`, `apiVersion`, `tier`, `trust`)
+ * is the minimum the host needs to classify and gate an extension (identity,
+ * compat, tier, origin) — it is non-optional in TS so contract violations
+ * surface in `tsc`. The OPTIONAL set (`dependsOn`, `entry`, `activation`,
+ * `contributes`, `capabilities`, `frontend`) stays optional: forcing
+ * present-but-empty values would burden every manifest and external authors
+ * for no benefit.
  */
 export interface Manifest {
   /** Unique extension identifier (e.g. "tools-fs", "provider-anthropic"). */
@@ -76,8 +120,24 @@ export interface Manifest {
   /** Semver range of kernel API versions this extension is compatible with. */
   readonly apiVersion: string;
 
+  /**
+   * Classification tier — REQUIRED. Every extension declares which of the
+   * three runtime tiers (`core` | `providers` | `standard`) it belongs to;
+   * the host derives locks/checkboxes and the core-depends-only-on-core rule
+   * from it. `tsc` enforces presence (§10.4).
+   */
+  readonly tier: PluginTier;
+
   /** Ids of extensions this one depends on (resolved topologically). */
   readonly dependsOn?: readonly string[];
+
+  /**
+   * Optional module specifier of the code entry, relative to the plugin
+   * directory (plan 04 packaging). Directory plugins (manifest.json + code)
+   * default to the conventional `index.ts`/`index.js`; `entry` overrides the
+   * convention. Bundled extensions are imported directly and leave it unset.
+   */
+  readonly entry?: string;
 
   /** Activation strategy: "eager" (on boot) or lazy event triggers. */
   readonly activation?: "eager" | string;
@@ -87,6 +147,12 @@ export interface Manifest {
 
   /** Capabilities this extension requires from the host. */
   readonly capabilities?: ManifestCapabilities;
+
+  /**
+   * Frontend section (plan 03: the frontend ABI). Optional — only plugins
+   * shipping a prebuilt ESM frontend module set it (see `ManifestFrontend`).
+   */
+  readonly frontend?: ManifestFrontend;
 
   /** Trust level — bundled (first-party), local (project), or external. */
   readonly trust: TrustLevel;
@@ -173,6 +239,31 @@ export interface EventsEmitter {
  *
  * Method signatures are typed contracts; implementations live in the host
  * module (not the kernel contracts).
+ *
+ * ## Disposal contract (enforced by the host)
+ *
+ * Every registration a HostAPI hands out is tracked per extension. When the
+ * extension is deactivated (unload/reload/shutdown), its `deactivate()` must
+ * dispose what it owns:
+ * - call the disposer returned by `provideService` for every service it gave,
+ * - call the disposers returned by `on` / `addFilter` /
+ *   `onServiceAvailable` / `onServiceUnavailable` for every subscription,
+ *   filter, and availability subscription it added,
+ * - call `scheduler.unregister` for every job it registered.
+ *
+ * After `deactivate()` the host verifies these are gone; anything still
+ * present is force-cleaned and logged ("dangling registration from plugin X").
+ * Tools, providers, and auth have no extension-side removal — the host removes
+ * them itself as part of the unload sweep.
+ *
+ * **Service-mediated registries are NOT tracked by this ledger**: some
+ * registries are themselves services (provided and consumed via typed service
+ * handles — e.g. UI surface registries), so registering into them does not
+ * flow through `define*` and is invisible to the ledger. A plugin that
+ * registers into such a registry via `getService` must deregister through the
+ * same registry in its `deactivate()`; a leaked registration there is caught
+ * by the plugin-verification harness asserting against that registry's
+ * catalog, not by the host ledger.
  */
 export interface HostAPI {
   /** Register a tool with the kernel's tool registry. */
@@ -228,11 +319,46 @@ export interface HostAPI {
     opts?: { readonly failClosed?: boolean },
   ) => Promise<TValue>;
 
-  /** Provide an implementation for a typed service handle. */
-  readonly provideService: <T>(handle: ServiceHandle<T>, impl: T) => void;
+  /**
+   * Provide an implementation for a typed service handle. Returns an
+   * un-provide disposer — call it to revoke the implementation (a later
+   * `getService` for the handle throws again). The disposal contract
+   * requires a deactivating extension to call this disposer for every
+   * service it provided.
+   */
+  readonly provideService: <T>(handle: ServiceHandle<T>, impl: T) => () => void;
 
   /** Retrieve the implementation for a typed service handle. */
   readonly getService: <T>(handle: ServiceHandle<T>) => T;
+
+  /**
+   * Non-throwing service lookup: the current implementation for the handle,
+   * or `undefined` when nothing provided it. The consumption pattern for
+   * OPTIONAL services — a core extension consuming a Standard-provided
+   * service looks the current value up (per request / per turn) and degrades
+   * when it is absent, so a Standard plugin can be loaded or unloaded
+   * mid-session with no core edit and no restart (plan 03). `getService`
+   * keeps its throwing behavior for genuine mandatory (core→core) deps.
+   */
+  readonly tryGetService: <T>(handle: ServiceHandle<T>) => T | undefined;
+
+  /**
+   * Subscribe to a service becoming available. Fires immediately (and
+   * error-isolated) with the current implementation when the service is
+   * already provided, then on each subsequent provide. Pair with
+   * `onServiceUnavailable` to keep a local slot fresh; per-request reads can
+   * also skip the slot and call `tryGetService` directly. The returned
+   * disposer is tracked in this extension's registration ledger — a
+   * deactivating extension must dispose it (or the host force-cleans it).
+   */
+  readonly onServiceAvailable: <T>(handle: ServiceHandle<T>, cb: (impl: T) => void) => () => void;
+
+  /**
+   * Subscribe to a service becoming unavailable (its un-provide disposer ran).
+   * Error-isolated; the returned disposer is ledger-tracked like
+   * `onServiceAvailable`'s.
+   */
+  readonly onServiceUnavailable: <T>(handle: ServiceHandle<T>, cb: () => void) => () => void;
 
   /** Get a namespaced storage interface for this extension. */
   readonly storage: (namespace: string) => StorageNamespace;
@@ -267,9 +393,18 @@ export interface HostAPI {
   /** Read-only view of all activated extensions' manifests (what is loaded). */
   readonly getExtensions: () => readonly Manifest[];
 
-  /** Register a scheduled job with the host's scheduler. */
+  /**
+   * Register a scheduled job with the host's scheduler. Returns an
+   * unregister disposer for the job (see `scheduler.unregister`).
+   */
   readonly scheduler: {
     readonly register: (job: ScheduledJob) => void;
+    /**
+     * Remove a previously registered job (by id). The disposal contract
+     * requires a deactivating extension to unregister every job it
+     * registered; the host force-unregisters leftovers and logs them.
+     */
+    readonly unregister: (jobId: string) => void;
   };
 }
 

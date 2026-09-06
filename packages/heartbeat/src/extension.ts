@@ -28,6 +28,7 @@ export const manifest: Manifest = {
   name: "Heartbeat",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "standard",
   trust: "bundled",
   // system-prompt provides `resolveText` (the variable resolver used to
   // substitute [type:name] placeholders in heartbeat prompts); conversation-

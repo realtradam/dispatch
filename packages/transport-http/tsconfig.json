@@ -7,13 +7,17 @@
     { "path": "../credential-store" },
     { "path": "../heartbeat" },
     { "path": "../kernel" },
+    { "path": "../layout-contract" },
+    { "path": "../layout-provider-contract" },
     { "path": "../lsp" },
     { "path": "../mcp" },
     { "path": "../named-agents" },
+    { "path": "../plugin-manager" },
     { "path": "../provider-concurrency" },
     { "path": "../session-orchestrator" },
     { "path": "../system-prompt" },
     { "path": "../throughput-store" },
-    { "path": "../transport-contract" }
+    { "path": "../transport-contract" },
+    { "path": "../workspace-plugin-config" }
   ]
 }

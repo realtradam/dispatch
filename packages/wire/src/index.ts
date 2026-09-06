@@ -639,6 +639,14 @@ export interface ConversationMeta {
    * policy; callers interpret absence as `{ mode: 'all' }`.
    */
   readonly toolPolicy?: ConversationToolPolicy;
+  /**
+   * The persisted per-conversation model name (`<credential>/<model>`), when
+   * one has been set. Absent/null means the conversation uses the default
+   * provider model. Surfaced on the open-conversation list + `conversation.open`
+   * broadcast so clients can stamp a tab with the conversation's ACTUAL model
+   * instead of the currently-selected global model.
+   */
+  readonly model?: string;
 }
 
 // ─── Compaction ──────────────────────────────────────────────────────────────

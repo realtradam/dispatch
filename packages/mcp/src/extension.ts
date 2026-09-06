@@ -10,9 +10,10 @@
  * in-memory backends (mirrors the LSP extension's injected adapters).
  */
 
-import type { Extension, HostAPI, ServiceHandle } from "@dispatch/kernel";
+import type { Extension, HostAPI, Manifest, ServiceHandle } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
 import { type ToolAssembly, toolsFilter } from "@dispatch/session-orchestrator";
+import { isPluginUsable, workspacePluginConfigHandle } from "@dispatch/workspace-plugin-config";
 import type { McpClient } from "./client.js";
 import { resolveServers } from "./config.js";
 import type { Logger } from "./manager.js";
@@ -36,6 +37,12 @@ export interface McpExtensionDeps {
  * Pure tool-filter logic: remove MCP tools whose owning server is not
  * currently connected. Non-MCP tools (no entry in `toolToServer`) are kept.
  * Extracted from the filter handler so it is unit-testable without I/O.
+ *
+ * The assembly's non-tool fields are preserved VERBATIM (spread) — including
+ * `modelName` / `workspaceId` / `signal` (plan 06 §6.3: the workspace gate
+ * downstream of this filter reads `workspaceId`, and the orchestrator's
+ * stop-interrupt reads `signal`), so a mid-chain filter must never shrink
+ * the assembly.
  */
 export function filterMcpTools(
   assembly: ToolAssembly,
@@ -47,12 +54,7 @@ export function filterMcpTools(
     if (serverId === undefined) return true;
     return connectedServerIds.has(serverId);
   });
-  return {
-    tools: filtered,
-    ...(assembly.cwd !== undefined && { cwd: assembly.cwd }),
-    ...(assembly.computerId !== undefined && { computerId: assembly.computerId }),
-    conversationId: assembly.conversationId,
-  };
+  return { ...assembly, tools: filtered };
 }
 
 /** Map a host Logger to the manager's narrower Logger surface. */
@@ -69,18 +71,21 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
   // factory closure so each built extension has its own.
   const store: { manager: McpManager | null } = { manager: null };
 
+  const manifest: Manifest = {
+    id: "mcp",
+    name: "Model Context Protocol",
+    version: "0.0.0",
+    apiVersion: "^0.1.0",
+    tier: "standard",
+    trust: "bundled",
+    activation: "eager",
+    dependsOn: ["session-orchestrator"],
+    capabilities: { spawn: true },
+    contributes: { tools: [], services: ["mcp"] },
+  };
+
   return {
-    manifest: {
-      id: "mcp",
-      name: "Model Context Protocol",
-      version: "0.0.0",
-      apiVersion: "^0.1.0",
-      trust: "bundled",
-      activation: "eager",
-      dependsOn: ["session-orchestrator"],
-      capabilities: { spawn: true },
-      contributes: { tools: [], services: ["mcp"] },
-    },
+    manifest,
     activate(host: HostAPI) {
       const logger = host.logger;
 
@@ -141,6 +146,13 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
       // Resolve config + ensure servers connected, then drop tools whose
       // server is not connected. Lazy-spawn happens here (first turn).
       //
+      // Per-workspace self-gate (plan 06 §6.3): when `mcp` is disabled in
+      // the turn's workspace, SKIP the whole (potentially slow,
+      // network-touching) connect phase and return the assembly unchanged —
+      // the orchestrator's workspace tool-gate drops this plugin's tools
+      // downstream (ledger attribution). The gate reads the assembly's
+      // `workspaceId`; absent → no workspace context → behave as before.
+      //
       // The whole connect phase is wrapped in a per-filter AbortController
       // that fires on EITHER (a) the turn's signal (`assembly.signal`, so
       // POST /conversations/:id/stop interrupts a stuck connect immediately)
@@ -148,6 +160,14 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
       // framing-incompatible server cannot hang the turn forever). On abort
       // we degrade gracefully: skip MCP tools for this turn rather than block.
       host.addFilter(toolsFilter, async (assembly: ToolAssembly): Promise<ToolAssembly> => {
+        if (assembly.workspaceId !== undefined) {
+          const config = host.tryGetService(workspacePluginConfigHandle);
+          if (config !== undefined) {
+            const state = await config.stateOf(assembly.workspaceId, manifest.id);
+            if (!isPluginUsable(manifest.tier, state)) return assembly;
+          }
+        }
+
         const cwd = assembly.cwd ?? deps.getCwd();
         const dispatchMcpJson = await deps.readFile(joinPath(cwd, ".dispatch", "mcp.json"));
         const opencodeJson = await deps.readFile(joinPath(cwd, "opencode.json"));

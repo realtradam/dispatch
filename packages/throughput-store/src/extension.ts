@@ -7,6 +7,7 @@ export const manifest: Manifest = {
   name: "Throughput Store",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "standard",
   trust: "bundled",
   capabilities: { db: true },
   contributes: { services: ["throughput-store/store"] },

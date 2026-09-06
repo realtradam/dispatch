@@ -1,5 +1,7 @@
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
-import type { AgentEvent, HostAPI, Logger } from "@dispatch/kernel";
+import type { AgentEvent, HostAPI, Logger, PluginTier } from "@dispatch/kernel";
+import type { LayoutProviderRegistry } from "@dispatch/layout-provider-contract";
+import { createLayoutRouteHandlers } from "@dispatch/layout-provider-contract";
 import { DEFAULT_TEMPLATE, getVariableCatalog } from "@dispatch/system-prompt";
 import type {
   CloseConversationResponse,
@@ -33,6 +35,8 @@ import type {
   NamedAgentResponse,
   NamedAgentsResponse,
   OpenConversationResponse,
+  PluginListResponse,
+  PluginScanResponse,
   QueueCancelResponse,
   QueueResponse,
   ReasoningEffortResponse,
@@ -42,6 +46,7 @@ import type {
   SetConversationComputerRequest,
   SetSystemPromptTemplateRequest,
   SetWorkspaceDefaultComputerRequest,
+  SetWorkspacePluginStateRequest,
   StopHeartbeatRunResponse,
   SystemPromptTemplateResponse,
   SystemPromptVariablesResponse,
@@ -53,6 +58,9 @@ import type {
   VisionSettingsResponse,
   WarmResponse,
   WorkspaceListResponse,
+  WorkspacePluginProvidersStatusResponse,
+  WorkspacePluginStateValue,
+  WorkspacePluginsResponse,
   WorkspaceResponse,
 } from "@dispatch/transport-contract";
 import { Hono } from "hono";
@@ -71,14 +79,17 @@ import {
   mapUpdateError,
   parseChatBody,
   parseModelBody,
+  parsePluginForceBody,
   parseQueueBody,
   parseReasoningEffortBody,
   parseSinceSeq,
   parseStatusFilter,
   parseWarmBody,
   parseWindowParam,
+  pluginOpStatus,
   serializeEventLine,
 } from "./logic.js";
+import type { PluginOwnership } from "./seam.js";
 import {
   type CompactionService,
   type ComputerService,
@@ -93,11 +104,14 @@ import {
   type McpServerStatus,
   type McpService,
   type NamedAgentsService,
+  type PluginManagerService,
   type SessionOrchestrator,
   type SystemPromptService,
   ThroughputQueryError,
   type ThroughputStore,
+  usablePluginsInWorkspace,
   type WarmService,
+  type WorkspacePluginConfigService,
 } from "./seam.js";
 
 export interface CreateServerOptions {
@@ -106,42 +120,105 @@ export interface CreateServerOptions {
   readonly credentialStore: CredentialStore;
   readonly warmService?: WarmService;
   readonly compactionService?: CompactionService;
-  readonly lspService?: LspService;
-  readonly mcpService?: McpService;
+  /**
+   * Optional + reactive: read PER REQUEST (the extension passes a live
+   * getter over a registry slot). `| undefined` is explicit so a getter
+   * returning the slot's current value typechecks under
+   * exactOptionalPropertyTypes — an absent service (extension not loaded or
+   * unloaded mid-session) takes the route's degrade path.
+   */
+  readonly lspService?: LspService | undefined;
+  readonly mcpService?: McpService | undefined;
   /** Optional — system prompt builder service (GET/PUT template). */
   readonly systemPromptService?: SystemPromptService;
   /**
-   * Optional — per-workspace heartbeat loop service (provided by the
-   * `heartbeat` extension). When absent (heartbeat not loaded), the
+   * Optional + reactive — per-workspace heartbeat loop service (provided by
+   * the `heartbeat` extension; read per request via a registry slot). When
+   * absent (heartbeat not loaded / unloaded mid-session), the
    * `/workspaces/:id/heartbeat*` routes degrade: GET returns defaults,
    * PUT/POST return 503.
    */
-  readonly heartbeatService?: HeartbeatService;
+  readonly heartbeatService?: HeartbeatService | undefined;
   /**
-   * Optional — computer discovery + live connection service (provided by the
-   * `ssh` extension). When absent (ssh not loaded), the `/computers*` routes
-   * degrade: list returns `[]`, status returns "disconnected", test returns
-   * a not-configured result. The per-conversation / workspace-default computer
+   * Optional + reactive — computer discovery + live connection service
+   * (provided by the `ssh` extension; read per request via a registry slot).
+   * When absent (ssh not loaded), the `/computers*` routes degrade: list
+   * returns `[]`, status returns "disconnected", test returns a
+   * not-configured result. The per-conversation / workspace-default computer
    * endpoints work regardless (they only touch the conversation store).
    */
-  readonly computerService?: ComputerService;
-  /** Optional — defaults to a no-op store (recording disabled, empty reports). */
-  readonly throughputStore?: ThroughputStore;
+  readonly computerService?: ComputerService | undefined;
   /**
-   * Optional — provider concurrency limiter service (provided by the
-   * `provider-concurrency` extension). When absent (extension not loaded),
-   * the `/concurrency/*` routes degrade: limits returns empty, status returns
-   * empty, PUT returns 503.
+   * Optional + reactive — throughput metrics store (provided by the
+   * `throughput-store` extension; read per use via a registry slot). When
+   * absent, recording is a no-op and aggregate reports are empty.
    */
-  readonly concurrencyService?: ConcurrencyService;
+  readonly throughputStore?: ThroughputStore | undefined;
   /**
-   * Optional — the Named Agent registry service (provided by the
-   * `named-agents` extension). When absent (extension not loaded), the
-   * `/named-agents*` routes degrade: GET/POST/PUT/DELETE return 503. When
-   * present, the routes delegate to this typed service — never a raw store —
-   * and perform ZERO provider-catalog calls (the registry is local config).
+   * Optional + reactive — provider concurrency limiter service (provided by
+   * the `provider-concurrency` extension; read per request via a registry
+   * slot). When absent (extension not loaded), the `/concurrency/*` routes
+   * degrade: limits returns empty, status returns empty, PUT returns 503.
    */
-  readonly namedAgentService?: NamedAgentsService;
+  readonly concurrencyService?: ConcurrencyService | undefined;
+  /**
+   * Optional + reactive — the Named Agent registry service (provided by the
+   * `named-agents` extension; read per request via a registry slot). When
+   * absent (extension not loaded / unloaded mid-session), the `/named-agents*`
+   * routes degrade: GET/POST/PUT/DELETE return 503. When present, the routes
+   * delegate to this typed service — never a raw store — and perform ZERO
+   * provider-catalog calls (the registry is local config).
+   */
+  readonly namedAgentService?: NamedAgentsService | undefined;
+  /**
+   * Optional + reactive — the plugin-manager service (provided by the core
+   * `plugin-manager` extension; read per request via a registry slot). When
+   * absent (somehow not activated), the `/plugins*` routes degrade to 503.
+   * Route handlers are thin shells: parse → delegate → map the structured
+   * result to a status (200 ok / 400 invalid body / 404 not-found /
+   * 409 blocked-with-reason / 500 engine failure / 503 absent).
+   */
+  readonly pluginManagerService?: PluginManagerService | undefined;
+  /**
+   * Optional + reactive — the per-workspace plugin enablement store
+   * (provided by the core `workspace-plugin-config` extension; read per
+   * request via a registry slot). When absent, the
+   * `/workspaces/:id/plugins*` routes degrade to 503 and `GET /models` with
+   * a `workspaceId` query degrades to 503 (without the param `/models`
+   * stays global and needs NO service — backward compatible). Route
+   * handlers are thin shells: parse → delegate to the service → map to
+   * HTTP (the state-transition + validation logic lives in the service).
+   */
+  readonly workspacePluginConfigService?: WorkspacePluginConfigService | undefined;
+  /**
+   * Optional + reactive — the plan-06 `PluginOwnership` seam (the
+   * composition root adapts it from the kernel host's registration-ledger
+   * views). `GET /models?workspaceId=` uses it to attribute each provider
+   * to its owning plugin; absent → that route degrades to 503 (the
+   * per-workspace gate must not silently over- or under-filter).
+   */
+  readonly pluginOwnership?: PluginOwnership | undefined;
+  /**
+   * Optional + reactive — the layout-provider REGISTRY (plan 02, evolved for
+   * per-workspace activation; provided by the bundled standard
+   * `layout-provider-registry` extension; every loaded layout plugin
+   * registers into it). Read per request via a registry slot; the routes
+   * resolve the WORKSPACE's one enabled layout plugin through
+   * `providerFor(workspaceId)` — the per-workspace enablement state decides
+   * which plugin serves. When absent (nothing registered / the registry
+   * unloaded mid-session) or when the workspace enables no layout plugin,
+   * the `/workspaces/:id/layout` routes degrade to 404 — the frontend's
+   * no-provider signal — and the decision logic (status mapping, body
+   * validation) lives in the provider kit; this transport mounts the
+   * handlers as thin shells (D-L6: no layout knowledge here).
+   */
+  readonly layoutProviderRegistry?: LayoutProviderRegistry | undefined;
+  /**
+   * Live tier lookup over the host's loaded manifests (wired by the
+   * extension from `host.getExtensions()`). Used by `GET /models?workspaceId=`
+   * to classify a provider's owning plugin; `undefined` tier → fail-open.
+   */
+  readonly pluginTierOf?: (pluginId: string) => PluginTier | undefined;
   readonly logger?: Logger;
   readonly generateId?: () => string;
   /** Injectable clock for sample timestamps (default Date.now). */
@@ -187,12 +264,22 @@ const noopThroughputStore: ThroughputStore = {
   aggregate: async (q) => ({ period: q.period, date: q.date, start: 0, end: 0, models: [] }),
 };
 
+/**
+ * The CURRENT throughput store per use — never captured at app-creation
+ * time. The extension passes `throughputStore` as a live getter over a
+ * registry slot, so a throughput-store loaded/unloaded mid-session is picked
+ * up on the next sample/report (absent → the no-op store records nothing and
+ * aggregates empty).
+ */
+function currentThroughputStore(opts: CreateServerOptions): ThroughputStore {
+  return opts.throughputStore ?? noopThroughputStore;
+}
+
 export function createApp(opts: CreateServerOptions): Hono {
   const app = new Hono();
   const log = opts.logger ?? noopLogger;
   const generateId = opts.generateId ?? (() => crypto.randomUUID());
   const now = opts.now ?? (() => Date.now());
-  const throughputStore = opts.throughputStore ?? noopThroughputStore;
 
   async function recordThroughput(
     turnEvents: readonly AgentEvent[],
@@ -207,7 +294,7 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
     if (genMs <= 0) return; // no generation time → can't compute tok/s
     try {
-      await throughputStore.record({ model, ts: now(), outputTokens, genMs });
+      await currentThroughputStore(opts).record({ model, ts: now(), outputTokens, genMs });
       log.info("throughput: turn recorded", {
         model,
         outputTokens,
@@ -355,11 +442,68 @@ export function createApp(opts: CreateServerOptions): Hono {
   });
 
   app.get("/models", async (c) => {
+    // Per-workspace provider gate (plan 06 §6.5): with `workspaceId` the
+    // catalog is filtered to providers whose OWNING plugin is usable in that
+    // workspace (loaded globally AND enabled there — `isPluginUsable`).
+    // Attribution via the plan-01 ledger (`PluginOwnership.ownerOfProvider`),
+    // NOT manifests. WITHOUT the param the route is the global catalog —
+    // backward compatible, no service needed. With the param, an absent
+    // config/ownership service degrades to 503 (never silently unfiltered).
+    const workspaceId = c.req.query("workspaceId");
     try {
       const entries = await opts.credentialStore.listCatalogDetailed();
-      const models = entries.map((e) => e.name);
+      let visible = entries;
+      if (workspaceId !== undefined) {
+        const config = opts.workspacePluginConfigService;
+        const ownership = opts.pluginOwnership;
+        const tierOf = opts.pluginTierOf;
+        if (config === undefined || ownership === undefined || tierOf === undefined) {
+          return c.json({ error: "Workspace plugin config service not available" }, 503);
+        }
+        // Provider id per catalog entry (`resolve` is a local map lookup —
+        // no I/O). An unresolvable entry is KEPT (fail-open — it has no
+        // attributable provider to gate).
+        const providerIdOfEntry = new Map<string, string>();
+        const providerIds = new Set<string>();
+        for (const entry of entries) {
+          const resolved = opts.credentialStore.resolve(entry.name);
+          if (resolved === undefined) continue;
+          providerIdOfEntry.set(entry.name, resolved.providerId);
+          providerIds.add(resolved.providerId);
+        }
+        // Provider → owning plugin → usable set (the ONE pure rule shared
+        // with the tool gate + surface filter). An UNATTRIBUTABLE provider
+        // (no ledger owner, or owner not classifiable) is KEPT — fail-open;
+        // global loaded/unloaded state already gates it.
+        const ownerOf = new Map<string, string>();
+        for (const providerId of providerIds) {
+          const owner = ownership.ownerOfProvider(providerId);
+          if (owner !== undefined) ownerOf.set(providerId, owner);
+        }
+        const usableOwners = await usablePluginsInWorkspace(
+          workspaceId,
+          [...new Set(ownerOf.values())],
+          config,
+          tierOf,
+        );
+        const usableProviders = new Set<string>();
+        for (const providerId of providerIds) {
+          const owner = ownerOf.get(providerId);
+          if (owner === undefined) {
+            usableProviders.add(providerId); // unattributable → fail-open
+          } else if (usableOwners.has(owner)) {
+            usableProviders.add(providerId);
+          }
+        }
+        visible = entries.filter((entry) => {
+          const providerId = providerIdOfEntry.get(entry.name);
+          if (providerId === undefined) return true; // unresolvable → fail-open
+          return usableProviders.has(providerId);
+        });
+      }
+      const models = visible.map((e) => e.name);
       const modelInfo: Record<string, { contextWindow?: number; vision?: boolean }> = {};
-      for (const entry of entries) {
+      for (const entry of visible) {
         if (entry.info.contextWindow !== undefined || entry.info.vision === true) {
           const infoEntry: { contextWindow?: number; vision?: boolean } = {};
           if (entry.info.contextWindow !== undefined)
@@ -772,7 +916,11 @@ export function createApp(opts: CreateServerOptions): Hono {
     try {
       // Typed against the wire contract: if the store's report shape ever
       // drifts from ThroughputResponse, this assignment fails to compile.
-      const body: ThroughputResponse = await throughputStore.aggregate({ period, date });
+      // Read per request: the current registry slot's store (or the no-op).
+      const body: ThroughputResponse = await currentThroughputStore(opts).aggregate({
+        period,
+        date,
+      });
       return c.json(body);
     } catch (err) {
       if (err instanceof ThroughputQueryError) {
@@ -1479,7 +1627,15 @@ export function createApp(opts: CreateServerOptions): Hono {
     // `"default"` when no workspaceId is persisted (or the conversation is
     // unknown), so this never throws for a missing conversation.
     const workspaceId = await opts.conversationStore.getWorkspaceId(conversationId);
-    opts.emit(conversationOpened, { conversationId, workspaceId });
+    // Surface the persisted per-conversation model so the frontend can stamp
+    // the opened tab with the conversation's ACTUAL model (not the global
+    // active model) — fix-toolcall-duplicate-keys plan Part 4.
+    const model = await opts.conversationStore.getModel(conversationId);
+    opts.emit(conversationOpened, {
+      conversationId,
+      workspaceId,
+      ...(model !== null ? { model } : {}),
+    });
     log.info("conversations: opened", { conversationId, workspaceId });
     const body: OpenConversationResponse = { conversationId };
     return c.json(body, 200);
@@ -1837,6 +1993,168 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
   });
 
+  // ─── Per-workspace plugin enablement (plan 06 §6.6) ────────────────────────
+  // The workspace modal's read+write contract for "is this plugin used HERE".
+  // Delegated to the WorkspacePluginConfigService (provided by the CORE
+  // `workspace-plugin-config` extension) — route handlers are thin shells
+  // (parse → delegate → map to HTTP); the state-transition + validation
+  // logic lives in the service. When the service is absent (somehow not
+  // activated), every route degrades to 503. The GET's read-through
+  // materialization (§6.1) is what lazily registers a workspace.
+
+  app.get("/workspaces/:id/plugins", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (opts.workspacePluginConfigService === undefined) {
+      return c.json({ error: "Workspace plugin config service not available" }, 503);
+    }
+    try {
+      const view = await opts.workspacePluginConfigService.view(workspaceId);
+      log.info("workspaces: plugin states read", {
+        workspaceId,
+        plugins: view.plugins.length,
+        enabledProviderCount: view.enabledProviderCount,
+      });
+      const body: WorkspacePluginsResponse = {
+        workspaceId,
+        plugins: view.plugins,
+        enabledProviderCount: view.enabledProviderCount,
+      };
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("workspaces: plugin states read failure", { err, workspaceId });
+      return c.json({ error: "Failed to read workspace plugin states" }, 500);
+    }
+  });
+
+  app.get("/workspaces/:id/plugins/providers-status", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (opts.workspacePluginConfigService === undefined) {
+      return c.json({ error: "Workspace plugin config service not available" }, 503);
+    }
+    try {
+      const enabledProviderCount =
+        await opts.workspacePluginConfigService.enabledProviderCount(workspaceId);
+      const body: WorkspacePluginProvidersStatusResponse = { workspaceId, enabledProviderCount };
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("workspaces: providers-status failure", { err, workspaceId });
+      return c.json({ error: "Failed to read workspace provider status" }, 500);
+    }
+  });
+
+  app.put("/workspaces/:id/plugins/:pluginId", async (c) => {
+    const workspaceId = c.req.param("id");
+    const pluginId = c.req.param("pluginId");
+    if (opts.workspacePluginConfigService === undefined) {
+      return c.json({ error: "Workspace plugin config service not available" }, 503);
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      log.warn("workspaces: plugin state invalid JSON body", { workspaceId, pluginId });
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (body === null || typeof body !== "object") {
+      return c.json({ error: "Request body must be a JSON object" }, 400);
+    }
+    const rawState = (body as Record<string, unknown>).state;
+    if (rawState !== "enabled" && rawState !== "disabled" && rawState !== "unset") {
+      return c.json({ error: "Field 'state' must be one of: enabled, disabled, unset" }, 400);
+    }
+    const request: SetWorkspacePluginStateRequest = { state: rawState };
+
+    try {
+      const result = await opts.workspacePluginConfigService.setState(
+        workspaceId,
+        pluginId,
+        request.state,
+      );
+      if (!result.ok) {
+        // Strict layering (§7): only the global plugin-manager loads code —
+        // the per-workspace surface refuses unloaded (greyed) and core
+        // (locked) plugins with 409.
+        log.warn("workspaces: plugin state change refused", {
+          workspaceId,
+          pluginId,
+          reason: result.reason,
+        });
+        const blocked = {
+          workspaceId,
+          pluginId,
+          reason: result.reason,
+          message:
+            result.reason === "core-locked"
+              ? "Core plugins cannot be changed per workspace"
+              : "Plugin is not loaded — load it globally first",
+        };
+        return c.json(blocked, 409);
+      }
+      const stateValue: WorkspacePluginStateValue = result.state ?? "undefined";
+      log.info("workspaces: plugin state set", { workspaceId, pluginId, state: stateValue });
+      const response = { workspaceId, pluginId, state: stateValue };
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("workspaces: plugin state set failure", { err, workspaceId, pluginId });
+      return c.json({ error: "Failed to set workspace plugin state" }, 500);
+    }
+  });
+
+  // ─── Layout (plan 02 — the workspace-ACTIVE layout provider's well-known
+  //      routes) ────
+  // Owned by whichever layout plugin the WORKSPACE enables (D-L6: a plugin's
+  // domain, not core's). The provider is consumed REACTIVELY (per-request
+  // registry slot) and resolved PER WORKSPACE (`providerFor` — the
+  // per-workspace enablement state picks the ONE enabled layout plugin);
+  // the decision logic — absent→404, body validation, status mapping —
+  // lives in the provider kit (`createLayoutRouteHandlers`), so these
+  // handlers are thin shells. While a workspace has no enabled layout
+  // plugin every route 404s for it (the frontend's no-provider signal); a
+  // mid-session load or enablement change applies on the next request with
+  // no restart.
+  const layoutRoutes = createLayoutRouteHandlers({
+    getProvider: async (workspaceId) => await opts.layoutProviderRegistry?.providerFor(workspaceId),
+    logger: log,
+  });
+
+  app.get("/workspaces/:id/layout", async (c) => {
+    const result = await layoutRoutes.get(c.req.param("id"));
+    return c.json(result.body, result.status);
+  });
+
+  app.put("/workspaces/:id/layout", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const result = await layoutRoutes.put(c.req.param("id"), body);
+    return c.json(result.body, result.status);
+  });
+
+  // POST /workspaces/:id/layout/ops (plan 04 §4.2) — the op vocabulary over
+  // HTTP, the SAME kit applyOps the service exposes (one code path, two
+  // doors). 404 while no provider is active (the FE ABI's no-provider
+  // signal); 400 for a bad body/op (failedOp names the offending op); 200
+  // `{ tree, applied }` on success.
+  app.post("/workspaces/:id/layout/ops", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const result = await layoutRoutes.ops(c.req.param("id"), body);
+    return c.json(result.body, result.status);
+  });
+
+  app.delete("/workspaces/:id/layout", async (c) => {
+    const result = await layoutRoutes.delete(c.req.param("id"));
+    return c.json(result.body, result.status);
+  });
+
   // ─── Heartbeat (per-workspace AI loop) ─────────────────────────────────────
   // The config + run history for a workspace's heartbeat loop. Delegated to
   // the HeartbeatService (provided by the `heartbeat` extension). When
@@ -2022,6 +2340,177 @@ export function createApp(opts: CreateServerOptions): Hono {
       }
       log.error("heartbeat: run stop failure", { err, workspaceId, runId });
       return c.json({ error: "Failed to stop heartbeat run" }, 500);
+    }
+  });
+
+  // ─── Plugin manager (plan 05) ─────────────────────────────────────────────
+  // Thin shells over the PluginManagerService (the core `plugin-manager`
+  // extension's typed service): parse → delegate → map the structured result
+  // to a status. All unload POLICY (core lock, last-provider lock, cascade
+  // warning, forced agent stop) is enforced server-side in the manager —
+  // these handlers never re-implement it.
+
+  app.get("/plugins", async (c) => {
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const list = await opts.pluginManagerService.list();
+      log.info("plugins: list", {
+        loaded: list.loaded.length,
+        disabled: list.disabledWithReason.length,
+        discovered: list.discovered.length,
+        missing: list.missing.length,
+      });
+      const body: PluginListResponse = list;
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("plugins: list failure", { err });
+      return c.json({ error: "Failed to list plugins" }, 500);
+    }
+  });
+
+  // ─── Plugin frontend entry (plan 03 §3.1) ─────────────────────────────────
+  // Serves a loaded plugin's declared `frontend.entry` file — the prebuilt
+  // ESM the web client dynamically imports. ALL gating is the manager
+  // service's decision (unknown / unloaded / frontend-less /
+  // disabled-in-the-caller's-active-workspace / traversal) — every block is
+  // 404, so the response never leaks WHICH case hit (a disabled plugin's
+  // code must not be fetchable). `workspace` is the caller's ACTIVE
+  // workspace (absent → the default workspace); `v` is the client's
+  // cache-bust version (learned from the additive `GET /plugins` field — the
+  // entry's mtimeMs, the same value the backend loader uses) — the route
+  // always serves current content and lets `v` pick the HTTP cache policy:
+  // versioned URLs are immutable, unversioned requests revalidate.
+  app.get("/plugins/:id/frontend", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const result = await opts.pluginManagerService.frontendEntry(id, c.req.query("workspace"));
+      if (!result.ok) {
+        log.warn("plugins: frontend entry blocked", { id, reason: result.reason });
+        return c.json({ error: "No frontend module for this plugin" }, 404);
+      }
+      log.info("plugins: frontend entry served", { id, bust: result.bust });
+      const headers: Record<string, string> = {
+        "Content-Type": "text/javascript; charset=utf-8",
+      };
+      if (c.req.query("v") !== undefined) {
+        // The URL is content-versioned (v = entry mtimeMs) — safe to cache
+        // for as long as the URL exists.
+        headers["Cache-Control"] = "public, max-age=31536000, immutable";
+      } else {
+        headers["Cache-Control"] = "no-cache";
+      }
+      return new Response(result.code, { status: 200, headers });
+    } catch (err) {
+      log.error("plugins: frontend entry failure", { err, id });
+      return c.json({ error: "Failed to read plugin frontend entry" }, 500);
+    }
+  });
+
+  app.post("/plugins/scan", async (c) => {
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const scan = await opts.pluginManagerService.scan();
+      log.info("plugins: scan", {
+        newPlugins: scan.newPlugins.length,
+        invalid: scan.invalid.length,
+        incompatible: scan.incompatible.length,
+      });
+      const body: PluginScanResponse = scan;
+      return c.json(body, 200);
+    } catch (err) {
+      log.error("plugins: scan failure", { err });
+      return c.json({ error: "Failed to scan plugins" }, 500);
+    }
+  });
+
+  app.post("/plugins/:id/load", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const result = await opts.pluginManagerService.load(id);
+      const status = pluginOpStatus(result);
+      if (!result.ok) log.warn("plugins: load blocked", { id, reason: result.reason });
+      else log.info("plugins: loaded", { id });
+      return c.json(result, status);
+    } catch (err) {
+      log.error("plugins: load failure", { err, id });
+      return c.json({ error: "Failed to load plugin" }, 500);
+    }
+  });
+
+  app.post("/plugins/:id/unload", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    const raw = await c.req.text();
+    const parsed = parsePluginForceBody(raw);
+    if (!parsed.ok) {
+      log.warn("plugins: unload invalid body", { id, error: parsed.error });
+      return c.json({ error: parsed.error }, 400);
+    }
+    try {
+      const result = await opts.pluginManagerService.unload(id, { force: parsed.force });
+      const status = pluginOpStatus(result);
+      if (!result.ok) log.warn("plugins: unload blocked", { id, reason: result.reason });
+      else log.info("plugins: unloaded", { id, force: parsed.force });
+      return c.json(result, status);
+    } catch (err) {
+      log.error("plugins: unload failure", { err, id });
+      return c.json({ error: "Failed to unload plugin" }, 500);
+    }
+  });
+
+  app.post("/plugins/:id/reload", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    const raw = await c.req.text();
+    const parsed = parsePluginForceBody(raw);
+    if (!parsed.ok) {
+      log.warn("plugins: reload invalid body", { id, error: parsed.error });
+      return c.json({ error: parsed.error }, 400);
+    }
+    try {
+      const result = await opts.pluginManagerService.reload(id, { force: parsed.force });
+      const status = pluginOpStatus(result);
+      if (!result.ok) log.warn("plugins: reload blocked", { id, reason: result.reason });
+      else log.info("plugins: reloaded", { id, force: parsed.force });
+      return c.json(result, status);
+    } catch (err) {
+      log.error("plugins: reload failure", { err, id });
+      return c.json({ error: "Failed to reload plugin" }, 500);
+    }
+  });
+
+  app.post("/plugins/:id/forget", async (c) => {
+    const id = c.req.param("id");
+    if (opts.pluginManagerService === undefined) {
+      return c.json({ error: "Plugin manager service not available" }, 503);
+    }
+    try {
+      const result = await opts.pluginManagerService.forget(id);
+      if (result.ok) {
+        log.info("plugins: forgot", {
+          id,
+          ...(result.clearedOverride ? { clearedOverride: true } : {}),
+        });
+      }
+      const status = pluginOpStatus(result);
+      return c.json(result, status);
+    } catch (err) {
+      log.error("plugins: forget failure", { err, id });
+      return c.json({ error: "Failed to forget plugin" }, 500);
     }
   });
 

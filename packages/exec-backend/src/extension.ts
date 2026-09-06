@@ -12,6 +12,7 @@ export const manifest: Manifest = {
   name: "Exec Backend",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "core",
   trust: "bundled",
   activation: "eager",
   contributes: { services: ["exec-backend/resolver"] },
@@ -22,13 +23,15 @@ export const manifest: Manifest = {
  *
  * - `computerId` undefined → `localExecBackend` (byte-identical local path;
  *   no host lookup, no remote machinery — unchanged from the original behavior).
- * - `computerId` set → remote: lazily look up the factory the `ssh` extension
+ * - `computerId` set → remote: look up the factory the `ssh` extension
  *   provides via `remoteExecBackendFactoryHandle` and call it with the alias.
- *   The lookup is deferred to resolve time (tool-EXECUTE time, after every
- *   extension has activated), so a missing provider (ssh not loaded) degrades
- *   gracefully into a clear error instead of crashing activation. This mirrors
- *   the lazy `host.getService(lspServiceHandle)` try/catch pattern `tool-edit-file`
- *   uses for its diagnostics hook.
+ *   The lookup is a REACTIVE registry read (plan 03): non-throwing
+ *   `tryGetService` at resolve time (tool-EXECUTE time), so a missing
+ *   provider (ssh not loaded — or unloaded mid-session) degrades gracefully
+ *   into a clear error instead of crashing activation, and an ssh plugin
+ *   loaded mid-session is picked up on the next remote execution with no
+ *   restart. `ssh` is a Standard plugin, so there is deliberately NO
+ *   core→standard dependsOn edge here (AGENTS.md).
  *
  * The resolver stays SYNCHRONOUS and side-effect-free with respect to
  * connections: looking up the factory and calling it returns a backend whose
@@ -38,13 +41,11 @@ export const manifest: Manifest = {
 function createResolver(host: HostAPI): ExecBackendResolver {
   return (computerId?: string): ExecBackend => {
     if (computerId === undefined) return localExecBackend;
-    // computerId set → remote. Look up the factory the `ssh` extension provides.
-    // `host.getService` throws when nothing provided the handle (ssh not loaded);
-    // convert that into a clear "not configured" error rather than a crash.
-    let factory: (computerId: string) => ExecBackend;
-    try {
-      factory = host.getService(remoteExecBackendFactoryHandle);
-    } catch {
+    // computerId set → remote. Look up the factory the `ssh` extension
+    // provides. Nothing provided the handle (ssh not loaded) → convert that
+    // into a clear "not configured" error rather than a crash.
+    const factory = host.tryGetService(remoteExecBackendFactoryHandle);
+    if (factory === undefined) {
       throw new Error(
         `SSH remote execution is not configured: the ssh extension is not loaded ` +
           `(requested computerId="${computerId}"). Load the ssh package to enable remote execution.`,

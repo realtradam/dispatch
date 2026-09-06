@@ -1,13 +1,58 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { ConfigAccess, HostAPI, Logger } from "@dispatch/kernel";
+import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
+import {
+  type Bus,
+  type ConfigAccess,
+  createBus,
+  type HostAPI,
+  type Logger,
+  type ServiceHandle,
+  type StorageNamespace,
+} from "@dispatch/kernel";
+import { DEFAULT_LAYOUT, type LayoutTree } from "@dispatch/layout-contract";
+import {
+  createLayoutProvider,
+  createLayoutProviderRegistry,
+  layoutProviderRegistryHandle,
+} from "@dispatch/layout-provider-contract";
 import { createApp } from "./app.js";
 import { createTransportHttpExtension } from "./index.js";
-import type {
-  ConversationStore,
-  CredentialStore,
-  LspService,
-  SessionOrchestrator,
+import {
+  type ConversationStore,
+  type CredentialStore,
+  cacheWarmHandle,
+  compactionHandle,
+  conversationStoreHandle,
+  credentialStoreHandle,
+  type HeartbeatService,
+  heartbeatServiceHandle,
+  type LspService,
+  lspServiceHandle,
+  type McpService,
+  mcpServiceHandle,
+  type NamedAgentsService,
+  namedAgentServiceHandle,
+  type SessionOrchestrator,
+  sessionOrchestratorHandle,
+  systemPromptHandle,
+  throughputStoreHandle,
 } from "./seam.js";
+
+/** An in-memory StorageNamespace (the kernel-test shape) for the kit. */
+function memoryNamespace(): StorageNamespace {
+  const store = new Map<string, string>();
+  return {
+    get: async (key) => store.get(key) ?? null,
+    set: async (key, value) => {
+      store.set(key, value);
+    },
+    delete: async (key) => {
+      store.delete(key);
+    },
+    has: async (key) => store.has(key),
+    keys: async () => [...store.keys()],
+  };
+}
 
 function fakeLogger(): Logger {
   return {
@@ -182,9 +227,20 @@ function createFakeHostAPI(configOverrides: Record<string, unknown> = {}): HostA
     async applyFilters(_hook, value) {
       return value;
     },
-    provideService() {},
+    provideService() {
+      return () => {};
+    },
     getService(handle) {
       return SERVICES.get(handle.id) as never;
+    },
+    tryGetService(handle) {
+      return SERVICES.get(handle.id) as never;
+    },
+    onServiceAvailable() {
+      return () => {};
+    },
+    onServiceUnavailable() {
+      return () => {};
     },
     storage() {
       return {
@@ -215,7 +271,10 @@ function createFakeHostAPI(configOverrides: Record<string, unknown> = {}): HostA
     getExtensions() {
       return [];
     },
-    scheduler: { register() {} },
+    scheduler: {
+      register() {},
+      unregister() {},
+    },
   };
 }
 
@@ -305,6 +364,347 @@ describe("extension lifecycle", () => {
       expect(true).toBe(false);
     } catch {
       // expected — server stopped
+    }
+  });
+});
+
+// ── Reactive service registry (plan 03) ────────────────────────────────────
+// The extension consumes the Standard-provided services (heartbeat, mcp,
+// throughput-store, named-agents — and optional lsp/ssh) REACTIVELY: no
+// dependsOn edge, no activate-time getService. These tests run the REAL
+// extension against a REAL kernel bus and assert the full plan-03 lifecycle:
+// boot with the Standard services absent → routes degrade (503/empty, server
+// still starts); a mid-session provide serves the routes with no restart; an
+// un-provide degrades them again.
+describe("reactive service registry (plan 03)", () => {
+  /**
+   * A HostAPI whose service operations are the REAL bus (so provide /
+   * un-provide drive the availability subscriptions exactly like the host
+   * does), with minimal stubs for everything else activate() touches. The
+   * given services are seeded INTO the bus (the mandatory core deps —
+   * activate() resolves them with the throwing `getService`).
+   */
+  function createBusHostAPI(
+    services: ReadonlyArray<readonly [ServiceHandle<unknown>, unknown]>,
+    configOverrides: Record<string, unknown> = {},
+  ): HostAPI & { readonly bus: Bus } {
+    const bus = createBus(fakeLogger());
+    for (const [handle, impl] of services) {
+      bus.provideService(handle, impl);
+    }
+    return {
+      bus,
+      getService: (handle) => bus.getService(handle),
+      tryGetService: (handle) => bus.tryGetService(handle),
+      provideService: (handle, impl) => bus.provideService(handle, impl),
+      onServiceAvailable: (handle, cb) => bus.onServiceAvailable(handle, cb),
+      onServiceUnavailable: (handle, cb) => bus.onServiceUnavailable(handle, cb),
+      config: fakeConfig(configOverrides),
+      logger: fakeLogger(),
+      emit: () => {},
+    } as unknown as HostAPI & { readonly bus: Bus };
+  }
+
+  /** The mandatory core services activate() resolves (throwing) via getService. */
+  function coreServices(store: ConversationStore) {
+    return [
+      [conversationStoreHandle, store],
+      [sessionOrchestratorHandle, fakeOrchestrator()],
+      [credentialStoreHandle, fakeCredentialStore()],
+      [cacheWarmHandle, {}], // WarmService — never called by the probed routes
+      [compactionHandle, {}], // CompactionService — never called by the probed routes
+      [systemPromptHandle, {}], // SystemPromptService — never called by the probed routes
+    ] as const satisfies ReadonlyArray<readonly [ServiceHandle<unknown>, unknown]>;
+  }
+
+  test("boots with every Standard service absent; routes degrade; mid-session load serves; unload degrades again", async () => {
+    // cwd resolves so the lsp/mcp routes reach their service guard (the
+    // no-cwd degrade path would short-circuit before the 503).
+    const store = {
+      ...fakeConversationStore(),
+      getCwd: async () => "/ws",
+      getEffectiveCwd: async () => "/ws",
+    };
+    const host = createBusHostAPI(coreServices(store), { httpPort: 0 });
+    const ext = createTransportHttpExtension();
+
+    // THE plan-03 assertion: activation succeeds with heartbeat / mcp /
+    // throughput-store / named-agents / lsp / ssh all ABSENT (the old
+    // activate-time getService would have thrown).
+    await ext.activate(host);
+
+    const server = ext._testServer;
+    expect(server).toBeDefined();
+    const base = `http://localhost:${server?.port as number}`;
+
+    try {
+      // ── absent: every reactive route takes its degrade path ──
+      let res = await fetch(`${base}/named-agents`);
+      expect(res.status).toBe(503);
+
+      res = await fetch(`${base}/metrics/throughput?period=day&date=2026-01-01`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        period: "day",
+        date: "2026-01-01",
+        start: 0,
+        end: 0,
+        models: [],
+      });
+
+      res = await fetch(`${base}/workspaces/w/heartbeat`);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { enabled: boolean }).enabled).toBe(false); // defaults
+
+      res = await fetch(`${base}/conversations/c1/mcp`);
+      expect(res.status).toBe(503);
+
+      res = await fetch(`${base}/conversations/c1/lsp`);
+      expect(res.status).toBe(503);
+
+      // ── mid-session load: routes serve WITHOUT a restart ──
+      const unname = host.provideService(namedAgentServiceHandle, {
+        list: async () => [],
+      } as unknown as NamedAgentsService);
+      const unthroughput = host.provideService(throughputStoreHandle, {
+        record: async () => {},
+        aggregate: async (q) => ({ period: q.period, date: q.date, start: 42, end: 7, models: [] }),
+      });
+      const unheartbeat = host.provideService(heartbeatServiceHandle, {
+        getConfig: async () => ({ ...DEFAULT_HEARTBEAT_CONFIG, enabled: true }),
+      } as unknown as HeartbeatService);
+      const unmcp = host.provideService(mcpServiceHandle, {
+        status: async () => [],
+      } as unknown as McpService);
+      const unlsp = host.provideService(lspServiceHandle, {
+        status: async () => [],
+      } as unknown as LspService);
+
+      res = await fetch(`${base}/named-agents`);
+      expect(res.status).toBe(200);
+
+      res = await fetch(`${base}/metrics/throughput?period=day&date=2026-01-01`);
+      expect(await res.json()).toEqual({
+        period: "day",
+        date: "2026-01-01",
+        start: 42,
+        end: 7,
+        models: [],
+      });
+
+      res = await fetch(`${base}/workspaces/w/heartbeat`);
+      expect(((await res.json()) as { enabled: boolean }).enabled).toBe(true);
+
+      res = await fetch(`${base}/conversations/c1/mcp`);
+      expect(res.status).toBe(200);
+
+      res = await fetch(`${base}/conversations/c1/lsp`);
+      expect(res.status).toBe(200);
+
+      // ── mid-session unload: routes degrade again ──
+      unname();
+      unthroughput();
+      unheartbeat();
+      unmcp();
+      unlsp();
+
+      res = await fetch(`${base}/named-agents`);
+      expect(res.status).toBe(503);
+      res = await fetch(`${base}/workspaces/w/heartbeat`);
+      expect(((await res.json()) as { enabled: boolean }).enabled).toBe(false);
+      res = await fetch(`${base}/conversations/c1/mcp`);
+      expect(res.status).toBe(503);
+    } finally {
+      ext.deactivate?.();
+    }
+  });
+
+  test("layout routes (plan 02): 404 with no provider, serve a mid-session load, 404 again after un-provide", async () => {
+    const host = createBusHostAPI(coreServices(fakeConversationStore()), { httpPort: 0 });
+    const ext = createTransportHttpExtension();
+    await ext.activate(host);
+    const server = ext._testServer;
+    expect(server).toBeDefined();
+    const base = `http://localhost:${server?.port as number}`;
+
+    try {
+      // ── absent: every layout route 404s (the frontend's no-provider signal) ──
+      let res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "No layout plugin is enabled in this workspace" });
+
+      res = await fetch(`${base}/workspaces/w/layout`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tree: DEFAULT_LAYOUT }),
+      });
+      expect(res.status).toBe(404);
+
+      res = await fetch(`${base}/workspaces/w/layout`, { method: "DELETE" });
+      expect(res.status).toBe(404);
+
+      // ── mid-session load: a registry + a registered kit provider serve with
+      // NO restart (the picker serves the workspace's enabled plugin — here a
+      // stub enabling the single registered one, as the layout-provider-
+      // registry extension computes from the per-workspace enablement state) ──
+      const emitted: unknown[] = [];
+      const provider = createLayoutProvider({
+        storage: memoryNamespace(),
+        defaultTree: DEFAULT_LAYOUT,
+        emitChange: (message) => {
+          emitted.push(message);
+        },
+        logger: fakeLogger(),
+      });
+      const registry = createLayoutProviderRegistry({
+        pickPlugin: async () => "layout-under-test",
+        logger: fakeLogger(),
+      });
+      registry.register("layout-under-test", provider);
+      const unprovide = host.provideService(layoutProviderRegistryHandle, registry);
+
+      res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: DEFAULT_LAYOUT });
+
+      // PUT a valid tree → 200 { tree }.
+      const swapped: LayoutTree = { version: 1, root: { kind: "leaf", view: "tabs" } };
+      res = await fetch(`${base}/workspaces/w/layout`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tree: swapped }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: swapped });
+
+      // PUT a structurally invalid tree → 400 { error }.
+      res = await fetch(`${base}/workspaces/w/layout`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tree: { version: 1, root: { kind: "split", dir: "row", children: [] } },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()) as { error: string }).toEqual({ error: expect.any(String) });
+
+      // DELETE → 200 { tree: freshSeed }, and a following GET re-seeds.
+      res = await fetch(`${base}/workspaces/w/layout`, { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: DEFAULT_LAYOUT });
+      res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: DEFAULT_LAYOUT });
+
+      // ── un-provide: routes 404 again (the degrade path) ──
+      unprovide();
+      res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(404);
+    } finally {
+      ext.deactivate?.();
+    }
+  });
+
+  test("POST /workspaces/:id/layout/ops (plan 04): 404 no provider, 400 bad op, 200 { tree, applied }", async () => {
+    const host = createBusHostAPI(coreServices(fakeConversationStore()), { httpPort: 0 });
+    const ext = createTransportHttpExtension();
+    await ext.activate(host);
+    const server = ext._testServer;
+    expect(server).toBeDefined();
+    const base = `http://localhost:${server?.port as number}`;
+
+    try {
+      // ── absent: the ops route 404s like its sibling layout routes ──
+      let res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [] }),
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "No layout plugin is enabled in this workspace" });
+
+      // ── a live registry with a registered kit provider ──
+      const registry2 = createLayoutProviderRegistry({
+        pickPlugin: async () => "layout-under-test",
+        logger: fakeLogger(),
+      });
+      registry2.register(
+        "layout-under-test",
+        createLayoutProvider({
+          storage: memoryNamespace(),
+          defaultTree: DEFAULT_LAYOUT,
+          emitChange: () => {},
+          logger: fakeLogger(),
+        }),
+      );
+      const unprovide = host.provideService(layoutProviderRegistryHandle, registry2);
+
+      // Malformed body (unknown op type) → 400 { error }.
+      res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [{ type: "teleport" }] }),
+      });
+      expect(res.status).toBe(400);
+      const badBody = (await res.json()) as { error: string; failedOp?: number };
+      expect(badBody.error).toContain("ops[0]");
+
+      // A known-typed op with junk fields → 400 { error, failedOp }.
+      res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [{ type: "ensurePanel", view: "tasks" }] }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: expect.stringContaining("op 0"),
+        failedOp: 0,
+      });
+
+      // A valid batch → 200 { tree, applied }; a follow-up GET sees the result.
+      res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ops: [{ type: "ensurePanel", panels: "side", view: "tasks" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tree: expect.anything(), applied: 1 });
+
+      res = await fetch(`${base}/workspaces/w/layout`);
+      expect(res.status).toBe(200);
+      const { tree } = (await res.json()) as { tree: LayoutTree };
+      expect(JSON.stringify(tree)).toContain('"tasks"');
+
+      // ── un-provide: the ops route 404s again ──
+      unprovide();
+      res = await fetch(`${base}/workspaces/w/layout/ops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [] }),
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      ext.deactivate?.();
+    }
+  });
+  test("deactivate is idempotent and a re-activation boots cleanly (subscriptions re-registered, none leaked)", async () => {
+    const host = createBusHostAPI(coreServices(fakeConversationStore()), { httpPort: 0 });
+    const ext = createTransportHttpExtension();
+    await ext.activate(host);
+    ext.deactivate?.();
+    // Idempotent: the disposer array was reset — no double-dispose throw.
+    expect(() => ext.deactivate?.()).not.toThrow();
+
+    // A fresh activation on the same host boots cleanly and serves.
+    const ext2 = createTransportHttpExtension();
+    await ext2.activate(host);
+    try {
+      const res = await fetch(`http://localhost:${ext2._testServer?.port as number}/health`);
+      expect(res.status).toBe(200);
+    } finally {
+      ext2.deactivate?.();
     }
   });
 });

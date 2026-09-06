@@ -261,6 +261,206 @@ describe("services", () => {
     bus.provideService(handle, 1);
     expect(() => bus.provideService(handle, 2)).toThrow("test/double");
   });
+
+  it("un-provide disposer removes the service (getService throws again)", () => {
+    const handle = defineService<number>("test/unprovide");
+
+    const unprovide = bus.provideService(handle, 7);
+    expect(bus.getService(handle)).toBe(7);
+
+    unprovide();
+    expect(() => bus.getService(handle)).toThrow("test/unprovide");
+  });
+
+  it("un-provide disposer is idempotent (double call is a no-op)", () => {
+    const handle = defineService<number>("test/unprovide-twice");
+
+    const unprovide = bus.provideService(handle, 7);
+    unprovide();
+    expect(() => unprovide()).not.toThrow();
+  });
+
+  it("re-provide after un-provide succeeds", () => {
+    const handle = defineService<number>("test/reprovide");
+
+    const unprovide = bus.provideService(handle, 1);
+    unprovide();
+    bus.provideService(handle, 2);
+    expect(bus.getService(handle)).toBe(2);
+  });
+
+  it("a stale un-provide disposer does not evict a newer registration", () => {
+    const handle = defineService<number>("test/stale-disposer");
+
+    const stale = bus.provideService(handle, 1);
+    stale();
+    bus.provideService(handle, 2);
+    // the old disposer must not remove the NEW implementation
+    stale();
+    expect(bus.getService(handle)).toBe(2);
+  });
+});
+
+describe("reactive service registry (plan 03)", () => {
+  let logger: FakeLogger;
+  let bus: Bus;
+
+  beforeEach(() => {
+    logger = createFakeLogger();
+    bus = createBus(logger);
+  });
+
+  it("tryGetService returns undefined when absent, the impl when present", () => {
+    const handle = defineService<{ n: number }>("registry/try-absent");
+    expect(bus.tryGetService(handle)).toBeUndefined();
+
+    const impl = { n: 1 };
+    bus.provideService(handle, impl);
+    expect(bus.tryGetService(handle)).toBe(impl);
+  });
+
+  it("tryGetService never throws (getService keeps throwing for mandatory deps)", () => {
+    const handle = defineService<string>("registry/try-never-throws");
+    expect(() => bus.tryGetService(handle)).not.toThrow();
+    expect(bus.tryGetService(handle)).toBeUndefined();
+    expect(() => bus.getService(handle)).toThrow("registry/try-never-throws");
+  });
+
+  it("onServiceAvailable fires immediately with the current impl when already provided", () => {
+    const handle = defineService<string>("registry/late-join");
+    bus.provideService(handle, "current");
+
+    const seen: string[] = [];
+    bus.onServiceAvailable(handle, (impl) => seen.push(impl));
+    expect(seen).toEqual(["current"]);
+  });
+
+  it("onServiceAvailable fires on each later provide (and not when absent)", () => {
+    const handle = defineService<number>("registry/later-provide");
+
+    const seen: number[] = [];
+    bus.onServiceAvailable(handle, (impl) => seen.push(impl));
+    expect(seen).toEqual([]); // nothing provided yet → no fire
+
+    const unprovide = bus.provideService(handle, 1);
+    expect(seen).toEqual([1]);
+    unprovide();
+    bus.provideService(handle, 2);
+    expect(seen).toEqual([1, 2]);
+  });
+
+  it("onServiceUnavailable fires when the un-provide disposer removes the service", () => {
+    const handle = defineService<string>("registry/unavailable");
+
+    const events: string[] = [];
+    bus.onServiceUnavailable(handle, () => events.push("gone"));
+    bus.onServiceAvailable(handle, (impl) => events.push(`got:${impl}`));
+
+    const unprovide = bus.provideService(handle, "x");
+    expect(events).toEqual(["got:x"]); // unavailable does NOT fire on provide
+    unprovide();
+    expect(events).toEqual(["got:x", "gone"]);
+  });
+
+  it("a stale un-provide disposer does NOT fire onServiceUnavailable", () => {
+    const handle = defineService<string>("registry/stale-unavailable");
+
+    const events: string[] = [];
+    bus.onServiceUnavailable(handle, () => events.push("gone"));
+
+    const stale = bus.provideService(handle, 1);
+    stale(); // real removal → fires
+    bus.provideService(handle, 2);
+    stale(); // stale: must not evict the new one → no second fire
+    expect(events).toEqual(["gone"]);
+    expect(bus.getService(handle)).toBe(2);
+  });
+
+  it("subscriber callbacks are error-isolated and logged (never break the provider)", () => {
+    const available = defineService<string>("registry/isolate-available");
+    const unavailable = defineService<string>("registry/isolate-unavailable");
+    const events: string[] = [];
+
+    bus.onServiceAvailable(available, () => {
+      throw new Error("available boom");
+    });
+    bus.onServiceAvailable(available, (impl) => events.push(`a:${impl}`));
+    bus.onServiceUnavailable(unavailable, () => {
+      throw new Error("unavailable boom");
+    });
+
+    // Provide: the throwing callback is logged, the sibling still runs,
+    // and the service is registered.
+    expect(() => bus.provideService(available, "v")).not.toThrow();
+    expect(events).toEqual(["a:v"]);
+    expect(bus.getService(available)).toBe("v");
+    expect(logger.errors).toHaveLength(1);
+    expect(logger.errors[0]?.message).toContain("registry/isolate-available");
+
+    // Un-provide: same isolation on the unavailable path.
+    const unprovide = bus.provideService(unavailable, "u");
+    expect(() => unprovide()).not.toThrow();
+    expect(bus.tryGetService(unavailable)).toBeUndefined();
+    expect(logger.errors).toHaveLength(2);
+    expect(logger.errors[1]?.message).toContain("registry/isolate-unavailable");
+  });
+
+  it("the immediate fire of onServiceAvailable is also error-isolated", () => {
+    const handle = defineService<string>("registry/isolate-immediate");
+    bus.provideService(handle, "v");
+
+    expect(() =>
+      bus.onServiceAvailable(handle, () => {
+        throw new Error("late-join boom");
+      }),
+    ).not.toThrow();
+    expect(logger.errors).toHaveLength(1);
+    expect(logger.errors[0]?.message).toContain("registry/isolate-immediate");
+  });
+
+  it("disposers stop further notification (available and unavailable)", () => {
+    const handle = defineService<number>("registry/dispose");
+
+    // Sanity first: BEFORE disposing, both subscriptions fire.
+    const seen: number[] = [];
+    const offAvailable = bus.onServiceAvailable(handle, (impl) => seen.push(impl));
+    const gone: string[] = [];
+    const offUnavailable = bus.onServiceUnavailable(handle, () => gone.push("gone"));
+    const unprovide = bus.provideService(handle, 1);
+    expect(seen).toEqual([1]);
+    unprovide();
+    expect(gone).toEqual(["gone"]);
+
+    // After disposing: neither fires anymore.
+    offAvailable();
+    offUnavailable();
+    seen.length = 0;
+    gone.length = 0;
+    const unprovide2 = bus.provideService(handle, 2);
+    expect(seen).toEqual([]);
+    unprovide2();
+    expect(gone).toEqual([]);
+  });
+
+  it("a callback that unsubscribes itself during notification is not re-fired for later provides", () => {
+    const handle = defineService<number>("registry/self-unsub");
+
+    const seen: number[] = [];
+    const sub = bus.onServiceAvailable(handle, (impl) => {
+      seen.push(impl);
+      sub(); // unsubscribe during the notification itself
+    });
+    // Nothing provided yet → no fire.
+    expect(seen).toEqual([]);
+
+    const unprovide = bus.provideService(handle, 1);
+    expect(seen).toEqual([1]); // fired, and self-unsubscribed mid-notification
+
+    // A later provide (after un-provide) must not reach the removed callback.
+    unprovide();
+    bus.provideService(handle, 2);
+    expect(seen).toEqual([1]);
+  });
 });
 
 describe("pure functions", () => {

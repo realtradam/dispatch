@@ -8,6 +8,7 @@
     { "path": "../credential-store" },
     { "path": "../message-queue" },
     { "path": "../provider-concurrency" },
-    { "path": "../system-prompt" }
+    { "path": "../system-prompt" },
+    { "path": "../workspace-plugin-config" }
   ]
 }

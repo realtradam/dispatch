@@ -14,10 +14,13 @@ export type { McpServerStatus, McpService } from "@dispatch/mcp";
 export { mcpServiceHandle } from "@dispatch/mcp";
 export type { NamedAgentsService } from "@dispatch/named-agents";
 export { namedAgentServiceHandle } from "@dispatch/named-agents";
+export type { FrontendEntryResult, PluginManagerService } from "@dispatch/plugin-manager";
+export { pluginManagerHandle } from "@dispatch/plugin-manager";
 export type { ConcurrencyService } from "@dispatch/provider-concurrency";
 export { concurrencyServiceHandle } from "@dispatch/provider-concurrency";
 export type {
   CompactionService,
+  PluginOwnership,
   SessionOrchestrator,
   WarmService,
 } from "@dispatch/session-orchestrator";
@@ -25,12 +28,18 @@ export {
   cacheWarmHandle,
   compactionHandle,
   conversationOpened,
+  pluginOwnershipHandle,
   sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
 export type { SystemPromptService } from "@dispatch/system-prompt";
 export { systemPromptHandle } from "@dispatch/system-prompt";
 export type { ThroughputStore } from "@dispatch/throughput-store";
 export { ThroughputQueryError, throughputStoreHandle } from "@dispatch/throughput-store";
+export type { WorkspacePluginConfigService } from "@dispatch/workspace-plugin-config";
+export {
+  usablePluginsInWorkspace,
+  workspacePluginConfigHandle,
+} from "@dispatch/workspace-plugin-config";
 
 // ─── ComputerService seam ─────────────────────────────────────────────────────
 //
@@ -67,3 +76,22 @@ export interface ComputerService {
  */
 export const computerServiceHandle: ServiceHandle<ComputerService> =
   defineService<ComputerService>("ssh");
+
+// ─── Layout provider REGISTRY seam (plan 02, evolved: per-workspace activation) ──
+//
+// The layout-provider REGISTRY (a STANDARD extension —
+// `layout-provider-registry` — provides it; every loaded layout plugin
+// registers its provider under its plugin id). Consumed REACTIVELY like
+// every optional Standard service: the routes resolve the WORKSPACE's one
+// enabled layout plugin per request (`providerFor(workspaceId)`) and 404
+// while the workspace has none (the frontend's no-provider signal); a
+// mid-session load or enablement change applies to the next request with no
+// restart. The route DECISION logic (status mapping, body validation) lives
+// in the provider kit (`@dispatch/layout-provider-contract`) — the transport
+// mounts the handlers as thin shells and learns nothing about trees (D-L6).
+
+export type { LayoutProvider } from "@dispatch/layout-contract";
+export {
+  type LayoutProviderRegistry,
+  layoutProviderRegistryHandle,
+} from "@dispatch/layout-provider-contract";

@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../kernel" },
+    { "path": "../layout-chat" },
+    { "path": "../layout-contract" },
+    { "path": "../layout-diagnostic" },
+    { "path": "../layout-provider-contract" },
+    { "path": "../layout-provider-registry" },
+    { "path": "../plugin-scaffold" },
+    { "path": "../surface-registry" },
+    { "path": "../workspace-plugin-config" }
+  ]
+}

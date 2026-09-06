@@ -20,10 +20,19 @@
       "path": "../lsp"
     },
     {
+      "path": "../layout-chat"
+    },
+    {
+      "path": "../layout-provider-registry"
+    },
+    {
       "path": "../message-queue"
     },
     {
       "path": "../named-agents"
+    },
+    {
+      "path": "../plugin-manager"
     },
     {
       "path": "../provider-concurrency"
@@ -69,6 +78,9 @@
     },
     {
       "path": "../vision-handoff"
+    },
+    {
+      "path": "../workspace-plugin-config"
     }
   ]
 }

@@ -22,6 +22,7 @@ export const manifest: Manifest = {
   name: "Cache Warming",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "standard",
   trust: "bundled",
   activation: "eager",
   dependsOn: ["session-orchestrator", "surface-registry"],

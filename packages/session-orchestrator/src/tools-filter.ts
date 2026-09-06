@@ -30,6 +30,17 @@ export interface ToolAssembly {
    */
   readonly modelName?: string;
   /**
+   * The workspace this turn runs in (the conversation's persisted
+   * workspaceId, plan 06 §6.3) — the per-workspace enforcement context.
+   * Workspace-aware filters read it to gate their contributions (e.g. the
+   * MCP injection filter short-circuits when `mcp` is disabled in the
+   * workspace); the orchestrator's workspace tool-gate (after the whole
+   * chain) drops tools whose owning plugin is not usable here. Optional:
+   * omitted by paths with no workspace context, in which case
+   * workspace-aware filters are passthroughs.
+   */
+  readonly workspaceId?: string;
+  /**
    * The turn's abort signal, threaded through the filter chain so a filter that
    * awaits slow I/O (e.g. the MCP tools filter connecting to MCP servers) can be
    * interrupted by `POST /conversations/:id/stop` instead of blocking the turn
@@ -79,6 +90,63 @@ export function filterRemoteIncompatibleTools(assembly: ToolAssembly): ToolAssem
     ...(assembly.computerId !== undefined ? { computerId: assembly.computerId } : {}),
     conversationId: assembly.conversationId,
     ...(assembly.modelName !== undefined ? { modelName: assembly.modelName } : {}),
+    ...(assembly.workspaceId !== undefined ? { workspaceId: assembly.workspaceId } : {}),
+    ...(assembly.signal !== undefined ? { signal: assembly.signal } : {}),
+  };
+}
+
+// ── Per-workspace tool gate (plan 06 §6.3) ──────────────────────────────────
+//
+// Backend-enforced "not use": a tool whose OWNING plugin is not usable in
+// the turn's workspace is dropped from the assembly. Attribution comes from
+// the plan-01 registration ledger (every `defineTool` is tracked under its
+// extension id — including filter-injected tools with runtime names no
+// manifest can enumerate, e.g. MCP's `<serverId>__<toolName>`), NOT from
+// manifests.
+//
+// ORDERING INVARIANT (§7: "nothing can re-add restricted tools"): the gate
+// runs AFTER the entire `toolsFilter` chain — after every contributing
+// filter (`mcp`, `skills`, `vision-handoff`,
+// `filterRemoteIncompatibleTools`) — so an injection filter cannot re-add
+// a dropped tool afterward; and the persisted conversation policy
+// (`applyToolPolicy`) still applies after the gate as the final word. The
+// orchestrator applies it between the chain and the policy (the bus chain
+// itself cannot express "registered last" — the orchestrator activates
+// before the injection filters — so the gate is an orchestrator step, not
+// a bus filter; the enforced ORDER is identical).
+
+/**
+ * Pure gate: rebuild the assembly with only the tools whose owning plugin
+ * is usable in the turn's workspace. `usablePlugins` is the pre-resolved
+ * usable-plugin-id set (see `usablePluginsInWorkspace` in
+ * `@dispatch/workspace-plugin-config`); `ownerOfTool` is the ledger view
+ * (tool name → extension id).
+ *
+ * Fail-open on the unattributable: a tool with NO owning plugin id
+ * (`ownerOfTool` → undefined — e.g. a race with a mid-turn unload, or an
+ * owner absent from the loaded manifests) is KEPT. Global loaded/unloaded
+ * state already gates it (the host sweep removes an unloaded plugin's
+ * tools); per-workspace gating only narrows what is already loadable, and
+ * dropping what we cannot attribute would be silent over-enforcement.
+ * Pure (no I/O) — the usable set is resolved by the caller.
+ */
+export function gateToolsForWorkspace(
+  assembly: ToolAssembly,
+  usablePlugins: ReadonlySet<string>,
+  ownerOfTool: (toolName: string) => string | undefined,
+): ToolAssembly {
+  const filtered = assembly.tools.filter((tool) => {
+    const owner = ownerOfTool(tool.name);
+    if (owner === undefined) return true; // unattributable → fail-open
+    return usablePlugins.has(owner);
+  });
+  return {
+    tools: filtered,
+    ...(assembly.cwd !== undefined ? { cwd: assembly.cwd } : {}),
+    ...(assembly.computerId !== undefined ? { computerId: assembly.computerId } : {}),
+    conversationId: assembly.conversationId,
+    ...(assembly.modelName !== undefined ? { modelName: assembly.modelName } : {}),
+    ...(assembly.workspaceId !== undefined ? { workspaceId: assembly.workspaceId } : {}),
     ...(assembly.signal !== undefined ? { signal: assembly.signal } : {}),
   };
 }
@@ -147,6 +215,7 @@ function stripTools(assembly: ToolAssembly, tools: readonly ToolContract[]): Too
     ...(assembly.computerId !== undefined ? { computerId: assembly.computerId } : {}),
     conversationId: assembly.conversationId,
     ...(assembly.modelName !== undefined ? { modelName: assembly.modelName } : {}),
+    ...(assembly.workspaceId !== undefined ? { workspaceId: assembly.workspaceId } : {}),
     ...(assembly.signal !== undefined ? { signal: assembly.signal } : {}),
   };
 }

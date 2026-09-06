@@ -19,6 +19,7 @@
  * is unchanged.
  */
 
+import type { LayoutTree } from "@dispatch/layout-contract";
 import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
 import type {
   AgentEvent,
@@ -37,6 +38,7 @@ import type {
   WorkspaceEntry,
 } from "@dispatch/wire";
 
+export type { LayoutTree } from "@dispatch/layout-contract";
 export type {
   AgentEvent,
   CompactionResult,
@@ -819,6 +821,37 @@ export interface ChatQueueCancelMessage {
 }
 
 /**
+ * Client → server: declare THIS connection's active workspace (plan 06
+ * §6.4). Workspace switching is instant and client-side, so the server
+ * must be told explicitly — on receipt the server records the
+ * connection's workspace and RE-PUSHES the surface catalog filtered to
+ * that workspace (surfaces contributed by plugins that are not usable in
+ * the workspace are omitted). Clients that never send it keep the
+ * unfiltered (global) catalog — backward compatible. Owned by plan 06
+ * (backend contract + server handling); plan 07 sends it from the client.
+ */
+export interface WorkspaceSetMessage {
+  readonly type: "workspace.set";
+  readonly workspaceId: string;
+}
+
+/**
+ * Broadcast to all connected WS clients after every successful layout write
+ * (plan 02 §2.5 — the `layout-chat` provider's PUT / setTree / DELETE / ops).
+ * Carries the FULL tree for ONE workspace (decision 7 — no patch protocol);
+ * the broadcast is a global fan-out and CLIENTS FILTER by their active
+ * workspace (the workspaceId is the payload, not a subscription). Additive to
+ * `WsServerMessage` — next to `extensions-changed`, a contract addition, not
+ * core layout knowledge (D-L6: no core extension or transport learns the
+ * layout domain; the transport ferries the message verbatim).
+ */
+export interface LayoutChangedMessage {
+  readonly type: "layout";
+  readonly workspaceId: string;
+  readonly tree: LayoutTree;
+}
+
+/**
  * Every client → server WS message: surface ops (`@dispatch/ui-contract`) + chat
  * ops. A server discriminates on `type`.
  */
@@ -828,7 +861,8 @@ export type WsClientMessage =
   | ChatSubscribeMessage
   | ChatUnsubscribeMessage
   | ChatQueueMessage
-  | ChatQueueCancelMessage;
+  | ChatQueueCancelMessage
+  | WorkspaceSetMessage;
 
 /**
  * Every server → client WS message: surface ops (`@dispatch/ui-contract`) + chat
@@ -840,7 +874,9 @@ export type WsServerMessage =
   | ChatErrorMessage
   | ConversationOpenMessage
   | ConversationStatusChangedMessage
-  | ConversationCompactedMessage;
+  | ConversationCompactedMessage
+  | ExtensionsChangedMessage
+  | LayoutChangedMessage;
 
 // ─── Conversation list + metadata ────────────────────────────────────────────
 
@@ -858,6 +894,13 @@ export interface ConversationOpenMessage {
    * workspace.
    */
   readonly workspaceId: string;
+  /**
+   * The conversation's persisted per-conversation model when set (absent =
+   * default provider model), so a frontend can stamp the new tab with the
+   * conversation's ACTUAL model rather than the globally-selected one
+   * (fix-toolcall-duplicate-keys plan Part 4).
+   */
+  readonly model?: string;
 }
 
 /**
@@ -888,6 +931,281 @@ export interface ConversationCompactedMessage {
   readonly newConversationId: string;
   readonly messagesSummarized: number;
   readonly messagesKept: number;
+}
+
+// ─── Plugin manager (plan 05) ────────────────────────────────────────────────
+//
+// The wire shapes for the plugin management API (HTTP routes + the
+// `extensions-changed` broadcast). Tier/trust mirror the kernel's
+// `PluginTier`/`TrustLevel` (stable three-value enums — the manager's
+// manifest→row mapping is the drift detector: any kernel-side change fails
+// the assignment there at compile time).
+
+/** Classification tier of a plugin (mirror of the kernel's `PluginTier`). */
+export type PluginTier = "core" | "providers" | "standard";
+
+/** Trust level of a plugin (mirror of the kernel's `TrustLevel`). */
+export type PluginTrustLevel = "bundled" | "local" | "external";
+
+/** How a persisted override came to be (absent in plan-04-era records). */
+export type PluginOverrideKind = "unloaded" | "disabled";
+
+/** The persisted user override for a discovered plugin (wire shape). */
+export interface PluginOverrideInfo {
+  readonly kind?: PluginOverrideKind;
+  readonly reason?: string;
+  readonly disabledAt?: string;
+}
+
+/** A plugin currently loaded and live — the manager's `loaded` table rows. */
+export interface LoadedPluginRow {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly tier: PluginTier;
+  readonly trust: PluginTrustLevel;
+  /** True for tier "core" — the server refuses to unload it. */
+  readonly locked: boolean;
+  readonly dependsOn: readonly string[];
+  /**
+   * The plugin's frontend section (plan 03), present when the loaded plugin
+   * declares one AND its entry file is servable (resolved inside the plugin
+   * directory). `apiVersion`/`entry` mirror the manifest; `bust` is the entry
+   * file's mtimeMs — the SAME value the backend loader uses as its `?v=`
+   * cache-bust query — so clients can build content-versioned import URLs.
+   */
+  readonly frontend?: LoadedPluginFrontend;
+}
+
+/** The wire shape of a servable frontend section (plan 03). */
+export interface LoadedPluginFrontend {
+  readonly apiVersion: string;
+  readonly entry: string;
+  readonly bust: string;
+}
+
+/** A plugin the system refused or failed to load — disabled-with-reason. */
+export interface DisabledWithReasonRow {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly tier: PluginTier;
+  readonly trust: PluginTrustLevel;
+  readonly reason: string;
+}
+
+/** A plugin present on disk but not loaded — the manager's second table. */
+export interface DiscoveredPluginRow {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly tier: PluginTier;
+  readonly trust: PluginTrustLevel;
+  /** Absolute plugin directory. */
+  readonly dir: string;
+  /**
+   * The persisted user override, if any. Absent = a fresh discovery the
+   * consent gate renders UNCHECKED; present rows distinguish a deliberate
+   * unload (`kind: "unloaded"`) from an explicit disable (`"disabled"`).
+   */
+  readonly override?: PluginOverrideInfo;
+}
+
+/** An override record whose plugin directory is gone — a greyed-out row. */
+export interface MissingPluginRow {
+  readonly id: string;
+  readonly reason?: string;
+  readonly disabledAt?: string;
+}
+
+/** Response for `GET /plugins` — the two manager tables + the missing strip. */
+export interface PluginListResponse {
+  readonly loaded: readonly LoadedPluginRow[];
+  readonly disabledWithReason: readonly DisabledWithReasonRow[];
+  readonly discovered: readonly DiscoveredPluginRow[];
+  readonly missing: readonly MissingPluginRow[];
+}
+
+/** One directory that failed scan validation (manifest missing/unparsable/invalid). */
+export interface InvalidPluginDir {
+  readonly dir: string;
+  readonly errors: readonly string[];
+}
+
+/** One directory whose (valid) manifest is incompatible with the kernel. */
+export interface IncompatiblePluginDir {
+  readonly dir: string;
+  readonly id: string;
+  readonly reason: string;
+}
+
+/**
+ * Response for `POST /plugins/scan` — the manual scan's product (§5): newly
+ * discovered plugins are UNCHECKED (the consent gate — the scan never
+ * auto-loads), broken directories report their validation errors.
+ */
+export interface PluginScanResponse {
+  /** The plugins root that was scanned. */
+  readonly root: string;
+  /** Fresh discoveries: loadable, not loaded, no override. */
+  readonly newPlugins: readonly DiscoveredPluginRow[];
+  /** Directories that failed manifest/entry validation. */
+  readonly invalid: readonly InvalidPluginDir[];
+  /** Valid manifests incompatible with the running kernel. */
+  readonly incompatible: readonly IncompatiblePluginDir[];
+}
+
+/** The mutation a plugin-management route performed. */
+export type PluginAction = "load" | "unload" | "reload" | "forget";
+
+/** Why a plugin operation was refused (HTTP 409/404 — see the route docs). */
+export type PluginBlockReason =
+  /** Core plugins cannot be unloaded (never force-able). */
+  | "core-locked"
+  /** Unloading would leave zero loaded providers (never force-able). */
+  | "last-provider"
+  /** Loaded dependents exist — retry with `force` (the dependents are listed). */
+  | "cascade-needs-force"
+  /** The target plugin is not currently loaded. */
+  | "not-loaded"
+  /** No such plugin was found (no loadable directory with that id). */
+  | "not-found"
+  /** The target is already loaded (load; use reload). */
+  | "already-loaded"
+  /** The engine refused or failed the operation (reason in `message`). */
+  | "engine-refused";
+
+/** Successful plugin-management operation (HTTP 200). */
+export interface PluginOpSuccess {
+  readonly ok: true;
+  readonly action: PluginAction;
+  readonly id: string;
+  /** Forced unload: the dependents that were unloaded before the target. */
+  readonly cascade?: readonly string[];
+  /** Forced reload: dependents unloaded around the target (engine report). */
+  readonly unloadedDependents?: readonly string[];
+  /** Forced reload: dependents reloaded after the target (engine report). */
+  readonly reloadedDependents?: readonly string[];
+  /** Whether a saved override record was removed (load / reload / forget). */
+  readonly clearedOverride?: boolean;
+  /** Forced ops stop ALL agents first — how many in-flight turns aborted. */
+  readonly stoppedAgents?: number;
+}
+
+/** Refused plugin-management operation (HTTP 404 / 409). */
+export interface PluginOpBlocked {
+  readonly ok: false;
+  readonly action: PluginAction;
+  readonly id: string;
+  readonly reason: PluginBlockReason;
+  /** Human-readable reason (server-log grammar) for the UI to surface. */
+  readonly message: string;
+  /** For `cascade-needs-force`: the loaded dependents a force would remove. */
+  readonly dependents?: readonly string[];
+}
+
+/** Response for the plugin-management mutation routes. */
+export type PluginOpResponse = PluginOpSuccess | PluginOpBlocked;
+
+/**
+ * Broadcast to ALL connected WS clients after every plugin-manager mutation
+ * (load / unload / reload / scan / forget) so every connected frontend
+ * refetches the extension list AND the surface catalog (§11 multi-client
+ * coherence). The payload is intentionally minimal — the client refreshes
+ * from `GET /plugins` + the surface catalog rather than diffing here.
+ */
+export interface ExtensionsChangedMessage {
+  readonly type: "extensions-changed";
+  readonly action: "load" | "unload" | "reload" | "scan" | "forget";
+  /** The plugin the action applied to (absent for a scan). */
+  readonly pluginId?: string;
+}
+
+// ─── Per-workspace plugin enablement (plan 06 §6.6) ─────────────────────────
+//
+// The workspace modal's read+write contract for "is this plugin used HERE".
+// The routes are thin shells over the workspace-plugin-config core service;
+// the state-transition + validation logic lives THERE (pure, unit-tested).
+
+/**
+ * The wire form of a per-workspace plugin state: `"enabled"` / `"disabled"`
+ * — an explicit record — or the string `"undefined"` for NO record (the
+ * blank slate, §7). The triple is spelled out on the wire (rather than
+ * omitting the field) so a client can render all three states uniformly.
+ */
+export type WorkspacePluginStateValue = "enabled" | "disabled" | "undefined";
+
+/**
+ * One row of `GET /workspaces/:id/plugins` — a plugin's effective state in
+ * the workspace plus the metadata the modal needs (unloaded → greyed;
+ * core → locked).
+ */
+export interface WorkspacePluginRow {
+  readonly pluginId: string;
+  readonly tier: PluginTier;
+  readonly state: WorkspacePluginStateValue;
+  /** Whether the plugin is currently loaded globally (plan 05). */
+  readonly loaded: boolean;
+  /** True for tier "core" — the per-workspace state cannot be changed. */
+  readonly locked: boolean;
+}
+
+/**
+ * Response for `GET /workspaces/:id/plugins` — this workspace's effective
+ * plugin states. READING triggers read-through materialization (§6.1):
+ * the first read snapshots inherited records from the default workspace
+ * (Core → `enabled` always). `enabledProviderCount` is folded in for
+ * convenience; the dedicated `providers-status` route reports the same
+ * signal without parsing the full list.
+ */
+export interface WorkspacePluginsResponse {
+  readonly workspaceId: string;
+  readonly plugins: readonly WorkspacePluginRow[];
+  /** Loaded provider-tier plugins effectively enabled here (§6.5 guardrail). */
+  readonly enabledProviderCount: number;
+}
+
+/**
+ * Request body for `PUT /workspaces/:id/plugins/:pluginId` — set/clear
+ * this workspace's state for one plugin. `"unset"` returns it to the
+ * blank slate (no record). The server refuses (`core-locked` /
+ * `unloaded`, HTTP 409) changes for CORE plugins and for plugins that are
+ * not currently loaded — strict layering: only the global plugin-manager
+ * loads code (§7).
+ */
+export interface SetWorkspacePluginStateRequest {
+  readonly state: "enabled" | "disabled" | "unset";
+}
+
+/** Response for `PUT /workspaces/:id/plugins/:pluginId` (HTTP 200). */
+export interface SetWorkspacePluginStateResponse {
+  readonly workspaceId: string;
+  readonly pluginId: string;
+  /** The resulting effective state (`"undefined"` after `"unset"`). */
+  readonly state: WorkspacePluginStateValue;
+}
+
+/** Why a `PUT /workspaces/:id/plugins/:pluginId` was refused (HTTP 409). */
+export type SetWorkspacePluginStateBlockReason = "core-locked" | "unloaded";
+
+/** Refused per-workspace state change (HTTP 409). */
+export interface SetWorkspacePluginStateBlocked {
+  readonly workspaceId: string;
+  readonly pluginId: string;
+  readonly reason: SetWorkspacePluginStateBlockReason;
+  /** Human-readable reason (server-log grammar) for the UI to surface. */
+  readonly message: string;
+}
+
+/** Response for `GET /workspaces/:id/plugins/providers-status` (§6.5). */
+export interface WorkspacePluginProvidersStatusResponse {
+  readonly workspaceId: string;
+  /**
+   * Loaded provider-tier plugins effectively `enabled` in this workspace.
+   * `0` is the first-boot guardrail signal (§7): show a visible "no
+   * providers enabled" prompt instead of a silently empty model picker.
+   */
+  readonly enabledProviderCount: number;
 }
 
 /**

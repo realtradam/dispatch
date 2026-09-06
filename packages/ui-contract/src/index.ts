@@ -140,6 +140,16 @@ export interface SurfaceCatalogEntry {
   readonly region: Region;
   readonly title: string;
   /**
+   * The id of the plugin (extension) that CONTRIBUTED this surface (plan 06
+   * §6.4). The per-workspace catalog filter omits surfaces whose
+   * contributing plugin is not usable in the connection's active
+   * workspace, and the frontend renders the contributing plugin per
+   * surface (plan 07). Optional + additive: entries without it are kept
+   * by the workspace filter (fail-open — a runtime-loaded plugin compiled
+   * against an older contract may omit it).
+   */
+  readonly pluginId?: string;
+  /**
    * Whether the surface's spec/values differ per conversation ("conversation")
    * or are app-wide ("global"). A client may skip re-subscribing GLOBAL surfaces
    * on a conversation switch (they ignore `conversationId`). Optional + additive:

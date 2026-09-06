@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# bin/set-openrouter-key — paste the OpenRouter API key into /etc/dispatch/env (prod + dev).
+#
+# A tiny, focused wrapper around `bin/sync-env --openrouter-key`. It prompts you
+# to paste the key WITHOUT echoing it and WITHOUT keeping it in shell history
+# (the value only ever exists in this script's stdin read), then elevates with
+# sudo to write it into /etc/dispatch/env — the SAME config file the systemd
+# service (prod) and bin/up (dev) both read.
+#
+# Usage:
+#   bin/set-openrouter-key                     # paste the key; empty → clear/disable
+#   bin/set-openrouter-key --remove            # explicitly remove/disable the provider
+#   bin/set-openrouter-key --help              # this help
+#
+# RUN WITHOUT A sudo PREFIX — sudo is inside. The key value is never echoed,
+# never written to a temp file, and never stored in this repo. It is passed to
+# the secure sync-env path below, which reports only "configured" / "removed" —
+# no key characters.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SYNC_ENV="$HERE/sync-env"
+
+print_help() {
+	sed -n '2,18p' "${BASH_SOURCE[0]}"
+	exit 0
+}
+
+MODE="set"
+for arg in "$@"; do
+	case "$arg" in
+		--remove | -r)
+			MODE="remove"
+			;;
+		--help | -h)
+			print_help
+			;;
+		*)
+			echo "set-openrouter-key: unknown argument: $arg" >&2
+			print_help
+			;;
+	esac
+done
+
+if [ ! -f "$SYNC_ENV" ]; then
+	echo "set-openrouter-key: $SYNC_ENV not found — run from the dispatch backend checkout." >&2
+	exit 1
+fi
+
+if [ "$MODE" = "remove" ]; then
+	echo "Removing OPENROUTER_API_KEY (disables the OpenRouter provider)…"
+	exec sudo "$SYNC_ENV" --openrouter-key ""
+fi
+
+echo "Paste your OPENROUTER_API_KEY and press Enter:"
+echo "(input is hidden and not saved to shell history)"
+echo -n "> "
+# `read -rs` suppresses echo; the value lives only in this variable, which is
+# passed to sync-env and then goes out of scope. No ambient state is created.
+IFS= read -rs OPENROUTER_KEY
+
+if [ -z "$OPENROUTER_KEY" ]; then
+	echo "No key entered — removing OPENROUTER_API_KEY (disables the OpenRouter provider)."
+	exec sudo "$SYNC_ENV" --openrouter-key ""
+fi
+
+# Sanity guard: a real API key never contains these. sync-env also rejects them,
+# but fail fast here with a clear message rather than a downstream sed surprise.
+if [[ "$OPENROUTER_KEY" == *"$'\n'"* || "$OPENROUTER_KEY" == *"$'\r'"* || "$OPENROUTER_KEY" == *'|'* ]]; then
+	echo "set-openrouter-key: pasted value contains a newline/pipe — refusing (was it double-pasted?)." >&2
+	exit 1
+fi
+
+echo "Writing OPENROUTER_API_KEY into /etc/dispatch/env (via sudo)…"
+exec sudo "$SYNC_ENV" --openrouter-key "$OPENROUTER_KEY"

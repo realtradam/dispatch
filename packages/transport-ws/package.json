@@ -7,9 +7,12 @@
   "types": "dist/index.d.ts",
   "dependencies": {
     "@dispatch/kernel": "workspace:*",
+    "@dispatch/layout-provider-contract": "workspace:*",
+    "@dispatch/plugin-manager": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*",
     "@dispatch/surface-registry": "workspace:*",
     "@dispatch/transport-contract": "workspace:*",
-    "@dispatch/ui-contract": "workspace:*"
+    "@dispatch/ui-contract": "workspace:*",
+    "@dispatch/workspace-plugin-config": "workspace:*"
   }
 }

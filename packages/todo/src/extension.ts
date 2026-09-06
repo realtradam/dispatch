@@ -19,6 +19,7 @@ export const manifest: Manifest = {
   name: "Todo Tool",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "standard",
   trust: "bundled",
   activation: "eager",
   dependsOn: ["surface-registry"],

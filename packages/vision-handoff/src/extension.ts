@@ -23,7 +23,6 @@ import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { agentManagementHandle } from "@dispatch/agent-management";
 import { conversationStoreHandle } from "@dispatch/conversation-store";
-import type { CredentialStore } from "@dispatch/credential-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
 import { execBackendHandle } from "@dispatch/exec-backend";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
@@ -38,7 +37,12 @@ export const manifest: Manifest = {
   name: "Vision Handoff",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "standard",
   trust: "bundled",
+  // Resolved at activate time (see activate below) — the DAG must order
+  // credential-store first or activation fails (getService throws when the
+  // service is absent).
+  dependsOn: ["credential-store"],
   activation: "eager",
   capabilities: { network: true, fs: true },
   contributes: {
@@ -146,13 +150,10 @@ async function deleteConversationImages(conversationId: string): Promise<void> {
 }
 
 export async function activate(host: HostAPI): Promise<void> {
-  const credentialStore = host.getService(credentialStoreHandle) as CredentialStore | undefined;
-  if (credentialStore === undefined) {
-    host.logger.warn(
-      "vision-handoff: credential-store service not available. The consult_vision tool and image handoff are disabled.",
-    );
-    return;
-  }
+  // dependsOn: ["credential-store"] (manifest) guarantees the service exists
+  // here — getService throws when absent, which fails activation and lands
+  // this extension in the host's disabled-with-reason list.
+  const credentialStore = host.getService(credentialStoreHandle);
 
   const resolveModel = (modelName: string) => {
     const resolved = credentialStore.resolve(modelName);

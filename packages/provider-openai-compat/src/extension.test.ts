@@ -80,6 +80,7 @@ describe("provider-openai-compat activation (numbered OpenCode)", () => {
 
   it("declares contributes providers = ['opencode'] (obsolete openai-compat namespace gone)", () => {
     expect(manifest.contributes?.providers).toEqual(["opencode"]);
+    expect(manifest.tier).toBe("providers");
   });
 
   it("no longer depends on auth-apikey", () => {

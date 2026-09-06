@@ -15,9 +15,10 @@ import type {
   ChatSubscribeMessage,
   ChatUnsubscribeMessage,
   ReasoningEffort,
+  WorkspaceSetMessage,
   WsClientMessage,
 } from "@dispatch/transport-contract";
-import type { SurfaceServerMessage } from "@dispatch/ui-contract";
+import type { SurfaceCatalog, SurfaceServerMessage } from "@dispatch/ui-contract";
 
 // ── Result types ────────────────────────────────────────────────────────────
 
@@ -114,6 +115,28 @@ export interface ChatQueueCancelRouteResult {
   readonly messageId: string;
 }
 
+/**
+ * The effect a validated `workspace.set` should produce (plan 06 §6.4): the
+ * shell records THIS connection's active workspace and RE-PUSHES the surface
+ * catalog filtered to it. No reply is sent on an invalid payload — a
+ * malformed `workspace.set` is a client bug, logged server-side (the shell
+ * owns the log); the connection keeps its previous workspace.
+ */
+export interface WorkspaceSetRouteResult {
+  readonly kind: "workspace-set";
+  readonly workspaceId: string;
+}
+
+/**
+ * The effect a malformed `workspace.set` should produce: NO reply, NO state
+ * change — the shell logs the reason. Mirrors the fire-and-forget style of
+ * the chat-queue results (there is no workspace-scoped error message type).
+ */
+export interface WorkspaceSetRouteError {
+  readonly kind: "workspace-error";
+  readonly errorMessage: string;
+}
+
 /** The effect any client WS message should produce. */
 export type RouteResult =
   | SurfaceRouteResult
@@ -122,7 +145,9 @@ export type RouteResult =
   | ChatSubscribeRouteResult
   | ChatUnsubscribeRouteResult
   | ChatQueueRouteResult
-  | ChatQueueCancelRouteResult;
+  | ChatQueueCancelRouteResult
+  | WorkspaceSetRouteResult
+  | WorkspaceSetRouteError;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -137,6 +162,40 @@ export function subKey(surfaceId: string, conversationId?: string): string {
 /** Build the catalog `SurfaceServerMessage` from the registry. */
 export function catalogMessage(registry: SurfaceRegistry): SurfaceServerMessage {
   return { type: "catalog", catalog: registry.getCatalog() };
+}
+
+/**
+ * Pure per-workspace catalog filter (plan 06 §6.4): omit surfaces whose
+ * CONTRIBUTING plugin is not in the usable set. Entries WITHOUT a
+ * `pluginId` are KEPT (fail-open — a runtime-loaded plugin compiled against
+ * an older contract may omit the field; global loaded/unloaded state already
+ * gates those elsewhere). Pure — the usable set is resolved by the caller
+ * (the shell resolves it via the workspace-plugin-config service).
+ */
+export function filterCatalogForWorkspace(
+  catalog: SurfaceCatalog,
+  usablePluginIds: ReadonlySet<string>,
+): SurfaceCatalog {
+  return catalog.filter(
+    (entry) => entry.pluginId === undefined || usablePluginIds.has(entry.pluginId),
+  );
+}
+
+/**
+ * Build the catalog message, optionally workspace-filtered. `usablePluginIds`
+ * omitted → the unfiltered (global) catalog — the connect-time default and
+ * the degrade path when no workspace context / config service exists.
+ */
+export function catalogMessageFiltered(
+  registry: SurfaceRegistry,
+  usablePluginIds: ReadonlySet<string> | undefined,
+): SurfaceServerMessage {
+  const catalog = registry.getCatalog();
+  return {
+    type: "catalog",
+    catalog:
+      usablePluginIds !== undefined ? filterCatalogForWorkspace(catalog, usablePluginIds) : catalog,
+  };
 }
 
 // ── Router ──────────────────────────────────────────────────────────────────
@@ -170,6 +229,8 @@ export function routeClientMessage(
       return handleChatQueue(msg);
     case "chat.queue.cancel":
       return handleChatQueueCancel(msg);
+    case "workspace.set":
+      return handleWorkspaceSet(msg);
   }
 }
 
@@ -299,6 +360,25 @@ function handleChatQueueCancel(
     conversationId: msg.conversationId,
     messageId: msg.messageId,
   };
+}
+
+/**
+ * Validate a `workspace.set` (plan 06 §6.4): `workspaceId` must be a
+ * non-empty string. Invalid → `workspace-error` (the shell logs and sends
+ * NOTHING — there is no workspace-scoped error message type); valid →
+ * `workspace-set` (the shell records the connection's workspace and re-pushes
+ * the filtered catalog).
+ */
+function handleWorkspaceSet(
+  msg: WorkspaceSetMessage,
+): WorkspaceSetRouteResult | WorkspaceSetRouteError {
+  if (typeof msg.workspaceId !== "string" || msg.workspaceId.length === 0) {
+    return {
+      kind: "workspace-error",
+      errorMessage: "workspace.set requires a non-empty string `workspaceId`",
+    };
+  }
+  return { kind: "workspace-set", workspaceId: msg.workspaceId };
 }
 
 // ── Per-message handlers ────────────────────────────────────────────────────

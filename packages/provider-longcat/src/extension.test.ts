@@ -50,5 +50,6 @@ describe("provider-longcat activation", () => {
   it("declares the longcat provider contribution + network capability", () => {
     expect(manifest.contributes?.providers).toEqual(["longcat"]);
     expect(manifest.capabilities?.network).toBe(true);
+    expect(manifest.tier).toBe("providers");
   });
 });

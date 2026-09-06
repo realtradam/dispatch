@@ -5,6 +5,7 @@ export const manifest: Manifest = {
   name: "Transport WebSocket",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "core",
   trust: "bundled",
   dependsOn: ["surface-registry", "session-orchestrator"],
   capabilities: { network: true },

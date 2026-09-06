@@ -14,6 +14,7 @@ function fakeManifest(
     name,
     version,
     apiVersion: "^0.1.0",
+    tier: "standard",
     trust: "bundled",
     ...extra,
   };

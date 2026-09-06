@@ -23,9 +23,10 @@ import { execBackendHandle, remoteExecBackendFactoryHandle } from "./service.js"
 
 /**
  * A minimal fake host exposing only the service-registry surface the resolver
- * touches (`getService`/`provideService`). Throws on a missing service exactly
- * like the real `bus.getService`, so the resolver's try/catch path is exercised
- * against behavior-equivalent input.
+ * touches (`getService`/`tryGetService`/`provideService`). `tryGetService`
+ * returns the provided impl or undefined — never throws — exactly like the
+ * real `bus.tryGetService`, so the resolver's reactive (plan 03) absent-
+ * service path is exercised against behavior-equivalent input.
  */
 function createFakeHost(services: Map<string, unknown>): HostAPI {
   const api = {
@@ -41,8 +42,12 @@ function createFakeHost(services: Map<string, unknown>): HostAPI {
       }
       return impl as T;
     },
+    tryGetService<T>(handle: ServiceHandle<T>): T | undefined {
+      return services.get(handle.id) as T | undefined;
+    },
   };
-  // The resolver only calls getService; the rest of HostAPI is unused here.
+  // The resolver only calls getService/tryGetService; the rest of HostAPI is
+  // unused here.
   return api as unknown as HostAPI;
 }
 

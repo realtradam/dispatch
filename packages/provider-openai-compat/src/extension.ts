@@ -7,6 +7,7 @@ export const manifest: Manifest = {
   name: "OpenAI-Compatible Provider",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "providers",
   trust: "bundled",
   activation: "eager",
   capabilities: { network: true },

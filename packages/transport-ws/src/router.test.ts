@@ -2,7 +2,13 @@ import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch
 import type { WsClientMessage } from "@dispatch/transport-contract";
 import type { SurfaceCatalogEntry, SurfaceSpec } from "@dispatch/ui-contract";
 import { describe, expect, it } from "vitest";
-import { catalogMessage, type RouteResult, routeClientMessage, subKey } from "./router.js";
+import {
+  catalogMessage,
+  catalogMessageFiltered,
+  type RouteResult,
+  routeClientMessage,
+  subKey,
+} from "./router.js";
 
 // ── Fake in-memory registry (no mocks — just a plain implementation) ────────
 
@@ -734,5 +740,82 @@ describe("subKey", () => {
 
   it("global and conversation-scoped keys are distinct", () => {
     expect(subKey("surf-a")).not.toBe(subKey("surf-a", "conv-42"));
+  });
+});
+
+// ── workspace.set + per-workspace catalog filter (plan 06 §6.4) ─────────────
+
+describe("routeClientMessage: workspace.set", () => {
+  it("routes a valid workspace.set to { kind: 'workspace-set', workspaceId }", () => {
+    const registry = fakeRegistry([]);
+    const result = routeClientMessage(registry, new Set<string>(), {
+      type: "workspace.set",
+      workspaceId: "team-a",
+    });
+    expect(result).toEqual({ kind: "workspace-set", workspaceId: "team-a" });
+  });
+
+  it("a malformed workspace.set routes to workspace-error (no reply, no state change)", () => {
+    const registry = fakeRegistry([]);
+    const result = routeClientMessage(registry, new Set<string>(), {
+      type: "workspace.set",
+      workspaceId: "",
+    });
+    expect(result.kind).toBe("workspace-error");
+  });
+});
+
+describe("filterCatalogForWorkspace + catalogMessageFiltered", () => {
+  /** A provider whose catalogEntry carries a contributing pluginId. */
+  function pluginSurface(id: string, pluginId: string | undefined): SurfaceProvider {
+    const provider = fakeProvider(id);
+    const entry: SurfaceCatalogEntry = {
+      ...provider.catalogEntry,
+      ...(pluginId !== undefined ? { pluginId } : {}),
+    };
+    return { ...provider, catalogEntry: entry };
+  }
+
+  function fakeRegistryWith(entries: readonly SurfaceProvider[]): SurfaceRegistry {
+    const map = new Map(entries.map((p) => [p.catalogEntry.id, p]));
+    return {
+      register() {
+        return () => {};
+      },
+      getCatalog() {
+        return [...map.values()].map((p) => p.catalogEntry);
+      },
+      getSurface(id) {
+        return map.get(id);
+      },
+    };
+  }
+
+  const registry = fakeRegistryWith([
+    pluginSurface("core-surf", "kernel-core"),
+    pluginSurface("mcp-surf", "mcp"),
+    pluginSurface("legacy-surf", undefined), // compiled against an old contract
+  ]);
+
+  it("omits surfaces whose contributing plugin is NOT usable in the workspace", () => {
+    const msg = catalogMessageFiltered(registry, new Set(["kernel-core"]));
+    const ids = msg.catalog.map((e) => e.id);
+    expect(ids).toEqual(["core-surf", "legacy-surf"]); // mcp-surf omitted
+  });
+
+  it("keeps entries WITHOUT a pluginId (fail-open) and entries whose plugin IS usable", () => {
+    const msg = catalogMessageFiltered(registry, new Set(["kernel-core", "mcp"]));
+    expect(msg.catalog.map((e) => e.id)).toEqual(["core-surf", "mcp-surf", "legacy-surf"]);
+  });
+
+  it("undefined usable set → the UNFILTERED global catalog (connect-time / degrade path)", () => {
+    const msg = catalogMessageFiltered(registry, undefined);
+    expect(msg.catalog).toHaveLength(3);
+  });
+
+  it("the pluginId field is present on the pushed catalog entries (§6.4 contract)", () => {
+    const msg = catalogMessageFiltered(registry, new Set(["mcp"]));
+    const mcpEntry = msg.catalog.find((e) => e.id === "mcp-surf");
+    expect(mcpEntry?.pluginId).toBe("mcp");
   });
 });

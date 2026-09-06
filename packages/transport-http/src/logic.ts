@@ -4,6 +4,7 @@ import type {
   ConversationStatus,
   ReasoningEffort,
 } from "@dispatch/kernel";
+import type { PluginOpResponse } from "@dispatch/transport-contract";
 import type { NamedAgentSelectionSnapshot } from "@dispatch/wire";
 
 const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
@@ -510,4 +511,42 @@ export function extractLastAssistantText(messages: readonly ChatMessage[]): stri
     return "";
   }
   return "";
+}
+
+/**
+ * Pure: parse the `{ force?: boolean }` body of the plugin unload/reload
+ * routes. An ABSENT body is valid (force defaults to false — the routes are
+ * POSTs with an optional JSON body). Malformed JSON or a non-boolean `force`
+ * is rejected. Everything else about the body is ignored (isolation over
+ * strictness — extra fields are not an error).
+ */
+export function parsePluginForceBody(
+  raw: string,
+): { readonly ok: true; readonly force: boolean } | { readonly ok: false; readonly error: string } {
+  if (raw.trim().length === 0) return { ok: true, force: false };
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "Invalid JSON body" };
+  }
+  if (body === null || typeof body !== "object") {
+    return { ok: false, error: "Request body must be a JSON object" };
+  }
+  const force = (body as Record<string, unknown>).force;
+  if (force !== undefined && typeof force !== "boolean") {
+    return { ok: false, error: "Field 'force' must be a boolean" };
+  }
+  return { ok: true, force: force === true };
+}
+
+/**
+ * Pure: map a `PluginOpResponse` to its HTTP status. Success → 200;
+ * `not-found` → 404 (no such plugin); every other refusal is a
+ * blocked-with-reason → 409 (per plan 05's route contract: the client shows
+ * the message and, for `cascade-needs-force`, the dependents).
+ */
+export function pluginOpStatus(response: PluginOpResponse): 200 | 404 | 409 {
+  if (response.ok) return 200;
+  return response.reason === "not-found" ? 404 : 409;
 }

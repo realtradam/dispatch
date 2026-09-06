@@ -1,11 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { extension as agentManagementExt } from "@dispatch/agent-management";
-import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
-import { extension as conversationStoreExt } from "@dispatch/conversation-store";
-import { createCredentialStoreExtension } from "@dispatch/credential-store";
-import { createExecBackendExtension } from "@dispatch/exec-backend";
-import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import { createJournalSink } from "@dispatch/journal-sink";
 import {
   type ConfigAccess,
@@ -15,54 +10,38 @@ import {
   type EventsEmitter,
   type Extension,
   type HostDeps,
+  KERNEL_API_VERSION,
   type LogDeps,
   type PermissionGate,
   type ScheduledJob,
   type SecretsAccess,
   type StorageNamespace,
 } from "@dispatch/kernel";
-// LSP temporarily disabled — crashes (unhandled JSON parse, ENOENT on
-// transient .old_modules dirs) and a memory leak. Re-enable after fix.
-// import { extension as lspExt } from "@dispatch/lsp";
-import { extension as mcpExt } from "@dispatch/mcp";
-import { extension as messageQueueExt } from "@dispatch/message-queue";
-import { extension as namedAgentsExt } from "@dispatch/named-agents";
-import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
-import { extension as providerHyperExt } from "@dispatch/provider-hyper";
-import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
-import {
-  parseNumberedOpenCodeEnv,
-  extension as providerOpenaiCompatExt,
-} from "@dispatch/provider-openai-compat";
-import { extension as providerUmansExt } from "@dispatch/provider-umans";
+import { pluginEngineHandle } from "@dispatch/plugin-manager";
+import { parseNumberedOpenCodeEnv } from "@dispatch/provider-openai-compat";
 import {
   type MemorySample,
   memorySampleAttributes,
-  extension as sessionOrchestratorExt,
+  pluginOwnershipHandle,
   sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
-import { extension as skillsExt } from "@dispatch/skills";
-import { extension as sshExt } from "@dispatch/ssh";
-import { createSqliteStorage, extension as storageSqliteExt } from "@dispatch/storage-sqlite";
-import { createLoadedExtensionsExtension } from "@dispatch/surface-loaded-extensions";
-import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
-import { extension as systemPromptExt } from "@dispatch/system-prompt";
-import { extension as throughputStoreExt } from "@dispatch/throughput-store";
-import { extension as todoExt } from "@dispatch/todo";
-import { extension as toolEditFileExt } from "@dispatch/tool-edit-file";
-import { extension as toolReadFileExt } from "@dispatch/tool-read-file";
-import { extension as toolShellExt } from "@dispatch/tool-shell";
-import { extension as toolWebSearchExt } from "@dispatch/tool-web-search";
-import { extension as toolWriteFileExt } from "@dispatch/tool-write-file";
-import { extension as toolYoutubeTranscriptExt } from "@dispatch/tool-youtube-transcript";
-import { createTransportHttpExtension } from "@dispatch/transport-http";
-import { createTransportWsExtension } from "@dispatch/transport-ws";
-import { extension as visionHandoffExt } from "@dispatch/vision-handoff";
+import { createSqliteStorage } from "@dispatch/storage-sqlite";
+import { createBundledExtensions } from "./bundled.js";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
 import { loadExternalExtensions } from "./load-external.js";
 import { startMemoryTelemetry } from "./mem-telemetry.js";
+import {
+  ensurePluginsDir,
+  loadPlugin,
+  readPluginOverrides,
+  scanPlugins,
+  toDiscoveredPlugins,
+  toReconciledBuckets,
+  toScannedEntries,
+} from "./plugin-discovery.js";
+import { reconcilePlugins, resolvePluginsDir } from "./plugin-reconcile.js";
 
 function createEmptySecrets(): SecretsAccess {
   return {
@@ -78,68 +57,16 @@ function createAllowAllPermissions(): PermissionGate {
   };
 }
 
-function createNoopScheduler(): { readonly register: (job: ScheduledJob) => void } {
-  return { register: () => {} };
+function createNoopScheduler(): {
+  readonly register: (job: ScheduledJob) => void;
+  readonly unregister: (jobId: string) => void;
+} {
+  return { register: () => {}, unregister: () => {} };
 }
 
 function createNoopEvents(): EventsEmitter {
   return { emit: () => {} };
 }
-
-// Core extensions EXCEPT the credential-store, which is assembled in boot() so
-// its credential list can include any credentials backed by external providers
-// (e.g. a `claude` credential once the external Anthropic provider is loaded).
-const CORE_EXTENSIONS: readonly Extension[] = [
-  storageSqliteExt,
-  conversationStoreExt,
-  providerUmansExt,
-  providerLongcatExt,
-  providerHyperExt,
-  providerConcurrencyExt,
-  // exec-backend must precede the tool extensions that
-  // `dependsOn: ["exec-backend"]` (tool-edit-file/read/shell/write). It
-  // provides the ExecBackendResolver the tools resolve through; placing it
-  // here keeps the activation DAG honest (it depends only on kernel).
-  createExecBackendExtension(),
-  toolEditFileExt,
-  toolReadFileExt,
-  toolShellExt,
-  toolWriteFileExt,
-  toolWebSearchExt,
-  toolYoutubeTranscriptExt,
-  throughputStoreExt,
-  todoExt,
-  messageQueueExt,
-  mcpExt,
-  sessionOrchestratorExt,
-  skillsExt,
-  systemPromptExt,
-  cacheWarmingExt,
-  // named-agents provides the Named Agent registry service. It depends only on
-  // the kernel + storage (host.storage), so it can live alongside the other
-  // service-providing core extensions. It MUST activate before transport-http
-  // (whose activate getService's it) and before agent-management (which
-  // declares dependsOn: ["named-agents"]). The host resolves activation order
-  // by manifest dependsOn.
-  namedAgentsExt,
-  // lspExt,  // LSP temporarily disabled — see import above
-  // ssh declares `dependsOn: ["exec-backend"]` and PROVIDES the remote
-  // exec-backend factory + the ComputerService the HTTP routes delegate to.
-  // Its lookups are lazy (tool-/request-time), but it is placed after
-  // exec-backend and the tool extensions (alongside the other standard
-  // tool-serving extensions) to keep the DAG honest — and before
-  // transport-http, whose routes consume the ComputerService it provides.
-  sshExt,
-  // heartbeat PROVIDES the HeartbeatService (per-workspace AI loop) the
-  // HTTP routes delegate to. Placed before transport-http (which depends on
-  // it) — mirrors how ssh precedes transport-http for the same reason.
-  heartbeatExt,
-  createTransportHttpExtension(),
-  // Surface extensions — dependency order: surface-registry first, then consumers.
-  createSurfaceRegistryExtension(),
-  createTransportWsExtension(),
-  createLoadedExtensionsExtension(),
-];
 
 /** Parse the comma-separated list of external extension module specifiers. */
 function parseExternalSpecifiers(env: Readonly<Record<string, string | undefined>>): string[] {
@@ -273,6 +200,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     credentials.push({ name: "hyper", providerId: "hyper" });
     logger.info(`Registered credential "hyper" → hyper provider`);
   }
+  if (process.env.OPENROUTER_API_KEY) {
+    credentials.push({ name: "openrouter", providerId: "openrouter" });
+    logger.info(`Registered credential "openrouter" → openrouter provider`);
+  }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),
   );
@@ -290,29 +221,71 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     logger.info(`Registered credential "${codexName}" → openai provider`);
   }
 
+  // One order-independent bundled set + externally loaded extensions. Ordering
+  // is manifest-declared: the host sorts by the dependsOn DAG and gates by
+  // apiVersion (see bundled.ts — main.ts curates NOTHING).
   const extensions: Extension[] = [
-    ...CORE_EXTENSIONS,
-    // provider-openai-compat registers one numbered OpenCode provider per
-    // OPENCODE_API_KEY_<n>. It is always loaded — when no numbered credentials
-    // are configured it self-degrades (registers nothing; OpenCode unavailable).
-    providerOpenaiCompatExt,
-    createCredentialStoreExtension({ credentials }),
-    // vision-handoff activates AFTER credential-store (it resolves the
-    // credential-store service at activate time to find vision-capable models).
-    // Placed here, not in CORE_EXTENSIONS, so the service is available when it
-    // activates. The session-orchestrator resolves its service LAZILY
-    // (per-turn), so activation order between it and session-orchestrator
-    // doesn't matter.
-    visionHandoffExt,
-    // agent-management activates AFTER session-orchestrator and
-    // conversation-store (it resolves their services at activate time). It
-    // registers the 7 agent-management tools and the AgentManagementService
-    // that vision-handoff will eventually consume for consultations.
-    agentManagementExt,
+    ...createBundledExtensions({ credentials }),
     ...externalExtensions,
   ];
 
+  // Resolve the plugins root BEFORE the host activates — the plugin-manager
+  // engine implementation (below) carries it, and the boot drop-in block
+  // reuses it. Creating the dir is best-effort (an uncreatable root scans
+  // as empty — scanPlugins logs it).
+  const pluginLogger = logger.child({ extensionId: "plugin-discovery" });
+  const pluginsDir = resolvePluginsDir(
+    process.env as Readonly<Record<string, string | undefined>>,
+    homedir(),
+  );
+  try {
+    await ensurePluginsDir(pluginsDir);
+  } catch {
+    // Best effort — an uncreatable root scans as empty (scanPlugins logs it).
+  }
+
   const host = createHost(extensions, deps);
+
+  // Provide the plugin lifecycle ENGINE to the plugin-manager (the manager's
+  // consumer-defined `PluginEngine` handle). Provided BEFORE activation so
+  // the manager's activate-time getService is deterministic; the adapter
+  // delegates to the plan-01 engine + plan-04 discovery machinery. The
+  // registration-closed gate on the composition root's host API covers the
+  // define* registries — services are dynamic (plan 03), and this provide
+  // is the designed injection point for the one service only the
+  // composition root can supply.
+  host.getHostAPI().provideService(pluginEngineHandle, {
+    getExtensions: host.getExtensions,
+    getDisabled: host.getDisabled,
+    loadExtension: host.loadExtension,
+    unloadExtension: host.unloadExtension,
+    reloadExtension: host.reloadExtension,
+    importPluginEntry: (entryPath) => loadPlugin(entryPath, pluginLogger),
+    pluginsDir,
+    scanPluginsDir: async (overrides) => {
+      const scan = await scanPlugins(pluginsDir, pluginLogger);
+      const plan = reconcilePlugins(toDiscoveredPlugins(scan), overrides, {
+        kernelApiVersion: KERNEL_API_VERSION,
+        loadedIds: host.getExtensions().map((m) => m.id),
+        mode: "scan", // mid-session scans NEVER auto-load (consent gate, §5)
+      });
+      return { scanned: toScannedEntries(scan), buckets: toReconciledBuckets(plan) };
+    },
+  });
+
+  // Provide the plan-06 PluginOwnership seam (session-orchestrator's
+  // consumer-defined handle) — the composition root is the one unit that can
+  // see the kernel host's plan-01 registration ledger, so it adapts the
+  // ledger's owner views into the service. Provided BEFORE activation (same
+  // injection point as the engine above): session-orchestrator's workspace
+  // tool gate + model-usability check and transport-http's /models
+  // workspace filter read it. Live views — loads/unloads are reflected on
+  // the next call (the maps are rebuilt from the ledger per call).
+  host.getHostAPI().provideService(pluginOwnershipHandle, {
+    ownerOfTool: (toolName) => host.getToolOwners().get(toolName),
+    ownerOfProvider: (providerId) => host.getProviderOwners().get(providerId),
+  });
+
   await host.activate();
 
   const disabled = host.getDisabled();
@@ -322,9 +295,62 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     }
   }
 
+  // --- Plugin directory drop-ins (plan 04): discover → reconcile → load ----
+  //
+  // This is the DROP-IN mechanism, complementary to DISPATCH_EXTERNAL_EXTENSIONS
+  // above (the explicit env list loaded BEFORE createHost) — both feed the same
+  // host: plugins land in the same registries and get the same apiVersion /
+  // DAG / capability-gate treatment. Directory plugins get the FULL
+  // validatePluginManifest at scan time; env-loaded externals keep the light
+  // structural check (trusted, developer-loaded — see load-external.ts).
+  //
+  // Boot here is READ-ONLY with respect to override records (§4.7): records
+  // are READ to honor saved disables; all record WRITES belong to the
+  // plugin-manager (plan 05) — including the user's consent to load, which
+  // clears a record.
+  const scan = await scanPlugins(pluginsDir, pluginLogger);
+  for (const p of scan.plugins) {
+    if (p.status.kind === "invalid") {
+      for (const error of p.status.errors) {
+        pluginLogger.error(`Plugin at "${p.dir}" is invalid: ${error}`);
+      }
+    } else if (p.status.kind === "incompatible") {
+      pluginLogger.warn(`Plugin "${p.status.manifest.id}" disabled: ${p.status.reason}`);
+    }
+  }
+  const overrides = await readPluginOverrides(host.getHostAPI(), pluginLogger);
+  const plan = reconcilePlugins(toDiscoveredPlugins(scan), overrides, {
+    kernelApiVersion: KERNEL_API_VERSION,
+    loadedIds: host.getExtensions().map((m) => m.id),
+    mode: "boot", // default-on at boot (§5) — no disable-record means load
+  });
+  for (const p of plan.toLoad) {
+    const ext = await loadPlugin(p.entryPath, pluginLogger);
+    if (ext === undefined) continue; // already logged + skipped by loadPlugin
+    const result = await host.loadExtension(ext);
+    if (!result.ok) pluginLogger.warn(`Plugin "${p.manifest.id}" disabled: ${result.reason}`);
+  }
+  for (const d of plan.disabledByOverride) {
+    pluginLogger.info(
+      `Plugin "${d.manifest.id}" at "${d.dir}" disabled by saved override${d.record.reason ? `: ${d.record.reason}` : ""}`,
+    );
+  }
+  for (const d of plan.disabledWithReason) {
+    pluginLogger.warn(`Plugin "${d.manifest.id}" at "${d.dir}" disabled: ${d.reason}`);
+  }
+  for (const m of plan.missing) {
+    // Greyed-out "missing" row (§6): the plugin is gone but its
+    // disable-record survives so the user notices; clearing the record is
+    // the manager's (plan 05) job.
+    pluginLogger.warn(
+      `Plugin "${m.id}" is MISSING (directory gone) but has a saved disable-record`,
+    );
+  }
+
   // Periodic memory telemetry — leak-localization edge effect (AGENTS.md:
   // timers are edge effects owned by host-bin, the composition root, NOT the
-  // kernel). Logs process.memoryUsage() every 60s tagged with the active-
+  // kernel). Logs process.memoryUsage() every 15s (the DEFAULT_MEMORY_
+  // SAMPLE_INTERVAL_MS in mem-telemetry.ts) tagged with the active-
   // conversation count, and every 5 min runs Bun.gc(true) + logs RSS
   // before/after to distinguish live retained objects from GC fragmentation.
   // The per-turn before/after sampling lives in session-orchestrator; this

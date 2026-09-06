@@ -52,6 +52,7 @@ export const manifest: Manifest = {
   name: "Agent Management",
   version: "0.0.0",
   apiVersion: "^0.1.0",
+  tier: "standard",
   trust: "bundled",
   activation: "eager",
   capabilities: { network: false },
