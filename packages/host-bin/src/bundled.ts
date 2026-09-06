@@ -24,6 +24,7 @@ import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import type { Extension } from "@dispatch/kernel";
 import { extension as layoutChatExt } from "@dispatch/layout-chat";
 import { extension as layoutDiagnosticExt } from "@dispatch/layout-diagnostic";
+import { createLayoutProviderRegistryExtension } from "@dispatch/layout-provider-registry";
 import { extension as lspExt } from "@dispatch/lsp";
 import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
@@ -127,19 +128,29 @@ export function createBundledExtensions(creds: {
     // scope. The pilot proves the load/unload/enable machinery on a real,
     // non-trivial plugin.
     lspExt,
+    // The per-workspace layout ACTIVATION plane: the registry every loaded
+    // layout plugin registers its provider into; the workspace's per-
+    // workspace enablement state (workspace-plugin-config) picks the ONE
+    // active provider per workspace. Coexisting layout plugins are the
+    // design — activation is per workspace (the plugins modal's checkboxes).
+    createLayoutProviderRegistryExtension(),
     // The default-layout provider (plan 02, D-L3): a bundled STANDARD plugin
-    // that owns per-workspace tile trees (its own storage namespace), serves
-    // the well-known /workspaces/:id/layout routes, and broadcasts `layout`
-    // WS changes. Unloading it degrades the system gracefully — routes 404
-    // and clients render their built-in default with ephemeral edits.
+    // that owns per-workspace tile trees (its own storage namespace) for the
+    // workspaces that ENABLE it, serves the well-known
+    // /workspaces/:id/layout routes there, and broadcasts `layout` WS
+    // changes. Registration is order-independent (reactive, into the
+    // registry) — a workspace without it enabled (or with no layout plugin
+    // enabled) 404s the routes, and clients render their built-in default
+    // with ephemeral edits (graceful degrade).
     layoutChatExt,
     // The DIAGNOSTIC layout provider: the same generic machinery (plan-02
-    // kit, same routes, same handle) seeding the default tree with border
+    // kit, same routes, its own tree) seeding the default tree with border
     // markers on the two root tiles (main = red, side = green) so a human can
-    // SEE which tile is which in the browser. Exactly one layout provider can
-    // be active (decision 8, first-provider-wins): kept AFTER layout-chat, it
-    // boots as a loaded HOT STANDBY — unloading layout-chat in the plugin UI
-    // hands the layout to it automatically; a restart hands it back.
+    // SEE which tile is which in the browser. Coexists with layout-chat —
+    // enable layout-diagnostic in a workspace's plugins (and disable
+    // layout-chat there) to make THIS plugin that workspace's layout
+    // provider; the frontend then renders the marked tree. No restart, no
+    // unload dance.
     layoutDiagnosticExt,
   ];
 }

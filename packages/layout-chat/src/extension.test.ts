@@ -1,22 +1,33 @@
 /**
- * layout-chat integration tests (plan 02 verification gate) — a REAL kernel
- * host (createBus + createHost + in-memory storage, the plugin-verify
- * pattern — zero Dispatch mocks) with the plugin ACTIVE:
+ * layout-chat integration tests — a REAL kernel host (createBus + createHost
+ * + in-memory storage, the plugin-verify pattern — zero Dispatch mocks) with
+ * the REAL workspace-plugin-config extension (the enablement plane) and the
+ * REAL layout-provider registry:
  *
- * - a fresh workspace GETS DEFAULT_LAYOUT (the plan-02 integration gate);
- * - the provider round-trips writes through its storage namespace and
- *   emits `layout` change events through the host's hook bus;
- * - deactivation (unload) un-provides the service (tryGetService →
- *   undefined) and leaves ZERO dangling registrations;
- * - the §2.4 conflict rule (decision 8): a SECOND provider of the same
- *   handle fails LOUDLY — provideService throws, the second plugin's
- *   activation errors into the disabled-with-reason grammar.
+ * - activation REGISTERS the provider (the registry holds it by plugin id);
+ * - a workspace that ENABLES layout-chat resolves it as ITS layout provider
+ *   and a fresh workspace GETS DEFAULT_LAYOUT (the plan-02 integration
+ *   gate), materialized in the plugin's OWN storage namespace;
+ * - the provider round-trips writes through its storage namespace and emits
+ *   `layout` change events through the host's hook bus;
+ * - a workspace that does NOT enable layout-chat resolves NO provider from
+ *   it (the per-workspace activation rule — registration alone is inert);
+ * - unloading the plugin removes its registration and leaves ZERO dangling
+ *   ledger entries;
+ * - COEXISTENCE (the evolved decision 8): layout-chat and layout-diagnostic
+ *   register SIMULTANEOUSLY without error — the per-workspace enablement
+ *   state picks the active one per workspace.
  */
 
-import type { EventsEmitter, Extension, Manifest } from "@dispatch/kernel";
+import type { EventsEmitter } from "@dispatch/kernel";
 import { createBus, createHost, createLogger } from "@dispatch/kernel";
 import { DEFAULT_LAYOUT, type LayoutTree } from "@dispatch/layout-contract";
-import { layoutChanged, layoutProviderHandle } from "@dispatch/layout-provider-contract";
+import { layoutChanged, layoutProviderRegistryHandle } from "@dispatch/layout-provider-contract";
+import { createLayoutProviderRegistryExtension } from "@dispatch/layout-provider-registry";
+import {
+  extension as workspacePluginConfigExtension,
+  workspacePluginConfigHandle,
+} from "@dispatch/workspace-plugin-config";
 import { describe, expect, it } from "vitest";
 import { extension as layoutChat } from "./extension.js";
 
@@ -70,18 +81,47 @@ function makeHostDeps() {
   };
 }
 
-function otherTree(): LayoutTree {
-  return { version: 1, root: { kind: "leaf", view: "chat" } };
+function makeHost(): Awaited<ReturnType<typeof createHost>> {
+  return createHost(
+    [workspacePluginConfigExtension, createLayoutProviderRegistryExtension(), layoutChat],
+    makeHostDeps(),
+  );
 }
 
-describe("layout-chat — integration (real host, plugin active)", () => {
-  it("a fresh workspace GETS the DEFAULT_LAYOUT seed through the live service", async () => {
-    const deps = makeHostDeps();
-    const host = createHost([layoutChat], deps);
+/** Enable a plugin in a workspace through the REAL config service. */
+async function enable(
+  host: Awaited<ReturnType<typeof createHost>>,
+  workspaceId: string,
+  pluginId: string,
+): Promise<void> {
+  const config = host.getHostAPI().tryGetService(workspacePluginConfigHandle);
+  if (config === undefined) throw new Error("workspace-plugin-config not provided");
+  await config.setState(workspaceId, pluginId, "enabled");
+}
+
+describe("layout-chat — integration (real host, plugin registered)", () => {
+  it("activation registers the provider under the plugin id (no error, loaded)", async () => {
+    const host = makeHost();
     await host.activate();
 
-    const api = host.getHostAPI();
-    const provider = api.tryGetService(layoutProviderHandle);
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    expect(registry).toBeDefined();
+    expect(host.getDisabled()).toEqual([]);
+    expect(registry?.ids()).toEqual(["layout-chat"]);
+    expect(registry?.get("layout-chat")).toBeDefined();
+  });
+
+  it("a workspace that ENABLES layout-chat resolves it as ITS provider and GETS the DEFAULT_LAYOUT seed", async () => {
+    const deps = makeHostDeps();
+    const host = createHost(
+      [workspacePluginConfigExtension, createLayoutProviderRegistryExtension(), layoutChat],
+      deps,
+    );
+    await host.activate();
+
+    await enable(host, "ws-a", "layout-chat");
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    const provider = await registry?.providerFor("ws-a");
     expect(provider).toBeDefined();
     if (provider === undefined) return;
 
@@ -92,13 +132,22 @@ describe("layout-chat — integration (real host, plugin active)", () => {
     expect(await ns.get("tree:fresh-workspace")).toBe(JSON.stringify(DEFAULT_LAYOUT));
   });
 
-  it("writes round-trip and the layout change event flows through the host bus", async () => {
-    const deps = makeHostDeps();
-    const host = createHost([layoutChat], deps);
+  it("a workspace that does NOT enable layout-chat resolves NO provider (registration alone is inert)", async () => {
+    const host = makeHost();
     await host.activate();
 
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    expect(await registry?.providerFor("ws-other")).toBeUndefined();
+  });
+
+  it("writes round-trip and the layout change event flows through the host bus", async () => {
+    const host = makeHost();
+    await host.activate();
+
+    await enable(host, "ws-a", "layout-chat");
     const api = host.getHostAPI();
-    const provider = api.tryGetService(layoutProviderHandle);
+    const registry = api.tryGetService(layoutProviderRegistryHandle);
+    const provider = await registry?.providerFor("ws-a");
     expect(provider).toBeDefined();
     if (provider === undefined) return;
 
@@ -109,68 +158,27 @@ describe("layout-chat — integration (real host, plugin active)", () => {
       received.push(message);
     });
 
-    const result = await provider.setTree("ws-a", otherTree());
+    const next: LayoutTree = { version: 1, root: { kind: "leaf", view: "chat" } };
+    const result = await provider.setTree("ws-a", next);
     expect(result.ok).toBe(true);
-    expect(received).toEqual([{ type: "layout", workspaceId: "ws-a", tree: otherTree() }]);
-    expect(await provider.getTree("ws-a")).toEqual(otherTree());
+    expect(received).toEqual([{ type: "layout", workspaceId: "ws-a", tree: next }]);
+    expect(await provider.getTree("ws-a")).toEqual(next);
 
     dispose();
   });
 
-  it("the disposal contract holds: unload reports ZERO dangling registrations (the verify-plugin disposal assertion, run here against a real host)", async () => {
-    const deps = makeHostDeps();
-    const host = createHost([layoutChat], deps);
+  it("the disposal contract holds: unload removes the registration with ZERO dangling ledger entries", async () => {
+    const host = makeHost();
     await host.activate();
-    expect(host.getHostAPI().tryGetService(layoutProviderHandle)).toBeDefined();
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    expect(registry?.get("layout-chat")).toBeDefined();
 
     const unload = await host.unloadExtension("layout-chat");
     expect(unload.ok).toBe(true);
     // Zero dangling: the ledger reports nothing force-cleaned (the field is
-    // absent/empty when the disposal contract held — the same assertion
-    // verify-plugin's disposal check makes over UnloadResult).
+    // absent/empty when the disposal contract held).
     expect(unload.dangling ?? []).toEqual([]);
-    expect(host.getHostAPI().tryGetService(layoutProviderHandle)).toBeUndefined();
-  });
-});
-
-describe("§2.4 provider-resolution rule (decision 8) — second provider rejected loudly", () => {
-  it("a second provideService on layoutProviderHandle THROWS and the second plugin lands disabled-with-reason", async () => {
-    // A second, independent plugin that provides the SAME handle.
-    const secondManifest: Manifest = {
-      id: "layout-impostor",
-      name: "Layout Impostor",
-      version: "0.0.0",
-      apiVersion: "^0.1.0",
-      tier: "standard",
-      trust: "bundled",
-      activation: "eager",
-    };
-    const impostor: Extension = {
-      manifest: secondManifest,
-      activate(host) {
-        // The kernel registry is FIRST-PROVIDER-WINS: this throws because
-        // layout-chat (earlier in activation order) already provided it.
-        host.provideService(layoutProviderHandle, {
-          getTree: async () => otherTree(),
-          setTree: async () => ({ ok: true, tree: otherTree() }),
-          resetTree: async () => otherTree(),
-        });
-      },
-    };
-
-    const deps = makeHostDeps();
-    const host = createHost([layoutChat, impostor], deps);
-    await host.activate();
-
-    // The impostor's activation failed LOUDLY into the disabled grammar…
-    const disabled = host.getDisabled();
-    expect(disabled.map((d) => d.manifest.id)).toEqual(["layout-impostor"]);
-    expect(disabled[0]?.reason).toContain("Activation failed");
-    expect(disabled[0]?.reason).toContain("already provided");
-
-    // …and the FIRST provider keeps ownership (first-provider-wins).
-    const provider = host.getHostAPI().tryGetService(layoutProviderHandle);
-    expect(provider).toBeDefined();
-    expect(await provider?.getTree("ws-a")).toEqual(DEFAULT_LAYOUT);
+    // The service-mediated registration is gone too.
+    expect(registry?.get("layout-chat")).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
 import type { AgentEvent, HostAPI, Logger, PluginTier } from "@dispatch/kernel";
-import type { LayoutProvider } from "@dispatch/layout-contract";
+import type { LayoutProviderRegistry } from "@dispatch/layout-provider-contract";
 import { createLayoutRouteHandlers } from "@dispatch/layout-provider-contract";
 import { DEFAULT_TEMPLATE, getVariableCatalog } from "@dispatch/system-prompt";
 import type {
@@ -199,16 +199,20 @@ export interface CreateServerOptions {
    */
   readonly pluginOwnership?: PluginOwnership | undefined;
   /**
-   * Optional + reactive — the ACTIVE layout provider (plan 02; provided by
-   * the bundled standard `layout-chat` plugin via the provider kit; read per
-   * request via a registry slot). When absent (no layout plugin loaded /
-   * unloaded mid-session), the `/workspaces/:id/layout` routes degrade to
-   * 404 — the frontend's no-provider signal — and the decision logic
-   * (status mapping, body validation) lives in the provider kit; this
-   * transport mounts the handlers as thin shells (D-L6: no layout knowledge
-   * here).
+   * Optional + reactive — the layout-provider REGISTRY (plan 02, evolved for
+   * per-workspace activation; provided by the bundled standard
+   * `layout-provider-registry` extension; every loaded layout plugin
+   * registers into it). Read per request via a registry slot; the routes
+   * resolve the WORKSPACE's one enabled layout plugin through
+   * `providerFor(workspaceId)` — the per-workspace enablement state decides
+   * which plugin serves. When absent (nothing registered / the registry
+   * unloaded mid-session) or when the workspace enables no layout plugin,
+   * the `/workspaces/:id/layout` routes degrade to 404 — the frontend's
+   * no-provider signal — and the decision logic (status mapping, body
+   * validation) lives in the provider kit; this transport mounts the
+   * handlers as thin shells (D-L6: no layout knowledge here).
    */
-  readonly layoutProvider?: LayoutProvider | undefined;
+  readonly layoutProviderRegistry?: LayoutProviderRegistry | undefined;
   /**
    * Live tier lookup over the host's loaded manifests (wired by the
    * extension from `host.getExtensions()`). Used by `GET /models?workspaceId=`
@@ -2097,16 +2101,20 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
   });
 
-  // ─── Layout (plan 02 — the ACTIVE layout provider's well-known routes) ─────
-  // Owned by whichever layout plugin is active (D-L6: a plugin's domain, not
-  // core's). The provider is consumed REACTIVELY (per-request registry slot);
-  // the decision logic — absent→404, body validation, status mapping — lives
-  // in the provider kit (`createLayoutRouteHandlers`), so these handlers are
-  // thin shells. While no provider is active every route 404s (the
-  // frontend's no-provider signal); a mid-session load starts serving with
+  // ─── Layout (plan 02 — the workspace-ACTIVE layout provider's well-known
+  //      routes) ────
+  // Owned by whichever layout plugin the WORKSPACE enables (D-L6: a plugin's
+  // domain, not core's). The provider is consumed REACTIVELY (per-request
+  // registry slot) and resolved PER WORKSPACE (`providerFor` — the
+  // per-workspace enablement state picks the ONE enabled layout plugin);
+  // the decision logic — absent→404, body validation, status mapping —
+  // lives in the provider kit (`createLayoutRouteHandlers`), so these
+  // handlers are thin shells. While a workspace has no enabled layout
+  // plugin every route 404s for it (the frontend's no-provider signal); a
+  // mid-session load or enablement change applies on the next request with
   // no restart.
   const layoutRoutes = createLayoutRouteHandlers({
-    getProvider: () => opts.layoutProvider,
+    getProvider: async (workspaceId) => await opts.layoutProviderRegistry?.providerFor(workspaceId),
     logger: log,
   });
 

@@ -18,8 +18,10 @@
  *   full tree, no patch protocol (decision 7);
  * - route handlers for the well-known HTTP routes (§2.3): GET/PUT/DELETE
  *   `/workspaces/:id/layout`. The transport (transport-http) mounts them as
- *   thin shells over a PER-REQUEST provider lookup, so the routes 404 while
- *   no provider is active and start serving without a restart when one loads.
+ *   thin shells over a PER-REQUEST, PER-WORKSPACE provider lookup (the
+ *   layout-provider REGISTRY's `providerFor`), so the routes 404 for a
+ *   workspace with no enabled layout plugin and start serving — for exactly
+ *   the workspaces that enable one — without a restart.
  *
  * Deps are INJECTED (effects at the edges): the plugin wires `storage` from
  * `host.storage(<its namespace>)`, `emitChange` from the kernel's event-hook
@@ -28,12 +30,12 @@
  * default tree (the plan-02 seed plugin uses `DEFAULT_LAYOUT` — the contract
  * package's single source of truth).
  *
- * §2.4 double-provide (decision 8): the kernel's service registry is ALREADY
- * first-provider-wins — `bus.provideService` throws when the handle is taken
- * (verified in `kernel/src/bus/bus.ts`), which fails the second plugin's
- * activation into the manager's disabled-with-reason grammar. The kit adds
- * no wrapper: providing stays the plugin's one-line `host.provideService`
- * call, and the loud failure is the kernel's own.
+ * Activation (per workspace) is NOT the kernel's single-slot registry
+ * anymore: layout plugins register into the layout-provider REGISTRY
+ * (`createLayoutProviderRegistry`, provided by the `layout-provider-registry`
+ * extension) and the workspace's per-workspace enablement state picks the
+ * ONE active provider — multiple layout plugins coexist loaded, exactly one
+ * serves each workspace.
  */
 
 import type { Logger, StorageNamespace } from "@dispatch/kernel";
@@ -239,7 +241,7 @@ export interface LayoutRouteHandlers {
   readonly ops: (workspaceId: string, body: unknown) => Promise<LayoutRouteResult>;
 }
 
-const NO_PROVIDER_BODY = { error: "No layout provider is active" } as const;
+const NO_PROVIDER_BODY = { error: "No layout plugin is enabled in this workspace" } as const;
 
 /** Validate a PUT body's shape: `{ tree: LayoutTree }` with version 1 + a root. */
 export function parseTreeBody(
@@ -292,14 +294,16 @@ export function parseOpsBody(
 }
 
 /**
- * Route handlers for the well-known layout routes, bound to a PER-REQUEST
- * provider lookup (the transport's live registry slot). Every handler
- * degrades to 404 while no provider is active — the frontend's no-provider
- * signal — and maps provider outcomes to statuses: 200 with the tree,
- * 400 with the validation error, 500 on storage failure.
+ * Route handlers for the well-known layout routes, bound to a PER-REQUEST,
+ * PER-WORKSPACE provider lookup (the transport resolves the workspace's
+ * ONE enabled layout plugin through the layout-provider registry's
+ * `providerFor`). Every handler degrades to 404 while the workspace has no
+ * enabled layout plugin — the frontend's no-provider signal — and maps
+ * provider outcomes to statuses: 200 with the tree, 400 with the validation
+ * error, 500 on storage failure.
  */
 export function createLayoutRouteHandlers(deps: {
-  readonly getProvider: () => LayoutProvider | undefined;
+  readonly getProvider: (workspaceId: string) => Promise<LayoutProvider | undefined>;
   readonly logger: Logger;
 }): LayoutRouteHandlers {
   const { getProvider, logger } = deps;
@@ -308,7 +312,7 @@ export function createLayoutRouteHandlers(deps: {
     workspaceId: string,
     run: (provider: LayoutProvider) => Promise<LayoutRouteResult>,
   ): Promise<LayoutRouteResult> {
-    const provider = getProvider();
+    const provider = await getProvider(workspaceId);
     if (provider === undefined) {
       return { status: 404, body: NO_PROVIDER_BODY };
     }

@@ -22,7 +22,10 @@
 import type { Extension, HostAPI, Manifest, ServiceHandle, ToolContract } from "@dispatch/kernel";
 import { defineService } from "@dispatch/kernel";
 import type { LayoutOp, LayoutProvider } from "@dispatch/layout-contract";
-import { layoutProviderHandle } from "@dispatch/layout-provider-contract";
+import {
+  type LayoutProviderRegistry,
+  layoutProviderRegistryHandle,
+} from "@dispatch/layout-provider-contract";
 import type { SurfaceProvider } from "@dispatch/surface-registry";
 import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 
@@ -226,17 +229,22 @@ export function createScaffoldExtension(): Extension {
 
       // 4d. Place the view with a LAYOUT OP (plan 04) — the composable write
       // path. Registering a view makes it RENDERABLE; an op makes it PLACED.
-      // The op vocabulary lives in `@dispatch/layout-contract`; the provider
-      // (another plugin's service) applies it atomically.
+      // The op vocabulary lives in `@dispatch/layout-contract`; the
+      // workspace's ACTIVE provider applies it atomically.
       //
-      // The PROVIDER MAY BE ABSENT rule: `layoutProviderHandle` is provided
-      // by whichever layout plugin is active (layout-chat) — a STANDARD
-      // plugin that may not be loaded. Consume it REACTIVELY:
-      // - present → apply the ops now;
-      // - absent  → subscribe to `onServiceAvailable` and apply when (if) a
-      //   provider loads. The subscription is a ledger-tracked registration —
-      //   its disposer MUST be disposed in deactivate().
-      // - never arrives → the ops never run; the plugin degrades gracefully.
+      // The PROVIDER MAY BE ABSENT rule: the layout-provider REGISTRY
+      // (`layoutProviderRegistryHandle`) is provided by a STANDARD extension
+      // that may not be loaded, and even with it present a workspace has a
+      // provider ONLY when a layout plugin is ENABLED there (the per-
+      // workspace activation rule). Consume it REACTIVELY:
+      // - registry present → resolve this workspace's provider via
+      //   `providerFor(SCAFFOLD_WORKSPACE_ID)` and apply the ops;
+      // - registry absent → subscribe to `onServiceAvailable` and resolve
+      //   when (if) it loads. The subscription is a ledger-tracked
+      //   registration — its disposer MUST be disposed in deactivate().
+      // - never arrives / no layout plugin enabled in the workspace → the
+      //   ops never run; the plugin degrades gracefully (enable a layout
+      //   plugin in the workspace's plugins modal to place the panel).
       //
       // The op itself is the ENSURE-FIRST pattern: `ensurePanel` is idempotent
       // (a no-op when the view is already in the panels node), so
@@ -269,19 +277,31 @@ export function createScaffoldExtension(): Extension {
           });
       };
 
-      const providerNow = host.tryGetService(layoutProviderHandle);
-      if (providerNow !== undefined) {
-        applyLayoutOps(providerNow);
-        host.logger.info("plugin-scaffold: layout provider present — ops applied");
-      } else {
-        disposeLayoutSubscription = host.onServiceAvailable(
-          layoutProviderHandle,
-          (lateProvider) => {
-            applyLayoutOps(lateProvider);
-            host.logger.info("plugin-scaffold: layout provider loaded later — ops applied");
-          },
-        );
-      }
+      /** Resolve THIS workspace's provider and apply (fail-soft, logged). */
+      const applyViaRegistry = (registry: LayoutProviderRegistry): void => {
+        void registry
+          .providerFor(SCAFFOLD_WORKSPACE_ID)
+          .then((provider) => {
+            if (provider === undefined) {
+              host.logger.warn(
+                "plugin-scaffold: no layout plugin is enabled in this workspace — panel not placed (enable one in the workspace's plugins)",
+              );
+              return;
+            }
+            applyLayoutOps(provider);
+            host.logger.info("plugin-scaffold: layout ops applied through the active provider");
+          })
+          .catch((err: unknown) => {
+            host.logger.warn(`plugin-scaffold: layout resolution failed — ${String(err)}`);
+          });
+      };
+
+      // Late-join semantics: fires immediately when the registry is already
+      // provided, and again if the registry itself reloads.
+      disposeLayoutSubscription = host.onServiceAvailable(
+        layoutProviderRegistryHandle,
+        applyViaRegistry,
+      );
 
       host.logger.info("plugin-scaffold activated");
     },

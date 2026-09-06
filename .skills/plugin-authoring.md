@@ -238,17 +238,20 @@ with backend plugins running in-process). The trust signal is the manifest's
 
 ## Step 8 — Layout ops (plan 04): editing the workspace tree
 
-Your plugin can EDIT the active layout instead of replacing it. The op
-vocabulary lives in `@dispatch/layout-contract` (pure, serialisable data —
-the same shapes the frontend renderer emits); the ACTIVE layout provider
-(whichever plugin provides `layoutProviderHandle`, e.g. `layout-chat`)
-applies them ATOMICALLY. Import both handles from
-`@dispatch/layout-provider-contract`.
+Your plugin can EDIT the workspace's active layout instead of replacing it.
+The op vocabulary lives in `@dispatch/layout-contract` (pure, serialisable
+data — the same shapes the frontend renderer emits); the workspace's ACTIVE
+layout provider applies them ATOMICALLY. Multiple layout plugins coexist
+LOADED; the ONE that serves a workspace is the one ENABLED there (the
+workspace plugins modal's per-workspace checkboxes — see
+`packages/layout-provider-registry`). Resolve it through the
+layout-provider REGISTRY (`layoutProviderRegistryHandle` from
+`@dispatch/layout-provider-contract`).
 
 ### The vocabulary + the ensure-first pattern
 
 ```ts
-import { layoutProviderHandle } from "@dispatch/layout-provider-contract";
+import { layoutProviderRegistryHandle } from "@dispatch/layout-provider-contract";
 import type { LayoutOp } from "@dispatch/layout-contract";
 
 const ops: readonly LayoutOp[] = [
@@ -270,18 +273,24 @@ default tree's ids — `"root"` (the main split), `"main"` (the left stack),
 `"side"` (the right panels node) — are part of its contract. Target those:
 `{ type: "ensurePanel", panels: "side", … }`.
 
-### The provider may be absent — consume reactively
+### The provider may be absent — consume reactively, resolve per workspace
 
-`layoutProviderHandle` is provided by a STANDARD plugin that may not be
-loaded. NEVER `getService` it (that throws) — consume it like the scaffold
-does (`packages/plugin-scaffold/src/extension.ts`, section 4d):
+The layout-provider REGISTRY (`layoutProviderRegistryHandle`) is provided by
+a STANDARD extension (`layout-provider-registry`) that may not be loaded —
+and even when it is present, a workspace has a provider ONLY when a layout
+plugin is ENABLED there. NEVER `getService` it (that throws) — consume it
+like the scaffold does (`packages/plugin-scaffold/src/extension.ts`,
+section 4d):
 
-- `host.tryGetService(layoutProviderHandle)` → present? apply now.
-- absent → `host.onServiceAvailable(layoutProviderHandle, cb)` and apply in
-  the callback when a provider loads. Dispose the subscription in
-  `deactivate()` (it is a ledger-tracked registration).
-- absent forever → your ops never run; degrade gracefully (ephemeral
-  frontend layouts are the no-provider mode).
+- `host.tryGetService(layoutProviderRegistryHandle)` → present? resolve now:
+  `registry.providerFor(yourWorkspaceId)` → the workspace's ONE enabled
+  layout provider, or `undefined` when none is enabled (log the reason and
+  degrade).
+- absent → `host.onServiceAvailable(layoutProviderRegistryHandle, cb)` and
+  resolve + apply in the callback when the registry loads. Dispose the
+  subscription in `deactivate()` (it is a ledger-tracked registration).
+- absent forever / no layout plugin ever enabled → your ops never run;
+  degrade gracefully (ephemeral frontend layouts are the no-provider mode).
 
 ### Atomicity + failure handling
 
@@ -300,6 +309,31 @@ After every successful write (set / ops / reset) the provider emits the
 to every client. React with `host.on(layoutChanged, cb)` (dispose in
 `deactivate()`); there is no caller attribution, so your reactor WILL see
 your own writes — compare trees before re-asserting if a loop matters.
+
+### Authoring a LAYOUT PROVIDER (a second provider kind)
+
+A layout provider is a STANDARD plugin that seeds a tree and registers it
+(`packages/layout-chat` is the reference; `layout-diagnostic` is a second
+live example):
+
+1. Build the provider with the kit — `createLayoutProvider({ storage:
+   host.storage("<your-plugin-id>"), defaultTree, emitChange: (m) =>
+   host.emit(layoutChanged, m), logger: host.logger })` (the plugin's OWN
+   storage namespace — D-L4/D-L6: there is no core layout store).
+2. Register it REACTIVELY: `host.onServiceAvailable(layoutProviderRegistryHandle,
+   (registry) => { disposeRegistration = registry.register("<your-plugin-id>",
+   provider); })` — late-join fires immediately when the registry is already
+   provided, and again if it reloads. Keep BOTH disposers and dispose them in
+   `deactivate()`.
+3. Declare the well-known routes in `contributes.routes`
+   (`/workspaces/:id/layout`, `/workspaces/:id/layout/ops`) — every layout
+   provider declares the SAME routes; the workspace's enabled plugin serves
+   them.
+4. There is NO provideService of a layout handle anymore and NO
+   first-provider-wins race: coexistence is the design, and the workspace's
+   per-workspace enablement state (the plugins modal) picks the ONE active
+   provider per workspace. Users enable your plugin in a workspace to
+   activate it there.
 
 ### NO-REVERT on unload + the reset affordance (documented semantics)
 

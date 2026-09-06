@@ -77,16 +77,21 @@ export interface ComputerService {
 export const computerServiceHandle: ServiceHandle<ComputerService> =
   defineService<ComputerService>("ssh");
 
-// ─── LayoutProvider seam (plan 02) ─────────────────────────────────────────────
+// ─── Layout provider REGISTRY seam (plan 02, evolved: per-workspace activation) ──
 //
-// The ACTIVE layout provider (a STANDARD plugin — `layout-chat` — provides it
-// via the provider kit). Consumed REACTIVELY like every optional Standard
-// service: the routes read the live registry slot per request and 404 while
-// absent (the frontend's no-provider signal); a mid-session load starts
-// serving with no restart. The route DECISION logic (status mapping, body
-// validation) lives in the provider kit (`@dispatch/layout-provider-contract`)
-// — the transport mounts the handlers as thin shells and learns nothing about
-// trees (D-L6).
+// The layout-provider REGISTRY (a STANDARD extension —
+// `layout-provider-registry` — provides it; every loaded layout plugin
+// registers its provider under its plugin id). Consumed REACTIVELY like
+// every optional Standard service: the routes resolve the WORKSPACE's one
+// enabled layout plugin per request (`providerFor(workspaceId)`) and 404
+// while the workspace has none (the frontend's no-provider signal); a
+// mid-session load or enablement change applies to the next request with no
+// restart. The route DECISION logic (status mapping, body validation) lives
+// in the provider kit (`@dispatch/layout-provider-contract`) — the transport
+// mounts the handlers as thin shells and learns nothing about trees (D-L6).
 
 export type { LayoutProvider } from "@dispatch/layout-contract";
-export { layoutProviderHandle } from "@dispatch/layout-provider-contract";
+export {
+  type LayoutProviderRegistry,
+  layoutProviderRegistryHandle,
+} from "@dispatch/layout-provider-contract";

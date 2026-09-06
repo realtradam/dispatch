@@ -8,7 +8,10 @@
   },
   "dependencies": {
     "@dispatch/kernel": "workspace:*",
+    "@dispatch/layout-chat": "workspace:*",
     "@dispatch/layout-contract": "workspace:*",
-    "@dispatch/layout-provider-contract": "workspace:*"
+    "@dispatch/layout-provider-contract": "workspace:*",
+    "@dispatch/layout-provider-registry": "workspace:*",
+    "@dispatch/workspace-plugin-config": "workspace:*"
   }
 }

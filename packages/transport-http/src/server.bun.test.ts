@@ -10,7 +10,11 @@ import {
   type StorageNamespace,
 } from "@dispatch/kernel";
 import { DEFAULT_LAYOUT, type LayoutTree } from "@dispatch/layout-contract";
-import { createLayoutProvider, layoutProviderHandle } from "@dispatch/layout-provider-contract";
+import {
+  createLayoutProvider,
+  createLayoutProviderRegistry,
+  layoutProviderRegistryHandle,
+} from "@dispatch/layout-provider-contract";
 import { createApp } from "./app.js";
 import { createTransportHttpExtension } from "./index.js";
 import {
@@ -527,7 +531,7 @@ describe("reactive service registry (plan 03)", () => {
       // ── absent: every layout route 404s (the frontend's no-provider signal) ──
       let res = await fetch(`${base}/workspaces/w/layout`);
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: "No layout provider is active" });
+      expect(await res.json()).toEqual({ error: "No layout plugin is enabled in this workspace" });
 
       res = await fetch(`${base}/workspaces/w/layout`, {
         method: "PUT",
@@ -539,19 +543,25 @@ describe("reactive service registry (plan 03)", () => {
       res = await fetch(`${base}/workspaces/w/layout`, { method: "DELETE" });
       expect(res.status).toBe(404);
 
-      // ── mid-session load: a provider (the kit's impl) serves with NO restart ──
+      // ── mid-session load: a registry + a registered kit provider serve with
+      // NO restart (the picker serves the workspace's enabled plugin — here a
+      // stub enabling the single registered one, as the layout-provider-
+      // registry extension computes from the per-workspace enablement state) ──
       const emitted: unknown[] = [];
-      const unprovide = host.provideService(
-        layoutProviderHandle,
-        createLayoutProvider({
-          storage: memoryNamespace(),
-          defaultTree: DEFAULT_LAYOUT,
-          emitChange: (message) => {
-            emitted.push(message);
-          },
-          logger: fakeLogger(),
-        }),
-      );
+      const provider = createLayoutProvider({
+        storage: memoryNamespace(),
+        defaultTree: DEFAULT_LAYOUT,
+        emitChange: (message) => {
+          emitted.push(message);
+        },
+        logger: fakeLogger(),
+      });
+      const registry = createLayoutProviderRegistry({
+        pickPlugin: async () => "layout-under-test",
+        logger: fakeLogger(),
+      });
+      registry.register("layout-under-test", provider);
+      const unprovide = host.provideService(layoutProviderRegistryHandle, registry);
 
       res = await fetch(`${base}/workspaces/w/layout`);
       expect(res.status).toBe(200);
@@ -611,11 +621,15 @@ describe("reactive service registry (plan 03)", () => {
         body: JSON.stringify({ ops: [] }),
       });
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: "No layout provider is active" });
+      expect(await res.json()).toEqual({ error: "No layout plugin is enabled in this workspace" });
 
-      // ── a live provider (the kit's impl) ──
-      const unprovide = host.provideService(
-        layoutProviderHandle,
+      // ── a live registry with a registered kit provider ──
+      const registry2 = createLayoutProviderRegistry({
+        pickPlugin: async () => "layout-under-test",
+        logger: fakeLogger(),
+      });
+      registry2.register(
+        "layout-under-test",
         createLayoutProvider({
           storage: memoryNamespace(),
           defaultTree: DEFAULT_LAYOUT,
@@ -623,6 +637,7 @@ describe("reactive service registry (plan 03)", () => {
           logger: fakeLogger(),
         }),
       );
+      const unprovide = host.provideService(layoutProviderRegistryHandle, registry2);
 
       // Malformed body (unknown op type) → 400 { error }.
       res = await fetch(`${base}/workspaces/w/layout/ops`, {

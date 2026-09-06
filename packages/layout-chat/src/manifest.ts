@@ -7,8 +7,9 @@
 import type { Manifest } from "@dispatch/kernel";
 
 export const manifest: Manifest = {
-  // Unique id across all loaded plugins; the plugin manager + per-workspace
-  // enablement store key everything by it.
+  // Unique id across all loaded plugins; the plugin manager, the
+  // layout-provider REGISTRY (the key this plugin registers its provider
+  // under), and the per-workspace enablement store all key by it.
   id: "layout-chat",
 
   name: "Chat Layout",
@@ -23,22 +24,20 @@ export const manifest: Manifest = {
 
   trust: "bundled",
 
-  // No layout-specific dependsOn (decision 1): this plugin imports the KIT
-  // package at build time (`@dispatch/layout-provider-contract`), never
-  // another plugin. It needs no other extension's service to activate.
+  // No dependsOn (decision 1): this plugin imports the KIT package at build
+  // time (`@dispatch/layout-provider-contract`), never another plugin. The
+  // layout-provider REGISTRY is consumed REACTIVELY (onServiceAvailable —
+  // registration is order-independent), so no activation-order edge exists.
   dependsOn: [],
 
   contributes: {
-    // The typed service other units (plan-04 op writers, future layout
-    // plugins' consumers) consume via `layoutProviderHandle`.
-    services: ["layout/provider"],
-
-    // The well-known HTTP routes this plugin OWNS while active (declared for
-    // discovery/gating; mounted by the core transport-http over the live
-    // registry slot — the route handlers come from the provider kit). While
-    // the plugin is active the routes serve; after deactivation they 404.
-    // The ops route (plan 04) shares the kit code path — the service's
-    // `applyOps` over HTTP.
+    // The well-known HTTP routes this plugin OWNS while it is a workspace's
+    // active provider (declared for discovery/gating; mounted by the core
+    // transport-http over the per-workspace provider resolution — see
+    // layout-provider-registry). Every layout provider declares the SAME
+    // routes: the workspace's enabled plugin serves them. The ops route
+    // (plan 04) shares the kit code path — the service's `applyOps` over
+    // HTTP.
     routes: ["/workspaces/:id/layout", "/workspaces/:id/layout/ops"],
   },
 

@@ -1,26 +1,31 @@
 /**
- * layout-diagnostic integration tests — the layout-chat gate run against the
- * diagnostic provider (a REAL kernel host: createBus + createHost +
- * in-memory storage, the plugin-verify pattern — zero Dispatch mocks):
+ * layout-diagnostic integration tests — a REAL kernel host (createBus +
+ * createHost + in-memory storage, the plugin-verify pattern — zero Dispatch
+ * mocks) with the REAL workspace-plugin-config extension (the enablement
+ * plane) and the REAL layout-provider registry:
  *
- * - activation provides the `layout/provider` service (when the handle is
- *   free) and a fresh workspace GETS DIAGNOSTIC_LAYOUT (the derived default
- *   + the two root-tile markers) through the live service, materialized in
- *   the plugin's OWN storage namespace;
- * - deactivation (unload) un-provides the service (tryGetService →
- *   undefined) and leaves ZERO dangling registrations;
- * - decision 8 (one provider at a time): when another layout provider got
- *   there first, THIS plugin loads as a HOT STANDBY — no error, no service —
- *   and provides automatically the moment that provider unloads. (The first
- *   provider is the layout-chat impostor pattern — a minimal inline
- *   provider — because layout plugins never import one another; the handle
- *   package exists so consumers and providers meet ONLY there.)
+ * - activation REGISTERS the provider (no error, loaded — alongside
+ *   layout-chat, which it never races: coexistence is the design);
+ * - a workspace that ENABLES layout-diagnostic resolves it as ITS provider
+ *   and GETS DIAGNOSTIC_LAYOUT (the derived default + the two root-tile
+ *   markers), materialized in the plugin's OWN storage namespace;
+ * - a workspace that keeps layout-chat enabled is UNAFFECTED (per-workspace
+ *   activation — the human's flow: enable diagnostic in the workspace's
+ *   plugins modal, no unload dance, no restart);
+ * - the disposal contract: unload removes the registration with ZERO
+ *   dangling ledger entries (the registry subscription included).
  */
 
-import type { EventsEmitter, Extension, Manifest } from "@dispatch/kernel";
+import type { EventsEmitter } from "@dispatch/kernel";
 import { createBus, createHost, createLogger } from "@dispatch/kernel";
-import { DEFAULT_LAYOUT } from "@dispatch/layout-contract";
-import { layoutProviderHandle } from "@dispatch/layout-provider-contract";
+import { extension as layoutChat } from "@dispatch/layout-chat";
+import { DEFAULT_LAYOUT, type LayoutTree } from "@dispatch/layout-contract";
+import { layoutProviderRegistryHandle } from "@dispatch/layout-provider-contract";
+import { createLayoutProviderRegistryExtension } from "@dispatch/layout-provider-registry";
+import {
+  extension as workspacePluginConfigExtension,
+  workspacePluginConfigHandle,
+} from "@dispatch/workspace-plugin-config";
 import { describe, expect, it } from "vitest";
 import { extension as layoutDiagnostic } from "./extension.js";
 import { DIAGNOSTIC_LAYOUT } from "./tree.js";
@@ -75,23 +80,57 @@ function makeHostDeps() {
   };
 }
 
-describe("layout-diagnostic — integration (real host, plugin active)", () => {
-  it("activation provides the layout provider service", async () => {
-    const deps = makeHostDeps();
-    const host = createHost([layoutDiagnostic], deps);
+/** Both layout plugins + the registry + the enablement plane — the real set. */
+function makeHost(): Awaited<ReturnType<typeof createHost>> {
+  return createHost(
+    [
+      workspacePluginConfigExtension,
+      createLayoutProviderRegistryExtension(),
+      layoutChat,
+      layoutDiagnostic,
+    ],
+    makeHostDeps(),
+  );
+}
+
+/** Set one workspace's plugin state through the REAL config service. */
+async function setState(
+  host: Awaited<ReturnType<typeof createHost>>,
+  workspaceId: string,
+  pluginId: string,
+  state: "enabled" | "disabled",
+): Promise<void> {
+  const config = host.getHostAPI().tryGetService(workspacePluginConfigHandle);
+  if (config === undefined) throw new Error("workspace-plugin-config not provided");
+  await config.setState(workspaceId, pluginId, state);
+}
+
+describe("layout-diagnostic — integration (real host, plugin registered)", () => {
+  it("activation registers the provider under the plugin id — alongside layout-chat, without error", async () => {
+    const host = makeHost();
     await host.activate();
 
-    const provider = host.getHostAPI().tryGetService(layoutProviderHandle);
-    expect(provider).toBeDefined();
+    expect(host.getDisabled()).toEqual([]);
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    expect(registry?.ids().sort()).toEqual(["layout-chat", "layout-diagnostic"]);
   });
 
-  it("a fresh workspace GETS DIAGNOSTIC_LAYOUT — the default tree plus the two root-tile markers", async () => {
+  it("a workspace that ENABLES layout-diagnostic GETS DIAGNOSTIC_LAYOUT — the default tree plus the two root-tile markers", async () => {
     const deps = makeHostDeps();
-    const host = createHost([layoutDiagnostic], deps);
+    const host = createHost(
+      [
+        workspacePluginConfigExtension,
+        createLayoutProviderRegistryExtension(),
+        layoutChat,
+        layoutDiagnostic,
+      ],
+      deps,
+    );
     await host.activate();
 
-    const api = host.getHostAPI();
-    const provider = api.tryGetService(layoutProviderHandle);
+    await setState(host, "ws-diag", "layout-diagnostic", "enabled");
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    const provider = await registry?.providerFor("ws-diag");
     expect(provider).toBeDefined();
     if (provider === undefined) return;
 
@@ -104,103 +143,68 @@ describe("layout-diagnostic — integration (real host, plugin active)", () => {
     expect(await ns.get("tree:fresh-workspace")).toBe(JSON.stringify(DIAGNOSTIC_LAYOUT));
   });
 
-  it("the disposal contract holds: unload reports ZERO dangling registrations (the verify-plugin disposal assertion, run here against a real host)", async () => {
-    const deps = makeHostDeps();
-    const host = createHost([layoutDiagnostic], deps);
+  it("PER-WORKSPACE activation: the diagnostic workspace gets the marked tree, the chat workspace is UNAFFECTED", async () => {
+    const host = makeHost();
     await host.activate();
-    expect(host.getHostAPI().tryGetService(layoutProviderHandle)).toBeDefined();
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    if (registry === undefined) return;
+
+    // The human's flow, with NO unload dance and NO restart: enable
+    // diagnostic in one workspace, keep chat in the other.
+    await setState(host, "ws-diag", "layout-diagnostic", "enabled");
+    await setState(host, "ws-chat", "layout-chat", "enabled");
+
+    const diagTree: LayoutTree | undefined = await registry
+      .providerFor("ws-diag")
+      .then((p) => p?.getTree("w"));
+    const chatTree: LayoutTree | undefined = await registry
+      .providerFor("ws-chat")
+      .then((p) => p?.getTree("w"));
+
+    expect(diagTree).toEqual(DIAGNOSTIC_LAYOUT);
+    expect(chatTree).toEqual(DEFAULT_LAYOUT);
+  });
+
+  it("switching a workspace between providers is a per-workspace state change (disable chat, enable diagnostic)", async () => {
+    const host = makeHost();
+    await host.activate();
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    if (registry === undefined) return;
+
+    await setState(host, "ws-a", "layout-chat", "enabled");
+    const chatProvider = await registry.providerFor("ws-a");
+    expect(await chatProvider?.getTree("w")).toEqual(DEFAULT_LAYOUT);
+
+    // The workspace switches to the diagnostic layout.
+    await setState(host, "ws-a", "layout-chat", "disabled");
+    await setState(host, "ws-a", "layout-diagnostic", "enabled");
+    const diagProvider = await registry.providerFor("ws-a");
+    expect(await diagProvider?.getTree("w")).toEqual(DIAGNOSTIC_LAYOUT);
+  });
+
+  it("a workspace with NO layout plugin enabled resolves NO provider (the 404 degrade)", async () => {
+    const host = makeHost();
+    await host.activate();
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    if (registry === undefined) return;
+
+    expect(await registry.providerFor("ws-none")).toBeUndefined();
+  });
+
+  it("the disposal contract holds: unload removes the registration with ZERO dangling ledger entries", async () => {
+    const host = makeHost();
+    await host.activate();
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    expect(registry?.get("layout-diagnostic")).toBeDefined();
 
     const unload = await host.unloadExtension("layout-diagnostic");
     expect(unload.ok).toBe(true);
-    // Zero dangling: the ledger reports nothing force-cleaned (the field is
-    // absent/empty when the disposal contract held — the same assertion
-    // verify-plugin's disposal check makes over UnloadResult).
+    // Zero dangling: the ledger reports nothing force-cleaned (the standby
+    // subscription of the old design is gone; the registry-availability
+    // subscription is ledger-tracked and disposed in deactivate()).
     expect(unload.dangling ?? []).toEqual([]);
-    expect(host.getHostAPI().tryGetService(layoutProviderHandle)).toBeUndefined();
-  });
-});
-
-describe("decision 8 — one provider at a time (hot standby while another provider is active)", () => {
-  /** A minimal provider that got there FIRST (the layout-chat impostor pattern). */
-  function firstProviderPlugin(): Extension {
-    const manifest: Manifest = {
-      id: "layout-first",
-      name: "Layout First",
-      version: "0.0.0",
-      apiVersion: "^0.1.0",
-      tier: "standard",
-      trust: "bundled",
-      activation: "eager",
-    };
-    return {
-      manifest,
-      activate(host) {
-        host.provideService(layoutProviderHandle, {
-          getTree: async () => DEFAULT_LAYOUT,
-          setTree: async () => ({ ok: true, tree: DEFAULT_LAYOUT }),
-          applyOps: async () => ({ ok: true, tree: DEFAULT_LAYOUT, applied: 0 }),
-          resetTree: async () => DEFAULT_LAYOUT,
-        });
-      },
-    };
-  }
-
-  it("activated alongside an active provider, THIS plugin loads WITHOUT error as a hot standby (no service, no disabled entry)", async () => {
-    const deps = makeHostDeps();
-    // The bundled array order puts layout-chat first, so the diagnostic
-    // plugin boots as the standby (first-provider-wins).
-    const host = createHost([firstProviderPlugin(), layoutDiagnostic], deps);
-    await host.activate();
-
-    // No loud failure: the plugin is LOADED, not in the disabled grammar…
-    expect(host.getDisabled()).toEqual([]);
-
-    // …and the FIRST provider keeps ownership (exactly one provider, and it
-    // is not this plugin).
-    const provider = host.getHostAPI().tryGetService(layoutProviderHandle);
-    expect(provider).toBeDefined();
-    expect(await provider?.getTree("ws-a")).toEqual(DEFAULT_LAYOUT);
-  });
-
-  it("the moment the active provider unloads, the standby takes over and serves the marked tree", async () => {
-    const deps = makeHostDeps();
-    const host = createHost([firstProviderPlugin(), layoutDiagnostic], deps);
-    await host.activate();
-
-    // The human's flow: unload the active layout provider in the plugin UI —
-    // the standby provides automatically (no second UI step).
-    const unloadFirst = await host.unloadExtension("layout-first");
-    expect(unloadFirst.ok).toBe(true);
-
-    const provider = host.getHostAPI().tryGetService(layoutProviderHandle);
-    expect(provider).toBeDefined();
-    expect(await provider?.getTree("ws-a")).toEqual(DIAGNOSTIC_LAYOUT);
-  });
-
-  it("a standby that unloads while waiting reports ZERO dangling registrations (the ledger-tracked standby subscription is disposed)", async () => {
-    const deps = makeHostDeps();
-    const host = createHost([firstProviderPlugin(), layoutDiagnostic], deps);
-    await host.activate();
-
-    const unload = await host.unloadExtension("layout-diagnostic");
-    expect(unload.ok).toBe(true);
-    expect(unload.dangling ?? []).toEqual([]);
-    // The first provider was never disturbed.
-    const provider = host.getHostAPI().tryGetService(layoutProviderHandle);
-    expect(await provider?.getTree("ws-a")).toEqual(DEFAULT_LAYOUT);
-  });
-
-  it("a standby takeover is disposed on unload: after taking over, unloading THIS plugin frees the handle with zero dangling", async () => {
-    const deps = makeHostDeps();
-    const host = createHost([firstProviderPlugin(), layoutDiagnostic], deps);
-    await host.activate();
-    await host.unloadExtension("layout-first");
-    expect(host.getHostAPI().tryGetService(layoutProviderHandle)).toBeDefined();
-
-    const unload = await host.unloadExtension("layout-diagnostic");
-    expect(unload.ok).toBe(true);
-    expect(unload.dangling ?? []).toEqual([]);
-    expect(host.getHostAPI().tryGetService(layoutProviderHandle)).toBeUndefined();
+    // The service-mediated registration is gone too.
+    expect(registry?.get("layout-diagnostic")).toBeUndefined();
   });
 });
 

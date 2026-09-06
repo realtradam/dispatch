@@ -8,7 +8,7 @@ import {
   conversationStoreHandle,
   credentialStoreHandle,
   heartbeatServiceHandle,
-  layoutProviderHandle,
+  layoutProviderRegistryHandle,
   lspServiceHandle,
   mcpServiceHandle,
   namedAgentServiceHandle,
@@ -148,7 +148,7 @@ export function createTransportHttpExtension(): Extension & {
         pluginManager: { current: host.tryGetService(pluginManagerHandle) },
         workspacePluginConfig: { current: host.tryGetService(workspacePluginConfigHandle) },
         pluginOwnership: { current: host.tryGetService(pluginOwnershipHandle) },
-        layoutProvider: { current: host.tryGetService(layoutProviderHandle) },
+        layoutProviderRegistry: { current: host.tryGetService(layoutProviderRegistryHandle) },
       };
 
       function watch<T>(handle: ServiceHandle<T>, slot: { current: T | undefined }): () => void {
@@ -175,7 +175,7 @@ export function createTransportHttpExtension(): Extension & {
         watch(pluginManagerHandle, slots.pluginManager),
         watch(workspacePluginConfigHandle, slots.workspacePluginConfig),
         watch(pluginOwnershipHandle, slots.pluginOwnership),
-        watch(layoutProviderHandle, slots.layoutProvider),
+        watch(layoutProviderRegistryHandle, slots.layoutProviderRegistry),
       ];
 
       const logger = host.logger;
@@ -225,8 +225,8 @@ export function createTransportHttpExtension(): Extension & {
         get pluginOwnership() {
           return slots.pluginOwnership.current;
         },
-        get layoutProvider() {
-          return slots.layoutProvider.current;
+        get layoutProviderRegistry() {
+          return slots.layoutProviderRegistry.current;
         },
         // Live tier lookup over the loaded manifests (plan 06 §6.5) — read
         // per call so mid-session loads/unloads are seen on the next

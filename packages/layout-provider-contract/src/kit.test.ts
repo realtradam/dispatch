@@ -235,7 +235,7 @@ describe("createLayoutProvider — resetTree (DELETE → re-seed)", () => {
 describe("createLayoutRouteHandlers — 404/400/200 matrix", () => {
   it("every route 404s while no provider is active (the no-provider signal)", async () => {
     const routes = createLayoutRouteHandlers({
-      getProvider: () => undefined,
+      getProvider: async () => undefined,
       logger: silentLogger,
     });
     const emptyBody = { tree: DEFAULT_LAYOUT };
@@ -245,14 +245,14 @@ describe("createLayoutRouteHandlers — 404/400/200 matrix", () => {
       await routes.delete("ws-a"),
     ]) {
       expect(outcome.status).toBe(404);
-      expect(outcome.body).toEqual({ error: "No layout provider is active" });
+      expect(outcome.body).toEqual({ error: "No layout plugin is enabled in this workspace" });
     }
   });
 
   it("GET → 200 { tree } (seeds a fresh workspace) with a live provider", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
     const result: LayoutRouteResult = await routes.get("fresh-ws");
@@ -263,7 +263,7 @@ describe("createLayoutRouteHandlers — 404/400/200 matrix", () => {
   it("PUT with a malformed body → 400 (absent provider still wins with 404 first)", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
     for (const bad of [undefined, "junk", 42, {}, { tree: null }, { tree: { version: 2 } }]) {
@@ -276,7 +276,7 @@ describe("createLayoutRouteHandlers — 404/400/200 matrix", () => {
   it("PUT with a structurally invalid tree → 400 { error } (from validateTree)", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
     const bad = { tree: { version: 1, root: { kind: "split", dir: "row", children: [] } } };
@@ -288,7 +288,7 @@ describe("createLayoutRouteHandlers — 404/400/200 matrix", () => {
   it("PUT with a valid tree → 200 { tree } and persists + emits (exactly once)", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
     const result = await routes.put("ws-a", { tree: otherTree() });
@@ -300,7 +300,7 @@ describe("createLayoutRouteHandlers — 404/400/200 matrix", () => {
   it("DELETE → 200 { tree: freshSeed }; a following GET re-seeds to the default", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
     await routes.put("ws-a", { tree: otherTree() });
@@ -342,7 +342,7 @@ describe("createLayoutRouteHandlers — 404/400/200 matrix", () => {
       logger: silentLogger,
     });
     const routes = createLayoutRouteHandlers({
-      getProvider: () => provider,
+      getProvider: async () => provider,
       logger: silentLogger,
     });
     const result = await routes.get("ws-a");
@@ -546,18 +546,18 @@ describe("createLayoutProvider — applyOps (plan 04)", () => {
 describe("createLayoutRouteHandlers — POST ops (plan 04, the second door)", () => {
   it("404s while no provider is active (before body validation)", async () => {
     const routes = createLayoutRouteHandlers({
-      getProvider: () => undefined,
+      getProvider: async () => undefined,
       logger: silentLogger,
     });
     const result = await routes.ops("ws-a", { ops: [] });
     expect(result.status).toBe(404);
-    expect(result.body).toEqual({ error: "No layout provider is active" });
+    expect(result.body).toEqual({ error: "No layout plugin is enabled in this workspace" });
   });
 
   it("a malformed body → 400; a known-typed op with junk fields → 400 with failedOp", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
 
@@ -579,7 +579,7 @@ describe("createLayoutRouteHandlers — POST ops (plan 04, the second door)", ()
   it("200 { tree, applied } on success — the SAME kit applyOps (one code path, two doors)", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
     const result = await routes.ops("ws-a", {
@@ -628,18 +628,18 @@ describe("parseOpsBody", () => {
 describe("createLayoutRouteHandlers — POST ops (plan 04, the second door)", () => {
   it("404s while no provider is active (before body validation)", async () => {
     const routes = createLayoutRouteHandlers({
-      getProvider: () => undefined,
+      getProvider: async () => undefined,
       logger: silentLogger,
     });
     const result = await routes.ops("ws-a", { ops: [] });
     expect(result.status).toBe(404);
-    expect(result.body).toEqual({ error: "No layout provider is active" });
+    expect(result.body).toEqual({ error: "No layout plugin is enabled in this workspace" });
   });
 
   it("a malformed body → 400; a known-typed op with junk fields → 400 with failedOp", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
 
@@ -661,7 +661,7 @@ describe("createLayoutRouteHandlers — POST ops (plan 04, the second door)", ()
   it("200 { tree, applied } on success — the same kit applyOps (one code path)", async () => {
     const h = makeHarness();
     const routes = createLayoutRouteHandlers({
-      getProvider: () => h.provider,
+      getProvider: async () => h.provider,
       logger: silentLogger,
     });
     const result = await routes.ops("ws-a", {
@@ -703,6 +703,99 @@ describe("parseOpsBody", () => {
       const parsed = parseOpsBody(bad);
       expect(parsed.ok).toBe(false);
       if (!parsed.ok) expect(parsed.error.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ── Per-workspace provider resolution (the routes are workspace-aware) ──────
+
+describe("createLayoutRouteHandlers — per-workspace resolution (the activation gate)", () => {
+  /**
+   * The route handlers over TWO kit providers (chat + diagnostic), resolved
+   * per workspace the way the transport wires it: the layout-provider
+   * registry's `providerFor(workspaceId)` decides which plugin serves.
+   */
+  function makeWorkspaceAwareRoutes(enabledByWorkspace: ReadonlyMap<string, string>) {
+    const chat = makeHarness();
+    const diagnostic = makeHarness(DIAGNOSTIC_TREE);
+    const byId: Record<string, Harness> = {
+      "layout-chat": chat,
+      "layout-diagnostic": diagnostic,
+    };
+    const routes = createLayoutRouteHandlers({
+      getProvider: async (workspaceId) => {
+        const pluginId = enabledByWorkspace.get(workspaceId);
+        if (pluginId === undefined) return undefined;
+        return byId[pluginId]?.provider;
+      },
+      logger: silentLogger,
+    });
+    return { routes, chat, diagnostic };
+  }
+
+  function diagnosticTree(): LayoutTree {
+    // The diagnostic tree IS the default with markers on the root tiles —
+    // any marker-bearing tree exercises "a different provider served this".
+    return {
+      version: 1,
+      root: {
+        kind: "split",
+        id: "root",
+        dir: "row",
+        children: [
+          {
+            size: 1,
+            node: {
+              kind: "stack",
+              id: "main",
+              marker: "main",
+              children: [{ grow: 1, node: { kind: "leaf", view: "chat" } }],
+            },
+          },
+        ],
+      },
+    };
+  }
+  const DIAGNOSTIC_TREE: LayoutTree = diagnosticTree();
+
+  it("the workspace with layout-chat enabled gets the CHAT tree", async () => {
+    const { routes } = makeWorkspaceAwareRoutes(new Map([["ws-chat", "layout-chat"]]));
+    const result: LayoutRouteResult = await routes.get("ws-chat");
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ tree: DEFAULT_LAYOUT });
+  });
+
+  it("the workspace with layout-diagnostic enabled gets the DIAGNOSTIC tree", async () => {
+    const { routes } = makeWorkspaceAwareRoutes(new Map([["ws-diag", "layout-diagnostic"]]));
+    const result: LayoutRouteResult = await routes.get("ws-diag");
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ tree: DIAGNOSTIC_TREE });
+  });
+
+  it("each workspace gets its OWN provider's tree (coexisting plugins)", async () => {
+    const { routes } = makeWorkspaceAwareRoutes(
+      new Map([
+        ["ws-chat", "layout-chat"],
+        ["ws-diag", "layout-diagnostic"],
+      ]),
+    );
+    expect(await routes.get("ws-chat")).toEqual({ status: 200, body: { tree: DEFAULT_LAYOUT } });
+    expect(await routes.get("ws-diag")).toEqual({
+      status: 200,
+      body: { tree: DIAGNOSTIC_TREE },
+    });
+  });
+
+  it("a workspace with NO layout plugin enabled → 404 on every route (the degrade)", async () => {
+    const { routes } = makeWorkspaceAwareRoutes(new Map()); // nothing enabled anywhere
+    for (const outcome of [
+      await routes.get("ws-none"),
+      await routes.put("ws-none", { tree: DEFAULT_LAYOUT }),
+      await routes.delete("ws-none"),
+      await routes.ops("ws-none", { ops: [] }),
+    ]) {
+      expect(outcome.status).toBe(404);
+      expect(outcome.body).toEqual({ error: "No layout plugin is enabled in this workspace" });
     }
   });
 });

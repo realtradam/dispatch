@@ -1,32 +1,43 @@
 /**
  * The plan-04 PILOT — the harness's test-host integration over the REAL
- * layout machinery (plan 04 §4.6). Loads `layout-chat` (the provider plugin)
- * + `plugin-scaffold` (the layout-op example) into ONE kernel test host and
- * asserts the whole pilot story:
+ * layout machinery (plan 04 §4.6, evolved for PER-WORKSPACE activation).
+ * Loads `layout-chat` + `layout-diagnostic` (coexisting layout providers) +
+ * `plugin-scaffold` (the layout-op example) into ONE kernel host with the
+ * REAL workspace-plugin-config extension (the enablement plane) and asserts
+ * the whole story:
  *
- * 1. the scaffold's activation applies its `ensurePanel` op through the
- *    provider — the workspace tree gains the panel EXACTLY ONCE, across
+ * 1. PER-WORKSPACE ACTIVATION: the workspace with layout-chat enabled gets
+ *    the chat tree; the workspace with layout-diagnostic enabled gets the
+ *    marked diagnostic tree; NEITHER enabled resolves no provider (404
+ *    degrade); both plugins coexist LOADED without error (the old
+ *    first-provider-wins throw is gone);
+ * 2. the scaffold's activation applies its `ensurePanel` op through the
+ *    workspace's resolved provider — the panel appears EXACTLY ONCE, across
  *    double activation (ensure-first idempotence);
- * 2. the deferred-provider path: a scaffold activated with NO provider
- *    applies its ops when a provider loads LATER (`onServiceAvailable` —
- *    the real reactive-registry path, real bus, real kit provider);
  * 3. NO-REVERT (decision 6): deactivating the scaffold leaves the tree
  *    UNCHANGED (its panel stays; its edits are permanent);
  * 4. reset: `resetTree` re-seeds — the tree returns to `DEFAULT_LAYOUT`.
  *
- * No internal mocks (AGENTS.md): a real bus/host, the real kit provider over
- * an in-memory storage namespace, the real scaffold + layout-chat extensions.
- * The only fakes are the kernel's own in-memory host deps (the disposal.ts
- * pattern) and a silent logger.
+ * No internal mocks (AGENTS.md): a real bus/host, the real kit providers
+ * over in-memory storage, the real registry extension + config extension,
+ * the real scaffold + layout-chat + layout-diagnostic extensions. The only
+ * fakes are the kernel's own in-memory host deps (the disposal.ts pattern)
+ * and a silent logger.
  */
 
 import { createHost, createLogger, type Logger } from "@dispatch/kernel";
 import { extension as layoutChat } from "@dispatch/layout-chat";
 import { DEFAULT_LAYOUT, findById, type LayoutProvider } from "@dispatch/layout-contract";
-import { layoutProviderHandle } from "@dispatch/layout-provider-contract";
+import { extension as layoutDiagnostic } from "@dispatch/layout-diagnostic";
+import { layoutProviderRegistryHandle } from "@dispatch/layout-provider-contract";
+import { createLayoutProviderRegistryExtension } from "@dispatch/layout-provider-registry";
 import { extension as scaffold } from "@dispatch/plugin-scaffold";
 import { createSurfaceRegistryExtension } from "@dispatch/surface-registry";
-import { beforeEach, describe, expect, it } from "vitest";
+import {
+  extension as workspacePluginConfigExtension,
+  workspacePluginConfigHandle,
+} from "@dispatch/workspace-plugin-config";
+import { describe, expect, it } from "vitest";
 import { makeHostDeps } from "./disposal.js";
 
 const silentLogger: Logger = createLogger(
@@ -53,33 +64,92 @@ async function scaffoldPanels(provider: LayoutProvider): Promise<number> {
   return side.node.panels.filter((p) => p.view === "plugin-scaffold").length;
 }
 
-/** The real kit provider over in-memory storage (what layout-chat provides). */
-async function makeProvider() {
-  const deps = makeHostDeps(silentLogger);
-  const host = createHost([layoutChat], deps);
-  await host.activate();
-  const api = host.getHostAPI();
-  const provider = api.tryGetService(layoutProviderHandle);
-  if (provider === undefined) throw new Error("layout-chat did not provide the layout provider");
-  return { host, provider };
+/** The real host set: enablement plane + registry + BOTH layout plugins. */
+function makeHost(): Awaited<ReturnType<typeof createHost>> {
+  return createHost(
+    [
+      workspacePluginConfigExtension,
+      createLayoutProviderRegistryExtension(),
+      layoutChat,
+      layoutDiagnostic,
+      createSurfaceRegistryExtension(),
+    ],
+    makeHostDeps(silentLogger),
+  );
 }
 
-let provider: Awaited<ReturnType<typeof makeProvider>>["provider"];
-beforeEach(async () => {
-  provider = (await makeProvider()).provider;
-});
+/**
+ * Enable a layout plugin in a workspace, THEN load the scaffold — the
+ * production order for the demo (the scaffold applies its ops at
+ * activation; loading it into a workspace with no enabled layout plugin
+ * degrades gracefully and places nothing).
+ */
+async function loadScaffoldAfterEnable(
+  host: Awaited<ReturnType<typeof createHost>>,
+  workspaceId: string,
+  pluginId: "layout-chat" | "layout-diagnostic",
+): Promise<void> {
+  await enable(host, workspaceId, pluginId);
+  const load = await host.loadExtension(scaffold);
+  expect(load.ok).toBe(true);
+}
 
-describe("layout pilot — scaffold layout ops through the provider (plan 04 §4.6)", () => {
-  it("activation applies the ensurePanel op: the panel appears EXACTLY ONCE, across double activation", async () => {
-    const host = createHost(
-      [createSurfaceRegistryExtension(), layoutChat, scaffold],
-      makeHostDeps(silentLogger),
-    );
+/** Enable a plugin in a workspace through the REAL config service. */
+async function enable(
+  host: Awaited<ReturnType<typeof createHost>>,
+  workspaceId: string,
+  pluginId: string,
+): Promise<void> {
+  const config = host.getHostAPI().tryGetService(workspacePluginConfigHandle);
+  if (config === undefined) throw new Error("workspace-plugin-config not provided");
+  await config.setState(workspaceId, pluginId, "enabled");
+}
+
+describe("layout pilot — per-workspace activation + scaffold layout ops (plan 04 §4.6)", () => {
+  it("PER-WORKSPACE ACTIVATION: chat's workspace gets the chat tree; the diagnostic workspace gets the marked tree; neither enabled → no provider", async () => {
+    const host = makeHost();
     await host.activate();
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    expect(registry).toBeDefined();
+    if (registry === undefined) return;
+
+    // Both layout plugins are LOADED and registered — no first-provider-wins
+    // race, no disabled-with-reason entry (coexistence is the design).
+    expect(host.getDisabled().map((d) => d.manifest.id)).not.toContain("layout-diagnostic");
+    expect(registry.ids().sort()).toEqual(["layout-chat", "layout-diagnostic"]);
+
+    // No workspace enabled yet → no provider anywhere (the degrade).
+    expect(await registry.providerFor("ws-a")).toBeUndefined();
+
+    // The chat workspace resolves the chat tree.
+    await enable(host, "ws-a", "layout-chat");
+    const chatProvider = await registry.providerFor("ws-a");
+    expect(await chatProvider?.getTree("fresh")).toEqual(DEFAULT_LAYOUT);
+
+    // The diagnostic workspace resolves the MARKED tree (markers ride the
+    // root tiles — the frontend renders the red/green borders).
+    await enable(host, "ws-b", "layout-diagnostic");
+    const diagProvider = await registry.providerFor("ws-b");
+    expect(await diagProvider?.getTree("fresh")).not.toEqual(DEFAULT_LAYOUT);
+    expect(JSON.stringify(await diagProvider?.getTree("fresh"))).toContain('"marker"');
+
+    // Switching ws-a to the diagnostic layout is a per-workspace state change.
+    await enable(host, "ws-a", "layout-diagnostic");
+    const config = host.getHostAPI().tryGetService(workspacePluginConfigHandle);
+    await config?.setState("ws-a", "layout-chat", "disabled");
+    const switched = await registry.providerFor("ws-a");
+    expect(JSON.stringify(await switched?.getTree("fresh"))).toContain('"marker"');
+  });
+
+  it("activation applies the ensurePanel op: the panel appears EXACTLY ONCE, across double activation", async () => {
+    const host = makeHost();
+    await host.activate();
+    await loadScaffoldAfterEnable(host, WS, "layout-chat");
     await settle();
 
     const api = host.getHostAPI();
-    const liveProvider = api.tryGetService(layoutProviderHandle);
+    const registry = api.tryGetService(layoutProviderRegistryHandle);
+    const liveProvider = await registry?.providerFor(WS);
     expect(liveProvider).toBeDefined();
     if (liveProvider === undefined) return;
     expect(await scaffoldPanels(liveProvider)).toBe(1);
@@ -94,41 +164,29 @@ describe("layout pilot — scaffold layout ops through the provider (plan 04 §4
     expect(await scaffoldPanels(liveProvider)).toBe(1);
   });
 
-  it("deferred provider: a scaffold activated with NO provider applies its ops when a provider loads later", async () => {
-    // Real bus + real host deps; the provider arrives AFTER the scaffold
-    // activated and subscribed (the reactive-registry path — no mocks).
-    const deps = makeHostDeps(silentLogger);
-    const host = createHost([createSurfaceRegistryExtension(), scaffold], deps);
+  it("the scaffold degrades when NO layout plugin is enabled in its workspace (ops do not run)", async () => {
+    // A host where the scaffold's workspace enables NOTHING: the scaffold
+    // activates, its resolution finds no provider, the panel is not placed.
+    const host = makeHost();
     await host.activate();
+    const load = await host.loadExtension(scaffold);
+    expect(load.ok).toBe(true);
     await settle();
 
-    const api = host.getHostAPI();
-    // Absent entirely: no provider → no ops ran → the scaffold degraded.
-    expect(api.tryGetService(layoutProviderHandle)).toBeUndefined();
-
-    // A provider loads MID-SESSION: provide the kit provider on the SAME bus
-    // the scaffold subscribed to (exactly what layout-chat's activate does —
-    // the provider here IS the real kit provider over in-memory storage).
-    deps.bus.provideService(layoutProviderHandle, provider);
-    await settle();
-
-    // The scaffold's onServiceAvailable callback ran its ops.
-    const liveProvider = api.tryGetService(layoutProviderHandle);
-    expect(liveProvider).toBeDefined();
-    if (liveProvider === undefined) return;
-    expect(await scaffoldPanels(liveProvider)).toBe(1);
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    expect(await registry?.providerFor(WS)).toBeUndefined();
+    // The scaffold itself is loaded (it degraded gracefully, no error).
+    expect(host.getDisabled().map((d) => d.manifest.id)).not.toContain("plugin-scaffold");
   });
 
   it("NO-REVERT (decision 6): deactivating the scaffold leaves the tree UNCHANGED — its panel stays", async () => {
-    const host = createHost(
-      [createSurfaceRegistryExtension(), layoutChat, scaffold],
-      makeHostDeps(silentLogger),
-    );
+    const host = makeHost();
     await host.activate();
+    await loadScaffoldAfterEnable(host, WS, "layout-chat");
     await settle();
 
-    const api = host.getHostAPI();
-    const liveProvider = api.tryGetService(layoutProviderHandle);
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    const liveProvider = await registry?.providerFor(WS);
     expect(liveProvider).toBeDefined();
     if (liveProvider === undefined) return;
     const before = await liveProvider.getTree(WS);
@@ -146,15 +204,13 @@ describe("layout pilot — scaffold layout ops through the provider (plan 04 §4
   });
 
   it("reset: resetTree re-seeds — the workspace tree returns to DEFAULT_LAYOUT", async () => {
-    const host = createHost(
-      [createSurfaceRegistryExtension(), layoutChat, scaffold],
-      makeHostDeps(silentLogger),
-    );
+    const host = makeHost();
     await host.activate();
+    await loadScaffoldAfterEnable(host, WS, "layout-chat");
     await settle();
 
-    const api = host.getHostAPI();
-    const liveProvider = api.tryGetService(layoutProviderHandle);
+    const registry = host.getHostAPI().tryGetService(layoutProviderRegistryHandle);
+    const liveProvider = await registry?.providerFor(WS);
     expect(liveProvider).toBeDefined();
     if (liveProvider === undefined) return;
     expect(await scaffoldPanels(liveProvider)).toBe(1);
@@ -167,11 +223,11 @@ describe("layout pilot — scaffold layout ops through the provider (plan 04 §4
   });
 
   it("the scaffold itself passes the harness (the pilot must not break verify-plugin)", async () => {
-    // The pilot added an onServiceAvailable subscription — a ledger-tracked
-    // registration. The disposal round-trip proves the scaffold still
-    // disposes EVERYTHING (the subscription included) on deactivate. The
-    // frontend entry must exist (the verify.test.ts precedent: build it when
-    // missing — vitest file order is not guaranteed).
+    // The pilot's subscription + the scaffold's layout-resolution are
+    // ledger-tracked registrations; the disposal round-trip proves the
+    // scaffold still disposes EVERYTHING on deactivate. The frontend entry
+    // must exist (the verify.test.ts precedent: build it when missing —
+    // vitest file order is not guaranteed).
     const { verifyPlugin } = await import("./verify.js");
     const { join } = await import("node:path");
     const { stat } = await import("node:fs/promises");

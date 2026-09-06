@@ -1,7 +1,9 @@
 /**
  * `@dispatch/layout-provider-contract` — the backend-only half of the layout
- * contract (plan 02, decision 1): the typed `layoutProviderHandle` service
- * binding, the `layoutChanged` event hook (the WS broadcast path), and the
+ * contract (plan 02, decision 1): the typed `layoutProviderRegistryHandle`
+ * service binding (per-workspace layout activation), the `layoutChanged`
+ * event hook (the WS broadcast path), the per-workspace provider RESOLUTION
+ * (`LayoutProviderRegistry` + `selectLayoutPlugin`), and the
  * `createLayoutProvider` kit + route handlers every layout plugin composes.
  *
  * Touches kernel types (`ServiceHandle`, `StorageNamespace`, `Logger`) the
@@ -9,7 +11,7 @@
  * `@dispatch/layout-contract` (the pure schema) + the wire types.
  */
 
-export { layoutChanged, layoutProviderHandle } from "./handle";
+export { layoutChanged, layoutProviderRegistryHandle } from "./handle";
 export {
   createLayoutProvider,
   createLayoutRouteHandlers,
@@ -19,3 +21,10 @@ export {
   parseOpsBody,
   parseTreeBody,
 } from "./kit";
+export {
+  createLayoutProviderRegistry,
+  type LayoutPluginSelection,
+  type LayoutProviderRegistry,
+  type LayoutProviderRegistryDeps,
+  selectLayoutPlugin,
+} from "./registry";

@@ -32,6 +32,7 @@ import {
   type Logger,
   resolveActivationOrderSafe,
 } from "@dispatch/kernel";
+import { layoutProviderRegistryHandle } from "@dispatch/layout-provider-contract";
 import { createSurfaceRegistryExtension, surfaceRegistryHandle } from "@dispatch/surface-registry";
 
 /** The outcome of the disposal + surface-leak check. */
@@ -161,6 +162,22 @@ export async function verifyDisposal(
     }
   };
 
+  /**
+   * Whether the plugin's LAYOUT-PROVIDER registration is still held by the
+   * layout-provider registry (service-mediated, invisible to the ledger —
+   * the same blind spot as surfaces). Only checked when the registry
+   * service is in the load set (a layout plugin's environment includes it).
+   */
+  const leakedLayoutRegistration = (): boolean => {
+    try {
+      const api: HostAPI = host.getHostAPI();
+      const registry = api.tryGetService(layoutProviderRegistryHandle);
+      return registry?.get(ext.manifest.id) !== undefined;
+    } catch {
+      return false;
+    }
+  };
+
   await host.activate();
 
   // A plugin whose activation threw is swept and lands in getDisabled with
@@ -190,6 +207,11 @@ export async function verifyDisposal(
       `leaked surface "${sid}" — still in the surface-registry catalog after deactivate(). Surface registrations are service-mediated and INVISIBLE to the disposal ledger; call the registry's unregister disposer in deactivate()`,
     );
   }
+  if (leakedLayoutRegistration()) {
+    errors.push(
+      `leaked layout provider "${id}" — still registered in the layout-provider registry after deactivate(). Layout registrations are service-mediated and INVISIBLE to the disposal ledger; call the registry's unregister disposer in deactivate()`,
+    );
+  }
 
   // ── Round 2: fresh load → reload → unload (exercises the reload path) ────
   const load2 = await host.loadExtension(ext);
@@ -214,6 +236,11 @@ export async function verifyDisposal(
   }
   for (const sid of leakedSurfaces()) {
     errors.push(`leaked surface "${sid}" still in the catalog after reload+deactivate()`);
+  }
+  if (leakedLayoutRegistration()) {
+    errors.push(
+      `leaked layout provider "${id}" still in the layout-provider registry after reload+deactivate() — re-activate() re-registers, so every cycle must dispose its own registration`,
+    );
   }
 
   return { ok: errors.length === 0, errors };

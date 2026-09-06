@@ -12,8 +12,11 @@
     "@dispatch/kernel": "workspace:*",
     "@dispatch/layout-chat": "workspace:*",
     "@dispatch/layout-contract": "workspace:*",
+    "@dispatch/layout-diagnostic": "workspace:*",
     "@dispatch/layout-provider-contract": "workspace:*",
+    "@dispatch/layout-provider-registry": "workspace:*",
     "@dispatch/plugin-scaffold": "workspace:*",
-    "@dispatch/surface-registry": "workspace:*"
+    "@dispatch/surface-registry": "workspace:*",
+    "@dispatch/workspace-plugin-config": "workspace:*"
   }
 }

@@ -23,6 +23,9 @@
       "path": "../layout-chat"
     },
     {
+      "path": "../layout-provider-registry"
+    },
+    {
       "path": "../message-queue"
     },
     {

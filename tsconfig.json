@@ -26,6 +26,9 @@
       "path": "./packages/layout-diagnostic"
     },
     {
+      "path": "./packages/layout-provider-registry"
+    },
+    {
       "path": "./packages/surface-registry"
     },
     {

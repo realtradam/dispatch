@@ -5,6 +5,8 @@
   "references": [
     { "path": "../kernel" },
     { "path": "../layout-contract" },
-    { "path": "../layout-provider-contract" }
+    { "path": "../layout-provider-contract" },
+    { "path": "../layout-provider-registry" },
+    { "path": "../workspace-plugin-config" }
   ]
 }

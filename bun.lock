@@ -88,6 +88,7 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-chat": "workspace:*",
         "@dispatch/layout-diagnostic": "workspace:*",
+        "@dispatch/layout-provider-registry": "workspace:*",
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
@@ -141,6 +142,8 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-contract": "workspace:*",
         "@dispatch/layout-provider-contract": "workspace:*",
+        "@dispatch/layout-provider-registry": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
     "packages/layout-contract": {
@@ -152,8 +155,11 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-chat": "workspace:*",
         "@dispatch/layout-contract": "workspace:*",
         "@dispatch/layout-provider-contract": "workspace:*",
+        "@dispatch/layout-provider-registry": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
     "packages/layout-provider-contract": {
@@ -163,6 +169,16 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-contract": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
+      },
+    },
+    "packages/layout-provider-registry": {
+      "name": "@dispatch/layout-provider-registry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/layout-provider-contract": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
     "packages/lsp": {
@@ -249,9 +265,12 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-chat": "workspace:*",
         "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/layout-diagnostic": "workspace:*",
         "@dispatch/layout-provider-contract": "workspace:*",
+        "@dispatch/layout-provider-registry": "workspace:*",
         "@dispatch/plugin-scaffold": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
+        "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
     "packages/provider-concurrency": {
@@ -570,6 +589,8 @@
     "@dispatch/layout-diagnostic": ["@dispatch/layout-diagnostic@workspace:packages/layout-diagnostic"],
 
     "@dispatch/layout-provider-contract": ["@dispatch/layout-provider-contract@workspace:packages/layout-provider-contract"],
+
+    "@dispatch/layout-provider-registry": ["@dispatch/layout-provider-registry@workspace:packages/layout-provider-registry"],
 
     "@dispatch/lsp": ["@dispatch/lsp@workspace:packages/lsp"],
 

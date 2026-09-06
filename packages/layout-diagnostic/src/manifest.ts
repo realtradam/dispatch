@@ -9,8 +9,9 @@
 import type { Manifest } from "@dispatch/kernel";
 
 export const manifest: Manifest = {
-  // Unique id across all loaded plugins; the plugin manager + per-workspace
-  // enablement store key everything by it.
+  // Unique id across all loaded plugins; the plugin manager, the
+  // layout-provider REGISTRY (the key this plugin registers its provider
+  // under), and the per-workspace enablement store all key by it.
   id: "layout-diagnostic",
 
   name: "Diagnostic Layout",
@@ -25,22 +26,17 @@ export const manifest: Manifest = {
 
   trust: "bundled",
 
-  // No layout-specific dependsOn (decision 1): this plugin imports the KIT
-  // package at build time (`@dispatch/layout-provider-contract`), never
-  // another plugin. It needs no other extension's service to activate.
+  // No dependsOn (decision 1): this plugin imports the KIT package at build
+  // time (`@dispatch/layout-provider-contract`), never another plugin. The
+  // layout-provider REGISTRY is consumed REACTIVELY (onServiceAvailable —
+  // registration is order-independent), so no activation-order edge exists.
   dependsOn: [],
 
   contributes: {
-    // The typed service other units consume via `layoutProviderHandle` —
-    // same handle as every layout provider (exactly one may be active,
-    // decision 8: first-provider-wins; while another layout provider holds
-    // the handle, this plugin is a loaded HOT STANDBY that takes over the
-    // moment that provider unloads).
-    services: ["layout/provider"],
-
-    // The well-known HTTP routes this plugin OWNS while active (the same
-    // routes every layout provider declares — the transport mounts them over
-    // the live registry slot, so they follow whoever provides the service).
+    // The well-known HTTP routes this plugin OWNS while it is a workspace's
+    // active provider — the SAME routes every layout provider declares (the
+    // transport mounts them over the per-workspace provider resolution; see
+    // layout-provider-registry).
     routes: ["/workspaces/:id/layout", "/workspaces/:id/layout/ops"],
   },
 
