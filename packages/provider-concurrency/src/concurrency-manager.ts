@@ -673,7 +673,7 @@ export function createConcurrencyManager(opts: ConcurrencyManagerOpts): Concurre
         return Promise.resolve(noopRelease);
       }
 
-      // Already-abororned before we even check availability: reject immediately
+      // Already-aborted before we even check availability: reject immediately
       // without calling onQueued, granting a slot, or changing any accounting.
       if (signal?.aborted === true) {
         return Promise.reject(new ConcurrencyAcquireAbortedError());

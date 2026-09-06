@@ -366,4 +366,32 @@ describe("createMetricsAccumulator", () => {
     const tm = acc.build("t1");
     expect(tm.contextSize).toBeUndefined();
   });
+
+  it("sets aborted=true when the done event's reason is 'aborted'", () => {
+    const acc = createMetricsAccumulator();
+
+    acc.ingest({
+      type: "done",
+      conversationId: "c1",
+      turnId: "t1",
+      reason: "aborted",
+    });
+
+    const tm = acc.build("t1");
+    expect(tm.aborted).toBe(true);
+  });
+
+  it("leaves aborted unset for a normal completion", () => {
+    const acc = createMetricsAccumulator();
+
+    acc.ingest({
+      type: "done",
+      conversationId: "c1",
+      turnId: "t1",
+      reason: "stop",
+    });
+
+    const tm = acc.build("t1");
+    expect(tm.aborted).toBeUndefined();
+  });
 });

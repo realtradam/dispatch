@@ -1097,6 +1097,9 @@ export function createSessionOrchestrator(
           // the model's context window is unknown, it returns void and the
           // kernel keeps its history unchanged (a strict no-op).
           onStepBoundary: async ({ stepUsage, messages }) => {
+            // Abort before any compaction reads/summarization work starts, so
+            // Stop prevents a new provider call (and the reads that precede it).
+            if (controller.signal.aborted) return;
             const stored = await deps.conversationStore.getCompactPercent(conversationId);
             const percent = stored ?? DEFAULT_COMPACT_PERCENT;
             if (percent <= 0) return; // auto-compact disabled
@@ -1105,10 +1108,14 @@ export function createSessionOrchestrator(
             // inherit, grown by this step's output).
             const contextSize = stepUsage.inputTokens + stepUsage.outputTokens;
             if (effectiveModelName === undefined || deps.resolveModelInfo === undefined) return;
+            // Abort may have fired during the compact-percent read.
+            if (controller.signal.aborted) return;
             const info = await deps.resolveModelInfo(effectiveModelName);
             if (info?.contextWindow === undefined) return;
             const threshold = Math.floor(info.contextWindow * (percent / 100));
             if (contextSize < threshold) return; // threshold not exceeded
+            // Abort may have fired during the model-info read.
+            if (controller.signal.aborted) return;
 
             const keepLastN = DEFAULT_KEEP_LAST_N;
             turnLogger?.info("compaction:in-flight", {
@@ -1237,6 +1244,17 @@ export function createSessionOrchestrator(
         }
       } finally {
         activeTurns.delete(conversationId);
+        // Abort-specific observability: log the deliberate cancellation with its
+        // latency from turn start to the abort, tagged by conversation + turn.
+        if (controller.signal.aborted) {
+          const abortLatencyMs =
+            deps.now?.() !== undefined ? (deps.now() ?? 0) - promptStartedAt : undefined;
+          deps.logger?.child({ conversationId, turnId }).info("turn:aborted", {
+            conversationId,
+            turnId,
+            ...(abortLatencyMs !== undefined ? { abortLatencyMs } : {}),
+          });
+        }
         // Post-seal carry: if the turn sealed with a non-empty steering queue
         // (no tool call fired → drainSteering never drained it), start a NEW
         // detached turn whose opening user-message carries the combined text.

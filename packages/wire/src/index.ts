@@ -263,6 +263,14 @@ export interface TurnMetrics {
    * current context usage. Optional: absent when no per-step usage was available.
    */
   readonly contextSize?: number;
+  /**
+   * **Aborted flag** — `true` when the turn was deliberately cancelled via the
+   * stop/abort path (the `done` event carried `reason: "aborted"`). Lets
+   * downstream consumers (throughput store, dashboards) count aborted turns
+   * without parsing event logs. Optional: `undefined` for pre-observability
+   * turns and falsey for normal completions.
+   */
+  readonly aborted?: boolean;
 }
 
 // ─── Message queue + steering ───────────────────────────────────────────────

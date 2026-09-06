@@ -335,6 +335,122 @@ describe("VisionHandoffService.prepareForProvider", () => {
     // kimi was NOT used for transcription (preferred overrode the catalog scan).
     expect(kimiProvider.stream).not.toHaveBeenCalled();
   });
+
+  it("an abort during a never-yielding vision stream stops promptly (no failure placeholder cached)", async () => {
+    // A vision provider whose stream yields nothing then hangs — so an abort
+    // cannot be satisfied by consuming events; the abort barrier must win.
+    const hangingVision: ProviderContract = {
+      id: "vision-hang",
+      stream() {
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise<IteratorResult<ProviderEvent>>(() => {}), // never settles
+              return: () => Promise.resolve({ done: true, value: undefined }),
+            };
+          },
+        };
+      },
+    };
+    // force compactionModel so resolveVisionModel returns the hanging provider.
+    const deps = makeDeps({
+      resolveModel: vi.fn(() => ({ provider: hangingVision, model: "vision-hang" })),
+    });
+    const svc = createVisionHandoffService(deps);
+
+    const ac = new AbortController();
+    // Two images, limit 1 → exactly one needs transcription.
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        chunks: [
+          { type: "text", text: "x" },
+          { type: "image", url: "data:image/png;base64,img1" },
+          { type: "image", url: "data:image/png;base64,img2" },
+        ],
+      },
+    ];
+
+    // The abort barrier wins over the hanging vision stream. prepareForProvider
+    // treats the deliberate abort as cancellation: it stops, does NOT cache a
+    // failure placeholder, and returns normally (the orchestrator's runTurn
+    // then seals the turn as aborted via its first-step signal check).
+    const resultPromise = svc.prepareForProvider(messages, "umans/umans-glm-5.2", {
+      conversationId: "conv-abort-vision",
+      imageLimit: 1,
+      compactionModel: "forced/vision-hang",
+      signal: ac.signal,
+    });
+    setTimeout(() => ac.abort(), 10);
+
+    // Settles promptly (bounded by the abort race, not the hanging stream).
+    const result = await Promise.race([
+      resultPromise,
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 500)),
+    ]);
+    // No failed-transcription placeholder was cached for the deliberate abort.
+    const flatText = result
+      .flatMap((m) => m.chunks)
+      .filter(
+        (c): c is Extract<ChatMessage["chunks"][number], { type: "text" }> => c.type === "text",
+      )
+      .map((c) => c.text)
+      .join(" ");
+    expect(flatText).not.toContain("failed");
+    expect(flatText).not.toContain("no vision model available");
+    void ac;
+  });
+
+  it("stops before starting the next image's transcription once the signal aborts (multi-image)", async () => {
+    let visionStreamCalls = 0;
+    const deps = makeDeps({
+      resolveModel: vi.fn(() => ({
+        provider: {
+          id: "vision-count",
+          stream() {
+            visionStreamCalls++;
+            return (async function* () {
+              yield { type: "text-delta", delta: "described" } as ProviderEvent;
+              yield { type: "finish", reason: "stop" } as ProviderEvent;
+            })();
+          },
+        } as ProviderContract,
+        model: "vision-count",
+      })),
+    });
+    const svc = createVisionHandoffService(deps);
+
+    const ac = new AbortController();
+    // 3 images, limit 1 → 2 need transcription. First succeeds; before the
+    // second, abort fires and the loop stops.
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        chunks: [
+          { type: "image", url: "data:image/png;base64,a" },
+          { type: "image", url: "data:image/png;base64,b" },
+          { type: "image", url: "data:image/png;base64,c" },
+        ],
+      },
+    ];
+
+    const resultPromise = svc.prepareForProvider(messages, "umans/umans-glm-5.2", {
+      conversationId: "conv-multi-img",
+      imageLimit: 1,
+      compactionModel: "forced/vision-count",
+      signal: ac.signal,
+    });
+    // Abort right after the first transcription stream call resolves.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    ac.abort();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Because the abort fired, the loop stops before the second transcription.
+    // prepareForProvider may reject with AbortError (it propagates) — either
+    // way the vision provider was called at most once for transcription.
+    await resultPromise.catch(() => {});
+    expect(visionStreamCalls).toBeLessThanOrEqual(1);
+  });
 });
 
 describe("VisionHandoffService.consultVision", () => {

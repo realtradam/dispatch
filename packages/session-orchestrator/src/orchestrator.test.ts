@@ -4835,6 +4835,316 @@ describe("in-flight compaction", () => {
       ),
     ).toBe(false);
   });
+
+  it("an abort BETWEEN forkHistory and replaceHistory orphans the archive but leaves the LIVE history unchanged, with no next provider step", async () => {
+    const store = createInMemoryStore();
+    seedHistory(store, "conv-boundary", 15); // > keepLastN(10) → compactable
+
+    // Step 0 → tool-call + usage 900 → 910 > 850 → triggers compaction.
+    // Compaction summary call yields text → SUMMARY built.
+    // forkHistory runs, and INSIDE it we abort the turn (controller.abort()),
+    // so the post-forkHistory signal check sees aborted and skips replaceHistory.
+    let callIndex = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        const call = callIndex++;
+        if (call === 0) {
+          return (async function* () {
+            yield {
+              type: "tool-call",
+              toolCallId: "tc1",
+              toolName: "echo",
+              input: {},
+            } as ProviderEvent;
+            yield { type: "usage", usage: { inputTokens: 900, outputTokens: 10 } } as ProviderEvent;
+            yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+          })();
+        }
+        // Compaction summary call.
+        return (async function* () {
+          yield {
+            type: "text-delta",
+            delta: "The following is a summary of earlier messages.",
+          } as ProviderEvent;
+          yield { type: "finish", reason: "stop" } as ProviderEvent;
+        })();
+      },
+    };
+
+    // Abort the turn once forkHistory settles (simulating Stop landing exactly
+    // at the forkHistory→replaceHistory commit boundary).
+    const originalFork = store.forkHistory.bind(store);
+    let abortedDuringFork = false;
+    store.forkHistory = async (sourceId, targetId) => {
+      await originalFork(sourceId, targetId);
+      if (orchestratorRef !== null) {
+        orchestratorRef.stopTurn("conv-boundary");
+        abortedDuringFork = true;
+      }
+    };
+
+    const terminalEvents: AgentEvent[] = [];
+    let orchestratorRef: ReturnType<typeof createSessionOrchestrator>["orchestrator"] | null = null;
+    const bootstrap = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [echoTool()],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveModel: () => ({ provider, model: "model" }),
+      resolveModelInfo: async () => ({ id: "test/model", contextWindow: 1000 }),
+      runTurn,
+      logger: undefined,
+      emit: () => {},
+    });
+    orchestratorRef = bootstrap.orchestrator;
+
+    const turnPromise = bootstrap.orchestrator.handleMessage({
+      conversationId: "conv-boundary",
+      text: "hi",
+      onEvent: (e) => {
+        if (e.type === "done" || e.type === "error") terminalEvents.push(e);
+      },
+      modelName: "test/model",
+    });
+
+    await turnPromise;
+
+    expect(abortedDuringFork).toBe(true);
+    // The turn sealed aborted with no spurious terminal error.
+    expect(terminalEvents.filter((e) => e.type === "done" && e.reason === "aborted")).toHaveLength(
+      1,
+    );
+    expect(terminalEvents.some((e) => e.type === "error")).toBe(false);
+
+    // The LIVE conversation history must be UNCHANGED (no system summary was
+    // injected) because replaceHistory was skipped after the abort.
+    const stored = store.data.get("conv-boundary") ?? [];
+    expect(
+      stored.some(
+        (m) =>
+          m.role === "system" &&
+          m.chunks.some(
+            (c) => c.type === "text" && String(c.text).startsWith("The following is a summary"),
+          ),
+      ),
+    ).toBe(false);
+    // The compaction must NOT have dropped the seed messages: everything before
+    // the summary-marker must still be present (the turn only injected the user
+    // message + step-0 tool result, not a replacement summary system message).
+    expect(
+      stored.filter((m) =>
+        m.chunks.some((c) => c.type === "text" && String(c.text).startsWith("seed message")),
+      ),
+    ).toHaveLength(15);
+  });
+
+  it("an abort AFTER replaceHistory commits lets the durable write settle but starts no next provider step", async () => {
+    const store = createInMemoryStore();
+    seedHistory(store, "conv-boundary2", 15); // > keepLastN(10) → compactable
+
+    let callIndex = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        const call = callIndex++;
+        if (call === 0) {
+          return (async function* () {
+            yield {
+              type: "tool-call",
+              toolCallId: "tc1",
+              toolName: "echo",
+              input: {},
+            } as ProviderEvent;
+            yield { type: "usage", usage: { inputTokens: 900, outputTokens: 10 } } as ProviderEvent;
+            yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+          })();
+        }
+        // Compaction summary call.
+        return (async function* () {
+          yield {
+            type: "text-delta",
+            delta: "The following is a summary of earlier messages.",
+          } as ProviderEvent;
+          yield { type: "finish", reason: "stop" } as ProviderEvent;
+        })();
+      },
+    };
+
+    // Instrument replaceHistory to abort the turn AFTER the durable write has
+    // finished, so the commit settles but no further provider step starts.
+    const originalReplace = store.replaceHistory.bind(store);
+    let abortedDuringReplace = false;
+    store.replaceHistory = async (conversationId, messages) => {
+      await originalReplace(conversationId, messages);
+      if (orchestratorRef !== null) {
+        orchestratorRef.stopTurn("conv-boundary2");
+        abortedDuringReplace = true;
+      }
+    };
+
+    let providerCallCount = 0;
+    const wrappingProvider: ProviderContract = {
+      id: "fake",
+      stream(messages, tools, opts) {
+        providerCallCount++;
+        return provider.stream(messages, tools, opts);
+      },
+    };
+
+    const terminalEvents: AgentEvent[] = [];
+    let orchestratorRef: ReturnType<typeof createSessionOrchestrator>["orchestrator"] | null = null;
+    const bootstrap = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => wrappingProvider,
+      resolveTools: () => [echoTool()],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveModel: () => ({ provider: wrappingProvider, model: "model" }),
+      resolveModelInfo: async () => ({ id: "test/model", contextWindow: 1000 }),
+      runTurn,
+      logger: undefined,
+      emit: () => {},
+    });
+    orchestratorRef = bootstrap.orchestrator;
+
+    const turnPromise = bootstrap.orchestrator.handleMessage({
+      conversationId: "conv-boundary2",
+      text: "hi",
+      onEvent: (e) => {
+        if (e.type === "done" || e.type === "error") terminalEvents.push(e);
+      },
+      modelName: "test/model",
+    });
+
+    await turnPromise;
+
+    expect(abortedDuringReplace).toBe(true);
+    expect(terminalEvents.filter((e) => e.type === "done" && e.reason === "aborted")).toHaveLength(
+      1,
+    );
+    expect(terminalEvents.some((e) => e.type === "error")).toBe(false);
+    // The durable replaceHistory write settled: the summary WAS committed.
+    const stored = store.data.get("conv-boundary2") ?? [];
+    expect(
+      stored.some(
+        (m) =>
+          m.role === "system" &&
+          m.chunks.some(
+            (c) => c.type === "text" && String(c.text).startsWith("The following is a summary"),
+          ),
+      ),
+    ).toBe(true);
+    // No NEXT provider step started after the compaction (call 0 = step 0,
+    // call 1 = compaction summary; a step 1 would have been call 2).
+    expect(providerCallCount).toBe(2);
+  });
+});
+
+describe("instant-stop end-to-end abort semantics", () => {
+  // A provider whose first event is a text-delta, then its next() never settles
+  // (simulates a hanging provider that ignores the signal) — so Stop must win
+  // via the kernel's consumer-side abort barrier.
+  function hangingAfterFirstProvider(): ProviderContract {
+    return {
+      id: "fake",
+      stream() {
+        let first = true;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () =>
+                first
+                  ? new Promise<IteratorResult<ProviderEvent>>((resolve) => {
+                      first = false;
+                      setTimeout(() => {
+                        resolve({
+                          done: false,
+                          value: { type: "text-delta", delta: "partial" } as ProviderEvent,
+                        });
+                      }, 1);
+                    })
+                  : new Promise<IteratorResult<ProviderEvent>>(() => {}), // hangs forever
+              return: () => Promise.resolve({ done: true, value: undefined }),
+            };
+          },
+        };
+      },
+    };
+  }
+
+  it("done(aborted) arrives AFTER all prior text-delta events, and no error event is emitted", async () => {
+    const store = createInMemoryStore();
+    const provider = hangingAfterFirstProvider();
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: runTurn,
+      emit: () => {},
+    });
+
+    const received: string[] = [];
+    const turnPromise = orchestrator.handleMessage({
+      conversationId: "conv-order",
+      text: "hi",
+      onEvent: (e) => {
+        if (e.type === "text-delta") received.push("text-delta");
+        if (e.type === "error") received.push("error");
+        if (e.type === "done") received.push(`done:${e.reason}`);
+        if (e.type === "turn-sealed") received.push("turn-sealed");
+      },
+    });
+
+    // Wait for the first text-delta + the hanging second next() to begin, then Stop.
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    orchestrator.stopTurn("conv-order");
+    await turnPromise;
+
+    // No terminal error on deliberate abort.
+    expect(received.includes("error")).toBe(false);
+    // Exactly one aborted done.
+    expect(received.filter((r) => r === "done:aborted")).toHaveLength(1);
+    // The done(aborted) must come after every text-delta (FIFO ordering).
+    const lastDelta = received.lastIndexOf("text-delta");
+    const doneIdx = received.indexOf("done:aborted");
+    expect(doneIdx).toBeGreaterThan(lastDelta);
+    expect(doneIdx).toBeGreaterThanOrEqual(0);
+  });
+
+  it("repeated Stop remains harmless (exactly one aborted done, one seal)", async () => {
+    const store = createInMemoryStore();
+    const provider = hangingAfterFirstProvider();
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: runTurn,
+      emit: () => {},
+    });
+
+    const received: string[] = [];
+    const turnPromise = orchestrator.handleMessage({
+      conversationId: "conv-repeat",
+      text: "hi",
+      onEvent: (e) => {
+        if (e.type === "done") received.push(`done:${e.reason}`);
+        if (e.type === "turn-sealed") received.push("turn-sealed");
+        if (e.type === "error") received.push("error");
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    orchestrator.stopTurn("conv-repeat");
+    orchestrator.stopTurn("conv-repeat"); // second stop is a no-op
+    orchestrator.stopTurn("conv-repeat");
+    await turnPromise;
+
+    expect(received.filter((r) => r === "done:aborted")).toHaveLength(1);
+    expect(received.filter((r) => r === "turn-sealed")).toHaveLength(1);
+    expect(received.filter((r) => r === "error")).toHaveLength(0);
+  });
 });
 
 describe("per-turn memory telemetry", () => {

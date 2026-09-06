@@ -30,6 +30,7 @@ export function createMetricsAccumulator(): MetricsAccumulator {
   const stepOrder: StepId[] = [];
   let doneUsage: Usage | undefined;
   let doneDurationMs: number | undefined;
+  let doneReason: string | undefined;
 
   function getOrCreateStep(stepId: StepId): StepAccumulator {
     let acc = steps.get(stepId);
@@ -69,6 +70,7 @@ export function createMetricsAccumulator(): MetricsAccumulator {
         const e = event as TurnDoneEvent;
         doneUsage = e.usage;
         doneDurationMs = e.durationMs;
+        doneReason = e.reason;
         break;
       }
     }
@@ -100,6 +102,9 @@ export function createMetricsAccumulator(): MetricsAccumulator {
     if (doneDurationMs !== undefined) {
       (tm as { durationMs?: number }).durationMs = doneDurationMs;
     }
+    if (doneReason === "aborted") {
+      (tm as { aborted?: boolean }).aborted = true;
+    }
 
     // contextSize = final step's inputTokens + outputTokens (true context occupancy).
     // Omit when no steps or the last step had no usable per-step usage event.
@@ -122,6 +127,7 @@ export function createMetricsAccumulator(): MetricsAccumulator {
     stepOrder.length = 0;
     doneUsage = undefined;
     doneDurationMs = undefined;
+    doneReason = undefined;
   }
 
   return { ingest, build, reset };
