@@ -10,6 +10,7 @@
     "@dispatch/credential-store": "workspace:*",
     "@dispatch/exec-backend": "workspace:*",
     "@dispatch/heartbeat": "workspace:*",
+    "@dispatch/home-tile-layout": "workspace:*",
     "@dispatch/journal-sink": "workspace:*",
     "@dispatch/kernel": "workspace:*",
     "@dispatch/layout-chat": "workspace:*",

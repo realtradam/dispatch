@@ -17,6 +17,9 @@
       "path": "./packages/layout-contract"
     },
     {
+      "path": "./packages/tile-layout-contract"
+    },
+    {
       "path": "./packages/layout-provider-contract"
     },
     {

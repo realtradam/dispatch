@@ -6,6 +6,7 @@
  * provider.subscribe wiring, orchestrator turn-streaming, server lifecycle.
  */
 
+import { tileLayoutChanged } from "@dispatch/home-tile-layout-contract";
 import type { Extension, HostAPI } from "@dispatch/kernel";
 import { layoutChanged } from "@dispatch/layout-provider-contract";
 import { extensionsChanged } from "@dispatch/plugin-manager";
@@ -261,6 +262,19 @@ export function createTransportWsExtension(): Extension {
       // workspace (the workspaceId rides the payload; decision 7 full-tree).
       disposers.push(
         host.on(layoutChanged, (message) => {
+          broadcast(message);
+        }),
+      );
+
+      // Broadcast `tile-layout` to ALL connected clients after every
+      // successful home tile-layout write (the `home-tile-layout` plugin's
+      // PUT / DELETE). Pure verbatim ferrying of a TYPED wire message,
+      // exactly like `layout`: the transport learns nothing about tile
+      // documents (D-L6) — clients filter by their active geometry mode
+      // (the orientation rides the payload; full-document, no patch
+      // protocol).
+      disposers.push(
+        host.on(tileLayoutChanged, (message) => {
           broadcast(message);
         }),
       );

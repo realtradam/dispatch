@@ -21,6 +21,7 @@ import { extension as conversationStoreExt } from "@dispatch/conversation-store"
 import { type Credential, createCredentialStoreExtension } from "@dispatch/credential-store";
 import { createExecBackendExtension } from "@dispatch/exec-backend";
 import { extension as heartbeatExt } from "@dispatch/heartbeat";
+import { extension as homeTileLayoutExt } from "@dispatch/home-tile-layout";
 import type { Extension } from "@dispatch/kernel";
 import { extension as layoutChatExt } from "@dispatch/layout-chat";
 import { extension as layoutDiagnosticExt } from "@dispatch/layout-diagnostic";
@@ -152,5 +153,14 @@ export function createBundledExtensions(creds: {
     // provider; the frontend then renders the marked tree. No restart, no
     // unload dance.
     layoutDiagnosticExt,
+    // The home grid's SYNCED tile layouts (one shared document per device
+    // orientation — `wide` = landscape/desktop, `tall` = portrait/mobile):
+    // its own storage namespace, the well-known /home/tile-layout/:mode
+    // routes (mounted by transport-http over the reactive service slot), and
+    // the `tile-layout` WS broadcast (ferried by transport-ws). ALWAYS-ON —
+    // the home grid is a global surface, so unlike the layout providers
+    // there is no per-workspace enablement; a device's only degrade is a
+    // genuinely absent backend (ephemeral edits, no error UI).
+    homeTileLayoutExt,
   ];
 }

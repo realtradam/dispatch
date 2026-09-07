@@ -17,6 +17,9 @@
       "path": "../kernel"
     },
     {
+      "path": "../home-tile-layout"
+    },
+    {
       "path": "../lsp"
     },
     {

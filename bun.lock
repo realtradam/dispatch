@@ -74,6 +74,24 @@
         "@dispatch/transport-contract": "workspace:*",
       },
     },
+    "packages/home-tile-layout": {
+      "name": "@dispatch/home-tile-layout",
+      "version": "0.1.0",
+      "dependencies": {
+        "@dispatch/home-tile-layout-contract": "workspace:*",
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/tile-layout-contract": "workspace:*",
+      },
+    },
+    "packages/home-tile-layout-contract": {
+      "name": "@dispatch/home-tile-layout-contract",
+      "version": "0.1.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/tile-layout-contract": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
+      },
+    },
     "packages/host-bin": {
       "name": "@dispatch/host-bin",
       "version": "0.0.0",
@@ -84,6 +102,7 @@
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/exec-backend": "workspace:*",
         "@dispatch/heartbeat": "workspace:*",
+        "@dispatch/home-tile-layout": "workspace:*",
         "@dispatch/journal-sink": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-chat": "workspace:*",
@@ -399,6 +418,10 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/tile-layout-contract": {
+      "name": "@dispatch/tile-layout-contract",
+      "version": "0.1.0",
+    },
     "packages/todo": {
       "name": "@dispatch/todo",
       "version": "0.0.0",
@@ -471,6 +494,7 @@
       "version": "0.24.0",
       "dependencies": {
         "@dispatch/layout-contract": "workspace:*",
+        "@dispatch/tile-layout-contract": "workspace:*",
         "@dispatch/ui-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
       },
@@ -482,6 +506,7 @@
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/heartbeat": "workspace:*",
+        "@dispatch/home-tile-layout-contract": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-contract": "workspace:*",
         "@dispatch/layout-provider-contract": "workspace:*",
@@ -503,6 +528,7 @@
       "name": "@dispatch/transport-ws",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/home-tile-layout-contract": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-provider-contract": "workspace:*",
         "@dispatch/plugin-manager": "workspace:*",
@@ -576,6 +602,10 @@
 
     "@dispatch/heartbeat": ["@dispatch/heartbeat@workspace:packages/heartbeat"],
 
+    "@dispatch/home-tile-layout": ["@dispatch/home-tile-layout@workspace:packages/home-tile-layout"],
+
+    "@dispatch/home-tile-layout-contract": ["@dispatch/home-tile-layout-contract@workspace:packages/home-tile-layout-contract"],
+
     "@dispatch/host-bin": ["@dispatch/host-bin@workspace:packages/host-bin"],
 
     "@dispatch/journal-sink": ["@dispatch/journal-sink@workspace:packages/journal-sink"],
@@ -637,6 +667,8 @@
     "@dispatch/system-prompt": ["@dispatch/system-prompt@workspace:packages/system-prompt"],
 
     "@dispatch/throughput-store": ["@dispatch/throughput-store@workspace:packages/throughput-store"],
+
+    "@dispatch/tile-layout-contract": ["@dispatch/tile-layout-contract@workspace:packages/tile-layout-contract"],
 
     "@dispatch/todo": ["@dispatch/todo@workspace:packages/todo"],
 

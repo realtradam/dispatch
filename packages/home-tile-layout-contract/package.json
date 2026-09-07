@@ -1,0 +1,13 @@
+{
+  "name": "@dispatch/home-tile-layout-contract",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/tile-layout-contract": "workspace:*",
+    "@dispatch/transport-contract": "workspace:*"
+  }
+}

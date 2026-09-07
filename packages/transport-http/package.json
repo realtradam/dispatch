@@ -9,6 +9,7 @@
     "@dispatch/conversation-store": "workspace:*",
     "@dispatch/credential-store": "workspace:*",
     "@dispatch/heartbeat": "workspace:*",
+    "@dispatch/home-tile-layout-contract": "workspace:*",
     "@dispatch/kernel": "workspace:*",
     "@dispatch/layout-contract": "workspace:*",
     "@dispatch/layout-provider-contract": "workspace:*",

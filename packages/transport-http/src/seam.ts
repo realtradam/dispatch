@@ -95,3 +95,17 @@ export {
   type LayoutProviderRegistry,
   layoutProviderRegistryHandle,
 } from "@dispatch/layout-provider-contract";
+
+// ─── Home tile-layout seam (the workspace home grid's synced layouts) ────────
+//
+// The home tile-layout SERVICE (a STANDARD extension — `home-tile-layout` —
+// provides it; ONE shared document per device orientation, wide/tall).
+// Consumed REACTIVELY like every optional Standard service: the routes resolve
+// the service per request and 503 while it is absent (a mid-session
+// load/unload applies to the next request with no restart). The route
+// DECISION logic (mode validation, body parsing, status mapping) lives in the
+// contract kit (`@dispatch/home-tile-layout-contract`) — the transport mounts
+// the handlers as thin shells and learns nothing about tile documents (D-L6).
+
+export type { HomeTileLayoutService } from "@dispatch/home-tile-layout-contract";
+export { homeTileLayoutHandle } from "@dispatch/home-tile-layout-contract";

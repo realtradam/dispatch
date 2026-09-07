@@ -20,6 +20,7 @@
  */
 
 import type { LayoutTree } from "@dispatch/layout-contract";
+import type { TileGeometryMode, TileLayoutData } from "@dispatch/tile-layout-contract";
 import type { SurfaceClientMessage, SurfaceServerMessage } from "@dispatch/ui-contract";
 import type {
   AgentEvent,
@@ -852,6 +853,22 @@ export interface LayoutChangedMessage {
 }
 
 /**
+ * Broadcast to all connected WS clients after every successful home
+ * tile-layout write (the `home-tile-layout` plugin's PUT / DELETE). Carries
+ * the FULL document for ONE device orientation (`mode`: "wide" = landscape/
+ * desktop, "tall" = portrait/mobile — two independent shared layouts); the
+ * broadcast is a global fan-out and CLIENTS FILTER by their active mode.
+ * Additive to `WsServerMessage`, the same verbatim-ferry pattern as
+ * `LayoutChangedMessage` — no core extension or transport learns the tile
+ * domain.
+ */
+export interface TileLayoutChangedMessage {
+  readonly type: "tile-layout";
+  readonly mode: TileGeometryMode;
+  readonly data: TileLayoutData;
+}
+
+/**
  * Every client → server WS message: surface ops (`@dispatch/ui-contract`) + chat
  * ops. A server discriminates on `type`.
  */
@@ -876,7 +893,8 @@ export type WsServerMessage =
   | ConversationStatusChangedMessage
   | ConversationCompactedMessage
   | ExtensionsChangedMessage
-  | LayoutChangedMessage;
+  | LayoutChangedMessage
+  | TileLayoutChangedMessage;
 
 // ─── Conversation list + metadata ────────────────────────────────────────────
 
