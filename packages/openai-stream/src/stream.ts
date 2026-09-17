@@ -6,6 +6,12 @@ import type {
   ToolContract,
 } from "@dispatch/kernel";
 import type { FetchLike, HttpExchangeFixture } from "@dispatch/trace-replay";
+import {
+  type BodyEvictionReport,
+  byteLengthUtf8,
+  DEFAULT_MAX_BODY_BYTES,
+  enforceBodyBudget,
+} from "./body-budget.js";
 import { convertMessages, type OpenAIMessage } from "./convert-messages.js";
 import { convertTools, type OpenAITool } from "./convert-tools.js";
 
@@ -31,6 +37,14 @@ export interface StreamConfig {
     body: Record<string, unknown>,
     opts: ProviderStreamOptions,
   ) => Record<string, unknown>;
+  /**
+   * Maximum request-body size in UTF-8 bytes (default:
+   * `DEFAULT_MAX_BODY_BYTES`, 9.5 MiB). When the serialized body exceeds this,
+   * `streamChat` evicts the OLDEST inline image parts first (each replaced IN
+   * PLACE by a placeholder text part) so the request stays under the
+   * provider's body-size cap instead of being rejected with HTTP 400.
+   */
+  readonly maxBodyBytes?: number;
 }
 
 /**
@@ -88,7 +102,20 @@ export async function* streamChat(
   }
 
   const url = `${config.baseURL}/chat/completions`;
-  const bodyString = JSON.stringify(body);
+  let bodyString = JSON.stringify(body);
+
+  // Provider body-size budget: inline images (`data:` URLs) dominate body
+  // size. When the serialized body exceeds the budget, evict the oldest image
+  // parts first (each replaced IN PLACE by a placeholder text part) so the
+  // request stays under the provider's cap (charm gateway: 10 MiB) instead of
+  // being rejected with HTTP 400 "invalid request body".
+  const maxBodyBytes = config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  const bodyBytesBefore = byteLengthUtf8(bodyString);
+  let eviction: BodyEvictionReport | null = null;
+  if (bodyBytesBefore > maxBodyBytes) {
+    eviction = enforceBodyBudget(body, maxBodyBytes);
+    bodyString = JSON.stringify(body);
+  }
 
   // Already-aborted before any I/O starts: short-circuit so no request is sent.
   if (opts?.signal?.aborted) {
@@ -105,17 +132,19 @@ export async function* streamChat(
     try {
       const model = opts?.model ?? config.model;
       const hasCacheBreakpoint = bodyString.includes("cache_control");
-      reqSpan = opts.logger.span(
-        "provider.request",
-        {
-          model,
-          url,
-          "request.method": "POST",
-          "request.cache_control_present": hasCacheBreakpoint,
-          "request.headers.authorization": `Bearer ${maskSecret(config.apiKey)}`,
-        },
-        bodyString,
-      );
+      const spanAttrs: Record<string, string | number | boolean | null> = {
+        model,
+        url,
+        "request.method": "POST",
+        "request.cache_control_present": hasCacheBreakpoint,
+        "request.headers.authorization": `Bearer ${maskSecret(config.apiKey)}`,
+      };
+      if (eviction !== null && eviction.imagesEvicted > 0) {
+        spanAttrs["request.images_evicted"] = eviction.imagesEvicted;
+        spanAttrs["request.body_bytes_before"] = bodyBytesBefore;
+        spanAttrs["request.body_budget_max_bytes"] = maxBodyBytes;
+      }
+      reqSpan = opts.logger.span("provider.request", spanAttrs, bodyString);
     } catch {
       // Fail-safe: capture must never break stream().
     }

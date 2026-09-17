@@ -965,3 +965,98 @@ describe("streamChat — cancellation via signal", () => {
     void ac;
   });
 });
+
+describe("streamChat — provider body budget", () => {
+  const PLACEHOLDER_SUFFIX = " — dropped to keep the request under the provider's body-size limit";
+
+  function configWithBudget(maxBodyBytes: number): StreamConfig {
+    return { ...makeConfig(), maxBodyBytes };
+  }
+
+  function imageUserMessage(url: string): ChatMessage {
+    return { role: "user", chunks: [{ type: "image", url }] };
+  }
+
+  function okResponse(): Response {
+    return new Response(
+      sseBody(
+        'data: {"id":"cmpl-b1","choices":[{"delta":{"content":"ok"},"index":0}]}',
+        'data: {"id":"cmpl-b1","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+        "data: [DONE]",
+      ),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+  }
+
+  it("evicts the oldest inline images when the body exceeds maxBodyBytes", async () => {
+    const { logger, spans } = createFakeLogger();
+    let sentBody: string | undefined;
+    const maxBodyBytes = 4096;
+    const bigImage = `data:image/png;base64,${"A".repeat(8_000)}`;
+
+    mockFetch((_url, init) => {
+      sentBody = typeof init?.body === "string" ? init.body : undefined;
+      return okResponse();
+    });
+
+    const events = await collectEvents(
+      streamChat(
+        configWithBudget(maxBodyBytes),
+        [imageUserMessage(bigImage), imageUserMessage(bigImage)],
+        [],
+        { logger },
+      ),
+    );
+
+    expect(events.some((e) => e.type === "text-delta")).toBe(true);
+
+    // Both images are evicted on the actual wire body, and each message keeps
+    // exactly one, non-empty placeholder text part.
+    assertDefined(sentBody);
+    const sent = JSON.parse(sentBody) as {
+      messages: Array<{ content: Array<{ type: string; text?: string; image_url?: unknown }> }>;
+    };
+    expect(sent.messages).toHaveLength(2);
+    for (const message of sent.messages) {
+      expect(message.content).toHaveLength(1);
+      const part = message.content[0];
+      expect(part?.type).toBe("text");
+      expect(part?.text).toContain("[image omitted: image/png, ");
+      expect(part?.text).toContain(PLACEHOLDER_SUFFIX);
+    }
+    expect(JSON.stringify(sent)).not.toContain('"image_url"');
+
+    // The provider.request span carries the budget attributes.
+    assertDefined(spans[0]);
+    const span = spans[0];
+    expect(span.attrs["request.images_evicted"]).toBe(2);
+    expect(span.attrs["request.body_budget_max_bytes"]).toBe(maxBodyBytes);
+    expect(Number(span.attrs["request.body_bytes_before"])).toBeGreaterThan(maxBodyBytes);
+    // The span body is the evicted, on-wire body.
+    assertDefined(span.body);
+    const spanBody = JSON.parse(span.body) as { messages: Array<{ content: unknown }> };
+    expect(JSON.stringify(spanBody)).not.toContain('"image_url"');
+  });
+
+  it("leaves an under-budget body untouched and records no budget attrs", async () => {
+    const { logger, spans } = createFakeLogger();
+    let sentBody: string | undefined;
+
+    mockFetch((_url, init) => {
+      sentBody = typeof init?.body === "string" ? init.body : undefined;
+      return okResponse();
+    });
+
+    await collectEvents(streamChat(makeConfig(), makeMessages(), [], { logger }));
+
+    assertDefined(sentBody);
+    const sent = JSON.parse(sentBody) as { messages: unknown };
+    expect(sent.messages).toEqual([{ role: "user", content: "Hello" }]);
+
+    assertDefined(spans[0]);
+    const span = spans[0];
+    expect(span.attrs["request.images_evicted"]).toBeUndefined();
+    expect(span.attrs["request.body_bytes_before"]).toBeUndefined();
+    expect(span.attrs["request.body_budget_max_bytes"]).toBeUndefined();
+  });
+});
