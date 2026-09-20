@@ -114,6 +114,7 @@ function createFakeConversationStore(
     defaultCwd: null,
     defaultComputerId: null,
     starred: false,
+    archived: false,
     createdAt: 0,
     lastActivityAt: 0,
   };
@@ -219,6 +220,9 @@ function createFakeConversationStore(
     },
     async setWorkspaceStarred(id, starred) {
       return { ...sampleWorkspace, id, starred };
+    },
+    async setWorkspaceArchived(id, archived) {
+      return { ...sampleWorkspace, id, archived };
     },
     async deleteWorkspace() {
       return { closedCount: 0 };
@@ -3904,6 +3908,7 @@ describe("Workspaces", () => {
     defaultCwd: null,
     defaultComputerId: null,
     starred: false,
+    archived: false,
     createdAt: 1000,
     lastActivityAt: 2000,
   };
@@ -4169,6 +4174,153 @@ describe("Workspaces", () => {
     const body = (await res.json()) as WorkspaceResponse;
     expect(body.starred).toBe(false);
     expect(starredCalled).toEqual({ id: "proj", starred: false });
+  });
+
+  // ─── Archive/unarchive workspace (hide from the home grid) ────────────────
+
+  it("PUT /workspaces/:id/archive archives + returns the workspace", async () => {
+    let archivedCalled: { id: string; archived: boolean } | null = null;
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setWorkspaceArchived(id, archived) {
+        archivedCalled = { id, archived };
+        return { ...sampleWorkspace, id, archived };
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/proj/archive", { method: "PUT" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WorkspaceResponse;
+    expect(body.archived).toBe(true);
+    expect(archivedCalled).toEqual({ id: "proj", archived: true });
+  });
+
+  it("DELETE /workspaces/:id/archive unarchives + returns the workspace", async () => {
+    let archivedCalled: { id: string; archived: boolean } | null = null;
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async setWorkspaceArchived(id, archived) {
+        archivedCalled = { id, archived };
+        return { ...sampleWorkspace, id, archived };
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/proj/archive", { method: "DELETE" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WorkspaceResponse;
+    expect(body.archived).toBe(false);
+    expect(archivedCalled).toEqual({ id: "proj", archived: false });
+  });
+
+  it("PUT /workspaces/default/archive is rejected (409)", async () => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/default/archive", { method: "PUT" });
+    expect(res.status).toBe(409);
+  });
+
+  it("DELETE /workspaces/default/archive is rejected (409)", async () => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/default/archive", { method: "DELETE" });
+    expect(res.status).toBe(409);
+  });
+
+  it("PUT /workspaces/:id/archive rejects an invalid slug (400)", async () => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces/INVALID SLUG!/archive", { method: "PUT" });
+    expect(res.status).toBe(400);
+  });
+
+  // ─── GET /workspaces?archived= filter ──────────────────────────────────────
+
+  it("GET /workspaces defaults to non-archived only", async () => {
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async listWorkspaces() {
+        return [
+          { ...sampleWorkspace, id: "active", archived: false, conversationCount: 0 },
+          { ...sampleWorkspace, id: "done", archived: true, conversationCount: 0 },
+        ];
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WorkspaceListResponse;
+    expect(body.workspaces.map((w) => w.id)).toEqual(["active"]);
+  });
+
+  it("GET /workspaces?archived=true returns archived only", async () => {
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async listWorkspaces() {
+        return [
+          { ...sampleWorkspace, id: "active", archived: false, conversationCount: 0 },
+          { ...sampleWorkspace, id: "done", archived: true, conversationCount: 0 },
+        ];
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces?archived=true");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WorkspaceListResponse;
+    expect(body.workspaces.map((w) => w.id)).toEqual(["done"]);
+  });
+
+  it("GET /workspaces?archived=all returns every workspace", async () => {
+    const store: ConversationStore = {
+      ...createFakeConversationStore(),
+      async listWorkspaces() {
+        return [
+          { ...sampleWorkspace, id: "active", archived: false, conversationCount: 0 },
+          { ...sampleWorkspace, id: "done", archived: true, conversationCount: 0 },
+        ];
+      },
+    };
+    const app = createApp({
+      conversationStore: store,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/workspaces?archived=all");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WorkspaceListResponse;
+    expect(body.workspaces.map((w) => w.id).sort()).toEqual(["active", "done"]);
   });
 
   it("PUT /workspaces/:id/star rejects invalid slug", async () => {
@@ -4744,6 +4896,8 @@ describe("PUT /workspaces/:id/default-computer", () => {
     title: "proj",
     defaultCwd: null,
     defaultComputerId: null,
+    starred: false,
+    archived: false,
     createdAt: 1000,
     lastActivityAt: 2000,
   };

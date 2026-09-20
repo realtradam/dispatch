@@ -1764,8 +1764,18 @@ export function createApp(opts: CreateServerOptions): Hono {
 
   app.get("/workspaces", async (c) => {
     try {
-      const workspaces = await opts.conversationStore.listWorkspaces();
-      log.info("workspaces: list", { count: workspaces.length });
+      // Optional `?archived=` filter: "true" → archived only, "all" → every
+      // workspace, anything else (or absent) → non-archived only (the home
+      // grid's default view). Mirrors the `?status=` pattern on /conversations.
+      const rawArchived = c.req.query("archived");
+      const archivedFilter =
+        rawArchived === "true" ? "true" : rawArchived === "all" ? "all" : "false";
+      const all = await opts.conversationStore.listWorkspaces();
+      const workspaces =
+        archivedFilter === "all"
+          ? all
+          : all.filter((w) => (archivedFilter === "true") === w.archived);
+      log.info("workspaces: list", { count: workspaces.length, archived: archivedFilter });
       const body: WorkspaceListResponse = { workspaces };
       return c.json(body, 200);
     } catch (err) {
@@ -2003,6 +2013,60 @@ export function createApp(opts: CreateServerOptions): Hono {
     } catch (err) {
       log.error("workspaces: unstar failure", { err, workspaceId });
       return c.json({ error: "Failed to unstar workspace" }, 500);
+    }
+  });
+
+  // ─── Archive/unarchive workspace ─────────────────────────────────────────────
+  // Archived workspaces are hidden from the home grid (`GET /workspaces`
+  // excludes them by default) WITHOUT deleting their data — the workspace, its
+  // conversations, and its settings are untouched, and it can be unarchived at
+  // any time. Unlike delete, archive touches no conversations.
+
+  app.put("/workspaces/:id/archive", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (!isValidWorkspaceSlug(workspaceId)) {
+      return c.json(
+        {
+          error: "Workspace id must be a valid slug (lowercase alphanumeric + hyphens, 1–40 chars)",
+        },
+        400,
+      );
+    }
+    if (workspaceId === "default") {
+      return c.json({ error: 'The "default" workspace cannot be archived' }, 409);
+    }
+    try {
+      const workspace = await opts.conversationStore.setWorkspaceArchived(workspaceId, true);
+      log.info("workspaces: archived", { workspaceId });
+      const response: WorkspaceResponse = workspace;
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("workspaces: archive failure", { err, workspaceId });
+      return c.json({ error: "Failed to archive workspace" }, 500);
+    }
+  });
+
+  app.delete("/workspaces/:id/archive", async (c) => {
+    const workspaceId = c.req.param("id");
+    if (!isValidWorkspaceSlug(workspaceId)) {
+      return c.json(
+        {
+          error: "Workspace id must be a valid slug (lowercase alphanumeric + hyphens, 1–40 chars)",
+        },
+        400,
+      );
+    }
+    if (workspaceId === "default") {
+      return c.json({ error: 'The "default" workspace cannot be archived' }, 409);
+    }
+    try {
+      const workspace = await opts.conversationStore.setWorkspaceArchived(workspaceId, false);
+      log.info("workspaces: unarchived", { workspaceId });
+      const response: WorkspaceResponse = workspace;
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("workspaces: unarchive failure", { err, workspaceId });
+      return c.json({ error: "Failed to unarchive workspace" }, 500);
     }
   });
 

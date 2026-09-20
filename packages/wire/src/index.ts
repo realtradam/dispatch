@@ -699,6 +699,14 @@ export interface Workspace {
    * Defaults to `false` on creation.
    */
   readonly starred: boolean;
+  /**
+   * Whether the workspace is archived by the user. Archived workspaces are
+   * HIDDEN from the home grid (`GET /workspaces` excludes them by default;
+   * `?archived=` opts back in) without deleting their data — the workspace,
+   * its conversations, and its settings are untouched, and it can be
+   * unarchived at any time. Defaults to `false` on creation.
+   */
+  readonly archived: boolean;
   /** Epoch-ms when the workspace was first created. */
   readonly createdAt: number;
   /** Epoch-ms of the most recent conversation activity in this workspace. */

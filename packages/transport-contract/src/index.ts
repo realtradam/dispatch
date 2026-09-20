@@ -1315,7 +1315,12 @@ export interface EnsureWorkspaceRequest {
 /** Response of `GET`/`PUT /workspaces/:id` — the workspace itself. */
 export interface WorkspaceResponse extends Workspace {}
 
-/** Response of `GET /workspaces` — all workspaces sorted by `lastActivityAt` desc. */
+/**
+ * Response of `GET /workspaces` — the workspaces sorted by `lastActivityAt`
+ * desc. The optional `?archived=` query selects which workspaces are included:
+ * `"true"` → archived only, `"all"` → every workspace; absent (or any other
+ * value) → non-archived only (the home grid's default view).
+ */
 export interface WorkspaceListResponse {
   readonly workspaces: readonly WorkspaceEntry[];
 }

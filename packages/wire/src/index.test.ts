@@ -58,6 +58,7 @@ describe("@dispatch/wire — Computer / Workspace shapes", () => {
       defaultCwd: null,
       defaultComputerId: "myserver",
       starred: false,
+      archived: false,
       createdAt: 0,
       lastActivityAt: 0,
     };

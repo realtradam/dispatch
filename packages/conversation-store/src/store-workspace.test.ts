@@ -48,6 +48,7 @@ describe("WorkspaceStore", () => {
       defaultCwd: null,
       defaultComputerId: null,
       starred: false,
+      archived: false,
       createdAt: 1000,
       lastActivityAt: 1000,
     });
@@ -68,6 +69,7 @@ describe("WorkspaceStore", () => {
       defaultCwd: null,
       defaultComputerId: null,
       starred: false,
+      archived: false,
       createdAt: 1000,
       lastActivityAt: 1000,
     });
@@ -86,6 +88,7 @@ describe("WorkspaceStore", () => {
       defaultCwd: "/projects/dispatch",
       defaultComputerId: null,
       starred: false,
+      archived: false,
       createdAt: 3000,
       lastActivityAt: 3000,
     });
@@ -100,6 +103,7 @@ describe("WorkspaceStore", () => {
       defaultCwd: null,
       defaultComputerId: null,
       starred: false,
+      archived: false,
       createdAt: 0,
       lastActivityAt: 0,
     });
@@ -122,6 +126,7 @@ describe("WorkspaceStore", () => {
       defaultCwd: null,
       defaultComputerId: null,
       starred: false,
+      archived: false,
       createdAt: 1000,
       lastActivityAt: 1000,
     });
@@ -220,6 +225,7 @@ describe("WorkspaceStore", () => {
       defaultCwd: null,
       defaultComputerId: null,
       starred: false,
+      archived: false,
       createdAt: 0,
       lastActivityAt: 0,
       conversationCount: 0,
@@ -467,6 +473,7 @@ describe("WorkspaceStore", () => {
       defaultCwd: null,
       defaultComputerId: null,
       starred: true,
+      archived: false,
       createdAt: 5000,
       lastActivityAt: 5000,
     });
@@ -546,6 +553,109 @@ describe("WorkspaceStore", () => {
     const ws = await store.getWorkspace("legacy");
     expect(ws?.starred).toBe(false);
   });
+
+  // --- archived (hidden from the home grid) ---
+
+  it("ensureWorkspace creates with archived: false", async () => {
+    const store = makeStore();
+    const ws = await store.ensureWorkspace("arch-work");
+    expect(ws.archived).toBe(false);
+  });
+
+  it("setWorkspaceArchived true persists and reads back", async () => {
+    const store = makeStore();
+    clock = 1000;
+    await store.ensureWorkspace("arch-work");
+    clock = 2000;
+    const ws = await store.setWorkspaceArchived("arch-work", true);
+    expect(ws.archived).toBe(true);
+    expect(ws.id).toBe("arch-work");
+    const reRead = await store.getWorkspace("arch-work");
+    expect(reRead?.archived).toBe(true);
+  });
+
+  it("setWorkspaceArchived false unarchives a previously archived workspace", async () => {
+    const store = makeStore();
+    await store.ensureWorkspace("arch-work");
+    await store.setWorkspaceArchived("arch-work", true);
+    await store.setWorkspaceArchived("arch-work", false);
+    const ws = await store.getWorkspace("arch-work");
+    expect(ws?.archived).toBe(false);
+  });
+
+  it("setWorkspaceArchived creates the workspace if missing", async () => {
+    const store = makeStore();
+    clock = 5000;
+    const ws = await store.setWorkspaceArchived("brand-new", true);
+    expect(ws).toEqual({
+      id: "brand-new",
+      title: "brand-new",
+      defaultCwd: null,
+      defaultComputerId: null,
+      starred: false,
+      archived: true,
+      createdAt: 5000,
+      lastActivityAt: 5000,
+    });
+  });
+
+  it("setWorkspaceArchived preserves title/defaultCwd/defaultComputerId/starred", async () => {
+    const store = makeStore();
+    clock = 1000;
+    await store.ensureWorkspace("my-work", {
+      title: "Custom",
+      defaultCwd: "/projects",
+      defaultComputerId: "myserver",
+    });
+    await store.setWorkspaceStarred("my-work", true);
+    clock = 2000;
+    const ws = await store.setWorkspaceArchived("my-work", true);
+    expect(ws.title).toBe("Custom");
+    expect(ws.defaultCwd).toBe("/projects");
+    expect(ws.defaultComputerId).toBe("myserver");
+    expect(ws.starred).toBe(true);
+    expect(ws.archived).toBe(true);
+    expect(ws.createdAt).toBe(1000);
+  });
+
+  it("listWorkspaces includes archived field", async () => {
+    const store = makeStore();
+    clock = 1000;
+    await store.ensureWorkspace("alpha");
+    await store.setWorkspaceArchived("alpha", true);
+    clock = 2000;
+    await store.ensureWorkspace("beta");
+    const list = await store.listWorkspaces();
+    expect(list.find((w) => w.id === "alpha")?.archived).toBe(true);
+    expect(list.find((w) => w.id === "beta")?.archived).toBe(false);
+  });
+
+  it("setWorkspaceTitle preserves archived state", async () => {
+    const store = makeStore();
+    await store.ensureWorkspace("my-work");
+    await store.setWorkspaceArchived("my-work", true);
+    const ws = await store.setWorkspaceTitle("my-work", "Renamed");
+    expect(ws.archived).toBe(true);
+    expect(ws.title).toBe("Renamed");
+  });
+
+  it("a legacy WorkspaceRow without archived reads back as false", async () => {
+    const store = makeStore();
+    // Simulate a legacy row persisted before `archived` existed.
+    await storage.set(
+      "workspace:legacy",
+      JSON.stringify({
+        title: "legacy",
+        defaultCwd: "/legacy/cwd",
+        defaultComputerId: null,
+        starred: false,
+        createdAt: 100,
+        lastActivityAt: 200,
+      }),
+    );
+    const ws = await store.getWorkspace("legacy");
+    expect(ws?.archived).toBe(false);
+  });
 });
 
 describe("ComputerStore", () => {
@@ -623,6 +733,7 @@ describe("ComputerStore", () => {
       defaultCwd: null,
       defaultComputerId: "remote-host",
       starred: false,
+      archived: false,
       createdAt: 5000,
       lastActivityAt: 5000,
     });
@@ -647,6 +758,7 @@ describe("ComputerStore", () => {
       defaultCwd: null,
       defaultComputerId: null,
       starred: false,
+      archived: false,
       createdAt: 0,
       lastActivityAt: 0,
     });
@@ -756,6 +868,7 @@ describe("ComputerStore", () => {
       defaultCwd: null,
       defaultComputerId: "prod-server",
       starred: false,
+      archived: false,
       createdAt: 1000,
       lastActivityAt: 1000,
     });
@@ -781,6 +894,7 @@ describe("ComputerStore", () => {
       defaultCwd: "/legacy/cwd",
       defaultComputerId: null,
       starred: false,
+      archived: false,
       createdAt: 100,
       lastActivityAt: 200,
     });
