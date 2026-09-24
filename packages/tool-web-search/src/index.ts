@@ -1,3 +1,4 @@
+export type { SearchBackend, SearchHit } from "@dispatch/search-backend-contract";
 export {
   CRAWL_MAX_WAIT_MS,
   CRAWL_POLL_MS,
@@ -11,15 +12,14 @@ export {
   type ScrapeParams,
   type SearchParams,
 } from "./client.js";
+export { type SearchConfigService, searchConfigServiceHandle } from "./config/index.js";
 export { activate, extension, manifest } from "./extension.js";
 export {
   type CrawlPage,
   formatCrawlResults,
-  formatMapResults,
   formatScrapeResult,
   formatSearchResults,
   type ScrapeResult,
-  type SearchHit,
   truncateOutput,
 } from "./format.js";
 export { createWebSearchTool, type WebSearchToolDeps } from "./tool.js";
@@ -29,7 +29,6 @@ export {
   FORMATS,
   type Format,
   MAX_LIMIT,
-  type MapArgs,
   MODES,
   type Mode,
   type ScrapeArgs,

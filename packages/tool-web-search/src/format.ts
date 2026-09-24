@@ -6,13 +6,9 @@
  * zero mocks.
  */
 
-/** A single search hit from Firecrawl's `/search` endpoint. */
-export interface SearchHit {
-  readonly title?: string;
-  readonly url?: string;
-  readonly description?: string;
-  readonly markdown?: string;
-}
+import type { SearchHit } from "@dispatch/search-backend-contract";
+
+export type { SearchHit };
 
 /** One page from a completed crawl (`/crawl` status `data`). */
 export interface CrawlPage {
@@ -98,14 +94,4 @@ export function formatCrawlResults(data: readonly CrawlPage[] | null | undefined
     parts.push(section);
   }
   return parts.join("\n\n---\n\n");
-}
-
-/**
- * Format discovered links as a bullet list. Empty → `"No links found."`.
- */
-export function formatMapResults(links: readonly string[] | null | undefined): string {
-  if (!links || links.length === 0) {
-    return "No links found.";
-  }
-  return links.map((l) => `- ${l}`).join("\n");
 }

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   formatCrawlResults,
-  formatMapResults,
   formatScrapeResult,
   formatSearchResults,
   truncateOutput,
@@ -56,18 +55,6 @@ describe("formatCrawlResults", () => {
   it("empty data returns 'No pages crawled.'", () => {
     expect(formatCrawlResults([])).toBe("No pages crawled.");
     expect(formatCrawlResults(null)).toBe("No pages crawled.");
-  });
-});
-
-describe("formatMapResults", () => {
-  it("formats links as bullet list", () => {
-    const out = formatMapResults(["http://a", "http://b"]);
-    expect(out).toBe("- http://a\n- http://b");
-  });
-
-  it("empty links returns 'No links found.'", () => {
-    expect(formatMapResults([])).toBe("No links found.");
-    expect(formatMapResults(null)).toBe("No links found.");
   });
 });
 

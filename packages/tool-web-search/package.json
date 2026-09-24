@@ -6,6 +6,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "dependencies": {
-    "@dispatch/kernel": "workspace:*"
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/search-backend-contract": "workspace:*",
+    "@dispatch/transport-contract": "workspace:*"
   }
 }

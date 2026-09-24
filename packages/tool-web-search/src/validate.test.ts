@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  type CrawlArgs,
-  type MapArgs,
-  type ScrapeArgs,
-  type SearchArgs,
-  validateArgs,
-} from "./validate.js";
+import { type CrawlArgs, type ScrapeArgs, type SearchArgs, validateArgs } from "./validate.js";
 
 describe("validateArgs", () => {
   it("mode defaults to search when query present", () => {
@@ -25,11 +19,15 @@ describe("validateArgs", () => {
   });
 
   it("explicit mode overrides defaults", () => {
-    const result = validateArgs({ query: "hello", url: "http://x", mode: "map" });
+    const result = validateArgs({ query: "hello", url: "http://x", mode: "crawl" });
     expect("error" in result).toBe(false);
     if ("error" in result) return;
-    expect(result.mode).toBe("map");
-    expect((result as MapArgs).url).toBe("http://x");
+    expect(result.mode).toBe("crawl");
+    expect((result as CrawlArgs).url).toBe("http://x");
+  });
+
+  it("the removed 'map' mode is now invalid", () => {
+    expect(validateArgs({ url: "http://x", mode: "map" })).toHaveProperty("error");
   });
 
   it("search mode requires query", () => {
@@ -37,10 +35,9 @@ describe("validateArgs", () => {
     expect(result).toHaveProperty("error");
   });
 
-  it("scrape/crawl/map modes require url", () => {
+  it("scrape/crawl modes require url", () => {
     expect(validateArgs({ mode: "scrape" })).toHaveProperty("error");
     expect(validateArgs({ mode: "crawl" })).toHaveProperty("error");
-    expect(validateArgs({ mode: "map" })).toHaveProperty("error");
   });
 
   it("limit clamped to max 10", () => {

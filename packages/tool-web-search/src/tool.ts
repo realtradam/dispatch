@@ -5,13 +5,19 @@
  * Mirrors the tool-shell pattern: factory + injected dep + pure helpers +
  * a `ToolResult` returned per call. Errors surface as `{ isError: true }`
  * rather than thrown, so the model can react to the message.
+ *
+ * Scrape/crawl always route to the injected Firecrawl client (keyless,
+ * self-hosted). Search mode resolves the ACTIVE search backend per call via
+ * the injected `resolveSearchBackend` (the global config decides) — `null`
+ * (the `"none"` off state / nothing registered) refuses search cleanly while
+ * scrape/crawl keep working.
  */
 
 import type { ToolContract, ToolExecuteContext, ToolResult } from "@dispatch/kernel";
+import type { SearchBackend } from "@dispatch/search-backend-contract";
 import type { FirecrawlClient } from "./client.js";
 import {
   formatCrawlResults,
-  formatMapResults,
   formatScrapeResult,
   formatSearchResults,
   truncateOutput,
@@ -21,8 +27,23 @@ import { validateArgs } from "./validate.js";
 
 const OUTPUT_CAP = 50_000;
 
+/** Prefix marking the deliberate search-disabled refusal (see `execute`). */
+const SEARCH_DISABLED_PREFIX = "Error: search is disabled";
+
 export interface WebSearchToolDeps {
+  /**
+   * The always-on Firecrawl client — scrape/crawl route here regardless of
+   * the search-backend selection.
+   */
   readonly client: FirecrawlClient;
+  /**
+   * Resolve the ACTIVE search backend for search mode, per call (the global
+   * config decides; the extension wires the real resolver; tests inject a
+   * fake). `null` (the `"none"` off state / nothing registered) → search
+   * refuses with a clean `isError` result. Optional: when absent, search
+   * degrades to the same refusal.
+   */
+  readonly resolveSearchBackend?: () => Promise<SearchBackend | null>;
   readonly outputCap?: number;
 }
 
@@ -30,11 +51,16 @@ export interface WebSearchToolDeps {
 async function runMode(
   validated: ValidatedArgs,
   client: FirecrawlClient,
+  resolveSearchBackend: (() => Promise<SearchBackend | null>) | undefined,
   signal: AbortSignal,
 ): Promise<string> {
   switch (validated.mode) {
     case "search": {
-      const hits = await client.search(
+      const backend = resolveSearchBackend === undefined ? null : await resolveSearchBackend();
+      if (backend === null) {
+        return "Error: search is disabled — no search backend is selected. Scrape and crawl modes remain available.";
+      }
+      const hits = await backend.search(
         {
           query: validated.query,
           limit: validated.limit,
@@ -62,10 +88,6 @@ async function runMode(
       );
       return formatCrawlResults(pages);
     }
-    case "map": {
-      const links = await client.map(validated.url, signal);
-      return formatMapResults(links);
-    }
   }
 }
 
@@ -81,20 +103,20 @@ export function createWebSearchTool(deps: WebSearchToolDeps): ToolContract {
   return {
     name: "web_search",
     description:
-      "Access the web via a self-hosted Firecrawl instance. Supports search, " +
-      "single-page scrape, site crawling, and sitemap discovery.",
+      "Access the web via a self-hosted Firecrawl instance. Supports single-page " +
+      "scrape and site crawling (always available), plus search — search is backed " +
+      "by a selectable search backend and may be disabled by configuration.",
     parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "The search query (search mode)." },
-        url: { type: "string", description: "A URL to scrape, crawl, or map." },
+        url: { type: "string", description: "A URL to scrape or crawl." },
         mode: {
           type: "string",
-          enum: ["search", "scrape", "crawl", "map"],
+          enum: ["search", "scrape", "crawl"],
           description:
             "Operation mode. 'search' (default when query present), 'scrape' " +
-            "(default when url present), 'crawl' (recursively scrape pages from a site), " +
-            "'map' (discover URLs on a site).",
+            "(default when url present), 'crawl' (recursively scrape pages from a site).",
         },
         limit: {
           type: "number",
@@ -127,9 +149,15 @@ export function createWebSearchTool(deps: WebSearchToolDeps): ToolContract {
       }
       const span = ctx.log.span("web_search.execute", { mode: validated.mode });
       try {
-        const output = await runMode(validated, client, ctx.signal);
+        const output = await runMode(validated, client, deps.resolveSearchBackend, ctx.signal);
         span.end();
-        return { content: truncateOutput(output, cap) };
+        // The search-disabled refusal is a clean, deliberate state (not a
+        // thrown failure) — surface it as an error result so the model reacts
+        // instead of treating the message as data.
+        return {
+          content: truncateOutput(output, cap),
+          ...(output.startsWith(SEARCH_DISABLED_PREFIX) ? { isError: true } : {}),
+        };
       } catch (err: unknown) {
         span.end({ err });
         return {

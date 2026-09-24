@@ -341,6 +341,10 @@
         "@dispatch/openai-stream": "workspace:*",
       },
     },
+    "packages/search-backend-contract": {
+      "name": "@dispatch/search-backend-contract",
+      "version": "0.0.0",
+    },
     "packages/session-orchestrator": {
       "name": "@dispatch/session-orchestrator",
       "version": "0.0.0",
@@ -461,6 +465,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
+        "@dispatch/search-backend-contract": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
       },
     },
     "packages/tool-write-file": {
@@ -518,6 +524,7 @@
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/system-prompt": "workspace:*",
         "@dispatch/throughput-store": "workspace:*",
+        "@dispatch/tool-web-search": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
         "@dispatch/wire": "workspace:*",
         "@dispatch/workspace-plugin-config": "workspace:*",
@@ -651,6 +658,8 @@
     "@dispatch/provider-openrouter": ["@dispatch/provider-openrouter@workspace:packages/provider-openrouter"],
 
     "@dispatch/provider-umans": ["@dispatch/provider-umans@workspace:packages/provider-umans"],
+
+    "@dispatch/search-backend-contract": ["@dispatch/search-backend-contract@workspace:packages/search-backend-contract"],
 
     "@dispatch/session-orchestrator": ["@dispatch/session-orchestrator@workspace:packages/session-orchestrator"],
 

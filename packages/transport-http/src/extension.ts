@@ -15,6 +15,7 @@ import {
   namedAgentServiceHandle,
   pluginManagerHandle,
   pluginOwnershipHandle,
+  searchConfigServiceHandle,
   sessionOrchestratorHandle,
   systemPromptHandle,
   throughputStoreHandle,
@@ -78,6 +79,7 @@ export const manifest: Manifest = {
       "/plugins/:id/unload",
       "/plugins/:id/reload",
       "/plugins/:id/forget",
+      "/search/config",
       "/system-prompt",
       "/system-prompt/variables",
       "/workspaces",
@@ -144,6 +146,7 @@ export function createTransportHttpExtension(): Extension & {
         lsp: { current: host.tryGetService(lspServiceHandle) },
         mcp: { current: host.tryGetService(mcpServiceHandle) },
         heartbeat: { current: host.tryGetService(heartbeatServiceHandle) },
+        searchConfig: { current: host.tryGetService(searchConfigServiceHandle) },
         computer: { current: host.tryGetService(computerServiceHandle) },
         concurrency: { current: host.tryGetService(concurrencyServiceHandle) },
         namedAgent: { current: host.tryGetService(namedAgentServiceHandle) },
@@ -172,6 +175,7 @@ export function createTransportHttpExtension(): Extension & {
         watch(lspServiceHandle, slots.lsp),
         watch(mcpServiceHandle, slots.mcp),
         watch(heartbeatServiceHandle, slots.heartbeat),
+        watch(searchConfigServiceHandle, slots.searchConfig),
         watch(computerServiceHandle, slots.computer),
         watch(concurrencyServiceHandle, slots.concurrency),
         watch(namedAgentServiceHandle, slots.namedAgent),
@@ -210,6 +214,9 @@ export function createTransportHttpExtension(): Extension & {
         },
         get heartbeatService() {
           return slots.heartbeat.current;
+        },
+        get searchConfigService() {
+          return slots.searchConfig.current;
         },
         get computerService() {
           return slots.computer.current;

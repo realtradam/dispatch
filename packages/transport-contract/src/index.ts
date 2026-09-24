@@ -1517,6 +1517,18 @@ export interface StopHeartbeatRunResponse {
   readonly ok: true;
 }
 
+// ─── Search backend selection ─────────────────────────────────────────────────
+
+/**
+ * Re-exported wire types for the global search-backend selection
+ * (`GET/PUT /search/config`). The web frontend consumes these directly.
+ */
+export type {
+  SearchBackendAvailability,
+  SearchBackendConfigResponse,
+  UpdateSearchConfigRequest,
+} from "@dispatch/wire";
+
 // ─── Provider concurrency limits ──────────────────────────────────────────────
 
 /**

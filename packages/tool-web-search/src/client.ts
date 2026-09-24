@@ -2,12 +2,15 @@
  * FirecrawlClient — the injected outermost edge for the web_search tool.
  *
  * All effects (fetch, sleep, clock) are injected so the pure decision logic
- * remains testable without real I/O. The factory builds four methods
- * (`search`, `scrape`, `crawl`, `map`) over a self-hosted Firecrawl instance
+ * remains testable without real I/O. The factory builds three methods
+ * (`search`, `scrape`, `crawl`) over a self-hosted Firecrawl instance
  * (no API key). `crawl` polls a status URL until the crawl completes or fails.
+ * (`map` was removed — sitemap-dependent and underperforming; crawl with a
+ * limit covers the same need.)
  */
 
-import type { CrawlPage, ScrapeResult, SearchHit } from "./format.js";
+import type { SearchHit, SearchParams } from "@dispatch/search-backend-contract";
+import type { CrawlPage, ScrapeResult } from "./format.js";
 
 export type FetchLike = typeof globalThis.fetch;
 
@@ -16,16 +19,7 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 export const CRAWL_POLL_MS = 2_000;
 export const CRAWL_MAX_WAIT_MS = 5 * 60 * 1_000;
 
-export interface SearchParams {
-  readonly query: string;
-  readonly limit: number;
-  readonly lang?: string;
-  readonly country?: string;
-  readonly scrapeOptions?: {
-    readonly formats: readonly string[];
-    readonly onlyMainContent: boolean;
-  };
-}
+export type { SearchHit, SearchParams };
 
 export interface ScrapeParams {
   readonly url: string;
@@ -42,7 +36,6 @@ export interface FirecrawlClient {
   readonly search: (params: SearchParams, signal: AbortSignal) => Promise<readonly SearchHit[]>;
   readonly scrape: (params: ScrapeParams, signal: AbortSignal) => Promise<ScrapeResult>;
   readonly crawl: (params: CrawlParams, signal: AbortSignal) => Promise<readonly CrawlPage[]>;
-  readonly map: (url: string, signal: AbortSignal) => Promise<readonly string[]>;
 }
 
 export interface FirecrawlClientDeps {
@@ -79,12 +72,6 @@ interface CrawlStartResponse {
 interface CrawlStatusResponse {
   readonly status: string;
   readonly data?: readonly CrawlPage[];
-  readonly error?: string;
-}
-
-interface MapResponse {
-  readonly success: boolean;
-  readonly links?: readonly string[];
   readonly error?: string;
 }
 
@@ -230,14 +217,6 @@ export function createFirecrawlClient(deps: FirecrawlClientDeps): FirecrawlClien
         }
       }
       throw new Error("crawl timed out waiting for completion.");
-    },
-
-    async map(url: string, signal: AbortSignal): Promise<readonly string[]> {
-      const json = (await post("map", { url }, signal)) as MapResponse;
-      if (!json.success) {
-        throw new Error(json.error ?? "Unknown error");
-      }
-      return json.links ?? [];
     },
   };
 }

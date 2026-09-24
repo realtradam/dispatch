@@ -5,6 +5,9 @@
       "path": "./packages/wire"
     },
     {
+      "path": "./packages/search-backend-contract"
+    },
+    {
       "path": "./packages/kernel"
     },
     {

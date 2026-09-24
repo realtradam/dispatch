@@ -801,3 +801,43 @@ export interface NamedAgentSelectionSnapshot {
   /** The resolved raw `<credential>/<model>` actually used by the conversation. */
   readonly model: string;
 }
+
+// ─── Search backend selection ────────────────────────────────────────────────
+
+/**
+ * The global search-backend selection (`GET/PUT /search/config`) — which
+ * engine backs the `web_search` tool's *search* mode. Decided entries:
+ * `"firecrawl"` (the self-hosted instance, always configured), `"umans"`
+ * (the Umans relay with the server-side Exa web-search tool), and `"none"`
+ * (the explicit off state — search refuses cleanly while scrape/crawl keep
+ * working). Future backends may add more ids.
+ */
+export type SearchBackendId = "firecrawl" | "umans" | "none";
+
+/**
+ * One selectable backend as the Settings dropdown renders it. `configured` is
+ * the availability gate (firecrawl: always true — keyless, self-hosted; umans:
+ * only when `UMANS_API_KEY` resolves). An unconfigured backend is LISTED but
+ * disabled in the UI — never an error.
+ */
+export interface SearchBackendAvailability {
+  readonly id: string;
+  readonly label: string;
+  readonly configured: boolean;
+}
+
+/**
+ * Response of `GET /search/config` — the selected backend id plus every
+ * registered backend with its availability. `backend` may be any string the
+ * persisted config holds (including `"none"`); unknown ids render as
+ * unconfigured/unavailable in the UI.
+ */
+export interface SearchBackendConfigResponse {
+  readonly backend: string;
+  readonly available: readonly SearchBackendAvailability[];
+}
+
+/** Body of `PUT /search/config` — select a backend by id (or `"none"`). */
+export interface UpdateSearchConfigRequest {
+  readonly backend: string;
+}

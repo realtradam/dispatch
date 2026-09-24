@@ -161,23 +161,6 @@ describe("createFirecrawlClient.crawl", () => {
   });
 });
 
-describe("createFirecrawlClient.map", () => {
-  it("sends POST /map and returns links", async () => {
-    const { fetchFn, calls } = makeFetch([
-      jsonResponse({ success: true, links: ["http://a", "http://b"] }),
-    ]);
-    const client = createFirecrawlClient({ baseUrl: BASE, fetchFn });
-    const links = await client.map("http://site", signal());
-    expect(links).toEqual(["http://a", "http://b"]);
-
-    const call = calls[0];
-    if (!call) throw new Error("no call captured");
-    expect(call.url).toBe(`${BASE}/map`);
-    expect(call.method).toBe("POST");
-    expect(JSON.parse(call.body ?? "{}")).toEqual({ url: "http://site" });
-  });
-});
-
 describe("createFirecrawlClient.request (error paths)", () => {
   it("throws on HTTP error", async () => {
     const { fetchFn } = makeFetch([

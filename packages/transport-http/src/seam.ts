@@ -35,6 +35,8 @@ export type { SystemPromptService } from "@dispatch/system-prompt";
 export { systemPromptHandle } from "@dispatch/system-prompt";
 export type { ThroughputStore } from "@dispatch/throughput-store";
 export { ThroughputQueryError, throughputStoreHandle } from "@dispatch/throughput-store";
+export type { SearchConfigService } from "@dispatch/tool-web-search";
+export { searchConfigServiceHandle } from "@dispatch/tool-web-search";
 export type { WorkspacePluginConfigService } from "@dispatch/workspace-plugin-config";
 export {
   usablePluginsInWorkspace,

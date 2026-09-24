@@ -16,6 +16,7 @@
     { "path": "../plugin-manager" },
     { "path": "../provider-concurrency" },
     { "path": "../session-orchestrator" },
+    { "path": "../tool-web-search" },
     { "path": "../system-prompt" },
     { "path": "../throughput-store" },
     { "path": "../transport-contract" },

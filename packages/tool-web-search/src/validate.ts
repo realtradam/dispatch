@@ -6,7 +6,7 @@
  * Returns a discriminated union so the tool's dispatch narrows by `mode`.
  */
 
-export const MODES = ["search", "scrape", "crawl", "map"] as const;
+export const MODES = ["search", "scrape", "crawl"] as const;
 export type Mode = (typeof MODES)[number];
 
 export const FORMATS = ["markdown", "text", "html"] as const;
@@ -40,12 +40,7 @@ export interface CrawlArgs extends BaseArgs {
   readonly limit: number;
 }
 
-export interface MapArgs extends BaseArgs {
-  readonly mode: "map";
-  readonly url: string;
-}
-
-export type ValidatedArgs = SearchArgs | ScrapeArgs | CrawlArgs | MapArgs;
+export type ValidatedArgs = SearchArgs | ScrapeArgs | CrawlArgs;
 
 export type ValidationError = { readonly error: string };
 
@@ -73,7 +68,7 @@ function resolveMode(raw: unknown, query: unknown, url: unknown): Result<Mode> {
     return { value: raw as Mode };
   }
   return {
-    error: `Error: Invalid mode "${String(raw)}" (must be one of: search, scrape, crawl, map).`,
+    error: `Error: Invalid mode "${String(raw)}" (must be one of: search, scrape, crawl).`,
   };
 }
 
@@ -193,17 +188,6 @@ export function validateArgs(args: unknown): ValidatedArgs | ValidationError {
         mode: "crawl",
         url: url.value,
         limit: limit.value,
-        format: format.value,
-      };
-      return result;
-    }
-    case "map": {
-      if (url.value === undefined || url.value.trim().length === 0) {
-        return { error: "Error: url is required for map mode." };
-      }
-      const result: MapArgs = {
-        mode: "map",
-        url: url.value,
         format: format.value,
       };
       return result;
