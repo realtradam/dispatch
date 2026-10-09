@@ -1,4 +1,5 @@
 import type {
+  AgentEvent,
   Attributes,
   ChatMessage,
   Chunk,
@@ -202,4 +203,81 @@ export function memoryDelta(before: MemorySample, after: MemorySample): MemorySa
     external: after.external - before.external,
     arrayBuffers: after.arrayBuffers - before.arrayBuffers,
   };
+}
+
+/**
+ * Compact an in-flight turn's event buffer for a LATE-JOIN replay (a client
+ * that subscribes mid-turn: a refresh, reconnect, or second device).
+ *
+ * The live stream emits one event per provider token chunk, so a long turn's
+ * buffer holds thousands of tiny `text-delta` / `reasoning-delta` events. A
+ * late-joiner folding them one-by-one does O(events) client work (each one a
+ * separate WS frame + reactive cycle) — painfully slow on mobile. The replay
+ * is purely historical, so it can be compacted without any latency tradeoff:
+ *
+ * - Each run of ADJACENT same-type, same-turn deltas is merged into ONE event
+ *   whose `delta` is the concatenation. Byte-identical for every consumer that
+ *   accumulates deltas by string concatenation (the FE reducer, the CLI).
+ * - `tool-output` (incremental stdout/stderr of a running tool) is dropped for
+ *   tool calls that already have a `tool-result` in the buffer — the result
+ *   carries the full output, so the progress stream is redundant (and large).
+ *   Output of a STILL-RUNNING tool is kept so the late-joiner sees progress.
+ * - `status` events are free-form transient hints; only the LAST is kept.
+ *
+ * Every structural event (`turn-start`, `user-message`, `tool-call`,
+ * `tool-result`, `usage`, `step-complete`, `steering`, `error`, `done`, …)
+ * is kept, in order. Live streaming is NOT affected — only the subscribe-time
+ * snapshot. Pure: input array → new array; the input is never mutated.
+ */
+export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
+  const finishedTools = new Set<string>();
+  let lastStatus = -1;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e === undefined) continue;
+    if (e.type === "tool-result") finishedTools.add(e.toolCallId);
+    else if (e.type === "status") lastStatus = i;
+  }
+
+  const out: AgentEvent[] = [];
+  // Pending merged delta (flushed when a different event interrupts the run).
+  let pending: {
+    type: "text-delta" | "reasoning-delta";
+    base: AgentEvent;
+    parts: string[];
+  } | null = null;
+  const flush = (): void => {
+    if (pending === null) return;
+    const base = pending.base;
+    out.push(
+      pending.parts.length === 1
+        ? base
+        : ({ ...base, delta: pending.parts.join("") } as AgentEvent),
+    );
+    pending = null;
+  };
+
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e === undefined) continue;
+    if (e.type === "text-delta" || e.type === "reasoning-delta") {
+      if (
+        pending !== null &&
+        pending.type === e.type &&
+        (pending.base as { turnId: string }).turnId === e.turnId
+      ) {
+        pending.parts.push(e.delta);
+      } else {
+        flush();
+        pending = { type: e.type, base: e, parts: [e.delta] };
+      }
+      continue;
+    }
+    if (e.type === "tool-output" && finishedTools.has(e.toolCallId)) continue;
+    if (e.type === "status" && i !== lastStatus) continue;
+    flush();
+    out.push(e);
+  }
+  flush();
+  return out;
 }

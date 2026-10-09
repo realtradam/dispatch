@@ -37,6 +37,7 @@ export {
 export { type PluginOwnership, pluginOwnershipHandle } from "./ownership.js";
 export {
   buildUserMessage,
+  compactReplay,
   cumulativeSleepMs,
   defaultDispatchPolicy,
   delayFor,

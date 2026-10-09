@@ -35,6 +35,7 @@ import {
   type WarmCompletedPayload,
 } from "./orchestrator.js";
 import type { MemorySample } from "./pure.js";
+import { compactReplay } from "./pure.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
 function createInMemoryStore(): ConversationStore & {
@@ -2586,8 +2587,13 @@ describe("detached turn hub", () => {
     expect(earlySnapshot.some((e) => e.type === "turn-start")).toBe(true);
     expect(earlySnapshot.some((e) => e.type === "text-delta")).toBe(true);
 
-    expect(lateEvents.length).toBe(earlySnapshot.length);
-    expect(lateEvents).toEqual(earlySnapshot);
+    // The late-join replay is COMPACTED: the two buffered text-deltas arrive
+    // as ONE merged delta ("Hello world"), everything else verbatim + in order.
+    expect(lateEvents).toEqual(compactReplay(earlySnapshot));
+    const lateDeltas = lateEvents.filter((e) => e.type === "text-delta");
+    expect(lateDeltas).toHaveLength(1);
+    expect((lateDeltas[0] as { delta: string }).delta).toBe("Hello world");
+    const replayLen = lateEvents.length;
 
     emitBarrierResolve?.();
 
@@ -2597,9 +2603,10 @@ describe("detached turn hub", () => {
     unsubEarly();
     unsubLate();
 
+    // No gap/dup: after the replay, the late subscriber receives exactly the
+    // live events the early subscriber received after the snapshot point.
     expect(earlyEvents.length).toBeGreaterThan(earlySnapshot.length);
-    expect(lateEvents.length).toBe(earlyEvents.length);
-    expect(lateEvents).toEqual(earlyEvents);
+    expect(lateEvents.slice(replayLen)).toEqual(earlyEvents.slice(earlySnapshot.length));
   });
 
   it("subscriber persists across turns — one subscriber receives events from two sequential turns", async () => {

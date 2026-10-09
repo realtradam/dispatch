@@ -33,6 +33,7 @@ import type { SystemPromptService } from "@dispatch/system-prompt";
 import { createMetricsAccumulator } from "./metrics.js";
 import {
   buildUserMessage,
+  compactReplay,
   defaultDispatchPolicy,
   delayFor,
   generateTurnId,
@@ -1472,7 +1473,10 @@ export function createSessionOrchestrator(
       }
       const turn = activeTurns.get(conversationId);
       if (turn !== undefined) {
-        const snapshot = [...turn.buffer];
+        // Late-join: replay a COMPACTED snapshot (merged delta runs, no stale
+        // tool-output) — O(structure) frames instead of O(tokens). See
+        // `compactReplay`. Live events after this point stream verbatim.
+        const snapshot = compactReplay(turn.buffer);
         listeners.add(listener);
         for (const event of snapshot) {
           listener(event);

@@ -2,6 +2,7 @@ import type { ProviderContract } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
   buildUserMessage,
+  compactReplay,
   cumulativeSleepMs,
   defaultDispatchPolicy,
   delayFor,
@@ -263,5 +264,105 @@ describe("memoryDelta", () => {
   it("is negative when memory dropped", () => {
     const delta = memoryDelta(after, before);
     expect(delta.rss).toBe(-150 * 1024 * 1024);
+  });
+});
+
+describe("compactReplay", () => {
+  const C = "conv";
+  const T = "turn-1";
+  const text = (delta: string, turnId = T) =>
+    ({ type: "text-delta", conversationId: C, turnId, delta }) as const;
+  const reason = (delta: string) =>
+    ({ type: "reasoning-delta", conversationId: C, turnId: T, delta }) as const;
+  const call = (toolCallId: string) =>
+    ({
+      type: "tool-call",
+      conversationId: C,
+      turnId: T,
+      stepId: `${T}#0`,
+      toolCallId,
+      toolName: "run_shell",
+      input: {},
+    }) as const;
+  const output = (toolCallId: string, data: string) =>
+    ({
+      type: "tool-output",
+      conversationId: C,
+      turnId: T,
+      toolCallId,
+      data,
+      stream: "stdout",
+    }) as const;
+  const result = (toolCallId: string) =>
+    ({
+      type: "tool-result",
+      conversationId: C,
+      turnId: T,
+      stepId: `${T}#0`,
+      toolCallId,
+      toolName: "run_shell",
+      content: "ok",
+      isError: false,
+    }) as const;
+  const start = { type: "turn-start", conversationId: C, turnId: T } as const;
+
+  it("returns an empty array for an empty buffer", () => {
+    expect(compactReplay([])).toEqual([]);
+  });
+
+  it("merges adjacent same-type deltas into one, preserving concatenated text", () => {
+    const out = compactReplay([
+      start,
+      reason("a"),
+      reason("b"),
+      text("He"),
+      text("llo"),
+      text("!"),
+    ]);
+    expect(out).toEqual([start, reason("ab"), text("Hello!")]);
+  });
+
+  it("does not merge across an interrupting structural event", () => {
+    const out = compactReplay([text("a"), call("x"), text("b"), text("c")]);
+    expect(out).toEqual([text("a"), call("x"), text("bc")]);
+  });
+
+  it("does not merge deltas of different turns", () => {
+    const out = compactReplay([text("a", "t1"), text("b", "t2")]);
+    expect(out).toEqual([text("a", "t1"), text("b", "t2")]);
+  });
+
+  it("drops tool-output of finished tools, keeps it for running tools", () => {
+    const out = compactReplay([
+      call("done"),
+      output("done", "1"),
+      output("done", "2"),
+      result("done"),
+      call("live"),
+      output("live", "partial"),
+    ]);
+    expect(out).toEqual([call("done"), result("done"), call("live"), output("live", "partial")]);
+  });
+
+  it("keeps only the last status event", () => {
+    const s1 = { type: "status", conversationId: C, status: "a" } as const;
+    const s2 = { type: "status", conversationId: C, status: "b" } as const;
+    expect(compactReplay([s1, text("x"), s2])).toEqual([text("x"), s2]);
+  });
+
+  it("does not mutate the input and keeps single deltas by identity", () => {
+    const one = text("solo");
+    const input = [start, one];
+    const copy = [...input];
+    const out = compactReplay(input);
+    expect(input).toEqual(copy);
+    expect(out[1]).toBe(one);
+  });
+
+  it("collapses a long token stream to a single event", () => {
+    const many = Array.from({ length: 5000 }, (_, i) => text(String(i % 10)));
+    const out = compactReplay(many);
+    expect(out).toHaveLength(1);
+    expect((out[0] as { delta: string }).delta).toBe(many.map((e) => e.delta).join(""));
   });
 });
