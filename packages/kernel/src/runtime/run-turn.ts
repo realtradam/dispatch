@@ -240,9 +240,11 @@ function processEvent(
       // or the FE event stream.
       if (seenToolCallIds.has(event.toolCallId)) break;
       seenToolCallIds.add(event.toolCallId);
-      // A tool call IS model output: it marks the first token when the
-      // provider sent no earlier `tool-call-start` marker.
-      markFirstToken(ctx, stepSpan, timing);
+      // NOT a first-token marker: a provider that buffers tool calls emits the
+      // complete call only at stream end, so treating it as the first token
+      // would collapse decode time to ~0 and wildly inflate tokens/sec. Tool
+      // output timing comes from `tool-call-start` (emitted as the call
+      // begins streaming); without it the step honestly reports no decode.
       const call: ToolCall = {
         id: event.toolCallId,
         name: event.toolName,

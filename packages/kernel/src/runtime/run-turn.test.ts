@@ -1489,9 +1489,10 @@ describe("runTurn", () => {
       expect(decodeOpens).toHaveLength(0);
     });
 
-    it("a tool-call-only step counts the tool call as its first output token", async () => {
+    it("a tool-call-only step is timed from its tool-call-start marker", async () => {
       const provider = createFakeProvider([
         [
+          { type: "tool-call-start" },
           { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
           { type: "finish", reason: "tool-calls" },
         ],
@@ -2439,7 +2440,7 @@ describe("runTurn", () => {
       }
     });
 
-    it("step-complete times a tool-call-only step from its tool call (tool = first output)", async () => {
+    it("step-complete omits ttft/decode for a tool-call-only step with no tool-call-start marker", async () => {
       const clock = createCounterNow();
       clock.tick(100); // turn starts at 100
 
@@ -2487,13 +2488,15 @@ describe("runTurn", () => {
       const stepCompleteEvts = events.filter((e) => e.type === "step-complete");
       expect(stepCompleteEvts).toHaveLength(2);
 
-      // First step: tool-call-only — the tool call is its first output token.
+      // First step: tool-call-only and the provider sent no tool-call-start
+      // marker (the call arrived complete, as at stream end) — no first token,
+      // so no decode (never a ~0ms decode that would inflate tokens/sec).
       const sc0 = stepCompleteEvts[0];
       if (sc0?.type === "step-complete") {
         expect(sc0.stepId).toBeDefined();
         expect(sc0.genTotalMs).toBe(100); // 80+20
-        expect(sc0.ttftMs).toBe(80);
-        expect(sc0.decodeMs).toBe(20);
+        expect(sc0.ttftMs).toBeUndefined();
+        expect(sc0.decodeMs).toBeUndefined();
       }
 
       // Second step: has text-delta
