@@ -2226,3 +2226,61 @@ describe("ConversationStore deleteConversation (deletion lifecycle)", () => {
     expect(await store.listConversations()).toEqual([]);
   });
 });
+
+describe("ConversationStore — chunk turnId provenance", () => {
+  it("stamps every appended chunk with opts.turnId and returns it from loadSince", async () => {
+    const store = createConversationStore(createMemoryStorage());
+    await store.append(
+      "c",
+      [
+        {
+          role: "user",
+          chunks: [
+            { type: "text", text: "hi" },
+            { type: "image", url: "/images/c/a.png" },
+          ],
+        },
+      ],
+      { turnId: "t1" },
+    );
+    await store.append("c", [{ role: "assistant", chunks: [{ type: "text", text: "yo" }] }], {
+      turnId: "t1",
+    });
+    await store.append("c", [{ role: "user", chunks: [{ type: "text", text: "no turn" }] }]);
+    const rows = await store.loadSince("c", 0);
+    expect(rows.map((r) => r.turnId)).toEqual(["t1", "t1", "t1", undefined]);
+    // The legacy (no turnId) row carries no `turnId` key at all.
+    expect("turnId" in (rows[3] ?? {})).toBe(false);
+    // Message regrouping is unaffected.
+    const msgs = await store.load("c");
+    expect(msgs.map((m) => m.chunks.length)).toEqual([2, 1, 1]);
+  });
+
+  it("replaceHistory keeps the turnId of the verbatim kept tail (summary gets none)", async () => {
+    const store = createConversationStore(createMemoryStorage());
+    await store.append("c", [{ role: "user", chunks: [{ type: "text", text: "q1" }] }], {
+      turnId: "t1",
+    });
+    await store.append("c", [{ role: "assistant", chunks: [{ type: "text", text: "a1" }] }], {
+      turnId: "t1",
+    });
+    await store.append("c", [{ role: "user", chunks: [{ type: "text", text: "q2" }] }], {
+      turnId: "t2",
+    });
+    await store.append("c", [{ role: "assistant", chunks: [{ type: "text", text: "a2" }] }], {
+      turnId: "t2",
+    });
+    await store.replaceHistory("c", [
+      { role: "system", chunks: [{ type: "text", text: "summary" }] },
+      { role: "user", chunks: [{ type: "text", text: "q2" }] },
+      { role: "assistant", chunks: [{ type: "text", text: "a2" }] },
+    ]);
+    const rows = await store.loadSince("c", 0);
+    expect(rows.map((r) => [r.seq, r.turnId])).toEqual([
+      [1, undefined],
+      [2, "t2"],
+      [3, "t2"],
+    ]);
+    expect((await store.load("c")).map((m) => m.role)).toEqual(["system", "user", "assistant"]);
+  });
+});

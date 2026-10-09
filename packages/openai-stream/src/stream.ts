@@ -446,6 +446,9 @@ async function* readSSEStream(
                     name: tc.function?.name ?? "",
                     arguments: tc.function?.arguments ?? "",
                   });
+                  // Timing-only marker: the model's tool-call output has begun
+                  // streaming (the complete call is emitted at finish).
+                  yield { type: "tool-call-start" };
                 }
               }
             }

@@ -83,6 +83,9 @@ export function parseSSELines(lines: readonly string[]): ProviderEvent[] {
                 name: tc.function?.name ?? "",
                 arguments: tc.function?.arguments ?? "",
               });
+              // Timing-only marker: the model's tool-call output has begun
+              // streaming (the complete call is emitted at finish).
+              events.push({ type: "tool-call-start" });
             }
           }
         }

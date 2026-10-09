@@ -1456,7 +1456,40 @@ describe("runTurn", () => {
       }
     });
 
-    it("a step with no content token does not emit a misleading decode", async () => {
+    it("a step with no output token does not emit a misleading decode", async () => {
+      // Step 0 produces NO output at all (only usage) — no first token. A
+      // tool call counts as output (see the tool-call timing tests), so the
+      // no-output case is a bare usage/finish step.
+      const provider = createFakeProvider([
+        [
+          { type: "usage", usage: { inputTokens: 1, outputTokens: 0 } },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+
+      const { logger, sink } = createTestLogger();
+
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        logger,
+      });
+
+      const ttftCloses = sink.records.filter((r) => r.kind === "span-close" && r.name === "ttft");
+      const decodeOpens = sink.records.filter((r) => r.kind === "span-open" && r.name === "decode");
+      expect(ttftCloses).toHaveLength(1);
+      if (ttftCloses[0]?.kind === "span-close") {
+        expect(ttftCloses[0].attributes?.firstToken).toBe(false);
+      }
+      expect(decodeOpens).toHaveLength(0);
+    });
+
+    it("a tool-call-only step counts the tool call as its first output token", async () => {
       const provider = createFakeProvider([
         [
           { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
@@ -1467,9 +1500,7 @@ describe("runTurn", () => {
           { type: "finish", reason: "stop" },
         ],
       ]);
-
       const tool = createFakeTool("echo", async () => ({ content: "echoed" }));
-
       const { logger, sink } = createTestLogger();
 
       await runTurn({
@@ -1483,27 +1514,13 @@ describe("runTurn", () => {
         logger,
       });
 
-      // First step (tool-call-only) should have ttft with firstToken: false and no decode
-      const ttftOpens = sink.records.filter((r) => r.kind === "span-open" && r.name === "ttft");
       const ttftCloses = sink.records.filter((r) => r.kind === "span-close" && r.name === "ttft");
       const decodeOpens = sink.records.filter((r) => r.kind === "span-open" && r.name === "decode");
-
-      // There should be 2 ttft opens (one per step) and 2 ttft closes
-      expect(ttftOpens).toHaveLength(2);
       expect(ttftCloses).toHaveLength(2);
-
-      // First step: tool-call-only, no first token
-      if (ttftCloses[0]?.kind === "span-close") {
-        expect(ttftCloses[0].attributes?.firstToken).toBe(false);
+      for (const c of ttftCloses) {
+        if (c.kind === "span-close") expect(c.attributes?.firstToken).toBe(true);
       }
-
-      // Second step: has text-delta, should have firstToken: true and decode span
-      if (ttftCloses[1]?.kind === "span-close") {
-        expect(ttftCloses[1].attributes?.firstToken).toBe(true);
-      }
-
-      // Only one decode span (for the second step)
-      expect(decodeOpens).toHaveLength(1);
+      expect(decodeOpens).toHaveLength(2);
     });
 
     it("turn span close stamps usage.inputTokens / usage.outputTokens (dotted)", async () => {
@@ -2422,7 +2439,7 @@ describe("runTurn", () => {
       }
     });
 
-    it("step-complete omits ttft/decode but keeps genTotalMs for a no-content step", async () => {
+    it("step-complete times a tool-call-only step from its tool call (tool = first output)", async () => {
       const clock = createCounterNow();
       clock.tick(100); // turn starts at 100
 
@@ -2470,13 +2487,13 @@ describe("runTurn", () => {
       const stepCompleteEvts = events.filter((e) => e.type === "step-complete");
       expect(stepCompleteEvts).toHaveLength(2);
 
-      // First step: tool-call-only, no content token
+      // First step: tool-call-only — the tool call is its first output token.
       const sc0 = stepCompleteEvts[0];
       if (sc0?.type === "step-complete") {
         expect(sc0.stepId).toBeDefined();
         expect(sc0.genTotalMs).toBe(100); // 80+20
-        expect(sc0.ttftMs).toBeUndefined();
-        expect(sc0.decodeMs).toBeUndefined();
+        expect(sc0.ttftMs).toBe(80);
+        expect(sc0.decodeMs).toBe(20);
       }
 
       // Second step: has text-delta
@@ -2487,6 +2504,92 @@ describe("runTurn", () => {
         expect(sc1.ttftMs).toBe(50);
         expect(sc1.decodeMs).toBe(50);
       }
+    });
+
+    it("tool execution time never counts toward step timing (eager, tool blocks the consumer)", async () => {
+      const clock = createCounterNow();
+      // A tool whose synchronous portion advances the clock by 1000ms: eager
+      // dispatch runs it inline while the step's stream is still open.
+      const tool: ToolContract = {
+        name: "slow",
+        description: "",
+        parameters: { type: "object" },
+        execute: (() => {
+          clock.tick(1000);
+          return Promise.resolve({ content: "x" });
+        }) as ToolContract["execute"],
+      };
+      let n = 0;
+      const provider: ProviderContract = {
+        id: "fake",
+        stream() {
+          const idx = n++;
+          return (async function* () {
+            clock.tick(100); // TTFT
+            if (idx === 0) {
+              yield { type: "tool-call-start" } as ProviderEvent;
+              clock.tick(40); // tool-call argument streaming
+              yield {
+                type: "tool-call",
+                toolCallId: "a",
+                toolName: "slow",
+                input: {},
+              } as ProviderEvent;
+              clock.tick(10);
+              yield { type: "finish", reason: "tool-calls" } as ProviderEvent;
+            } else {
+              yield { type: "text-delta", delta: "ok" } as ProviderEvent;
+              yield { type: "finish", reason: "stop" } as ProviderEvent;
+            }
+          })();
+        },
+      };
+      const { events, emit } = createCollectingEmit();
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [tool],
+        dispatch: { maxConcurrent: 1, eager: true },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit,
+        now: clock.now,
+      });
+      const sc0 = events.find((e) => e.type === "step-complete");
+      expect(sc0?.type === "step-complete" && sc0.ttftMs).toBe(100);
+      expect(sc0?.type === "step-complete" && sc0.decodeMs).toBe(50); // 40 + 10, not 1050
+      expect(sc0?.type === "step-complete" && sc0.genTotalMs).toBe(150);
+    });
+
+    it("tool-call-start marks the first token before the complete call arrives", async () => {
+      const clock = createCounterNow();
+      const provider: ProviderContract = {
+        id: "fake",
+        stream() {
+          return (async function* () {
+            clock.tick(300);
+            yield { type: "tool-call-start" } as ProviderEvent;
+            clock.tick(700);
+            yield { type: "finish", reason: "stop" } as ProviderEvent;
+          })();
+        },
+      };
+      const { events, emit } = createCollectingEmit();
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [],
+        dispatch: { maxConcurrent: 1, eager: true },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit,
+        now: clock.now,
+      });
+      const sc = events.find((e) => e.type === "step-complete");
+      expect(sc?.type === "step-complete" && sc.ttftMs).toBe(300);
+      expect(sc?.type === "step-complete" && sc.decodeMs).toBe(700);
+      // tool-call-start is timing-only: no content chunk / outward event
+      expect(events.some((e) => (e.type as string) === "tool-call-start")).toBe(false);
     });
 
     it("usage event carries stepId", async () => {

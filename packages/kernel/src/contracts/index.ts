@@ -110,6 +110,7 @@ export type {
   ReasoningDeltaEvent,
   ReasoningEffort,
   TextDeltaEvent,
+  ToolCallStartEvent,
   Usage,
   UsageEvent,
 } from "./provider.js";

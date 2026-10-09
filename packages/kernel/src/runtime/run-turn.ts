@@ -140,6 +140,13 @@ interface TimingState {
   firstTokenSeen: boolean;
   streamStartMs: number | undefined;
   firstTokenMs: number | undefined;
+  /**
+   * Wall time the stream consumer spent blocked inside tool execution while
+   * the step's stream was still open (eager dispatch runs a tool's
+   * synchronous portion inline on `submit`). Subtracted from the step's
+   * timing so tool execution never counts as generation time (TPS).
+   */
+  toolBlockedMs: number;
 }
 
 interface StepResult {
@@ -159,6 +166,48 @@ interface StepResult {
   readonly finishReason: string;
 }
 
+/**
+ * Mark the step's first OUTPUT token (text, reasoning, or the start of a
+ * tool call) — the TTFT / decode boundary. Idempotent per step.
+ */
+function markFirstToken(ctx: StepContext, stepSpan: Span | undefined, timing: TimingState): void {
+  if (timing.firstTokenSeen) return;
+  timing.firstTokenSeen = true;
+  if (ctx.now !== undefined) {
+    timing.firstTokenMs = ctx.now();
+  }
+  try {
+    timing.ttftSpan?.end({ attrs: { firstToken: true } });
+  } catch {
+    // Swallow — D7.
+  }
+  timing.ttftSpan = undefined;
+  try {
+    timing.decodeSpan = stepSpan?.child("decode");
+  } catch {
+    // Swallow — D7.
+  }
+}
+
+/**
+ * Submit a tool call to the dispatcher, charging the time spent inside the
+ * call (an eager dispatch runs the tool's synchronous portion inline) to
+ * `timing.toolBlockedMs` so it is excluded from the step's generation timing.
+ */
+function submitTimed(
+  dispatcher: StepDispatcher,
+  call: ToolCall,
+  ctx: StepContext,
+  timing: TimingState,
+): void {
+  const start = ctx.now?.();
+  dispatcher.submit(call);
+  const end = ctx.now?.();
+  if (start !== undefined && end !== undefined && end > start) {
+    timing.toolBlockedMs += end - start;
+  }
+}
+
 function processEvent(
   event: ProviderEvent,
   chunks: Chunk[],
@@ -172,44 +221,12 @@ function processEvent(
 ): void {
   switch (event.type) {
     case "text-delta":
-      if (!timing.firstTokenSeen) {
-        timing.firstTokenSeen = true;
-        if (ctx.now !== undefined) {
-          timing.firstTokenMs = ctx.now();
-        }
-        try {
-          timing.ttftSpan?.end({ attrs: { firstToken: true } });
-        } catch {
-          // Swallow — D7.
-        }
-        timing.ttftSpan = undefined;
-        try {
-          timing.decodeSpan = stepSpan?.child("decode");
-        } catch {
-          // Swallow — D7.
-        }
-      }
+      markFirstToken(ctx, stepSpan, timing);
       appendTextDelta(chunks, event.delta);
       ctx.emit(textDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
       break;
     case "reasoning-delta":
-      if (!timing.firstTokenSeen) {
-        timing.firstTokenSeen = true;
-        if (ctx.now !== undefined) {
-          timing.firstTokenMs = ctx.now();
-        }
-        try {
-          timing.ttftSpan?.end({ attrs: { firstToken: true } });
-        } catch {
-          // Swallow — D7.
-        }
-        timing.ttftSpan = undefined;
-        try {
-          timing.decodeSpan = stepSpan?.child("decode");
-        } catch {
-          // Swallow — D7.
-        }
-      }
+      markFirstToken(ctx, stepSpan, timing);
       appendThinkingDelta(chunks, event.delta);
       ctx.emit(reasoningDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
       break;
@@ -223,6 +240,9 @@ function processEvent(
       // or the FE event stream.
       if (seenToolCallIds.has(event.toolCallId)) break;
       seenToolCallIds.add(event.toolCallId);
+      // A tool call IS model output: it marks the first token when the
+      // provider sent no earlier `tool-call-start` marker.
+      markFirstToken(ctx, stepSpan, timing);
       const call: ToolCall = {
         id: event.toolCallId,
         name: event.toolName,
@@ -270,10 +290,14 @@ function processEvent(
       }
 
       if (ctx.dispatch.eager) {
-        dispatcher.submit(call);
+        submitTimed(dispatcher, call, ctx, timing);
       }
       break;
     }
+    case "tool-call-start":
+      // Timing-only: the model began streaming a tool call.
+      markFirstToken(ctx, stepSpan, timing);
+      break;
     case "usage":
       ctx.emit(usageEvent(ctx.conversationId, ctx.turnId, event.usage, ctx.stepId));
       break;
@@ -334,6 +358,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
     firstTokenSeen: false,
     streamStartMs: ctx.now !== undefined ? ctx.now() : undefined,
     firstTokenMs: undefined,
+    toolBlockedMs: 0,
   };
 
   // Open TTFT span when spans are enabled
@@ -508,13 +533,18 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
   // Emit step-complete event with timing
   const streamEndMs = ctx.now !== undefined ? ctx.now() : undefined;
   if (timing.streamStartMs !== undefined && streamEndMs !== undefined) {
-    const genTotalMs = streamEndMs - timing.streamStartMs;
+    // Tool execution that blocked the stream consumer (eager dispatch) is
+    // NOT generation time. Tools only start after their call arrives, i.e.
+    // after the first token, so the excluded time comes out of decode.
+    const blocked = Math.max(0, timing.toolBlockedMs);
+    const genTotalMs = Math.max(0, streamEndMs - timing.streamStartMs - blocked);
     const stepTiming: { ttftMs?: number; decodeMs?: number; genTotalMs?: number } = {
       genTotalMs,
     };
     if (timing.firstTokenMs !== undefined) {
-      stepTiming.ttftMs = timing.firstTokenMs - timing.streamStartMs;
-      stepTiming.decodeMs = streamEndMs - timing.firstTokenMs;
+      const ttftMs = Math.max(0, timing.firstTokenMs - timing.streamStartMs);
+      stepTiming.ttftMs = Math.min(ttftMs, genTotalMs);
+      stepTiming.decodeMs = genTotalMs - stepTiming.ttftMs;
     }
     ctx.emit(stepCompleteEvent(ctx.conversationId, ctx.turnId, ctx.stepId, stepTiming));
   } else {

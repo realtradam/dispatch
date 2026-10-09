@@ -185,6 +185,18 @@ export interface StoredChunk {
   readonly seq: number;
   readonly role: Role;
   readonly chunk: Chunk;
+  /**
+   * The turn that produced this chunk — the same `turnId` carried on every
+   * live `AgentEvent` of that turn (the turn's opening user message, any
+   * mid-turn steering message, and every assistant/tool chunk the turn
+   * generated). The join key between transcript content and the turn's
+   * `TurnMetrics`, so a client places per-turn metrics EXACTLY (no positional
+   * guessing) — including while a turn is in flight and when older history has
+   * been unloaded. Optional: absent on rows persisted before this field
+   * existed and on chunks written outside any turn (e.g. a compaction summary).
+   * A consumer must tolerate its absence.
+   */
+  readonly turnId?: string;
 }
 
 // ─── Reasoning effort ───────────────────────────────────────────────────────
@@ -228,9 +240,9 @@ export interface StepMetrics {
   readonly stepId: StepId;
   /** The step's token usage (all four counters; cache fields optional per `Usage`). */
   readonly usage: Usage;
-  /** Time to first token (stream start → first text/reasoning delta). Optional — see `TurnStepCompleteEvent.ttftMs`. */
+  /** Time to first output token (text, reasoning, or tool-call input). Optional — see `TurnStepCompleteEvent.ttftMs`. */
   readonly ttftMs?: number;
-  /** Decode time (first token → stream end). Optional — see `TurnStepCompleteEvent.decodeMs`. */
+  /** Decode time (first token → stream end, tool execution excluded) — the tokens-per-second denominator. Optional — see `TurnStepCompleteEvent.decodeMs`. */
   readonly decodeMs?: number;
   /** Total generation time for the step (stream start → stream end). Optional: present only when a clock was available. */
   readonly genTotalMs?: number;
@@ -457,14 +469,23 @@ export interface TurnStepCompleteEvent {
   readonly conversationId: string;
   readonly turnId: string;
   readonly stepId: StepId;
-  /** Time to first token: stream start → first text/reasoning delta. */
+  /**
+   * Time to first token: stream start → the first OUTPUT token of any kind
+   * (text, reasoning, or tool-call argument streaming).
+   */
   readonly ttftMs?: number;
-  /** Decode time: first token → stream end (generation total − TTFT). */
+  /**
+   * Decode time: first output token → stream end, EXCLUDING any time the
+   * runtime spent executing tools while the stream was still open (eager
+   * dispatch). The denominator for a step's tokens-per-second
+   * (`outputTokens / decodeMs`). Tool execution time never counts.
+   */
   readonly decodeMs?: number;
   /**
-   * Total generation time for the step: stream start → stream end. Present
-   * whenever a clock was available, even if no first token was seen (in which
-   * case `ttftMs`/`decodeMs` are absent). When a first token was seen,
+   * Total generation time for the step: stream start → stream end, excluding
+   * tool execution time (see `decodeMs`). Present whenever a clock was
+   * available, even if no first token was seen (in which case
+   * `ttftMs`/`decodeMs` are absent). When a first token was seen,
    * `genTotalMs === ttftMs + decodeMs`.
    */
   readonly genTotalMs?: number;

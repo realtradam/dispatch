@@ -39,7 +39,17 @@ import {
 import { reconcileWithReport } from "./reconcile.js";
 
 export interface ConversationStore {
-  readonly append: (conversationId: string, messages: readonly ChatMessage[]) => Promise<void>;
+  /**
+   * Append messages to the log. `opts.turnId` stamps every appended chunk with
+   * the turn that produced it (returned as `StoredChunk.turnId` by
+   * `loadSince`) — the join key a client uses to place per-turn metrics.
+   * Omit for content written outside a turn.
+   */
+  readonly append: (
+    conversationId: string,
+    messages: readonly ChatMessage[],
+    opts?: { readonly turnId?: string },
+  ) => Promise<void>;
   readonly load: (conversationId: string) => Promise<ChatMessage[]>;
   /**
    * Read the conversation's persisted chunks as a SELECTION + optional WINDOW,
@@ -417,6 +427,8 @@ interface PersistedChunkEntry {
   readonly role: Role;
   readonly msgIdx: number;
   readonly chunkIdx: number;
+  /** The producing turn (absent on legacy rows / out-of-turn writes). */
+  readonly turnId?: string;
 }
 
 /**
@@ -740,36 +752,61 @@ export function createConversationStore(
     await storage.set(workspaceKey(workspaceId), JSON.stringify(row));
   }
 
-  return {
-    async append(conversationId, messages) {
-      const raw = await storage.get(seqKey(conversationId));
-      let seq = parseSeq(raw) + 1;
+  /**
+   * The shared append writer: persists `messages` as seq-numbered chunk rows
+   * (msgIdx/chunkIdx per message, local to this call) and upserts metadata.
+   * `turnIdOf(flatIdx)` resolves the producing turn of the flatIdx-th chunk
+   * (flattened across all messages, in order) — `undefined` = none.
+   */
+  async function appendChunks(
+    conversationId: string,
+    messages: readonly ChatMessage[],
+    turnIdOf: (flatIdx: number) => string | undefined,
+  ): Promise<void> {
+    const raw = await storage.get(seqKey(conversationId));
+    let seq = parseSeq(raw) + 1;
+    let flat = 0;
 
-      for (let msgIdx = 0; msgIdx < messages.length; msgIdx++) {
-        const msg = messages[msgIdx];
-        if (msg === undefined) continue;
-        for (let chunkIdx = 0; chunkIdx < msg.chunks.length; chunkIdx++) {
-          const chunk = msg.chunks[chunkIdx];
-          if (chunk === undefined) continue;
-          const entry: PersistedChunkEntry = {
-            chunk,
-            role: msg.role,
-            msgIdx,
-            chunkIdx,
-          };
-          await storage.set(chunkKey(conversationId, seq), JSON.stringify(entry));
-          seq++;
-        }
+    for (let msgIdx = 0; msgIdx < messages.length; msgIdx++) {
+      const msg = messages[msgIdx];
+      if (msg === undefined) continue;
+      for (let chunkIdx = 0; chunkIdx < msg.chunks.length; chunkIdx++) {
+        const chunk = msg.chunks[chunkIdx];
+        const flatIdx = flat++;
+        if (chunk === undefined) continue;
+        const turnId = turnIdOf(flatIdx);
+        const entry: PersistedChunkEntry = {
+          chunk,
+          role: msg.role,
+          msgIdx,
+          chunkIdx,
+          ...(turnId !== undefined ? { turnId } : {}),
+        };
+        await storage.set(chunkKey(conversationId, seq), JSON.stringify(entry));
+        seq++;
       }
+    }
 
-      await storage.set(seqKey(conversationId), String(seq - 1));
+    await storage.set(seqKey(conversationId), String(seq - 1));
 
-      // Metadata upsert: track createdAt/lastActivityAt/title and keep the
-      // conversation discoverable in the index.
-      const ts = now();
-      let conversationWorkspaceId = DEFAULT_WORKSPACE_ID;
-      const metaRaw = await storage.get(metaKey(conversationId));
-      if (metaRaw === null) {
+    // Metadata upsert: track createdAt/lastActivityAt/title and keep the
+    // conversation discoverable in the index.
+    const ts = now();
+    let conversationWorkspaceId = DEFAULT_WORKSPACE_ID;
+    const metaRaw = await storage.get(metaKey(conversationId));
+    if (metaRaw === null) {
+      const row: ConversationMetaRow = {
+        createdAt: ts,
+        lastActivityAt: ts,
+        title: extractTitle(messages),
+        status: "idle",
+      };
+      await storage.set(metaKey(conversationId), JSON.stringify(row));
+      await ensureInIndex(conversationId);
+    } else {
+      const existing = parseMetaRow(metaRaw);
+      if (existing === null) {
+        // Corrupt row — rewrite from scratch using this append.
         const row: ConversationMetaRow = {
           createdAt: ts,
           lastActivityAt: ts,
@@ -779,38 +816,32 @@ export function createConversationStore(
         await storage.set(metaKey(conversationId), JSON.stringify(row));
         await ensureInIndex(conversationId);
       } else {
-        const existing = parseMetaRow(metaRaw);
-        if (existing === null) {
-          // Corrupt row — rewrite from scratch using this append.
-          const row: ConversationMetaRow = {
-            createdAt: ts,
-            lastActivityAt: ts,
-            title: extractTitle(messages),
-            status: "idle",
-          };
-          await storage.set(metaKey(conversationId), JSON.stringify(row));
-          await ensureInIndex(conversationId);
-        } else {
-          conversationWorkspaceId = existing.workspaceId ?? DEFAULT_WORKSPACE_ID;
-          const title =
-            existing.title === "Untitled" || existing.title === ""
-              ? extractTitle(messages)
-              : existing.title;
-          const row: ConversationMetaRow = {
-            createdAt: existing.createdAt,
-            lastActivityAt: ts,
-            title,
-            status: existing.status,
-            ...(existing.compactedFrom !== undefined
-              ? { compactedFrom: existing.compactedFrom }
-              : {}),
-            ...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
-          };
-          await storage.set(metaKey(conversationId), JSON.stringify(row));
-        }
+        conversationWorkspaceId = existing.workspaceId ?? DEFAULT_WORKSPACE_ID;
+        const title =
+          existing.title === "Untitled" || existing.title === ""
+            ? extractTitle(messages)
+            : existing.title;
+        const row: ConversationMetaRow = {
+          createdAt: existing.createdAt,
+          lastActivityAt: ts,
+          title,
+          status: existing.status,
+          ...(existing.compactedFrom !== undefined
+            ? { compactedFrom: existing.compactedFrom }
+            : {}),
+          ...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
+        };
+        await storage.set(metaKey(conversationId), JSON.stringify(row));
       }
-      // Bump the owning workspace's lastActivityAt to this append's time.
-      await bumpWorkspaceLastActivityAt(conversationWorkspaceId, ts);
+    }
+    // Bump the owning workspace's lastActivityAt to this append's time.
+    await bumpWorkspaceLastActivityAt(conversationWorkspaceId, ts);
+  }
+
+  return {
+    async append(conversationId, messages, opts) {
+      const turnId = opts?.turnId;
+      await appendChunks(conversationId, messages, () => turnId);
     },
 
     async load(conversationId) {
@@ -906,7 +937,11 @@ export function createConversationStore(
         const value = await storage.get(key);
         if (value === null) continue;
         const entry = JSON.parse(value) as PersistedChunkEntry;
-        result.push({ seq, role: entry.role, chunk: entry.chunk });
+        result.push(
+          typeof entry.turnId === "string"
+            ? { seq, role: entry.role, chunk: entry.chunk, turnId: entry.turnId }
+            : { seq, role: entry.role, chunk: entry.chunk },
+        );
       }
 
       // Window: keep only the NEWEST `limit` chunks, still ascending by seq.
@@ -1334,16 +1369,44 @@ export function createConversationStore(
     },
 
     async replaceHistory(conversationId, messages) {
-      // Delete all existing chunks.
       const keys = await storage.keys(chunkPrefix(conversationId));
+
+      // Carry each kept chunk's `turnId` over. Compaction keeps a verbatim
+      // recent TAIL of the old history ([summary, ...recent]); align the new
+      // chunk list against the old one from the END and copy the turnId while
+      // role + content match exactly (the summary never matches, so the walk
+      // stops there). Keeps per-turn metrics placement exact after compaction.
+      const oldEntries: PersistedChunkEntry[] = [];
+      for (const k of [...keys].sort()) {
+        const value = await storage.get(k);
+        if (value === null) continue;
+        try {
+          oldEntries.push(JSON.parse(value) as PersistedChunkEntry);
+        } catch {
+          // Corrupt row — cannot match; ignore.
+        }
+      }
+      const flat: { readonly role: Role; readonly chunk: Chunk }[] = [];
+      for (const m of messages) for (const chunk of m.chunks) flat.push({ role: m.role, chunk });
+      const turnIds: (string | undefined)[] = flat.map(() => undefined);
+      for (let i = flat.length - 1, j = oldEntries.length - 1; i >= 0 && j >= 0; i--, j--) {
+        const n = flat[i];
+        const o = oldEntries[j];
+        if (n === undefined || o === undefined) break;
+        if (n.role !== o.role || JSON.stringify(n.chunk) !== JSON.stringify(o.chunk)) break;
+        turnIds[i] = o.turnId;
+      }
+
+      // Delete all existing chunks.
       for (const k of keys) {
         await storage.delete(k);
       }
       // Reset the seq counter so the new messages start from seq 1.
       await storage.set(seqKey(conversationId), "0");
-      // Append the new messages (re-uses the append logic for seq
-      // numbering + metadata upsert).
-      await this.append(conversationId, messages);
+      // Append the new messages (re-uses the append logic for seq numbering +
+      // metadata upsert) in ONE call so msgIdx-based message boundaries are
+      // unchanged; each kept chunk keeps its producing turn.
+      await appendChunks(conversationId, messages, (flatIdx) => turnIds[flatIdx]);
     },
 
     async forkHistory(sourceId, targetId) {

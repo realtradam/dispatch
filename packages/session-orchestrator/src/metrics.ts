@@ -22,6 +22,8 @@ interface StepAccumulator {
 export interface MetricsAccumulator {
   readonly ingest: (event: AgentEvent) => void;
   readonly build: (turnId: string) => TurnMetrics;
+  /** True once any step has been seen (a usage or step-complete event). */
+  readonly hasSteps: () => boolean;
   readonly reset: () => void;
 }
 
@@ -130,7 +132,11 @@ export function createMetricsAccumulator(): MetricsAccumulator {
     doneReason = undefined;
   }
 
-  return { ingest, build, reset };
+  function hasSteps(): boolean {
+    return stepOrder.length > 0;
+  }
+
+  return { ingest, build, hasSteps, reset };
 }
 
 function sumStepUsage(steps: readonly StepMetrics[]): Usage {

@@ -817,6 +817,78 @@ describe("turn-sealed event", () => {
     expect(ordering).toEqual(["append", "append", "appendMetrics", "turn-sealed"]);
   });
 
+  it("stamps every persisted chunk of a turn with that turn's id", async () => {
+    const store = createInMemoryStore();
+    const turnIds: (string | undefined)[] = [];
+    const wrappedStore: ConversationStore = {
+      ...store,
+      async append(conversationId, messages, opts) {
+        for (const m of messages) for (const _ of m.chunks) turnIds.push(opts?.turnId);
+        await store.append(conversationId, messages, opts);
+      },
+    };
+    const provider = createFakeProvider([
+      [
+        { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+        { type: "finish", reason: "tool-calls" },
+      ],
+      [
+        { type: "text-delta", delta: "done" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: wrappedStore,
+      resolveProvider: () => provider,
+      resolveTools: () => [createFakeTool("echo")],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const { events, onEvent } = collectEvents();
+    await orchestrator.handleMessage({ conversationId: "conv-tid", text: "go", onEvent });
+    const turnId = events.find((e) => e.type === "turn-start")?.turnId;
+    expect(turnId).toBeDefined();
+    // user msg + tool-call + tool-result + final text
+    expect(turnIds.length).toBeGreaterThanOrEqual(4);
+    expect(turnIds.every((t) => t === turnId)).toBe(true);
+  });
+
+  it("persists the metrics a turn accumulated even when the turn throws", async () => {
+    const store = createInMemoryStore();
+    let appends = 0;
+    const wrappedStore: ConversationStore = {
+      ...store,
+      async append(conversationId, messages, opts) {
+        appends++;
+        // user message persists; the first step's persistence fails
+        if (appends === 2) throw new Error("storage failure");
+        await store.append(conversationId, messages, opts);
+      },
+    };
+    const provider = createFakeProvider([
+      [
+        { type: "text-delta", delta: "ok" },
+        { type: "usage", usage: { inputTokens: 10, outputTokens: 2 } },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: wrappedStore,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const { events, onEvent } = collectEvents();
+    await orchestrator.handleMessage({ conversationId: "conv-err-m", text: "go", onEvent });
+    expect(events.some((e) => e.type === "error")).toBe(true);
+    const turnId = events.find((e) => e.type === "turn-start")?.turnId;
+    const metrics = await store.loadMetrics("conv-err-m");
+    expect(metrics).toHaveLength(1);
+    expect(metrics[0]?.turnId).toBe(turnId);
+    expect(metrics[0]?.steps[0]?.usage.outputTokens).toBe(2);
+  });
+
   it("does not emit turn-sealed when append throws — emits error event instead", async () => {
     const provider = createFakeProvider([
       [

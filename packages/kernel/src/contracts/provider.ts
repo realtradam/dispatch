@@ -22,6 +22,7 @@ export type ProviderEvent =
   | TextDeltaEvent
   | ReasoningDeltaEvent
   | ProviderToolCallEvent
+  | ToolCallStartEvent
   | UsageEvent
   | FinishEvent
   | ProviderErrorEvent;
@@ -47,6 +48,19 @@ export interface ProviderToolCallEvent {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly input: unknown;
+}
+
+/**
+ * The model has STARTED streaming a tool call (its name / first argument
+ * bytes arrived). Timing-only: carries no content and produces no chunk or
+ * outward event — the complete call still arrives as a `tool-call` event.
+ * Lets the runtime mark a step's first output token when the step's output is
+ * tool calls only (providers that buffer a call until the step finishes would
+ * otherwise report no time-to-first-token / decode time for such a step).
+ * Optional for providers: one that never emits it just loses that precision.
+ */
+export interface ToolCallStartEvent {
+  readonly type: "tool-call-start";
 }
 
 /** Token usage report, typically emitted at step end. */

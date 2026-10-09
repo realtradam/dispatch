@@ -30,6 +30,7 @@ describe("parseSSELines", () => {
 
     const events = parseSSELines(lines);
     expect(events).toEqual([
+      { type: "tool-call-start" },
       {
         type: "tool-call",
         toolCallId: "call_abc",
@@ -52,6 +53,8 @@ describe("parseSSELines", () => {
 
     const events = parseSSELines(lines);
     expect(events).toEqual([
+      { type: "tool-call-start" },
+      { type: "tool-call-start" },
       { type: "tool-call", toolCallId: "call_1", toolName: "read_file", input: { path: "a.ts" } },
       { type: "tool-call", toolCallId: "call_2", toolName: "read_file", input: { path: "b.ts" } },
       { type: "finish", reason: "tool_calls" },
@@ -261,6 +264,7 @@ describe("parseSSELines", () => {
     const events = parseSSELines(lines);
     expect(events).toEqual([
       { type: "text-delta", delta: "Let me check." },
+      { type: "tool-call-start" },
       {
         type: "tool-call",
         toolCallId: "call_xyz",
@@ -289,6 +293,7 @@ describe("parseSSELines", () => {
 
     const events = parseSSELines(lines);
     expect(events).toEqual([
+      { type: "tool-call-start" },
       { type: "tool-call", toolCallId: "call_bad", toolName: "foo", input: "not-json" },
       { type: "finish", reason: "tool_calls" },
     ]);

@@ -818,6 +818,12 @@ export function createSessionOrchestrator(
 
     void (async () => {
       let sealed = false;
+      // Per-turn metrics accumulator. Hoisted out of the try so a turn that
+      // THROWS (e.g. a store failure mid-turn) still persists the metrics it
+      // accumulated — every turn that produced steps gets a metrics row, so
+      // client-side turn placement / numbering never has a hole.
+      const metrics = createMetricsAccumulator();
+      let metricsPersisted = false;
       try {
         const [effectiveCwd, effectiveComputerId, storedEffort, isNewConversation, storedModel] =
           await Promise.all([
@@ -1011,8 +1017,6 @@ export function createSessionOrchestrator(
         const assembled = applyToolPolicy(gated, policy);
         const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
         const turnLogger = deps.logger?.child({ conversationId, turnId });
-        const metrics = createMetricsAccumulator();
-
         const emitAndAccumulate = (event: AgentEvent): void => {
           metrics.ingest(event);
           emitToHub(conversationId, event);
@@ -1111,7 +1115,7 @@ export function createSessionOrchestrator(
                 // `await` it (the kernel awaits drainSteering). Errors
                 // propagate (a DB failure ends the turn, matching
                 // `onStepComplete`'s behavior).
-                await deps.conversationStore.append(conversationId, [steeringMessage]);
+                await deps.conversationStore.append(conversationId, [steeringMessage], { turnId });
                 emitToHub(conversationId, {
                   type: "steering",
                   conversationId,
@@ -1255,7 +1259,7 @@ export function createSessionOrchestrator(
         // Persist the user message at turn start so it has a seq
         // number before the first step generates. This enables the
         // FE to syncTail during generation (CR-6).
-        await deps.conversationStore.append(conversationId, [userMsg]);
+        await deps.conversationStore.append(conversationId, [userMsg], { turnId });
 
         // Per-turn memory telemetry: capture a sample immediately BEFORE the
         // stream starts. Paired with the post-stream sample below, this
@@ -1277,7 +1281,7 @@ export function createSessionOrchestrator(
           // generation, so the FE can GET /conversations/:id?sinceSeq=N
           // mid-turn and pick up committed chunks (CR-6).
           onStepComplete: async (stepMessages) => {
-            await deps.conversationStore.append(conversationId, stepMessages);
+            await deps.conversationStore.append(conversationId, stepMessages, { turnId });
             stepsPersisted = true;
           },
         });
@@ -1302,15 +1306,28 @@ export function createSessionOrchestrator(
         // Fallback: if onStepComplete was never called (e.g., a fake
         // runTurn in tests), persist all result messages as a batch.
         if (!stepsPersisted && result.messages.length > 0) {
-          await deps.conversationStore.append(conversationId, result.messages);
+          await deps.conversationStore.append(conversationId, result.messages, { turnId });
         }
 
         const turnMetrics = metrics.build(turnId);
+        metricsPersisted = true;
         await deps.conversationStore.appendMetrics(conversationId, turnMetrics);
 
         emitToHub(conversationId, { type: "turn-sealed", conversationId, turnId });
         sealed = true;
       } catch (err) {
+        // Persist whatever metrics the failed turn accumulated (steps that
+        // ran before the failure), so its row exists like any other turn's.
+        // Best-effort: a store that is failing may fail again — never mask
+        // the original error.
+        if (!metricsPersisted && metrics.hasSteps()) {
+          metricsPersisted = true;
+          try {
+            await deps.conversationStore.appendMetrics(conversationId, metrics.build(turnId));
+          } catch {
+            // Swallow — the turn's own error is what gets reported.
+          }
+        }
         // A deliberate stop aborts the turn. The kernel already sealed a single
         // `done("aborted")` event (its terminal). Do NOT emit an additional
         // `error` — the client would see both an error and the aborted done
