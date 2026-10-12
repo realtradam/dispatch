@@ -68,6 +68,9 @@
       "path": "./packages/provider-hyper"
     },
     {
+      "path": "./packages/provider-baseten"
+    },
+    {
       "path": "./packages/provider-openrouter"
     },
     {

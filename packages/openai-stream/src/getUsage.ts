@@ -25,6 +25,12 @@ export interface GetUsageConfig {
   readonly apiKey: string;
   readonly fetchFn?: FetchLike;
   readonly providerId: string;
+  /**
+   * Authorization scheme prefix sent as `Authorization: <authScheme> <apiKey>`.
+   * Default (absent): `"Bearer"`. Providers with a non-standard scheme (e.g.
+   * Baseten's `Api-Key`) override it. Generic — the library names no feature.
+   */
+  readonly authScheme?: string;
 }
 
 /**
@@ -44,7 +50,7 @@ export async function getUsage(config: GetUsageConfig): Promise<ProviderUsage | 
     response = await effectiveFetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: `${config.authScheme ?? "Bearer"} ${config.apiKey}`,
       },
     });
   } catch {

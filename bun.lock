@@ -113,6 +113,7 @@
         "@dispatch/message-queue": "workspace:*",
         "@dispatch/named-agents": "workspace:*",
         "@dispatch/plugin-manager": "workspace:*",
+        "@dispatch/provider-baseten": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/provider-hyper": "workspace:*",
         "@dispatch/provider-longcat": "workspace:*",
@@ -290,6 +291,14 @@
         "@dispatch/plugin-scaffold": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
         "@dispatch/workspace-plugin-config": "workspace:*",
+      },
+    },
+    "packages/provider-baseten": {
+      "name": "@dispatch/provider-baseten",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/openai-stream": "workspace:*",
       },
     },
     "packages/provider-concurrency": {
@@ -565,7 +574,7 @@
     },
     "packages/wire": {
       "name": "@dispatch/wire",
-      "version": "0.12.0",
+      "version": "0.13.0",
     },
     "packages/workspace-plugin-config": {
       "name": "@dispatch/workspace-plugin-config",
@@ -646,6 +655,8 @@
     "@dispatch/plugin-scaffold": ["@dispatch/plugin-scaffold@workspace:packages/plugin-scaffold"],
 
     "@dispatch/plugin-verify": ["@dispatch/plugin-verify@workspace:packages/plugin-verify"],
+
+    "@dispatch/provider-baseten": ["@dispatch/provider-baseten@workspace:packages/provider-baseten"],
 
     "@dispatch/provider-concurrency": ["@dispatch/provider-concurrency@workspace:packages/provider-concurrency"],
 

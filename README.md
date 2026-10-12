@@ -48,6 +48,11 @@ bun install
    HYPER_API_KEY=sk-hyper-...                      # if set, the "hyper" provider is registered
    # HYPER_BASE_URL=https://hyper.charm.land/v1     # optional override (default shown)
    # HYPER_MODEL=deepseek-v4-flash                  # optional default model override
+
+   # Optional — Baseten Model APIs (https://baseten.co) — auth is `Authorization: Api-Key <key>`
+   BASETEN_API_KEY=...                             # if set, the "baseten" provider is registered
+   # BASETEN_BASE_URL=https://inference.baseten.co/v1  # optional override (default shown)
+   # BASETEN_MODEL=deepseek-ai/DeepSeek-V4.1-Flash-Fast # optional default model override
    ```
 
 2. **Boot the server:**
@@ -118,6 +123,13 @@ Hyper key (`HYPER_API_KEY` -> the `hyper` provider + credential) use:
 ```sh
 sudo bin/sync-env --hyper-key "$HYPER_API_KEY"   # add / replace (never echoes the value)
 sudo bin/sync-env --hyper-key ""                 # remove / disable
+```
+
+The Baseten key (`BASETEN_API_KEY` -> the `baseten` provider + credential) works the same way:
+
+```sh
+sudo bin/sync-env --baseten-key "$BASETEN_API_KEY"   # add / replace (never echoes the value)
+sudo bin/sync-env --baseten-key ""                   # remove / disable
 ```
 
 ---
@@ -292,6 +304,7 @@ topologically at activation). Every extension also depends implicitly on the ker
 | **provider-umans** | Umans OpenAI-compatible provider (`api.code.umans.ai`); self-contained (reads `UMANS_API_KEY` from env). | — |
 | **provider-longcat** | LongCat OpenAI-compatible provider (`api.longcat.chat`, model `LongCat-2.0`, text-only); self-contained (reads `LONGCAT_API_KEY` from env). | — |
 | **provider-hyper** | Hyper OpenAI-compatible provider (`https://hyper.charm.land/v1`, models from live `GET /models`); self-contained (reads `HYPER_API_KEY` from env). Omits `getUsage` — Hyper documents `/v1/credits`, not the `concurrent_sessions` shape. | — |
+| **provider-baseten** | Baseten Model APIs OpenAI-compatible provider (`https://inference.baseten.co/v1`, default model `deepseek-ai/DeepSeek-V4.1-Flash-Fast`, override via `BASETEN_MODEL` / `provider.baseten.model`); self-contained (reads `BASETEN_API_KEY` from env). Authenticates with `Authorization: Api-Key <key>` (via `openai-stream`'s `authScheme`), omits `getUsage`. | — |
 | **surface-registry** | In-process registry where extensions contribute UI **surfaces** (frontend-agnostic data); exposes a typed `surfaceRegistryHandle` service. | — |
 | **transport-ws** | WebSocket transport serving the surface catalog + per-surface subscribe / update / invoke to clients. | surface-registry |
 | **surface-loaded-extensions** | Contributes the live "Loaded Extensions" surface (a `stat` per activated extension). | surface-registry |
@@ -306,7 +319,7 @@ The **Depends on** column is each package's `@dispatch/*` workspace dependencies
 | **wire** | Types-only wire ABI (`AgentEvent` + conversation model + `Usage`); kernel + transport-contract re-export it so clients consume the wire without the kernel runtime. | — |
 | **transport-contract** | Types-only description of the full HTTP API shared by the server and every client. | wire, kernel |
 | **ui-contract** | Types-only, **frontend-agnostic** vocabulary for backend-declared **surfaces** (`SurfaceSpec`, field kinds, the surface WS protocol). | — |
-| **openai-stream** | Generic OpenAI-compatible stream/convert/listModels library extracted from `provider-openai-compat` (shared by `provider-umans`, `provider-longcat`, and `provider-hyper`). Parses explicit `capabilities.vision` as authoritative model vision, with a name heuristic fallback; `createOpenAICompatProvider` supports a `getUsage: false` opt-out. | wire |
+| **openai-stream** | Generic OpenAI-compatible stream/convert/listModels library extracted from `provider-openai-compat` (shared by `provider-umans`, `provider-longcat`, `provider-hyper`, and `provider-baseten`). Parses explicit `capabilities.vision` as authoritative model vision, with a name heuristic fallback; `createOpenAICompatProvider` supports a `getUsage: false` opt-out and a custom `authScheme` (default `Bearer`). | wire |
 | **cli** | The bundled one-shot terminal client documented above. | transport-contract |
 | **host-bin** | The composition root: loads config, activates all extensions through the host, serves HTTP, and supervises the observability collector. | kernel, all extensions, journal-sink |
 | **journal-sink** | Bootstrap `LogSink` that appends structured logs/spans to an NDJSON journal (rotation, fail-safe). | kernel |

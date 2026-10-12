@@ -192,3 +192,60 @@ describe("transformBody", () => {
     expect("reasoning_effort" in wireBody).toBe(false);
   });
 });
+
+describe("authScheme", () => {
+  function headerOf(init: RequestInit | undefined): string | undefined {
+    return (init?.headers as Record<string, string> | undefined)?.Authorization;
+  }
+
+  it("defaults to `Bearer <key>` on stream, listModels and getUsage", async () => {
+    const seen: (string | undefined)[] = [];
+    const fetchFn = vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      seen.push(headerOf(init));
+      if (String(url).endsWith("/chat/completions")) {
+        return Promise.resolve(okSseResponse());
+      }
+      return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    }) as unknown as FetchLike;
+    const provider = createOpenAICompatProvider({
+      credentials: makeCreds(),
+      model: "test-model",
+      id: "p",
+      fetchFn,
+    });
+    await collectEvents(provider.stream(makeMessages(), []));
+    await provider.listModels?.();
+    await provider.getUsage?.();
+    expect(seen).toEqual([
+      "Bearer sk-test-1234567890abcdef",
+      "Bearer sk-test-1234567890abcdef",
+      "Bearer sk-test-1234567890abcdef",
+    ]);
+  });
+
+  it("custom authScheme sends `<scheme> <key>` on stream, listModels and getUsage", async () => {
+    const seen: (string | undefined)[] = [];
+    const fetchFn = vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      seen.push(headerOf(init));
+      if (String(url).endsWith("/chat/completions")) {
+        return Promise.resolve(okSseResponse());
+      }
+      return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    }) as unknown as FetchLike;
+    const provider = createOpenAICompatProvider({
+      credentials: makeCreds(),
+      model: "test-model",
+      id: "p",
+      fetchFn,
+      authScheme: "Api-Key",
+    });
+    await collectEvents(provider.stream(makeMessages(), []));
+    await provider.listModels?.();
+    await provider.getUsage?.();
+    expect(seen).toEqual([
+      "Api-Key sk-test-1234567890abcdef",
+      "Api-Key sk-test-1234567890abcdef",
+      "Api-Key sk-test-1234567890abcdef",
+    ]);
+  });
+});

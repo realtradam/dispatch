@@ -45,6 +45,12 @@ export interface StreamConfig {
    * provider's body-size cap instead of being rejected with HTTP 400.
    */
   readonly maxBodyBytes?: number;
+  /**
+   * Authorization scheme prefix sent as `Authorization: <authScheme> <apiKey>`.
+   * Default (absent): `"Bearer"`. Providers with a non-standard scheme (e.g.
+   * Baseten's `Api-Key`) override it. Generic — the library names no feature.
+   */
+  readonly authScheme?: string;
 }
 
 /**
@@ -122,6 +128,7 @@ export async function* streamChat(
     return;
   }
 
+  const authScheme = config.authScheme ?? "Bearer";
   let reqSpan: Span | undefined;
   let totalInputTokens: number | undefined;
   let totalOutputTokens: number | undefined;
@@ -137,7 +144,7 @@ export async function* streamChat(
         url,
         "request.method": "POST",
         "request.cache_control_present": hasCacheBreakpoint,
-        "request.headers.authorization": `Bearer ${maskSecret(config.apiKey)}`,
+        "request.headers.authorization": `${authScheme} ${maskSecret(config.apiKey)}`,
       };
       if (eviction !== null && eviction.imagesEvicted > 0) {
         spanAttrs["request.images_evicted"] = eviction.imagesEvicted;
@@ -162,8 +169,10 @@ export async function* streamChat(
           const redactedHeaders: Record<string, string> = {};
           for (const [key, value] of Object.entries(fx.request.headers)) {
             if (key.toLowerCase() === "authorization") {
-              const token = value.replace(/^Bearer\s+/i, "");
-              redactedHeaders[key] = `Bearer ${maskSecret(token)}`;
+              const token = value.startsWith(`${authScheme} `)
+                ? value.slice(authScheme.length + 1)
+                : value.replace(/^Bearer\s+/i, "");
+              redactedHeaders[key] = `${authScheme} ${maskSecret(token)}`;
             } else {
               redactedHeaders[key] = value;
             }
@@ -189,7 +198,7 @@ export async function* streamChat(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: `${authScheme} ${config.apiKey}`,
       },
       body: bodyString,
       ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),

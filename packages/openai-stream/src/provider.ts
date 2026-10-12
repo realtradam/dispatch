@@ -60,6 +60,12 @@ export interface CreateOpenAICompatProviderOpts {
    * preserving current behavior.
    */
   readonly getUsage?: boolean;
+  /**
+   * Authorization scheme prefix sent as `Authorization: <authScheme> <apiKey>`.
+   * Default (absent): `"Bearer"`. Providers with a non-standard scheme (e.g.
+   * Baseten's `Api-Key`) override it. Generic — the library names no feature.
+   */
+  readonly authScheme?: string;
 }
 
 export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts): ProviderContract {
@@ -67,6 +73,8 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
   const apiKey = opts.credentials.apiKey;
   const fetchFn = opts.fetchFn;
   const transformBody = opts.transformBody;
+  const authScheme = opts.authScheme;
+  const authOpt = authScheme !== undefined ? { authScheme } : {};
 
   const streamConfig = {
     baseURL,
@@ -74,6 +82,7 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
     model: opts.model,
     ...(fetchFn !== undefined ? { fetchFn } : {}),
     ...(transformBody !== undefined ? { transformBody } : {}),
+    ...authOpt,
   };
 
   return {
@@ -91,6 +100,7 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
             apiKey,
             providerId: opts.id,
             ...(fetchFn !== undefined ? { fetchFn } : {}),
+            ...authOpt,
           }),
     ...(opts.getUsage !== false
       ? {
@@ -100,6 +110,7 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
               apiKey,
               providerId: opts.id,
               ...(fetchFn !== undefined ? { fetchFn } : {}),
+              ...authOpt,
             }),
         }
       : {}),

@@ -204,6 +204,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     credentials.push({ name: "openrouter", providerId: "openrouter" });
     logger.info(`Registered credential "openrouter" → openrouter provider`);
   }
+  if (process.env.BASETEN_API_KEY) {
+    credentials.push({ name: "baseten", providerId: "baseten" });
+    logger.info(`Registered credential "baseten" → baseten provider`);
+  }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),
   );

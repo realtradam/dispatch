@@ -53,6 +53,7 @@ describe("bundled extension set (de-curated, plan 02)", () => {
     expect(tierById.get("provider-longcat")).toBe("providers");
     expect(tierById.get("provider-hyper")).toBe("providers");
     expect(tierById.get("provider-openrouter")).toBe("providers");
+    expect(tierById.get("provider-baseten")).toBe("providers");
     expect(tierById.get("provider-openai-compat")).toBe("providers");
   });
 

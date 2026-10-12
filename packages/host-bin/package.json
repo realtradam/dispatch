@@ -22,6 +22,7 @@
     "@dispatch/named-agents": "workspace:*",
     "@dispatch/plugin-manager": "workspace:*",
     "@dispatch/provider-concurrency": "workspace:*",
+    "@dispatch/provider-baseten": "workspace:*",
     "@dispatch/provider-hyper": "workspace:*",
     "@dispatch/provider-longcat": "workspace:*",
     "@dispatch/provider-openai-compat": "workspace:*",

@@ -172,7 +172,7 @@ export async function listUmansModels(config: ListModelsConfig): Promise<readonl
     response = await effectiveFetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: `${config.authScheme ?? "Bearer"} ${config.apiKey}`,
       },
     });
   } catch (err) {
@@ -201,6 +201,12 @@ export interface ListModelsConfig {
   readonly apiKey: string;
   readonly fetchFn?: FetchLike;
   readonly providerId: string;
+  /**
+   * Authorization scheme prefix sent as `Authorization: <authScheme> <apiKey>`.
+   * Default (absent): `"Bearer"`. Providers with a non-standard scheme (e.g.
+   * Baseten's `Api-Key`) override it. Generic — the library names no feature.
+   */
+  readonly authScheme?: string;
 }
 
 export async function listModels(config: ListModelsConfig): Promise<readonly ModelInfo[]> {
@@ -212,7 +218,7 @@ export async function listModels(config: ListModelsConfig): Promise<readonly Mod
     response = await effectiveFetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: `${config.authScheme ?? "Bearer"} ${config.apiKey}`,
       },
     });
   } catch (err) {

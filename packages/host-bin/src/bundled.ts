@@ -31,6 +31,7 @@ import { extension as mcpExt } from "@dispatch/mcp";
 import { extension as messageQueueExt } from "@dispatch/message-queue";
 import { extension as namedAgentsExt } from "@dispatch/named-agents";
 import { extension as pluginManagerExt } from "@dispatch/plugin-manager";
+import { extension as providerBasetenExt } from "@dispatch/provider-baseten";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
 import { extension as providerHyperExt } from "@dispatch/provider-hyper";
 import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
@@ -102,6 +103,7 @@ export function createBundledExtensions(creds: {
     providerLongcatExt,
     providerHyperExt,
     providerOpenRouterExt,
+    providerBasetenExt,
     // Always loaded — with no numbered credentials configured it
     // self-degrades (registers nothing; OpenCode unavailable).
     providerOpenaiCompatExt,
