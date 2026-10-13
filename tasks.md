@@ -72,5 +72,11 @@ Backend verification: typecheck clean; 3145 Vitest tests passed / 6 skipped;
 144 Bun tests passed; Biome clean. Wire/kernel dist built for Claude.
 HTTP history strips opaque fields without mutating stored/provider-facing history.
 Compaction and other prefix rewrites retain bytes but require provider validity fallback.
-- [ ] Claude SSE capture, ordered replay, prefix-mismatch fallback, documentation.
-- [ ] Verify Claude and commit. No merge/push/server restart or symlinked checkout edits.
+- [x] Claude SSE capture, ordered replay, prefix-mismatch fallback, documentation.
+- [x] Verify Claude and commit (`3db10a5`). No merge/push/server restart or symlinked checkout edits.
+
+Claude verification against rebuilt backend dist: typecheck clean; 165 tests
+passed (114 provider tests); Biome clean. Independent integration reviews found
+no blocking signature-feature bugs. Decisions and request-local recovery's
+non-durable exclusion limitation are recorded in provider `THINKING.md`.
+No live API probe was performed; no real credentials were read for validation.
