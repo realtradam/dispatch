@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatMessage, ImageChunk, ImageInput } from "../contracts/conversation.js";
+import type { ChatMessage, Chunk, ImageChunk, ImageInput } from "../contracts/conversation.js";
 import type { AgentEvent } from "../contracts/events.js";
 import type { LogDeps, Logger, LogRecord, LogSink } from "../contracts/logging.js";
 import type { ProviderContract, ProviderEvent } from "../contracts/provider.js";
@@ -150,6 +150,328 @@ describe("runTurn", () => {
       "step-complete",
       "done",
     ]);
+  });
+
+  describe("reasoning block boundaries", () => {
+    it.each<{ name: string; script: ProviderEvent[]; chunks: Chunk[] }>([
+      {
+        name: "signed block retains verbatim text and opaque signature",
+        script: [
+          { type: "reasoning-delta", delta: "  first\n" },
+          { type: "reasoning-delta", delta: "second  " },
+          { type: "reasoning-end", signature: "opaque-signature\n==" },
+        ],
+        chunks: [
+          { type: "thinking", text: "  first\nsecond  ", signature: "opaque-signature\n==" },
+        ],
+      },
+      {
+        name: "consecutive signed blocks remain separate",
+        script: [
+          { type: "reasoning-delta", delta: "first" },
+          { type: "reasoning-end", signature: "sig-1" },
+          { type: "reasoning-delta", delta: "second" },
+          { type: "reasoning-end", signature: "sig-2" },
+        ],
+        chunks: [
+          { type: "thinking", text: "first", signature: "sig-1" },
+          { type: "thinking", text: "second", signature: "sig-2" },
+        ],
+      },
+      {
+        name: "unsigned end closes a block without persisted closure fields",
+        script: [
+          { type: "reasoning-delta", delta: "first" },
+          { type: "reasoning-end" },
+          { type: "reasoning-delta", delta: "second" },
+          { type: "reasoning-delta", delta: " rest" },
+        ],
+        chunks: [
+          { type: "thinking", text: "first" },
+          { type: "thinking", text: "second rest" },
+        ],
+      },
+      {
+        name: "redacted-only blocks retain opaque data and order",
+        script: [
+          { type: "reasoning-end", redactedData: "opaque-data\n==" },
+          { type: "reasoning-end", redactedData: "next-data" },
+          { type: "reasoning-delta", delta: "visible" },
+          { type: "reasoning-end", signature: "sig" },
+        ],
+        chunks: [
+          { type: "thinking", text: "", redactedData: "opaque-data\n==" },
+          { type: "thinking", text: "", redactedData: "next-data" },
+          { type: "thinking", text: "visible", signature: "sig" },
+        ],
+      },
+      {
+        name: "empty blocks with and without deltas survive closure",
+        script: [
+          { type: "reasoning-delta", delta: "" },
+          { type: "reasoning-end", signature: "" },
+          { type: "reasoning-end", signature: "omitted-display" },
+          { type: "reasoning-end" },
+          { type: "reasoning-end", redactedData: "" },
+        ],
+        chunks: [
+          { type: "thinking", text: "", signature: "" },
+          { type: "thinking", text: "", signature: "omitted-display" },
+          { type: "thinking", text: "" },
+          { type: "thinking", text: "", redactedData: "" },
+        ],
+      },
+      {
+        name: "legacy deltas still merge and alternate with text",
+        script: [
+          { type: "reasoning-delta", delta: "first" },
+          { type: "reasoning-delta", delta: " rest" },
+          { type: "text-delta", delta: "answer" },
+          { type: "reasoning-delta", delta: "later" },
+        ],
+        chunks: [
+          { type: "thinking", text: "first rest" },
+          { type: "text", text: "answer" },
+          { type: "thinking", text: "later" },
+        ],
+      },
+      {
+        name: "end after text creates an empty block and preserves both payloads",
+        script: [
+          { type: "text-delta", delta: "answer" },
+          { type: "reasoning-end", signature: "sig", redactedData: "data" },
+        ],
+        chunks: [
+          { type: "text", text: "answer" },
+          { type: "thinking", text: "", signature: "sig", redactedData: "data" },
+        ],
+      },
+    ])("$name", async ({ script, chunks }) => {
+      const result = await runTurn({
+        provider: createFakeProvider([script]),
+        messages: [userMessage],
+        tools: [],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+      });
+      expect(result.messages).toEqual([{ role: "assistant", chunks }]);
+    });
+
+    it("retains signed history and chunk order through persistence callbacks and subsequent steps", async () => {
+      const history: ChatMessage = {
+        role: "assistant",
+        chunks: [{ type: "thinking", text: "old", signature: "old-sig", redactedData: "old-data" }],
+      };
+      const { provider, capturedMessages } = createCapturingProvider([
+        [
+          { type: "reasoning-delta", delta: "first" },
+          { type: "reasoning-end", signature: "sig" },
+          { type: "reasoning-end", redactedData: "data" },
+          { type: "text-delta", delta: "calling" },
+          { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+        ],
+        [
+          { type: "reasoning-delta", delta: "next" },
+          { type: "reasoning-delta", delta: " step" },
+        ],
+      ]);
+      const persisted: ChatMessage[][] = [];
+      const result = await runTurn({
+        provider,
+        messages: [history, userMessage],
+        tools: [createFakeTool("echo")],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        onStepComplete: (messages) => {
+          persisted.push([...messages]);
+        },
+      });
+      expect(persisted.flat()).toEqual(result.messages);
+      expect(result.messages[0]?.chunks).toEqual([
+        { type: "thinking", text: "first", signature: "sig" },
+        { type: "thinking", text: "", redactedData: "data" },
+        { type: "text", text: "calling" },
+        { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {}, stepId: "turn-1#0" },
+      ]);
+      expect(capturedMessages[1]?.[2]).toEqual(result.messages[0]);
+      expect(capturedMessages[0]?.[0]).toEqual(history);
+      expect(capturedMessages[1]?.[0]).toEqual(history);
+      expect(result.messages[2]?.chunks).toEqual([{ type: "thinking", text: "next step" }]);
+    });
+
+    it("reasoning ends emit no live event or opaque payload and never mark TTFT", async () => {
+      const { logger, sink } = createTestLogger();
+      const { events, emit } = createCollectingEmit();
+      await runTurn({
+        provider: createFakeProvider([
+          [
+            { type: "reasoning-end", signature: "secret-signature" },
+            { type: "reasoning-end", redactedData: "secret-redacted-data" },
+            { type: "reasoning-end" },
+          ],
+        ]),
+        messages: [userMessage],
+        tools: [],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit,
+        logger,
+        now: () => 100,
+      });
+      expect(events.map((event) => event.type)).toEqual(["turn-start", "step-complete", "done"]);
+      expect(JSON.stringify(events)).not.toContain("secret");
+      const step = events.find((event) => event.type === "step-complete");
+      expect(step).toEqual({
+        type: "step-complete",
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        stepId: "turn-1#0",
+        genTotalMs: 0,
+      });
+      const ttftCloses = sink.records.filter((r) => r.kind === "span-close" && r.name === "ttft");
+      expect(ttftCloses).toHaveLength(1);
+      expect(ttftCloses[0]?.attributes?.firstToken).toBe(false);
+      expect(sink.records.filter((r) => r.name === "decode")).toHaveLength(0);
+    });
+
+    it("reasoning ends before output do not move the first-token timestamp", async () => {
+      let time = 0;
+      const provider: ProviderContract = {
+        id: "fake",
+        async *stream() {
+          time = 50;
+          yield { type: "reasoning-end", signature: "sig" };
+          time = 100;
+          yield { type: "text-delta", delta: "answer" };
+          time = 200;
+        },
+      };
+      const { events, emit } = createCollectingEmit();
+      await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit,
+        now: () => time,
+      });
+      expect(events.find((event) => event.type === "step-complete")).toMatchObject({
+        ttftMs: 100,
+        decodeMs: 100,
+      });
+    });
+
+    it("reasoning-end content prevents retry from duplicating hidden blocks", async () => {
+      let sleeps = 0;
+      const result = await runTurn({
+        provider: createFakeProvider([
+          [
+            { type: "reasoning-end", redactedData: "data" },
+            { type: "error", message: "failed", retryable: true },
+          ],
+        ]),
+        messages: [userMessage],
+        tools: [],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        retry: {
+          delayFor: () => 0,
+          sleep: async () => {
+            sleeps++;
+          },
+        },
+      });
+      expect(sleeps).toBe(0);
+      expect(result.finishReason).toBe("error");
+      expect(result.messages[0]?.chunks).toEqual([
+        { type: "thinking", text: "", redactedData: "data" },
+        { type: "error", message: "failed" },
+      ]);
+    });
+
+    it.each([
+      false,
+      true,
+    ])("abort strips replay fields and empty thinking with eager=%s", async (eager) => {
+      const controller = new AbortController();
+      const provider: ProviderContract = {
+        id: "fake",
+        async *stream() {
+          yield { type: "reasoning-delta", delta: "keep verbatim\n" };
+          yield { type: "reasoning-end", signature: "sig", redactedData: "data" };
+          yield { type: "reasoning-end", signature: "empty" };
+          yield { type: "reasoning-end", redactedData: "redacted" };
+          yield { type: "reasoning-end" };
+          yield { type: "text-delta", delta: "" };
+          yield { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} };
+          controller.abort();
+        },
+      };
+      const persisted: ChatMessage[] = [];
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [createFakeTool("echo")],
+        dispatch: { maxConcurrent: 1, eager },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        signal: controller.signal,
+        onStepComplete: (messages) => {
+          persisted.push(...messages);
+        },
+      });
+      expect(result.finishReason).toBe("aborted");
+      expect(result.messages).toEqual([
+        {
+          role: "assistant",
+          chunks: [
+            { type: "thinking", text: "keep verbatim\n" },
+            { type: "text", text: "" },
+          ],
+        },
+      ]);
+      expect(persisted).toEqual(result.messages);
+    });
+
+    it("abort omits an assistant message left with only empty thinking and removed tools", async () => {
+      const controller = new AbortController();
+      const provider: ProviderContract = {
+        id: "fake",
+        async *stream() {
+          yield { type: "reasoning-end", signature: "empty" };
+          yield { type: "reasoning-end", redactedData: "redacted" };
+          yield { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} };
+          controller.abort();
+        },
+      };
+      let persisted = false;
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [createFakeTool("echo")],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        emit: () => {},
+        signal: controller.signal,
+        onStepComplete: () => {
+          persisted = true;
+        },
+      });
+      expect(result.finishReason).toBe("aborted");
+      expect(result.messages).toEqual([]);
+      expect(persisted).toBe(false);
+    });
   });
 
   it("turn with one tool call executes tool, feeds result back, then finishes", async () => {

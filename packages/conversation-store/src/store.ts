@@ -50,11 +50,14 @@ export interface ConversationStore {
     messages: readonly ChatMessage[],
     opts?: { readonly turnId?: string },
   ) => Promise<void>;
+  /** Provider-facing history: reconciled, retaining opaque thinking replay fields verbatim. */
   readonly load: (conversationId: string) => Promise<ChatMessage[]>;
   /**
    * Read the conversation's persisted chunks as a SELECTION + optional WINDOW,
    * ascending by seq. The raw append-order log; NOT reconciled (a dangling
-   * tool-call is returned as-is — repair is a turn-path concern).
+   * tool-call is returned as-is — repair is a turn-path concern). Includes
+   * opaque thinking replay fields; client-facing transports must project out
+   * `signature` / `redactedData` rather than modifying this raw-log read.
    *
    * - **Selection** — `sinceSeq` is an exclusive lower bound (`seq > sinceSeq`;
    *   omitted/`0`/non-positive/non-integer = from the start). When

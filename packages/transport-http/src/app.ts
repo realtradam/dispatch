@@ -90,6 +90,7 @@ import {
   parseWarmBody,
   parseWindowParam,
   pluginOpStatus,
+  projectHistoryChunks,
   serializeEventLine,
 } from "./logic.js";
 import type { PluginOwnership } from "./seam.js";
@@ -445,7 +446,7 @@ export function createApp(opts: CreateServerOptions): Hono {
         sinceSeq: sinceSeqResult,
         count: chunks.length,
       });
-      const body: ConversationHistoryResponse = { chunks, latestSeq };
+      const body: ConversationHistoryResponse = { chunks: projectHistoryChunks(chunks), latestSeq };
       return c.json(body, 200);
     } catch (err) {
       log.error("conversations: store failure", { err });

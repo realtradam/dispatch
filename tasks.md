@@ -61,3 +61,16 @@ provider + snapshot send rules, what to NOT rely on).
 ### Remaining / notes
 - Not merged/pushed (per instructions). Companion FE implemented separately.
 - No tasks.md existed when this branch was checked out; created fresh here.
+## feature/claude-thinking-display — thinking signatures
+
+- [x] Read architecture rules and attached plan; installed backend + Claude dependencies.
+- [x] Add provider-opaque wire payloads and reasoning-end contract.
+- [x] Runtime boundaries/abort safety, persistence round-trip, and audit history paths.
+- [x] Verify backend and build wire/kernel dist; commit including plan note.
+
+Backend verification: typecheck clean; 3145 Vitest tests passed / 6 skipped;
+144 Bun tests passed; Biome clean. Wire/kernel dist built for Claude.
+HTTP history strips opaque fields without mutating stored/provider-facing history.
+Compaction and other prefix rewrites retain bytes but require provider validity fallback.
+- [ ] Claude SSE capture, ordered replay, prefix-mismatch fallback, documentation.
+- [ ] Verify Claude and commit. No merge/push/server restart or symlinked checkout edits.

@@ -109,6 +109,7 @@ export type {
   ProviderUsage,
   ReasoningDeltaEvent,
   ReasoningEffort,
+  ReasoningEndEvent,
   TextDeltaEvent,
   ToolCallStartEvent,
   Usage,

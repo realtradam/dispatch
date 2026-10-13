@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   ConversationStatus,
   ReasoningEffort,
+  StoredChunk,
 } from "@dispatch/kernel";
 import type { PluginOpResponse } from "@dispatch/transport-contract";
 import type { NamedAgentSelectionSnapshot } from "@dispatch/wire";
@@ -16,6 +17,19 @@ const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
 ];
 
 const VALID_STATUSES: readonly ConversationStatus[] = ["active", "queued", "idle", "closed"];
+
+/**
+ * Pure HTTP history projection: omit provider-opaque thinking replay fields,
+ * preserving every row (including empty/redacted thinking) and its metadata.
+ * Store/provider history remains untouched.
+ */
+export function projectHistoryChunks(chunks: readonly StoredChunk[]): readonly StoredChunk[] {
+  return chunks.map((row) => {
+    if (row.chunk.type !== "thinking") return row;
+    const { signature: _signature, redactedData: _redactedData, ...chunk } = row.chunk;
+    return { ...row, chunk };
+  });
+}
 
 /**
  * Pure: parse a `?status=` query value into a list of valid ConversationStatus

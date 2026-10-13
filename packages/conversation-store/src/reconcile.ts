@@ -36,10 +36,12 @@ export function reconcileWithReport(messages: readonly ChatMessage[]): Reconcile
     }
   }
 
-  // Phase 2: drop assistant messages left with neither `text` nor `tool-call`
-  // chunks after stripping (the now-empty error-only message). This is what
-  // unblocks continuation: such a message serializes to nothing a provider
-  // understands. Safe: it ends with no tool-call, so it is NEVER followed by a
+  // Phase 2: drop assistant messages left with no `text`, `tool-call`, or
+  // `thinking` chunks after stripping (the now-empty error-only message).
+  // Thinking counts even with empty text: a signature-only or redacted chunk
+  // carries opaque provider replay content. Never normalize or merge it.
+  // Dropping an empty message unblocks continuation: it serializes to nothing
+  // a provider understands. Safe: it ends with no tool-call, so it is NEVER followed by a
   // `tool` message — no "tool-without-preceding-assistant-tool_calls" 400.
   let droppedEmptyMessages = 0;
   const pruned: ChatMessage[] = [];

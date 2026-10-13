@@ -21,6 +21,7 @@ export type { ReasoningEffort, Usage } from "@dispatch/wire";
 export type ProviderEvent =
   | TextDeltaEvent
   | ReasoningDeltaEvent
+  | ReasoningEndEvent
   | ProviderToolCallEvent
   | ToolCallStartEvent
   | UsageEvent
@@ -37,6 +38,18 @@ export interface TextDeltaEvent {
 export interface ReasoningDeltaEvent {
   readonly type: "reasoning-delta";
   readonly delta: string;
+}
+
+/**
+ * End of one reasoning block, carrying opaque payloads for verbatim replay.
+ * Optional: providers without signed reasoning never need to emit this event.
+ * Closes the current reasoning chunk even when neither payload is present.
+ * Produces no outward event and is not a first-token marker.
+ */
+export interface ReasoningEndEvent {
+  readonly type: "reasoning-end";
+  readonly signature?: string;
+  readonly redactedData?: string;
 }
 
 /**

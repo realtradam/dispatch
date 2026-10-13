@@ -5,6 +5,7 @@
 
 export * from "./bus/index.js";
 export * from "./contracts/index.js";
+export type { ReasoningEndEvent } from "./contracts/provider.js";
 export * from "./host/index.js";
 export * from "./logging/index.js";
 export * from "./runtime/index.js";

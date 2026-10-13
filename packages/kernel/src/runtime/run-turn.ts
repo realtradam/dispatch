@@ -4,6 +4,7 @@ import type {
   ProviderContract,
   ProviderEvent,
   ProviderStreamOptions,
+  ReasoningEndEvent,
   Usage,
 } from "../contracts/provider.js";
 import type {
@@ -88,26 +89,57 @@ function appendTextDelta(chunks: Chunk[], delta: string): void {
   }
 }
 
-function appendThinkingDelta(chunks: Chunk[], delta: string): void {
+function appendThinkingDelta(chunks: Chunk[], closedThinking: Set<number>, delta: string): void {
   const lastIdx = chunks.length - 1;
   const last = chunks[lastIdx];
-  if (last !== undefined && last.type === "thinking") {
-    chunks[lastIdx] = { type: "thinking", text: last.text + delta };
+  if (last !== undefined && last.type === "thinking" && !closedThinking.has(lastIdx)) {
+    chunks[lastIdx] = { ...last, text: last.text + delta };
   } else {
     chunks.push({ type: "thinking", text: delta });
   }
 }
 
+/** Close a block without storing runtime-only closure state on the chunk. */
+function closeThinkingBlock(
+  chunks: Chunk[],
+  closedThinking: Set<number>,
+  event: ReasoningEndEvent,
+): void {
+  const lastIdx = chunks.length - 1;
+  const last = chunks[lastIdx];
+  const payload = {
+    ...(event.signature !== undefined ? { signature: event.signature } : {}),
+    ...(event.redactedData !== undefined ? { redactedData: event.redactedData } : {}),
+  };
+  if (last !== undefined && last.type === "thinking" && !closedThinking.has(lastIdx)) {
+    chunks[lastIdx] = { ...last, ...payload };
+    closedThinking.add(lastIdx);
+  } else {
+    chunks.push({ type: "thinking", text: "", ...payload });
+    closedThinking.add(chunks.length - 1);
+  }
+}
+
 /**
  * Remove tool-call chunks from an assistant message, returning a new message
- * with only the non-tool-call chunks (text, thinking, error). Returns
- * `undefined` when all chunks were tool-calls (so the caller can omit the
- * message entirely). Used when a step is aborted to avoid persisting
+ * with only the non-tool-call chunks (text, thinking, error).
+ * Opaque thinking payloads cannot safely replay a modified/partial step, so
+ * degrade its thinking to unsigned text and omit now-empty thinking blocks.
+ * Returns `undefined` when nothing remains. Used when a step is aborted to
+ * avoid persisting
  * incomplete tool calls whose placeholder "Aborted" results would create
  * orphaned `tool` messages in the next turn's history.
  */
 function stripToolCallChunks(msg: ChatMessage): ChatMessage | undefined {
-  const stripped = msg.chunks.filter((c) => c.type !== "tool-call");
+  const stripped: Chunk[] = [];
+  for (const chunk of msg.chunks) {
+    if (chunk.type === "tool-call") continue;
+    if (chunk.type === "thinking") {
+      if (chunk.text.length > 0) stripped.push({ type: "thinking", text: chunk.text });
+    } else {
+      stripped.push(chunk);
+    }
+  }
   return stripped.length > 0 ? { role: msg.role, chunks: stripped } : undefined;
 }
 
@@ -211,6 +243,7 @@ function submitTimed(
 function processEvent(
   event: ProviderEvent,
   chunks: Chunk[],
+  closedThinking: Set<number>,
   toolCalls: ToolCall[],
   seenToolCallIds: Set<string>,
   dispatcher: StepDispatcher,
@@ -227,8 +260,12 @@ function processEvent(
       break;
     case "reasoning-delta":
       markFirstToken(ctx, stepSpan, timing);
-      appendThinkingDelta(chunks, event.delta);
+      appendThinkingDelta(chunks, closedThinking, event.delta);
       ctx.emit(reasoningDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
+      break;
+    case "reasoning-end":
+      // Replay-only content: no live event and no first-token marker.
+      closeThinkingBlock(chunks, closedThinking, event);
       break;
     case "tool-call": {
       // Dedupe by toolCallId within the step: a provider can emit the SAME
@@ -316,6 +353,8 @@ function processEvent(
 
 async function executeStep(ctx: StepContext): Promise<StepResult> {
   const chunks: Chunk[] = [];
+  // Includes unsigned ends: payload presence alone cannot define closure.
+  const closedThinking = new Set<number>();
   const toolCalls: ToolCall[] = [];
   const seenToolCallIds = new Set<string>();
   const toolDispatchTimes = new Map<string, number>();
@@ -419,6 +458,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
         if (
           event.type === "text-delta" ||
           event.type === "reasoning-delta" ||
+          event.type === "reasoning-end" ||
           event.type === "tool-call" ||
           event.type === "usage"
         ) {
@@ -427,6 +467,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
         processEvent(
           event,
           chunks,
+          closedThinking,
           toolCalls,
           seenToolCallIds,
           dispatcher,

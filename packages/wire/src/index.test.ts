@@ -16,6 +16,7 @@ import type {
   ImageInput,
   NamedAgent,
   NamedAgentSelectionSnapshot,
+  ThinkingChunk,
   Workspace,
 } from "./index.js";
 
@@ -70,6 +71,37 @@ describe("@dispatch/wire — Computer / Workspace shapes", () => {
 
     const starred: Workspace = { ...remote, starred: true };
     expect(starred.starred).toBe(true);
+  });
+});
+
+describe("@dispatch/wire — ThinkingChunk replay metadata", () => {
+  it("accepts legacy thinking chunks without replay metadata", () => {
+    const thinking: ThinkingChunk = { type: "thinking", text: "Legacy reasoning" };
+    const chunk: Chunk = thinking;
+    expect(chunk.type).toBe("thinking");
+    expect(thinking.signature).toBeUndefined();
+    expect(thinking.redactedData).toBeUndefined();
+  });
+
+  it("round-trips signed thinking text and opaque signature unchanged", () => {
+    const thinking: ThinkingChunk = {
+      type: "thinking",
+      text: "  Exact reasoning\n",
+      signature: "opaque-provider-signature+/=",
+    };
+    const chunk: Chunk = thinking;
+    expect(JSON.parse(JSON.stringify(chunk))).toEqual(thinking);
+  });
+
+  it("round-trips opaque redacted data with empty thinking text", () => {
+    const thinking: ThinkingChunk = {
+      type: "thinking",
+      text: "",
+      redactedData: "opaque-redacted-payload+/=",
+    };
+    const chunk: Chunk = thinking;
+    expect(chunk.text).toBe("");
+    expect(JSON.parse(JSON.stringify(chunk))).toEqual(thinking);
   });
 });
 

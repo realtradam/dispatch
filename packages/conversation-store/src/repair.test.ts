@@ -60,6 +60,22 @@ describe("dedupeDuplicateToolChunks", () => {
     ]);
   });
 
+  it("retains consecutive signed and redacted thinking chunks while deduping tools", () => {
+    const thinking: ChatMessage["chunks"] = [
+      { type: "thinking", text: " exact\r\n ", signature: "sig-1" },
+      { type: "thinking", text: "", signature: "sig-2" },
+      { type: "thinking", text: "", redactedData: "redacted-3" },
+    ];
+    const input = [msg([...thinking, call("a"), call("a")])];
+    const { messages, removedChunks } = dedupeDuplicateToolChunks(input);
+    expect(removedChunks).toBe(1);
+    expect(messages[0]?.chunks).toEqual([...thinking, call("a")]);
+    expect(
+      messages[0]?.chunks.slice(0, 3).map((chunk, index) => chunk === thinking[index]),
+    ).toEqual([true, true, true]);
+    expect(input[0]?.chunks).toHaveLength(5);
+  });
+
   it("returns the original message reference when nothing is removed", () => {
     const input = [msg([call("a"), call("b")])];
     const { messages, removedChunks } = dedupeDuplicateToolChunks(input);

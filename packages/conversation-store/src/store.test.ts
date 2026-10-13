@@ -129,6 +129,130 @@ describe("ConversationStore", () => {
     expect(result).toEqual([msg]);
   });
 
+  it("append → load preserves exact signed thinking text and opaque signature", async () => {
+    const store = createConversationStore(storage);
+    const message: ChatMessage = {
+      role: "assistant",
+      chunks: [
+        {
+          type: "thinking",
+          text: " \tFirst line\r\n\nλ e\u0301 😀\t ",
+          signature: `opaque+/=${"s".repeat(10_000)}\n`,
+        },
+      ],
+    };
+    await store.append("conv1", [message]);
+
+    // A fresh store reads persisted JSON, not any writer-owned state.
+    expect(await createConversationStore(storage).load("conv1")).toEqual([message]);
+  });
+
+  it("append → load preserves an empty signature-only thinking message", async () => {
+    const message: ChatMessage = {
+      role: "assistant",
+      chunks: [{ type: "thinking", text: "", signature: "opaque-signature+/=" }],
+    };
+    await createConversationStore(storage).append("conv1", [message]);
+    expect(await createConversationStore(storage).load("conv1")).toEqual([message]);
+  });
+
+  it("append → load preserves a redacted-only thinking message", async () => {
+    const message: ChatMessage = {
+      role: "assistant",
+      chunks: [{ type: "thinking", text: "", redactedData: "opaque-redacted+/=\n" }],
+    };
+    await createConversationStore(storage).append("conv1", [message]);
+    expect(await createConversationStore(storage).load("conv1")).toEqual([message]);
+  });
+
+  it("append → load keeps consecutive thinking chunks separate and in tool-use order", async () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        chunks: [
+          { type: "thinking", text: " first ", signature: "sig-1" },
+          { type: "thinking", text: "second\n", signature: "sig-2" },
+          { type: "thinking", text: "", signature: "sig-3" },
+          { type: "thinking", text: "", redactedData: "redacted-4" },
+          { type: "text", text: "Calling a tool." },
+          { type: "tool-call", toolCallId: "c1", toolName: "t", input: {} },
+        ],
+      },
+      {
+        role: "tool",
+        chunks: [
+          { type: "tool-result", toolCallId: "c1", toolName: "t", content: "done", isError: false },
+        ],
+      },
+    ];
+    await createConversationStore(storage).append("conv1", messages);
+    expect(await createConversationStore(storage).load("conv1")).toEqual(messages);
+  });
+
+  it("loadSince keeps opaque replay payloads in the raw log with seq and turnId intact", async () => {
+    const message: ChatMessage = {
+      role: "assistant",
+      chunks: [
+        { type: "thinking", text: " signed ", signature: "sig" },
+        { type: "thinking", text: "", signature: "empty-sig" },
+        { type: "thinking", text: "", redactedData: "redacted" },
+        { type: "text", text: "answer" },
+        { type: "tool-call", toolCallId: "c1", toolName: "t", input: {} },
+        { type: "error", message: "interrupted" },
+      ],
+    };
+    const store = createConversationStore(storage);
+    await store.append("conv1", [message], { turnId: "turn-1" });
+    const expected = message.chunks.map((chunk, index) => ({
+      seq: index + 1,
+      role: message.role,
+      chunk,
+      turnId: "turn-1",
+    }));
+    expect(await store.loadSince("conv1")).toEqual(expected);
+    expect(await store.loadSince("conv1", 1, { beforeSeq: 5, limit: 2 })).toEqual(
+      expected.slice(2, 4),
+    );
+
+    // Provider repair must not mutate persisted chunks or the raw log.
+    await store.load("conv1");
+    expect(await store.loadSince("conv1")).toEqual(expected);
+  });
+
+  it("forkHistory and replaceHistory retain signed and redacted thinking payloads", async () => {
+    const store = createConversationStore(storage);
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "question" }] },
+      {
+        role: "assistant",
+        chunks: [
+          { type: "thinking", text: " exact\n", signature: "sig-1" },
+          { type: "thinking", text: "", signature: "sig-2" },
+          { type: "thinking", text: "", redactedData: "redacted-3" },
+        ],
+      },
+    ];
+    await store.append("conv1", messages, { turnId: "turn-1" });
+    await store.forkHistory("conv1", "archive");
+    expect(await store.load("archive")).toEqual(messages);
+    expect(await store.loadSince("archive")).toEqual(await store.loadSince("conv1"));
+
+    const replaced: ChatMessage[] = [
+      { role: "user", chunks: [{ type: "text", text: "summary" }] },
+      ...messages.slice(1),
+    ];
+    await store.replaceHistory("conv1", replaced);
+    expect(await createConversationStore(storage).load("conv1")).toEqual(replaced);
+    expect((await store.loadSince("conv1")).slice(1)).toEqual(
+      messages[1]?.chunks.map((chunk, index) => ({
+        seq: index + 2,
+        role: "assistant",
+        chunk,
+        turnId: "turn-1",
+      })),
+    );
+  });
+
   it("round-trips multiple messages in one append", async () => {
     const store = createConversationStore(storage);
     const messages: ChatMessage[] = [

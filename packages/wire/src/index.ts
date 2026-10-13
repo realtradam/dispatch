@@ -49,6 +49,10 @@ export interface TextChunk {
 export interface ThinkingChunk {
   readonly type: "thinking";
   readonly text: string;
+  /** Opaque provider signature for verbatim replay (Anthropic `signature`). Never render. */
+  readonly signature?: string;
+  /** Opaque redacted-thinking payload (Anthropic `redacted_thinking.data`); text is "". Never render. */
+  readonly redactedData?: string;
 }
 
 /**

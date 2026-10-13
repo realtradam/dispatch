@@ -1125,6 +1125,88 @@ describe("GET /conversations/:id", () => {
     expect(body.latestSeq).toBe(4);
   });
 
+  it.each([
+    ["", 0],
+    ["?sinceSeq=1&beforeSeq=6&limit=4", 1],
+  ] as const)("omits thinking replay fields without changing rows or cursors: %s", async (query, offset) => {
+    const source: StoredChunk[] = [
+      { seq: 1, role: "user", chunk: { type: "text", text: "hello" } },
+      {
+        seq: 2,
+        role: "assistant",
+        turnId: "turn-signed",
+        chunk: { type: "thinking", text: "  visible reasoning\n", signature: "opaque-signature" },
+      },
+      {
+        seq: 3,
+        role: "assistant",
+        turnId: "turn-signed",
+        chunk: {
+          type: "tool-call",
+          toolCallId: "call-1",
+          toolName: "example",
+          stepId: "step-1",
+          input: { signature: "ordinary-input", redactedData: "ordinary-data" },
+        },
+      },
+      {
+        seq: 4,
+        role: "assistant",
+        turnId: "turn-signed",
+        chunk: { type: "thinking", text: "" },
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        turnId: "turn-redacted",
+        chunk: { type: "thinking", text: "", redactedData: "opaque-redacted-data" },
+      },
+    ];
+    const original = structuredClone(source);
+    for (const row of source) {
+      Object.freeze(row.chunk);
+      Object.freeze(row);
+    }
+    Object.freeze(source);
+    const conversationStore = createFakeConversationStore(
+      new Map<string, StoredChunk[]>([["conv1", source]]),
+    );
+    const app = createApp({
+      conversationStore,
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+    });
+
+    const res = await app.request(`/conversations/conv1${query}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { chunks: readonly StoredChunk[]; latestSeq: number };
+    const expected: StoredChunk[] = [
+      ...original.slice(0, 1),
+      {
+        seq: 2,
+        role: "assistant",
+        turnId: "turn-signed",
+        chunk: { type: "thinking", text: "  visible reasoning\n" },
+      },
+      ...original.slice(2, 4),
+      {
+        seq: 5,
+        role: "assistant",
+        turnId: "turn-redacted",
+        chunk: { type: "thinking", text: "" },
+      },
+    ];
+    expect(body).toEqual({ chunks: expected.slice(offset), latestSeq: 5 });
+    for (const row of body.chunks) {
+      if (row.chunk.type === "thinking") {
+        expect(row.chunk).not.toHaveProperty("signature");
+        expect(row.chunk).not.toHaveProperty("redactedData");
+      }
+    }
+    expect(source).toEqual(original);
+    expect(await conversationStore.loadSince("conv1", 0)).toEqual(original);
+  });
+
   it("returns only chunks with seq > N and latestSeq = last seq", async () => {
     const store = new Map<string, StoredChunk[]>([["conv1", sampleChunks]]);
     const app = createApp({

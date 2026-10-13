@@ -261,7 +261,9 @@ export interface DeleteNamedAgentResponse {
  * returned as-is (rendered as an interrupted call). Reconciliation is a
  * turn-path concern — the server repairs history only when it feeds a provider,
  * never on this read path — which is what preserves the per-chunk `seq` cursor
- * invariant (a synthesized repair chunk would have no seq).
+ * invariant (a synthesized repair chunk would have no seq). Provider-opaque
+ * thinking replay fields (`signature` and `redactedData`) are omitted from
+ * this client-facing response; chunk presence, text, order, and seq are intact.
  *
  * `latestSeq` is the `seq` of the LAST chunk in this response, or — when the
  * slice is empty (the client is already caught up) — the requested `sinceSeq`

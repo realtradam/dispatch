@@ -418,6 +418,67 @@ describe("reconcile", () => {
     expect(report.repairedToolCallIds).toEqual(["call_orph"]);
   });
 
+  it.each([
+    { type: "thinking" as const, text: " exact\r\n ", signature: "sig" },
+    { type: "thinking" as const, text: "", signature: "empty-sig" },
+    { type: "thinking" as const, text: "", redactedData: "opaque-data" },
+    { type: "thinking" as const, text: "" },
+  ])("preserves thinking-only messages verbatim: %j", (chunk) => {
+    const messages: ChatMessage[] = [{ role: "assistant", chunks: [chunk] }];
+    const { messages: result, report } = reconcileWithReport(messages);
+    expect(result).toEqual(messages);
+    expect(result[0]?.chunks[0]).toBe(chunk);
+    expect(report).toEqual({
+      repairedCount: 0,
+      repairedToolCallIds: [],
+      strippedErrorChunks: 0,
+      droppedEmptyMessages: 0,
+    });
+  });
+
+  it("error stripping retains consecutive signed and redacted thinking chunks unchanged", () => {
+    const thinking: ChatMessage["chunks"] = [
+      { type: "thinking", text: " first\n", signature: "sig-1" },
+      { type: "thinking", text: "", signature: "sig-2" },
+      { type: "thinking", text: "", redactedData: "redacted-3" },
+    ];
+    const messages: ChatMessage[] = [
+      { role: "assistant", chunks: [...thinking, { type: "error", message: "interrupted" }] },
+    ];
+    const { messages: result, report } = reconcileWithReport(messages);
+    expect(result).toEqual([{ role: "assistant", chunks: thinking }]);
+    expect(result[0]?.chunks.map((chunk, index) => chunk === thinking[index])).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(report.strippedErrorChunks).toBe(1);
+    expect(report.droppedEmptyMessages).toBe(0);
+    expect(messages[0]?.chunks).toHaveLength(4);
+  });
+
+  it("orphan repair retains signed and redacted thinking before the tool-call verbatim", () => {
+    const message: ChatMessage = {
+      role: "assistant",
+      chunks: [
+        { type: "thinking", text: " first ", signature: "sig-1" },
+        { type: "thinking", text: "", signature: "sig-2" },
+        { type: "thinking", text: "", redactedData: "redacted-3" },
+        { type: "tool-call", toolCallId: "c1", toolName: "t", input: {} },
+      ],
+    };
+    const { messages, report } = reconcileWithReport([message]);
+    expect(messages[0]).toBe(message);
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.chunks[0]).toMatchObject({
+      type: "tool-result",
+      toolCallId: "c1",
+      isError: true,
+    });
+    expect(report.repairedCount).toBe(1);
+    expect(report.droppedEmptyMessages).toBe(0);
+  });
+
   it("reconcile preserves a thinking-only assistant message", () => {
     // Regression: an assistant message with only a thinking chunk (no text,
     // no tool-call) was being dropped by the hasContent check. Thinking IS
