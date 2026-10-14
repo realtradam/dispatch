@@ -9,7 +9,8 @@ been implemented** in the same branch (`frontend/src/features/account-usage`, si
 | Method | Path | Response | Notes |
 |---|---|---|---|
 | GET | `/usage` | `AccountUsageResponse` | Both providers, fixed order `claude`, `codex`. |
-| GET | `/usage/:provider` | `AccountUsageReport` | `provider ∈ claude \| codex`; other → 404. |
+| GET | `/usage/:provider` | `AccountUsageReport` | `provider ∈ claude \| codex \| hyper`; other → 404. |
+| PUT | `/usage/:provider/settings` | `AccountUsageReport` | Body `UpdateAccountUsageSettingsRequest`; only `hyper` (others 404); 400 invalid. |
 
 - `?refresh=1` (or `true`) asks the server to bypass the success TTL. It **cannot** bypass a
   failure cooldown and is ignored when the last attempt was < 30 s ago.
@@ -64,11 +65,28 @@ Limit ids: `claude:5h`, `claude:7d`, `claude:7d:<model-slug>` (legacy opus/sonne
 `codex:<meter>:primary|secondary` (e.g. `spark`). Codex labels/durations come from
 `limit_window_seconds` — don't assume 5h/7d.
 
+## 2b. Hyper daily Hypercredits (`transport-contract@0.26.0`)
+- `GET https://hyper.charm.land/v1/credits` (`HYPER_API_KEY` / `HYPER_BASE_URL`, same env as
+  provider-hyper) returns ONLY `{ "balance": N }` — verified live and against the docs. There is no
+  allowance or refresh time in the API (the refresh time is only shown on the web dashboard).
+- So the report carries `dailyCredits: { balance, allowance, resetAnchor, resetSource }` and one
+  limit `hyper:daily` (`unit: "credits"`, `used = allowance − balance` clamped to `[0, allowance]`,
+  `durationMs` 24h, `resetsAt` = next `resetAnchor + k·24h`, or null when unknown).
+- `allowance` defaults to **250**; `PUT /usage/hyper/settings { dailyAllowance }` changes it.
+- Reset time: `PUT /usage/hyper/settings { resetAnchor: <epoch-ms> }` sets it manually (any
+  occurrence; recurs daily), `{ resetAnchor: null }` clears it. If unset, the service
+  auto-DETECTS a refill (balance rises to ≥ 95 % of the allowance between two polls) and anchors at
+  the midpoint (`resetSource: "detected"`, ± ~2.5 min). Manual always wins. Settings persist in the
+  `account-usage` storage namespace.
+- Balance above the allowance (purchased bundles) shows 0 used; a large bundle purchase could be
+  mis-detected as a refill — set the time manually to avoid that.
+
 ## 3. Credential support
 - Claude: OAuth bearer from `~/.claude/.credentials.json` (via `claude-oauth`), or an
   API-key-shaped `sk-ant-oat…` OAuth token. Plain Anthropic API keys → `unsupported`.
 - Codex: ChatGPT OAuth bearer from `~/.codex/auth.json` (via `codex-oauth`); account id from the
   JWT (`chatgpt-account-id` header). Anything else → `unsupported`.
+- Hyper: `HYPER_API_KEY` env (API key). Missing → `not-configured`.
 - Auth provider absent / no credentials → `not-configured`.
 
 ## 4. Backend cache / retry
@@ -80,6 +98,7 @@ Limit ids: `claude:5h`, `claude:7d`, `claude:7d:<model-slug>` (legacy opus/sonne
   429, aborts/timeouts, or endpoint-absent statuses (404/405/410/501). Custom base URLs fall back
   to `api.anthropic.com` only when the endpoint is absent. Profile (`/api/oauth/profile`) fetched
   when the usage body lacks identity.
+- Hyper fetch: single attempt, 10 s failure cooldown (same as Codex).
 - Codex fetch: single attempt (OMP behaviour); only chatgpt.com / chat.openai.com account bases are
   honored, otherwise canonical `https://chatgpt.com/backend-api`.
 - Last good report retained 24 h per **account id** (stable across token rotation; a different

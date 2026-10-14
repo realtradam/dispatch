@@ -23,6 +23,7 @@ import {
   normalizeCodexAccountBase,
   parseCodexUsagePayload,
 } from "./codex.js";
+import { HYPER_DEFAULT_BASE_URL, parseHyperCredits } from "./hyper.js";
 import { isRecord, type ProviderUsage } from "./shared.js";
 
 /** Outcome of one usage fetch. `identity` lets the cache isolate accounts even on failure. */
@@ -262,5 +263,55 @@ export function createCodexFetcher(deps: FetcherDeps): UsageFetcher {
     if (!usage)
       return { ok: false, kind: "error", error: "response missing usage data", ...idField };
     return { ok: true, usage };
+  };
+}
+
+export interface HyperFetcherDeps {
+  readonly fetchFn: FetchFn;
+  /** The Hyper API key + base URL (from `HYPER_API_KEY` / `HYPER_BASE_URL`), or null. */
+  readonly resolveConfig: () => { readonly apiKey: string; readonly baseURL?: string } | null;
+  readonly logger: Logger;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Hyper `GET <base>/credits` → `{ balance }`. The daily allowance + reset
+ * time are applied by the service from user settings.
+ */
+export function createHyperFetcher(deps: HyperFetcherDeps): UsageFetcher {
+  return async () => {
+    const cfg = deps.resolveConfig();
+    if (!cfg) return { ok: false, kind: "not-configured", error: "No HYPER_API_KEY configured" };
+    const base = (cfg.baseURL?.trim() || HYPER_DEFAULT_BASE_URL).replace(/\/+$/, "");
+    let payload: unknown;
+    try {
+      const res = await deps.fetchFn(`${base}/credits`, {
+        headers: { authorization: `Bearer ${cfg.apiKey}`, accept: "application/json" },
+        signal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        deps.logger.warn("account-usage: hyper credits fetch failed", { status: res.status });
+        return { ok: false, kind: "error", error: `HTTP ${res.status}` };
+      }
+      payload = await res.json();
+    } catch (err) {
+      const error = errMessage(err);
+      deps.logger.warn("account-usage: hyper credits fetch error", { error });
+      return { ok: false, kind: "error", error };
+    }
+    const balance = parseHyperCredits(payload);
+    if (balance === null) return { ok: false, kind: "error", error: "response missing balance" };
+    return {
+      ok: true,
+      usage: {
+        account: { accountId: null, email: null, planType: null },
+        limits: [],
+        limitReached: null,
+        canServe: balance > 0,
+        creditOverage: false,
+        credits: null,
+        dailyBalance: balance,
+      },
+    };
   };
 }

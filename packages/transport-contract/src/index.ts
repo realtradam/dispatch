@@ -1627,8 +1627,12 @@ export interface SetConcurrencyCooldownRequest {
 // cached server-side. Distinct from per-turn token `Usage`: these are the
 // account's plan allowance windows, never estimated from token counts.
 
-/** The subscription accounts the usage service reports on. */
-export type AccountUsageProviderId = "claude" | "codex";
+/**
+ * The subscription accounts the usage service reports on. `hyper` is a daily
+ * Hypercredit allowance (Hyper's API reports only the balance — the allowance
+ * and reset time are user settings, see `AccountUsageDailyCredits`).
+ */
+export type AccountUsageProviderId = "claude" | "codex" | "hyper";
 
 /**
  * Freshness/availability of one provider's report:
@@ -1671,7 +1675,8 @@ export interface AccountUsageLimit {
   readonly durationMs: number | null;
   /** Epoch-ms when the window resets (null when unknown). */
   readonly resetsAt: number | null;
-  readonly unit: "percent" | "usd";
+  /** `credits` = Hypercredits (`limit` = the daily allowance). */
+  readonly unit: "percent" | "usd" | "credits";
   readonly used: number;
   readonly limit: number | null;
   readonly remaining: number | null;
@@ -1713,6 +1718,8 @@ export interface AccountUsageReport {
   /** True when Codex credits fund requests past an exhausted plan window. */
   readonly creditOverage: boolean;
   readonly credits: AccountUsageCredits | null;
+  /** Daily credit allowance details (Hyper only; null for other providers). */
+  readonly dailyCredits: AccountUsageDailyCredits | null;
   /** Epoch-ms of the report's data (last successful fetch), null if never. */
   readonly fetchedAt: number | null;
   /** Epoch-ms of the last refresh attempt (success or failure), null if never. */
@@ -1723,7 +1730,36 @@ export interface AccountUsageReport {
   readonly error: string | null;
 }
 
-/** Response of `GET /usage` — one report per provider, always both, in fixed order (claude, codex). */
+/**
+ * Daily credit allowance (Hyper). Hyper's `GET /v1/credits` returns only the
+ * balance, so `allowance` (default 250) and the reset time are settings:
+ * - `resetAnchor`: an epoch-ms instant of ANY past or future refresh; resets
+ *   recur every 24h from it (`resetsAt` on the limit is the next one).
+ * - `resetSource`: `manual` (user-set), `detected` (inferred from an observed
+ *   balance refill — approximate, ± the poll interval), or null (unknown ⇒ no
+ *   `resetsAt`, so no pace marker).
+ */
+export interface AccountUsageDailyCredits {
+  /** Current balance as reported (may exceed `allowance` with purchased bundles). */
+  readonly balance: number;
+  readonly allowance: number;
+  readonly resetAnchor: number | null;
+  readonly resetSource: "manual" | "detected" | null;
+}
+
+/**
+ * Body of `PUT /usage/:provider/settings` (only `hyper` has settings). Omitted
+ * fields are unchanged. `dailyAllowance` must be a positive integer;
+ * `resetAnchor` is an epoch-ms refresh instant, or `null` to clear the manual
+ * time (falling back to a detected one, if any). Responds with the provider's
+ * refreshed `AccountUsageReport`; 400 invalid body, 404 provider without settings.
+ */
+export interface UpdateAccountUsageSettingsRequest {
+  readonly dailyAllowance?: number;
+  readonly resetAnchor?: number | null;
+}
+
+/** Response of `GET /usage` — one report per provider, in fixed order (claude, codex, hyper). */
 export interface AccountUsageResponse {
   readonly providers: readonly AccountUsageReport[];
   /** Server clock (epoch-ms) when this response was built — use it to compute window progress. */

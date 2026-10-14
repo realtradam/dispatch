@@ -1,6 +1,6 @@
 import { createAccountUsageService } from "@dispatch/account-usage";
 import type { Logger } from "@dispatch/kernel";
-import type { AccountUsageResponse } from "@dispatch/transport-contract";
+import type { AccountUsageReport, AccountUsageResponse } from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import type { ConversationStore, CredentialStore, SessionOrchestrator } from "./seam.js";
@@ -37,6 +37,18 @@ function app(withService: boolean) {
         kind: "not-configured",
         error: "No Codex OAuth credentials",
       }),
+      hyper: async () => ({
+        ok: true,
+        usage: {
+          account: { accountId: null, email: null, planType: null },
+          limits: [],
+          limitReached: null,
+          canServe: true,
+          creditOverage: false,
+          credits: null,
+          dailyBalance: 100,
+        },
+      }),
     },
     now: () => 1000,
     random: () => 0.5,
@@ -60,6 +72,7 @@ describe("GET /usage", () => {
     expect(body.providers.map((p) => [p.provider, p.state])).toEqual([
       ["claude", "fresh"],
       ["codex", "not-configured"],
+      ["hyper", "fresh"],
     ]);
     expect(Object.keys(body.providers[0] ?? {}).sort()).toEqual(
       [
@@ -67,6 +80,7 @@ describe("GET /usage", () => {
         "canServe",
         "creditOverage",
         "credits",
+        "dailyCredits",
         "error",
         "fetchedAt",
         "label",
@@ -85,6 +99,34 @@ describe("GET /usage", () => {
     const a = app(true);
     expect((await a.request("/usage/codex")).status).toBe(200);
     expect((await a.request("/usage/gemini")).status).toBe(404);
+  });
+
+  it("PUT /usage/hyper/settings validates and applies the allowance + reset anchor", async () => {
+    const a = app(true);
+    const put = (path: string, body: unknown) =>
+      a.request(path, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await put("/usage/hyper/settings", { dailyAllowance: -1 })).status).toBe(400);
+    expect((await put("/usage/claude/settings", { dailyAllowance: 5 })).status).toBe(404);
+    const res = await put("/usage/hyper/settings", { dailyAllowance: 200, resetAnchor: 500 });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as AccountUsageReport;
+    expect(body.dailyCredits).toEqual({
+      balance: 100,
+      allowance: 200,
+      resetAnchor: 500,
+      resetSource: "manual",
+    });
+    expect(body.limits[0]).toMatchObject({
+      id: "hyper:daily",
+      unit: "credits",
+      used: 100,
+      limit: 200,
+      resetsAt: 500 + 86_400_000,
+    });
   });
 
   it("503s when the service is absent", async () => {

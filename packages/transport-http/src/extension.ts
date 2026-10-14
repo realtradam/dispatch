@@ -99,6 +99,7 @@ export const manifest: Manifest = {
       "/workspaces/:id/title",
       "/usage",
       "/usage/:provider",
+      "/usage/:provider/settings",
     ],
   },
   activation: "eager",

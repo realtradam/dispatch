@@ -31,6 +31,14 @@ import type {
 import { parseClaudeRateLimitHeaders } from "./claude.js";
 import { parseCodexRateLimitHeaders } from "./codex.js";
 import type { UsageFetcher, UsageFetchResult } from "./fetchers.js";
+import {
+  applySettingsPatch,
+  buildDailyCredits,
+  type DailyCreditsSettings,
+  DEFAULT_DAILY_CREDITS_SETTINGS,
+  isRefill,
+  parseDailyCreditsSettings,
+} from "./hyper.js";
 import { mergeLimits, type ProviderUsage } from "./shared.js";
 
 export const SUCCESS_TTL_MS = 5 * 60_000;
@@ -44,8 +52,16 @@ export const MIN_FORCED_INTERVAL_MS = 30_000;
 export const HEADER_INGEST_THROTTLE_MS = 60_000;
 export const JITTER_FRACTION = 0.25;
 
-export const PROVIDER_ORDER: readonly AccountUsageProviderId[] = ["claude", "codex"];
-const LABELS: Record<AccountUsageProviderId, string> = { claude: "Claude", codex: "Codex" };
+export const PROVIDER_ORDER: readonly AccountUsageProviderId[] = ["claude", "codex", "hyper"];
+const LABELS: Record<AccountUsageProviderId, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  hyper: "Hyper",
+};
+
+export type UpdateSettingsResult =
+  | { readonly ok: true; readonly report: AccountUsageReport }
+  | { readonly ok: false; readonly error: string; readonly notFound?: boolean };
 
 export interface AccountUsageService {
   /** Every provider's report (fixed order). Refreshes expired entries (deduped). */
@@ -60,6 +76,14 @@ export interface AccountUsageService {
    * Throttled to once/minute unless a window is exhausted; merges rows by id
    * into the cached report WITHOUT extending its refresh expiry.
    */
+  /**
+   * Update a provider's user settings (only `hyper`: daily allowance + manual
+   * reset anchor). Persisted; returns the refreshed report.
+   */
+  readonly updateSettings: (
+    provider: AccountUsageProviderId,
+    body: unknown,
+  ) => Promise<UpdateSettingsResult>;
   readonly ingestHeaders: (
     provider: AccountUsageProviderId,
     headers: Readonly<Record<string, string>>,
@@ -76,6 +100,14 @@ export interface AccountUsageServiceDeps {
   /** 0..1 random source for jitter. */
   readonly random: () => number;
   readonly logger: Logger;
+  /**
+   * Persistence for the Hyper daily-credit settings (allowance, manual +
+   * detected reset anchors). Optional: absent ⇒ in-memory defaults.
+   */
+  readonly settingsStore?: {
+    readonly load: () => Promise<string | null>;
+    readonly save: (raw: string) => Promise<void>;
+  };
 }
 
 interface LastGood {
@@ -122,6 +154,49 @@ export function jitter(baseMs: number, random: () => number): number {
 export function createAccountUsageService(deps: AccountUsageServiceDeps): AccountUsageService {
   const entries = new Map<AccountUsageProviderId, Entry>();
   const log = deps.logger;
+  let hyperSettings: DailyCreditsSettings = DEFAULT_DAILY_CREDITS_SETTINGS;
+  let settingsLoaded: Promise<void> | null = null;
+
+  function loadSettings(): Promise<void> {
+    if (!settingsLoaded) {
+      settingsLoaded = (async () => {
+        try {
+          hyperSettings = parseDailyCreditsSettings((await deps.settingsStore?.load()) ?? null);
+        } catch (err) {
+          log.warn("account-usage: failed to load hyper settings", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
+    }
+    return settingsLoaded;
+  }
+
+  async function saveSettings(next: DailyCreditsSettings): Promise<void> {
+    hyperSettings = next;
+    try {
+      await deps.settingsStore?.save(JSON.stringify(next));
+    } catch (err) {
+      log.warn("account-usage: failed to save hyper settings", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Detect a Hyper daily refill between the previous good balance and this
+   * one; anchor the reset at the midpoint of the two observations.
+   */
+  function detectRefill(e: Entry, usage: ProviderUsage, now: number): void {
+    if (usage.dailyBalance === undefined) return;
+    const prev = currentLastGood(e);
+    const prevBalance = prev?.usage.dailyBalance;
+    if (prev === undefined || prevBalance === undefined) return;
+    if (!isRefill(prevBalance, usage.dailyBalance, hyperSettings.dailyAllowance)) return;
+    const anchor = Math.round(prev.fetchedAt + (now - prev.fetchedAt) / 2);
+    log.info("account-usage: hyper daily refill detected", { anchor });
+    void saveSettings({ ...hyperSettings, detectedAnchor: anchor });
+  }
 
   function entryFor(p: AccountUsageProviderId): Entry {
     let e = entries.get(p);
@@ -153,6 +228,7 @@ export function createAccountUsageService(deps: AccountUsageServiceDeps): Accoun
     e.lastAttemptAt = now;
     if (r.ok) {
       const accountId = r.usage.account.accountId;
+      if (p === "hyper") detectRefill(e, r.usage, now);
       e.currentAccount = accountId;
       e.lastGood.set(accountId ?? "", { usage: r.usage, fetchedAt: now, accountId });
       // Prune expired accounts.
@@ -226,16 +302,21 @@ export function createAccountUsageService(deps: AccountUsageServiceDeps): Accoun
     }
     const showData = state === "fresh" || state === "stale";
     const u = showData && lg ? lg.usage : null;
+    const daily =
+      u?.dailyBalance !== undefined
+        ? buildDailyCredits(u.dailyBalance, hyperSettings, deps.now())
+        : null;
     return {
       provider: p,
       label: LABELS[p],
       state,
       account: u ? u.account : null,
-      limits: u ? u.limits : [],
+      limits: daily ? [daily.limit, ...(u?.limits ?? [])] : u ? u.limits : [],
       limitReached: u ? u.limitReached : null,
       canServe: u ? u.canServe : null,
       creditOverage: u ? u.creditOverage : false,
       credits: u ? u.credits : null,
+      dailyCredits: daily ? daily.detail : null,
       fetchedAt: showData && lg ? lg.fetchedAt : null,
       lastAttemptAt: e.lastAttemptAt,
       nextRefreshAt: e.nextRefreshAt,
@@ -248,6 +329,7 @@ export function createAccountUsageService(deps: AccountUsageServiceDeps): Accoun
     opts?: { readonly refresh?: boolean },
   ): Promise<AccountUsageReport> {
     const e = entryFor(p);
+    if (p === "hyper") await loadSettings();
     if (e.inflight) await e.inflight;
     else if (shouldRefresh(e, opts?.refresh === true)) await refresh(p, e);
     return build(p, e);
@@ -255,6 +337,16 @@ export function createAccountUsageService(deps: AccountUsageServiceDeps): Accoun
 
   return {
     get,
+    async updateSettings(p, body) {
+      if (p !== "hyper") {
+        return { ok: false, error: `${LABELS[p]} has no settings`, notFound: true };
+      }
+      await loadSettings();
+      const result = applySettingsPatch(hyperSettings, body);
+      if (!result.ok) return result;
+      await saveSettings(result.settings);
+      return { ok: true, report: await get(p) };
+    },
     async getAll(opts) {
       const providers = await Promise.all(PROVIDER_ORDER.map((p) => get(p, opts)));
       return { providers, servedAt: deps.now() };
