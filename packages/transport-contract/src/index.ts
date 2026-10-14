@@ -1621,3 +1621,149 @@ export interface ConcurrencyCooldownResponse {
 export interface SetConcurrencyCooldownRequest {
   readonly cooldownMs: number;
 }
+
+// ─── Account usage (Claude / Codex subscription quotas) ───────────────────────
+//
+// Subscription quota usage polled from each provider's first-party account
+// API (Claude `GET /api/oauth/usage`, Codex `GET /backend-api/wham/usage`),
+// cached server-side. Distinct from per-turn token `Usage`: these are the
+// account's plan allowance windows, never estimated from token counts.
+
+/**
+ * The subscription accounts the usage service reports on. `hyper` is a daily
+ * Hypercredit allowance (Hyper's API reports only the balance — the allowance
+ * and reset time are user settings, see `AccountUsageDailyCredits`).
+ */
+export type AccountUsageProviderId = "claude" | "codex" | "hyper";
+
+/**
+ * Freshness/availability of one provider's report:
+ * - `fresh`          — the last refresh succeeded and is within the cache TTL.
+ * - `stale`          — the latest refresh FAILED; `limits` are the last good
+ *                      report (≤ 24h old), see `fetchedAt` / `error`.
+ * - `unavailable`    — refresh failed and there is no last-good report.
+ * - `unsupported`    — a credential exists but cannot query subscription usage
+ *                      (e.g. a plain Anthropic API key).
+ * - `not-configured` — no credential / the auth extension is not loaded.
+ */
+export type AccountUsageState =
+  | "fresh"
+  | "stale"
+  | "unavailable"
+  | "unsupported"
+  | "not-configured";
+
+/** Severity of a single limit: `warning` ≥ 90% used, `exhausted` ≥ 100%. */
+export type AccountUsageLimitStatus = "ok" | "warning" | "exhausted" | "unknown";
+
+/**
+ * One quota meter. Percent meters have `unit: "percent"`, `limit: 100`.
+ * Spend meters (`kind: "spend"`, `unit: "usd"`) may have `limit: null` when the
+ * cap is unlimited/unset — never treat that as a zero-dollar cap.
+ */
+export interface AccountUsageLimit {
+  /** Stable id, e.g. `claude:5h`, `claude:7d:opus`, `codex:primary`, `codex:spark:secondary`. */
+  readonly id: string;
+  /** Human label, e.g. "5 Hour", "7 Day (Opus)", "Spark · 5 hours". */
+  readonly label: string;
+  readonly kind: "window" | "spend";
+  /** Window id, e.g. `5h`, `7d`, `30d`, `extra`. */
+  readonly windowId: string;
+  /** True for account-wide windows that gate every request. */
+  readonly shared: boolean;
+  /** Model family / metered-feature slug for scoped meters, else null. */
+  readonly tier: string | null;
+  /** Window length in ms (null when unknown, e.g. spend meters). */
+  readonly durationMs: number | null;
+  /** Epoch-ms when the window resets (null when unknown). */
+  readonly resetsAt: number | null;
+  /** `credits` = Hypercredits (`limit` = the daily allowance). */
+  readonly unit: "percent" | "usd" | "credits";
+  readonly used: number;
+  readonly limit: number | null;
+  readonly remaining: number | null;
+  /** 0..1 (null when there is no cap). */
+  readonly usedFraction: number | null;
+  readonly remainingFraction: number | null;
+  readonly status: AccountUsageLimitStatus;
+}
+
+/** Codex paid-credit details (from `/wham/usage` `credits` + `spend_control`). */
+export interface AccountUsageCredits {
+  readonly hasCredits: boolean | null;
+  readonly unlimited: boolean | null;
+  readonly overageLimitReached: boolean | null;
+  /** Remaining credit balance as reported (string or number upstream; normalized to number). */
+  readonly balance: number | null;
+  readonly spendControlReached: boolean | null;
+}
+
+/** One provider's usage report as served to clients. Never carries credentials. */
+export interface AccountUsageReport {
+  readonly provider: AccountUsageProviderId;
+  /** Display name: "Claude" / "Codex". */
+  readonly label: string;
+  readonly state: AccountUsageState;
+  readonly account: {
+    readonly accountId: string | null;
+    readonly email: string | null;
+    readonly planType: string | null;
+  } | null;
+  readonly limits: readonly AccountUsageLimit[];
+  /**
+   * Plan-level verdict (Codex): `limitReached` = plan allowance consumed;
+   * `canServe` = the account can still serve requests (credits may fund
+   * overage). Null when unknown (Claude reports per-window only).
+   */
+  readonly limitReached: boolean | null;
+  readonly canServe: boolean | null;
+  /** True when Codex credits fund requests past an exhausted plan window. */
+  readonly creditOverage: boolean;
+  readonly credits: AccountUsageCredits | null;
+  /** Daily credit allowance details (Hyper only; null for other providers). */
+  readonly dailyCredits: AccountUsageDailyCredits | null;
+  /** Epoch-ms of the report's data (last successful fetch), null if never. */
+  readonly fetchedAt: number | null;
+  /** Epoch-ms of the last refresh attempt (success or failure), null if never. */
+  readonly lastAttemptAt: number | null;
+  /** Epoch-ms after which the server will refresh on the next request. */
+  readonly nextRefreshAt: number | null;
+  /** Last refresh failure message (sanitized, no secrets), null on success. */
+  readonly error: string | null;
+}
+
+/**
+ * Daily credit allowance (Hyper). Hyper's `GET /v1/credits` returns only the
+ * balance, so `allowance` (default 250) and the reset time are settings:
+ * - `resetAnchor`: an epoch-ms instant of ANY past or future refresh; resets
+ *   recur every 24h from it (`resetsAt` on the limit is the next one).
+ * - `resetSource`: `manual` (user-set), `detected` (inferred from an observed
+ *   balance refill — approximate, ± the poll interval), or null (unknown ⇒ no
+ *   `resetsAt`, so no pace marker).
+ */
+export interface AccountUsageDailyCredits {
+  /** Current balance as reported (may exceed `allowance` with purchased bundles). */
+  readonly balance: number;
+  readonly allowance: number;
+  readonly resetAnchor: number | null;
+  readonly resetSource: "manual" | "detected" | null;
+}
+
+/**
+ * Body of `PUT /usage/:provider/settings` (only `hyper` has settings). Omitted
+ * fields are unchanged. `dailyAllowance` must be a positive integer;
+ * `resetAnchor` is an epoch-ms refresh instant, or `null` to clear the manual
+ * time (falling back to a detected one, if any). Responds with the provider's
+ * refreshed `AccountUsageReport`; 400 invalid body, 404 provider without settings.
+ */
+export interface UpdateAccountUsageSettingsRequest {
+  readonly dailyAllowance?: number;
+  readonly resetAnchor?: number | null;
+}
+
+/** Response of `GET /usage` — one report per provider, in fixed order (claude, codex, hyper). */
+export interface AccountUsageResponse {
+  readonly providers: readonly AccountUsageReport[];
+  /** Server clock (epoch-ms) when this response was built — use it to compute window progress. */
+  readonly servedAt: number;
+}

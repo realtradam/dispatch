@@ -15,6 +15,8 @@
  * with that list. Runtime credential registration for mid-session providers
  * is OUT OF SCOPE (plan 00 Q-C): credentials are fixed at boot.
  */
+
+import { extension as accountUsageExt } from "@dispatch/account-usage";
 import { extension as agentManagementExt } from "@dispatch/agent-management";
 import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
@@ -109,6 +111,7 @@ export function createBundledExtensions(creds: {
     providerOpenaiCompatExt,
     // --- standard ---
     namedAgentsExt,
+    accountUsageExt,
     heartbeatExt,
     sshExt,
     mcpExt,

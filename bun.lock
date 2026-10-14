@@ -11,6 +11,14 @@
         "vitest": "^3.0.0",
       },
     },
+    "packages/account-usage": {
+      "name": "@dispatch/account-usage",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
+      },
+    },
     "packages/agent-management": {
       "name": "@dispatch/agent-management",
       "version": "0.0.0",
@@ -96,6 +104,7 @@
       "name": "@dispatch/host-bin",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/account-usage": "workspace:*",
         "@dispatch/agent-management": "workspace:*",
         "@dispatch/cache-warming": "workspace:*",
         "@dispatch/conversation-store": "workspace:*",
@@ -506,7 +515,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.24.0",
+      "version": "0.25.0",
       "dependencies": {
         "@dispatch/layout-contract": "workspace:*",
         "@dispatch/tile-layout-contract": "workspace:*",
@@ -518,6 +527,7 @@
       "name": "@dispatch/transport-http",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/account-usage": "workspace:*",
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
         "@dispatch/heartbeat": "workspace:*",
@@ -603,6 +613,8 @@
     "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.4.16", "", { "os": "win32", "cpu": "arm64" }, "sha512-0rgImMsNb5v/chhkIFe3wu7PEFClS6RBAYUijGL9UsYN3PanSaoK24HSSuSJb1pYbYYVjzAyZTl3gtjJ84BM8A=="],
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.4.16", "", { "os": "win32", "cpu": "x64" }, "sha512-Kp85jgoBHa05gix6UIRjfCDiUV3w/8VIdZ247VyyO2gEjaw12WEVhdIjlxp/AMzXxqxQwbxNTDVZ3Mwd2RG5rw=="],
+
+    "@dispatch/account-usage": ["@dispatch/account-usage@workspace:packages/account-usage"],
 
     "@dispatch/agent-management": ["@dispatch/agent-management@workspace:packages/agent-management"],
 

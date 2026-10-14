@@ -3,6 +3,7 @@
   "compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
   "include": ["src/**/*.ts"],
   "references": [
+    { "path": "../account-usage" },
     { "path": "../conversation-store" },
     { "path": "../credential-store" },
     { "path": "../heartbeat" },
