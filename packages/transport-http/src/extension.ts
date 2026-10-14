@@ -1,6 +1,7 @@
 import type { Extension, HostAPI, Manifest, ServiceHandle } from "@dispatch/kernel";
 import { createApp } from "./app.js";
 import {
+  accountUsageServiceHandle,
   cacheWarmHandle,
   compactionHandle,
   computerServiceHandle,
@@ -96,6 +97,8 @@ export const manifest: Manifest = {
       "/workspaces/:id/layout/ops",
       "/workspaces/:id/star",
       "/workspaces/:id/title",
+      "/usage",
+      "/usage/:provider",
     ],
   },
   activation: "eager",
@@ -155,6 +158,7 @@ export function createTransportHttpExtension(): Extension & {
         pluginOwnership: { current: host.tryGetService(pluginOwnershipHandle) },
         layoutProviderRegistry: { current: host.tryGetService(layoutProviderRegistryHandle) },
         homeTileLayout: { current: host.tryGetService(homeTileLayoutHandle) },
+        accountUsage: { current: host.tryGetService(accountUsageServiceHandle) },
       };
 
       function watch<T>(handle: ServiceHandle<T>, slot: { current: T | undefined }): () => void {
@@ -184,6 +188,7 @@ export function createTransportHttpExtension(): Extension & {
         watch(pluginOwnershipHandle, slots.pluginOwnership),
         watch(layoutProviderRegistryHandle, slots.layoutProviderRegistry),
         watch(homeTileLayoutHandle, slots.homeTileLayout),
+        watch(accountUsageServiceHandle, slots.accountUsage),
       ];
 
       const logger = host.logger;
@@ -241,6 +246,9 @@ export function createTransportHttpExtension(): Extension & {
         },
         get homeTileLayout() {
           return slots.homeTileLayout.current;
+        },
+        get accountUsageService() {
+          return slots.accountUsage.current;
         },
         // Live tier lookup over the loaded manifests (plan 06 §6.5) — read
         // per call so mid-session loads/unloads are seen on the next

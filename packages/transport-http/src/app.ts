@@ -6,6 +6,9 @@ import type { LayoutProviderRegistry } from "@dispatch/layout-provider-contract"
 import { createLayoutRouteHandlers } from "@dispatch/layout-provider-contract";
 import { DEFAULT_TEMPLATE, getVariableCatalog } from "@dispatch/system-prompt";
 import type {
+  AccountUsageProviderId,
+  AccountUsageReport,
+  AccountUsageResponse,
   CloseConversationResponse,
   CompactPercentResponse,
   CompactResponse,
@@ -92,7 +95,7 @@ import {
   pluginOpStatus,
   serializeEventLine,
 } from "./logic.js";
-import type { PluginOwnership } from "./seam.js";
+import type { AccountUsageService, PluginOwnership } from "./seam.js";
 import {
   type CompactionService,
   type ComputerService,
@@ -236,6 +239,12 @@ export interface CreateServerOptions {
    * thin shells (D-L6: no tile-document knowledge here).
    */
   readonly homeTileLayout?: HomeTileLayoutService | undefined;
+  /**
+   * Optional + reactive — Claude/Codex subscription usage (provided by the
+   * standard `account-usage` extension; read per request via a registry
+   * slot). When absent, `GET /usage*` degrades to 503.
+   */
+  readonly accountUsageService?: AccountUsageService | undefined;
   /**
    * Live tier lookup over the host's loaded manifests (wired by the
    * extension from `host.getExtensions()`). Used by `GET /models?workspaceId=`
@@ -543,6 +552,44 @@ export function createApp(opts: CreateServerOptions): Hono {
     } catch (err) {
       log.error("models: failed to retrieve catalog", { err });
       return c.json({ error: "Failed to retrieve model catalog" }, 502);
+    }
+  });
+
+  // ─── Account usage (Claude / Codex subscription quotas) ─────────────────────
+  // Thin shells over the account-usage service, which owns caching (5 min TTL
+  // ±25%), failure cooldowns, and in-flight dedup. `?refresh=1` asks for a
+  // refresh but the service still enforces its cooldown / min interval, so a
+  // client can never drive unrestricted provider requests.
+
+  app.get("/usage", async (c) => {
+    const svc = opts.accountUsageService;
+    if (svc === undefined) return c.json({ error: "Account usage service not available" }, 503);
+    const refresh = c.req.query("refresh") === "1" || c.req.query("refresh") === "true";
+    try {
+      const body: AccountUsageResponse = await svc.getAll({ refresh });
+      return c.json(body);
+    } catch (err) {
+      log.error("account-usage: getAll failed", { err });
+      return c.json({ error: "Failed to load account usage" }, 500);
+    }
+  });
+
+  app.get("/usage/:provider", async (c) => {
+    const svc = opts.accountUsageService;
+    if (svc === undefined) return c.json({ error: "Account usage service not available" }, 503);
+    const provider = c.req.param("provider");
+    if (provider !== "claude" && provider !== "codex") {
+      return c.json({ error: "provider must be one of: claude, codex" }, 404);
+    }
+    const refresh = c.req.query("refresh") === "1" || c.req.query("refresh") === "true";
+    try {
+      const body: AccountUsageReport = await svc.get(provider as AccountUsageProviderId, {
+        refresh,
+      });
+      return c.json(body);
+    } catch (err) {
+      log.error("account-usage: get failed", { err, provider });
+      return c.json({ error: "Failed to load account usage" }, 500);
     }
   });
 

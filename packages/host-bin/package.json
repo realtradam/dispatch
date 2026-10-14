@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "dependencies": {
+    "@dispatch/account-usage": "workspace:*",
     "@dispatch/agent-management": "workspace:*",
     "@dispatch/cache-warming": "workspace:*",
     "@dispatch/conversation-store": "workspace:*",
@@ -21,8 +22,8 @@
     "@dispatch/message-queue": "workspace:*",
     "@dispatch/named-agents": "workspace:*",
     "@dispatch/plugin-manager": "workspace:*",
-    "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/provider-baseten": "workspace:*",
+    "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/provider-hyper": "workspace:*",
     "@dispatch/provider-longcat": "workspace:*",
     "@dispatch/provider-openai-compat": "workspace:*",

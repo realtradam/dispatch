@@ -2,6 +2,8 @@ import { defineService, type ServiceHandle } from "@dispatch/kernel";
 import type { ComputerStatusResponse, TestComputerResponse } from "@dispatch/transport-contract";
 import type { Computer, ComputerEntry } from "@dispatch/wire";
 
+export type { AccountUsageService } from "@dispatch/account-usage";
+export { accountUsageServiceHandle } from "@dispatch/account-usage";
 export type { ConversationStore } from "@dispatch/conversation-store";
 export { conversationStoreHandle, isValidWorkspaceSlug } from "@dispatch/conversation-store";
 export type { CredentialStore } from "@dispatch/credential-store";

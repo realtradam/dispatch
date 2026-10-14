@@ -8,6 +8,9 @@
   "include": ["src/**/*.ts"],
   "references": [
     {
+      "path": "../account-usage"
+    },
+    {
       "path": "../cache-warming"
     },
     {
