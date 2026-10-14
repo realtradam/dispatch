@@ -104,12 +104,22 @@ re-render the clock locally between polls.
 Additional Codex meters (Spark) are independent of plan credits. `status`: `ok` < 90 % ≤
 `warning` < 100 % ≤ `exhausted`; `unknown` for uncapped spend.
 
-## 7. Inference-header ingestion
-`AccountUsageService.ingestHeaders(provider, headers)` is implemented + tested (Claude
-`anthropic-ratelimit-unified-*` fraction×100 / unix-seconds; Codex `x-codex-*`): throttled to
-1/min except exhausted windows, merges rows by id, never advances `fetchedAt`/`nextRefreshAt`.
-**Not wired yet**: the Claude/Codex providers live in the external `claude/` and `codex/` repos
-and don't expose response headers through a kernel contract; wiring needs a hook there.
+## 7. Inference-header ingestion (wired)
+- Kernel contract: `providerResponseHeaders` event hook (`kernel/provider.response-headers`,
+  payload `{ providerId, authId?, status, headers }`), exported from `@dispatch/kernel`.
+- `claude/` `provider-anthropic` emits it (authId `claude-oauth`) with only the
+  `anthropic-ratelimit-*` headers; `codex/` `provider-openai` emits it (authId `codex-oauth`) with
+  an allow-list of `x-codex-{primary,secondary,credits}-*`, `x-codex-plan-type`,
+  `x-codex-active-limit` (the opaque `x-codex-turn-state` is never forwarded). Emission happens on
+  every final HTTP response (success or error) and can never break the stream.
+- `account-usage` subscribes and calls `ingestHeaders`: throttled to 1/min unless a window is
+  exhausted; merges rows by id (endpoint-only rows like spend/scoped meters are kept); never
+  advances `fetchedAt`/`nextRefreshAt`; usage never moves backwards within the same window
+  instance (headers are coarser, e.g. `0.1` vs endpoint `11%`), only on a reset. A Codex 100%
+  window on a 2xx response is `warning` (the account is demonstrably serving).
+- Zero-length windows (`limit_window_seconds: 0` / `window-minutes: 0`) are Codex's "no such
+  window" placeholder and are dropped.
+- Header ingestion only refines an existing report; with no report yet, the next poll fills it.
 
 ## 8. Verification
 - Backend: `bun run typecheck` ✓, `bun run check` ✓, `bun run test` ✓ (174 files / 3149 tests;
@@ -117,5 +127,12 @@ and don't expose response headers through a kernel contract; wiring needs a hook
   `bun packages/plugin-verify/src/cli.ts packages/account-usage` ✓.
 - Live probe against real accounts: Claude (5h + 7d windows) and Codex Pro (7-day window) both
   `fresh`.
-- Known limitations: header ingestion unwired (above); reset-credit redemption intentionally not
-  implemented; mimicry constants (Claude betas/CLI version, Codex UA) are version-locked copies.
+- End-to-end live probe: real kernel host + real auth/provider extensions from `claude/` and
+  `codex/` + account-usage → one inference per provider emitted the event (12 Claude / 13 Codex
+  headers) and the cached reports stayed consistent.
+- claude: typecheck/check ✓, 89 tests; codex: typecheck/check ✓, 127 tests.
+- **Merge order:** merge the backend (kernel `providerResponseHeaders`) and rebuild its dist
+  (`bun run typecheck`) BEFORE merging the claude/codex branches — they value-import the hook
+  from `../backend/packages/kernel/dist`.
+- Known limitations: reset-credit redemption intentionally not implemented; mimicry constants
+  (Claude betas/CLI version, Codex UA) are version-locked copies.

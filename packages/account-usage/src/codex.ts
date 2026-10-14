@@ -99,7 +99,10 @@ interface RawWindow {
 function parseWindow(raw: unknown): RawWindow | undefined {
   if (!isRecord(raw)) return undefined;
   const usedPercent = toNumber(raw.used_percent);
-  const windowSeconds = toNumber(raw.limit_window_seconds);
+  // A zero-length window is Codex's placeholder for "no such window".
+  const rawSeconds = toNumber(raw.limit_window_seconds);
+  if (rawSeconds !== undefined && rawSeconds <= 0) return undefined;
+  const windowSeconds = rawSeconds;
   const resetAt = toNumber(raw.reset_at);
   const resetAfterSeconds = toNumber(raw.reset_after_seconds);
   if (
@@ -309,13 +312,19 @@ export function parseCodexUsagePayload(
 export function parseCodexRateLimitHeaders(
   headers: Readonly<Record<string, string>>,
   nowMs: number,
+  responseStatus?: number,
 ): AccountUsageLimit[] {
+  // A successful inference response proves the account is serving requests.
+  const served = responseStatus !== undefined && responseStatus >= 200 && responseStatus < 300;
   const out: AccountUsageLimit[] = [];
   for (const key of ["primary", "secondary"] as const) {
     const usedPercent = toNumber(headers[`x-codex-${key}-used-percent`]);
     if (usedPercent === undefined) continue;
     const minutes = toNumber(headers[`x-codex-${key}-window-minutes`]);
+    // `window-minutes: 0` is Codex's placeholder for an absent window.
+    if (minutes !== undefined && minutes <= 0) continue;
     const resetAt = toNumber(headers[`x-codex-${key}-reset-at`]);
+    const resetAfterSeconds = toNumber(headers[`x-codex-${key}-reset-after-seconds`]);
     const l = windowLimit({
       id: `codex:${key}`,
       key,
@@ -323,8 +332,10 @@ export function parseCodexRateLimitHeaders(
         usedPercent,
         ...(minutes !== undefined ? { windowSeconds: minutes * 60 } : {}),
         ...(resetAt !== undefined ? { resetAt } : {}),
+        ...(resetAfterSeconds !== undefined ? { resetAfterSeconds } : {}),
       },
       tier: null,
+      ...(served ? { allowed: true, limitReached: false } : {}),
       nowMs,
     });
     if (l) out.push(l);

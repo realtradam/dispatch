@@ -38,6 +38,7 @@ export {
   LAST_GOOD_RETENTION_MS,
   MIN_FORCED_INTERVAL_MS,
   PROVIDER_ORDER,
+  providerForResponse,
   SUCCESS_TTL_MS,
 } from "./service.js";
 export type { ProviderUsage } from "./shared.js";

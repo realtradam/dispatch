@@ -104,6 +104,7 @@ export type {
   ProviderContract,
   ProviderErrorEvent,
   ProviderEvent,
+  ProviderResponseHeadersPayload,
   ProviderStreamOptions,
   ProviderToolCallEvent,
   ProviderUsage,
@@ -114,6 +115,7 @@ export type {
   Usage,
   UsageEvent,
 } from "./provider.js";
+export { providerResponseHeaders } from "./provider.js";
 export type {
   EventEmitter,
   FinishReason,

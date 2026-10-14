@@ -385,3 +385,48 @@ describe("codex fetcher", () => {
     expect(r.limits[0]?.used).toBe(40);
   });
 });
+
+describe("provider response-headers routing", () => {
+  it("routes by auth id, then by header prefix", async () => {
+    const { providerForResponse } = await import("./service.js");
+    expect(
+      providerForResponse({
+        providerId: "anthropic",
+        authId: "claude-oauth",
+        status: 200,
+        headers: {},
+      }),
+    ).toBe("claude");
+    expect(
+      providerForResponse({
+        providerId: "openai",
+        authId: "codex-oauth",
+        status: 200,
+        headers: {},
+      }),
+    ).toBe("codex");
+    expect(
+      providerForResponse({
+        providerId: "x",
+        authId: "apikey",
+        status: 200,
+        headers: { "x-codex-primary-used-percent": "1" },
+      }),
+    ).toBeNull();
+    expect(
+      providerForResponse({
+        providerId: "x",
+        status: 200,
+        headers: { "x-codex-primary-used-percent": "1" },
+      }),
+    ).toBe("codex");
+    expect(providerForResponse({ providerId: "x", status: 200, headers: {} })).toBeNull();
+  });
+
+  it("codex 100% on a successful response is a warning, not exhausted", async () => {
+    const { parseCodexRateLimitHeaders } = await import("./codex.js");
+    const h = { "x-codex-primary-used-percent": "100" };
+    expect(parseCodexRateLimitHeaders(h, 0, 200)[0]?.status).toBe("warning");
+    expect(parseCodexRateLimitHeaders(h, 0, 429)[0]?.status).toBe("exhausted");
+  });
+});

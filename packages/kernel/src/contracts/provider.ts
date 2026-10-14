@@ -8,6 +8,7 @@
 
 import type { ReasoningEffort, Usage } from "@dispatch/wire";
 import type { ChatMessage } from "./conversation.js";
+import { defineEventHook, type EventHookDescriptor } from "./hooks.js";
 import type { Logger } from "./logging.js";
 import type { ToolContract } from "./tool.js";
 
@@ -208,3 +209,32 @@ export interface ProviderContract {
    */
   readonly getUsage?: () => Promise<ProviderUsage | undefined>;
 }
+
+// --- Provider response metadata ---
+
+/**
+ * Payload of {@link providerResponseHeaders}: the HTTP response headers a
+ * provider received for one upstream inference request. Lets observers (e.g.
+ * an account-quota tracker) read upstream rate-limit metadata passively,
+ * without the provider knowing who listens.
+ *
+ * Providers MUST include only non-secret headers (response headers carry no
+ * credentials; providers may further restrict to a relevant prefix).
+ */
+export interface ProviderResponseHeadersPayload {
+  /** The provider id (`ProviderContract.id`). */
+  readonly providerId: string;
+  /** The auth provider id the request was billed through (e.g. "claude-oauth"), if any. */
+  readonly authId?: string;
+  /** HTTP status of the response. */
+  readonly status: number;
+  /** Response headers, keys lower-cased. */
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+/**
+ * Event hook emitted by provider extensions after each upstream inference
+ * response (success or error) — fire-and-forget, error-isolated.
+ */
+export const providerResponseHeaders: EventHookDescriptor<ProviderResponseHeadersPayload> =
+  defineEventHook<ProviderResponseHeadersPayload>("kernel/provider.response-headers");

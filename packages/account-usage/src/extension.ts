@@ -6,10 +6,23 @@
  * Auth providers are looked up PER FETCH (`host.getAuthProvider`), so a
  * provider loaded after this extension, or absent entirely, is handled
  * (absent ⇒ `not-configured`). No secrets are stored or logged.
+ *
+ * It also subscribes to the kernel `providerResponseHeaders` event so the
+ * claude/codex providers' inference responses update the cached windows
+ * between polls (throttled; see `AccountUsageService.ingestHeaders`).
  */
-import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
+import {
+  type Extension,
+  type HostAPI,
+  type Manifest,
+  providerResponseHeaders,
+} from "@dispatch/kernel";
 import { createClaudeFetcher, createCodexFetcher, type FetcherDeps } from "./fetchers.js";
-import { accountUsageServiceHandle, createAccountUsageService } from "./service.js";
+import {
+  accountUsageServiceHandle,
+  createAccountUsageService,
+  providerForResponse,
+} from "./service.js";
 
 export const manifest: Manifest = {
   id: "account-usage",
@@ -23,7 +36,7 @@ export const manifest: Manifest = {
   contributes: { services: ["account-usage/service"] },
 };
 
-let disposeService: (() => void) | undefined;
+let disposers: Array<() => void> = [];
 
 export function activate(host: HostAPI): void {
   const logger = host.logger.child({ attrs: { extensionId: "account-usage" } });
@@ -46,13 +59,21 @@ export function activate(host: HostAPI): void {
     random: Math.random,
     logger,
   });
-  disposeService = host.provideService(accountUsageServiceHandle, service);
+  disposers = [
+    host.provideService(accountUsageServiceHandle, service),
+    // Passive ingestion: providers emit their inference response headers;
+    // route Claude/Codex ones (by auth id) into the cache.
+    host.on(providerResponseHeaders, (payload) => {
+      const provider = providerForResponse(payload);
+      if (provider) service.ingestHeaders(provider, payload.headers, payload.status);
+    }),
+  ];
   logger.info("account-usage: service activated");
 }
 
 export function deactivate(): void {
-  disposeService?.();
-  disposeService = undefined;
+  for (const d of disposers) d();
+  disposers = [];
 }
 
 export const extension: Extension = { manifest, activate, deactivate };

@@ -279,6 +279,31 @@ describe("codex usage payload", () => {
     expect(l[0]).toMatchObject({ used: 12, durationMs: 18_000_000, resetsAt: 1_760_010_000_000 });
   });
 
+  it("treats zero-length windows (live placeholder) as absent", () => {
+    // Exactly what a live Pro account sends: no secondary window.
+    const live = {
+      "x-codex-primary-reset-at": "1792472897",
+      "x-codex-primary-used-percent": "26",
+      "x-codex-primary-window-minutes": "10080",
+      "x-codex-secondary-reset-after-seconds": "0",
+      "x-codex-secondary-used-percent": "0",
+      "x-codex-secondary-window-minutes": "0",
+    };
+    const l = parseCodexRateLimitHeaders(live, NOW, 200);
+    expect(l.map((x) => x.id)).toEqual(["codex:primary"]);
+    expect(l[0]).toMatchObject({ used: 26, label: "7 days", resetsAt: 1_792_472_897_000 });
+    const u = parseCodexUsagePayload(
+      {
+        rate_limit: {
+          primary_window: { used_percent: 5, limit_window_seconds: 604_800 },
+          secondary_window: { used_percent: 0, limit_window_seconds: 0, reset_after_seconds: 0 },
+        },
+      },
+      NOW,
+    );
+    expect(u?.limits.map((x) => x.id)).toEqual(["codex:primary"]);
+  });
+
   it("extracts identity from the JWT and normalizes account base", () => {
     const token = jwt({
       "https://api.openai.com/auth": { chatgpt_account_id: "acc-1" },
@@ -315,5 +340,26 @@ describe("mergeLimits", () => {
       ["claude:5h", 50],
       ["claude:extra", 0.01],
     ]);
+  });
+
+  it("never moves usage backwards within the same window, but accepts a reset", () => {
+    const base = parseClaudeUsagePayload({
+      seven_day: { utilization: 11, resets_at: new Date(1_792_522_800_381).toISOString() },
+    });
+    const coarse = parseClaudeRateLimitHeaders({
+      "anthropic-ratelimit-unified-7d-utilization": "0.1",
+      "anthropic-ratelimit-unified-7d-reset": "1792522800",
+    });
+    expect(mergeLimits(base?.limits ?? [], coarse)[0]?.used).toBe(11);
+    const higher = parseClaudeRateLimitHeaders({
+      "anthropic-ratelimit-unified-7d-utilization": "0.15",
+      "anthropic-ratelimit-unified-7d-reset": "1792522800",
+    });
+    expect(mergeLimits(base?.limits ?? [], higher)[0]?.used).toBe(15);
+    const reset = parseClaudeRateLimitHeaders({
+      "anthropic-ratelimit-unified-7d-utilization": "0.01",
+      "anthropic-ratelimit-unified-7d-reset": String(1_792_522_800 + 7 * 86_400),
+    });
+    expect(mergeLimits(base?.limits ?? [], reset)[0]?.used).toBe(1);
   });
 });

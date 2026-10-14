@@ -109,16 +109,38 @@ export function slugify(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+/** Two reset timestamps within this tolerance are the same window instance. */
+const SAME_WINDOW_TOLERANCE_MS = 5 * 60_000;
+
+/**
+ * Pick the row to keep when a header row replaces an existing one. Within the
+ * SAME window instance usage only grows, and inference headers are coarser
+ * than the endpoint (e.g. `0.1` vs `11%`) — so never move usage backwards
+ * unless the window has reset (its `resetsAt` moved).
+ */
+function pickRow(existing: AccountUsageLimit, incoming: AccountUsageLimit): AccountUsageLimit {
+  const sameWindow =
+    existing.resetsAt === null ||
+    incoming.resetsAt === null ||
+    Math.abs(existing.resetsAt - incoming.resetsAt) <= SAME_WINDOW_TOLERANCE_MS;
+  if (sameWindow && incoming.used < existing.used) return existing;
+  return incoming;
+}
+
 /**
  * Merge header-derived limits into an existing report: rows with the same id
- * are replaced; endpoint-only rows (e.g. spend, scoped meters) are kept.
+ * are replaced (monotonic within a window — see `pickRow`); endpoint-only rows
+ * (e.g. spend, scoped meters) are kept.
  */
 export function mergeLimits(
   base: readonly AccountUsageLimit[],
   incoming: readonly AccountUsageLimit[],
 ): AccountUsageLimit[] {
   const byId = new Map(incoming.map((l) => [l.id, l] as const));
-  const merged = base.map((l) => byId.get(l.id) ?? l);
+  const merged = base.map((l) => {
+    const next = byId.get(l.id);
+    return next ? pickRow(l, next) : l;
+  });
   for (const l of incoming) if (!base.some((b) => b.id === l.id)) merged.push(l);
   return merged;
 }

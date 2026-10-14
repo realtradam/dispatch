@@ -16,7 +16,12 @@
  * State is owned by the returned closure (no module state). Clock + random
  * are injected for deterministic tests.
  */
-import { defineService, type Logger, type ServiceHandle } from "@dispatch/kernel";
+import {
+  defineService,
+  type Logger,
+  type ProviderResponseHeadersPayload,
+  type ServiceHandle,
+} from "@dispatch/kernel";
 import type {
   AccountUsageProviderId,
   AccountUsageReport,
@@ -58,6 +63,7 @@ export interface AccountUsageService {
   readonly ingestHeaders: (
     provider: AccountUsageProviderId,
     headers: Readonly<Record<string, string>>,
+    responseStatus?: number,
   ) => void;
 }
 
@@ -90,6 +96,23 @@ interface Entry {
   kind: "ok" | "error" | "not-configured" | "unsupported" | null;
   inflight: Promise<void> | null;
   headerIngestedAt: number | null;
+}
+
+/**
+ * Map a provider response-headers event to the account it bills. Keyed by the
+ * auth id (the claude/codex extensions' OAuth auth providers); falls back to
+ * header presence so a provider that omits `authId` still routes.
+ */
+export function providerForResponse(
+  payload: ProviderResponseHeadersPayload,
+): AccountUsageProviderId | null {
+  if (payload.authId === "claude-oauth") return "claude";
+  if (payload.authId === "codex-oauth") return "codex";
+  if (payload.authId !== undefined) return null;
+  const keys = Object.keys(payload.headers);
+  if (keys.some((k) => k.startsWith("anthropic-ratelimit-unified-"))) return "claude";
+  if (keys.some((k) => k.startsWith("x-codex-"))) return "codex";
+  return null;
 }
 
 export function jitter(baseMs: number, random: () => number): number {
@@ -236,12 +259,12 @@ export function createAccountUsageService(deps: AccountUsageServiceDeps): Accoun
       const providers = await Promise.all(PROVIDER_ORDER.map((p) => get(p, opts)));
       return { providers, servedAt: deps.now() };
     },
-    ingestHeaders(p, headers) {
+    ingestHeaders(p, headers, responseStatus) {
       const now = deps.now();
       const incoming =
         p === "claude"
           ? parseClaudeRateLimitHeaders(headers)
-          : parseCodexRateLimitHeaders(headers, now);
+          : parseCodexRateLimitHeaders(headers, now, responseStatus);
       if (incoming.length === 0) return;
       const e = entryFor(p);
       const exhausted = incoming.some((l) => l.status === "exhausted");
