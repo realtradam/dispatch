@@ -291,6 +291,8 @@ export interface ConversationOpenedPayload {
    * (fix-toolcall-duplicate-keys plan Part 4). Absent = default provider model.
    */
   readonly model?: string;
+  /** Effective visual group parent; absent = ungrouped. */
+  readonly tabGroupParentId?: string;
 }
 
 /**
@@ -301,6 +303,18 @@ export interface ConversationOpenedPayload {
  */
 export const conversationOpened: EventHookDescriptor<ConversationOpenedPayload> =
   defineEventHook<ConversationOpenedPayload>("session-orchestrator/conversation-opened");
+
+/** Purely visual grouping metadata; never changes lineage or manageability. */
+export interface ConversationTabGroupChangedPayload {
+  readonly conversationId: string;
+  readonly workspaceId: string;
+  readonly tabGroupParentId: string | null;
+}
+
+export const conversationTabGroupChanged: EventHookDescriptor<ConversationTabGroupChangedPayload> =
+  defineEventHook<ConversationTabGroupChangedPayload>(
+    "session-orchestrator/conversation-tab-group-changed",
+  );
 
 /** Payload for the conversationStatusChanged bus event. */
 export interface ConversationStatusChangedPayload {

@@ -99,6 +99,10 @@ function fakeConversationStore(): ConversationStore {
       return null;
     },
     async setReasoningEffort() {},
+    async getTabGroupParentId() {
+      return null;
+    },
+    async setTabGroupParentId() {},
     async listConversations() {
       return [];
     },

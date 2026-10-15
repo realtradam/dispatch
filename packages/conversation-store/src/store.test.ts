@@ -2408,3 +2408,69 @@ describe("ConversationStore — chunk turnId provenance", () => {
     expect((await store.load("c")).map((m) => m.role)).toEqual(["system", "user", "assistant"]);
   });
 });
+
+describe("visual tab group parent", () => {
+  it("defaults to lineage only until an override (id or explicit clearing) is persisted", async () => {
+    const storage = createMemoryStorage();
+    const store = createConversationStore(storage);
+    expect(await store.getTabGroupParentId("child")).toBeNull();
+    await store.setParentConversationId("child", "summoner");
+    expect(await store.getTabGroupParentId("child")).toBe("summoner");
+    await store.setTabGroupParentId("child", "visual-parent");
+    expect(await store.getTabGroupParentId("child")).toBe("visual-parent");
+    await store.setTabGroupParentId("child", null);
+    expect(await store.getTabGroupParentId("child")).toBeNull();
+    // Reads after reload must distinguish explicit ungrouping from absence.
+    const reloaded = createConversationStore(storage);
+    expect(await reloaded.getTabGroupParentId("child")).toBeNull();
+    expect(await reloaded.getParentConversationId("child")).toBe("summoner");
+    expect(await reloaded.listChildren("summoner")).toEqual([]); // no metadata/index yet
+    await store.setTabGroupParentId("child", "visual-parent");
+    expect(await reloaded.getTabGroupParentId("child")).toBe("visual-parent");
+  });
+
+  it("enriches list and single metadata with distinct lineage and effective visual parents", async () => {
+    const store = createConversationStore(createMemoryStorage());
+    for (const id of ["root", "defaulted", "overridden", "cleared"]) {
+      await store.setConversationTitle(id, id);
+      if (id !== "root") await store.setParentConversationId(id, "root");
+    }
+    await store.setTabGroupParentId("overridden", "defaulted");
+    await store.setTabGroupParentId("cleared", null);
+    await store.setModel("overridden", "credential/model");
+    const list = await store.listConversations();
+    for (const meta of list) expect(meta).toEqual(await store.getConversationMeta(meta.id));
+    expect(list.find((m) => m.id === "root")).not.toHaveProperty("tabGroupParentId");
+    expect(list.find((m) => m.id === "root")).not.toHaveProperty("parentConversationId");
+    expect(list.find((m) => m.id === "defaulted")).toMatchObject({
+      parentConversationId: "root",
+      tabGroupParentId: "root",
+    });
+    expect(list.find((m) => m.id === "overridden")).toMatchObject({
+      parentConversationId: "root",
+      tabGroupParentId: "defaulted",
+      model: "credential/model",
+    });
+    expect(list.find((m) => m.id === "cleared")).toHaveProperty("parentConversationId", "root");
+    expect(list.find((m) => m.id === "cleared")).not.toHaveProperty("tabGroupParentId");
+    expect(await store.listChildren("root")).toEqual(["defaulted", "overridden", "cleared"]);
+  });
+
+  it.each([
+    "visual-parent",
+    null,
+  ])("deletion removes the override %s without touching others", async (value) => {
+    const storage = createMemoryStorage();
+    const store = createConversationStore(storage);
+    await store.setConversationTitle("child", "child");
+    await store.setTabGroupParentId("child", value);
+    await store.setTabGroupParentId("other", "kept");
+    expect(await storage.has("conv:child:tab-group-parent")).toBe(true);
+    await store.deleteConversation("child");
+    expect(await storage.has("conv:child:tab-group-parent")).toBe(false);
+    expect(await store.getTabGroupParentId("other")).toBe("kept");
+    // Reusing the id must not retain a stale visual override/clear sentinel.
+    await store.setParentConversationId("child", "new-summoner");
+    expect(await store.getTabGroupParentId("child")).toBe("new-summoner");
+  });
+});

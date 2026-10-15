@@ -32,6 +32,7 @@ import {
   parseSeq,
   reasoningEffortKey,
   seqKey,
+  tabGroupParentKey,
   toolPolicyKey,
   VISION_SETTINGS_KEY,
   workspaceKey,
@@ -131,10 +132,13 @@ export interface ConversationStore {
    */
   readonly migrateLegacyOpenCodeModels: () => Promise<number>;
   /**
-   * The persisted parent conversation id for a spawned/forked conversation, or
-   * `null` if never set (a top-level conversation). The id of the PARENT
-   * conversation that spawned this one.
+   * Effective visual group parent: persisted override → lineage parent → null.
+   * An explicitly cleared override stays ungrouped even when lineage exists.
    */
+  readonly getTabGroupParentId: (conversationId: string) => Promise<string | null>;
+  /** Write the visual override; null explicitly ungroups, hiding any lineage fallback. */
+  readonly setTabGroupParentId: (conversationId: string, parentId: string | null) => Promise<void>;
+  /** The persisted lineage parent, independent of visual grouping. */
   readonly getParentConversationId: (conversationId: string) => Promise<string | null>;
   /**
    * Persist (upsert) the parent conversation id for a conversation. The
@@ -184,8 +188,8 @@ export interface ConversationStore {
    * Delete a conversation ENTIRELY: every persisted key in its `conv:{id}:*`
    * namespace (chunks, metrics, meta, cwd, model, computer, reasoning-effort,
    * compact-percent, image-transcriptions, parent, toolPolicy,
-   * named-agent-selection) and its entry in the conversation index. This is
-   * the normal conversation deletion lifecycle through which parent/toolPolicy
+   * named-agent-selection, tab-group-parent) and its entry in the conversation
+   * index. This is the normal conversation deletion lifecycle through which parent/toolPolicy
    * metadata is cleaned. Idempotent for an unknown conversation. Lineage
    * metadata only at the storage layer — it does not rewind append-only
    * history semantics of other conversations.
@@ -689,6 +693,22 @@ export function createConversationStore(
   now: () => number = Date.now,
   serverDefaultCwd: string = process.cwd(),
 ): ConversationStore {
+  /** Batch the scalar metadata reads, shared by list and single-meta responses. */
+  async function enrichMeta(meta: ConversationMeta): Promise<ConversationMeta> {
+    const [model, parentConversationId, override] = await Promise.all([
+      storage.get(modelKey(meta.id)),
+      storage.get(parentKey(meta.id)),
+      storage.get(tabGroupParentKey(meta.id)),
+    ]);
+    const tabGroupParentId = override === null ? parentConversationId : override || null;
+    return {
+      ...meta,
+      ...(model !== null ? { model } : {}),
+      ...(parentConversationId !== null ? { parentConversationId } : {}),
+      ...(tabGroupParentId !== null ? { tabGroupParentId } : {}),
+    };
+  }
+
   /**
    * Add `conversationId` to the persisted index (idempotent). The store is
    * not highly concurrent — the session-orchestrator serializes turns per
@@ -1081,6 +1101,17 @@ export function createConversationStore(
       return migrated;
     },
 
+    async getTabGroupParentId(conversationId) {
+      const override = await storage.get(tabGroupParentKey(conversationId));
+      if (override !== null) return override === "" ? null : override;
+      return this.getParentConversationId(conversationId);
+    },
+
+    async setTabGroupParentId(conversationId, parentId) {
+      // Absence means lineage fallback; empty string means explicitly ungrouped.
+      await storage.set(tabGroupParentKey(conversationId), parentId ?? "");
+    },
+
     async getParentConversationId(conversationId) {
       return await storage.get(parentKey(conversationId));
     },
@@ -1195,6 +1226,7 @@ export function createConversationStore(
         compactThresholdKey(conversationId),
         imageTranscriptionsKey(conversationId),
         parentKey(conversationId),
+        tabGroupParentKey(conversationId),
         toolPolicyKey(conversationId),
         namedAgentSelectionKey(conversationId),
         metricsSeqKey(conversationId),
@@ -1258,19 +1290,13 @@ export function createConversationStore(
         }
         metas.push(toMeta(id, row));
       }
-      // Surface the persisted per-conversation model on the list so clients can
-      // stamp a tab for a conversation opened from the backend list with its
-      // ACTUAL model (fix-toolcall-duplicate-keys plan Part 4) — point lookups
-      // alongside the existing meta scans; batched for the (small) index.
-      const withModel = await Promise.all(
-        metas.map(async (m) => {
-          const model = await this.getModel(m.id);
-          return model !== null ? { ...m, model } : m;
-        }),
-      );
+      // Surface the persisted model, lineage, and effective visual group parent.
+      // Point lookups alongside the existing meta scans; batched for the small index.
+      const enriched = await Promise.all(metas.map((m) => enrichMeta(m)));
+
       // Sort by lastActivityAt descending (most recent first). Stable sort
       // keeps first-seen (index) order for ties.
-      return withModel.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+      return enriched.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
     },
 
     async getConversationMeta(conversationId) {
@@ -1279,10 +1305,7 @@ export function createConversationStore(
       const row = parseMetaRow(raw);
       if (row === null) return null;
       const meta = toMeta(conversationId, row);
-      // Consistent with listConversations: surface the persisted per-conversation
-      // model when set (absent = default provider).
-      const model = await this.getModel(conversationId);
-      return model !== null ? { ...meta, model } : meta;
+      return enrichMeta(meta);
     },
 
     async setConversationTitle(conversationId, title) {

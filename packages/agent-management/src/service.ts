@@ -344,10 +344,12 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     // we still resolve from the store (correct for already-persisted metadata).
     const workspaceId = knownWorkspaceId ?? (await store.getWorkspaceId(conversationId));
     const model = await store.getModel(conversationId);
+    const tabGroupParentId = await store.getTabGroupParentId(conversationId);
     deps.emit(conversationOpened, {
       conversationId,
       workspaceId,
       ...(model !== null ? { model } : {}),
+      ...(tabGroupParentId !== null ? { tabGroupParentId } : {}),
     });
     return workspaceId;
   }

@@ -658,6 +658,8 @@ export interface ConversationMeta {
    * conversations that have no parent.
    */
   readonly parentConversationId?: string;
+  /** Effective visual group parent; absent = ungrouped. Does not change lineage. */
+  readonly tabGroupParentId?: string;
   /**
    * The per-conversation tool policy controlling which tools an agent may
    * invoke during a turn. Absent on conversations that have no persisted

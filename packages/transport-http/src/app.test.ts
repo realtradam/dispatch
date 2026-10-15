@@ -169,6 +169,10 @@ function createFakeConversationStore(
     async setReasoningEffort(conversationId, effort) {
       reasoningEffortStore.set(conversationId, effort);
     },
+    async getTabGroupParentId() {
+      return null;
+    },
+    async setTabGroupParentId() {},
     async getModel(conversationId) {
       return modelStore.get(conversationId) ?? null;
     },

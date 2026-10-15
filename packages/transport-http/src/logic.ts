@@ -5,7 +5,7 @@ import type {
   ReasoningEffort,
   StoredChunk,
 } from "@dispatch/kernel";
-import type { PluginOpResponse } from "@dispatch/transport-contract";
+import type { PluginOpResponse, SetTabGroupRequest } from "@dispatch/transport-contract";
 import type { NamedAgentSelectionSnapshot } from "@dispatch/wire";
 
 const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
@@ -563,4 +563,16 @@ export function parsePluginForceBody(
 export function pluginOpStatus(response: PluginOpResponse): 200 | 404 | 409 {
   if (response.ok) return 200;
   return response.reason === "not-found" ? 404 : 409;
+}
+
+/** Validate without normalizing ids: they are opaque identifiers, not titles. */
+export function parseTabGroupBody(body: unknown): SetTabGroupRequest | ParseError {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return { error: "Request body must be a JSON object" };
+  }
+  const parentId = (body as Record<string, unknown>).parentId;
+  if (parentId !== null && (typeof parentId !== "string" || parentId.trim().length === 0)) {
+    return { error: "Field 'parentId' must be a non-empty string or null" };
+  }
+  return { parentId };
 }

@@ -56,6 +56,7 @@ import type {
   StopHeartbeatRunResponse,
   SystemPromptTemplateResponse,
   SystemPromptVariablesResponse,
+  TabGroupResponse,
   TestComputerResponse,
   ThroughputResponse,
   TitleResponse,
@@ -90,6 +91,7 @@ import {
   parseReasoningEffortBody,
   parseSinceSeq,
   parseStatusFilter,
+  parseTabGroupBody,
   parseWarmBody,
   parseWindowParam,
   pluginOpStatus,
@@ -104,6 +106,7 @@ import {
   type ConversationStore,
   type CredentialStore,
   conversationOpened,
+  conversationTabGroupChanged,
   type HeartbeatService,
   isValidWorkspaceSlug,
   type LspServerStatus,
@@ -258,8 +261,9 @@ export interface CreateServerOptions {
   readonly now?: () => number;
   /**
    * Fire-and-forget event-bus emit (bound `host.emit`). Required by
-   * `POST /conversations/:id/open` to signal the frontend. When absent,
-   * that endpoint responds `500 { error: "not available" }`.
+   * `POST /conversations/:id/open` and `PUT /conversations/:id/tab-group` to
+   * signal the frontend. When absent, those endpoints respond with
+   * `500 { error: "not available" }` without writing.
    */
   readonly emit?: HostAPI["emit"];
   /**
@@ -311,6 +315,9 @@ function currentThroughputStore(opts: CreateServerOptions): ThroughputStore {
 export function createApp(opts: CreateServerOptions): Hono {
   const app = new Hono();
   const log = opts.logger ?? noopLogger;
+  // Visual graph writes must validate against the preceding committed write:
+  // concurrent A→B / B→A requests must not both pass their cycle checks.
+  let tabGroupWriteTail: Promise<void> = Promise.resolve();
   const generateId = opts.generateId ?? (() => crypto.randomUUID());
   const now = opts.now ?? (() => Date.now());
 
@@ -1730,14 +1737,78 @@ export function createApp(opts: CreateServerOptions): Hono {
     // the opened tab with the conversation's ACTUAL model (not the global
     // active model) — fix-toolcall-duplicate-keys plan Part 4.
     const model = await opts.conversationStore.getModel(conversationId);
+    const tabGroupParentId = await opts.conversationStore.getTabGroupParentId(conversationId);
     opts.emit(conversationOpened, {
       conversationId,
       workspaceId,
       ...(model !== null ? { model } : {}),
+      ...(tabGroupParentId !== null ? { tabGroupParentId } : {}),
     });
     log.info("conversations: opened", { conversationId, workspaceId });
     const body: OpenConversationResponse = { conversationId };
     return c.json(body, 200);
+  });
+
+  app.put("/conversations/:id/tab-group", async (c) => {
+    const conversationId = c.req.param("id");
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const parsed = parseTabGroupBody(body);
+    if (isParseError(parsed)) return c.json(parsed, 400);
+    const { parentId } = parsed;
+    if (parentId === conversationId) {
+      return c.json({ error: "A conversation cannot group under itself" }, 400);
+    }
+
+    const previousWrite = tabGroupWriteTail;
+    let releaseWrite: () => void = () => {};
+    tabGroupWriteTail = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    await previousWrite;
+    try {
+      const store = opts.conversationStore;
+      const meta = await store.getConversationMeta(conversationId);
+      if (meta === null) return c.json({ error: "Conversation not found" }, 404);
+      if (parentId !== null) {
+        const parent = await store.getConversationMeta(parentId);
+        if (parent === null) return c.json({ error: "Parent conversation not found" }, 404);
+        if (parent.workspaceId !== meta.workspaceId) {
+          return c.json({ error: "Tab group parent must be in the same workspace" }, 400);
+        }
+        // Walk EFFECTIVE visual links, never lineage. A visited set also bounds
+        // the walk when persisted data already contains an unrelated loop.
+        let cursor: string | null = parentId;
+        const visited = new Set<string>();
+        while (cursor !== null) {
+          if (cursor === conversationId) {
+            return c.json({ error: "Tab group would form a cycle" }, 409);
+          }
+          if (visited.has(cursor)) break;
+          visited.add(cursor);
+          cursor = await store.getTabGroupParentId(cursor);
+        }
+      }
+      if (opts.emit === undefined) return c.json({ error: "not available" }, 500);
+      await store.setTabGroupParentId(conversationId, parentId);
+      const tabGroupParentId = await store.getTabGroupParentId(conversationId);
+      opts.emit(conversationTabGroupChanged, {
+        conversationId,
+        workspaceId: meta.workspaceId,
+        tabGroupParentId,
+      });
+      const response: TabGroupResponse = { conversationId, tabGroupParentId };
+      return c.json(response, 200);
+    } catch (err) {
+      log.error("conversations: tab group set failure", { err });
+      return c.json({ error: "Failed to set tab group" }, 500);
+    } finally {
+      releaseWrite();
+    }
   });
 
   app.put("/conversations/:id/title", async (c) => {

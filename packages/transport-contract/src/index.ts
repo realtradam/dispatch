@@ -892,6 +892,7 @@ export type WsServerMessage =
   | ChatDeltaMessage
   | ChatErrorMessage
   | ConversationOpenMessage
+  | ConversationTabGroupChangedMessage
   | ConversationStatusChangedMessage
   | ConversationCompactedMessage
   | ExtensionsChangedMessage
@@ -900,6 +901,16 @@ export type WsServerMessage =
 
 // ─── Conversation list + metadata ────────────────────────────────────────────
 
+/** A visual grouping change, globally broadcast to every connected client. */
+export interface ConversationTabGroupChangedMessage {
+  readonly type: "conversation.tabGroupChanged";
+  readonly conversationId: string;
+  /** The conversation's persisted workspace id. */
+  readonly workspaceId: string;
+  /** The new EFFECTIVE tab group parent; null = ungrouped. */
+  readonly tabGroupParentId: string | null;
+}
+
 /**
  * Broadcast to all connected WS clients when a conversation is "opened" (e.g.
  * via the CLI `--open` flag). The frontend decides whether to open/focus a tab
@@ -907,6 +918,8 @@ export type WsServerMessage =
  */
 export interface ConversationOpenMessage {
   readonly type: "conversation.open";
+  /** Effective visual group parent; absent = ungrouped. */
+  readonly tabGroupParentId?: string;
   readonly conversationId: string;
   /**
    * The conversation's actual workspace id, so a frontend can open/focus it
@@ -1256,6 +1269,17 @@ export interface LastMessageResponse {
  */
 export interface OpenConversationResponse {
   readonly conversationId: string;
+}
+
+/** Body for `PUT /conversations/:id/tab-group`. null = remove from its group (ungroup). */
+export interface SetTabGroupRequest {
+  readonly parentId: string | null;
+}
+
+/** Response for `PUT /conversations/:id/tab-group` — the new EFFECTIVE value. */
+export interface TabGroupResponse {
+  readonly conversationId: string;
+  readonly tabGroupParentId: string | null;
 }
 
 /**

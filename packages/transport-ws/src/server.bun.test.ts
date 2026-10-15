@@ -1,9 +1,28 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { AgentEvent, Attributes, ErrorAttributes, Logger } from "@dispatch/kernel";
-import type { SessionOrchestrator, TurnEventListener } from "@dispatch/session-orchestrator";
-import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
+import {
+  type AgentEvent,
+  type Attributes,
+  createBus,
+  type ErrorAttributes,
+  type HostAPI,
+  type Logger,
+} from "@dispatch/kernel";
+import {
+  conversationOpened,
+  conversationTabGroupChanged,
+  type SessionOrchestrator,
+  sessionOrchestratorHandle,
+  type TurnEventListener,
+} from "@dispatch/session-orchestrator";
+import {
+  type SurfaceContext,
+  type SurfaceProvider,
+  type SurfaceRegistry,
+  surfaceRegistryHandle,
+} from "@dispatch/surface-registry";
 import type { ConversationStatus, WsServerMessage } from "@dispatch/transport-contract";
 import type { SurfaceCatalogEntry, SurfaceClientMessage, SurfaceSpec } from "@dispatch/ui-contract";
+import { createTransportWsExtension } from "./extension.js";
 import { catalogMessage, routeClientMessage, subKey } from "./router.js";
 
 // ── Fake Logger (captures records for assertions) ───────────────────────────
@@ -1300,5 +1319,64 @@ describe("extensions-changed broadcast (extensionsChanged hook — plan 05 §11)
 
     ws1.close();
     ws2.close();
+  });
+});
+
+describe("visual grouping hooks through the real WS extension", () => {
+  test("globally fans out group changes and effective open values with exact null/absent semantics", async () => {
+    const logger = fakeLogger();
+    const bus = createBus(logger);
+    bus.provideService(surfaceRegistryHandle, fakeRegistry([]));
+    bus.provideService(sessionOrchestratorHandle, fakeOrchestrator());
+    // Reserve an ephemeral TEST port, then hand it to the real extension.
+    // This does not interact with the already-running development server.
+    const reservation = Bun.serve({ port: 0, fetch: () => new Response("test") });
+    const port = reservation.port;
+    reservation.stop(true);
+    const extension = createTransportWsExtension();
+    const host = {
+      logger,
+      getService: bus.getService,
+      tryGetService: bus.tryGetService,
+      on: bus.on,
+      config: { get: (key: string) => (key === "surfaceWsPort" ? port : undefined) },
+      getExtensions: () => [],
+    } as unknown as HostAPI;
+    const clients: WebSocket[] = [];
+    try {
+      await extension.activate(host);
+      for (let i = 0; i < 2; i++) {
+        const ws = new WebSocket(`ws://localhost:${port}`);
+        clients.push(ws);
+        await waitForMessage(ws); // initial catalog, no chat subscriptions
+      }
+      const sendAndExpect = async (emit: () => void, expected: WsServerMessage) => {
+        const replies = clients.map(waitForMessage);
+        emit();
+        expect(await Promise.all(replies)).toEqual([expected, expected]);
+      };
+      for (const tabGroupParentId of ["visual-parent", null]) {
+        const payload = { conversationId: "child", workspaceId: "work", tabGroupParentId };
+        await sendAndExpect(() => bus.emit(conversationTabGroupChanged, payload), {
+          type: "conversation.tabGroupChanged",
+          ...payload,
+        });
+      }
+      for (const tabGroupParentId of ["visual-parent", undefined]) {
+        const payload = {
+          conversationId: "child",
+          workspaceId: "work",
+          model: "credential/model",
+          ...(tabGroupParentId !== undefined ? { tabGroupParentId } : {}),
+        };
+        await sendAndExpect(() => bus.emit(conversationOpened, payload), {
+          type: "conversation.open",
+          ...payload,
+        });
+      }
+    } finally {
+      for (const ws of clients) ws.close();
+      await extension.deactivate?.();
+    }
   });
 });

@@ -15,6 +15,7 @@ import {
   conversationCompacted,
   conversationOpened,
   conversationStatusChanged,
+  conversationTabGroupChanged,
   sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
 import type { SurfaceContext, SurfaceProvider, SurfaceRegistry } from "@dispatch/surface-registry";
@@ -193,13 +194,20 @@ export function createTransportWsExtension(): Extension {
       // orchestrator from the store), so a frontend opens/focuses the tab in
       // the correct workspace.
       disposers.push(
-        host.on(conversationOpened, ({ conversationId, workspaceId, model }) => {
+        host.on(conversationOpened, ({ conversationId, workspaceId, model, tabGroupParentId }) => {
           broadcast({
             type: "conversation.open",
             conversationId,
             workspaceId,
             ...(model !== undefined ? { model } : {}),
+            ...(tabGroupParentId !== undefined ? { tabGroupParentId } : {}),
           });
+        }),
+      );
+
+      disposers.push(
+        host.on(conversationTabGroupChanged, (payload) => {
+          broadcast({ type: "conversation.tabGroupChanged", ...payload });
         }),
       );
 

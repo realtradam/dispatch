@@ -12,7 +12,11 @@ import { conversationStoreHandle, createConversationStore } from "@dispatch/conv
 import type { CredentialStore } from "@dispatch/credential-store";
 import { createLogger, type StorageNamespace } from "@dispatch/kernel";
 import { createNamedAgentsService, type NamedAgentsService } from "@dispatch/named-agents";
-import type { SessionOrchestrator, StartTurnInput } from "@dispatch/session-orchestrator";
+import {
+  conversationOpened,
+  type SessionOrchestrator,
+  type StartTurnInput,
+} from "@dispatch/session-orchestrator";
 import type { NamedAgent, NamedAgentSelectionSnapshot } from "@dispatch/wire";
 import { describe, expect, it, vi } from "vitest";
 import { type AgentManagementDeps, createAgentManagementService } from "./service.js";
@@ -532,5 +536,58 @@ describe("AgentManagementService.summon — exactly-one selection", () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error.code).toBe("invalid-input");
+  });
+});
+
+describe("agent-management visual grouping on open", () => {
+  it("summon opens under the already-persisted lineage parent, and open_agent uses effective overrides", async () => {
+    const { service } = await makeNamedAgents();
+    const { deps } = makeDeps({
+      namedAgents: service,
+      credentialStore: makeFakeCredentialStore(["opencode-1/claude-sonnet-4.5"]),
+    });
+    const events: Array<{ hook: unknown; payload: unknown }> = [];
+    const svc = createAgentManagementService({
+      ...deps,
+      emit: (hook, payload) => {
+        events.push({ hook, payload });
+      },
+    });
+    await deps.conversationStore.setWorkspaceId("caller-1", "work");
+    const result = await svc.summon({
+      callerConversationId: "caller-1",
+      model: "opencode-1/claude-sonnet-4.5",
+      task: "help",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const conversationId = result.value.conversationId;
+    expect(events).toEqual([
+      {
+        hook: conversationOpened,
+        payload: {
+          conversationId,
+          workspaceId: "work",
+          tabGroupParentId: "caller-1",
+        },
+      },
+    ]);
+    // The fake orchestrator deliberately does not persist metadata. Lineage
+    // still precedes summon-open; ordinary open reads already-persisted state.
+    await deps.conversationStore.setConversationTitle(conversationId, "child");
+    await deps.conversationStore.setWorkspaceId(conversationId, "work");
+    for (const parentId of ["visual-only", null]) {
+      await deps.conversationStore.setTabGroupParentId(conversationId, parentId);
+      expect((await svc.open({ callerConversationId: "caller-1", conversationId })).ok).toBe(true);
+      expect(events.at(-1)).toEqual({
+        hook: conversationOpened,
+        payload: {
+          conversationId,
+          workspaceId: "work",
+          ...(parentId !== null ? { tabGroupParentId: parentId } : {}),
+        },
+      });
+      expect(await deps.conversationStore.getParentConversationId(conversationId)).toBe("caller-1");
+    }
   });
 });

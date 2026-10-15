@@ -67,6 +67,11 @@ export function parentKey(conversationId: string): string {
   return `conv:${conversationId}:parent`;
 }
 
+/** Visual group override: plain id, or empty string for explicitly ungrouped. */
+export function tabGroupParentKey(conversationId: string): string {
+  return `conv:${conversationId}:tab-group-parent`;
+}
+
 /** The per-conversation tool policy (JSON `ConversationToolPolicy`). */
 export function toolPolicyKey(conversationId: string): string {
   return `conv:${conversationId}:toolpolicy`;

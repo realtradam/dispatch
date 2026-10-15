@@ -30,6 +30,7 @@ export {
   cacheWarmHandle,
   compactionHandle,
   conversationOpened,
+  conversationTabGroupChanged,
   pluginOwnershipHandle,
   sessionOrchestratorHandle,
 } from "@dispatch/session-orchestrator";
