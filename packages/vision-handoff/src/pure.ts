@@ -191,6 +191,15 @@ export function formatNoVisionPlaceholder(): string {
 }
 
 /**
+ * Placeholder text used when an image's bytes are no longer available (the tmp
+ * file is gone — e.g. the image dir did not survive a reboot). Substituted
+ * instead of failing the turn. Pure.
+ */
+export function formatImageUnavailablePlaceholder(): string {
+  return "[Image unavailable — the original file is no longer on disk.]";
+}
+
+/**
  * Maximum length of the consultation title body (matching the conversation
  * store's `TITLE_MAX`). The question is truncated to this before the
  * `"IMAGE - "` prefix is applied so the consultation tab's title stays in line

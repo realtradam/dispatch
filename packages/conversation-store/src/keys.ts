@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const SEQ_PAD = 10;
 
 export function seqKey(conversationId: string): string {
@@ -90,9 +92,40 @@ export function compactThresholdKey(conversationId: string): string {
   return `conv:${conversationId}:compact-percent`;
 }
 
-/** Per-conversation image transcription cache (JSON map of imageUrl → transcription). */
-export function imageTranscriptionsKey(conversationId: string): string {
+/**
+ * The LEGACY per-conversation image transcription cache key: one JSON object
+ * mapping (resolved) image URL → transcription text. Retained only for
+ * migration / deletion — the runtime uses {@link imageTranscriptionKey}.
+ */
+export function legacyImageTranscriptionsKey(conversationId: string): string {
   return `conv:${conversationId}:image-transcriptions`;
+}
+
+/**
+ * SHA-256 hex digest of a persisted image URL. The transcription cache key is
+ * derived from the URL **as stored in history** (the compact `/images/...` URL
+ * or a legacy inline `data:` URL) — never the resolved data URL — so the key is
+ * stable regardless of whether the temp file still exists, and cheap to compute
+ * without reading the image. Pure given the URL string.
+ */
+export function hashImageUrl(url: string): string {
+  return createHash("sha256").update(url).digest("hex");
+}
+
+/**
+ * The per-image transcription cache key:
+ * `conv:<id>:image-transcription:<sha256-hex(persistedUrl)>`. Note the SINGULAR
+ * `image-transcription:` segment (with the trailing colon) — it does not match
+ * the legacy `conv:<id>:image-transcriptions` key, so prefix scans cannot
+ * confuse them.
+ */
+export function imageTranscriptionKey(conversationId: string, url: string): string {
+  return `${imageTranscriptionPrefix(conversationId)}${hashImageUrl(url)}`;
+}
+
+/** Prefix of every per-image transcription row for a conversation. */
+export function imageTranscriptionPrefix(conversationId: string): string {
+  return `conv:${conversationId}:image-transcription:`;
 }
 
 /** Global vision settings (image compaction limit + compaction model). */

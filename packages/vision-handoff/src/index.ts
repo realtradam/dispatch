@@ -5,6 +5,7 @@ export {
   findVisionModelName,
   formatConsultResult,
   formatImagePlaceholder,
+  formatImageUnavailablePlaceholder,
   formatNoVisionPlaceholder,
   isVisionCapable,
 } from "./pure.js";

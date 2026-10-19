@@ -37,6 +37,7 @@ import {
   formatConsultationTitle,
   formatConsultResult,
   formatImagePlaceholder,
+  formatImageUnavailablePlaceholder,
   formatNoVisionPlaceholder,
   isVisionCapable,
 } from "./pure.js";
@@ -52,6 +53,11 @@ export interface ResolvedVisionModel {
 
 /** A registered image (looked up by the consult_vision tool via imageId). */
 interface RegisteredImage {
+  /**
+   * The image URL AS PERSISTED in history — the compact `/images/...` URL (or a
+   * legacy inline `data:` URL). Resolution to a provider-ready data URL happens
+   * lazily in `consultVision`, only when the image is actually consulted.
+   */
   readonly url: string;
   readonly mimeType?: string;
 }
@@ -80,17 +86,19 @@ export interface VisionHandoffDeps {
    */
   readonly resolveAgentManagement?: () => AgentManagementService | undefined;
   /**
-   * Get the per-conversation cached image transcriptions (imageUrl → text).
-   * Used to avoid re-transcribing old images that were compacted to text on a
-   * previous turn. Optional — when absent, compaction still works but
-   * re-transcribes every turn (no caching).
+   * Get cached transcriptions for the given PERSISTED image URLs (compact
+   * `/images/...` URLs or legacy inline `data:` URLs). Only the requested rows
+   * are read. Returns a map keyed by the original URL; absent URLs are cache
+   * misses. Optional — when absent, compaction still works but re-transcribes
+   * every turn (no caching).
    */
   readonly getImageTranscriptions?: (
     conversationId: string,
+    urls: readonly string[],
   ) => Promise<ReadonlyMap<string, string>>;
   /**
-   * Upsert a single image transcription into the per-conversation cache.
-   * Optional — paired with getImageTranscriptions.
+   * Upsert a single image transcription into the per-conversation cache, keyed
+   * by the PERSISTED image URL. Optional — paired with getImageTranscriptions.
    */
   readonly setImageTranscription?: (
     conversationId: string,
@@ -271,16 +279,152 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
     return { provider: resolved.provider, model: resolved.model, modelName: name };
   }
 
+  /** One image chunk's location in the message list, with its persisted URL. */
+  interface ImageEntry {
+    readonly msgIdx: number;
+    readonly chunkIdx: number;
+    /** The URL AS PERSISTED in history (compact `/images/...` or inline `data:`). */
+    readonly url: string;
+  }
+
+  /** Whether resolving this persisted URL requires the injected file resolver. */
+  function needsResolution(url: string): boolean {
+    return deps.resolveImageUrl !== undefined && url.startsWith("/images/");
+  }
+
+  /** Every image chunk in order (oldest first), with its persisted URL. */
+  function collectImageEntries(messages: readonly ChatMessage[]): ImageEntry[] {
+    const entries: ImageEntry[] = [];
+    for (const [msgIdx, msg] of messages.entries()) {
+      for (const [chunkIdx, chunk] of msg.chunks.entries()) {
+        if (chunk.type === "image") entries.push({ msgIdx, chunkIdx, url: chunk.url });
+      }
+    }
+    return entries;
+  }
+
+  /**
+   * Resolve ONE persisted image URL to a provider-ready data URL. Compact
+   * `/images/...` URLs are read through the injected resolver; `data:` URLs pass
+   * through unchanged. Returns `undefined` (never throws) when the bytes cannot
+   * be read — the caller substitutes text so a missing file never fails a turn.
+   */
+  async function tryResolveImage(
+    persistedUrl: string,
+    conversationId: string | undefined,
+    logger: Logger | undefined,
+  ): Promise<string | undefined> {
+    const resolve = deps.resolveImageUrl;
+    if (resolve === undefined || !persistedUrl.startsWith("/images/")) {
+      return persistedUrl;
+    }
+    try {
+      return await resolve(persistedUrl);
+    } catch (err) {
+      // Log the identifier, never the bytes.
+      logger?.warn("vision-handoff: image bytes unavailable", {
+        conversationId: conversationId ?? null,
+        url: persistedUrl,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Build the provider message list: images with a known transcription are
+   * replaced by text; every other image is resolved to a data URL lazily (only
+   * the ones actually sent natively). A resolution failure falls back to a
+   * cached transcription when one exists, else to a short unavailable
+   * placeholder — so a missing tmp file never fails a turn.
+   *
+   * `transcribed` maps PERSISTED URL → transcription text.
+   */
+  async function buildProviderMessages(
+    messages: readonly ChatMessage[],
+    transcribed: ReadonlyMap<string, string>,
+    conversationId: string | undefined,
+    logger: Logger | undefined,
+  ): Promise<readonly ChatMessage[]> {
+    const nativeUrls = new Set<string>();
+    for (const entry of collectImageEntries(messages)) {
+      if (!transcribed.has(entry.url)) nativeUrls.add(entry.url);
+    }
+
+    // Resolve each native image exactly once.
+    const dataUrls = new Map<string, string>();
+    const failedUrls: string[] = [];
+    for (const url of nativeUrls) {
+      const dataUrl = await tryResolveImage(url, conversationId, logger);
+      if (dataUrl !== undefined) dataUrls.set(url, dataUrl);
+      else failedUrls.push(url);
+    }
+
+    // Missing bytes: prefer an already-cached transcription (e.g. the user
+    // raised `imageLimit` after the image was transcribed and its file
+    // deleted), else the unavailable placeholder.
+    const cachedFallbacks = new Map<string, string>();
+    if (
+      failedUrls.length > 0 &&
+      conversationId !== undefined &&
+      deps.getImageTranscriptions !== undefined
+    ) {
+      const cached = await deps.getImageTranscriptions(conversationId, failedUrls);
+      for (const [url, text] of cached) cachedFallbacks.set(url, text);
+    }
+
+    const result: ChatMessage[] = [];
+    for (const msg of messages) {
+      if (!msg.chunks.some((c) => c.type === "image")) {
+        result.push(msg);
+        continue;
+      }
+      const newChunks: Chunk[] = [];
+      for (const chunk of msg.chunks) {
+        if (chunk.type !== "image") {
+          newChunks.push(chunk);
+          continue;
+        }
+        const transcription = transcribed.get(chunk.url);
+        if (transcription !== undefined) {
+          newChunks.push({ type: "text", text: `[Compacted image]: ${transcription}` });
+          continue;
+        }
+        const dataUrl = dataUrls.get(chunk.url);
+        if (dataUrl !== undefined) {
+          newChunks.push({
+            type: "image",
+            url: dataUrl,
+            ...(chunk.mimeType !== undefined ? { mimeType: chunk.mimeType } : {}),
+          });
+          continue;
+        }
+        const cachedText = cachedFallbacks.get(chunk.url);
+        newChunks.push({
+          type: "text",
+          text:
+            cachedText !== undefined
+              ? `[Compacted image]: ${cachedText}`
+              : formatImageUnavailablePlaceholder(),
+        });
+      }
+      result.push({ role: msg.role, chunks: newChunks });
+    }
+    return result;
+  }
+
   /**
    * Compact images for a vision-capable model: when the conversation has more
    * image chunks than the limit, the oldest images are transcribed to text
-   * (one-time, cached in the conversation store) and stripped from the
-   * provider messages. Recent images (within the limit) stay native.
+   * (one-time, cached in the conversation store by PERSISTED URL) and stripped
+   * from the provider messages. Recent images (within the limit) stay native.
+   *
+   * Resolution is LAZY: images are read + base64-encoded only when they are
+   * actually sent to the provider (the newest `limit`) or need a fresh
+   * transcription (cache misses). Cached, already-transcribed images are never
+   * read again.
    *
    * The persisted history is NOT modified — only the provider's view.
-   * Transcriptions are cached so they're reused on subsequent turns (no
-   * re-transcription). When no caching deps are available, it still works but
-   * re-transcribes every turn.
    */
   async function compactImagesForVisionModel(
     messages: readonly ChatMessage[],
@@ -297,36 +441,34 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
   ): Promise<readonly ChatMessage[]> {
     void currentModelName; // reserved for future model-specific compaction logic
     const limit = opts?.imageLimit;
-    // No limit or limit <= 0 → pass all images through (compaction disabled).
-    if (limit === undefined || limit <= 0) return messages;
+    const convId = opts?.conversationId;
+    const log = opts?.logger ?? deps.logger;
+    const entries = collectImageEntries(messages);
 
-    // Collect all image chunks in order (oldest first, across all messages).
-    const imageEntries: { msgIdx: number; chunkIdx: number; url: string }[] = [];
-    for (const [mi, msg] of messages.entries()) {
-      for (const [ci, chunk] of msg.chunks.entries()) {
-        if (chunk.type === "image") {
-          imageEntries.push({ msgIdx: mi, chunkIdx: ci, url: chunk.url });
-        }
-      }
+    // No limit, limit <= 0, or within the limit → every image travels natively.
+    if (limit === undefined || limit <= 0 || entries.length <= limit) {
+      // Fast path: nothing to resolve (all data URLs / no resolver) — keep the
+      // input untouched (same reference, no copy).
+      if (!entries.some((e) => needsResolution(e.url))) return messages;
+      return buildProviderMessages(messages, new Map(), convId, log);
     }
 
-    // If within the limit, pass everything through natively.
-    if (imageEntries.length <= limit) return messages;
+    // The oldest (count − limit) images need transcription; the newest stay native.
+    const toTranscribe = entries.slice(0, entries.length - limit);
 
-    // The oldest (imageEntries.length - limit) images need transcription.
-    const toTranscribeCount = imageEntries.length - limit;
-    const toTranscribe = imageEntries.slice(0, toTranscribeCount);
+    // Load cached transcriptions ONLY for the images that need them.
+    const transcriptions = new Map<string, string>();
+    if (convId !== undefined && deps.getImageTranscriptions !== undefined) {
+      const requested = [...new Set(toTranscribe.map((e) => e.url))];
+      const cached = await deps.getImageTranscriptions(convId, requested);
+      for (const [url, text] of cached) transcriptions.set(url, text);
+    }
 
-    // Load cached transcriptions.
-    const convId = opts?.conversationId;
-    const cache =
-      convId !== undefined && deps.getImageTranscriptions !== undefined
-        ? await deps.getImageTranscriptions(convId)
-        : new Map<string, string>();
+    const hasMisses = toTranscribe.some((e) => !transcriptions.has(e.url));
+    const vision = hasMisses
+      ? await resolveVisionModel(undefined, opts?.compactionModel ?? undefined)
+      : undefined;
 
-    // Transcribe any that aren't cached yet (via the vision model).
-    const transcriptions = new Map<string, string>(cache);
-    const vision = await resolveVisionModel(undefined, opts?.compactionModel ?? undefined);
     for (const entry of toTranscribe) {
       // Abort check: stop before starting the next image's transcription.
       // On abort we stop here and let the caller proceed to runTurn, which
@@ -343,6 +485,16 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         );
         continue;
       }
+
+      // Resolve ONLY this image (cache miss), at the moment of transcription.
+      const dataUrl = await tryResolveImage(entry.url, convId, log);
+      if (dataUrl === undefined) {
+        // Missing file: substitute text but do NOT cache it, so it can be
+        // retried if the file reappears.
+        transcriptions.set(entry.url, formatImageUnavailablePlaceholder());
+        continue;
+      }
+
       try {
         const prompt =
           "Describe this image in detail. Include visible text (transcribe verbatim), " +
@@ -352,7 +504,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
           role: "user",
           chunks: [
             { type: "text", text: prompt },
-            { type: "image", url: entry.url },
+            { type: "image", url: dataUrl },
           ],
         };
         const stream = vision.provider.stream([userMessage], [], {
@@ -366,12 +518,14 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         const text =
           description.length > 0 ? description : "[Image transcription produced no output.]";
         transcriptions.set(entry.url, text);
-        // Cache it in the conversation store (if available).
+        // Cache it under the PERSISTED URL (compact `/images/...` or a legacy
+        // inline data URL — never the resolved data URL of a compact image).
         if (convId !== undefined && deps.setImageTranscription !== undefined) {
           await deps.setImageTranscription(convId, entry.url, text);
         }
         // The image has been transcribed to text — delete the tmp file
         // (the transcription is cached, the raw image is no longer needed).
+        // `entry.url` is the PERSISTED compact URL, so cleanup actually runs.
         if (deps.deleteTmpImage !== undefined) {
           try {
             await deps.deleteTmpImage(entry.url);
@@ -387,73 +541,17 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
           break;
         }
         const msg = err instanceof Error ? err.message : String(err);
-        log?.warn("vision-handoff: image compaction transcription failed", { error: msg });
+        log?.warn("vision-handoff: image compaction transcription failed", {
+          conversationId: convId ?? null,
+          error: msg,
+        });
         transcriptions.set(entry.url, `[Image transcription failed: ${msg}]`);
       }
     }
 
-    // Build the provider messages: replace transcribed images with text,
-    // keep recent images (within the limit) native.
-    const transcribedUrls = new Set(toTranscribe.map((e) => e.url));
-    const result: ChatMessage[] = [];
-    for (const msg of messages) {
-      if (!msg.chunks.some((c) => c.type === "image")) {
-        result.push(msg);
-        continue;
-      }
-      const newChunks: Chunk[] = [];
-      for (const chunk of msg.chunks) {
-        if (chunk.type === "image" && transcribedUrls.has(chunk.url)) {
-          const transcription = transcriptions.get(chunk.url);
-          if (transcription !== undefined) {
-            newChunks.push({ type: "text", text: `[Compacted image]: ${transcription}` });
-          } else {
-            newChunks.push(chunk); // fallback: keep the image
-          }
-        } else {
-          newChunks.push(chunk);
-        }
-      }
-      result.push({ role: msg.role, chunks: newChunks });
-    }
-    return result;
-  }
-
-  async function resolveImageUrlsInMessages(
-    messages: readonly ChatMessage[],
-  ): Promise<readonly ChatMessage[]> {
-    const resolveImageUrl = deps.resolveImageUrl;
-    if (resolveImageUrl === undefined) return messages;
-    let hasCompact = false;
-    for (const msg of messages) {
-      if (msg.chunks.some((c) => c.type === "image")) {
-        hasCompact = true;
-        break;
-      }
-    }
-    if (!hasCompact) return messages;
-    const result: ChatMessage[] = [];
-    for (const msg of messages) {
-      if (!msg.chunks.some((c) => c.type === "image")) {
-        result.push(msg);
-        continue;
-      }
-      const newChunks: Chunk[] = [];
-      for (const chunk of msg.chunks) {
-        if (chunk.type === "image") {
-          const dataUrl = await resolveImageUrl(chunk.url);
-          newChunks.push({
-            type: "image",
-            url: dataUrl,
-            ...(chunk.mimeType !== undefined ? { mimeType: chunk.mimeType } : {}),
-          });
-        } else {
-          newChunks.push(chunk);
-        }
-      }
-      result.push({ role: msg.role, chunks: newChunks });
-    }
-    return result;
+    // Build the provider messages: transcribed images → text, recent images
+    // native (resolved lazily), missing files → cached text or placeholder.
+    return buildProviderMessages(messages, transcriptions, convId, log);
   }
 
   const service: VisionHandoffService = {
@@ -511,11 +609,6 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       // Fast path: no images anywhere → nothing to do.
       if (!hasImageChunks(messages)) return messages;
 
-      // Resolve compact URLs (/images/...) → data URLs for the provider.
-      // The persisted chunks store compact URLs (tiny strings); the provider
-      // needs data URLs (read from tmp files at runtime).
-      const resolved = await resolveImageUrlsInMessages(messages);
-
       const isCapable =
         currentModelName !== undefined &&
         (await isVisionCapable(currentModelName, await getInfo(currentModelName)));
@@ -524,11 +617,14 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       // When the conversation has more images than the limit, the oldest images
       // are transcribed to text (one-time, cached) and stripped from the
       // provider messages. Recent images (within the limit) stay native.
+      // Resolution is lazy — driven inside, only for images actually sent.
       if (isCapable) {
-        return compactImagesForVisionModel(resolved, opts, currentModelName);
+        return compactImagesForVisionModel(messages, opts, currentModelName);
       }
 
       // ── Non-vision model: placeholders + consult_vision ──────────────────
+      // Placeholder substitution needs NO image bytes: register the PERSISTED
+      // URL and resolve it lazily inside `consultVision` when it is consulted.
       const vision = await resolveVisionModel(undefined, opts?.compactionModel ?? undefined);
       const convId = opts?.conversationId;
 
@@ -542,7 +638,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       // per-conversation registry so the consult_vision tool can look it up.
       let seqId = 0;
       const result: ChatMessage[] = [];
-      for (const msg of resolved) {
+      for (const msg of messages) {
         if (!msg.chunks.some((c) => c.type === "image")) {
           result.push(msg);
           continue;
@@ -611,7 +707,8 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         };
       }
 
-      // Collect image data URLs to attach.
+      // Collect image data URLs to attach. Registered images hold the
+      // PERSISTED URL; resolve each lazily now that it is actually consulted.
       const images: ImageInput[] = [];
       if (opts.imageIds !== undefined) {
         for (const id of opts.imageIds) {
@@ -621,8 +718,14 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
               error: `Image ${id} is not registered. It may have been lost after a server restart — ask the user to re-paste the image.`,
             };
           }
+          const dataUrl = await tryResolveImage(img.url, opts.conversationId, opts.logger ?? log);
+          if (dataUrl === undefined) {
+            return {
+              error: `Image ${id} is no longer available on disk — ask the user to re-paste the image.`,
+            };
+          }
           images.push({
-            url: img.url,
+            url: dataUrl,
             ...(img.mimeType !== undefined ? { mimeType: img.mimeType } : {}),
           });
         }

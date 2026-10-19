@@ -31,6 +31,26 @@ export const extension: Extension = {
       );
     }
 
+    // One-time persisted-state migration: legacy image-transcription caches
+    // were one giant JSON blob per conversation keyed by full (resolved) image
+    // data URLs. Convert each to one small row per image keyed by
+    // sha256(persisted URL), then delete the blob. Idempotent — a second run
+    // finds no legacy keys. Errors are contained: boot must not fail.
+    try {
+      const imageMigration = await store.migrateImageTranscriptions();
+      if (imageMigration.blobs > 0 || imageMigration.skipped > 0) {
+        host.logger.info("conversation-store: image-transcription cache migration", {
+          blobs: imageMigration.blobs,
+          migrated: imageMigration.migrated,
+          skipped: imageMigration.skipped,
+        });
+      }
+    } catch (err) {
+      host.logger.warn("conversation-store: image-transcription migration failed (continuing)", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     const stale = await store.listConversations({ status: ["active"] });
     for (const m of stale) {
       await store.setConversationStatus(m.id, "idle");
