@@ -1,3 +1,4 @@
+import { createCredentialStore } from "@dispatch/credential-store";
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
 import type {
   AgentEvent,
@@ -618,6 +619,36 @@ describe("GET /health", () => {
 });
 
 describe("GET /models", () => {
+  it("returns healthy credentials when another credential has an expired key", async () => {
+    const credentialStore = createCredentialStore({
+      credentials: [
+        { name: "opencode-1", providerId: "opencode-1" },
+        { name: "healthy", providerId: "healthy" },
+      ],
+      getProvider: (id) => ({
+        id,
+        stream: async function* () {},
+        listModels: async () => {
+          if (id === "opencode-1") throw new Error("HTTP 401: api_key_expired");
+          return [{ id: "model", contextWindow: 128000, vision: true }];
+        },
+      }),
+    });
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore,
+      logger: noopLogger,
+    });
+
+    const res = await app.request("/models");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      models: ["healthy/model"],
+      modelInfo: { "healthy/model": { contextWindow: 128000, vision: true } },
+    });
+  });
+
   it("returns model catalog", async () => {
     const app = createApp({
       conversationStore: createFakeConversationStore(),

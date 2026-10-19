@@ -23,6 +23,7 @@ export function createCredentialStoreExtension(deps: {
       const store = createCredentialStore({
         credentials: deps.credentials,
         getProvider: (id) => host.getProviders().get(id),
+        logger: host.logger,
       });
       host.provideService(credentialStoreHandle, store);
     },

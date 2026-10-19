@@ -1,4 +1,4 @@
-import type { ModelInfo, ProviderContract } from "@dispatch/kernel";
+import type { Logger, ModelInfo, ProviderContract } from "@dispatch/kernel";
 
 export interface Credential {
   readonly name: string;
@@ -29,7 +29,7 @@ export interface CredentialStore {
   /**
    * The model catalog: for each credential, look up its provider and call listModels(),
    * emitting `${credential.name}/${modelInfo.id}`. Skip credentials whose provider is
-   * missing or has no listModels.
+   * missing, has no listModels, or fails to list models.
    */
   listCatalog(): Promise<readonly string[]>;
 
@@ -37,6 +37,7 @@ export interface CredentialStore {
    * The model catalog WITH per-model metadata, resolved in ONE pass: for each
    * credential, the provider's `listModels` is called exactly once and each
    * model's {@link ModelInfo} is carried alongside its fully-qualified name.
+   * Providers that fail to list models are logged and skipped for this request.
    *
    * This is the single-pass primitive a catalog endpoint (`GET /models`) should
    * use. Consumers that call `listCatalog()` then `getModelInfo()` per entry
@@ -56,6 +57,7 @@ export interface CredentialStore {
 export interface CredentialStoreDeps {
   readonly credentials: readonly Credential[];
   readonly getProvider: (id: string) => ProviderContract | undefined;
+  readonly logger?: Pick<Logger, "error">;
 }
 
 /**
@@ -75,7 +77,17 @@ async function listCatalogDetailedInternal(
     if (!provider?.listModels) {
       continue;
     }
-    const models = await provider.listModels();
+    let models: readonly ModelInfo[];
+    try {
+      models = await provider.listModels();
+    } catch (err) {
+      deps.logger?.error("catalog: failed to list models for credential", {
+        credential: credential.name,
+        providerId: credential.providerId,
+        err,
+      });
+      continue;
+    }
     for (const model of models) {
       entries.push({ name: `${credential.name}/${model.id}`, info: model });
     }

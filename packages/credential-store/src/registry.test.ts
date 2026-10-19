@@ -139,4 +139,55 @@ describe("createCredentialStore", () => {
       expect(info?.contextWindow).toBe(128000);
     });
   });
+
+  describe("catalog provider failures", () => {
+    it.each([
+      "first",
+      "middle",
+      "last",
+    ])("keeps healthy models and metadata when the %s provider fails", async (failedId) => {
+      const failure = new Error("HTTP 401: api_key_expired");
+      const errors: unknown[] = [];
+      const ids = ["first", "middle", "last"];
+      const localStore = createCredentialStore({
+        credentials: ids.map((id) => ({ name: id, providerId: id })),
+        getProvider: (id) =>
+          fakeProvider(id, async () => {
+            if (id === failedId) throw failure;
+            return [{ id: "model", contextWindow: 128000, vision: true }];
+          }),
+        logger: { error: (_message, attrs) => errors.push(attrs) },
+      });
+      const healthyIds = ids.filter((id) => id !== failedId);
+
+      expect(await localStore.listCatalog()).toEqual(healthyIds.map((id) => `${id}/model`));
+      expect(await localStore.listCatalogDetailed()).toEqual(
+        healthyIds.map((id) => ({
+          name: `${id}/model`,
+          info: { id: "model", contextWindow: 128000, vision: true },
+        })),
+      );
+      expect(errors).toEqual([
+        { credential: failedId, providerId: failedId, err: failure },
+        { credential: failedId, providerId: failedId, err: failure },
+      ]);
+    });
+
+    it("retries failed providers on the next catalog request, including synchronous failures", async () => {
+      let failing = true;
+      const localStore = createCredentialStore({
+        credentials: [{ name: "opencode-1", providerId: "opencode-1" }],
+        getProvider: (id) =>
+          fakeProvider(id, () => {
+            if (failing) throw new Error("HTTP 401: api_key_expired");
+            return Promise.resolve([{ id: "model" }]);
+          }),
+      });
+
+      expect(await localStore.listCatalog()).toEqual([]);
+      expect(await localStore.listCatalogDetailed()).toEqual([]);
+      failing = false;
+      expect(await localStore.listCatalog()).toEqual(["opencode-1/model"]);
+    });
+  });
 });
