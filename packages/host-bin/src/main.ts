@@ -42,6 +42,7 @@ import {
   toScannedEntries,
 } from "./plugin-discovery.js";
 import { reconcilePlugins, resolvePluginsDir } from "./plugin-reconcile.js";
+import { createShutdownController, EXIT_CODES } from "./shutdown-controller.js";
 
 function createEmptySecrets(): SecretsAccess {
   return {
@@ -390,19 +391,35 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     });
   }
 
-  let shuttingDown = false;
-  const shutdown = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    memoryTelemetry?.stop();
-    logger.info("Shutting down — deactivating extensions");
-    await host.deactivate();
-    logger.info("Draining collector");
-    await supervisor?.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  // --- Shutdown / crash handling -------------------------------------------
+  // Production runs under systemd with `Restart=on-failure`, which restarts
+  // ONLY on a non-zero exit, a signal, or a timeout. The controller owns the
+  // exit-code DECISION (see shutdown-controller.ts): SIGINT/SIGTERM → 0,
+  // uncaughtException → 1, and a cleanup that hangs past the deadline → 70
+  // (all non-zero crash codes restart the service). Every effect is injected,
+  // so the decisions are unit-tested without touching this process.
+  const shutdownController = createShutdownController({
+    cleanup: async () => {
+      memoryTelemetry?.stop();
+      logger.info("Shutting down — deactivating extensions");
+      await host.deactivate();
+      logger.info("Draining collector");
+      await supervisor?.stop();
+    },
+    exit: (code) => process.exit(code),
+    setTimer: (deadlineMs, onDeadline) => {
+      // Deliberately NOT unref'd: the timer only exists once shutdown has
+      // begun (it can never keep a healthy process alive), and keeping it
+      // ref'd guarantees the deadline fires even if cleanup leaves the event
+      // loop idle — otherwise Bun could exit on its own without our exit code.
+      const timer = setTimeout(onDeadline, deadlineMs);
+      return { cancel: () => clearTimeout(timer) };
+    },
+    logger,
+  });
+
+  process.on("SIGINT", () => void shutdownController.shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdownController.shutdown("SIGTERM"));
 
   const memorySnapshot = () => {
     const m = process.memoryUsage();
@@ -433,7 +450,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
       timestamp: new Date().toISOString(),
       ...memorySnapshot(),
     });
-    void shutdown();
+    // Crash path: same best-effort cleanup, but exits NON-ZERO so systemd's
+    // `Restart=on-failure` restarts the server. A crash during an in-progress
+    // SIGTERM shutdown escalates that shutdown's exit code to non-zero too.
+    void shutdownController.shutdown("uncaughtException");
   });
 
   logger.info("Dispatch booted");
@@ -442,10 +462,16 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
 
 // Only auto-boot when this module is the direct entry point (dev mode via
 // `bun packages/host-bin/src/main.ts`). When imported by a build wrapper
-// (compiled binary), the wrapper calls boot() itself with preloaded extensions.
+// (compiled binary), the wrapper calls boot() itself with preloaded extensions
+// and installs the same fatal-boot catch (bin/build's generated
+// `dist/main-build.ts` exits 1 — see `EXIT_CODES.crash`, the same non-zero
+// "failed, restart me" contract as a crash).
 if (import.meta.main) {
   boot().catch((err) => {
+    // A fatal boot error MUST exit non-zero: systemd's `Restart=on-failure`
+    // only restarts on a non-zero exit, so exit 0 here would leave the
+    // service down for good.
     console.error("Fatal boot error:", err);
-    process.exit(1);
+    process.exit(EXIT_CODES.crash);
   });
 }
