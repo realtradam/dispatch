@@ -208,6 +208,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     credentials.push({ name: "baseten", providerId: "baseten" });
     logger.info(`Registered credential "baseten" → baseten provider`);
   }
+  if (process.env.CORAL_API_KEY) {
+    credentials.push({ name: "coralbricks", providerId: "coralbricks" });
+    logger.info(`Registered credential "coralbricks" → coralbricks provider`);
+  }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),
   );
