@@ -129,8 +129,62 @@ export function resolveTools(tools: ReadonlyMap<string, unknown>): readonly unkn
   return [...tools.values()];
 }
 
+/**
+ * The default tool-dispatch policy: up to four tools at once, launched as
+ * soon as their call streams in. Tools flagged `concurrencySafe: false` still
+ * run exclusively (the kernel dispatcher enforces that regardless of the cap).
+ *
+ * Chosen as a CAP rather than unlimited (`0`): the contract doc flags
+ * unlimited parallelism as a deliberate opt-in, and a cap keeps a runaway
+ * batch bounded. Pure: returns a fresh value, no ambient state.
+ */
 export function defaultDispatchPolicy(): ToolDispatchPolicy {
-  return { maxConcurrent: 1, eager: true };
+  return { maxConcurrent: 4, eager: true };
+}
+
+/** Environment variable an operator uses to override the dispatch cap. */
+export const DISPATCH_TOOL_MAX_CONCURRENT_ENV = "DISPATCH_TOOL_MAX_CONCURRENT";
+
+/**
+ * The result of resolving the operator's dispatch override: the policy to
+ * hand to `runTurn`, plus an optional human-readable warning when the raw
+ * value was present but invalid. The caller (the extension's edge) logs the
+ * warning; this stays pure.
+ */
+export interface DispatchPolicyResolution {
+  readonly policy: ToolDispatchPolicy;
+  readonly warning?: string;
+}
+
+/**
+ * Parse the `DISPATCH_TOOL_MAX_CONCURRENT` override into a dispatch policy.
+ *
+ * - unset / empty / whitespace-only → {@link defaultDispatchPolicy}
+ *   (empty-string env values are treated as unset, matching the repo's
+ *   `DISPATCH_PLUGINS_DIR` convention)
+ * - a non-negative integer (`"0"` unlimited, `"1"` sequential, `"2"+` cap) →
+ *   that cap, `eager` stays `true`
+ * - anything else (`"-1"`, `"abc"`, `"2.5"`, overflow) → the default plus a
+ *   warning for the edge to log
+ *
+ * Pure: raw string in → decision out; no `process.env` read, no logging.
+ */
+export function resolveDispatchPolicy(raw: string | undefined): DispatchPolicyResolution {
+  const fallback = defaultDispatchPolicy();
+  if (raw === undefined || raw.trim().length === 0) {
+    return { policy: fallback };
+  }
+  const trimmed = raw.trim();
+  const maxConcurrent = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+  if (!Number.isSafeInteger(maxConcurrent)) {
+    return {
+      policy: fallback,
+      warning:
+        `invalid ${DISPATCH_TOOL_MAX_CONCURRENT_ENV}="${raw}" (expected an integer >= 0); ` +
+        `using the default maxConcurrent=${fallback.maxConcurrent}`,
+    };
+  }
+  return { policy: { maxConcurrent, eager: true } };
 }
 
 export function generateTurnId(): string {

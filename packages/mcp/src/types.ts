@@ -31,10 +31,24 @@ export interface McpServerStatus {
   readonly toolCount: number;
 }
 
+/**
+ * MCP tool annotations from `tools/list` (`annotations`). These are HINTS:
+ * the server's own claims, treated as untrusted input by Dispatch. The only
+ * hint we act on today is `readOnlyHint` (two concurrent read-only calls are
+ * assumed not to race); everything else is carried through untouched.
+ */
+export interface McpToolAnnotations {
+  readonly readOnlyHint?: boolean;
+  readonly destructiveHint?: boolean;
+  readonly idempotentHint?: boolean;
+  readonly openWorldHint?: boolean;
+}
+
 export interface McpToolInfo {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: ToolParameterSchema;
+  readonly annotations?: McpToolAnnotations;
 }
 
 export interface McpContentItem {

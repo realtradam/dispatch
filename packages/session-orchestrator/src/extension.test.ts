@@ -6,7 +6,7 @@ import { type MessageQueueService, messageQueueHandle } from "@dispatch/message-
 import { concurrencyServiceHandle } from "@dispatch/provider-concurrency";
 import { systemPromptHandle } from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
-import { activate } from "./extension.js";
+import { activate, createDispatchPolicy } from "./extension.js";
 import {
   cacheWarmHandle,
   compactionHandle,
@@ -14,6 +14,7 @@ import {
   sessionOrchestratorHandle,
   visionHandoffLocalHandle,
 } from "./orchestrator.js";
+import { DISPATCH_TOOL_MAX_CONCURRENT_ENV, defaultDispatchPolicy } from "./pure.js";
 
 // ── Injected fakes (effects, not mocks of our own modules) ─────────────────
 
@@ -167,5 +168,39 @@ describe("session-orchestrator extension (reactive service registry)", () => {
     expect(host.bus.tryGetService(concurrencyServiceHandle)).toBeUndefined();
     expect(host.bus.tryGetService(systemPromptHandle)).toBeUndefined();
     expect(host.bus.tryGetService(compactionHandle)).toBeDefined(); // core-provided at activate
+  });
+});
+
+// ── Tool-dispatch cap override (DISPATCH_TOOL_MAX_CONCURRENT) ──────────────
+
+describe("tool-dispatch policy at the extension edge", () => {
+  function createCapturingLogger(): { logger: { warn: (m: string) => void }; warnings: string[] } {
+    const warnings: string[] = [];
+    return { logger: { warn: (m) => warnings.push(m) }, warnings };
+  }
+
+  it("uses the default policy when the env var is absent", () => {
+    const { logger, warnings } = createCapturingLogger();
+    expect(createDispatchPolicy({}, logger)).toEqual(defaultDispatchPolicy());
+    expect(warnings).toEqual([]);
+  });
+
+  it("honors a valid override and keeps eager true", () => {
+    const { logger, warnings } = createCapturingLogger();
+    expect(createDispatchPolicy({ [DISPATCH_TOOL_MAX_CONCURRENT_ENV]: "2" }, logger)).toEqual({
+      maxConcurrent: 2,
+      eager: true,
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it("logs a warning and falls back to the default for an invalid value", () => {
+    const { logger, warnings } = createCapturingLogger();
+    expect(createDispatchPolicy({ [DISPATCH_TOOL_MAX_CONCURRENT_ENV]: "nope" }, logger)).toEqual(
+      defaultDispatchPolicy(),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("session-orchestrator:");
+    expect(warnings[0]).toContain(DISPATCH_TOOL_MAX_CONCURRENT_ENV);
   });
 });

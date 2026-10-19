@@ -14,9 +14,21 @@ import type {
   ToolParameterSchema,
   ToolResult,
 } from "@dispatch/kernel";
-import type { McpContentItem, McpToolCaller, McpToolInfo } from "./types.js";
+import type { McpContentItem, McpToolAnnotations, McpToolCaller, McpToolInfo } from "./types.js";
 
 const NAMESPACE_SEP = "__";
+
+/**
+ * Map MCP tool annotations to the kernel's `concurrencySafe` flag.
+ *
+ * Safe ONLY when the server explicitly claims `readOnlyHint: true` AND does
+ * not contradict itself with `destructiveHint: true`. Missing/false hints are
+ * UNSAFE (the conservative default): hints are untrusted, and a mutating
+ * server-side tool must never run concurrently with anything else.
+ */
+export function isConcurrencySafe(annotations: McpToolAnnotations | undefined): boolean {
+  return annotations?.readOnlyHint === true && annotations.destructiveHint !== true;
+}
 
 export function namespace(serverId: string, toolName: string): string {
   return `${serverId}${NAMESPACE_SEP}${toolName}`;
@@ -44,7 +56,7 @@ export function adaptTool(
     name: namespace(serverId, mcpTool.name),
     description: `[${serverId}] ${mcpTool.description}`,
     parameters,
-    concurrencySafe: false,
+    concurrencySafe: isConcurrencySafe(mcpTool.annotations),
     execute: async (args: unknown, ctx: ToolExecuteContext): Promise<ToolResult> => {
       const result = await caller.callTool(mcpTool.name, args, ctx.signal);
       const toolResult: ToolResult = {

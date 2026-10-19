@@ -35,7 +35,7 @@ import {
   type WarmCompletedPayload,
 } from "./orchestrator.js";
 import type { MemorySample } from "./pure.js";
-import { compactReplay } from "./pure.js";
+import { compactReplay, defaultDispatchPolicy } from "./pure.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
 function createInMemoryStore(): ConversationStore & {
@@ -407,22 +407,39 @@ describe("handleMessage integration", () => {
     expect(lastUserText).toEqual({ type: "text", text: "Second message" });
   });
 
-  it("uses custom dispatch policy when resolveDispatch is provided", async () => {
+  it("hands the default dispatch policy to runTurn when resolveDispatch is absent", async () => {
     const store = createInMemoryStore();
-    const provider = createFakeProvider([
-      [
-        { type: "text-delta", delta: "ok" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
+    const { captured, captureRunTurn } = createCapturingRunTurn();
 
     const { orchestrator } = createSessionOrchestrator({
       conversationStore: store,
-      resolveProvider: () => provider,
+      resolveProvider: () => ({ id: "fake", stream: async function* () {} }),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn: captureRunTurn,
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-dispatch-default",
+      text: "test",
+      onEvent: () => {},
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.dispatch).toEqual(defaultDispatchPolicy());
+  });
+
+  it("hands the resolved override to runTurn when resolveDispatch is provided", async () => {
+    const store = createInMemoryStore();
+    const { captured, captureRunTurn } = createCapturingRunTurn();
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => ({ id: "fake", stream: async function* () {} }),
       resolveTools: () => [],
       applyToolsFilter: identityApplyToolsFilter,
       resolveDispatch: () => ({ maxConcurrent: 4, eager: false }),
-      runTurn,
+      runTurn: captureRunTurn,
     });
 
     await orchestrator.handleMessage({
@@ -431,9 +448,8 @@ describe("handleMessage integration", () => {
       onEvent: () => {},
     });
 
-    const stored = store.data.get("conv-dispatch");
-    expect(stored).toBeDefined();
-    expect(stored?.length).toBeGreaterThanOrEqual(1);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.dispatch).toEqual({ maxConcurrent: 4, eager: false });
   });
 });
 

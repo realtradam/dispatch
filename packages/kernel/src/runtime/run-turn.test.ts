@@ -726,6 +726,103 @@ describe("runTurn", () => {
     expect(cStartIdx).toBeLessThan(aEndIdx);
   });
 
+  it("maxConcurrent caps how many safe tools run at once (2 of 3)", async () => {
+    let running = 0;
+    let maxRunning = 0;
+    const log: string[] = [];
+
+    const makeTool = (name: string): ToolContract =>
+      createFakeTool(
+        name,
+        async () => {
+          running++;
+          maxRunning = Math.max(maxRunning, running);
+          log.push(`${name}:start`);
+          await delay(20);
+          running--;
+          log.push(`${name}:end`);
+          return { content: name };
+        },
+        { concurrencySafe: true },
+      );
+
+    const provider = createFakeProvider([
+      [
+        { type: "tool-call", toolCallId: "tc1", toolName: "a", input: {} },
+        { type: "tool-call", toolCallId: "tc2", toolName: "b", input: {} },
+        { type: "tool-call", toolCallId: "tc3", toolName: "c", input: {} },
+        { type: "finish", reason: "tool-calls" },
+      ],
+      [
+        { type: "text-delta", delta: "done" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+
+    await runTurn({
+      provider,
+      messages: [userMessage],
+      tools: [makeTool("a"), makeTool("b"), makeTool("c")],
+      dispatch: { maxConcurrent: 2, eager: false },
+      conversationId: "tab-test",
+      turnId: "turn-test",
+      emit: () => {},
+    });
+
+    // The cap is respected: never three at once.
+    expect(maxRunning).toBe(2);
+    // The third call starts only after one of the first two finished.
+    const cStart = log.indexOf("c:start");
+    expect(cStart).toBeGreaterThan(Math.min(log.indexOf("a:end"), log.indexOf("b:end")));
+    expect(cStart).toBeGreaterThan(log.indexOf("a:start"));
+    expect(cStart).toBeGreaterThan(log.indexOf("b:start"));
+  });
+
+  it("preserves call order across an unsafe barrier (no leapfrogging)", async () => {
+    const log: string[] = [];
+
+    const makeTool = (name: string, concurrencySafe: boolean): ToolContract =>
+      createFakeTool(
+        name,
+        async () => {
+          log.push(`${name}:start`);
+          await delay(10);
+          log.push(`${name}:end`);
+          return { content: name };
+        },
+        { concurrencySafe },
+      );
+
+    const provider = createFakeProvider([
+      [
+        { type: "tool-call", toolCallId: "tc1", toolName: "safe-a", input: {} },
+        { type: "tool-call", toolCallId: "tc2", toolName: "unsafe", input: {} },
+        { type: "tool-call", toolCallId: "tc3", toolName: "safe-b", input: {} },
+        { type: "finish", reason: "tool-calls" },
+      ],
+      [
+        { type: "text-delta", delta: "done" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+
+    await runTurn({
+      provider,
+      messages: [userMessage],
+      tools: [makeTool("safe-a", true), makeTool("unsafe", false), makeTool("safe-b", true)],
+      dispatch: { maxConcurrent: 4, eager: false },
+      conversationId: "tab-test",
+      turnId: "turn-test",
+      emit: () => {},
+    });
+
+    // The unsafe tool is exclusive: it starts only after safe-a finishes...
+    expect(log.indexOf("unsafe:start")).toBeGreaterThan(log.indexOf("safe-a:end"));
+    // ...and the safe call issued AFTER it cannot leapfrog it: it waits for
+    // the barrier even though the cap would allow another slot.
+    expect(log.indexOf("safe-b:start")).toBeGreaterThan(log.indexOf("unsafe:end"));
+  });
+
   it("eager: true launches tool before step finish", async () => {
     const log: string[] = [];
 

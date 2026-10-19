@@ -1,6 +1,6 @@
 import { conversationStoreHandle } from "@dispatch/conversation-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
-import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
+import type { Extension, HostAPI, Manifest, ToolDispatchPolicy } from "@dispatch/kernel";
 import { runTurn } from "@dispatch/kernel";
 import { messageQueueHandle } from "@dispatch/message-queue";
 import { concurrencyServiceHandle } from "@dispatch/provider-concurrency";
@@ -20,12 +20,35 @@ import {
   visionHandoffLocalHandle,
 } from "./orchestrator.js";
 import { pluginOwnershipHandle } from "./ownership.js";
-import { selectFirstProvider } from "./pure.js";
+import {
+  DISPATCH_TOOL_MAX_CONCURRENT_ENV,
+  resolveDispatchPolicy,
+  selectFirstProvider,
+} from "./pure.js";
 import {
   filterRemoteIncompatibleTools,
   gateToolsForWorkspace,
   toolsFilter,
 } from "./tools-filter.js";
+
+/**
+ * Resolve the operator's tool-dispatch override at the extension EDGE.
+ *
+ * `DISPATCH_TOOL_MAX_CONCURRENT` (integer >= 0; 0=unlimited, 1=sequential)
+ * lets an operator tune the cap without a code change. The parsing/validation
+ * logic is the pure {@link resolveDispatchPolicy}; this wrapper only reads the
+ * injected environment and logs the warning for an invalid value. `eager`
+ * always stays `true`. Ambience is confined to this edge — the orchestrator
+ * receives the resolved policy as an explicit dep.
+ */
+export function createDispatchPolicy(
+  env: Readonly<Record<string, string | undefined>>,
+  logger: { readonly warn: (message: string) => void },
+): ToolDispatchPolicy {
+  const { policy, warning } = resolveDispatchPolicy(env[DISPATCH_TOOL_MAX_CONCURRENT_ENV]);
+  if (warning !== undefined) logger.warn(`session-orchestrator: ${warning}`);
+  return policy;
+}
 
 export const manifest: Manifest = {
   id: "session-orchestrator",
@@ -55,11 +78,15 @@ export const manifest: Manifest = {
 
 export function activate(host: HostAPI): void {
   const conversationStore = host.getService(conversationStoreHandle);
+  // Operator override for the tool-dispatch cap, resolved once at activation
+  // (env changes require a restart, like the other env-based config).
+  const dispatchPolicy = createDispatchPolicy(process.env, host.logger);
 
   const { orchestrator, activeConversations } = createSessionOrchestrator({
     conversationStore,
     resolveProvider: () => selectFirstProvider(host.getProviders()),
     resolveTools: () => [...host.getTools().values()],
+    resolveDispatch: () => dispatchPolicy,
     resolveModel: (modelName: string) => {
       const store = host.getService(credentialStoreHandle);
       const r = store.resolve(modelName);
