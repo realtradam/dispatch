@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createCredentialStore } from "@dispatch/credential-store";
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
 import type {
@@ -615,6 +618,128 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+});
+
+describe("GET /local-image", () => {
+  const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+  const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]);
+  const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x10, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+  const gifBytes = new TextEncoder().encode("GIF89a");
+  const bmpBytes = new TextEncoder().encode("BM6\0\0\0");
+
+  const formats: readonly {
+    readonly ext: string;
+    readonly mime: string;
+    readonly bytes: Uint8Array;
+  }[] = [
+    { ext: ".png", mime: "image/png", bytes: pngBytes },
+    { ext: ".jpg", mime: "image/jpeg", bytes: jpegBytes },
+    { ext: ".jpeg", mime: "image/jpeg", bytes: jpegBytes },
+    { ext: ".webp", mime: "image/webp", bytes: webpBytes },
+    { ext: ".gif", mime: "image/gif", bytes: gifBytes },
+    { ext: ".bmp", mime: "image/bmp", bytes: bmpBytes },
+  ];
+
+  function createTestApp() {
+    return createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+  }
+
+  async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "dispatch-local-image-"));
+    try {
+      await fn(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("serves a real image file of each whitelisted format with its MIME type", async () => {
+    await withTempDir(async (dir) => {
+      const app = createTestApp();
+      for (const format of formats) {
+        const file = join(dir, `pic${format.ext}`);
+        await writeFile(file, format.bytes);
+        const res = await app.request(`/local-image?path=${encodeURIComponent(file)}`);
+        expect(res.status, format.ext).toBe(200);
+        expect(res.headers.get("content-type")).toBe(format.mime);
+        expect(res.headers.get("cache-control")).toBe("no-cache");
+        expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(new Uint8Array(await res.arrayBuffer())).toEqual(format.bytes);
+      }
+    });
+  });
+
+  it("returns 400 for a non-image extension", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "notes.txt");
+      await writeFile(file, "plain text");
+      const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("extension");
+    });
+  });
+
+  it("returns 400 when the magic bytes do not match the extension", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "not-a-png.png");
+      await writeFile(file, "plain text that is definitely not a PNG");
+      const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("does not match");
+    });
+  });
+
+  it("returns 400 for a relative path", async () => {
+    const res = await createTestApp().request(
+      `/local-image?path=${encodeURIComponent("pics/pic.png")}`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when path is missing or empty", async () => {
+    const app = createTestApp();
+    for (const url of ["/local-image", "/local-image?path="]) {
+      const res = await app.request(url);
+      expect(res.status, url).toBe(400);
+    }
+  });
+
+  it("returns 404 for a missing file", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "missing.png");
+      const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "Image not found" });
+    });
+  });
+
+  it("expands a leading ~ to the home directory", async () => {
+    await withTempDir(async (dir) => {
+      const previousHome = process.env.HOME;
+      process.env.HOME = dir;
+      try {
+        await writeFile(join(dir, "home-pic.png"), pngBytes);
+        const res = await createTestApp().request(
+          `/local-image?path=${encodeURIComponent("~/home-pic.png")}`,
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toBe("image/png");
+      } finally {
+        if (previousHome === undefined) {
+          delete process.env.HOME;
+        } else {
+          process.env.HOME = previousHome;
+        }
+      }
+    });
   });
 });
 

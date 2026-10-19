@@ -149,6 +149,13 @@ describe("system-prompt service", () => {
     expect(DEFAULT_TEMPLATE).toContain("[prompt:cwd]");
   });
 
+  it("DEFAULT_TEMPLATE documents inline local-image Markdown", () => {
+    expect(DEFAULT_TEMPLATE).toContain("![description](/absolute/path/to/image.png)");
+    expect(DEFAULT_TEMPLATE).toContain("file:// URLs");
+    expect(DEFAULT_TEMPLATE).toContain("png, jpg, jpeg, webp, gif, bmp");
+    expect(DEFAULT_TEMPLATE).toContain("No tool call is needed");
+  });
+
   it("getWithMeta on a never-constructed conversation returns { prompt: null, cwd: null }", async () => {
     // 1. never constructed → both fields null.
     const service = createSystemPromptService({

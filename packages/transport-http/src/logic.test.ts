@@ -2,6 +2,7 @@ import type { AgentEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
   computeExpectedCacheRate,
+  isLocalImageRequestError,
   isModelParseError,
   isParseError,
   isReasoningEffortParseError,
@@ -11,7 +12,9 @@ import {
   isWindowParamError,
   mapCreateError,
   mapUpdateError,
+  matchesImageMagicBytes,
   parseChatBody,
+  parseLocalImageRequest,
   parseModelBody,
   parseQueueBody,
   parseReasoningEffortBody,
@@ -708,5 +711,125 @@ describe("mapCreateError / mapUpdateError", () => {
     for (const e of ["duplicate-name", "invalid-name", "invalid-model", "not-found"] as const) {
       expect(mapUpdateError(e).message.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("parseLocalImageRequest", () => {
+  const home = "/home/tester";
+
+  it("accepts every whitelisted raster extension with its MIME type", () => {
+    const expected: readonly (readonly [string, string])[] = [
+      [".png", "image/png"],
+      [".jpg", "image/jpeg"],
+      [".jpeg", "image/jpeg"],
+      [".webp", "image/webp"],
+      [".gif", "image/gif"],
+      [".bmp", "image/bmp"],
+    ];
+    for (const [ext, mime] of expected) {
+      const result = parseLocalImageRequest(`/tmp/pic${ext}`, home);
+      if (isLocalImageRequestError(result)) throw new Error(result.error);
+      expect(result.extension).toBe(ext);
+      expect(result.mime).toBe(mime);
+      expect(result.path).toBe(`/tmp/pic${ext}`);
+    }
+  });
+
+  it("lowercases the extension before the whitelist lookup", () => {
+    const result = parseLocalImageRequest("/tmp/PIC.PNG", home);
+    if (isLocalImageRequestError(result)) throw new Error(result.error);
+    expect(result.extension).toBe(".png");
+    expect(result.mime).toBe("image/png");
+  });
+
+  it("expands a leading ~ to the home directory", () => {
+    const result = parseLocalImageRequest("~/pics/a.png", home);
+    if (isLocalImageRequestError(result)) throw new Error(result.error);
+    expect(result.path).toBe("/home/tester/pics/a.png");
+  });
+
+  it("leaves non-leading ~ untouched", () => {
+    const result = parseLocalImageRequest("/tmp/~a.png", home);
+    if (isLocalImageRequestError(result)) throw new Error(result.error);
+    expect(result.path).toBe("/tmp/~a.png");
+  });
+
+  it("rejects a relative path (after ~ expansion)", () => {
+    for (const raw of ["pic.png", "./pic.png", "../pic.png"]) {
+      const result = parseLocalImageRequest(raw, home);
+      expect(isLocalImageRequestError(result)).toBe(true);
+    }
+  });
+
+  it("rejects a missing or empty path", () => {
+    for (const raw of [undefined, ""]) {
+      const result = parseLocalImageRequest(raw, home);
+      expect(isLocalImageRequestError(result)).toBe(true);
+    }
+  });
+
+  it("rejects non-image extensions, including SVG", () => {
+    for (const raw of ["/tmp/notes.txt", "/tmp/evil.svg", "/tmp/page.html", "/tmp/noext"]) {
+      const result = parseLocalImageRequest(raw, home);
+      expect(isLocalImageRequestError(result)).toBe(true);
+    }
+  });
+});
+
+describe("matchesImageMagicBytes", () => {
+  const TextBytes = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+  it("accepts each format's real header", () => {
+    expect(
+      matchesImageMagicBytes(
+        new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        ".png",
+      ),
+    ).toBe(true);
+    expect(matchesImageMagicBytes(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), ".jpg")).toBe(true);
+    expect(matchesImageMagicBytes(new Uint8Array([0xff, 0xd8, 0xff, 0xe1]), ".jpeg")).toBe(true);
+    expect(matchesImageMagicBytes(TextBytes("GIF89a"), ".gif")).toBe(true);
+    expect(matchesImageMagicBytes(TextBytes("BM6\0\0\0"), ".bmp")).toBe(true);
+    expect(
+      matchesImageMagicBytes(
+        new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x10, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]),
+        ".webp",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a non-image header for every declared format", () => {
+    const text = TextBytes("plain text, definitely not an image");
+    for (const ext of [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]) {
+      expect(matchesImageMagicBytes(text, ext)).toBe(false);
+    }
+  });
+
+  it("rejects a header that belongs to a different image format", () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    expect(matchesImageMagicBytes(png, ".jpg")).toBe(false);
+    expect(matchesImageMagicBytes(png, ".gif")).toBe(false);
+    expect(matchesImageMagicBytes(png, ".webp")).toBe(false);
+  });
+
+  it("rejects truncated headers", () => {
+    expect(matchesImageMagicBytes(new Uint8Array([0x89, 0x50]), ".png")).toBe(false);
+    expect(matchesImageMagicBytes(new Uint8Array([0xff, 0xd8]), ".jpg")).toBe(false);
+    expect(matchesImageMagicBytes(TextBytes("GIF"), ".gif")).toBe(false);
+    expect(matchesImageMagicBytes(new Uint8Array([0x42]), ".bmp")).toBe(false);
+    expect(
+      matchesImageMagicBytes(
+        new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42]),
+        ".webp",
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a RIFF container that is not WEBP", () => {
+    expect(matchesImageMagicBytes(TextBytes("RIFFxxxxWAVE"), ".webp")).toBe(false);
+  });
+
+  it("rejects an unknown extension", () => {
+    expect(matchesImageMagicBytes(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), ".svg")).toBe(false);
   });
 });

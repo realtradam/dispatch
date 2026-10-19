@@ -22,6 +22,12 @@ export const DEFAULT_TEMPLATE = `You are a helpful coding assistant.
 [endif]
 
 The current working directory is [prompt:cwd].
+
+You can show the user images directly in chat by embedding them in your Markdown
+replies, e.g. ![description](/absolute/path/to/image.png). Local absolute paths
+(and file:// URLs) are rendered inline by the chat UI; relative paths resolve
+against the current working directory. Supported formats: png, jpg, jpeg, webp, gif, bmp.
+No tool call is needed — just the Markdown image syntax.
 `;
 
 /** Storage keys. */

@@ -76,6 +76,7 @@ import {
   computeCachePct,
   computeExpectedCacheRate,
   extractLastAssistantText,
+  isLocalImageRequestError,
   isModelParseError,
   isParseError,
   isReasoningEffortParseError,
@@ -84,7 +85,9 @@ import {
   isWindowParamError,
   mapCreateError,
   mapUpdateError,
+  matchesImageMagicBytes,
   parseChatBody,
+  parseLocalImageRequest,
   parseModelBody,
   parsePluginForceBody,
   parseQueueBody,
@@ -388,6 +391,37 @@ export function createApp(opts: CreateServerOptions): Hono {
     } catch {
       return c.json({ error: "Image not found" }, 404);
     }
+  });
+
+  // ── Local image serving (Markdown image embedding) ─────────────────────────
+  // The chat UI rewrites local Markdown image srcs (`![alt](/abs/pic.png)`) to
+  // this route. It intentionally serves ANY absolute image path (the agent
+  // already has filesystem access to the same machine); the raster extension
+  // whitelist + magic-byte sniff bound the response to actual image files.
+  // SVG is excluded deliberately (script-bearing XML is an XSS vector).
+  app.get("/local-image", async (c) => {
+    const { homedir } = await import("node:os");
+    const request = parseLocalImageRequest(c.req.query("path"), homedir());
+    if (isLocalImageRequestError(request)) {
+      return c.json({ error: request.error }, 400);
+    }
+    const { readFile: fsReadFile } = await import("node:fs/promises");
+    let buf: Uint8Array;
+    try {
+      buf = await fsReadFile(request.path);
+    } catch {
+      return c.json({ error: "Image not found" }, 404);
+    }
+    if (!matchesImageMagicBytes(buf, request.extension)) {
+      return c.json({ error: "File content does not match the image format" }, 400);
+    }
+    return new Response(buf, {
+      headers: {
+        "Content-Type": request.mime,
+        "Cache-Control": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
   });
 
   app.get("/conversations/:id/metrics", async (c) => {

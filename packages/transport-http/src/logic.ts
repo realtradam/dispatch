@@ -1,3 +1,4 @@
+import { extname, isAbsolute, join } from "node:path";
 import type {
   AgentEvent,
   ChatMessage,
@@ -575,4 +576,114 @@ export function parseTabGroupBody(body: unknown): SetTabGroupRequest | ParseErro
     return { error: "Field 'parentId' must be a non-empty string or null" };
   }
   return { parentId };
+}
+
+// ── Local image serving (Markdown image embedding) ──────────────────────────
+
+/**
+ * Extension → MIME whitelist for `GET /local-image`. Raster formats only:
+ * SVG is deliberately excluded (it can carry script — an XSS vector).
+ */
+const LOCAL_IMAGE_MIME: Readonly<Record<string, string>> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+};
+
+export interface LocalImageRequest {
+  /** Absolute filesystem path (after `~` expansion). */
+  readonly path: string;
+  /** Lowercased extension, one of the whitelist keys. */
+  readonly extension: string;
+  readonly mime: string;
+}
+
+export interface LocalImageRequestError {
+  readonly error: string;
+}
+
+/** Type guard for the `parseLocalImageRequest` union. */
+export function isLocalImageRequestError(
+  value: LocalImageRequest | LocalImageRequestError,
+): value is LocalImageRequestError {
+  return "error" in value;
+}
+
+/** Expand a single leading `~` to the OS home directory. */
+function expandLeadingHome(path: string, homeDir: string): string {
+  if (path === "~") return homeDir;
+  if (path.startsWith("~/")) return join(homeDir, path.slice(2));
+  return path;
+}
+
+/**
+ * Pure: validate + normalize the `path` query param of `GET /local-image`.
+ * Expands a leading `~`, requires an absolute path, and checks the extension
+ * against the raster whitelist. Magic bytes are checked separately, once the
+ * file has been read.
+ */
+export function parseLocalImageRequest(
+  rawPath: string | undefined,
+  homeDir: string,
+): LocalImageRequest | LocalImageRequestError {
+  if (rawPath === undefined || rawPath === "") {
+    return { error: "Query param 'path' must be a non-empty absolute path" };
+  }
+  const path = expandLeadingHome(rawPath, homeDir);
+  if (!isAbsolute(path)) {
+    return { error: "Query param 'path' must be an absolute path" };
+  }
+  const extension = extname(path).toLowerCase();
+  const mime = LOCAL_IMAGE_MIME[extension];
+  if (mime === undefined) {
+    return { error: "Unsupported image extension" };
+  }
+  return { path, extension, mime };
+}
+
+// Cheap per-format headers. PNG's first four bytes are enough to distinguish
+// it; WEBP is a RIFF container with "WEBP" at offset 8.
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47] as const;
+const JPEG_MAGIC = [0xff, 0xd8, 0xff] as const;
+const GIF_MAGIC = [0x47, 0x49, 0x46, 0x38] as const; // "GIF8"
+const BMP_MAGIC = [0x42, 0x4d] as const; // "BM"
+const RIFF_MAGIC = [0x52, 0x49, 0x46, 0x46] as const; // "RIFF"
+const WEBP_MAGIC = [0x57, 0x45, 0x42, 0x50] as const; // "WEBP" at offset 8
+
+function startsWithBytes(buf: Uint8Array, bytes: readonly number[]): boolean {
+  if (buf.length < bytes.length) return false;
+  for (let i = 0; i < bytes.length; i++) {
+    if (buf[i] !== bytes[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Pure: does the buffer's header match the extension it claims? A mismatch
+ * means the file is not the image type its name says, so the route refuses to
+ * serve it — guaranteeing the endpoint can never serve a non-image file.
+ */
+export function matchesImageMagicBytes(buf: Uint8Array, extension: string): boolean {
+  switch (extension) {
+    case ".png":
+      return startsWithBytes(buf, PNG_MAGIC);
+    case ".jpg":
+    case ".jpeg":
+      return startsWithBytes(buf, JPEG_MAGIC);
+    case ".gif":
+      return startsWithBytes(buf, GIF_MAGIC);
+    case ".bmp":
+      return startsWithBytes(buf, BMP_MAGIC);
+    case ".webp":
+      return (
+        startsWithBytes(buf, RIFF_MAGIC) &&
+        buf.length >= 12 &&
+        startsWithBytes(buf.subarray(8), WEBP_MAGIC)
+      );
+    default:
+      return false;
+  }
 }
