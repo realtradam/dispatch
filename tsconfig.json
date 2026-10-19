@@ -74,6 +74,9 @@
       "path": "./packages/provider-baseten"
     },
     {
+      "path": "./packages/provider-coralbricks"
+    },
+    {
       "path": "./packages/provider-openrouter"
     },
     {

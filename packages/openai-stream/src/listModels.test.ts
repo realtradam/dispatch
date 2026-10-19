@@ -101,6 +101,28 @@ describe("listModels — vision capability detection", () => {
     expect(result).toEqual([{ id: "umans-kimi-k2.7", vision: false }]);
   });
 
+  it("parseModelList honors a top-level supports_image_input boolean (CoralBricks)", () => {
+    const result = parseModelList([
+      {
+        id: "deepseek-v4.1-flash-fast",
+        context_length: 1048576,
+        supports_image_input: true,
+      },
+      { id: "glm-5.3-fast", context_length: 1048576, supports_image_input: false },
+    ]);
+    expect(result).toEqual([
+      { id: "deepseek-v4.1-flash-fast", contextWindow: 1048576, vision: true },
+      { id: "glm-5.3-fast", contextWindow: 1048576, vision: false },
+    ]);
+  });
+
+  it("parseModelList prefers capabilities.vision over supports_image_input when both are present", () => {
+    const result = parseModelList([
+      { id: "m1", capabilities: { vision: false }, supports_image_input: true },
+    ]);
+    expect(result).toEqual([{ id: "m1", vision: false }]);
+  });
+
   it("parseModelList falls back to the name heuristic when capabilities.vision is absent", () => {
     // no capabilities field — heuristic still applies (backward compatible)
     const heuristic = parseModelList([{ id: "umans-kimi-k2.7" }, { id: "deepseek-v4-flash" }]);

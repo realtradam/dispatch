@@ -124,6 +124,7 @@
         "@dispatch/plugin-manager": "workspace:*",
         "@dispatch/provider-baseten": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
+        "@dispatch/provider-coralbricks": "workspace:*",
         "@dispatch/provider-hyper": "workspace:*",
         "@dispatch/provider-longcat": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
@@ -316,6 +317,14 @@
       "dependencies": {
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/kernel": "workspace:*",
+      },
+    },
+    "packages/provider-coralbricks": {
+      "name": "@dispatch/provider-coralbricks",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/openai-stream": "workspace:*",
       },
     },
     "packages/provider-hyper": {
@@ -515,7 +524,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.25.0",
+      "version": "0.26.0",
       "dependencies": {
         "@dispatch/layout-contract": "workspace:*",
         "@dispatch/tile-layout-contract": "workspace:*",
@@ -671,6 +680,8 @@
     "@dispatch/provider-baseten": ["@dispatch/provider-baseten@workspace:packages/provider-baseten"],
 
     "@dispatch/provider-concurrency": ["@dispatch/provider-concurrency@workspace:packages/provider-concurrency"],
+
+    "@dispatch/provider-coralbricks": ["@dispatch/provider-coralbricks@workspace:packages/provider-coralbricks"],
 
     "@dispatch/provider-hyper": ["@dispatch/provider-hyper@workspace:packages/provider-hyper"],
 
