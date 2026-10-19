@@ -4,7 +4,13 @@
  * FileWatcher, and forwards matching disk changes.
  */
 
-import { DiagnosticsStore, diagnosticKey, type PublishDiagnosticsParams } from "./diagnostics.js";
+import {
+  type Diagnostic,
+  DiagnosticsStore,
+  diagnosticKey,
+  type PublishDiagnosticsParams,
+  type PushOutcome,
+} from "./diagnostics.js";
 import { computeChangeRange } from "./diff.js";
 import { FrameDecoder } from "./framing.js";
 import { languageId as resolveLanguageId } from "./language.js";
@@ -86,7 +92,10 @@ export const CLIENT_CAPABILITIES: ClientCapabilities = {
   textDocument: {
     synchronization: { didOpen: true, didChange: true },
     diagnostic: { dynamicRegistration: true, relatedDocumentSupport: true },
-    publishDiagnostics: { versionSupport: false },
+    // Advertise version-bearing publishDiagnostics (LSP 3.15+). Servers that
+    // support it echo the document version, which lets the client reject a
+    // push from a previous version outright instead of guessing.
+    publishDiagnostics: { versionSupport: true },
   },
 };
 
@@ -106,9 +115,60 @@ export interface ClientDeps {
    * drive the timeout path quickly.
    */
   readonly initializeTimeoutMs?: number | undefined;
+  /**
+   * Quiet window (ms) for UNVERSIONED `publishDiagnostics` bursts — default
+   * 150. A server that omits `version` gives no way to tell which document
+   * version a push belongs to; typescript-language-server emits TWO pushes
+   * after `didOpen` and neither carries a version. The client therefore
+   * debounces pushes: a push opens/extends the window, and only when the
+   * window closes with no further push is the result taken. A `didChange`
+   * that lands inside the window is DEFERRED to the window's end, so a late
+   * push from the previous generation can never satisfy it. Exposed so tests
+   * can shrink it.
+   */
+  readonly unversionedSettleMs?: number | undefined;
 }
 
 export type ClientState = "starting" | "connected" | "error" | "not-started";
+
+/**
+ * Per-URI synchronization bookkeeping for diagnostics. Keyed by URI (not
+ * filePath) because that is what `publishDiagnostics` carries.
+ *
+ * `settling` is the unversioned quiet window: true from the moment a sync is
+ * sent until no push has arrived for `unversionedSettleMs`. `pending` holds the
+ * latest content whose sync was DEFERRED because it landed inside an open's
+ * quiet window (see the class docs on `waitForDiagnostics`).
+ */
+interface SyncState {
+  readonly uri: string;
+  readonly filePath: string;
+  /** Last document version written to the server (didOpen/didChange). */
+  version: number;
+  /** True while unversioned pushes may still be in flight for this sync. */
+  settling: boolean;
+  /** Set once the server proves it echoes versions — no debounce needed after that. */
+  versioned: boolean;
+  /** A push has arrived for the current sync (guards `settled` resolution). */
+  pushSinceSync: boolean;
+  /** Latest content whose sync was deferred until the quiet window closes. */
+  pending: { readonly text: string } | { readonly fromDisk: true } | null;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** Default quiet window for unversioned diagnostic bursts. */
+const UNVERSIONED_SETTLE_MS = 150;
+
+export interface WaitForDiagnosticsResult {
+  /** Formatted diagnostics (filtered by `minSeverity`), empty if none. */
+  readonly formatted: string;
+  /** Structurally false — retained for contract compatibility. */
+  readonly slow: boolean;
+  /** True when the wait hit its cap or the client broke before a push. */
+  readonly timedOut: boolean;
+  /** The merged (push + pull) diagnostics behind `formatted`, for structured diffs. */
+  readonly diagnostics: readonly Diagnostic[];
+}
 
 export class LanguageServerClient {
   readonly serverId: string;
@@ -130,6 +190,11 @@ export class LanguageServerClient {
    * evicts the LRU entry via a textDocument/didClose + purge.
    */
   private openDocuments = new Map<string, { version: number; text: string }>();
+  /**
+   * Per-URI diagnostics synchronization state (quiet windows, deferred
+   * changes). Keyed by URI; cleared on close/broken/shutdown.
+   */
+  private syncStates = new Map<string, SyncState>();
   /** Sync mode captured from the server's initialize capabilities: 1=Full, 2=Incremental. */
   private textDocumentChange: 1 | 2 = 1;
   /**
@@ -259,9 +324,12 @@ export class LanguageServerClient {
     this.rpc = null;
     // Release cached document text + diagnostics — the server is dead, so
     // the contents are stale anyway. Keeps a repeatedly-crashed client from
-    // accumulating memory across re-spawn cycles.
+    // accumulating memory across re-spawn cycles. Pending diagnostic waiters
+    // resolve NOW (as failed) rather than polling a corpse until the cap.
     this.openDocuments.clear();
     this.lastDiagSnapshot.clear();
+    this.clearSyncStates();
+    this.diagnostics.failAllPushWaiters(reason);
   }
 
   /**
@@ -313,7 +381,7 @@ export class LanguageServerClient {
 
   private setupServerHandlers(rpc: JsonRpcConnection): void {
     rpc.onNotification("textDocument/publishDiagnostics", (params) => {
-      this.diagnostics.setPushDiagnostics(params as PublishDiagnosticsParams);
+      this.handlePush(params as PublishDiagnosticsParams);
     });
 
     rpc.onRequest("workspace/configuration", (params) => {
@@ -476,9 +544,10 @@ export class LanguageServerClient {
     const version = 1;
     this.openDocuments.set(filePath, { version, text });
 
+    const sync = this.beginSync(filePath, version);
     rpc.sendNotification("textDocument/didOpen", {
       textDocument: {
-        uri: `file://${filePath}`,
+        uri: sync.uri,
         languageId: langId ?? resolveLanguageId(filePath),
         version,
         text,
@@ -508,9 +577,11 @@ export class LanguageServerClient {
   /**
    * Close an open document: send textDocument/didClose to the server and
    * release every cached reference to it (openDocuments, lastDiagSnapshot,
-   * and the diagnostics store). Idempotent — a no-op for a path that isn't
-   * open. This is the lifecycle hook that keeps memory bounded: without it
-   * the maps retained every file an agent ever touched (9.5 GB over 12h).
+   * sync state, and the diagnostics store). Idempotent — a no-op for a path
+   * that isn't open. This is the lifecycle hook that keeps memory bounded:
+   * without it the maps retained every file an agent ever touched (9.5 GB
+   * over 12h). Pending waiters resolve immediately (as failed) — a closed
+   * document will never produce the push they are waiting for.
    * Safe to call on a broken/disconnected client (sends nothing, still frees
    * local state).
    */
@@ -518,7 +589,8 @@ export class LanguageServerClient {
     const wasOpen = this.openDocuments.has(filePath);
     this.openDocuments.delete(filePath);
     this.lastDiagSnapshot.delete(filePath);
-    const uri = `file://${filePath}`;
+    const uri = uriFor(filePath);
+    this.clearSyncState(uri);
     this.diagnostics.purge(uri);
 
     if (!wasOpen) return;
@@ -541,6 +613,30 @@ export class LanguageServerClient {
       return;
     }
 
+    const sync = this.syncStates.get(uriFor(filePath));
+    if (sync?.settling && !sync.versioned) {
+      // Unversioned quiet window still open (typically right after didOpen,
+      // where typescript-language-server emits a SECOND push for the old
+      // generation). Sending didChange now would race that late push; an
+      // unversioned push carries no version to reject it. Defer the sync —
+      // only the latest content matters — until the window closes.
+      sync.pending = { text: newText };
+      return;
+    }
+
+    this.sendChange(filePath, newText);
+  }
+
+  /**
+   * Write a didChange for a document that is already open. Sets the sync
+   * generation BEFORE writing to the pipe so a fast response can never be
+   * attributed to the previous version, and arms the unversioned quiet window.
+   */
+  private sendChange(filePath: string, newText: string): void {
+    const rpc = this.rpc;
+    const existing = this.openDocuments.get(filePath);
+    if (!rpc || this.state !== "connected" || !existing) return;
+
     const version = existing.version + 1;
     // Re-insert (delete + set) to move this key to the tail of the insertion-
     // ordered Map = most-recently-used. A plain `set` on an existing key
@@ -549,71 +645,226 @@ export class LanguageServerClient {
     this.openDocuments.delete(filePath);
     this.openDocuments.set(filePath, { version, text: newText });
 
+    const sync = this.beginSync(filePath, version);
     if (this.textDocumentChange === 2) {
       // Incremental sync — compute the minimal change range.
       const changeEvent = computeChangeRange(existing.text, newText);
       rpc.sendNotification("textDocument/didChange", {
-        textDocument: { uri: `file://${filePath}`, version },
+        textDocument: { uri: sync.uri, version },
         contentChanges: [changeEvent],
       });
     } else {
       // Full sync — send the entire content.
       rpc.sendNotification("textDocument/didChange", {
-        textDocument: { uri: `file://${filePath}`, version },
+        textDocument: { uri: sync.uri, version },
         contentChanges: [{ text: newText }],
       });
     }
   }
 
+  /** Start a new sync generation for `filePath` and arm its quiet window. */
+  private beginSync(filePath: string, version: number): SyncState {
+    const uri = uriFor(filePath);
+    const previous = this.syncStates.get(uri);
+    if (previous?.timer) clearTimeout(previous.timer);
+    const sync: SyncState = {
+      uri,
+      filePath,
+      version,
+      settling: true,
+      versioned: previous?.versioned ?? false,
+      pushSinceSync: false,
+      pending: null,
+      timer: null,
+    };
+    this.syncStates.set(uri, sync);
+    this.armSettle(sync);
+    return sync;
+  }
+
+  /** (Re)arm the quiet window. Each push extends it until the burst ends. */
+  private armSettle(sync: SyncState): void {
+    if (sync.timer) clearTimeout(sync.timer);
+    sync.settling = true;
+    const timer = setTimeout(() => {
+      sync.timer = null;
+      this.finishSettle(sync.uri);
+    }, this.deps.unversionedSettleMs ?? UNVERSIONED_SETTLE_MS);
+    // Never hold the process open for a background quiet window.
+    (timer as { unref?: () => void }).unref?.();
+    sync.timer = timer;
+  }
+
+  /**
+   * The quiet window closed: the store's contents are final for the sync that
+   * armed it, so let waiters take them. Any change deferred during the window
+   * is then written — AFTER the waiters resolved, so its push cannot be
+   * confused with the settled generation.
+   */
+  private finishSettle(uri: string): void {
+    const sync = this.syncStates.get(uri);
+    if (sync === undefined || !sync.settling) return;
+    if (sync.timer) {
+      clearTimeout(sync.timer);
+      sync.timer = null;
+    }
+    sync.settling = false;
+    this.diagnostics.settlePushWaiters(uri);
+
+    const pending = sync.pending;
+    sync.pending = null;
+    if (pending === null) return;
+    if ("text" in pending) {
+      this.sendChange(sync.filePath, pending.text);
+      return;
+    }
+    // Re-open from disk (content was not supplied). Fire-and-forget: the
+    // caller's own wait resolves on the push this produces.
+    void this.deps.fs
+      .readText(sync.filePath)
+      .then((text) => this.sendChange(sync.filePath, text))
+      .catch(() => {
+        // Vanished/unreadable file — nothing to sync.
+      });
+  }
+
+  private clearSyncState(uri: string): void {
+    const sync = this.syncStates.get(uri);
+    if (sync?.timer) clearTimeout(sync.timer);
+    this.syncStates.delete(uri);
+  }
+
+  private clearSyncStates(): void {
+    for (const sync of this.syncStates.values()) {
+      if (sync.timer) clearTimeout(sync.timer);
+    }
+    this.syncStates.clear();
+  }
+
+  /**
+   * Accept a `publishDiagnostics` push. Rules:
+   *  - Versioned push: drop if it is older than the version we last wrote.
+   *  - Unversioned push during a quiet window: it belongs to the current
+   *    burst; store it (so reports see it) and EXTEND the window.
+   *  - Versioned push during a window: the server has proven it echoes
+   *    versions, so end the window immediately (the next change need not be
+   *    deferred).
+   */
+  private handlePush(params: PublishDiagnosticsParams): void {
+    const sync = this.syncStates.get(params.uri);
+    if (sync !== undefined && params.version !== undefined && params.version < sync.version) {
+      return; // stale: belongs to a document version we have already replaced
+    }
+
+    if (sync !== undefined) {
+      sync.pushSinceSync = true;
+      if (params.version !== undefined) sync.versioned = true;
+    }
+
+    this.diagnostics.setPushDiagnostics(params);
+
+    if (sync === undefined) return;
+    if (params.version !== undefined) {
+      if (sync.settling) this.finishSettle(params.uri);
+      return;
+    }
+    if (sync.settling) this.armSettle(sync);
+  }
+
+  /** Version the next `waitForDiagnostics` sync will write for `filePath`. */
+  private nextSyncVersion(filePath: string): number {
+    const doc = this.openDocuments.get(filePath);
+    return doc === undefined ? 1 : doc.version + 1;
+  }
+
+  /**
+   * Does `outcome` satisfy a wait targeting `targetVersion`? `version` is the
+   * only trustworthy discriminator; without it the quiet window is the best
+   * available proxy.
+   */
+  private satisfiesWait(uri: string, targetVersion: number, outcome: PushOutcome): boolean {
+    if (outcome.kind === "failed") return true;
+    const sync = this.syncStates.get(uri);
+    if (sync === undefined) {
+      // No sync on record: either the sync was never written (disconnected) or
+      // this push predates it (e.g. a workspace scan for a file we are about
+      // to open). Neither can be trusted as the result of THIS call.
+      return false;
+    }
+    if (outcome.kind === "push" && outcome.params.version !== undefined) {
+      return outcome.params.version >= targetVersion;
+    }
+    if (sync.settling) return false;
+    if (!sync.pushSinceSync) return false;
+    return sync.version >= targetVersion;
+  }
+
+  /**
+   * Sync `filePath` to the server and wait for the diagnostics that reflect
+   * THAT content.
+   *
+   * Event-driven: the waiter resolves when the matching push arrives (or the
+   * unversioned quiet window closes), never on a poll tick, and resolves
+   * IMMEDIATELY if the client breaks or the document closes while waiting.
+   *
+   * Stale-push protection:
+   *  - Versioned pushes are accepted only when `version >= targetVersion`
+   *    (the version this call is about to write).
+   *  - Unversioned pushes are held until a quiet window with no further push
+   *    closes, and a didChange that lands inside a window is deferred to its
+   *    end — so the extra push typescript-language-server emits after
+   *    `didOpen` can never satisfy an edit's wait.
+   */
   async waitForDiagnostics(
     filePath: string,
     opts?: { readonly text?: string; readonly timeoutMs?: number; readonly minSeverity?: number },
-  ): Promise<{ readonly formatted: string; readonly slow: boolean; readonly timedOut: boolean }> {
+  ): Promise<WaitForDiagnosticsResult> {
     const timeoutMs = opts?.timeoutMs ?? 10_000;
-    const uri = `file://${filePath}`;
+    const uri = uriFor(filePath);
+    const targetVersion = this.nextSyncVersion(filePath);
 
-    // Clear the "received" flag so we detect fresh publishDiagnostics after our sync.
-    this.diagnostics.clearReceived(uri);
-
-    // Sync the document: use didChange with the provided text (post-edit buffer)
-    // or fall back to didOpen reading from disk.
-    if (opts?.text !== undefined) {
-      await this.change(filePath, opts.text);
-    } else {
-      await this.open(filePath);
-    }
-
-    const start = Date.now();
-
-    // Poll until the server pushes diagnostics (even empty = done) or the
-    // per-server cap elapses (then we skip it — see aggregateDiagnostics).
-    const received = await new Promise<boolean>((resolve) => {
-      const check = () => {
-        const elapsed = Date.now() - start;
-        const got = this.diagnostics.hasReceivedPush(uri);
-        if (got || elapsed >= timeoutMs) {
-          resolve(got);
-          return;
-        }
-        setTimeout(check, 100);
-      };
-      check();
+    let resolveWait!: (value: boolean) => void;
+    const waited = new Promise<boolean>((resolve) => {
+      resolveWait = resolve;
     });
 
-    // Only a server that actually pushed can be corruption-checked.
-    if (received) {
-      this.detectStaleDiagnostics(uri, opts?.text ?? "");
-    }
+    const waiter = this.diagnostics.addPushWaiter(uri, (outcome) => {
+      if (outcome.kind === "failed") {
+        resolveWait(false); // client broke → report as skipped, never hang
+        return;
+      }
+      if (this.satisfiesWait(uri, targetVersion, outcome)) resolveWait(true);
+    });
+    const timer = setTimeout(() => resolveWait(false), timeoutMs);
+    (timer as { unref?: () => void }).unref?.();
 
-    // `slow` is structurally false now: the per-server cap is 10s, so
-    // elapsed can never exceed the old "unusually long" threshold. That
-    // warning is superseded by the timeout→skip notice produced in
-    // aggregateDiagnostics. The field is kept for contract compatibility.
-    return {
-      formatted: this.diagnostics.formatFiltered(uri, opts?.minSeverity),
-      slow: false,
-      timedOut: !received,
-    };
+    // Sync AFTER the waiter is registered so a push that races the write is
+    // never missed. `change`/`open` may defer the actual write (quiet window).
+    try {
+      if (opts?.text !== undefined) {
+        await this.change(filePath, opts.text);
+      } else {
+        await this.open(filePath);
+      }
+      const received = await waited;
+      if (received) this.detectStaleDiagnostics(uri, opts?.text ?? "");
+      return {
+        formatted: this.diagnostics.formatFiltered(uri, opts?.minSeverity),
+        diagnostics: this.filteredDiagnostics(uri, opts?.minSeverity),
+        slow: false,
+        timedOut: !received,
+      };
+    } finally {
+      clearTimeout(timer);
+      waiter.cancel();
+    }
+  }
+
+  /** Merged (push + pull) diagnostics for `uri`, optionally severity-filtered. */
+  private filteredDiagnostics(uri: string, minSeverity?: number): readonly Diagnostic[] {
+    const merged = this.diagnostics.getMerged(uri);
+    if (minSeverity === undefined) return merged;
+    return merged.filter((d) => (d.severity ?? 0) <= minSeverity);
   }
 
   getWatchedFilesRegistry(): WatchedFilesRegistry {
@@ -651,10 +902,18 @@ export class LanguageServerClient {
     // Drop all cached document text + diagnostics so a shut-down client
     // releases its memory immediately (no lingering references until GC).
     // We don't send didClose here — the server process is being killed.
+    // Pending waiters resolve NOW instead of sitting out their cap.
+    this.clearSyncStates();
     this.openDocuments.clear();
     this.lastDiagSnapshot.clear();
+    this.diagnostics.failAllPushWaiters("language server client shut down");
     this.state = "not-started";
   }
+}
+
+/** LSP document URI for an absolute file path. */
+function uriFor(filePath: string): string {
+  return `file://${filePath}`;
 }
 
 function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {

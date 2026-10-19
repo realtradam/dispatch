@@ -1,7 +1,7 @@
 import { execBackendHandle } from "@dispatch/exec-backend";
 import type { Extension } from "@dispatch/kernel";
 import { type LspService, lspServiceHandle } from "@dispatch/lsp";
-import { createEditFileTool, type DiagnosticsHook } from "./edit-file.js";
+import { createEditFileTool, type QueueCheckHook } from "./edit-file.js";
 
 export const extension: Extension = {
   manifest: {
@@ -27,24 +27,21 @@ export const extension: Extension = {
     // Reactive LSP lookup (plan 03): resolved per edit via the registry's
     // non-throwing `tryGetService`. If LSP isn't loaded (or was unloaded
     // mid-session), the hook degrades to a no-op — edits proceed without
-    // diagnostics.
-    const diagnostics: DiagnosticsHook = async (opts) => {
+    // background diagnostics.
+    //
+    // The hook only ENQUEUES a check: it returns immediately, so the edit is
+    // never blocked on a language server (plan: lsp-async-diagnostics).
+    const queueCheck: QueueCheckHook = (opts) => {
       const lspService: LspService | undefined = host.tryGetService(lspServiceHandle);
-      if (lspService === undefined) {
-        return { formatted: "", slow: false, timedOut: false };
-      }
-      return lspService.getDiagnostics({
+      if (lspService === undefined) return;
+      lspService.queueCheck({
+        conversationId: opts.conversationId,
         filePath: opts.filePath,
         text: opts.text,
         cwd: opts.cwd,
-        // 10s matches the LSP service's per-server cap (see packages/lsp).
-        // The service clamps this anyway; stated explicitly so the call
-        // site is honest about the effective live-diagnostics budget.
-        timeoutMs: 10_000,
-        minSeverity: 2, // errors + warnings only
       });
     };
 
-    host.defineTool(createEditFileTool({ resolveBackend, workdir: process.cwd(), diagnostics }));
+    host.defineTool(createEditFileTool({ resolveBackend, workdir: process.cwd(), queueCheck }));
   },
 };

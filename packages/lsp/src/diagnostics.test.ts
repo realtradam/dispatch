@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Diagnostic, DiagnosticsStore } from "./diagnostics.js";
+import { type Diagnostic, DiagnosticsStore, type PushOutcome } from "./diagnostics.js";
 
 describe("diagnostics", () => {
   it("formats diagnostics with severity, location, and message", () => {
@@ -154,5 +154,71 @@ describe("diagnostics", () => {
 
     expect(store.hasReceivedPush("file:///bg/file1.ts")).toBe(false);
     expect(store.format("file:///bg/file1.ts")).toBe("");
+  });
+});
+
+describe("DiagnosticsStore waiters", () => {
+  it("notifies a waiter on a push for its URI and stops after cancel", () => {
+    const store = new DiagnosticsStore();
+    const seen: PushOutcome[] = [];
+    const waiter = store.addPushWaiter("file:///a.ts", (outcome) => seen.push(outcome));
+
+    store.setPushDiagnostics({ uri: "file:///a.ts", diagnostics: [] });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.kind).toBe("push");
+
+    // Pushes for other URIs never reach this waiter.
+    store.setPushDiagnostics({ uri: "file:///b.ts", diagnostics: [] });
+    expect(seen).toHaveLength(1);
+
+    waiter.cancel();
+    store.setPushDiagnostics({ uri: "file:///a.ts", diagnostics: [] });
+    expect(seen).toHaveLength(1);
+  });
+
+  it("fails a waiter immediately when its document is purged", () => {
+    const store = new DiagnosticsStore();
+    const seen: PushOutcome[] = [];
+    store.addPushWaiter("file:///a.ts", (outcome) => seen.push(outcome));
+
+    store.purge("file:///a.ts");
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.kind).toBe("failed");
+  });
+
+  it("fails every waiter on failAllPushWaiters (client death/shutdown)", () => {
+    const store = new DiagnosticsStore();
+    const seen: string[] = [];
+    store.addPushWaiter("file:///a.ts", (o) => seen.push(o.kind));
+    store.addPushWaiter("file:///b.ts", (o) => seen.push(o.kind));
+
+    store.failAllPushWaiters("process exited");
+
+    expect(seen.sort()).toEqual(["failed", "failed"]);
+  });
+
+  it("notifies waiters when an unversioned burst settles", () => {
+    const store = new DiagnosticsStore();
+    const seen: string[] = [];
+    store.addPushWaiter("file:///a.ts", (o) => seen.push(o.kind));
+
+    store.settlePushWaiters("file:///a.ts");
+
+    expect(seen).toEqual(["settled"]);
+  });
+
+  it("isolates a throwing waiter (a bad waiter cannot drop a push)", () => {
+    const store = new DiagnosticsStore();
+    store.addPushWaiter("file:///a.ts", () => {
+      throw new Error("bad waiter");
+    });
+    let other = 0;
+    store.addPushWaiter("file:///a.ts", () => {
+      other += 1;
+    });
+
+    expect(() => store.setPushDiagnostics({ uri: "file:///a.ts", diagnostics: [] })).not.toThrow();
+    expect(other).toBe(1);
   });
 });

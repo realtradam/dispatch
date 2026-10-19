@@ -106,19 +106,18 @@ export function computeReplacement(
 // --- Diagnostics hook ---
 
 /**
- * Optional post-edit diagnostics hook. Returns formatted diagnostics string
- * (empty if none) + timing metadata. Injected by the extension from the LSP
+ * Optional post-edit hook: hand the written content to the LSP extension's
+ * background check queue. It is SYNCHRONOUS and fire-and-forget by contract —
+ * the edit result must never wait on a language server (see
+ * notes/lsp-async-diagnostics-plan.md). Injected by the extension from the LSP
  * service; absent when no LSP is available (graceful degradation).
  */
-export type DiagnosticsHook = (opts: {
+export type QueueCheckHook = (opts: {
+  readonly conversationId: string;
   readonly filePath: string;
   readonly text: string;
   readonly cwd: string;
-}) => Promise<{
-  readonly formatted: string;
-  readonly slow: boolean;
-  readonly timedOut: boolean;
-}>;
+}) => void;
 
 // --- Shell / edge ---
 
@@ -133,17 +132,17 @@ export type DiagnosticsHook = (opts: {
  * `workdir` is the fallback base directory when `ctx.cwd` is omitted. It is
  * injected so the tool is testable; `execute` prefers `ctx.cwd` when present.
  *
- * `diagnostics` is the post-edit LSP hook (errors+warnings from LSP servers
- * are appended to successful edit results, only when errors exist). It is
- * invoked LAZILY at edit time — the extension defers the LSP service lookup so
- * it resolves after LSP activates. When `ctx.computerId` is set (REMOTE) the
- * diagnostics call is skipped: LSP servers are local processes that can't see
- * remote files over SFTP, so the no-LSP degradation path is used instead.
+ * `queueCheck` is the post-edit LSP hook. It merely ENQUEUES a background
+ * diagnostics check — the edit returns immediately and its result carries no
+ * diagnostics. It is invoked lazily (the extension resolves the LSP service per
+ * edit), skipped for REMOTE edits (`ctx.computerId` set — LSP servers are local
+ * processes that can't see remote files over SFTP), and skipped when there is no
+ * `ctx.conversationId` (nobody to notify). A throwing hook never fails the edit.
  */
 export function createEditFileTool(deps: {
   readonly resolveBackend: ExecBackendResolver;
   readonly workdir?: string;
-  readonly diagnostics: DiagnosticsHook;
+  readonly queueCheck?: QueueCheckHook | undefined;
 }): ToolContract {
   const workdir = deps.workdir !== undefined ? resolve(deps.workdir) : undefined;
 
@@ -246,47 +245,30 @@ export function createEditFileTool(deps: {
       }
 
       const plural = result.count === 1 ? "" : "s";
-      let baseContent = `Replaced ${result.count} occurrence${plural} in "${relPath}".`;
+      const baseContent = `Replaced ${result.count} occurrence${plural} in "${relPath}".`;
 
-      // After a successful edit, query LSP diagnostics (if available).
-      // Only append if there are actual errors/warnings (no noise on clean edits).
-      const diagnostics = deps.diagnostics;
-      if (diagnostics) {
-        let diag: {
-          readonly formatted: string;
-          readonly slow: boolean;
-          readonly timedOut: boolean;
-        };
-        if (ctx.computerId !== undefined) {
-          // REMOTE: LSP servers are local processes that can't see remote
-          // files over SFTP — skip the diagnostics call (the no-LSP
-          // degradation path). Forward-compatible: computerId is always
-          // undefined this wave, so behavior is byte-identical to today.
-          diag = { formatted: "", slow: false, timedOut: false };
-        } else {
-          try {
-            const cwd = ctx.cwd ?? process.cwd();
-            diag = await diagnostics({
-              filePath: resolvedPath,
-              text: result.content,
-              cwd,
-            });
-          } catch {
-            // LSP diagnostics failure is non-fatal — the edit already succeeded.
-            diag = { formatted: "", slow: false, timedOut: false };
-          }
-        }
-        const suffix: string[] = [];
-        if (diag.slow) {
-          suffix.push(
-            "⚠️ LSP is taking unusually long. If this happens more than once, raise it to the user.",
-          );
-        }
-        if (diag.formatted) {
-          suffix.push(diag.formatted);
-        }
-        if (suffix.length > 0) {
-          baseContent += `\n\n${suffix.join("\n\n")}`;
+      // Fire-and-forget background diagnostics check. It never delays or
+      // changes the edit result: the LSP notice (if any) arrives separately,
+      // at the next tool-result boundary or in a new turn.
+      //  - REMOTE: LSP servers are local processes that can't see remote files
+      //    over SFTP — skip.
+      //  - No conversation id: nobody to notify — skip.
+      //  - A throwing hook must never fail an edit that already succeeded.
+      const queueCheck = deps.queueCheck;
+      if (
+        queueCheck !== undefined &&
+        ctx.computerId === undefined &&
+        ctx.conversationId !== undefined
+      ) {
+        try {
+          queueCheck({
+            conversationId: ctx.conversationId,
+            filePath: resolvedPath,
+            text: result.content,
+            cwd: ctx.cwd ?? process.cwd(),
+          });
+        } catch {
+          // Diagnostics are advisory; the edit is done.
         }
       }
 

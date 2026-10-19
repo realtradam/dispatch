@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { localExecBackend } from "@dispatch/exec-backend";
 import { createLogger, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWriteFileTool, decideOverwrite, validateArgs } from "./write-file.js";
+import {
+  createWriteFileTool,
+  decideOverwrite,
+  type QueueCheckHook,
+  validateArgs,
+} from "./write-file.js";
 
 function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
   return {
@@ -25,8 +30,12 @@ function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
  * behavior-identical to today's inline calls). No `@dispatch/*` mocking — the
  * real fs edge is exercised, matching the constitution's strict-core rule.
  */
-function makeTool(workdir: string) {
-  return createWriteFileTool({ resolveBackend: () => localExecBackend, workdir });
+function makeTool(workdir: string, queueCheck?: QueueCheckHook) {
+  return createWriteFileTool({
+    resolveBackend: () => localExecBackend,
+    workdir,
+    ...(queueCheck !== undefined ? { queueCheck } : {}),
+  });
 }
 
 let workdir: string;
@@ -241,5 +250,80 @@ describe("createWriteFileTool", () => {
     expect(result.isError).toBeUndefined();
     const written = await readFile(join(workdir, "sub", "file.txt"), "utf8");
     expect(written).toBe("nested");
+  });
+
+  it("queues a background diagnostics check after a local write (fire-and-forget)", async () => {
+    const queued: Parameters<QueueCheckHook>[0][] = [];
+    const tool = makeTool(workdir, (opts) => queued.push(opts));
+
+    const result = await tool.execute(
+      { path: "checked.txt", content: "const x: number = 'no';" },
+      stubCtx({ conversationId: "conv-1", cwd: workdir }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    // The write result carries no diagnostics.
+    expect(result.content).toBe('Created "checked.txt" (23 bytes).');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.conversationId).toBe("conv-1");
+    expect(queued[0]?.filePath).toBe(join(workdir, "checked.txt"));
+    expect(queued[0]?.text).toBe("const x: number = 'no';");
+    expect(queued[0]?.cwd).toBe(workdir);
+  });
+
+  it("queues a check on overwrite too", async () => {
+    const filePath = join(workdir, "over.txt");
+    await writeFile(filePath, "old", "utf8");
+    const queued: Parameters<QueueCheckHook>[0][] = [];
+    const tool = makeTool(workdir, (opts) => queued.push(opts));
+
+    const result = await tool.execute(
+      { path: "over.txt", content: "new", overwrite: true },
+      stubCtx({ conversationId: "conv-1", cwd: workdir }),
+    );
+
+    expect(result.content).toContain("Overwrote");
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.text).toBe("new");
+  });
+
+  it("skips the check for remote writes, without a conversation, or when LSP is absent", async () => {
+    let called = 0;
+    const tool = makeTool(workdir, () => {
+      called += 1;
+    });
+
+    await tool.execute(
+      { path: "remote.txt", content: "x" },
+      stubCtx({ computerId: "remote-host", conversationId: "conv-1" }),
+    );
+    await tool.execute({ path: "noconv.txt", content: "x" }, stubCtx());
+
+    expect(called).toBe(0);
+
+    // No hook at all (LSP not loaded) — the write still succeeds.
+    const plain = makeTool(workdir);
+    const result = await plain.execute(
+      { path: "no-lsp.txt", content: "x" },
+      stubCtx({
+        conversationId: "conv-1",
+      }),
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("Created");
+  });
+
+  it("swallows a throwing queue hook (write already succeeded)", async () => {
+    const tool = makeTool(workdir, () => {
+      throw new Error("LSP exploded");
+    });
+
+    const result = await tool.execute(
+      { path: "throws.txt", content: "x" },
+      stubCtx({ conversationId: "conv-1" }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("Created");
   });
 });

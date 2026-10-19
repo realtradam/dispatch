@@ -14,6 +14,7 @@ function makeClient(overrides?: {
   readonly fs?: FsAccess;
   readonly initialization?: Record<string, unknown>;
   readonly initializeTimeoutMs?: number;
+  readonly unversionedSettleMs?: number;
 }): {
   client: LanguageServerClient;
   stdinChunks: Uint8Array[];
@@ -55,6 +56,9 @@ function makeClient(overrides?: {
     ...(overrides?.initialization ? { initialization: overrides.initialization } : {}),
     ...(overrides?.initializeTimeoutMs !== undefined
       ? { initializeTimeoutMs: overrides.initializeTimeoutMs }
+      : {}),
+    ...(overrides?.unversionedSettleMs !== undefined
+      ? { unversionedSettleMs: overrides.unversionedSettleMs }
       : {}),
   });
 
@@ -603,3 +607,185 @@ describe("client", () => {
     expect(client.getState()).toBe("error");
   });
 });
+
+/**
+ * Diagnostics-wait behavior (the non-blocking feature's correctness core):
+ * event-driven resolution, immediate failure on client death, version
+ * rejection, and the unversioned stale-push regression.
+ */
+describe("client diagnostics wait", () => {
+  const PATH = "/project/src/app.ts";
+  const URI = "file:///project/src/app.ts";
+
+  function push(params: {
+    readonly uri?: string;
+    readonly version?: number;
+    readonly messages: readonly string[];
+    readonly severity?: number;
+  }): string {
+    return JSON.stringify({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: params.uri ?? URI,
+        ...(params.version !== undefined ? { version: params.version } : {}),
+        diagnostics: params.messages.map((message) => ({
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          severity: params.severity ?? 1,
+          source: "ts",
+          message,
+        })),
+      },
+    });
+  }
+
+  /** Connect a client; returns the fake-server controls plus the client. */
+  async function connectedClient(opts?: { readonly unversionedSettleMs?: number }): Promise<{
+    client: LanguageServerClient;
+    serverResponses: (msg: string) => void;
+    exit: () => void;
+    sentMethods: () => string[];
+  }> {
+    const chunks = stdinMethods();
+    const stdoutHolder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitHandler: ProcessExitHandler | null = null;
+    const spawn: SpawnProcess = () => ({
+      stdin: { write: (bytes: Uint8Array) => chunks.record(bytes) },
+      stdout: {
+        on: (_e, cb) => {
+          stdoutHolder.cb = cb;
+        },
+      },
+      pid: 42,
+      kill: () => {},
+      onExit: (handler) => {
+        exitHandler = handler;
+      },
+    });
+
+    const { client } = makeClient({
+      spawn,
+      ...(opts?.unversionedSettleMs !== undefined
+        ? { unversionedSettleMs: opts.unversionedSettleMs }
+        : {}),
+    });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 30));
+    stdoutHolder.cb?.(
+      encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })),
+    );
+    await startPromise;
+    expect(client.getState()).toBe("connected");
+
+    return {
+      client,
+      serverResponses: (msg) => stdoutHolder.cb?.(encode(msg)),
+      exit: () => exitHandler?.({ code: 1 }),
+      sentMethods: chunks.methods,
+    };
+  }
+
+  it("resolves on the push itself — no 100 ms poll floor (versioned)", async () => {
+    // A long quiet window proves resolution didn't come from the debounce.
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 5000 });
+    const started = Date.now();
+
+    const wait = client.waitForDiagnostics(PATH, { text: "content", timeoutMs: 5000 });
+    await new Promise((r) => setTimeout(r, 10));
+    serverResponses(push({ version: 1, messages: ["boom"] }));
+
+    const result = await wait;
+    expect(Date.now() - started).toBeLessThan(100);
+    expect(result.timedOut).toBe(false);
+    expect(result.formatted).toContain("boom");
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it("rejects a versioned push from an older document version", async () => {
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 20 });
+    await client.openWithText(PATH, "v1");
+    await new Promise((r) => setTimeout(r, 40)); // let the open's window close
+
+    const wait = client.waitForDiagnostics(PATH, { text: "v2", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 10));
+    // Stale push for v1 (the version the document had before this change).
+    serverResponses(push({ version: 1, messages: ["stale error"] }));
+    await new Promise((r) => setTimeout(r, 30));
+    serverResponses(push({ version: 2, messages: ["fresh error"] }));
+
+    const result = await wait;
+    expect(result.timedOut).toBe(false);
+    expect(result.formatted).toContain("fresh error");
+    expect(result.formatted).not.toContain("stale error");
+  });
+
+  it("resolves immediately (timed out) when the server dies mid-wait", async () => {
+    const { client, exit } = await connectedClient({ unversionedSettleMs: 20 });
+    const started = Date.now();
+
+    const wait = client.waitForDiagnostics(PATH, { text: "content", timeoutMs: 10_000 });
+    await new Promise((r) => setTimeout(r, 20));
+    exit();
+
+    const result = await wait;
+    // Not the 10 s cap: markBroken failed the waiter at once.
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result.timedOut).toBe(true);
+    expect(client.getState()).toBe("error");
+  });
+
+  it("REGRESSION: a late second didOpen push cannot satisfy a back-to-back edit (unversioned)", async () => {
+    // typescript-language-server emits TWO pushes after didOpen, neither
+    // carrying a version. An edit issued right after the open must see the
+    // EDIT's result, not the late open-generation push.
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 40 });
+
+    const openWait = client.waitForDiagnostics(PATH, { text: "open content", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 10));
+    serverResponses(push({ messages: ["old error"] })); // open push #1
+
+    await new Promise((r) => setTimeout(r, 10));
+    const editWait = client.waitForDiagnostics(PATH, { text: "edited content", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 5));
+    serverResponses(push({ messages: ["old error"] })); // late open push #2
+
+    // The quiet window closes (~40 ms after the last push), the deferred
+    // didChange is written, and only THEN does the edit's real push land.
+    await new Promise((r) => setTimeout(r, 70));
+    serverResponses(push({ messages: ["new error"] }));
+
+    const editResult = await editWait;
+    expect(editResult.timedOut).toBe(false);
+    expect(editResult.formatted).toContain("new error");
+    expect(editResult.formatted).not.toContain("old error");
+
+    const openResult = await openWait;
+    expect(openResult.formatted).toContain("old error");
+  });
+
+  it("defers a didChange that lands inside an unversioned quiet window", async () => {
+    const { client, sentMethods } = await connectedClient({ unversionedSettleMs: 40 });
+    await client.openWithText(PATH, "v1");
+    // Immediately change while the open's quiet window is open.
+    await client.change(PATH, "v2");
+    // The didChange is deferred — not yet written.
+    expect(sentMethods().filter((m) => m === "textDocument/didChange")).toHaveLength(0);
+    // ...and is written once the window closes.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(sentMethods().filter((m) => m === "textDocument/didChange")).toHaveLength(1);
+  });
+});
+
+/** Tiny stdin recorder: decoded JSON-RPC methods, in order. */
+function stdinMethods(): { record: (bytes: Uint8Array) => void; methods: () => string[] } {
+  const sent: string[] = [];
+  return {
+    record: (bytes) => {
+      const text = new TextDecoder().decode(bytes);
+      const headerEnd = text.indexOf("\r\n\r\n");
+      const msg = JSON.parse(text.slice(headerEnd + 4)) as { method?: string };
+      if (msg.method !== undefined) sent.push(msg.method);
+    },
+    methods: () => sent,
+  };
+}

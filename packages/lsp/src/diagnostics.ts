@@ -17,6 +17,34 @@ export interface Diagnostic {
 export interface PublishDiagnosticsParams {
   readonly uri: string;
   readonly diagnostics: readonly Diagnostic[];
+  /**
+   * The document version these diagnostics were computed against. LSP 3.15+
+   * servers send it only when the client advertises
+   * `textDocument.publishDiagnostics.versionSupport`; many (notably
+   * typescript-language-server) still omit it. When present it is the ONLY
+   * reliable way to reject a push that belongs to a previous document version.
+   */
+  readonly version?: number;
+}
+
+/**
+ * What a diagnostics waiter observes. `push` is a fresh
+ * `textDocument/publishDiagnostics`; `settled` is the end of an UNVERSIONED
+ * quiet window (no further push after the debounce, so the store's latest
+ * contents are final for the sync that armed it); `failed` means the client
+ * broke or the document closed while waiting — the waiter must resolve now
+ * instead of polling until its cap.
+ */
+export type PushOutcome =
+  | { readonly kind: "push"; readonly params: PublishDiagnosticsParams }
+  | { readonly kind: "settled" }
+  | { readonly kind: "failed"; readonly reason: string };
+
+export type PushWaiter = (outcome: PushOutcome) => void;
+
+export interface PushWaiterHandle {
+  /** Remove the waiter (no further callbacks). Idempotent. */
+  readonly cancel: () => void;
 }
 
 export interface DocumentDiagnosticReport {
@@ -35,6 +63,8 @@ export class DiagnosticsStore {
   private pushDiagnostics = new Map<string, readonly Diagnostic[]>();
   private pullDiagnostics = new Map<string, readonly Diagnostic[]>();
   private pushReceived = new Set<string>();
+  /** Event-driven waiters, keyed by URI. Resolve on push/settle/failure — no polling. */
+  private waiters = new Map<string, Set<PushWaiter>>();
   /**
    * Bounded push-diagnostics set: once more than this many URIs have cached
    * push diagnostics, the least-recently-pushed is evicted (just deleted —
@@ -57,6 +87,83 @@ export class DiagnosticsStore {
     this.pushDiagnostics.set(params.uri, params.diagnostics);
     this.pushReceived.add(params.uri);
     this.evictPushIfOverCap();
+    this.notify(params.uri, { kind: "push", params });
+  }
+
+  /**
+   * Register a waiter for pushes on `uri`. The waiter is called for every
+   * push; the CALLER decides whether a given push satisfies it (version or
+   * quiet-window rules live in the client). This is the event-driven
+   * replacement for the old 100 ms poll — resolution latency is the push's
+   * arrival, not a poll tick.
+   */
+  addPushWaiter(uri: string, waiter: PushWaiter): PushWaiterHandle {
+    let set = this.waiters.get(uri);
+    if (set === undefined) {
+      set = new Set<PushWaiter>();
+      this.waiters.set(uri, set);
+    }
+    set.add(waiter);
+    const registered = set;
+    return {
+      cancel: () => {
+        registered.delete(waiter);
+        if (registered.size === 0 && this.waiters.get(uri) === registered) {
+          this.waiters.delete(uri);
+        }
+      },
+    };
+  }
+
+  /**
+   * Tell all waiters for `uri` that the unversioned quiet window closed. The
+   * store's contents are final for the sync that armed the window, so a waiter
+   * that was waiting on a burst can take them now.
+   */
+  settlePushWaiters(uri: string): void {
+    const set = this.waiters.get(uri);
+    if (set === undefined) return;
+    for (const waiter of [...set]) {
+      this.deliver(waiter, { kind: "settled" });
+    }
+  }
+
+  /**
+   * Resolve every waiter for `uri` as failed (client broke, document closed).
+   * Without this a waiter would sit until its timeout cap even though no push
+   * can possibly arrive.
+   */
+  failPushWaiters(uri: string, reason: string): void {
+    const set = this.waiters.get(uri);
+    if (set === undefined) return;
+    this.waiters.delete(uri);
+    for (const waiter of set) {
+      this.deliver(waiter, { kind: "failed", reason });
+    }
+  }
+
+  /** Resolve EVERY waiter — the client is dying/shutting down. */
+  failAllPushWaiters(reason: string): void {
+    for (const uri of [...this.waiters.keys()]) {
+      this.failPushWaiters(uri, reason);
+    }
+  }
+
+  private notify(uri: string, outcome: PushOutcome): void {
+    const set = this.waiters.get(uri);
+    if (set === undefined) return;
+    for (const waiter of [...set]) {
+      this.deliver(waiter, outcome);
+    }
+  }
+
+  /** Isolate waiter errors: a bad waiter must never break the push path. */
+  private deliver(waiter: PushWaiter, outcome: PushOutcome): void {
+    try {
+      waiter(outcome);
+    } catch {
+      // A waiter is internal; swallow so one failure can't drop a push.
+    }
   }
 
   /**
@@ -92,16 +199,17 @@ export class DiagnosticsStore {
   }
 
   /**
-   * Drop ALL state for a URI — push diagnostics, pull diagnostics, and the
-   * received flag. Called when a document is closed (textDocument/didClose)
-   * so the store stops retaining the file's diagnostics forever. Without
-   * this, the maps grow unboundedly as an agent touches thousands of files
-   * (the 9.5 GB leak).
+   * Drop ALL state for a URI — push diagnostics, pull diagnostics, the
+   * received flag, and any pending waiters (failed immediately). Called when
+   * a document is closed (textDocument/didClose) so the store stops retaining
+   * the file's diagnostics forever. Without this, the maps grow unboundedly as
+   * an agent touches thousands of files (the 9.5 GB leak).
    */
   purge(uri: string): void {
     this.pushDiagnostics.delete(uri);
     this.pullDiagnostics.delete(uri);
     this.pushReceived.delete(uri);
+    this.failPushWaiters(uri, "document closed");
   }
 
   getMerged(uri: string): readonly Diagnostic[] {

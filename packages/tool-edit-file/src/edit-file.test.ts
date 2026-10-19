@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   computeReplacement,
   createEditFileTool,
-  type DiagnosticsHook,
+  type QueueCheckHook,
   validateArgs,
 } from "./edit-file.js";
 
@@ -25,27 +25,23 @@ function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
   };
 }
 
-/** No-op diagnostics — the post-edit LSP hook returning "no diagnostics". */
-const noopDiagnostics: DiagnosticsHook = async () => ({
-  formatted: "",
-  slow: false,
-  timedOut: false,
-});
+/** No-op queue hook — the post-edit LSP background check. */
+const noopQueueCheck: QueueCheckHook = () => {};
 
 /**
  * Build an edit_file tool wired to the real local ExecBackend (node:fs,
- * behavior-identical to today's inline calls) and a no-op diagnostics hook.
+ * behavior-identical to today's inline calls) and a no-op queue hook.
  * No `@dispatch/*` mocking — the real fs edge is exercised, matching the
- * constitution's strict-core rule. Tests that need a real diagnostics hook
- * build the tool inline.
+ * constitution's strict-core rule. Tests that need a real queue hook build
+ * the tool inline.
  */
 function makeTool(
-  diagnostics: DiagnosticsHook = noopDiagnostics,
+  queueCheck: QueueCheckHook = noopQueueCheck,
 ): ReturnType<typeof createEditFileTool> {
   return createEditFileTool({
     resolveBackend: () => localExecBackend,
     workdir,
-    diagnostics,
+    queueCheck,
   });
 }
 
@@ -323,111 +319,107 @@ describe("createEditFileTool", () => {
     expect(tool.parameters.properties?.replaceAll?.type).toBe("boolean");
   });
 
-  it("appends LSP diagnostics to the result when local and errors exist", async () => {
+  it("queues a background diagnostics check after a local edit (fire-and-forget)", async () => {
     const filePath = join(workdir, "diag.txt");
     await writeFile(filePath, "hello world\n", "utf8");
 
-    let called = false;
-    const diagnostics: DiagnosticsHook = async (opts) => {
-      called = true;
-      expect(opts.text).toBe("hello there\n");
-      return { formatted: "⚠️ 2 errors", slow: false, timedOut: false };
+    const queued: Parameters<QueueCheckHook>[0][] = [];
+    const queueCheck: QueueCheckHook = (opts) => {
+      queued.push(opts);
     };
-    const tool = makeTool(diagnostics);
+    const tool = makeTool(queueCheck);
 
     const result = await tool.execute(
       { path: "diag.txt", oldString: "world", newString: "there" },
-      stubCtx(),
-    );
-
-    expect(called).toBe(true);
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("Replaced 1 occurrence");
-    expect(result.content).toContain("⚠️ 2 errors");
-  });
-
-  it("appends the slow-diagnostics notice when LSP is slow", async () => {
-    const filePath = join(workdir, "slow.txt");
-    await writeFile(filePath, "hello\n", "utf8");
-
-    const diagnostics: DiagnosticsHook = async () => ({
-      formatted: "",
-      slow: true,
-      timedOut: false,
-    });
-    const tool = makeTool(diagnostics);
-
-    const result = await tool.execute(
-      { path: "slow.txt", oldString: "hello", newString: "hi" },
-      stubCtx(),
+      stubCtx({ conversationId: "conv-1" }),
     );
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("Replaced 1 occurrence");
-    expect(result.content).toContain("LSP is taking unusually long");
+    // The edit result carries NO diagnostics — the check is asynchronous.
+    expect(result.content).toBe('Replaced 1 occurrence in "diag.txt".');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.conversationId).toBe("conv-1");
+    expect(queued[0]?.filePath).toBe(filePath);
+    expect(queued[0]?.text).toBe("hello there\n");
+    expect(queued[0]?.cwd).toBe(process.cwd());
   });
 
-  it("calls LSP diagnostics when local (computerId undefined)", async () => {
-    const filePath = join(workdir, "local.txt");
+  it("returns immediately: a check that never completes cannot delay the edit", async () => {
+    const filePath = join(workdir, "async.txt");
     await writeFile(filePath, "hello\n", "utf8");
 
-    let called = false;
-    const diagnostics: DiagnosticsHook = async () => {
-      called = true;
-      return { formatted: "", slow: false, timedOut: false };
+    let checkStillRunning = true;
+    const queueCheck: QueueCheckHook = () => {
+      // Model a long-running check: the hook has no way to return a promise,
+      // so the edit cannot await it.
+      void new Promise<void>((resolve) => setTimeout(resolve, 60_000)).then(() => {
+        checkStillRunning = false;
+      });
     };
-    const tool = makeTool(diagnostics);
+    const tool = makeTool(queueCheck);
 
     const result = await tool.execute(
-      { path: "local.txt", oldString: "hello", newString: "hi" },
-      stubCtx(), // computerId omitted → undefined → local
+      { path: "async.txt", oldString: "hello", newString: "hi" },
+      stubCtx({ conversationId: "conv-1" }),
     );
 
-    expect(called).toBe(true);
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toBe('Replaced 1 occurrence in "local.txt".');
+    expect(result.content).toBe('Replaced 1 occurrence in "async.txt".');
+    expect(checkStillRunning).toBe(true);
   });
 
-  it("skips LSP diagnostics when computerId is set (remote)", async () => {
+  it("skips the check when computerId is set (remote)", async () => {
     const filePath = join(workdir, "remote.txt");
     await writeFile(filePath, "hello\n", "utf8");
 
     let called = false;
-    const diagnostics: DiagnosticsHook = async () => {
+    const queueCheck: QueueCheckHook = () => {
       called = true;
-      return { formatted: "DIAG-SHOULD-NOT-APPEAR", slow: false, timedOut: false };
     };
-    const tool = makeTool(diagnostics);
+    const tool = makeTool(queueCheck);
 
     const result = await tool.execute(
       { path: "remote.txt", oldString: "hello", newString: "hi" },
-      stubCtx({ computerId: "remote-host" }),
+      stubCtx({ computerId: "remote-host", conversationId: "conv-1" }),
     );
 
-    // Remote: the diagnostics hook is never invoked (LSP servers are local
-    // processes that can't see remote files over SFTP).
+    // Remote: LSP servers are local processes that can't see SFTP files.
     expect(called).toBe(false);
     expect(result.isError).toBeUndefined();
-    // The edit itself still succeeded against the (local) backend.
     expect(result.content).toBe('Replaced 1 occurrence in "remote.txt".');
-    expect(result.content).not.toContain("DIAG-SHOULD-NOT-APPEAR");
 
     const content = await readFile(filePath, "utf8");
     expect(content).toBe("hi\n");
   });
 
-  it("swallows a throwing diagnostics hook (edit already succeeded)", async () => {
+  it("skips the check when there is no conversation to notify", async () => {
+    const filePath = join(workdir, "noconv.txt");
+    await writeFile(filePath, "hello\n", "utf8");
+
+    let called = false;
+    const tool = makeTool(() => {
+      called = true;
+    });
+
+    const result = await tool.execute(
+      { path: "noconv.txt", oldString: "hello", newString: "hi" },
+      stubCtx(), // conversationId omitted
+    );
+
+    expect(called).toBe(false);
+    expect(result.content).toBe('Replaced 1 occurrence in "noconv.txt".');
+  });
+
+  it("swallows a throwing queue hook (edit already succeeded)", async () => {
     const filePath = join(workdir, "throw.txt");
     await writeFile(filePath, "hello\n", "utf8");
 
-    const diagnostics: DiagnosticsHook = async () => {
+    const tool = makeTool(() => {
       throw new Error("LSP exploded");
-    };
-    const tool = makeTool(diagnostics);
+    });
 
     const result = await tool.execute(
       { path: "throw.txt", oldString: "hello", newString: "hi" },
-      stubCtx(),
+      stubCtx({ conversationId: "conv-1" }),
     );
 
     expect(result.isError).toBeUndefined();
