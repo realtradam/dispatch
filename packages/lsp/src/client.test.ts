@@ -15,6 +15,7 @@ function makeClient(overrides?: {
   readonly initialization?: Record<string, unknown>;
   readonly initializeTimeoutMs?: number;
   readonly unversionedSettleMs?: number;
+  readonly noPushGraceMs?: number;
 }): {
   client: LanguageServerClient;
   stdinChunks: Uint8Array[];
@@ -60,6 +61,7 @@ function makeClient(overrides?: {
     ...(overrides?.unversionedSettleMs !== undefined
       ? { unversionedSettleMs: overrides.unversionedSettleMs }
       : {}),
+    ...(overrides?.noPushGraceMs !== undefined ? { noPushGraceMs: overrides.noPushGraceMs } : {}),
   });
 
   return {
@@ -375,7 +377,7 @@ describe("client", () => {
     // A healthy server would change diagnostics as the file changes; a
     // corrupted one re-emits the SAME non-empty set. Drive 5 edits with
     // different text but identical diagnostics → client flips to error.
-    const { client, serverResponses } = makeClient();
+    const { client, serverResponses } = makeClient({ unversionedSettleMs: 20 });
     const startPromise = client.start();
     await new Promise((r) => setTimeout(r, 50));
     serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
@@ -419,7 +421,7 @@ describe("client", () => {
   });
 
   it("corruption detector does NOT trip on a clean file (empty diagnostics stay identical)", async () => {
-    const { client, serverResponses } = makeClient();
+    const { client, serverResponses } = makeClient({ unversionedSettleMs: 20 });
     const startPromise = client.start();
     await new Promise((r) => setTimeout(r, 50));
     serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
@@ -640,7 +642,10 @@ describe("client diagnostics wait", () => {
   }
 
   /** Connect a client; returns the fake-server controls plus the client. */
-  async function connectedClient(opts?: { readonly unversionedSettleMs?: number }): Promise<{
+  async function connectedClient(opts?: {
+    readonly unversionedSettleMs?: number;
+    readonly noPushGraceMs?: number;
+  }): Promise<{
     client: LanguageServerClient;
     serverResponses: (msg: string) => void;
     exit: () => void;
@@ -668,6 +673,7 @@ describe("client diagnostics wait", () => {
       ...(opts?.unversionedSettleMs !== undefined
         ? { unversionedSettleMs: opts.unversionedSettleMs }
         : {}),
+      ...(opts?.noPushGraceMs !== undefined ? { noPushGraceMs: opts.noPushGraceMs } : {}),
     });
     const startPromise = client.start();
     await new Promise((r) => setTimeout(r, 30));
@@ -761,6 +767,98 @@ describe("client diagnostics wait", () => {
 
     const openResult = await openWait;
     expect(openResult.formatted).toContain("old error");
+  });
+
+  it("COLD START: a late multi-push open burst cannot satisfy a back-to-back edit (unversioned)", async () => {
+    // Real cold typescript-language-server: the initial quiet window expires
+    // with NO push (the server takes ~2.4 s), then THREE pushes arrive over
+    // ~185 ms. The first late push must reopen the window, and a change issued
+    // right after it must be deferred until the whole burst goes quiet.
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 60 });
+
+    const openWait = client.waitForDiagnostics(PATH, { text: "clean v1", timeoutMs: 4000 });
+
+    // The initial window (60 ms) expires with no push at all.
+    await new Promise((r) => setTimeout(r, 90));
+    serverResponses(push({ messages: [] })); // open push #1, late
+    await new Promise((r) => setTimeout(r, 15));
+
+    const editWait = client.waitForDiagnostics(PATH, { text: "broken v2", timeoutMs: 4000 });
+    await new Promise((r) => setTimeout(r, 15));
+    serverResponses(push({ messages: [] })); // burst push #2 (stale generation)
+    await new Promise((r) => setTimeout(r, 15));
+    serverResponses(push({ messages: [] })); // burst push #3 (stale generation)
+
+    // Burst quiesces → the open settles clean and the deferred didChange is
+    // written. Only then does the real result for the edit arrive.
+    await new Promise((r) => setTimeout(r, 180));
+    serverResponses(push({ messages: ["real error"] }));
+
+    const edit = await editWait;
+    expect(edit.timedOut).toBe(false);
+    expect(edit.formatted).toContain("real error");
+
+    const open = await openWait;
+    expect(open.timedOut).toBe(false);
+    expect(open.formatted).toBe("");
+  });
+
+  it("the first unversioned push after a cold-start delay reopens the quiet window", async () => {
+    // Directly asserts the burst rule: a push arriving after the sync's
+    // initial window already expired must NOT resolve the wait immediately.
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 50 });
+    let resolved = false;
+
+    const wait = client.waitForDiagnostics(PATH, { text: "content", timeoutMs: 4000 }).then((r) => {
+      resolved = true;
+      return r;
+    });
+
+    await new Promise((r) => setTimeout(r, 120)); // initial window long gone
+    serverResponses(push({ messages: ["from the burst"] }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(false); // held: waiting for the burst to go quiet
+
+    const result = await wait;
+    expect(result.formatted).toContain("from the burst");
+  });
+
+  it("resolves as unchanged when a sync produces NO push and the last result was empty", async () => {
+    // typescript-language-server suppresses empty→empty publishes entirely.
+    const { client, serverResponses } = await connectedClient({
+      unversionedSettleMs: 20,
+      noPushGraceMs: 60,
+    });
+
+    const first = client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 15));
+    serverResponses(push({ messages: [] }));
+    expect((await first).formatted).toBe("");
+
+    // No push will ever answer this sync. The grace must report it as
+    // unchanged (not a 5 s "server skipped").
+    const started = Date.now();
+    const second = await client.waitForDiagnostics(PATH, { text: "v2", timeoutMs: 5000 });
+    expect(second.timedOut).toBe(false);
+    expect(second.formatted).toBe("");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("does NOT fall back to 'unchanged' when the last result was non-empty", async () => {
+    // A non-empty set means the server WILL publish (empty or different), so a
+    // missing push must keep waiting — never report stale data as current.
+    const { client, serverResponses } = await connectedClient({
+      unversionedSettleMs: 20,
+      noPushGraceMs: 40,
+    });
+
+    const first = client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 15));
+    serverResponses(push({ messages: ["existing error"] }));
+    expect((await first).formatted).toContain("existing error");
+
+    const second = await client.waitForDiagnostics(PATH, { text: "v2", timeoutMs: 150 });
+    expect(second.timedOut).toBe(true); // no push, non-empty previous set
   });
 
   it("defers a didChange that lands inside an unversioned quiet window", async () => {

@@ -68,6 +68,12 @@ interface FakeDelivery {
   emit(conversationId: string, event: AgentEvent): void;
   setActive(conversationId: string, active: boolean): void;
   setOrchestratorAvailable(available: boolean): void;
+  /**
+   * Make an idle `enqueue` emit the opening `user-message` synchronously, the
+   * way the real orchestrator does (`startTurn` → `runTurnDetached` emits
+   * before `enqueue` returns).
+   */
+  setEmitOnStart(emit: boolean): void;
 }
 
 function makeDelivery(): FakeDelivery {
@@ -78,6 +84,7 @@ function makeDelivery(): FakeDelivery {
   const listeners = new Map<string, Set<(event: AgentEvent) => void>>();
   let nextId = 1;
   let orchestratorAvailable = true;
+  let emitOnStart = false;
 
   const delivery: NoticeDelivery = {
     isActive: (id) => orchestratorAvailable && active.has(id),
@@ -85,8 +92,19 @@ function makeDelivery(): FakeDelivery {
       if (!orchestratorAvailable) return { startedTurn: false, messageId: undefined };
       if (!active.has(conversationId)) {
         // Idle → a turn starts and is assumed to settle before any later
-        // event; mid-turn behavior is opted into with `setActive`.
+        // event; mid-turn behavior is opted into with `setActive`. The real
+        // orchestrator emits the opening user-message BEFORE enqueue returns.
         enqueued.push({ conversationId, text, messageId: undefined });
+        if (emitOnStart) {
+          for (const listener of listeners.get(conversationId) ?? []) {
+            listener({
+              type: "user-message",
+              conversationId,
+              turnId: `started-${nextId++}`,
+              text,
+            });
+          }
+        }
         return { startedTurn: true, messageId: undefined };
       }
       const messageId = `m${nextId++}`;
@@ -124,6 +142,9 @@ function makeDelivery(): FakeDelivery {
     },
     setOrchestratorAvailable: (available) => {
       orchestratorAvailable = available;
+    },
+    setEmitOnStart: (emit) => {
+      emitOnStart = emit;
     },
   };
 }
@@ -482,5 +503,141 @@ describe("DiagnosticsCheckQueue — bounds", () => {
 
     const reports = await queue.listResults("c1");
     expect(reports.map((r) => r.filePath)).toEqual(["/proj/b.ts", "/proj/c.ts"]);
+  });
+});
+
+describe("DiagnosticsCheckQueue — post-seal carry (orchestrator tryCarryQueue)", () => {
+  /** Queue a notice mid-turn and return its text. */
+  async function midTurnNotice(
+    harness: ReturnType<typeof makeQueue>,
+    callIndex: number,
+    message: string,
+  ): Promise<string> {
+    const { queue, runner, fake } = harness;
+    fake.setActive("c1", true);
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: `v-${message}`, cwd: CWD });
+    runner.calls[callIndex]?.resolve(outcome([err(message)]));
+    await tick();
+    const text = fake.enqueued[fake.enqueued.length - 1]?.text ?? "";
+    fake.setActive("c1", false);
+    return text;
+  }
+
+  it("counts a carried LSP-only turn against the auto-turn cap", async () => {
+    const harness = makeQueue({ maxAutoTurns: 2 });
+
+    for (let i = 0; i < 2; i++) {
+      const notice = await midTurnNotice(harness, i, `e${i}`);
+      // The turn ends without another tool call → the orchestrator carries the
+      // queued notice into a NEW turn whose opening user-message is the notice.
+      harness.fake.emit("c1", {
+        type: "done",
+        conversationId: "c1",
+        turnId: `t${i}`,
+        reason: "stop",
+      });
+      harness.fake.emit("c1", {
+        type: "user-message",
+        conversationId: "c1",
+        turnId: `carry-${i}`,
+        text: notice,
+      });
+    }
+
+    // Two carried turns reached the cap; a third (idle, auto-start) is dropped.
+    harness.queue.queueCheck({
+      conversationId: "c1",
+      filePath: FILE,
+      text: "v-third",
+      cwd: CWD,
+    });
+    harness.runner.calls[2]?.resolve(outcome([err("e-third")]));
+    await tick();
+
+    expect(harness.fake.enqueued).toHaveLength(2);
+  });
+
+  it("a carried turn that also contains user steering is a real user message (resets the cap)", async () => {
+    const harness = makeQueue({ maxAutoTurns: 2 });
+
+    // One LSP-only carry → autoTurns 1.
+    const notice = await midTurnNotice(harness, 0, "e0");
+    harness.fake.emit("c1", {
+      type: "user-message",
+      conversationId: "c1",
+      turnId: "carry-0",
+      text: notice,
+    });
+
+    // Next notice queued mid-turn; the carry combines our notice with user text.
+    const notice2 = await midTurnNotice(harness, 1, "e1");
+    harness.fake.emit("c1", {
+      type: "user-message",
+      conversationId: "c1",
+      turnId: "carry-1",
+      text: `please also look at the tests\n\n${notice2}`,
+    });
+
+    // If the combined carry reset the guards, an idle notice can auto-start.
+    harness.queue.queueCheck({
+      conversationId: "c1",
+      filePath: FILE,
+      text: "v2",
+      cwd: CWD,
+    });
+    harness.runner.calls[2]?.resolve(outcome([err("e2")]));
+    await tick();
+
+    expect(harness.fake.enqueued).toHaveLength(3);
+  });
+
+  it("a non-aborted done at the cap cancels the queued notice (no carry can start)", async () => {
+    const harness = makeQueue({ maxAutoTurns: 1 });
+
+    // Reach the cap with one LSP-only carry.
+    const first = await midTurnNotice(harness, 0, "e0");
+    harness.fake.emit("c1", {
+      type: "user-message",
+      conversationId: "c1",
+      turnId: "carry-0",
+      text: first,
+    });
+    expect(harness.fake.enqueued).toHaveLength(1);
+
+    // A new notice is queued mid-turn while already at the cap.
+    await midTurnNotice(harness, 1, "e1");
+    expect(harness.fake.enqueued).toHaveLength(2);
+    const queuedId = harness.fake.enqueued[1]?.messageId;
+
+    // `done` (before seal/carry) must remove it, otherwise tryCarryQueue would
+    // start a turn the cap was meant to prevent.
+    harness.fake.emit("c1", {
+      type: "done",
+      conversationId: "c1",
+      turnId: "t1",
+      reason: "stop",
+    });
+
+    expect(queuedId).toBeDefined();
+    expect(harness.fake.cancelled.map((c) => c.messageId)).toContain(queuedId);
+  });
+
+  it("an auto-start is counted once even though the orchestrator emits its opening user-message", async () => {
+    const harness = makeQueue({ maxAutoTurns: 2 });
+    harness.fake.setEmitOnStart(true);
+
+    for (let i = 0; i < 3; i++) {
+      harness.queue.queueCheck({
+        conversationId: "c1",
+        filePath: FILE,
+        text: `v${i}`,
+        cwd: CWD,
+      });
+      harness.runner.calls[i]?.resolve(outcome([err(`e${i}`)]));
+      await tick();
+    }
+
+    // Two auto-starts allowed, the third dropped — not one (double-count bug).
+    expect(harness.fake.enqueued).toHaveLength(2);
   });
 });

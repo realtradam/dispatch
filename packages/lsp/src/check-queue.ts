@@ -432,7 +432,7 @@ export class DiagnosticsCheckQueue {
       conv.pending = null;
       return;
     }
-    if (conv.autoTurns >= (this.deps.maxAutoTurns ?? DEFAULT_MAX_AUTO_TURNS)) {
+    if (conv.autoTurns >= this.maxAutoTurns()) {
       conv.pending = null;
       return;
     }
@@ -480,14 +480,32 @@ export class DiagnosticsCheckQueue {
       case "user-message": {
         const pending = conv.pending;
         const expected = conv.expectedAutoText;
+
+        // Delivery confirmation for EVERY opening message that contains our
+        // notice: our own auto-start, and — crucially — a turn the
+        // orchestrator CARRIED out of the steering queue after seal
+        // (`tryCarryQueue` opens a new turn with the queued text as its
+        // user message).
+        if (pending !== null && event.text.includes(pending.text)) {
+          this.markDelivered(conv, pending);
+        }
+
         if (expected !== null && event.text.includes(expected)) {
-          // Our own auto-started turn — this is what delivery looks like.
+          // Our own auto-started turn. `deliver` counts it (it knows whether
+          // `enqueue` started a turn); counting here too would halve the cap.
           conv.expectedAutoText = null;
-          if (pending !== null && event.text.includes(pending.text)) {
-            this.markDelivered(conv, pending);
-          }
           return;
         }
+
+        // A carried LSP-ONLY turn arrives with no `expectedAutoText`. It IS an
+        // LSP-initiated turn, so it must count against the cap — otherwise
+        // edit → notice → turn → notice ping-pong never stops. A carry that
+        // also contains user steering text is a real user message (below).
+        if (pending !== null && event.text === pending.text) {
+          conv.autoTurns += 1;
+          return;
+        }
+
         // A real user message resets both safety guards.
         conv.autoTurns = 0;
         conv.lastTurnAborted = false;
@@ -508,14 +526,25 @@ export class DiagnosticsCheckQueue {
           // the orchestrator's post-seal carry can't start a turn either.
           conv.lastTurnAborted = true;
           this.discardPending(conv);
-        } else {
-          conv.lastTurnAborted = false;
+          return;
+        }
+        conv.lastTurnAborted = false;
+        // `done` is emitted BEFORE the turn seals and before the orchestrator's
+        // post-seal carry. At the cap, a queued notice would be carried into a
+        // NEW turn (a carry does not go through `enqueue`, so `deliver`'s cap
+        // check never sees it). Drop it now so the carry has nothing to start.
+        if (conv.pending !== null && conv.autoTurns >= this.maxAutoTurns()) {
+          this.discardPending(conv);
         }
         return;
       }
       default:
         return;
     }
+  }
+
+  private maxAutoTurns(): number {
+    return this.deps.maxAutoTurns ?? DEFAULT_MAX_AUTO_TURNS;
   }
 
   // --- state helpers ------------------------------------------------------

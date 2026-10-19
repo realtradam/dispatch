@@ -117,16 +117,35 @@ export interface ClientDeps {
   readonly initializeTimeoutMs?: number | undefined;
   /**
    * Quiet window (ms) for UNVERSIONED `publishDiagnostics` bursts — default
-   * 150. A server that omits `version` gives no way to tell which document
-   * version a push belongs to; typescript-language-server emits TWO pushes
-   * after `didOpen` and neither carries a version. The client therefore
-   * debounces pushes: a push opens/extends the window, and only when the
-   * window closes with no further push is the result taken. A `didChange`
-   * that lands inside the window is DEFERRED to the window's end, so a late
-   * push from the previous generation can never satisfy it. Exposed so tests
-   * can shrink it.
+   * 300. A server that omits `version` gives no way to tell which document
+   * version a push belongs to; typescript-language-server emits several pushes
+   * per sync and none carries a version.
+   *
+   * The client treats an unversioned push stream as a burst:
+   *  - EVERY push (re)opens the window, including the first push after a cold
+   *    start (typescript-language-server's first push lands seconds after
+   *    `didOpen`, followed by more over the next ~200 ms). A push is only
+   *    trusted once no further push has arrived for the whole window.
+   *  - A `didChange` that lands inside the window is DEFERRED to the window's
+   *    end, so a late push from the previous generation can never satisfy it.
+   *
+   * The longer default is safe: checks are background work now, and notice
+   * latency matters far less than reporting the right content's diagnostics.
+   * Exposed so tests can shrink it.
    */
   readonly unversionedSettleMs?: number | undefined;
+  /**
+   * Grace period (ms) before a sync with NO push at all is treated as
+   * "diagnostics unchanged" — default 1500. Some servers (notably
+   * typescript-language-server 5.3.0) suppress the push entirely when a
+   * diagnostic kind was empty and stays empty, so a clean→clean edit is
+   * indistinguishable from a slow server except by waiting. The fallback is
+   * deliberately narrow: it applies only when the document's last reported
+   * diagnostics were EMPTY (so "unchanged" means "still clean") and only after
+   * a grace comfortably longer than the observed response latency, so a slow
+   * server that is about to report a NEW error is not pre-empted.
+   */
+  readonly noPushGraceMs?: number | undefined;
 }
 
 export type ClientState = "starting" | "connected" | "error" | "not-started";
@@ -157,7 +176,13 @@ interface SyncState {
 }
 
 /** Default quiet window for unversioned diagnostic bursts. */
-const UNVERSIONED_SETTLE_MS = 150;
+const UNVERSIONED_SETTLE_MS = 300;
+/**
+ * Default grace before "no push at all" means "diagnostics unchanged". Must be
+ * comfortably above the observed push latency (~400 ms warm) so a slow server
+ * reporting a NEW issue is not pre-empted.
+ */
+const NO_PUSH_GRACE_MS = 1500;
 
 export interface WaitForDiagnosticsResult {
   /** Formatted diagnostics (filtered by `minSeverity`), empty if none. */
@@ -613,6 +638,14 @@ export class LanguageServerClient {
       return;
     }
 
+    if (existing.text === newText) {
+      // Nothing changed: the server already holds exactly this content, and
+      // re-sending an identical didChange can make some servers skip the push
+      // entirely (bumping the version while never answering it). Leave the
+      // sync state untouched — `waitForDiagnostics` reports from the store.
+      return;
+    }
+
     const sync = this.syncStates.get(uriFor(filePath));
     if (sync?.settling && !sync.versioned) {
       // Unversioned quiet window still open (typically right after didOpen,
@@ -744,11 +777,15 @@ export class LanguageServerClient {
   /**
    * Accept a `publishDiagnostics` push. Rules:
    *  - Versioned push: drop if it is older than the version we last wrote.
-   *  - Unversioned push during a quiet window: it belongs to the current
-   *    burst; store it (so reports see it) and EXTEND the window.
    *  - Versioned push during a window: the server has proven it echoes
    *    versions, so end the window immediately (the next change need not be
    *    deferred).
+   *  - Unversioned push: it belongs to a burst whose boundaries the protocol
+   *    does not reveal. (Re)open the quiet window — including for the FIRST
+   *    push after a cold start, where the initial window has already expired
+   *    with no push at all (typescript-language-server takes ~2.4 s to push
+   *    once and then emits more over the next ~200 ms). A push is trusted only
+   *    when the burst goes quiet.
    */
   private handlePush(params: PublishDiagnosticsParams): void {
     const sync = this.syncStates.get(params.uri);
@@ -758,17 +795,21 @@ export class LanguageServerClient {
 
     if (sync !== undefined) {
       sync.pushSinceSync = true;
-      if (params.version !== undefined) sync.versioned = true;
+      if (params.version !== undefined) {
+        sync.versioned = true;
+      } else {
+        // Arm BEFORE storing/notifying: waiters must observe `settling` and
+        // hold the push until the burst goes quiet.
+        this.armSettle(sync);
+      }
     }
 
     this.diagnostics.setPushDiagnostics(params);
 
     if (sync === undefined) return;
-    if (params.version !== undefined) {
-      if (sync.settling) this.finishSettle(params.uri);
-      return;
+    if (params.version !== undefined && sync.settling) {
+      this.finishSettle(params.uri);
     }
-    if (sync.settling) this.armSettle(sync);
   }
 
   /** Version the next `waitForDiagnostics` sync will write for `filePath`. */
@@ -811,9 +852,14 @@ export class LanguageServerClient {
    *  - Versioned pushes are accepted only when `version >= targetVersion`
    *    (the version this call is about to write).
    *  - Unversioned pushes are held until a quiet window with no further push
-   *    closes, and a didChange that lands inside a window is deferred to its
-   *    end — so the extra push typescript-language-server emits after
+   *    closes (every push reopens it, including the first one after a cold
+   *    start), and a didChange that lands inside a window is deferred to its
+   *    end — so the extra pushes typescript-language-server emits after
    *    `didOpen` can never satisfy an edit's wait.
+   *  - A NO-OP sync (the requested content is already the document's content)
+   *    sends nothing and resolves from the store: the server already holds
+   *    this content, and re-sending an identical didChange may produce no push
+   *    at all.
    */
   async waitForDiagnostics(
     filePath: string,
@@ -821,7 +867,10 @@ export class LanguageServerClient {
   ): Promise<WaitForDiagnosticsResult> {
     const timeoutMs = opts?.timeoutMs ?? 10_000;
     const uri = uriFor(filePath);
-    const targetVersion = this.nextSyncVersion(filePath);
+
+    // The version the wait targets. For a real sync this is the version the
+    // sync will write; a no-op sync keeps the document's current version.
+    let targetVersion = this.nextSyncVersion(filePath);
 
     let resolveWait!: (value: boolean) => void;
     const waited = new Promise<boolean>((resolve) => {
@@ -838,16 +887,45 @@ export class LanguageServerClient {
     const timer = setTimeout(() => resolveWait(false), timeoutMs);
     (timer as { unref?: () => void }).unref?.();
 
+    // Some servers send NO push when a change leaves the diagnostics empty and
+    // they were already empty (typescript-language-server suppresses exactly
+    // that case). Waiting the full cap would turn every clean edit into a
+    // spurious "took too long". After a bounded grace, resolve as "unchanged"
+    // — but only when the last reported set was empty, so a slow server about
+    // to report a new issue keeps waiting.
+    const grace = setTimeout(() => {
+      if (this.isUnchangedEmptyResult(uri, targetVersion)) resolveWait(true);
+    }, this.deps.noPushGraceMs ?? NO_PUSH_GRACE_MS);
+    (grace as { unref?: () => void }).unref?.();
+
     // Sync AFTER the waiter is registered so a push that races the write is
     // never missed. `change`/`open` may defer the actual write (quiet window).
     try {
-      if (opts?.text !== undefined) {
-        await this.change(filePath, opts.text);
+      let text = opts?.text ?? null;
+      if (text === null) {
+        try {
+          text = await this.deps.fs.readText(filePath);
+        } catch {
+          text = null; // vanished/unreadable: `open` degrades the same way
+        }
+      }
+
+      const docBefore = this.openDocuments.get(filePath);
+      const noOp = text !== null && docBefore !== undefined && docBefore.text === text;
+      if (noOp && docBefore !== undefined) targetVersion = docBefore.version;
+
+      if (text !== null) {
+        await this.openWithText(filePath, text);
       } else {
         await this.open(filePath);
       }
+
+      // The document already holds this content and the current sync has
+      // already reported: the store IS the answer (no push will come back).
+      if (noOp && this.syncAlreadyReported(uri)) resolveWait(true);
+
       const received = await waited;
-      if (received) this.detectStaleDiagnostics(uri, opts?.text ?? "");
+      if (received) this.detectStaleDiagnostics(uri, text ?? "");
       return {
         formatted: this.diagnostics.formatFiltered(uri, opts?.minSeverity),
         diagnostics: this.filteredDiagnostics(uri, opts?.minSeverity),
@@ -856,8 +934,34 @@ export class LanguageServerClient {
       };
     } finally {
       clearTimeout(timer);
+      clearTimeout(grace);
       waiter.cancel();
     }
+  }
+
+  /**
+   * True when a wait has received NO push for its sync and the document's last
+   * reported diagnostics were empty. Servers that suppress empty→empty pushes
+   * (typescript-language-server) will never answer such a sync, so "no push"
+   * is the answer: still clean.
+   */
+  private isUnchangedEmptyResult(uri: string, targetVersion: number): boolean {
+    const sync = this.syncStates.get(uri);
+    if (sync === undefined) return false;
+    if (sync.version < targetVersion) return false; // sync not written yet
+    if (sync.pushSinceSync) return false; // a push arrived; normal path applies
+    if (!this.diagnostics.hasReceivedPush(uri)) return false; // never reported yet
+    return this.diagnostics.getMerged(uri).length === 0;
+  }
+
+  /**
+   * True when the current sync generation has produced a push and its burst
+   * (for unversioned servers) has gone quiet — i.e. the store holds final
+   * diagnostics for the document's current content.
+   */
+  private syncAlreadyReported(uri: string): boolean {
+    const sync = this.syncStates.get(uri);
+    return sync?.pushSinceSync === true && !sync.settling;
   }
 
   /** Merged (push + pull) diagnostics for `uri`, optionally severity-filtered. */
