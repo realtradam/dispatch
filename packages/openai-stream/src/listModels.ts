@@ -26,6 +26,12 @@ interface OpenAIModelEntry {
   readonly capabilities?: {
     readonly vision?: boolean;
   };
+  /**
+   * Authoritative top-level vision capability reported by some providers'
+   * `/models` endpoints (e.g. CoralBricks' `supports_image_input`). Treated the
+   * same as `capabilities.vision`; the nested field wins when both are present.
+   */
+  readonly supports_image_input?: boolean;
 }
 
 interface OpenAIModelListResponse {
@@ -104,17 +110,19 @@ export function isVisionModelId(id: string): boolean {
 /**
  * Pure mapping: raw OpenAI-compatible model list → ModelInfo[].
  * Extracts `contextWindow` from common field names (providers vary) and
- * detects vision capability via an EXPLICIT `capabilities.vision` boolean when
- * the provider reports one (authoritative, e.g. Hyper's `/v1/models`), falling
- * back to the {@link isVisionModelId} name heuristic only when that field is
- * absent (backward compatibility for providers with no capability signal).
+ * detects vision capability via an EXPLICIT capability boolean when the
+ * provider reports one — either the nested `capabilities.vision` (e.g. Hyper's
+ * `/v1/models`) or the top-level `supports_image_input` (e.g. CoralBricks'
+ * `/v1/models`). The nested field wins when both are present. Falls back to the
+ * {@link isVisionModelId} name heuristic only when neither field is present
+ * (backward compatibility for providers with no capability signal).
  * Extracted for direct unit testing with no I/O.
  */
 export function parseModelList(data: readonly OpenAIModelEntry[]): readonly ModelInfo[] {
   return data.map((entry) => {
     const contextWindow =
       entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_tokens;
-    const explicitVision = entry.capabilities?.vision;
+    const explicitVision = entry.capabilities?.vision ?? entry.supports_image_input;
     const fallbackVision = isVisionModelId(entry.id);
     // Precedence: an explicit boolean capability wins; otherwise the name-based
     // heuristic (vision only reported when true — a non-vision-looking id emits

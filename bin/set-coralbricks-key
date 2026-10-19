@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# bin/set-coralbricks-key — paste the CoralBricks API key into /etc/dispatch/env (prod + dev).
+#
+# A tiny, focused wrapper around `bin/sync-env --coralbricks-key`. It prompts you
+# to paste the key WITHOUT echoing it and WITHOUT keeping it in shell history
+# (the value only ever exists in this script's stdin read), then elevates with
+# sudo to write it into /etc/dispatch/env — the SAME config file the systemd
+# service (prod) and bin/up (dev) both read.
+#
+# Usage:
+#   bin/set-coralbricks-key                    # paste the key; empty → clear/disable
+#   bin/set-coralbricks-key --remove           # explicitly remove/disable the provider
+#   bin/set-coralbricks-key --help             # this help
+#
+# RUN WITHOUT A sudo PREFIX — sudo is inside. The key value is never echoed,
+# never written to a temp file, and never stored in this repo. It is passed to
+# the secure sync-env path below, which reports only "configured" / "removed" —
+# no key characters.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SYNC_ENV="$HERE/sync-env"
+
+print_help() {
+	sed -n '2,18p' "${BASH_SOURCE[0]}"
+	exit 0
+}
+
+MODE="set"
+for arg in "$@"; do
+	case "$arg" in
+		--remove | -r)
+			MODE="remove"
+			;;
+		--help | -h)
+			print_help
+			;;
+		*)
+			echo "set-coralbricks-key: unknown argument: $arg" >&2
+			print_help
+			;;
+	esac
+done
+
+if [ ! -f "$SYNC_ENV" ]; then
+	echo "set-coralbricks-key: $SYNC_ENV not found — run from the dispatch backend checkout." >&2
+	exit 1
+fi
+
+if [ "$MODE" = "remove" ]; then
+	echo "Removing CORAL_API_KEY (disables the CoralBricks provider)…"
+	exec sudo "$SYNC_ENV" --coralbricks-key ""
+fi
+
+echo "Paste your CORAL_API_KEY and press Enter:"
+echo "(input is hidden and not saved to shell history)"
+echo -n "> "
+# `read -rs` suppresses echo; the value lives only in this variable, which is
+# passed to sync-env and then goes out of scope. No ambient state is created.
+IFS= read -rs CORALBRICKS_KEY
+
+if [ -z "$CORALBRICKS_KEY" ]; then
+	echo "No key entered — removing CORAL_API_KEY (disables the CoralBricks provider)."
+	exec sudo "$SYNC_ENV" --coralbricks-key ""
+fi
+
+# Sanity guard: a real API key never contains these. sync-env also rejects them,
+# but fail fast here with a clear message rather than a downstream sed surprise.
+if [[ "$CORALBRICKS_KEY" == *"$'\n'"* || "$CORALBRICKS_KEY" == *"$'\r'"* || "$CORALBRICKS_KEY" == *'|'* ]]; then
+	echo "set-coralbricks-key: pasted value contains a newline/pipe — refusing (was it double-pasted?)." >&2
+	exit 1
+fi
+
+echo "Writing CORAL_API_KEY into /etc/dispatch/env (via sudo)…"
+exec sudo "$SYNC_ENV" --coralbricks-key "$CORALBRICKS_KEY"

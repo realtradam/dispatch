@@ -7,12 +7,13 @@
 # credential NUMBER is reported).
 #
 # Usage:
-#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..." --hyper-key "sk-hyper-..." --openrouter-key "sk-or-v1-..." --baseten-key "..." --opencode-key "1=sk-..."
+#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..." --hyper-key "sk-hyper-..." --openrouter-key "sk-or-v1-..." --baseten-key "..." --coralbricks-key "cb_..." --opencode-key "1=sk-..."
 #   sudo bin/sync-env                          # prompts for keys interactively
 #   sudo bin/sync-env --umans-key ""           # removes the umans key (writes UMANS_API_KEY=)
 #   sudo bin/sync-env --hyper-key ""           # removes the hyper key (disables the provider)
 #   sudo bin/sync-env --openrouter-key ""      # removes the openrouter key (disables the provider)
 #   sudo bin/sync-env --baseten-key ""         # removes the baseten key (disables the provider)
+#   sudo bin/sync-env --coralbricks-key ""     # removes the coralbricks key (disables the provider)
 #   sudo bin/sync-env --opencode-key "1="      # removes numbered OpenCode key #1
 #
 # Numbered OpenCode keys: `--opencode-key <number>=<key>`. An empty value
@@ -42,6 +43,7 @@ LONGCAT_KEY=""
 HYPER_KEY=""
 OPENROUTER_KEY=""
 BASETEN_KEY=""
+CORALBRICKS_KEY=""
 # Whether --hyper-key was explicitly supplied on this run. Unlike umans/longcat
 # (empty = skip), an explicitly empty --hyper-key means REMOVE the key.
 HYPER_KEY_SET=0
@@ -51,6 +53,9 @@ OPENROUTER_KEY_SET=0
 # Whether --baseten-key was explicitly supplied on this run. Same semantics
 # as --hyper-key: explicitly empty means REMOVE the key.
 BASETEN_KEY_SET=0
+# Whether --coralbricks-key was explicitly supplied on this run. Same semantics
+# as --baseten-key: explicitly empty means REMOVE the key.
+CORALBRICKS_KEY_SET=0
 # Maps a canonical OpenCode number → value. Empty value means "removal".
 declare -A OPENCODE_MAP=()
 add_opencode() {
@@ -121,6 +126,16 @@ while [[ $# -gt 0 ]]; do
 			BASETEN_KEY_SET=1
 			shift
 			;;
+		--coralbricks-key)
+			CORALBRICKS_KEY="$2"
+			CORALBRICKS_KEY_SET=1
+			shift 2
+			;;
+		--coralbricks-key=*)
+			CORALBRICKS_KEY="${1#--coralbricks-key=}"
+			CORALBRICKS_KEY_SET=1
+			shift
+			;;
 		--opencode-key)
 			add_opencode "$2"
 			shift 2
@@ -131,7 +146,7 @@ while [[ $# -gt 0 ]]; do
 			;;
 		*)
 			echo "sync-env: unknown argument: $1" >&2
-			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--hyper-key \"sk-hyper-...\"] [--openrouter-key \"sk-or-v1-...\"] [--baseten-key \"...\"] [--opencode-key \"1=sk-...\"]" >&2
+			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--hyper-key \"sk-hyper-...\"] [--openrouter-key \"sk-or-v1-...\"] [--baseten-key \"...\"] [--coralbricks-key \"cb_...\"] [--opencode-key \"1=sk-...\"]" >&2
 			exit 1
 			;;
 	esac
@@ -171,6 +186,15 @@ if [ -z "$BASETEN_KEY" ] && [ -t 0 ]; then
 	# only an explicit `--baseten-key ""` argument removes the key.
 	if [ -n "$BASETEN_KEY" ]; then
 		BASETEN_KEY_SET=1
+	fi
+fi
+if [ -z "$CORALBRICKS_KEY" ] && [ -t 0 ]; then
+	echo -n "Enter CORAL_API_KEY (or press Enter to skip): " >&2
+	read -r CORALBRICKS_KEY
+	# An interactive empty value means "skip" (leave any existing key as-is) —
+	# only an explicit `--coralbricks-key ""` argument removes the key.
+	if [ -n "$CORALBRICKS_KEY" ]; then
+		CORALBRICKS_KEY_SET=1
 	fi
 fi
 
@@ -251,6 +275,22 @@ if [ "$BASETEN_KEY_SET" -eq 1 ]; then
 	else
 		sed -i "/^BASETEN_API_KEY=/d" "$ENV_FILE"
 		echo "  removed BASETEN_API_KEY" >&2
+	fi
+fi
+
+# --- Update CORAL_API_KEY. Same semantics as HYPER_API_KEY: omitted →
+# --- leave as-is; non-empty → update/append; explicitly empty → remove.
+if [ "$CORALBRICKS_KEY_SET" -eq 1 ]; then
+	if [ -n "$CORALBRICKS_KEY" ]; then
+		if grep -q "^CORAL_API_KEY=" "$ENV_FILE"; then
+			sed -i "s|^CORAL_API_KEY=.*|CORAL_API_KEY=$CORALBRICKS_KEY|" "$ENV_FILE"
+		else
+			echo "CORAL_API_KEY=$CORALBRICKS_KEY" >> "$ENV_FILE"
+		fi
+		echo "  CORAL_API_KEY configured (value not echoed)" >&2
+	else
+		sed -i "/^CORAL_API_KEY=/d" "$ENV_FILE"
+		echo "  removed CORAL_API_KEY" >&2
 	fi
 fi
 
