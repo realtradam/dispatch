@@ -99,6 +99,57 @@ describe("flattenContent", () => {
   });
 });
 
+describe("adaptTool concurrency safety from annotations", () => {
+  const base: McpToolInfo = {
+    name: "annotated",
+    description: "Annotated tool",
+    inputSchema: { type: "object" },
+  };
+  const caller = makeCaller({ content: [] });
+
+  it("readOnlyHint: true → concurrencySafe", () => {
+    const adapted = adaptTool("srv", { ...base, annotations: { readOnlyHint: true } }, caller);
+    expect(adapted.concurrencySafe).toBe(true);
+  });
+
+  it("missing annotations → unsafe (conservative default)", () => {
+    const adapted = adaptTool("srv", base, caller);
+    expect(adapted.concurrencySafe).toBe(false);
+  });
+
+  it("readOnlyHint: false → unsafe", () => {
+    const adapted = adaptTool("srv", { ...base, annotations: { readOnlyHint: false } }, caller);
+    expect(adapted.concurrencySafe).toBe(false);
+  });
+
+  it("readOnlyHint: true with destructiveHint: true contradicts → unsafe", () => {
+    const adapted = adaptTool(
+      "srv",
+      { ...base, annotations: { readOnlyHint: true, destructiveHint: true } },
+      caller,
+    );
+    expect(adapted.concurrencySafe).toBe(false);
+  });
+
+  it("readOnlyHint: true with destructiveHint: false → safe", () => {
+    const adapted = adaptTool(
+      "srv",
+      { ...base, annotations: { readOnlyHint: true, destructiveHint: false } },
+      caller,
+    );
+    expect(adapted.concurrencySafe).toBe(true);
+  });
+
+  it("other hints alone do not make a tool safe", () => {
+    const adapted = adaptTool(
+      "srv",
+      { ...base, annotations: { idempotentHint: true, openWorldHint: false } },
+      caller,
+    );
+    expect(adapted.concurrencySafe).toBe(false);
+  });
+});
+
 describe("adaptTool", () => {
   it("maps inputSchema to ToolParameterSchema", () => {
     const mcpTool: McpToolInfo = {

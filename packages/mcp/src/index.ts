@@ -9,7 +9,7 @@ export {
 } from "./extension.js";
 export { encode, FrameDecoder } from "./framing.js";
 export { type Logger, McpManager, type McpManagerDeps } from "./manager.js";
-export { adaptTool, flattenContent, namespace } from "./registry.js";
+export { adaptTool, flattenContent, isConcurrencySafe, namespace } from "./registry.js";
 export {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_DEFAULT_TIMEOUT_MS,
@@ -30,6 +30,7 @@ export type {
   McpServerState,
   McpServerStatus,
   McpService,
+  McpToolAnnotations,
   McpToolCaller,
   McpToolInfo,
   ResolvedMcpServer,

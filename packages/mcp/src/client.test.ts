@@ -86,6 +86,38 @@ describe("McpClient", () => {
     expect(tools[0].description).toBe("A test tool");
   });
 
+  it("listTools passes annotations through from tools/list", async () => {
+    const conn = makeMockConnection();
+    const origSend = conn.send.bind(conn);
+    conn.send = (method: string, params?: unknown) => {
+      if (method === "tools/list") {
+        return Promise.resolve({
+          tools: [
+            {
+              name: "reader",
+              description: "Read-only tool",
+              inputSchema: { type: "object" },
+              annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+            },
+          ],
+        });
+      }
+      return origSend(method, params);
+    };
+
+    const client = new McpClient({ connection: conn });
+    await client.initialize();
+    const tools = await client.listTools();
+
+    expect(tools[0]?.annotations).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    // getTools() exposes the same pass-through snapshot.
+    expect(client.getTools()[0]?.annotations?.readOnlyHint).toBe(true);
+  });
+
   it("callTool sends name + arguments", async () => {
     const conn = makeMockConnection();
     let callParams: unknown = null;

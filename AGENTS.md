@@ -45,7 +45,12 @@ SQLite via `bun:sqlite`. AI SDK (`ai` + `@ai-sdk/*`) for providers.
 ## Tool dispatch (kernel turn loop)
 Togglable `{ maxConcurrent, eager }`. `maxConcurrent`: 0=unlimited, 1=sequential,
 2+=cap. `eager`: launch a tool the instant its call streams in vs. after the
-step ends. **Default `{ maxConcurrent: 1, eager: true }`.**
+step ends. **Default `{ maxConcurrent: 4, eager: true }`.** Operators override the
+cap with `DISPATCH_TOOL_MAX_CONCURRENT` (integer ≥ 0; 0=unlimited, 1=sequential);
+invalid values log a warning and use the default. A tool flagged
+`concurrencySafe: false` always runs exclusively, and call order is preserved
+across an unsafe barrier. Every bundled tool must declare `concurrencySafe`
+explicitly (a missing flag is treated as safe).
 
 ## Durability (never leave the system broken)
 Persist incrementally + append-only. Recovery is a PURE `reconcile(rows)` run on

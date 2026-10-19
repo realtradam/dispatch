@@ -22,8 +22,9 @@
  *   (overlaps tool execution with the rest of generation)
  * - `false` — wait until the step's finish event, then dispatch the batch
  *
- * **Default:** `{ maxConcurrent: 1, eager: true }` — never two tools at once
- * (safe for any tool), yet the first tool starts during generation.
+ * **Default:** `{ maxConcurrent: 4, eager: true }` — up to four tools run at
+ * once, yet the first tool starts during generation. Tools flagged
+ * `concurrencySafe: false` still run exclusively regardless of the cap.
  */
 export interface ToolDispatchPolicy {
   readonly maxConcurrent: number;

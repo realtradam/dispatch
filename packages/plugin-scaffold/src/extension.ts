@@ -76,6 +76,13 @@ function createScaffoldTool(): ToolContract {
       },
       required: ["text"],
     },
+    // REQUIRED IN SPIRIT: `concurrencySafe` is not optional for a bundled
+    // tool. The kernel dispatcher treats a MISSING flag as safe, so leaving
+    // it out silently opts the tool into parallelism. Declare it explicitly:
+    // `true` only if two concurrent calls can safely overlap (read-only /
+    // independent); `false` if the tool mutates shared state or must be
+    // serialized. This echo is pure → safe.
+    concurrencySafe: true,
     // Return { content, isError? }. Never throw — report errors via isError
     // so the model can react.
     execute: async (args) => {

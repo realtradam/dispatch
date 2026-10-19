@@ -41,6 +41,8 @@ export {
   buildUserMessage,
   compactReplay,
   cumulativeSleepMs,
+  DISPATCH_TOOL_MAX_CONCURRENT_ENV,
+  type DispatchPolicyResolution,
   defaultDispatchPolicy,
   delayFor,
   generateTurnId,
@@ -50,6 +52,7 @@ export {
   RETRY_BUDGET_MS,
   RETRY_SCHEDULE_MS,
   RETRY_TAIL_MS,
+  resolveDispatchPolicy,
   resolveReasoningEffort,
   selectFirstProvider,
 } from "./pure.js";

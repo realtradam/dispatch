@@ -4,6 +4,7 @@ import {
   buildUserMessage,
   compactReplay,
   cumulativeSleepMs,
+  DISPATCH_TOOL_MAX_CONCURRENT_ENV,
   defaultDispatchPolicy,
   delayFor,
   generateTurnId,
@@ -13,6 +14,7 @@ import {
   RETRY_BUDGET_MS,
   RETRY_SCHEDULE_MS,
   RETRY_TAIL_MS,
+  resolveDispatchPolicy,
   resolveReasoningEffort,
   selectFirstProvider,
 } from "./pure.js";
@@ -94,8 +96,54 @@ describe("selectFirstProvider", () => {
 });
 
 describe("defaultDispatchPolicy", () => {
-  it("returns maxConcurrent: 1, eager: true", () => {
-    expect(defaultDispatchPolicy()).toEqual({ maxConcurrent: 1, eager: true });
+  it("returns maxConcurrent: 4, eager: true", () => {
+    expect(defaultDispatchPolicy()).toEqual({ maxConcurrent: 4, eager: true });
+  });
+});
+
+describe("resolveDispatchPolicy", () => {
+  it("falls back to the default when the env var is unset", () => {
+    expect(resolveDispatchPolicy(undefined)).toEqual({ policy: defaultDispatchPolicy() });
+  });
+
+  it("treats empty / whitespace-only values as unset (no warning)", () => {
+    expect(resolveDispatchPolicy("")).toEqual({ policy: defaultDispatchPolicy() });
+    expect(resolveDispatchPolicy("   ")).toEqual({ policy: defaultDispatchPolicy() });
+  });
+
+  it("parses an integer cap and keeps eager true", () => {
+    expect(resolveDispatchPolicy("4")).toEqual({
+      policy: { maxConcurrent: 4, eager: true },
+    });
+  });
+
+  it("accepts 0 (unlimited) and 1 (sequential)", () => {
+    expect(resolveDispatchPolicy("0").policy).toEqual({ maxConcurrent: 0, eager: true });
+    expect(resolveDispatchPolicy("1").policy).toEqual({ maxConcurrent: 1, eager: true });
+  });
+
+  it("trims surrounding whitespace", () => {
+    expect(resolveDispatchPolicy("  2  ").policy).toEqual({ maxConcurrent: 2, eager: true });
+  });
+
+  it.each([
+    "-1",
+    "abc",
+    "2.5",
+    "1e3",
+    "+4",
+    "4.0",
+  ])("rejects %j with the default and a warning", (raw) => {
+    const resolution = resolveDispatchPolicy(raw);
+    expect(resolution.policy).toEqual(defaultDispatchPolicy());
+    expect(resolution.warning).toContain(DISPATCH_TOOL_MAX_CONCURRENT_ENV);
+    expect(resolution.warning).toContain(`maxConcurrent=${defaultDispatchPolicy().maxConcurrent}`);
+  });
+
+  it("rejects an integer that is not safely representable", () => {
+    const resolution = resolveDispatchPolicy("9007199254740993");
+    expect(resolution.policy).toEqual(defaultDispatchPolicy());
+    expect(resolution.warning).toBeDefined();
   });
 });
 
