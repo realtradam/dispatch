@@ -22,6 +22,7 @@ export type {
   FsAccess,
   SpawnedProcess,
   SpawnProcess,
+  WaitForDiagnosticsResult,
 } from "./client.js";
 export { LanguageServerClient } from "./client.js";
 export type {

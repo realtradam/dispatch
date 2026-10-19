@@ -239,17 +239,47 @@ async function verifyDegradedCases(): Promise<void> {
       await wait;
 
       const errored = await pollUntil(() => client.getState() === "error", 3000);
-      // A check on the dead client resolves as skipped instead of hanging.
-      const dead = await client.waitForDiagnostics(join(dir, "src", "a.ts"), {
+
+      // The reported reproduction: on a dead client, a call for the SAME file
+      // with NEW content and a call for a DIFFERENT file must both return
+      // immediately (skipped), not wait out the 10 s cap.
+      const sameFile = join(dir, "src", "a.ts");
+      const otherFile = join(dir, "src", "b.ts");
+      writeFileSync(otherFile, cleanFor(1));
+
+      const sameStart = Date.now();
+      const same = await client.waitForDiagnostics(sameFile, {
         text: brokenFor(0),
-        timeoutMs: 300,
+        timeoutMs: 10_000,
         minSeverity: 2,
       });
-      const ok = errored && dead.timedOut && dead.formatted === "";
+      const sameMs = Date.now() - sameStart;
+
+      const otherStart = Date.now();
+      const other = await client.waitForDiagnostics(otherFile, {
+        text: brokenFor(1),
+        timeoutMs: 10_000,
+        minSeverity: 2,
+      });
+      const otherMs = Date.now() - otherStart;
+
+      const ok =
+        errored &&
+        same.timedOut &&
+        same.unavailable === true &&
+        same.formatted === "" &&
+        other.timedOut &&
+        other.unavailable === true &&
+        other.formatted === "" &&
+        sameMs < 1000 &&
+        otherMs < 1000;
       if (!ok) degradedFailures += 1;
       console.log(
-        `${ok ? "PASS" : "FAIL"} degraded: server killed mid-check → wait resolved, ` +
-          `state=${client.getState()}, later check skipped=${dead.timedOut} (no throw)`,
+        `${ok ? "PASS" : "FAIL"} degraded: call after the server died → ` +
+          `same-file ${sameMs}ms, other-file ${otherMs}ms, ` +
+          `skipped=${same.timedOut && other.timedOut}, ` +
+          `unavailable=${same.unavailable === true && other.unavailable === true}, ` +
+          `state=${client.getState()} (no throw)`,
       );
     } catch (error: unknown) {
       degradedFailures += 1;

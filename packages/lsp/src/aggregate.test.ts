@@ -198,3 +198,28 @@ describe("aggregateDiagnostics — structured issues", () => {
     expect(result.issues).toEqual([]);
   });
 });
+
+describe("aggregateDiagnostics — unavailable client", () => {
+  it("reports a not-connected client as skipped, not as 'took too long'", async () => {
+    const unavailable = fakeClient(
+      async () =>
+        ({
+          formatted: "",
+          slow: false,
+          timedOut: true,
+          unavailable: true,
+          diagnostics: [],
+        }) as never,
+    );
+
+    const result = await aggregateDiagnostics(() => unavailable, [SERVER_A], "/p/x.rb", 10_000, {});
+
+    expect(result.timedOut).toBe(true);
+    expect(result.issues).toEqual([]);
+    // Never reported as clean, and the wording names the real cause.
+    expect(result.formatted).toContain("[Ruby-LSP]");
+    expect(result.formatted).toContain("is not connected");
+    expect(result.formatted).toContain("skipped");
+    expect(result.formatted).not.toContain("took too long");
+  });
+});

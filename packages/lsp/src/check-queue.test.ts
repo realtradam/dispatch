@@ -48,13 +48,14 @@ interface CheckCall {
   readonly text: string | undefined;
   readonly cwd: string;
   readonly resolve: (value: CheckOutcome) => void;
+  readonly reject: (error: unknown) => void;
 }
 
 function makeRunner(): { check: CheckRunner; calls: CheckCall[] } {
   const calls: CheckCall[] = [];
   const check: CheckRunner = (opts) =>
-    new Promise<CheckOutcome>((resolve) => {
-      calls.push({ filePath: opts.filePath, text: opts.text, cwd: opts.cwd, resolve });
+    new Promise<CheckOutcome>((resolve, reject) => {
+      calls.push({ filePath: opts.filePath, text: opts.text, cwd: opts.cwd, resolve, reject });
     });
   return { check, calls };
 }
@@ -766,5 +767,91 @@ describe("DiagnosticsCheckQueue — failure containment", () => {
     expect(() => queue.purgeConversation("c1")).not.toThrow();
     expect(() => queue.dispose()).not.toThrow();
     expect(unsubscribes).toBe(1);
+  });
+});
+
+describe("DiagnosticsCheckQueue — skipped checks must not corrupt the baseline", () => {
+  const SKIP_TEXT = "⚠️ [ts] language server is not connected, diagnostics skipped";
+
+  it("a fully-skipped check does not clear the notified baseline (no re-announcement)", async () => {
+    const { queue, runner, fake } = makeQueue();
+    fake.setActive("c1", true);
+
+    // Announce e1 and confirm delivery.
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v1", cwd: CWD });
+    runner.calls[0]?.resolve(outcome([err("e1")]));
+    await tick();
+    expect(fake.enqueued).toHaveLength(1);
+    fake.emit("c1", {
+      type: "steering",
+      conversationId: "c1",
+      turnId: "t1",
+      text: fake.enqueued[0]?.text ?? "",
+    });
+
+    // A check where every server was skipped: no evidence the file is clean.
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v2", cwd: CWD });
+    runner.calls[1]?.resolve({ formatted: SKIP_TEXT, timedOut: true, issues: [] });
+    await tick();
+    expect(fake.enqueued).toHaveLength(1);
+
+    // The SAME (still unfixed) issue must not be announced again.
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v3", cwd: CWD });
+    runner.calls[2]?.resolve(outcome([err("e1")]));
+    await tick();
+    expect(fake.enqueued).toHaveLength(1);
+  });
+
+  it("surfaces a skipped check in the report cache instead of reporting clean", async () => {
+    const { queue, runner } = makeQueue();
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v1", cwd: CWD });
+    runner.calls[0]?.resolve({ formatted: SKIP_TEXT, timedOut: true, issues: [] });
+    await tick();
+
+    const fresh = queue.getFreshResult({ conversationId: "c1", filePath: FILE });
+    expect(fresh?.timedOut).toBe(true);
+    expect(fresh?.formatted).toContain("skipped");
+
+    // The no-path report lists it too (it is the only known signal).
+    const reports = await queue.listResults("c1");
+    expect(reports.map((r) => r.formatted)).toEqual([SKIP_TEXT]);
+  });
+
+  it("a skipped READ (report path) does not clear the baseline either", async () => {
+    const { queue, runner, fake } = makeQueue();
+    fake.setActive("c1", true);
+
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v1", cwd: CWD });
+    runner.calls[0]?.resolve(outcome([err("e1")]));
+    await tick();
+    fake.emit("c1", {
+      type: "steering",
+      conversationId: "c1",
+      turnId: "t1",
+      text: fake.enqueued[0]?.text ?? "",
+    });
+
+    // A failed background run leaves `lastResult` stale for the new seq, so the
+    // report path performs a READ. Model that read as skipped.
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v2", cwd: CWD });
+    runner.calls[1]?.reject(new Error("check exploded"));
+    await tick();
+
+    const readPromise = queue.waitForResult({
+      conversationId: "c1",
+      filePath: FILE,
+      cwd: CWD,
+    });
+    await tick();
+    expect(runner.calls).toHaveLength(3); // the report's own read
+    runner.calls[2]?.resolve({ formatted: SKIP_TEXT, timedOut: true, issues: [] });
+    const read = await readPromise;
+    expect(read.timedOut).toBe(true);
+
+    // Still no re-announcement of e1.
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v3", cwd: CWD });
+    runner.calls[2]?.resolve(outcome([err("e1")]));
+    await tick();
+    expect(fake.enqueued).toHaveLength(1);
   });
 });

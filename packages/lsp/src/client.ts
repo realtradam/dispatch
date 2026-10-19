@@ -202,6 +202,14 @@ export interface WaitForDiagnosticsResult {
   readonly timedOut: boolean;
   /** The merged (push + pull) diagnostics behind `formatted`, for structured diffs. */
   readonly diagnostics: readonly Diagnostic[];
+  /**
+   * The wait could not even be ATTEMPTED: the client is not connected (broken,
+   * never started, or shut down), so it can never push. Such a result is
+   * returned immediately (never after the cap) and always has
+   * `timedOut: true`; consumers report it as "server skipped" rather than
+   * "clean", and it must not be treated as evidence that the file is clean.
+   */
+  readonly unavailable?: boolean | undefined;
 }
 
 export class LanguageServerClient {
@@ -947,6 +955,14 @@ export class LanguageServerClient {
   }
 
   /**
+   * True when this client can actually talk to a live server. Used to fail
+   * diagnostic waits FAST on a broken/never-started/shut-down client.
+   */
+  private isConnected(): boolean {
+    return this.state === "connected" && this.rpc !== null;
+  }
+
+  /**
    * Does `outcome` satisfy a wait targeting `targetVersion`? `version` is the
    * only trustworthy discriminator; without it the quiet window is the best
    * available proxy.
@@ -996,6 +1012,12 @@ export class LanguageServerClient {
     const timeoutMs = opts?.timeoutMs ?? 10_000;
     const uri = uriFor(filePath);
 
+    // A client that is not connected (broken, never started, shut down) can
+    // NEVER produce a push. Fail fast as "skipped" instead of burning the cap —
+    // this is the race where a server dies between `manager.status()` and the
+    // wait, and the direct-caller case.
+    if (!this.isConnected()) return unavailableResult();
+
     // The version the wait targets. For a real sync this is the version the
     // sync will write; a no-op sync keeps the document's current version.
     let targetVersion = this.nextSyncVersion(filePath);
@@ -1033,6 +1055,11 @@ export class LanguageServerClient {
     // Sync AFTER the waiter is registered so a push that races the write is
     // never missed. `change`/`open` may defer the actual write (quiet window).
     try {
+      // Re-check connectivity: the client may have broken between the check
+      // above and the waiter registration (markBroken only fails waiters that
+      // already exist). Without this, that race would wait out the cap.
+      if (!this.isConnected()) return unavailableResult();
+
       let text = opts?.text ?? null;
       if (text === null) {
         try {
@@ -1051,6 +1078,12 @@ export class LanguageServerClient {
       } else {
         await this.open(filePath);
       }
+
+      // The client may have died DURING the sync (e.g. the write hit a broken
+      // pipe, or the process exited while a disk read was in flight). The
+      // waiter is failed by markBroken in that case; this also covers a break
+      // that landed before the waiter was registered.
+      if (!this.isConnected()) return unavailableResult();
 
       // The document already holds this content and the current sync has
       // already reported: the store IS the answer (no push will come back).
@@ -1122,8 +1155,11 @@ export class LanguageServerClient {
     params?: unknown,
     timeoutMs: number = LanguageServerClient.REQUEST_TIMEOUT_MS,
   ): Promise<unknown> {
-    if (!this.rpc || this.state !== "connected") {
-      throw new Error("Client not connected");
+    // Fail fast (reject) on a client that cannot answer — never wait a request
+    // timeout on a dead/never-started/shut-down server.
+    if (!this.isConnected() || this.rpc === null) {
+      const detail = this.stateError !== undefined ? `: ${this.stateError}` : "";
+      throw new Error(`Language server is not connected (state: ${this.state})${detail}`);
     }
     return this.rpc.sendRequest(method, params, timeoutMs);
   }
@@ -1177,6 +1213,21 @@ function uriFor(filePath: string): string {
 /** Human-readable message for an unknown thrown value. */
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The "client is not connected" wait result: immediately skipped, never a
+ * claim that the file is clean. `formatted` is empty on purpose — stale store
+ * contents must not be presented as the current diagnostics.
+ */
+function unavailableResult(): WaitForDiagnosticsResult {
+  return {
+    formatted: "",
+    diagnostics: [],
+    slow: false,
+    timedOut: true,
+    unavailable: true,
+  };
 }
 
 function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {

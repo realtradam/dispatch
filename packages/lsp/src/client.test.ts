@@ -1134,3 +1134,159 @@ describe("client failure containment — injected dependencies", () => {
     expect(result.formatted).toBe("");
   });
 });
+
+/**
+ * A client that is not connected must fail FAST (skipped), never wait out the
+ * timeout. This is the real-server scenario: open + wait, `kill -9`, then call
+ * again on the same file (new content) and on a different file.
+ */
+describe("client unavailable-fast-fail", () => {
+  const PATH = "/project/src/dead.ts";
+  const OTHER = "/project/src/other.ts";
+
+  async function connectedClient(): Promise<{
+    readonly client: LanguageServerClient;
+    readonly respond: (msg: string) => void;
+    readonly exit: () => void;
+  }> {
+    const holder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitHandler: ProcessExitHandler | null = null;
+    const spawn: SpawnProcess = () => ({
+      stdin: { write: () => {} },
+      stdout: {
+        on: (_e, cb) => {
+          holder.cb = cb;
+        },
+      },
+      pid: 21,
+      kill: () => {},
+      onExit: (handler) => {
+        exitHandler = handler;
+      },
+    });
+    const { client } = makeClient({ spawn, unversionedSettleMs: 20 });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 20));
+    holder.cb?.(encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })));
+    await startPromise;
+    return {
+      client,
+      respond: (msg) => holder.cb?.(encode(msg)),
+      exit: () => exitHandler?.({ code: 1 }),
+    };
+  }
+
+  it("REPRO: after the server dies, calls on the same file AND another file return immediately", async () => {
+    const harness = await connectedClient();
+    const first = harness.client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 5));
+    harness.respond(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: { uri: `file://${PATH}`, diagnostics: [] },
+      }),
+    );
+    await first;
+    harness.exit();
+    expect(harness.client.getState()).toBe("error");
+
+    // Same file, NEW content — exactly the reported reproduction.
+    const sameStart = Date.now();
+    const same = await harness.client.waitForDiagnostics(PATH, {
+      text: "v2",
+      timeoutMs: 10_000,
+    });
+    const sameMs = Date.now() - sameStart;
+    // A different file (never opened at all).
+    const otherStart = Date.now();
+    const other = await harness.client.waitForDiagnostics(OTHER, {
+      text: "x",
+      timeoutMs: 10_000,
+    });
+    const otherMs = Date.now() - otherStart;
+
+    expect(sameMs).toBeLessThan(200);
+    expect(otherMs).toBeLessThan(200);
+    expect(same.timedOut).toBe(true);
+    expect(same.unavailable).toBe(true);
+    expect(same.formatted).toBe("");
+    expect(other.timedOut).toBe(true);
+    expect(other.unavailable).toBe(true);
+  });
+
+  it("fails fast on a never-started client", async () => {
+    const { client } = makeClient();
+    const started = Date.now();
+    const result = await client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 10_000 });
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(result.timedOut).toBe(true);
+    expect(result.unavailable).toBe(true);
+  });
+
+  it("fails fast on a shut-down client", async () => {
+    const harness = await connectedClient();
+    harness.client.shutdown();
+    const started = Date.now();
+    const result = await harness.client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 10_000 });
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(result.timedOut).toBe(true);
+    expect(result.unavailable).toBe(true);
+  });
+
+  it("covers the race: the client breaks between wait registration and the sync", async () => {
+    // `fs.readText` runs AFTER the waiter is registered and BEFORE the sync is
+    // written. Breaking the client there used to leave the waiter unfailed.
+    const holder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitHandler: ProcessExitHandler | null = null;
+    let broke = false;
+    const spawn: SpawnProcess = () => ({
+      stdin: { write: () => {} },
+      stdout: {
+        on: (_e, cb) => {
+          holder.cb = cb;
+        },
+      },
+      pid: 22,
+      kill: () => {
+        // The process dies as the client tries to read the file.
+      },
+      onExit: (handler) => {
+        exitHandler = handler;
+      },
+    });
+    const { client } = makeClient({
+      spawn,
+      unversionedSettleMs: 20,
+      fs: {
+        readText: async () => {
+          if (!broke) {
+            broke = true;
+            exitHandler?.({ code: 1 }); // break BEFORE the sync write
+          }
+          return "content";
+        },
+        exists: async () => true,
+      },
+    });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 20));
+    holder.cb?.(encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })));
+    await startPromise;
+    expect(client.getState()).toBe("connected");
+
+    const started = Date.now();
+    const result = await client.waitForDiagnostics(PATH, { timeoutMs: 10_000 });
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(result.timedOut).toBe(true);
+    expect(result.unavailable).toBe(true);
+  });
+
+  it("request() rejects immediately on a dead client (no request timeout)", async () => {
+    const harness = await connectedClient();
+    harness.exit();
+    const started = Date.now();
+    await expect(harness.client.request("textDocument/hover", {})).rejects.toThrow(/not connected/);
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+});

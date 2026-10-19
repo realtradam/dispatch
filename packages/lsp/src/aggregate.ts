@@ -78,8 +78,12 @@ export async function aggregateDiagnostics(
     const { server, result } = entry;
     if (result.timedOut) {
       timedOut = true;
+      // A client that is not connected fails fast: say so instead of claiming
+      // it "took too long" (both are reported as skipped, never as clean).
       parts.push(
-        `⚠️ [${server.name}] LSP took too long (>${capSeconds}s), diagnostics skipped — please raise this to the user.`,
+        result.unavailable === true
+          ? `⚠️ [${server.name}] language server is not connected, diagnostics skipped — please raise this to the user.`
+          : `⚠️ [${server.name}] LSP took too long (>${capSeconds}s), diagnostics skipped — please raise this to the user.`,
       );
       continue;
     }

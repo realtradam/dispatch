@@ -231,7 +231,12 @@ export class DiagnosticsCheckQueue {
         ...(text !== undefined ? { text } : {}),
       });
       if (seq === file.seq) {
-        file.lastIssues = outcome.issues;
+        // Same rule as the background run: a fully-skipped READ is not
+        // evidence that the file is clean, so it must not move the baseline
+        // (which the next check derives its "new issue" diff from).
+        if (!outcome.timedOut || outcome.issues.length > 0) {
+          file.lastIssues = outcome.issues;
+        }
         file.lastResult = { seq, formatted: outcome.formatted, timedOut: outcome.timedOut };
       }
       return { formatted: outcome.formatted, slow: false, timedOut: outcome.timedOut };
@@ -354,7 +359,14 @@ export class DiagnosticsCheckQueue {
         if (seq !== file.seq) continue;
 
         file.processedSeq = seq;
-        file.lastIssues = outcome.issues;
+        // A check that produced NOTHING because every server was skipped is
+        // NOT evidence that the file is clean: keep the last known issues so a
+        // skipped check can neither clear the notified baseline (which would
+        // re-announce old issues later) nor suppress a real notice. The skip
+        // notice is still cached in `lastResult` for the full report.
+        if (!outcome.timedOut || outcome.issues.length > 0) {
+          file.lastIssues = outcome.issues;
+        }
         file.lastResult = { seq, formatted: outcome.formatted, timedOut: outcome.timedOut };
         if (conv.closed) return;
         if (outcome.timedOut) {
