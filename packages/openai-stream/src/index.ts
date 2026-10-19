@@ -19,6 +19,7 @@ export {
   listUmansModels,
   parseModelList,
   parseUmansModelInfo,
+  UMANS_MAX_IMAGES,
   visionFromUmansCapability,
 } from "./listModels.js";
 export { parseSSELines } from "./parse-sse.js";

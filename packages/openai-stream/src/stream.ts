@@ -9,8 +9,10 @@ import type { FetchLike, HttpExchangeFixture } from "@dispatch/trace-replay";
 import {
   type BodyEvictionReport,
   byteLengthUtf8,
+  countImageParts,
   DEFAULT_MAX_BODY_BYTES,
   enforceBodyBudget,
+  enforceImageCount,
 } from "./body-budget.js";
 import { convertMessages, type OpenAIMessage } from "./convert-messages.js";
 import { convertTools, type OpenAITool } from "./convert-tools.js";
@@ -45,6 +47,16 @@ export interface StreamConfig {
    * provider's body-size cap instead of being rejected with HTTP 400.
    */
   readonly maxBodyBytes?: number;
+  /**
+   * Maximum number of inline `image_url` parts a request body may carry.
+   * Some OpenAI-compatible gateways reject a request with more than N image
+   * parts with an opaque HTTP 400 that is independent of body size (e.g.
+   * umans: >8). When set, `streamChat` evicts the OLDEST image parts beyond
+   * the cap first (each replaced IN PLACE by a placeholder text part) BEFORE
+   * applying the byte budget. Default (absent): no count cap — providers
+   * without a known limit keep their existing behavior unchanged.
+   */
+  readonly maxImages?: number;
   /**
    * Authorization scheme prefix sent as `Authorization: <authScheme> <apiKey>`.
    * Default (absent): `"Bearer"`. Providers with a non-standard scheme (e.g.
@@ -110,18 +122,41 @@ export async function* streamChat(
   const url = `${config.baseURL}/chat/completions`;
   let bodyString = JSON.stringify(body);
 
+  // Provider image-COUNT cap FIRST: some gateways reject a request carrying
+  // more than N inline image parts with an opaque HTTP 400 independent of
+  // body size (e.g. umans: >8). Evict the oldest parts beyond the cap, each
+  // replaced IN PLACE by the standard placeholder. No cap configured
+  // (undefined) → no count clamping, so other providers are unchanged.
+  const maxImages = config.maxImages;
+  let imagesEvicted = 0;
+  if (maxImages !== undefined) {
+    const countEviction = enforceImageCount(body, maxImages);
+    if (countEviction !== null) {
+      imagesEvicted += countEviction.imagesEvicted;
+      bodyString = JSON.stringify(body);
+    }
+  }
+
   // Provider body-size budget: inline images (`data:` URLs) dominate body
   // size. When the serialized body exceeds the budget, evict the oldest image
   // parts first (each replaced IN PLACE by a placeholder text part) so the
   // request stays under the provider's cap (charm gateway: 10 MiB) instead of
-  // being rejected with HTTP 400 "invalid request body".
+  // being rejected with HTTP 400 "invalid request body". Runs AFTER the count
+  // cap (count eviction also frees bytes).
   const maxBodyBytes = config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const bodyBytesBefore = byteLengthUtf8(bodyString);
-  let eviction: BodyEvictionReport | null = null;
+  let budgetEviction: BodyEvictionReport | null = null;
   if (bodyBytesBefore > maxBodyBytes) {
-    eviction = enforceBodyBudget(body, maxBodyBytes);
+    budgetEviction = enforceBodyBudget(body, maxBodyBytes);
+    if (budgetEviction !== null) {
+      imagesEvicted += budgetEviction.imagesEvicted;
+    }
     bodyString = JSON.stringify(body);
   }
+
+  // Image parts in the body ACTUALLY being sent (after both evictions), so a
+  // gateway's opaque 400 can be diagnosed from the span.
+  const imageCount = countImageParts(body);
 
   // Already-aborted before any I/O starts: short-circuit so no request is sent.
   if (opts?.signal?.aborted) {
@@ -145,9 +180,17 @@ export async function* streamChat(
         "request.method": "POST",
         "request.cache_control_present": hasCacheBreakpoint,
         "request.headers.authorization": `${authScheme} ${maskSecret(config.apiKey)}`,
+        // The image count in the body actually being sent (after any count
+        // clamp), so a gateway's opaque 400 can be diagnosed from app.ndjson.
+        "request.image_count": imageCount,
       };
-      if (eviction !== null && eviction.imagesEvicted > 0) {
-        spanAttrs["request.images_evicted"] = eviction.imagesEvicted;
+      if (maxImages !== undefined) {
+        spanAttrs["request.image_count_max"] = maxImages;
+      }
+      if (imagesEvicted > 0) {
+        spanAttrs["request.images_evicted"] = imagesEvicted;
+      }
+      if (budgetEviction !== null && budgetEviction.imagesEvicted > 0) {
         spanAttrs["request.body_bytes_before"] = bodyBytesBefore;
         spanAttrs["request.body_budget_max_bytes"] = maxBodyBytes;
       }

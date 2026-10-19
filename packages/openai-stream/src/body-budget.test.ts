@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { byteLengthUtf8, DEFAULT_MAX_BODY_BYTES, enforceBodyBudget } from "./body-budget.js";
+import {
+  byteLengthUtf8,
+  countImageParts,
+  DEFAULT_MAX_BODY_BYTES,
+  enforceBodyBudget,
+  enforceImageCount,
+} from "./body-budget.js";
 import type {
   OpenAIContentPart,
   OpenAIImagePart,
@@ -286,3 +292,137 @@ function assertDefined<T>(v: T | null | undefined, msg?: string): asserts v is T
     throw new Error(msg ?? "expected defined");
   }
 }
+
+describe("countImageParts", () => {
+  it("counts image_url parts across messages and ignores text/string content", () => {
+    const body = buildBody([
+      partsMessage([textPart("a"), imagePart(imageUrl(10)), imagePart(imageUrl(10))]),
+      plainTextMessage("no parts"),
+      partsMessage([imagePart(imageUrl(10))]),
+    ]);
+
+    expect(countImageParts(body)).toBe(3);
+  });
+
+  it("returns 0 for a non-array messages field or image-free body", () => {
+    expect(countImageParts({ messages: "nope" })).toBe(0);
+    expect(countImageParts(buildBody([plainTextMessage("x")]))).toBe(0);
+  });
+});
+
+describe("enforceImageCount", () => {
+  it("returns null and leaves the body untouched when within the cap", () => {
+    const messages = [partsMessage([imagePart(imageUrl(10)), imagePart(imageUrl(10))])];
+    const body = buildBody(messages);
+
+    const report = enforceImageCount(body, 2);
+
+    expect(report).toBeNull();
+    expect(body.messages).toEqual(messages);
+  });
+
+  it("evicts the oldest images across messages, keeping the newest", () => {
+    const messages = [
+      partsMessage([imagePart(imageUrl(10))]),
+      partsMessage([imagePart(imageUrl(10))]),
+      partsMessage([imagePart(imageUrl(10))]),
+    ];
+    const body = buildBody(messages);
+
+    const report = enforceImageCount(body, 2);
+
+    assertDefined(report);
+    expect(report.imagesEvicted).toBe(1);
+    const msgs = body.messages as OpenAIMessage[];
+    expect(imagePartsOf(msgs[0] as OpenAIMessage)).toBe(0);
+    expect(imagePartsOf(msgs[1] as OpenAIMessage)).toBe(1);
+    expect(imagePartsOf(msgs[2] as OpenAIMessage)).toBe(1);
+  });
+
+  it("evicts the oldest part within one message first", () => {
+    const messages = [
+      partsMessage([
+        imagePart(imageUrl(10)),
+        textPart("middle"),
+        imagePart(imageUrl(10)),
+        imagePart(imageUrl(10)),
+      ]),
+    ];
+    const body = buildBody(messages);
+
+    const report = enforceImageCount(body, 2);
+
+    assertDefined(report);
+    expect(report.imagesEvicted).toBe(1);
+    const content = (body.messages as OpenAIMessage[])[0]?.content as OpenAIContentPart[];
+    expect(content[0]).toEqual({
+      type: "text",
+      text: expect.stringContaining("[image omitted: image/png, "),
+    });
+    expect(content[1]).toEqual({ type: "text", text: "middle" });
+    expect(content[2]?.type).toBe("image_url");
+    expect(content[3]?.type).toBe("image_url");
+  });
+
+  it("uses the standard eviction placeholder", () => {
+    // 450 KB base64 payload → "~450 KB", matching enforceBodyBudget's format.
+    const url = imageUrl(450 * 1024);
+    const body = buildBody([partsMessage([imagePart(url), imagePart(url)])]);
+
+    const report = enforceImageCount(body, 1);
+
+    assertDefined(report);
+    const content = (body.messages as OpenAIMessage[])[0]?.content as OpenAIContentPart[];
+    expect(content[0]).toEqual({
+      type: "text",
+      text: `[image omitted: image/png, ~450 KB${PLACEHOLDER_SUFFIX}]`,
+    });
+    expect(content[1]?.type).toBe("image_url");
+  });
+
+  it("evicts every image when maxImages is 0 and never touches non-image parts", () => {
+    const messages = [
+      partsMessage([textPart("keep"), imagePart(imageUrl(10))]),
+      { role: "assistant", content: "assistant text" },
+      { role: "tool", content: "tool result", tool_call_id: "call_1" },
+    ];
+    const body = buildBody(messages);
+
+    const report = enforceImageCount(body, 0);
+
+    assertDefined(report);
+    expect(report.imagesEvicted).toBe(1);
+    expect(countImageParts(body)).toBe(0);
+    const msgs = body.messages as OpenAIMessage[];
+    expect((msgs[0]?.content as OpenAIContentPart[])[0]).toEqual({
+      type: "text",
+      text: "keep",
+    });
+    expect(msgs[1]).toEqual({ role: "assistant", content: "assistant text" });
+    expect(msgs[2]).toEqual({
+      role: "tool",
+      content: "tool result",
+      tool_call_id: "call_1",
+    });
+  });
+
+  it("returns null for a body with no image parts", () => {
+    const body = buildBody([plainTextMessage("hello")]);
+    expect(enforceImageCount(body, 0)).toBeNull();
+  });
+
+  it("reports exact bytesFreed under the default UTF-8 measurement", () => {
+    const body = buildBody([
+      partsMessage([imagePart(imageUrl(1_000))]),
+      partsMessage([imagePart(imageUrl(1_000))]),
+    ]);
+    const before = byteLengthUtf8(JSON.stringify(body));
+
+    const report = enforceImageCount(body, 1);
+
+    assertDefined(report);
+    expect(report.imagesEvicted).toBe(1);
+    const after = byteLengthUtf8(JSON.stringify(body));
+    expect(report.bytesFreed).toBe(before - after);
+  });
+});

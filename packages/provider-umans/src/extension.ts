@@ -1,5 +1,9 @@
 import type { ApiKeyCredentials, Extension, HostAPI, Manifest } from "@dispatch/kernel";
-import { createOpenAICompatProvider, listUmansModels } from "@dispatch/openai-stream";
+import {
+  createOpenAICompatProvider,
+  listUmansModels,
+  UMANS_MAX_IMAGES,
+} from "@dispatch/openai-stream";
 import { transformBody } from "./reasoning.js";
 import { type EnvSource, resolveUmansConfig } from "./resolver.js";
 
@@ -48,6 +52,12 @@ export async function activate(host: HostAPI, env: EnvSource = process.env): Pro
     model: cfg.model,
     id: "umans",
     transformBody,
+    // Umans rejects any request carrying more than 8 inline image parts with
+    // an opaque HTTP 400 'Invalid request' (empirically bisected: 8 → 200,
+    // 9 → 400, size-independent). The endpoint does not report the cap, so it
+    // is a known provider constant. Enforced in the adapter as a last-resort
+    // safety net (mid-turn `read_image` images bypass turn-start compaction).
+    maxImages: UMANS_MAX_IMAGES,
     // Umans reads the REAL /v1/models/info endpoint for per-model capability
     // metadata (supports_vision + context_window), overriding the generic
     // /models fetch (whose name-based vision guess would miss e.g. umans-flash

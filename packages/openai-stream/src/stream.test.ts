@@ -1060,3 +1060,169 @@ describe("streamChat — provider body budget", () => {
     expect(span.attrs["request.body_budget_max_bytes"]).toBeUndefined();
   });
 });
+
+describe("streamChat — provider image-count cap", () => {
+  const PLACEHOLDER_SUFFIX = " — dropped to keep the request under the provider's body-size limit";
+
+  function imageUserMessage(url: string): ChatMessage {
+    return { role: "user", chunks: [{ type: "image", url }] };
+  }
+
+  function okResponse(): Response {
+    return new Response(
+      sseBody(
+        'data: {"id":"cmpl-c1","choices":[{"delta":{"content":"ok"},"index":0}]}',
+        'data: {"id":"cmpl-c1","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+        "data: [DONE]",
+      ),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+  }
+
+  function smallImage(index: number): string {
+    return `data:image/png;base64,${String(index).repeat(16)}`;
+  }
+
+  interface SentBody {
+    messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+  }
+
+  function countSentImageParts(sent: SentBody): number {
+    return sent.messages.reduce(
+      (total, message) =>
+        total + message.content.filter((part) => part.type === "image_url").length,
+      0,
+    );
+  }
+
+  function countSentPlaceholders(sent: SentBody): number {
+    return sent.messages.reduce(
+      (total, message) =>
+        total +
+        message.content.filter(
+          (part) => part.type === "text" && (part.text ?? "").includes("[image omitted"),
+        ).length,
+      0,
+    );
+  }
+
+  it("clamps the wire body to maxImages and reports it on the span", async () => {
+    const { logger, spans } = createFakeLogger();
+    let sentBody: string | undefined;
+
+    mockFetch((_url, init) => {
+      sentBody = typeof init?.body === "string" ? init.body : undefined;
+      return okResponse();
+    });
+
+    const messages = Array.from({ length: 10 }, (_, i) => imageUserMessage(smallImage(i)));
+    const config: StreamConfig = { ...makeConfig(), maxImages: 8 };
+
+    await collectEvents(streamChat(config, messages, [], { logger }));
+
+    // The on-wire body carries at most 8 image parts; the 2 oldest are
+    // replaced by the standard placeholder text IN PLACE.
+    assertDefined(sentBody);
+    const sent = JSON.parse(sentBody) as SentBody;
+    expect(countSentImageParts(sent)).toBe(8);
+    expect(countSentPlaceholders(sent)).toBe(2);
+    // The NEWEST images survive (messages 2..9), the oldest are dropped.
+    expect(sent.messages[0]?.content[0]?.type).toBe("text");
+    expect(sent.messages[1]?.content[0]?.type).toBe("text");
+    expect(sent.messages[2]?.content[0]?.type).toBe("image_url");
+    const placeholder = sent.messages[0]?.content[0]?.text ?? "";
+    expect(placeholder).toContain("[image omitted: image/png, ");
+    expect(placeholder).toContain(PLACEHOLDER_SUFFIX);
+
+    assertDefined(spans[0]);
+    const span = spans[0];
+    expect(span.attrs["request.image_count"]).toBe(8);
+    expect(span.attrs["request.image_count_max"]).toBe(8);
+    expect(span.attrs["request.images_evicted"]).toBe(2);
+    // Count eviction alone does not claim a byte-budget event.
+    expect(span.attrs["request.body_budget_max_bytes"]).toBeUndefined();
+    // The captured span body is the same clamped, on-wire body.
+    assertDefined(span.body);
+    expect(countSentImageParts(JSON.parse(span.body) as SentBody)).toBe(8);
+  });
+
+  it("leaves the body untouched when within the count cap", async () => {
+    const { logger, spans } = createFakeLogger();
+    let sentBody: string | undefined;
+
+    mockFetch((_url, init) => {
+      sentBody = typeof init?.body === "string" ? init.body : undefined;
+      return okResponse();
+    });
+
+    const messages = Array.from({ length: 8 }, (_, i) => imageUserMessage(smallImage(i)));
+    const config: StreamConfig = { ...makeConfig(), maxImages: 8 };
+
+    await collectEvents(streamChat(config, messages, [], { logger }));
+
+    assertDefined(sentBody);
+    const sent = JSON.parse(sentBody) as SentBody;
+    expect(countSentImageParts(sent)).toBe(8);
+    expect(countSentPlaceholders(sent)).toBe(0);
+
+    assertDefined(spans[0]);
+    const span = spans[0];
+    expect(span.attrs["request.image_count"]).toBe(8);
+    expect(span.attrs["request.image_count_max"]).toBe(8);
+    expect(span.attrs["request.images_evicted"]).toBeUndefined();
+  });
+
+  it("does not clamp when maxImages is absent (other providers unchanged)", async () => {
+    const { logger, spans } = createFakeLogger();
+    let sentBody: string | undefined;
+
+    mockFetch((_url, init) => {
+      sentBody = typeof init?.body === "string" ? init.body : undefined;
+      return okResponse();
+    });
+
+    const messages = Array.from({ length: 12 }, (_, i) => imageUserMessage(smallImage(i)));
+
+    await collectEvents(streamChat(makeConfig(), messages, [], { logger }));
+
+    assertDefined(sentBody);
+    const sent = JSON.parse(sentBody) as SentBody;
+    expect(countSentImageParts(sent)).toBe(12);
+    expect(countSentPlaceholders(sent)).toBe(0);
+
+    assertDefined(spans[0]);
+    const span = spans[0];
+    expect(span.attrs["request.image_count"]).toBe(12);
+    expect(span.attrs["request.image_count_max"]).toBeUndefined();
+    expect(span.attrs["request.images_evicted"]).toBeUndefined();
+  });
+
+  it("applies the count cap before the byte budget and sums both evictions", async () => {
+    const { logger, spans } = createFakeLogger();
+    let sentBody: string | undefined;
+
+    mockFetch((_url, init) => {
+      sentBody = typeof init?.body === "string" ? init.body : undefined;
+      return okResponse();
+    });
+
+    const messages = Array.from({ length: 10 }, (_, i) => imageUserMessage(smallImage(i)));
+    const maxBodyBytes = 1; // forces the byte budget to evict the remaining images
+    const config: StreamConfig = { ...makeConfig(), maxImages: 4, maxBodyBytes };
+
+    await collectEvents(streamChat(config, messages, [], { logger }));
+
+    // Count cap drops 6 of 10; the byte budget then drops the remaining 4.
+    assertDefined(sentBody);
+    const sent = JSON.parse(sentBody) as SentBody;
+    expect(countSentImageParts(sent)).toBe(0);
+    expect(countSentPlaceholders(sent)).toBe(10);
+
+    assertDefined(spans[0]);
+    const span = spans[0];
+    expect(span.attrs["request.image_count"]).toBe(0);
+    expect(span.attrs["request.image_count_max"]).toBe(4);
+    expect(span.attrs["request.images_evicted"]).toBe(10);
+    expect(span.attrs["request.body_budget_max_bytes"]).toBe(maxBodyBytes);
+  });
+});

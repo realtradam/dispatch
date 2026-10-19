@@ -194,11 +194,11 @@ describe("listModels — Umans /models/info parsing (parseUmansModelInfo)", () =
       },
     });
     expect(result).toEqual([
-      { id: "umans-kimi-k2.7", contextWindow: 262144, vision: true },
-      { id: "umans-coder", contextWindow: 262144, vision: true },
-      { id: "umans-flash", contextWindow: 262144, vision: true },
-      { id: "umans-glm-5.2", contextWindow: 405504, vision: false },
-      { id: "umans-deepseek-v4-flash-0731", contextWindow: 1048576, vision: false },
+      { id: "umans-kimi-k2.7", contextWindow: 262144, vision: true, maxImages: 8 },
+      { id: "umans-coder", contextWindow: 262144, vision: true, maxImages: 8 },
+      { id: "umans-flash", contextWindow: 262144, vision: true, maxImages: 8 },
+      { id: "umans-glm-5.2", contextWindow: 405504, vision: false, maxImages: 8 },
+      { id: "umans-deepseek-v4-flash-0731", contextWindow: 1048576, vision: false, maxImages: 8 },
     ]);
   });
 
@@ -210,7 +210,13 @@ describe("listModels — Umans /models/info parsing (parseUmansModelInfo)", () =
       },
     });
     expect(result).toEqual([
-      { id: "umans-coder", displayName: "Umans Coder", contextWindow: 262144, vision: true },
+      {
+        id: "umans-coder",
+        displayName: "Umans Coder",
+        contextWindow: 262144,
+        vision: true,
+        maxImages: 8,
+      },
     ]);
   });
 
@@ -218,7 +224,7 @@ describe("listModels — Umans /models/info parsing (parseUmansModelInfo)", () =
     const result = parseUmansModelInfo({
       "umans-coder": { capabilities: { context_window: 262144 } },
     });
-    expect(result).toEqual([{ id: "umans-coder", contextWindow: 262144 }]);
+    expect(result).toEqual([{ id: "umans-coder", contextWindow: 262144, maxImages: 8 }]);
   });
 
   it("returns empty array for an empty response map", () => {
@@ -254,8 +260,8 @@ describe("listModels — Umans /models/info fetch (listUmansModels)", () => {
     expect(init.headers).toEqual({ Authorization: "Bearer sk-test-1234567890abcdef" });
 
     expect(models).toEqual([
-      { id: "umans-kimi-k2.7", contextWindow: 262144, vision: true },
-      { id: "umans-glm-5.2", contextWindow: 405504, vision: false },
+      { id: "umans-kimi-k2.7", contextWindow: 262144, vision: true, maxImages: 8 },
+      { id: "umans-glm-5.2", contextWindow: 405504, vision: false, maxImages: 8 },
     ] as readonly ModelInfo[]);
   });
 

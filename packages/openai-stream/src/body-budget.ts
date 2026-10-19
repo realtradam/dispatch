@@ -74,6 +74,90 @@ function buildPlaceholder(url: string): string {
 }
 
 /**
+ * Count the inline `image_url` parts in a request body. Messages are scanned
+ * in array order, parts in order. Pure — no I/O.
+ */
+export function countImageParts(body: Record<string, unknown>): number {
+  const messages = body.messages;
+  if (!Array.isArray(messages)) return 0;
+
+  let count = 0;
+  for (const message of messages as OpenAIMessage[]) {
+    const content = message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content as OpenAIContentPart[]) {
+      if (part && typeof part === "object" && part.type === "image_url") count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Enforce a maximum number of inline `image_url` parts in a provider request
+ * body by evicting the OLDEST parts and replacing each IN PLACE with the same
+ * placeholder text part the byte budget uses (so a message's content array
+ * never becomes empty, and the model can tell an image was dropped).
+ *
+ * Some OpenAI-compatible gateways reject a request with more than N image
+ * parts with an opaque HTTP 400 (e.g. umans rejects >8 regardless of size) —
+ * the count cap is the count-dimension mirror of {@link enforceBodyBudget}.
+ * It runs independently of body size: a small body can still be over the
+ * count cap.
+ *
+ * Pure: decision logic only, no I/O. Byte measurement is injectable so tests
+ * stay deterministic; it defaults to UTF-8 byte length via `Buffer`.
+ *
+ * - While the number of `image_url` parts exceeds `maxImages`, evicts the
+ *   oldest remaining part (messages scanned in array order, parts in order).
+ *   `maxImages <= 0` evicts every image.
+ * - Stops as soon as the count fits, or when no image parts remain. Never
+ *   touches anything except `image_url` parts.
+ * - Eviction happens on the caller's body object: the mutated `body` IS the
+ *   result, so the caller must re-stringify it before sending.
+ *
+ * @returns `null` when the body already fits within the count cap; otherwise
+ *   a report of what was evicted.
+ */
+export function enforceImageCount(
+  body: Record<string, unknown>,
+  maxImages: number,
+  byteLength: (s: string) => number = byteLengthUtf8,
+): BodyEvictionReport | null {
+  const messages = body.messages;
+  if (!Array.isArray(messages)) return null;
+
+  let imageCount = countImageParts(body);
+  if (imageCount <= maxImages) return null;
+
+  const bytesBefore = byteLength(JSON.stringify(body) ?? "");
+  const openaiMessages = messages as OpenAIMessage[];
+  let imagesEvicted = 0;
+
+  for (const message of openaiMessages) {
+    if (imageCount <= maxImages) break;
+    const content = message?.content;
+    if (!Array.isArray(content)) continue;
+    const parts = content as OpenAIContentPart[];
+    for (let i = 0; i < parts.length; i++) {
+      if (imageCount <= maxImages) break;
+      const part = parts[i];
+      if (!part || typeof part !== "object") continue;
+      if (part.type !== "image_url") continue;
+      const placeholder: OpenAITextPart = {
+        type: "text",
+        text: buildPlaceholder(part.image_url.url),
+      };
+      parts[i] = placeholder;
+      imageCount--;
+      imagesEvicted++;
+    }
+  }
+
+  const bytesAfter = byteLength(JSON.stringify(body) ?? "");
+  return { imagesEvicted, bytesFreed: bytesBefore - bytesAfter };
+}
+
+/**
  * Enforce a provider request-body budget by evicting inline `image_url`
  * parts, oldest first, and replacing each IN PLACE with a placeholder text
  * part (so a message's content array never becomes empty).

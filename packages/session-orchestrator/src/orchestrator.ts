@@ -1154,12 +1154,34 @@ export function createSessionOrchestrator(
         let providerMessages: readonly ChatMessage[] = [...history, userMsg];
         if (visionHandoff !== undefined) {
           const visionSettings = await deps.conversationStore.getVisionSettings();
+          // A per-model image-count cap (e.g. umans' known 8) can be LOWER
+          // than the GLOBAL vision compaction limit. Clamp here so at turn
+          // start the oldest images beyond the model's cap are TRANSCRIBED
+          // (information preserved) instead of reaching the provider and
+          // being placeholder-evicted by the adapter's last-resort wire cap.
+          // `imageLimit <= 0` means "disabled" in the vision settings (no
+          // global limit), so a reported model cap still applies. Only looked
+          // up when the turn actually carries images — a text-only turn must
+          // not pay an extra upstream model-list call.
+          const hasImages = providerMessages.some((message) =>
+            message.chunks.some((chunk) => chunk.type === "image"),
+          );
+          const modelMaxImages =
+            hasImages && effectiveModelName !== undefined && deps.resolveModelInfo !== undefined
+              ? (await deps.resolveModelInfo(effectiveModelName))?.maxImages
+              : undefined;
+          const imageLimit =
+            modelMaxImages === undefined
+              ? visionSettings.imageLimit
+              : visionSettings.imageLimit > 0
+                ? Math.min(visionSettings.imageLimit, modelMaxImages)
+                : modelMaxImages;
           providerMessages = await visionHandoff.prepareForProvider(
             providerMessages,
             effectiveModelName,
             {
               conversationId,
-              imageLimit: visionSettings.imageLimit,
+              imageLimit,
               compactionModel: visionSettings.compactionModel,
               signal: controller.signal,
               ...(turnLogger !== undefined ? { logger: turnLogger } : {}),

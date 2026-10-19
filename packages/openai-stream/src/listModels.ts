@@ -47,6 +47,18 @@ interface OpenAIModelListResponse {
 export type UmansVisionCapability = boolean | "via-handoff" | undefined;
 
 /**
+ * Maximum inline image parts the Umans gateway accepts in ONE
+ * `/v1/chat/completions` request: **8**. Empirical, not reported by the API —
+ * replay/bisect showed 8 images → 200 and 9 → 400 (the same opaque
+ * `invalid_request_error` for every shape, independent of body size). It is
+ * set for every Umans model so (a) the orchestrator clamps turn-start vision
+ * compaction to it and (b) the provider adapter enforces it on the wire. If
+ * Umans later reports a real per-model cap, feed that through
+ * `parseUmansModelInfo` instead.
+ */
+export const UMANS_MAX_IMAGES = 8;
+
+/**
  * The shape of a single entry in the Umans `/models/info` response. The response
  * is a JSON object keyed by model id, each value carrying metadata plus a
  * `capabilities` object that holds the runtime-relevant fields (`context_window`,
@@ -143,9 +155,12 @@ export function parseModelList(data: readonly OpenAIModelEntry[]): readonly Mode
  *
  * Source of truth is the REAL capability metadata: `capabilities.supports_vision`
  * drives `vision` (via {@link visionFromUmansCapability}), and
- * `capabilities.context_window` drives `contextWindow`. Only entries present in
- * the response are emitted (no hardcoded model list). Optionally includes the
- * human `display_name` when present. Pure: response map → ModelInfo[], no I/O.
+ * `capabilities.context_window` drives `contextWindow`. Every model also gets
+ * the known provider-wide image-count cap ({@link UMANS_MAX_IMAGES}) as
+ * `maxImages` — the endpoint does not report it, but the gateway rejects more
+ * than 8 image parts with an opaque HTTP 400. Only entries present in the
+ * response are emitted (no hardcoded model list). Optionally includes the human
+ * `display_name` when present. Pure: response map → ModelInfo[], no I/O.
  */
 export function parseUmansModelInfo(response: UmansModelInfoResponse): readonly ModelInfo[] {
   return Object.entries(response).map(([id, entry]) => {
@@ -157,6 +172,7 @@ export function parseUmansModelInfo(response: UmansModelInfoResponse): readonly 
       ...(displayName !== undefined ? { displayName } : {}),
       ...(contextWindow !== undefined ? { contextWindow } : {}),
       ...(vision !== undefined ? { vision } : {}),
+      maxImages: UMANS_MAX_IMAGES,
     };
   });
 }

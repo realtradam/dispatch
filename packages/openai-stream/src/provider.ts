@@ -61,6 +61,14 @@ export interface CreateOpenAICompatProviderOpts {
    */
   readonly getUsage?: boolean;
   /**
+   * Maximum number of inline `image_url` parts a single request may carry.
+   * Some gateways reject more than N with an opaque HTTP 400 independent of
+   * body size (e.g. umans: >8). When set, the stream evicts the oldest image
+   * parts beyond the cap (placeholder text in place) before sending. Default
+   * (absent): no count cap — providers without a known limit are unchanged.
+   */
+  readonly maxImages?: number;
+  /**
    * Authorization scheme prefix sent as `Authorization: <authScheme> <apiKey>`.
    * Default (absent): `"Bearer"`. Providers with a non-standard scheme (e.g.
    * Baseten's `Api-Key`) override it. Generic — the library names no feature.
@@ -75,6 +83,7 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
   const transformBody = opts.transformBody;
   const authScheme = opts.authScheme;
   const authOpt = authScheme !== undefined ? { authScheme } : {};
+  const maxImages = opts.maxImages;
 
   const streamConfig = {
     baseURL,
@@ -82,6 +91,7 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
     model: opts.model,
     ...(fetchFn !== undefined ? { fetchFn } : {}),
     ...(transformBody !== undefined ? { transformBody } : {}),
+    ...(maxImages !== undefined ? { maxImages } : {}),
     ...authOpt,
   };
 

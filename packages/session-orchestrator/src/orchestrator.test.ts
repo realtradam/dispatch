@@ -32,6 +32,7 @@ import {
   createSessionOrchestrator,
   createWarmService,
   type TurnLifecyclePayload,
+  type VisionHandoffService,
   type WarmCompletedPayload,
 } from "./orchestrator.js";
 import type { MemorySample } from "./pure.js";
@@ -5702,5 +5703,107 @@ describe("per-turn memory telemetry", () => {
     release();
     await done;
     expect(orchestrator.getActiveConversationCount()).toBe(0);
+  });
+});
+
+describe("vision handoff effective image limit (model image cap)", () => {
+  interface CapturedPrepareOpts {
+    imageLimit?: number;
+  }
+
+  function fakeVisionHandoff(captured: CapturedPrepareOpts[]): VisionHandoffService {
+    return {
+      storeImages: async (_conversationId, images) => images,
+      purgeConversationImages: async () => {},
+      prepareForProvider: async (messages, _modelName, opts) => {
+        captured.push({ imageLimit: opts?.imageLimit });
+        return messages;
+      },
+    };
+  }
+
+  async function runImageTurn(opts: {
+    globalLimit: number;
+    modelMaxImages?: number;
+    withImage?: boolean;
+  }): Promise<{ captured: CapturedPrepareOpts[]; modelInfoCalls: number }> {
+    const store = createInMemoryStore();
+    store.getVisionSettings = async () => ({
+      imageLimit: opts.globalLimit,
+      compactionModel: null,
+    });
+    const captured: CapturedPrepareOpts[] = [];
+    let modelInfoCalls = 0;
+
+    const provider = createFakeProvider([
+      [
+        { type: "text-delta", delta: "ok" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveVisionHandoff: () => fakeVisionHandoff(captured),
+      resolveModelInfo: async () => {
+        modelInfoCalls++;
+        return {
+          id: "umans/test-model",
+          ...(opts.modelMaxImages !== undefined ? { maxImages: opts.modelMaxImages } : {}),
+        };
+      },
+      runTurn,
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-vision-cap",
+      text: "look",
+      ...(opts.withImage !== false ? { images: [{ url: "data:image/png;base64,AAAA" }] } : {}),
+      modelName: "umans/test-model",
+      onEvent: () => {},
+    });
+
+    return { captured, modelInfoCalls };
+  }
+
+  it("clamps the global limit down to a model-reported maxImages", async () => {
+    const { captured } = await runImageTurn({ globalLimit: 10, modelMaxImages: 4 });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.imageLimit).toBe(4);
+  });
+
+  it("keeps the global limit when the model reports no cap", async () => {
+    const { captured } = await runImageTurn({ globalLimit: 10 });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.imageLimit).toBe(10);
+  });
+
+  it("keeps the LOWER global limit when it is below the model cap", async () => {
+    const { captured } = await runImageTurn({ globalLimit: 3, modelMaxImages: 8 });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.imageLimit).toBe(3);
+  });
+
+  it("uses the model cap when the global limit is disabled (0)", async () => {
+    const { captured } = await runImageTurn({ globalLimit: 0, modelMaxImages: 8 });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.imageLimit).toBe(8);
+  });
+
+  it("does not resolve model info for a text-only turn", async () => {
+    const { modelInfoCalls } = await runImageTurn({
+      globalLimit: 10,
+      modelMaxImages: 4,
+      withImage: false,
+    });
+
+    expect(modelInfoCalls).toBe(0);
   });
 });

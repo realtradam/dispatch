@@ -177,6 +177,17 @@ export interface ModelInfo {
    * provider that knows a model is vision-capable sets it `true`.
    */
   readonly vision?: boolean;
+  /**
+   * The maximum number of inline image parts a single request to this model
+   * may carry. Optional and provider-reported: some gateways reject a request
+   * with more than N image parts with an opaque HTTP 400 that is independent
+   * of body size (e.g. umans: >8). When set, the orchestrator clamps its
+   * turn-start vision compaction limit to this value (transcribing the oldest
+   * images instead of passing them through), and the provider adapter enforces
+   * the same cap on the wire as a last-resort safety net. Absent = no known
+   * per-model cap.
+   */
+  readonly maxImages?: number;
 }
 
 /**
