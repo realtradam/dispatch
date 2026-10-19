@@ -2,13 +2,18 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createLogger, type HostAPI, type ToolContract } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
-import type { FsWatcherHandle, WatchFn } from "./extension.js";
-
 // `realFileWatcher` is a module-private function; the exported seam below
 // re-exposes it for testing. Import through the module to exercise the real
 // production path (the error-listener attachment is what we're verifying).
-import { __test__realFileWatcher } from "./extension.js";
+import {
+  __test__realFileWatcher,
+  __test__realSpawn,
+  type FsWatcherHandle,
+  extension as lspExtension,
+  type WatchFn,
+} from "./extension.js";
 
 describe("realFileWatcher (Bug 2 — unhandled fs.watch 'error' event)", () => {
   it("swallows a watcher 'error' event instead of crashing (injected watcher)", () => {
@@ -85,5 +90,56 @@ describe("realFileWatcher (Bug 2 — unhandled fs.watch 'error' event)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("realSpawn (missing server binary — the degraded LSP case)", () => {
+  // The production adapter uses the Bun runtime; vitest runs under Node, where
+  // `Bun` is absent. `scripts/verify-lsp-diagnostics.ts` exercises this path
+  // under Bun (see its "degraded cases" section).
+  const hasBun = typeof Bun !== "undefined";
+  it.skipIf(!hasBun)(
+    "throws synchronously from the adapter, which LanguageServerClient.start() contains",
+    () => {
+      // Bun.spawn throws ENOENT synchronously for a missing binary. The client's
+      // start() try/catch turns that into state:"error" — never an uncaught throw.
+      expect(() =>
+        __test__realSpawn(["/nonexistent/missing-lsp-binary", "--stdio"], { cwd: "/tmp" }),
+      ).toThrow(/ENOENT/);
+    },
+  );
+});
+
+describe("activate() — LSP not fully available", () => {
+  it("activates with no session-orchestrator, registers the tool, and deactivates cleanly", () => {
+    // `tryGetService` returns undefined for BOTH the orchestrator and the LSP
+    // service lookups — the degraded shape when a provider is absent.
+    const tools: ToolContract[] = [];
+    const disposers: (() => void)[] = [];
+    const host = {
+      logger: createLogger(
+        { extensionId: "lsp-test" },
+        { emit: () => {} },
+        { now: () => 0, newId: () => "id" },
+      ),
+      on: () => {
+        const dispose = () => {};
+        disposers.push(dispose);
+        return dispose;
+      },
+      defineTool: (tool: ToolContract) => tools.push(tool),
+      provideService: () => {
+        const dispose = () => {};
+        disposers.push(dispose);
+        return dispose;
+      },
+      tryGetService: () => undefined,
+    } as unknown as HostAPI;
+
+    expect(() => lspExtension.activate(host)).not.toThrow();
+    expect(tools.map((t) => t.name)).toEqual(["lsp"]);
+    // Every subscription/disposer handed out must be released on deactivate.
+    expect(() => lspExtension.deactivate()).not.toThrow();
+    expect(disposers).toHaveLength(2);
   });
 });

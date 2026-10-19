@@ -74,6 +74,8 @@ interface FakeDelivery {
    * before `enqueue` returns).
    */
   setEmitOnStart(emit: boolean): void;
+  /** Make one delivery method throw (injected-failure containment tests). */
+  failOn(method: "isActive" | "enqueue" | "cancel" | "subscribe"): void;
 }
 
 function makeDelivery(): FakeDelivery {
@@ -85,10 +87,18 @@ function makeDelivery(): FakeDelivery {
   let nextId = 1;
   let orchestratorAvailable = true;
   let emitOnStart = false;
+  const failing = new Set<string>();
+  const maybeThrow = (method: string): void => {
+    if (failing.has(method)) throw new Error(`delivery.${method} exploded`);
+  };
 
   const delivery: NoticeDelivery = {
-    isActive: (id) => orchestratorAvailable && active.has(id),
+    isActive: (id) => {
+      maybeThrow("isActive");
+      return orchestratorAvailable && active.has(id);
+    },
     enqueue: ({ conversationId, text }): NoticeEnqueueResult => {
+      maybeThrow("enqueue");
       if (!orchestratorAvailable) return { startedTurn: false, messageId: undefined };
       if (!active.has(conversationId)) {
         // Idle → a turn starts and is assumed to settle before any later
@@ -113,10 +123,12 @@ function makeDelivery(): FakeDelivery {
       return { startedTurn: false, messageId };
     },
     cancel: ({ messageId }) => {
+      maybeThrow("cancel");
       cancelled.push({ conversationId: "", messageId });
       return queued.delete(messageId);
     },
     subscribe: (conversationId, listener) => {
+      maybeThrow("subscribe");
       if (!orchestratorAvailable) return undefined;
       let set = listeners.get(conversationId);
       if (set === undefined) {
@@ -146,10 +158,13 @@ function makeDelivery(): FakeDelivery {
     setEmitOnStart: (emit) => {
       emitOnStart = emit;
     },
+    failOn: (method) => {
+      failing.add(method);
+    },
   };
 }
 
-function makeQueue(options?: { maxAutoTurns?: number; maxFiles?: number }): {
+function makeQueue(options?: { maxAutoTurns?: number; maxFiles?: number; check?: CheckRunner }): {
   queue: DiagnosticsCheckQueue;
   runner: ReturnType<typeof makeRunner>;
   fake: FakeDelivery;
@@ -157,8 +172,13 @@ function makeQueue(options?: { maxAutoTurns?: number; maxFiles?: number }): {
   const runner = makeRunner();
   const fake = makeDelivery();
   const queue = new DiagnosticsCheckQueue({
-    check: runner.check,
+    check: options?.check ?? runner.check,
     delivery: fake.delivery,
+    logger: {
+      warn: () => {
+        // Errors are reported here; a throwing logger is covered separately.
+      },
+    },
     ...(options?.maxAutoTurns !== undefined ? { maxAutoTurns: options.maxAutoTurns } : {}),
     ...(options?.maxFiles !== undefined ? { maxFilesPerConversation: options.maxFiles } : {}),
   });
@@ -639,5 +659,112 @@ describe("DiagnosticsCheckQueue — post-seal carry (orchestrator tryCarryQueue)
 
     // Two auto-starts allowed, the third dropped — not one (double-count bug).
     expect(harness.fake.enqueued).toHaveLength(2);
+  });
+});
+
+/**
+ * FAILURE CONTAINMENT — the queue runs from background promise chains and from
+ * an orchestrator event listener that does NOT catch. Nothing may escape.
+ */
+describe("DiagnosticsCheckQueue — failure containment", () => {
+  it("contains a throwing check runner and does not hot-retry", async () => {
+    let calls = 0;
+    const { queue, fake } = makeQueue({
+      check: async () => {
+        calls += 1;
+        throw new Error("check exploded");
+      },
+    });
+
+    expect(() =>
+      queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v1", cwd: CWD }),
+    ).not.toThrow();
+    await tick();
+    await tick();
+
+    expect(calls).toBe(1); // marked processed → no infinite retry loop
+    expect(fake.enqueued).toHaveLength(0);
+
+    // The queue still works afterwards.
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v2", cwd: CWD });
+    await tick();
+    expect(calls).toBe(2);
+  });
+
+  it("contains a throwing logger", async () => {
+    const fake = makeDelivery();
+    const queue = new DiagnosticsCheckQueue({
+      check: async () => {
+        throw new Error("check exploded");
+      },
+      delivery: fake.delivery,
+      logger: {
+        warn: () => {
+          throw new Error("logger exploded");
+        },
+      },
+    });
+
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v1", cwd: CWD });
+    await tick();
+    expect(fake.enqueued).toHaveLength(0);
+  });
+
+  for (const method of ["isActive", "enqueue", "cancel", "subscribe"] as const) {
+    it(`contains a throwing delivery.${method}`, async () => {
+      const { queue, runner, fake } = makeQueue();
+      fake.failOn(method);
+      fake.setActive("c1", true);
+
+      expect(() =>
+        queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v1", cwd: CWD }),
+      ).not.toThrow();
+      await tick();
+
+      // Resolving the check must not reject/throw through the run loop.
+      expect(() => runner.calls[0]?.resolve(outcome([err("boom")]))).not.toThrow();
+      await tick();
+
+      // The result is still cached for the report tool.
+      expect(queue.getFreshResult({ conversationId: "c1", filePath: FILE })?.formatted).toContain(
+        "boom",
+      );
+    });
+  }
+
+  it("contains a throwing cancel while handling a done event (orchestrator listener)", async () => {
+    const { queue, runner, fake } = makeQueue({ maxAutoTurns: 1 });
+    fake.setActive("c1", true);
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v1", cwd: CWD });
+    runner.calls[0]?.resolve(outcome([err("e1")]));
+    await tick();
+    expect(fake.enqueued).toHaveLength(1);
+
+    fake.failOn("cancel");
+    // `done` runs inside the orchestrator's emit, which does not catch.
+    expect(() =>
+      fake.emit("c1", { type: "done", conversationId: "c1", turnId: "t1", reason: "aborted" }),
+    ).not.toThrow();
+  });
+
+  it("contains a throwing unsubscribe on conversation close and dispose", async () => {
+    let unsubscribes = 0;
+    const fake = makeDelivery();
+    const queue = new DiagnosticsCheckQueue({
+      check: async () => ({ formatted: "", timedOut: false, issues: [] }),
+      delivery: {
+        ...fake.delivery,
+        subscribe: () => () => {
+          unsubscribes += 1;
+          throw new Error("unsubscribe exploded");
+        },
+      },
+    });
+
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, text: "v1", cwd: CWD });
+    await tick();
+    expect(() => queue.purgeConversation("c1")).not.toThrow();
+    expect(() => queue.dispose()).not.toThrow();
+    expect(unsubscribes).toBe(1);
   });
 });

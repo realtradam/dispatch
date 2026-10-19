@@ -168,6 +168,119 @@ interface RoundResult {
 
 const results: RoundResult[] = [];
 let failures = 0;
+let degradedFailures = 0;
+
+/**
+ * Degraded-path containment (server missing / crashing): the LSP feature must
+ * degrade to "no diagnostics" without throwing, and the client must tear down
+ * cleanly. These do not need a working server.
+ */
+async function verifyDegradedCases(): Promise<void> {
+  // 1. A configured binary that does not exist (Bun.spawn throws ENOENT).
+  {
+    const dir = makeWorkspace();
+    const client = new LanguageServerClient({
+      spawn: realSpawn,
+      fileWatcher: noopFileWatcher,
+      fs,
+      command: ["/nonexistent/missing-lsp-binary", "--stdio"],
+      root: dir,
+      serverId: "missing",
+    });
+    let threw = false;
+    try {
+      await client.start();
+      const ok = client.getState() === "error" && /ENOENT/.test(client.getStateError() ?? "");
+      if (!ok) degradedFailures += 1;
+      console.log(`${ok ? "PASS" : "FAIL"} degraded: missing binary → state=error (no throw)`);
+    } catch (error: unknown) {
+      threw = true;
+      degradedFailures += 1;
+      console.log(`FAIL degraded: missing binary THREW ${String(error)}`);
+    } finally {
+      if (!threw) expectNoThrow(() => client.shutdown(), "shutdown after missing binary");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // 2. A server that dies mid-check: the in-flight wait must resolve (no hang,
+  //    no throw), the client must go to state:error, and a later check on the
+  //    dead client must fail fast as skipped.
+  {
+    const dir = makeWorkspace();
+    writeFileSync(join(dir, "src", "a.ts"), cleanFor(0));
+    const spawned: SpawnedProcess[] = [];
+    const capturingSpawn = (
+      command: string[],
+      opts: { readonly cwd: string; readonly env?: Readonly<Record<string, string>> | undefined },
+    ): SpawnedProcess => {
+      const proc = realSpawn(command, opts);
+      spawned.push(proc);
+      return proc;
+    };
+    const client = new LanguageServerClient({
+      spawn: capturingSpawn,
+      fileWatcher: noopFileWatcher,
+      fs,
+      command: [...SERVER_SPEC.command],
+      root: dir,
+      serverId: SERVER_SPEC.serverId,
+    });
+    try {
+      await client.start();
+      const wait = client.waitForDiagnostics(join(dir, "src", "a.ts"), {
+        text: cleanFor(0),
+        timeoutMs: 4000,
+        minSeverity: 2,
+      });
+      // Kill it immediately: whether the server answers first is timing, but
+      // the wait must always RESOLVE (never hang / throw).
+      spawned[0]?.kill();
+      await wait;
+
+      const errored = await pollUntil(() => client.getState() === "error", 3000);
+      // A check on the dead client resolves as skipped instead of hanging.
+      const dead = await client.waitForDiagnostics(join(dir, "src", "a.ts"), {
+        text: brokenFor(0),
+        timeoutMs: 300,
+        minSeverity: 2,
+      });
+      const ok = errored && dead.timedOut && dead.formatted === "";
+      if (!ok) degradedFailures += 1;
+      console.log(
+        `${ok ? "PASS" : "FAIL"} degraded: server killed mid-check → wait resolved, ` +
+          `state=${client.getState()}, later check skipped=${dead.timedOut} (no throw)`,
+      );
+    } catch (error: unknown) {
+      degradedFailures += 1;
+      console.log(`FAIL degraded: server death THREW ${String(error)}`);
+    } finally {
+      expectNoThrow(() => client.shutdown(), "shutdown after crash");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+/** Poll a predicate until true or the budget elapses. */
+async function pollUntil(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return predicate();
+}
+
+function expectNoThrow(fn: () => void, label: string): void {
+  try {
+    fn();
+  } catch (error: unknown) {
+    degradedFailures += 1;
+    console.log(`FAIL degraded: ${label} threw ${String(error)}`);
+  }
+}
+
+await verifyDegradedCases();
 
 for (let run = 0; run < RUNS; run++) {
   const dir = makeWorkspace();
@@ -332,8 +445,8 @@ const coldFailures = results.filter(
 );
 console.log(
   `\nserver: ${SERVER_SPEC.label}\n` +
-    `${results.length} rounds across ${RUNS} fresh server(s): ` +
-    `${results.length - failures} passed, ${failures} failed ` +
-    `(cold-start rounds failed: ${coldFailures.length})`,
+    `rounds: ${results.length - failures}/${results.length} passed, ${failures} failed ` +
+    `(cold-start rounds failed: ${coldFailures.length})\n` +
+    `degraded-path cases: ${2 - degradedFailures}/2 passed`,
 );
-process.exit(failures === 0 ? 0 : 1);
+process.exit(failures === 0 && degradedFailures === 0 ? 0 : 1);

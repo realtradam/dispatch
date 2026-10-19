@@ -327,3 +327,29 @@ describe("createWriteFileTool", () => {
     expect(result.content).toContain("Created");
   });
 });
+
+describe("write_file — LSP failure containment", () => {
+  it("succeeds with NO LSP hook at all (LSP absent or failed to activate)", async () => {
+    const tool = createWriteFileTool({ resolveBackend: () => localExecBackend, workdir });
+    const result = await tool.execute(
+      { path: "no-lsp.txt", content: "written" },
+      stubCtx({ conversationId: "conv-1" }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(await readFile(join(workdir, "no-lsp.txt"), "utf8")).toBe("written");
+  });
+
+  it("a throwing LSP hook never breaks the write", async () => {
+    const tool = makeTool(workdir, () => {
+      throw new Error("LSP extension exploded");
+    });
+    const result = await tool.execute(
+      { path: "broken-lsp.txt", content: "written anyway" },
+      stubCtx({ conversationId: "conv-1" }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(await readFile(join(workdir, "broken-lsp.txt"), "utf8")).toBe("written anyway");
+  });
+});

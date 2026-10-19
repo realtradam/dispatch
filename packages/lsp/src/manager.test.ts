@@ -450,3 +450,116 @@ describe("manager", () => {
     expect(spawnCount).toBe(2); // re-spawned exactly once
   });
 });
+
+describe("manager — failure containment", () => {
+  const CONFIG = {
+    "/project/tsconfig.json": "{}",
+    "/project/.dispatch/lsp.json": JSON.stringify({
+      servers: {
+        broken: {
+          command: ["/nonexistent/missing-lsp-binary", "--stdio"],
+          extensions: [".ts"],
+          rootMarkers: ["tsconfig.json"],
+        },
+      },
+    }),
+  };
+
+  it("a spawn that throws (missing binary) is reported as state:error and never throws", async () => {
+    let spawnCount = 0;
+    const manager = new LspManager({
+      spawn: () => {
+        spawnCount += 1;
+        throw new Error("ENOENT: no such file or directory, posix_spawn");
+      },
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs(CONFIG),
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    const statuses = await manager.status("/project");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]?.state).toBe("error");
+    expect(statuses[0]?.error).toMatch(/ENOENT/);
+
+    // A second status() during the backoff window does not re-spawn (no storm).
+    const again = await manager.status("/project");
+    expect(again[0]?.state).toBe("error");
+    expect(spawnCount).toBe(1);
+  });
+
+  it("routes contained client callback failures to the injected logger (onError wiring)", async () => {
+    const logged: { msg: string; attrs?: Record<string, unknown> }[] = [];
+    let writes = 0;
+    // initialize (1) and initialized (2) succeed; the first didOpen write (3)
+    // fails — the "server died between notifications" case.
+    const spawn: SpawnProcess = () => {
+      let messageHandler: ((data: Uint8Array) => void) | null = null;
+      return {
+        stdin: {
+          write: (bytes: Uint8Array) => {
+            writes += 1;
+            if (writes > 2) throw new Error("EPIPE: broken pipe");
+            const decoded = new TextDecoder().decode(bytes);
+            const headerEnd = decoded.indexOf("\r\n\r\n");
+            if (headerEnd === -1) return;
+            const msg = JSON.parse(decoded.slice(headerEnd + 4));
+            if (msg.method === "initialize") {
+              setTimeout(() => {
+                messageHandler?.(
+                  encode(
+                    JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {} } }),
+                  ),
+                );
+              }, 5);
+            }
+          },
+        },
+        stdout: {
+          on: (_event: string, cb: (data: Uint8Array) => void) => {
+            messageHandler = cb;
+          },
+        },
+        pid: 1,
+        kill: () => {},
+      };
+    };
+
+    const manager = new LspManager({
+      spawn,
+      fileWatcher: noopFileWatcher(),
+      fs: fakeFs({
+        ...CONFIG,
+        "/project/.dispatch/lsp.json": JSON.stringify({
+          servers: {
+            test: {
+              command: ["test-lsp", "--stdio"],
+              extensions: [".ts"],
+              rootMarkers: ["tsconfig.json"],
+            },
+          },
+        }),
+      }),
+      logger: {
+        info: () => {},
+        warn: (msg, attrs) => logged.push({ msg, ...(attrs !== undefined ? { attrs } : {}) }),
+        error: () => {},
+      },
+    });
+
+    const statuses = await manager.status("/project");
+    expect(statuses[0]?.state).toBe("connected");
+
+    const client = manager.getClient("test", "/project");
+    expect(client).toBeDefined();
+    // The write fails inside the client; it must not throw to the caller.
+    expect(() => client?.openWithText("/project/a.ts", "const x = 1;")).not.toThrow();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(logged.some((l) => l.msg.includes("contained"))).toBe(true);
+    expect(client?.getState()).toBe("error");
+
+    // Teardown never throws, even with an errored client.
+    expect(() => manager.shutdownAll()).not.toThrow();
+  });
+});

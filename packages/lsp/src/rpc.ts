@@ -153,7 +153,13 @@ export class JsonRpcConnection {
   private handleIncomingNotification(method: string, params: unknown): void {
     const handler = this.notificationHandlers.get(method);
     if (handler) {
-      handler(params);
+      try {
+        handler(params);
+      } catch {
+        // Notification handlers run in the message loop with no caller to catch
+        // a throw. A malformed payload or a buggy handler must stay contained;
+        // the client's own handlers report their own failures.
+      }
     }
   }
 

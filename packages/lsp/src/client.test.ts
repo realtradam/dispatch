@@ -701,7 +701,10 @@ describe("client diagnostics wait", () => {
     serverResponses(push({ version: 1, messages: ["boom"] }));
 
     const result = await wait;
-    expect(Date.now() - started).toBeLessThan(100);
+    // The 5000 ms quiet window is the proof that resolution came from the PUSH
+    // itself (and not from a poll tick, the settle window, or the 10 s cap).
+    // The wall-clock bound is generous so parallel test load cannot flake it.
+    expect(Date.now() - started).toBeLessThan(400);
     expect(result.timedOut).toBe(false);
     expect(result.formatted).toContain("boom");
     expect(result.diagnostics).toHaveLength(1);
@@ -887,3 +890,247 @@ function stdinMethods(): { record: (bytes: Uint8Array) => void; methods: () => s
     methods: () => sent,
   };
 }
+
+/**
+ * LSP FAILURE CONTAINMENT — the harness invariant: nothing an LSP server (or a
+ * bug in our own client) does may escape as an uncaught exception / unhandled
+ * rejection. Edits, turns and the host process keep working; the LSP feature
+ * degrades to "no diagnostics".
+ */
+describe("client failure containment", () => {
+  const PATH = "/project/src/c.ts";
+  const URI = "file:///project/src/c.ts";
+
+  function pushPayload(messages: readonly string[] = []): string {
+    return JSON.stringify({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: URI,
+        diagnostics: messages.map((message) => ({
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          severity: 1,
+          source: "ts",
+          message,
+        })),
+      },
+    });
+  }
+
+  interface Harness {
+    readonly client: LanguageServerClient;
+    readonly respond: (msg: string) => void;
+    readonly exit: () => void;
+  }
+
+  /**
+   * A client whose stdin write throws after `writeFailsAfter` successful
+   * writes — the "server died between notifications" (EPIPE) case. Writes in
+   * order: initialize request (1), initialized notification (2), didOpen (3),
+   * didChange (4), ...
+   */
+  async function connected(opts: {
+    readonly writeFailsAfter: number;
+    readonly killThrows?: boolean;
+    readonly fileWatcher?: FileWatcher;
+  }): Promise<Harness> {
+    const holder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitHandler: ProcessExitHandler | null = null;
+    let writes = 0;
+
+    const spawn: SpawnProcess = () => ({
+      stdin: {
+        write: () => {
+          writes += 1;
+          if (writes > opts.writeFailsAfter) throw new Error("EPIPE: broken pipe");
+        },
+      },
+      stdout: {
+        on: (_e, cb) => {
+          holder.cb = cb;
+        },
+      },
+      pid: 11,
+      kill: () => {
+        if (opts.killThrows === true) throw new Error("kill failed");
+      },
+      onExit: (handler) => {
+        exitHandler = handler;
+      },
+    });
+
+    const { client } = makeClient({
+      spawn,
+      unversionedSettleMs: 20,
+      ...(opts.fileWatcher !== undefined ? { fileWatcher: opts.fileWatcher } : {}),
+    });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 20));
+    holder.cb?.(encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })));
+    await startPromise;
+
+    return {
+      client,
+      respond: (msg) => holder.cb?.(encode(msg)),
+      exit: () => exitHandler?.({ code: 1 }),
+    };
+  }
+
+  it("a throwing stdin write in the settle timer is contained and breaks the client", async () => {
+    // didOpen (write 3) succeeds; the deferred didChange write (4) throws from
+    // inside setTimeout, where no caller can catch it.
+    const harness = await connected({ writeFailsAfter: 3 });
+    const client = harness.client;
+    expect(client.getState()).toBe("connected");
+
+    const open = client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 3000 });
+    await new Promise((r) => setTimeout(r, 5));
+    harness.respond(pushPayload([])); // arms the quiet window
+    const deferred = client.waitForDiagnostics(PATH, { text: "v2", timeoutMs: 3000 });
+
+    // Both promises settle (the open from the held burst, the deferred as
+    // skipped); nothing escapes the timer.
+    await expect(open).resolves.toBeDefined();
+    const second = await deferred;
+    expect(second.timedOut).toBe(true);
+
+    expect(client.getState()).toBe("error");
+    expect(client.getStateError()).toMatch(/failed to write textDocument\/didChange/);
+    expect(client.getStateError()).toMatch(/EPIPE/);
+  });
+
+  it("a write failure during initialization leaves the client in error (never masks it as connected)", async () => {
+    // initialize request (1) succeeds, the `initialized` notification (2) throws.
+    const harness = await connected({ writeFailsAfter: 1 });
+    expect(harness.client.getState()).toBe("error");
+    expect(harness.client.getStateError()).toMatch(/failed to write initialized/);
+  });
+
+  it("a throwing file-watcher event is contained", async () => {
+    let watcherCb: ((e: { type: "change"; path: string }) => void) | null = null;
+    const harness = await connected({
+      writeFailsAfter: Number.POSITIVE_INFINITY,
+      fileWatcher: (_root, onEvent) => {
+        watcherCb = onEvent as typeof watcherCb;
+        return { close: () => {} };
+      },
+    });
+    expect(harness.client.getState()).toBe("connected");
+
+    // A malformed event makes our callback throw (`.startsWith` on undefined);
+    // fs.watch would otherwise propagate it into the runtime.
+    expect(() =>
+      watcherCb?.({ type: "change", path: undefined as unknown as string }),
+    ).not.toThrow();
+    expect(harness.client.getState()).toBe("connected");
+  });
+
+  it("a malformed publishDiagnostics payload is contained", async () => {
+    const harness = await connected({ writeFailsAfter: Number.POSITIVE_INFINITY });
+    // params: null → reading params.uri throws inside the notification handler.
+    expect(() =>
+      harness.respond(
+        JSON.stringify({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: null }),
+      ),
+    ).not.toThrow();
+    expect(harness.client.getState()).toBe("connected");
+  });
+
+  it("a throwing kill() during a process exit is contained", async () => {
+    const harness = await connected({
+      writeFailsAfter: Number.POSITIVE_INFINITY,
+      killThrows: true,
+    });
+    expect(() => harness.exit()).not.toThrow();
+    expect(harness.client.getState()).toBe("error");
+  });
+
+  it("a spawn that throws (missing server binary) yields state error, never throws", async () => {
+    const { client } = makeClient({
+      spawn: () => {
+        throw new Error("ENOENT: no such file or directory, posix_spawn");
+      },
+    });
+
+    await expect(client.start()).resolves.toBeUndefined();
+    expect(client.getState()).toBe("error");
+    expect(client.getStateError()).toMatch(/ENOENT/);
+    // Teardown of a never-started client must also be safe.
+    expect(() => client.shutdown()).not.toThrow();
+  });
+
+  it("a server that crashes mid-check resolves as skipped instead of hanging", async () => {
+    const harness = await connected({ writeFailsAfter: Number.POSITIVE_INFINITY });
+    const wait = harness.client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 10_000 });
+    await new Promise((r) => setTimeout(r, 10));
+    harness.exit(); // crash mid-check
+    const result = await wait;
+    expect(result.timedOut).toBe(true);
+    expect(result.formatted).toBe("");
+  });
+});
+
+describe("client failure containment — injected dependencies", () => {
+  it("a throwing fileWatcher factory yields state:error (start catches)", async () => {
+    // The watcher factory runs inside initialize(); it throws AFTER the
+    // handshake, which must not reject start().
+    const spawn: SpawnProcess = () => {
+      let handler: ((data: Uint8Array) => void) | null = null;
+      return {
+        stdin: {
+          write: (bytes: Uint8Array) => {
+            const text = new TextDecoder().decode(bytes);
+            const headerEnd = text.indexOf("\r\n\r\n");
+            if (headerEnd === -1) return;
+            const msg = JSON.parse(text.slice(headerEnd + 4));
+            if (msg.method === "initialize") {
+              setTimeout(() => {
+                handler?.(
+                  encode(
+                    JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {} } }),
+                  ),
+                );
+              }, 5);
+            }
+          },
+        },
+        stdout: {
+          on: (_e, cb) => {
+            handler = cb;
+          },
+        },
+        pid: 2,
+        kill: () => {},
+      };
+    };
+
+    const { client } = makeClient({
+      spawn,
+      fileWatcher: () => {
+        throw new Error("watch failed");
+      },
+    });
+    await expect(client.start()).resolves.toBeUndefined();
+    expect(client.getState()).toBe("error");
+    expect(client.getStateError()).toMatch(/watch failed/);
+  });
+
+  it("a throwing fs.readText is contained and the wait resolves as skipped", async () => {
+    const { client, serverResponses } = makeClient({
+      fs: {
+        readText: async () => {
+          throw new Error("EACCES: permission denied");
+        },
+        exists: async () => false,
+      },
+    });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 20));
+    serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
+    await startPromise;
+
+    const result = await client.waitForDiagnostics("/project/src/gone.ts", { timeoutMs: 120 });
+    expect(result.timedOut).toBe(true);
+    expect(result.formatted).toBe("");
+  });
+});

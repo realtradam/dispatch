@@ -91,27 +91,63 @@ function createCheckRunner(manager: LspManager): CheckRunner {
  * Delivery seam over the session-orchestrator, resolved LAZILY on every call
  * (standard→core, optional): activation order does not matter and the notice
  * feature degrades off when the orchestrator isn't loaded.
+ *
+ * Every method is contained: the orchestrator (and the message queue behind
+ * it) is another unit's code, and a throw here runs from a background promise
+ * chain or a turn-event callback. Containment holds even if its store is
+ * broken, so the LSP feature can never take the host or the turn down.
  */
 function createNoticeDelivery(host: HostAPI): NoticeDelivery {
   const orchestrator = () => host.tryGetService(sessionOrchestratorHandle);
+  const warn = (message: string, error: unknown): void => {
+    try {
+      host.logger.warn(message, { error: error instanceof Error ? error.message : String(error) });
+    } catch {
+      // A throwing logger must not defeat containment.
+    }
+  };
+
   return {
-    isActive: (conversationId) => orchestrator()?.isActive(conversationId) ?? false,
+    isActive: (conversationId) => {
+      try {
+        return orchestrator()?.isActive(conversationId) ?? false;
+      } catch (error: unknown) {
+        warn("LSP delivery isActive failed (contained)", error);
+        return false;
+      }
+    },
     enqueue: ({ conversationId, text }) => {
-      const service = orchestrator();
-      if (service === undefined) return { startedTurn: false, messageId: undefined };
-      const result = service.enqueue({ conversationId, text });
-      if (result.startedTurn) return { startedTurn: true, messageId: undefined };
-      // The message-queue appends, so our notice is the last snapshot entry.
-      const queued = result.queue[result.queue.length - 1];
-      return { startedTurn: false, messageId: queued?.id };
+      try {
+        const service = orchestrator();
+        if (service === undefined) return { startedTurn: false, messageId: undefined };
+        const result = service.enqueue({ conversationId, text });
+        if (result.startedTurn) return { startedTurn: true, messageId: undefined };
+        // The message-queue appends, so our notice is the last snapshot entry.
+        const queued = result.queue[result.queue.length - 1];
+        return { startedTurn: false, messageId: queued?.id };
+      } catch (error: unknown) {
+        warn("LSP notice enqueue failed (contained)", error);
+        return { startedTurn: false, messageId: undefined };
+      }
     },
     cancel: ({ conversationId, messageId }) => {
-      const service = orchestrator();
-      if (service === undefined) return false;
-      return service.cancelQueuedMessage({ conversationId, messageId }).cancelled;
+      try {
+        const service = orchestrator();
+        if (service === undefined) return false;
+        return service.cancelQueuedMessage({ conversationId, messageId }).cancelled;
+      } catch (error: unknown) {
+        warn("LSP notice cancel failed (contained)", error);
+        return false;
+      }
     },
-    subscribe: (conversationId, listener) =>
-      orchestrator()?.subscribe(conversationId, listener) ?? undefined,
+    subscribe: (conversationId, listener) => {
+      try {
+        return orchestrator()?.subscribe(conversationId, listener) ?? undefined;
+      } catch (error: unknown) {
+        warn("LSP turn-event subscribe failed (contained)", error);
+        return undefined;
+      }
+    },
   };
 }
 
@@ -141,10 +177,24 @@ function realSpawn(
     // Surface process exit so the client can stop querying a dead server
     // and self-heal (respawn). Bun's Subprocess.exited resolves with the
     // exit code (or rejects if killed by signal — treat as code:null).
+    // The handler is also contained here: it runs from a runtime promise with
+    // no caller, so a throw would otherwise become an unhandled rejection.
     onExit: (handler) => {
       (proc as { exited: Promise<number | null> }).exited
-        .then((code) => handler({ code }))
-        .catch(() => handler({ code: null }));
+        .then((code) => {
+          try {
+            handler({ code });
+          } catch {
+            // contained: LSP failure must not reach the host runtime
+          }
+        })
+        .catch(() => {
+          try {
+            handler({ code: null });
+          } catch {
+            // contained
+          }
+        });
     },
   };
 }
@@ -246,9 +296,26 @@ export const extension: Extension = {
       delivery: createNoticeDelivery(host),
       logger: createQueueLogger(logger),
     });
-    const stopOnClose = host.on(conversationClosed, (payload) => {
-      checks.purgeConversation(payload.conversationId);
-    });
+    let stopOnClose: (() => void) | undefined;
+    try {
+      stopOnClose = host.on(conversationClosed, (payload) => {
+        // Hook handlers are error-isolated by the kernel, but a failing purge
+        // must also never break the LSP extension's own bookkeeping.
+        try {
+          checks.purgeConversation(payload.conversationId);
+        } catch (err: unknown) {
+          logger.warn("failed to purge LSP state for a closed conversation", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+    } catch (err: unknown) {
+      // A missing hook mechanism must not fail activation: conversation state
+      // then lives until unload (bounded by the per-conversation LRU).
+      logger.warn("failed to subscribe to conversationClosed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     const lspTool = createLspTool(manager, { checks });
     host.defineTool(lspTool);
@@ -260,16 +327,24 @@ export const extension: Extension = {
       async getDiagnostics(opts: GetDiagnosticsOpts): Promise<DiagnosticsResult> {
         // 10s hard ceiling per server, regardless of what the caller passes.
         // A server that doesn't respond in 10s is skipped with a notice
-        // instead of waited out.
-        const timeoutMs = Math.min(opts.timeoutMs ?? PER_SERVER_CAP_MS, PER_SERVER_CAP_MS);
-        const agg = await aggregateFile(manager, {
-          filePath: opts.filePath,
-          text: opts.text,
-          cwd: opts.cwd,
-          timeoutMs,
-          minSeverity: opts.minSeverity,
-        });
-        return { formatted: agg.formatted, slow: false, timedOut: agg.timedOut };
+        // instead of waited out. Contract: never throws — a broken manager,
+        // config, or spawn surfaces as an empty (skipped) result.
+        try {
+          const timeoutMs = Math.min(opts.timeoutMs ?? PER_SERVER_CAP_MS, PER_SERVER_CAP_MS);
+          const agg = await aggregateFile(manager, {
+            filePath: opts.filePath,
+            text: opts.text,
+            cwd: opts.cwd,
+            timeoutMs,
+            minSeverity: opts.minSeverity,
+          });
+          return { formatted: agg.formatted, slow: false, timedOut: agg.timedOut };
+        } catch (err: unknown) {
+          logger.warn("LSP getDiagnostics failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return { formatted: "", slow: false, timedOut: false };
+        }
       },
       queueCheck(opts: QueueCheckOpts): void {
         // Fire-and-forget by contract: never throws, never blocks the edit.
@@ -298,14 +373,25 @@ export const extension: Extension = {
     lspManagerStore.stopOnClose = stopOnClose;
   },
   deactivate() {
-    lspManagerStore.checks?.dispose();
-    lspManagerStore.stopOnClose?.();
-    lspManagerStore.manager?.shutdownAll();
-    lspManagerStore.unprovide?.();
+    // Unload must complete cleanly even if one edge fails: each step is
+    // independently contained so the host's disposal sweep always runs.
+    const attempts: (() => void)[] = [
+      () => lspManagerStore.checks?.dispose(),
+      () => lspManagerStore.stopOnClose?.(),
+      () => lspManagerStore.manager?.shutdownAll(),
+      () => lspManagerStore.unprovide?.(),
+    ];
+    for (const attempt of attempts) {
+      try {
+        attempt();
+      } catch {
+        // Keep disposing the rest.
+      }
+    }
     lspManagerStore.manager = null;
     lspManagerStore.unprovide = null;
     lspManagerStore.checks = null;
-    lspManagerStore.stopOnClose = null;
+    lspManagerStore.stopOnClose = undefined;
   },
 };
 
@@ -314,12 +400,12 @@ const lspManagerStore: {
   manager: LspManager | null;
   unprovide: (() => void) | null;
   checks: DiagnosticsCheckQueue | null;
-  stopOnClose: (() => void) | null;
+  stopOnClose: (() => void) | undefined;
 } = {
   manager: null,
   unprovide: null,
   checks: null,
-  stopOnClose: null,
+  stopOnClose: undefined,
 };
 
 /** Adapt the host logger to the queue's narrow logger interface. */
@@ -337,3 +423,10 @@ function createQueueLogger(logger: HostAPI["logger"]): CheckQueueLogger {
  * extension surface — the `__test__` prefix signals test-only use.
  */
 export const __test__realFileWatcher = realFileWatcher;
+
+/**
+ * Test-only re-export of the production `realSpawn` adapter, so the
+ * missing-binary path (Bun.spawn throws ENOENT synchronously) can be exercised
+ * against the real runtime. NOT part of the public extension surface.
+ */
+export const __test__realSpawn = realSpawn;

@@ -426,3 +426,40 @@ describe("createEditFileTool", () => {
     expect(result.content).toBe('Replaced 1 occurrence in "throw.txt".');
   });
 });
+
+describe("edit_file — LSP failure containment", () => {
+  it("succeeds with NO LSP hook at all (LSP absent or failed to activate)", async () => {
+    const filePath = join(workdir, "no-lsp.txt");
+    await writeFile(filePath, "hello\n", "utf8");
+
+    // Exactly the shape the extension builds when `tryGetService` finds no LSP
+    // service: the optional hook is simply absent.
+    const tool = createEditFileTool({ resolveBackend: () => localExecBackend, workdir });
+    const result = await tool.execute(
+      { path: "no-lsp.txt", oldString: "hello", newString: "hi" },
+      stubCtx({ conversationId: "conv-1" }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe('Replaced 1 occurrence in "no-lsp.txt".');
+    expect(await readFile(filePath, "utf8")).toBe("hi\n");
+  });
+
+  it("a throwing LSP hook (broken service) never breaks the edit or the file write", async () => {
+    const filePath = join(workdir, "broken-lsp.txt");
+    await writeFile(filePath, "hello\n", "utf8");
+
+    const tool = makeTool(() => {
+      throw new Error("LSP extension exploded");
+    });
+    const result = await tool.execute(
+      { path: "broken-lsp.txt", oldString: "hello", newString: "hi" },
+      stubCtx({ conversationId: "conv-1" }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe('Replaced 1 occurrence in "broken-lsp.txt".');
+    // The edit is fully applied despite the LSP failure.
+    expect(await readFile(filePath, "utf8")).toBe("hi\n");
+  });
+});

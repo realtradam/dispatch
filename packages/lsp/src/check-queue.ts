@@ -166,6 +166,15 @@ export class DiagnosticsCheckQueue {
    * run a check. Never throws, never blocks the caller (the tool/edit path).
    */
   queueCheck(opts: QueueCheckOpts): void {
+    // Called from the edit/write tool path: it must never throw into the tool.
+    try {
+      this.queueCheckInner(opts);
+    } catch (error: unknown) {
+      this.warn("failed to enqueue LSP diagnostics check", { error: errText(error) });
+    }
+  }
+
+  private queueCheckInner(opts: QueueCheckOpts): void {
     if (opts.conversationId.length === 0) return;
     const conv = this.conversationState(opts.conversationId);
     const file = this.fileState(conv, opts.filePath, opts.cwd);
@@ -270,8 +279,7 @@ export class DiagnosticsCheckQueue {
     if (conv === undefined) return;
     conv.closed = true;
     this.discardPending(conv);
-    conv.unsubscribe?.();
-    conv.unsubscribe = null;
+    this.unsubscribe(conv);
     conv.files.clear();
     this.conversations.delete(conversationId);
   }
@@ -281,8 +289,7 @@ export class DiagnosticsCheckQueue {
     for (const conv of this.conversations.values()) {
       conv.closed = true;
       this.discardPending(conv);
-      conv.unsubscribe?.();
-      conv.unsubscribe = null;
+      this.unsubscribe(conv);
     }
     this.conversations.clear();
   }
@@ -298,57 +305,134 @@ export class DiagnosticsCheckQueue {
     }
     const run = this.run(conv, file);
     file.inFlight = run;
+    // `run` never rejects (see below), so this chain can only fail on a bug in
+    // the cleanup itself — contain it so it cannot become an unhandled rejection.
     void run.finally(() => {
-      if (file.inFlight === run) file.inFlight = null;
-      // A request that landed after the loop's final sequence check must not
-      // be lost in the gap between that check and this cleanup.
-      if (!conv.closed && file.seq !== file.processedSeq && file.inFlight === null) {
-        this.startRun(conv, file);
+      try {
+        if (file.inFlight === run) file.inFlight = null;
+        // A request that landed after the loop's final sequence check must not
+        // be lost in the gap between that check and this cleanup.
+        if (!conv.closed && file.seq !== file.processedSeq && file.inFlight === null) {
+          this.startRun(conv, file);
+        }
+      } catch (error: unknown) {
+        this.warn("LSP check cleanup failed", { error: errText(error) });
       }
     });
   }
 
+  /**
+   * The background run loop. It must NEVER reject: the promise is stored in
+   * `file.inFlight` and observed by `waitForResult`/`listResults`, and its
+   * `.finally` chain is fire-and-forget — a rejection would be an unhandled
+   * rejection (and on some runtimes a process-level fault).
+   */
   private async run(conv: ConversationState, file: FileState): Promise<void> {
-    for (;;) {
-      const seq = file.seq;
-      let outcome: CheckOutcome;
-      try {
-        outcome = await this.deps.check({
-          filePath: file.filePath,
-          cwd: file.cwd,
-          ...(file.text !== undefined ? { text: file.text } : {}),
-        });
-      } catch (err: unknown) {
-        this.deps.logger?.warn("LSP background check failed", {
-          filePath: file.filePath,
-          error: errText(err),
-        });
-        // Mark the request processed: a failing check must not hot-retry.
+    let seq = file.seq;
+    try {
+      for (;;) {
+        seq = file.seq;
+        let outcome: CheckOutcome;
+        try {
+          outcome = await this.deps.check({
+            filePath: file.filePath,
+            cwd: file.cwd,
+            ...(file.text !== undefined ? { text: file.text } : {}),
+          });
+        } catch (err: unknown) {
+          this.warn("LSP background check failed", {
+            filePath: file.filePath,
+            error: errText(err),
+          });
+          // Mark the request processed: a failing check must not hot-retry.
+          file.processedSeq = seq;
+          return;
+        }
+
+        // Superseded while in flight: discard this result entirely (never cache
+        // it, never announce it) and run once more with the latest content.
+        if (seq !== file.seq) continue;
+
         file.processedSeq = seq;
+        file.lastIssues = outcome.issues;
+        file.lastResult = { seq, formatted: outcome.formatted, timedOut: outcome.timedOut };
+        if (conv.closed) return;
+        if (outcome.timedOut) {
+          // Silent for the agent (the notice only counts new issues); the full
+          // report still carries the per-server skip line.
+          this.warn("LSP background check skipped a slow server", {
+            filePath: file.filePath,
+          });
+        }
+        this.recomputePending(conv);
         return;
       }
-
-      // Superseded while in flight: discard this result entirely (never cache
-      // it, never announce it) and run once more with the latest content.
-      if (seq !== file.seq) continue;
-
+    } catch (error: unknown) {
+      // Anything thrown while applying/delivering the result (including a bug
+      // in our own notice logic) stays inside the LSP extension.
+      this.warn("LSP background check post-processing failed", {
+        filePath: file.filePath,
+        error: errText(error),
+      });
       file.processedSeq = seq;
-      file.lastIssues = outcome.issues;
-      file.lastResult = { seq, formatted: outcome.formatted, timedOut: outcome.timedOut };
-      if (conv.closed) return;
-      if (outcome.timedOut) {
-        // Silent for the agent (the notice only counts new issues); the full
-        // report still carries the per-server skip line.
-        this.deps.logger?.warn("LSP background check skipped a slow server", {
-          filePath: file.filePath,
-        });
-      }
-      this.recomputePending(conv);
-      return;
     }
   }
 
   // --- notice computation + delivery -------------------------------------
+
+  /**
+   * Delivery is an INJECTED dependency (the session-orchestrator adapter): it
+   * can throw if the orchestrator's store or message queue is broken. Every
+   * call is contained so a broken delivery path can never reject a background
+   * run, throw into a timer, or break the turn-event subscription.
+   */
+  private deliveryIsActive(conversationId: string): boolean {
+    try {
+      return this.deps.delivery.isActive(conversationId);
+    } catch (error: unknown) {
+      this.warn("LSP notice delivery isActive failed", { error: errText(error) });
+      return false;
+    }
+  }
+
+  private deliveryEnqueue(input: {
+    readonly conversationId: string;
+    readonly text: string;
+  }): NoticeEnqueueResult {
+    try {
+      const result = this.deps.delivery.enqueue(input);
+      return {
+        startedTurn: result?.startedTurn === true,
+        messageId: typeof result?.messageId === "string" ? result.messageId : undefined,
+      };
+    } catch (error: unknown) {
+      this.warn("LSP notice enqueue failed", { error: errText(error) });
+      return { startedTurn: false, messageId: undefined };
+    }
+  }
+
+  private deliveryCancel(input: {
+    readonly conversationId: string;
+    readonly messageId: string;
+  }): boolean {
+    try {
+      return this.deps.delivery.cancel(input) === true;
+    } catch (error: unknown) {
+      this.warn("LSP notice cancel failed", { error: errText(error) });
+      // Unknown state: assume it was delivered so the same issues are not
+      // re-announced in a loop.
+      return false;
+    }
+  }
+
+  /** Log through the injected logger; logging must never break the queue. */
+  private warn(message: string, attrs?: Record<string, string | number | boolean | null>): void {
+    try {
+      this.deps.logger?.warn(message, attrs);
+    } catch {
+      // A throwing logger must not defeat containment.
+    }
+  }
 
   /**
    * Recompute the conversation's single pending notice from the DELIVERED
@@ -368,7 +452,7 @@ export class DiagnosticsCheckQueue {
     const previous = conv.pending;
     conv.pending = null;
     if (previous !== null && previous.messageId !== undefined) {
-      const stillQueued = this.deps.delivery.cancel({
+      const stillQueued = this.deliveryCancel({
         conversationId: conv.id,
         messageId: previous.messageId,
       });
@@ -417,10 +501,10 @@ export class DiagnosticsCheckQueue {
     const pending: PendingNotice = { text, messageId: undefined, files };
     conv.pending = pending;
 
-    if (this.deps.delivery.isActive(conv.id)) {
+    if (this.deliveryIsActive(conv.id)) {
       // Mid-turn: the message-queue steering path — drained at the next tool-result
       // boundary (or carried into a new turn after seal).
-      const result = this.deps.delivery.enqueue({ conversationId: conv.id, text });
+      const result = this.deliveryEnqueue({ conversationId: conv.id, text });
       pending.messageId = result.messageId;
       if (result.startedTurn) this.markDelivered(conv, pending);
       return;
@@ -438,7 +522,7 @@ export class DiagnosticsCheckQueue {
     }
 
     conv.expectedAutoText = text;
-    const result = this.deps.delivery.enqueue({ conversationId: conv.id, text });
+    const result = this.deliveryEnqueue({ conversationId: conv.id, text });
     if (result.startedTurn) {
       conv.autoTurns += 1;
       this.markDelivered(conv, pending);
@@ -461,20 +545,36 @@ export class DiagnosticsCheckQueue {
     conv.pending = null;
     conv.expectedAutoText = null;
     if (pending === null || pending.messageId === undefined) return;
-    this.deps.delivery.cancel({ conversationId: conv.id, messageId: pending.messageId });
+    this.deliveryCancel({ conversationId: conv.id, messageId: pending.messageId });
   }
 
   // --- turn events (Stop guard, loop cap reset, delivery confirmation) ----
 
   private ensureSubscribed(conv: ConversationState): void {
     if (conv.unsubscribe !== null) return;
-    const unsubscribe = this.deps.delivery.subscribe(conv.id, (event) =>
-      this.onTurnEvent(conv, event),
-    );
-    if (unsubscribe !== undefined) conv.unsubscribe = unsubscribe;
+    try {
+      const unsubscribe = this.deps.delivery.subscribe(conv.id, (event) =>
+        this.onTurnEvent(conv, event),
+      );
+      if (unsubscribe !== undefined) conv.unsubscribe = unsubscribe;
+    } catch (error: unknown) {
+      // Retried on the next check/delivery; the feature degrades, the host does not.
+      this.warn("LSP turn-event subscribe failed", { error: errText(error) });
+    }
   }
 
   private onTurnEvent(conv: ConversationState, event: AgentEvent): void {
+    // Invoked by the session-orchestrator's `emitToHub`, which does NOT catch
+    // listener throws — a throw here would break event delivery for the whole
+    // turn (including to the frontend) and could escape into the turn loop.
+    try {
+      this.handleTurnEvent(conv, event);
+    } catch (error: unknown) {
+      this.warn("LSP turn-event handling failed", { error: errText(error) });
+    }
+  }
+
+  private handleTurnEvent(conv: ConversationState, event: AgentEvent): void {
     if (conv.closed) return;
     switch (event.type) {
       case "user-message": {
@@ -566,6 +666,18 @@ export class DiagnosticsCheckQueue {
       this.conversations.set(conversationId, conv);
     }
     return conv;
+  }
+
+  /** Release a turn-event subscription, containing an unsubscribe failure. */
+  private unsubscribe(conv: ConversationState): void {
+    const unsubscribe = conv.unsubscribe;
+    conv.unsubscribe = null;
+    if (unsubscribe === null) return;
+    try {
+      unsubscribe();
+    } catch (error: unknown) {
+      this.warn("LSP turn-event unsubscribe failed", { error: errText(error) });
+    }
   }
 
   /** Get-or-create a file's state, maintaining the insertion-order LRU. */

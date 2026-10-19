@@ -146,6 +146,15 @@ export interface ClientDeps {
    * server that is about to report a NEW error is not pre-empted.
    */
   readonly noPushGraceMs?: number | undefined;
+  /**
+   * Containment hook for errors caught at the client's UNTRUSTED edges —
+   * timers, rpc notification handlers, process-exit and file-watcher
+   * callbacks, and stdin writes. Such callbacks are invoked by the runtime
+   * (or by a dying child process), so a throw there would escape into an
+   * `uncaughtException` and could take the whole host down; the client catches
+   * and reports instead. Implementations MUST NOT throw.
+   */
+  readonly onError?: ((where: string, error: unknown) => void) | undefined;
 }
 
 export type ClientState = "starting" | "connected" | "error" | "not-started";
@@ -290,7 +299,9 @@ export class LanguageServerClient {
       }
 
       await this.initialize(rpc);
-      this.state = "connected";
+      // A write failure during initialize marks the client broken; never mask
+      // that with "connected" (the manager must see the error and re-spawn).
+      if (this.getState() !== "error") this.state = "connected";
     } catch (err: unknown) {
       this.state = "error";
       this.stateError = err instanceof Error ? err.message : String(err);
@@ -326,9 +337,16 @@ export class LanguageServerClient {
    * of polling a corpse for the full timeout on every edit. Idempotent.
    */
   private handleExit(info: ProcessExitInfo): void {
-    if (this.state === "error" || this.state === "not-started") return;
-    const detail = info.signal !== undefined ? `signal ${info.signal}` : `code ${info.code ?? "?"}`;
-    this.markBroken(`language server process exited (${detail})`);
+    // Called from the spawn adapter's exit hook (and from stdout-end inside an
+    // async loop). It must never throw back into the process runtime.
+    try {
+      if (this.state === "error" || this.state === "not-started") return;
+      const detail =
+        info.signal !== undefined ? `signal ${info.signal}` : `code ${info.code ?? "?"}`;
+      this.markBroken(`language server process exited (${detail})`);
+    } catch (error: unknown) {
+      this.report("process exit", error);
+    }
   }
 
   /**
@@ -341,11 +359,26 @@ export class LanguageServerClient {
     if (this.state === "error") return;
     this.state = "error";
     this.stateError = reason;
-    this.fileWatcherHandle?.close();
+    // Every teardown step touches an edge that can fail (a closed watcher, a
+    // process that already exited, an rpc whose socket rejected). Containment:
+    // none of them may stop the rest of the teardown or escape the caller.
+    try {
+      this.fileWatcherHandle?.close();
+    } catch (error: unknown) {
+      this.report("watcher close", error);
+    }
     this.fileWatcherHandle = null;
-    this.process?.kill();
+    try {
+      this.process?.kill();
+    } catch (error: unknown) {
+      this.report("process kill", error);
+    }
     this.process = null;
-    this.rpc?.dispose();
+    try {
+      this.rpc?.dispose();
+    } catch (error: unknown) {
+      this.report("rpc dispose", error);
+    }
     this.rpc = null;
     // Release cached document text + diagnostics — the server is dead, so
     // the contents are stale anyway. Keeps a repeatedly-crashed client from
@@ -353,8 +386,16 @@ export class LanguageServerClient {
     // resolve NOW (as failed) rather than polling a corpse until the cap.
     this.openDocuments.clear();
     this.lastDiagSnapshot.clear();
-    this.clearSyncStates();
-    this.diagnostics.failAllPushWaiters(reason);
+    try {
+      this.clearSyncStates();
+    } catch (error: unknown) {
+      this.report("sync cleanup", error);
+    }
+    try {
+      this.diagnostics.failAllPushWaiters(reason);
+    } catch (error: unknown) {
+      this.report("waiter cleanup", error);
+    }
   }
 
   /**
@@ -387,8 +428,47 @@ export class LanguageServerClient {
     }
   }
 
+  /**
+   * Report an error caught at an untrusted edge. The reporting hook itself is
+   * untrusted (it is injected) and must never break containment.
+   */
+  private report(where: string, error: unknown): void {
+    try {
+      this.deps.onError?.(where, error);
+    } catch {
+      // A throwing reporter must not defeat the containment it exists for.
+    }
+  }
+
+  /**
+   * write a JSON-RPC notification, containing any stdin failure (EPIPE when
+   * the child died mid-write, a closed pipe, a throwing spawn adapter). A
+   * failed write means the server is unusable, so the client is marked broken —
+   * which fails pending waiters and lets the manager re-spawn later.
+   */
+  private notify(method: string, params: unknown): boolean {
+    const rpc = this.rpc;
+    if (!rpc) return false;
+    try {
+      rpc.sendNotification(method, params);
+      return true;
+    } catch (error: unknown) {
+      this.report(`sendNotification(${method})`, error);
+      this.markBroken(`failed to write ${method}: ${errorText(error)}`);
+      return false;
+    }
+  }
+
   private handleBytes(chunk: Uint8Array): void {
-    const messages = this.decoder.decode(chunk);
+    // stdout 'data' handlers are invoked by the runtime with no caller to
+    // catch anything we throw: a framing/decoder error must stop here.
+    let messages: readonly string[];
+    try {
+      messages = this.decoder.decode(chunk);
+    } catch (error: unknown) {
+      this.report("frame decode", error);
+      return;
+    }
     for (const msg of messages) {
       // handleMessage is async — catch rejections so a malformed
       // message never becomes an unhandled rejection that crashes
@@ -400,7 +480,13 @@ export class LanguageServerClient {
       // circuits to `undefined`, and a plain `.catch()` on `undefined`
       // throws a synchronous TypeError that crashes the process. The
       // extra `?.` makes it `undefined?.catch()` → `undefined`.
-      void this.rpc?.handleMessage(msg)?.catch(() => {});
+      try {
+        void this.rpc
+          ?.handleMessage(msg)
+          ?.catch((error: unknown) => this.report("rpc message", error));
+      } catch (error: unknown) {
+        this.report("rpc dispatch", error);
+      }
     }
   }
 
@@ -511,10 +597,10 @@ export class LanguageServerClient {
       this.textDocumentChange = sync.change as 1 | 2;
     }
 
-    rpc.sendNotification("initialized", {});
+    this.notify("initialized", {});
 
     if (this.deps.initialization) {
-      rpc.sendNotification("workspace/didChangeConfiguration", {
+      this.notify("workspace/didChangeConfiguration", {
         settings: this.deps.initialization,
       });
     }
@@ -523,25 +609,37 @@ export class LanguageServerClient {
   }
 
   private startFileWatcher(): void {
-    const rootPrefix = this.root.endsWith("/") ? this.root : `${this.root}/`;
     this.fileWatcherHandle = this.deps.fileWatcher(this.root, (event) => {
-      const changeType =
-        event.type === "create"
-          ? FileChangeType.Created
-          : event.type === "delete"
-            ? FileChangeType.Deleted
-            : FileChangeType.Changed;
-
-      const relativePath = event.path.startsWith(rootPrefix)
-        ? event.path.slice(rootPrefix.length)
-        : event.path.replace(/^\/+/, "");
-
-      if (this.watchedFiles.matches(relativePath)) {
-        this.rpc?.sendNotification("workspace/didChangeWatchedFiles", {
-          changes: [{ uri: `file://${event.path}`, type: changeType }],
-        });
+      // fs.watch invokes this with no caller to catch a throw.
+      try {
+        this.forwardFileEvent(event);
+      } catch (error: unknown) {
+        this.report("file watcher event", error);
       }
     });
+  }
+
+  private forwardFileEvent(event: {
+    readonly type: "create" | "change" | "delete";
+    readonly path: string;
+  }): void {
+    const rootPrefix = this.root.endsWith("/") ? this.root : `${this.root}/`;
+    const changeType =
+      event.type === "create"
+        ? FileChangeType.Created
+        : event.type === "delete"
+          ? FileChangeType.Deleted
+          : FileChangeType.Changed;
+
+    const relativePath = event.path.startsWith(rootPrefix)
+      ? event.path.slice(rootPrefix.length)
+      : event.path.replace(/^\/+/, "");
+
+    if (this.watchedFiles.matches(relativePath)) {
+      this.notify("workspace/didChangeWatchedFiles", {
+        changes: [{ uri: `file://${event.path}`, type: changeType }],
+      });
+    }
   }
 
   async open(filePath: string): Promise<void> {
@@ -570,7 +668,7 @@ export class LanguageServerClient {
     this.openDocuments.set(filePath, { version, text });
 
     const sync = this.beginSync(filePath, version);
-    rpc.sendNotification("textDocument/didOpen", {
+    this.notify("textDocument/didOpen", {
       textDocument: {
         uri: sync.uri,
         languageId: langId ?? resolveLanguageId(filePath),
@@ -619,12 +717,9 @@ export class LanguageServerClient {
     this.diagnostics.purge(uri);
 
     if (!wasOpen) return;
-    const rpc = this.rpc;
-    if (rpc && this.state === "connected") {
-      rpc.sendNotification("textDocument/didClose", {
-        textDocument: { uri },
-      });
-    }
+    this.notify("textDocument/didClose", {
+      textDocument: { uri },
+    });
   }
 
   async change(filePath: string, newText: string): Promise<void> {
@@ -666,9 +761,16 @@ export class LanguageServerClient {
    * attributed to the previous version, and arms the unversioned quiet window.
    */
   private sendChange(filePath: string, newText: string): void {
-    const rpc = this.rpc;
+    try {
+      this.sendChangeInner(filePath, newText);
+    } catch (error: unknown) {
+      this.report("didChange", error);
+    }
+  }
+
+  private sendChangeInner(filePath: string, newText: string): void {
     const existing = this.openDocuments.get(filePath);
-    if (!rpc || this.state !== "connected" || !existing) return;
+    if (!this.rpc || this.state !== "connected" || !existing) return;
 
     const version = existing.version + 1;
     // Re-insert (delete + set) to move this key to the tail of the insertion-
@@ -682,13 +784,13 @@ export class LanguageServerClient {
     if (this.textDocumentChange === 2) {
       // Incremental sync — compute the minimal change range.
       const changeEvent = computeChangeRange(existing.text, newText);
-      rpc.sendNotification("textDocument/didChange", {
+      this.notify("textDocument/didChange", {
         textDocument: { uri: sync.uri, version },
         contentChanges: [changeEvent],
       });
     } else {
       // Full sync — send the entire content.
-      rpc.sendNotification("textDocument/didChange", {
+      this.notify("textDocument/didChange", {
         textDocument: { uri: sync.uri, version },
         contentChanges: [{ text: newText }],
       });
@@ -720,8 +822,13 @@ export class LanguageServerClient {
     if (sync.timer) clearTimeout(sync.timer);
     sync.settling = true;
     const timer = setTimeout(() => {
-      sync.timer = null;
-      this.finishSettle(sync.uri);
+      // Timer callbacks have no caller to catch a throw: containment.
+      try {
+        sync.timer = null;
+        this.finishSettle(sync.uri);
+      } catch (error: unknown) {
+        this.report("settle timer", error);
+      }
     }, this.deps.unversionedSettleMs ?? UNVERSIONED_SETTLE_MS);
     // Never hold the process open for a background quiet window.
     (timer as { unref?: () => void }).unref?.();
@@ -735,6 +842,16 @@ export class LanguageServerClient {
    * confused with the settled generation.
    */
   private finishSettle(uri: string): void {
+    // Called from a timer and from a versioned push handler; contain anything
+    // thrown by the deferred-sync flush (e.g. a write to a dead child).
+    try {
+      this.finishSettleInner(uri);
+    } catch (error: unknown) {
+      this.report("finishSettle", error);
+    }
+  }
+
+  private finishSettleInner(uri: string): void {
     const sync = this.syncStates.get(uri);
     if (sync === undefined || !sync.settling) return;
     if (sync.timer) {
@@ -756,8 +873,9 @@ export class LanguageServerClient {
     void this.deps.fs
       .readText(sync.filePath)
       .then((text) => this.sendChange(sync.filePath, text))
-      .catch(() => {
-        // Vanished/unreadable file — nothing to sync.
+      .catch((error: unknown) => {
+        // Vanished/unreadable file — nothing to sync; never reject.
+        this.report("read for deferred sync", error);
       });
   }
 
@@ -788,6 +906,16 @@ export class LanguageServerClient {
    *    when the burst goes quiet.
    */
   private handlePush(params: PublishDiagnosticsParams): void {
+    // Invoked from an rpc notification handler; a malformed payload must not
+    // escape into the runtime's message loop.
+    try {
+      this.handlePushInner(params);
+    } catch (error: unknown) {
+      this.report("publishDiagnostics", error);
+    }
+  }
+
+  private handlePushInner(params: PublishDiagnosticsParams): void {
     const sync = this.syncStates.get(params.uri);
     if (sync !== undefined && params.version !== undefined && params.version < sync.version) {
       return; // stale: belongs to a document version we have already replaced
@@ -894,7 +1022,11 @@ export class LanguageServerClient {
     // — but only when the last reported set was empty, so a slow server about
     // to report a new issue keeps waiting.
     const grace = setTimeout(() => {
-      if (this.isUnchangedEmptyResult(uri, targetVersion)) resolveWait(true);
+      try {
+        if (this.isUnchangedEmptyResult(uri, targetVersion)) resolveWait(true);
+      } catch (error: unknown) {
+        this.report("no-push grace timer", error);
+      }
     }, this.deps.noPushGraceMs ?? NO_PUSH_GRACE_MS);
     (grace as { unref?: () => void }).unref?.();
 
@@ -997,20 +1129,42 @@ export class LanguageServerClient {
   }
 
   shutdown(): void {
-    this.fileWatcherHandle?.close();
+    // Called from deactivate() and the manager; must never throw (a throwing
+    // deactivate can leave the host's unload sweep half-done).
+    try {
+      this.fileWatcherHandle?.close();
+    } catch (error: unknown) {
+      this.report("watcher close", error);
+    }
     this.fileWatcherHandle = null;
-    this.process?.kill();
+    try {
+      this.process?.kill();
+    } catch (error: unknown) {
+      this.report("process kill", error);
+    }
     this.process = null;
-    this.rpc?.dispose();
+    try {
+      this.rpc?.dispose();
+    } catch (error: unknown) {
+      this.report("rpc dispose", error);
+    }
     this.rpc = null;
     // Drop all cached document text + diagnostics so a shut-down client
     // releases its memory immediately (no lingering references until GC).
     // We don't send didClose here — the server process is being killed.
     // Pending waiters resolve NOW instead of sitting out their cap.
-    this.clearSyncStates();
+    try {
+      this.clearSyncStates();
+    } catch (error: unknown) {
+      this.report("sync cleanup", error);
+    }
     this.openDocuments.clear();
     this.lastDiagSnapshot.clear();
-    this.diagnostics.failAllPushWaiters("language server client shut down");
+    try {
+      this.diagnostics.failAllPushWaiters("language server client shut down");
+    } catch (error: unknown) {
+      this.report("waiter cleanup", error);
+    }
     this.state = "not-started";
   }
 }
@@ -1018,6 +1172,11 @@ export class LanguageServerClient {
 /** LSP document URI for an absolute file path. */
 function uriFor(filePath: string): string {
   return `file://${filePath}`;
+}
+
+/** Human-readable message for an unknown thrown value. */
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {

@@ -240,6 +240,17 @@ export class LspManager {
       command: server.command,
       root,
       serverId: server.id,
+      // Containment telemetry: the client catches at its untrusted edges
+      // (timers, rpc/process/watcher callbacks, stdin writes) and routes the
+      // error here instead of letting it escape into the host runtime.
+      onError: (where, error) => {
+        this.deps.logger?.warn("LSP client callback failed (contained)", {
+          serverId: server.id,
+          root,
+          where,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
     };
     if (server.env) {
       (clientDeps as { env?: Readonly<Record<string, string>> }).env = server.env;
