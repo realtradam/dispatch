@@ -7,7 +7,9 @@
 import { extname, resolve } from "node:path";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "@dispatch/kernel";
 import { aggregateDiagnostics } from "./aggregate.js";
+import type { DiagnosticsCheckQueue } from "./check-queue.js";
 import type { LspManager } from "./manager.js";
+import { displayPath } from "./notices.js";
 
 type Operation = "diagnostics" | "hover" | "definition" | "references" | "documentSymbol";
 
@@ -15,7 +17,8 @@ const POSITION_OPS: ReadonlySet<string> = new Set(["hover", "definition", "refer
 
 interface ValidatedArgs {
   readonly operation: Operation;
-  readonly path: string;
+  /** Required for every operation EXCEPT diagnostics (which may report all files). */
+  readonly path?: string | undefined;
   readonly line?: number | undefined;
   readonly character?: number | undefined;
 }
@@ -45,8 +48,21 @@ function validateArgs(args: unknown): { readonly error: string } | ValidatedArgs
   const operation = rawOp as Operation;
 
   const rawPath = obj.path;
-  if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
-    return { error: 'Error: Missing or empty "path" parameter (must be a non-empty string).' };
+  let path: string | undefined;
+  if (operation === "diagnostics") {
+    // `path` is OPTIONAL for diagnostics: omitting it reports every file in
+    // this conversation that currently has issues.
+    if (rawPath !== undefined) {
+      if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
+        return { error: 'Error: Invalid "path" parameter (must be a non-empty string).' };
+      }
+      path = rawPath;
+    }
+  } else {
+    if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
+      return { error: 'Error: Missing or empty "path" parameter (must be a non-empty string).' };
+    }
+    path = rawPath;
   }
 
   let line: number | undefined;
@@ -70,7 +86,10 @@ function validateArgs(args: unknown): { readonly error: string } | ValidatedArgs
     character = Math.floor(n);
   }
 
-  const result: ValidatedArgs = { operation, path: rawPath };
+  const result: ValidatedArgs = { operation };
+  if (path !== undefined) {
+    (result as { path?: string }).path = path;
+  }
   if (line !== undefined) {
     (result as { line?: number }).line = line;
   }
@@ -100,11 +119,36 @@ function toPosition(
   return { line: line - 1, character: character - 1 };
 }
 
-export function createLspTool(manager: LspManager): ToolContract {
+/**
+ * The path-less `diagnostics` variant: every file in the conversation whose
+ * latest background check found errors/warnings, each under a relative path
+ * header. Reading never changes the notified baseline.
+ */
+async function listConversationDiagnostics(
+  checks: DiagnosticsCheckQueue,
+  conversationId: string,
+  cwd: string,
+): Promise<ToolResult> {
+  const reports = await checks.listResults(conversationId);
+  if (reports.length === 0) return { content: "No diagnostics found." };
+  return {
+    content: reports
+      .map((report) => `${displayPath(report.filePath, report.cwd || cwd)}\n${report.formatted}`)
+      .join("\n\n"),
+  };
+}
+
+export function createLspTool(
+  manager: LspManager,
+  opts?: { readonly checks?: DiagnosticsCheckQueue | undefined },
+): ToolContract {
+  const checks = opts?.checks;
   return {
     name: "lsp",
     description:
-      "Query language servers for diagnostics, hover information, symbol definitions, references, and document symbols.",
+      "Query language servers for diagnostics, hover information, symbol definitions, references, and document symbols. " +
+      'The "diagnostics" operation returns the CURRENT full report (all errors and warnings) for a file — use it after an [LSP] notice ' +
+      'points you here; omit "path" to report every file in this conversation that currently has errors or warnings.',
     parameters: {
       type: "object",
       properties: {
@@ -115,7 +159,9 @@ export function createLspTool(manager: LspManager): ToolContract {
         },
         path: {
           type: "string",
-          description: "File path relative to the workspace.",
+          description:
+            "File path relative to the workspace. Required for every operation except diagnostics; " +
+            "omit it for diagnostics to list every file in this conversation that currently has issues.",
         },
         line: {
           type: "number",
@@ -126,7 +172,7 @@ export function createLspTool(manager: LspManager): ToolContract {
           description: "Character position (1-based). Required for hover, definition, references.",
         },
       },
-      required: ["operation", "path"],
+      required: ["operation"],
     },
     concurrencySafe: true,
     async execute(args: unknown, ctx: ToolExecuteContext): Promise<ToolResult> {
@@ -137,7 +183,7 @@ export function createLspTool(manager: LspManager): ToolContract {
 
       const { operation, path: filePath, line, character } = validated;
       const cwd = ctx.cwd ?? process.cwd();
-      const absolutePath = resolveFilePath(filePath, cwd);
+      const absolutePath = filePath === undefined ? undefined : resolveFilePath(filePath, cwd);
 
       if (POSITION_OPS.has(operation)) {
         if (line === undefined || character === undefined) {
@@ -149,6 +195,44 @@ export function createLspTool(manager: LspManager): ToolContract {
       }
 
       try {
+        // The path-less diagnostics variant and the background-result cache do
+        // not need a live server scan — serve them before spawning anything.
+        if (
+          operation === "diagnostics" &&
+          checks !== undefined &&
+          ctx.conversationId !== undefined
+        ) {
+          if (absolutePath === undefined) {
+            return listConversationDiagnostics(checks, ctx.conversationId, cwd);
+          }
+          const fresh = checks.getFreshResult({
+            conversationId: ctx.conversationId,
+            filePath: absolutePath,
+          });
+          if (fresh !== undefined) {
+            return { content: fresh.formatted || "No diagnostics found." };
+          }
+          // Cache miss: preserve the "nothing configured" diagnosis instead of
+          // silently reporting an empty result.
+          const configured = await manager.status(cwd);
+          if (configured.length === 0) {
+            return { content: "No language server configured for this workspace.", isError: true };
+          }
+          const result = await checks.waitForResult({
+            conversationId: ctx.conversationId,
+            filePath: absolutePath,
+            cwd,
+          });
+          return { content: result.formatted || "No diagnostics found." };
+        }
+
+        if (absolutePath === undefined) {
+          return {
+            content: 'Error: Missing or empty "path" parameter (must be a non-empty string).',
+            isError: true,
+          };
+        }
+
         const statuses = await manager.status(cwd);
         if (statuses.length === 0) {
           return { content: "No language server configured for this workspace.", isError: true };

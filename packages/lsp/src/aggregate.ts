@@ -12,6 +12,7 @@
  */
 
 import type { LanguageServerClient } from "./client.js";
+import { type Diagnostic, diagnosticKey } from "./diagnostics.js";
 
 export interface AggregateServer {
   readonly id: string;
@@ -31,6 +32,13 @@ export interface AggregateResult {
   readonly formatted: string;
   /** True if at least one server was skipped for exceeding the cap. */
   readonly timedOut: boolean;
+  /**
+   * The structured diagnostics behind `formatted` (same severity filter),
+   * deduped by identity+range across servers. The background check queue
+   * diffs these against the "already announced" baseline; string parsing of
+   * `formatted` would lose source/code structure.
+   */
+  readonly issues: readonly Diagnostic[];
 }
 
 /**
@@ -60,6 +68,8 @@ export async function aggregateDiagnostics(
   );
 
   const parts: string[] = [];
+  const issues: Diagnostic[] = [];
+  const seenIssues = new Set<string>();
   let timedOut = false;
   const capSeconds = Math.round(timeoutMs / 1000);
 
@@ -68,13 +78,25 @@ export async function aggregateDiagnostics(
     const { server, result } = entry;
     if (result.timedOut) {
       timedOut = true;
+      // A client that is not connected fails fast: say so instead of claiming
+      // it "took too long" (both are reported as skipped, never as clean).
       parts.push(
-        `⚠️ [${server.name}] LSP took too long (>${capSeconds}s), diagnostics skipped — please raise this to the user.`,
+        result.unavailable === true
+          ? `⚠️ [${server.name}] language server is not connected, diagnostics skipped — please raise this to the user.`
+          : `⚠️ [${server.name}] LSP took too long (>${capSeconds}s), diagnostics skipped — please raise this to the user.`,
       );
-    } else if (result.formatted) {
+      continue;
+    }
+    if (result.formatted) {
       parts.push(`[${server.name}]\n${result.formatted}`);
+    }
+    for (const issue of result.diagnostics ?? []) {
+      const key = `${issue.source ?? ""}|${issue.code === undefined ? "" : String(issue.code)}|${diagnosticKey(issue)}`;
+      if (seenIssues.has(key)) continue;
+      seenIssues.add(key);
+      issues.push(issue);
     }
   }
 
-  return { formatted: parts.join("\n\n"), timedOut };
+  return { formatted: parts.join("\n\n"), timedOut, issues };
 }

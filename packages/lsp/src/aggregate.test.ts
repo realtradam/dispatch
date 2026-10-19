@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type AggregateServer, aggregateDiagnostics } from "./aggregate.js";
 import type { LanguageServerClient } from "./client.js";
+import type { Diagnostic } from "./diagnostics.js";
 
 /**
  * A minimal fake client: only `waitForDiagnostics` is exercised by
@@ -15,6 +16,8 @@ function fakeClient(
 
 const SERVER_A: AggregateServer = { id: "a", name: "Ruby-LSP", root: "/p" };
 const SERVER_B: AggregateServer = { id: "b", name: "Steep", root: "/p" };
+const SERVER_C: AggregateServer = { id: "c", name: "Slow", root: "/p" };
+const SERVER_LIST = [SERVER_A, SERVER_B, SERVER_C];
 
 describe("aggregateDiagnostics", () => {
   it("returns merged diagnostics from all responding servers, tagged by source", async () => {
@@ -137,5 +140,86 @@ describe("aggregateDiagnostics", () => {
     expect(seen[0]?.text).toBe("post-edit buffer");
     expect(seen[0]?.minSeverity).toBe(2);
     expect(seen[0]?.timeoutMs).toBe(7000);
+  });
+});
+
+describe("aggregateDiagnostics — structured issues", () => {
+  it("collects issues from responding servers, deduped, and excludes timed-out ones", async () => {
+    const diag = (message: string, source: string, line = 0): Diagnostic => ({
+      range: { start: { line, character: 0 }, end: { line, character: 1 } },
+      severity: 1,
+      source,
+      message,
+    });
+    const clients = new Map<string, LanguageServerClient>([
+      [
+        "a",
+        fakeClient(async () => ({
+          formatted: "a",
+          slow: false,
+          timedOut: false,
+          diagnostics: [diag("boom", "ts")],
+        })),
+      ],
+      [
+        "b",
+        fakeClient(async () => ({
+          formatted: "b",
+          slow: false,
+          timedOut: false,
+          // Same identity+range+source as a's → deduped; a second one remains.
+          diagnostics: [diag("boom", "ts"), diag("warn", "biome", 4)],
+        })),
+      ],
+      ["c", fakeClient(async () => ({ formatted: "", slow: false, timedOut: true }))],
+    ]);
+
+    const result = await aggregateDiagnostics(
+      (id) => clients.get(id),
+      [...SERVER_LIST],
+      "/p/x.rb",
+      1000,
+      {},
+    );
+
+    expect(result.issues.map((i) => i.message).sort()).toEqual(["boom", "warn"]);
+    // The timeout still contributes its skip notice to the formatted report.
+    expect(result.formatted).toContain("took too long");
+  });
+
+  it("tolerates a client result without structured diagnostics (older/fake clients)", async () => {
+    const result = await aggregateDiagnostics(
+      () => fakeClient(async () => ({ formatted: "x", slow: false, timedOut: false }) as never),
+      [SERVER_A],
+      "/p/x.rb",
+      1000,
+      {},
+    );
+    expect(result.issues).toEqual([]);
+  });
+});
+
+describe("aggregateDiagnostics — unavailable client", () => {
+  it("reports a not-connected client as skipped, not as 'took too long'", async () => {
+    const unavailable = fakeClient(
+      async () =>
+        ({
+          formatted: "",
+          slow: false,
+          timedOut: true,
+          unavailable: true,
+          diagnostics: [],
+        }) as never,
+    );
+
+    const result = await aggregateDiagnostics(() => unavailable, [SERVER_A], "/p/x.rb", 10_000, {});
+
+    expect(result.timedOut).toBe(true);
+    expect(result.issues).toEqual([]);
+    // Never reported as clean, and the wording names the real cause.
+    expect(result.formatted).toContain("[Ruby-LSP]");
+    expect(result.formatted).toContain("is not connected");
+    expect(result.formatted).toContain("skipped");
+    expect(result.formatted).not.toContain("took too long");
   });
 });

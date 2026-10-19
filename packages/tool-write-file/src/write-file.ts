@@ -50,6 +50,21 @@ export function validateArgs(args: unknown): ValidatedArgs | { readonly error: s
   return { path: rawPath, content: rawContent, overwrite };
 }
 
+// --- Diagnostics hook ---
+
+/**
+ * Optional post-write hook: hand the written content to the LSP extension's
+ * background check queue. SYNCHRONOUS and fire-and-forget by contract — the
+ * write result never waits on a language server. Injected by the extension from
+ * the LSP service; absent when no LSP is available (graceful degradation).
+ */
+export type QueueCheckHook = (opts: {
+  readonly conversationId: string;
+  readonly filePath: string;
+  readonly text: string;
+  readonly cwd: string;
+}) => void;
+
 /**
  * Factory: create a write_file ToolContract.
  *
@@ -60,10 +75,16 @@ export function validateArgs(args: unknown): ValidatedArgs | { readonly error: s
  *
  * `workdir` is the fallback base directory when `ctx.cwd` is omitted. It is
  * injected so the tool is testable; `execute` prefers `ctx.cwd` when present.
+ *
+ * `queueCheck` is the post-write LSP hook: it only ENQUEUES a background
+ * diagnostics check (every file edit is checked, per the async-diagnostics
+ * plan). Skipped for REMOTE writes and when there is no conversation id; a
+ * throwing hook never fails a write that already succeeded.
  */
 export function createWriteFileTool(deps: {
   readonly resolveBackend: ExecBackendResolver;
   readonly workdir?: string;
+  readonly queueCheck?: QueueCheckHook | undefined;
 }): ToolContract {
   const workdir = deps.workdir !== undefined ? resolve(deps.workdir) : undefined;
 
@@ -154,6 +175,28 @@ export function createWriteFileTool(deps: {
       }
 
       const action = decision === "create" ? "Created" : "Overwrote";
+
+      // Fire-and-forget background diagnostics check (every file write is
+      // checked). Never delays or changes the result; a throwing hook cannot
+      // fail a write that already succeeded.
+      const queueCheck = deps.queueCheck;
+      if (
+        queueCheck !== undefined &&
+        ctx.computerId === undefined &&
+        ctx.conversationId !== undefined
+      ) {
+        try {
+          queueCheck({
+            conversationId: ctx.conversationId,
+            filePath: resolvedPath,
+            text: content,
+            cwd: ctx.cwd ?? process.cwd(),
+          });
+        } catch {
+          // Diagnostics are advisory; the write is done.
+        }
+      }
+
       return { content: `${action} "${relPath}" (${content.length} bytes).` };
     },
   };

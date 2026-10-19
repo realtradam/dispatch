@@ -39,6 +39,20 @@ export interface GetDiagnosticsOpts {
   readonly minSeverity?: number;
 }
 
+/**
+ * Options for a background diagnostics check. The check runs detached from any
+ * edit; its result is announced to the conversation (when it contains issues
+ * the agent has not been told about) and cached for the `lsp` tool.
+ */
+export interface QueueCheckOpts {
+  readonly conversationId: string;
+  /** Absolute path to the file that was written. */
+  readonly filePath: string;
+  /** Post-edit buffer content — lets the server check memory, not stale disk. */
+  readonly text?: string;
+  readonly cwd: string;
+}
+
 export interface LspService {
   /**
    * Resolve the language servers configured for `cwd`, ensure each is spawned +
@@ -54,4 +68,17 @@ export interface LspService {
    * version, not stale disk content.
    */
   getDiagnostics(opts: GetDiagnosticsOpts): Promise<DiagnosticsResult>;
+
+  /**
+   * Non-blocking post-edit hook: enqueue a background check for `filePath`.
+   * Returns immediately — callers (edit_file/write_file) never wait on LSP.
+   * Per (conversation, file) only the latest content is checked; older
+   * in-flight results are discarded. New errors/warnings are announced to the
+   * conversation as a short `[LSP]` notice; the full report is available via
+   * the `lsp` tool's `diagnostics` operation.
+   *
+   * A no-op when no conversation is given (nobody to notify) or when the
+   * extension's queue has been shut down.
+   */
+  queueCheck(opts: QueueCheckOpts): void;
 }

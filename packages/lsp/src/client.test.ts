@@ -14,6 +14,8 @@ function makeClient(overrides?: {
   readonly fs?: FsAccess;
   readonly initialization?: Record<string, unknown>;
   readonly initializeTimeoutMs?: number;
+  readonly unversionedSettleMs?: number;
+  readonly noPushGraceMs?: number;
 }): {
   client: LanguageServerClient;
   stdinChunks: Uint8Array[];
@@ -56,6 +58,10 @@ function makeClient(overrides?: {
     ...(overrides?.initializeTimeoutMs !== undefined
       ? { initializeTimeoutMs: overrides.initializeTimeoutMs }
       : {}),
+    ...(overrides?.unversionedSettleMs !== undefined
+      ? { unversionedSettleMs: overrides.unversionedSettleMs }
+      : {}),
+    ...(overrides?.noPushGraceMs !== undefined ? { noPushGraceMs: overrides.noPushGraceMs } : {}),
   });
 
   return {
@@ -371,7 +377,7 @@ describe("client", () => {
     // A healthy server would change diagnostics as the file changes; a
     // corrupted one re-emits the SAME non-empty set. Drive 5 edits with
     // different text but identical diagnostics → client flips to error.
-    const { client, serverResponses } = makeClient();
+    const { client, serverResponses } = makeClient({ unversionedSettleMs: 20 });
     const startPromise = client.start();
     await new Promise((r) => setTimeout(r, 50));
     serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
@@ -415,7 +421,7 @@ describe("client", () => {
   });
 
   it("corruption detector does NOT trip on a clean file (empty diagnostics stay identical)", async () => {
-    const { client, serverResponses } = makeClient();
+    const { client, serverResponses } = makeClient({ unversionedSettleMs: 20 });
     const startPromise = client.start();
     await new Promise((r) => setTimeout(r, 50));
     serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
@@ -601,5 +607,686 @@ describe("client", () => {
     }).not.toThrow();
     // State stays errored; the stale response didn't flip it to connected.
     expect(client.getState()).toBe("error");
+  });
+});
+
+/**
+ * Diagnostics-wait behavior (the non-blocking feature's correctness core):
+ * event-driven resolution, immediate failure on client death, version
+ * rejection, and the unversioned stale-push regression.
+ */
+describe("client diagnostics wait", () => {
+  const PATH = "/project/src/app.ts";
+  const URI = "file:///project/src/app.ts";
+
+  function push(params: {
+    readonly uri?: string;
+    readonly version?: number;
+    readonly messages: readonly string[];
+    readonly severity?: number;
+  }): string {
+    return JSON.stringify({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: params.uri ?? URI,
+        ...(params.version !== undefined ? { version: params.version } : {}),
+        diagnostics: params.messages.map((message) => ({
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          severity: params.severity ?? 1,
+          source: "ts",
+          message,
+        })),
+      },
+    });
+  }
+
+  /** Connect a client; returns the fake-server controls plus the client. */
+  async function connectedClient(opts?: {
+    readonly unversionedSettleMs?: number;
+    readonly noPushGraceMs?: number;
+  }): Promise<{
+    client: LanguageServerClient;
+    serverResponses: (msg: string) => void;
+    exit: () => void;
+    sentMethods: () => string[];
+  }> {
+    const chunks = stdinMethods();
+    const stdoutHolder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitHandler: ProcessExitHandler | null = null;
+    const spawn: SpawnProcess = () => ({
+      stdin: { write: (bytes: Uint8Array) => chunks.record(bytes) },
+      stdout: {
+        on: (_e, cb) => {
+          stdoutHolder.cb = cb;
+        },
+      },
+      pid: 42,
+      kill: () => {},
+      onExit: (handler) => {
+        exitHandler = handler;
+      },
+    });
+
+    const { client } = makeClient({
+      spawn,
+      ...(opts?.unversionedSettleMs !== undefined
+        ? { unversionedSettleMs: opts.unversionedSettleMs }
+        : {}),
+      ...(opts?.noPushGraceMs !== undefined ? { noPushGraceMs: opts.noPushGraceMs } : {}),
+    });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 30));
+    stdoutHolder.cb?.(
+      encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })),
+    );
+    await startPromise;
+    expect(client.getState()).toBe("connected");
+
+    return {
+      client,
+      serverResponses: (msg) => stdoutHolder.cb?.(encode(msg)),
+      exit: () => exitHandler?.({ code: 1 }),
+      sentMethods: chunks.methods,
+    };
+  }
+
+  it("resolves on the push itself — no 100 ms poll floor (versioned)", async () => {
+    // A long quiet window proves resolution didn't come from the debounce.
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 5000 });
+    const started = Date.now();
+
+    const wait = client.waitForDiagnostics(PATH, { text: "content", timeoutMs: 5000 });
+    await new Promise((r) => setTimeout(r, 10));
+    serverResponses(push({ version: 1, messages: ["boom"] }));
+
+    const result = await wait;
+    // The 5000 ms quiet window is the proof that resolution came from the PUSH
+    // itself (and not from a poll tick, the settle window, or the 10 s cap).
+    // The wall-clock bound is generous so parallel test load cannot flake it.
+    expect(Date.now() - started).toBeLessThan(400);
+    expect(result.timedOut).toBe(false);
+    expect(result.formatted).toContain("boom");
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it("rejects a versioned push from an older document version", async () => {
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 20 });
+    await client.openWithText(PATH, "v1");
+    await new Promise((r) => setTimeout(r, 40)); // let the open's window close
+
+    const wait = client.waitForDiagnostics(PATH, { text: "v2", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 10));
+    // Stale push for v1 (the version the document had before this change).
+    serverResponses(push({ version: 1, messages: ["stale error"] }));
+    await new Promise((r) => setTimeout(r, 30));
+    serverResponses(push({ version: 2, messages: ["fresh error"] }));
+
+    const result = await wait;
+    expect(result.timedOut).toBe(false);
+    expect(result.formatted).toContain("fresh error");
+    expect(result.formatted).not.toContain("stale error");
+  });
+
+  it("resolves immediately (timed out) when the server dies mid-wait", async () => {
+    const { client, exit } = await connectedClient({ unversionedSettleMs: 20 });
+    const started = Date.now();
+
+    const wait = client.waitForDiagnostics(PATH, { text: "content", timeoutMs: 10_000 });
+    await new Promise((r) => setTimeout(r, 20));
+    exit();
+
+    const result = await wait;
+    // Not the 10 s cap: markBroken failed the waiter at once.
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result.timedOut).toBe(true);
+    expect(client.getState()).toBe("error");
+  });
+
+  it("REGRESSION: a late second didOpen push cannot satisfy a back-to-back edit (unversioned)", async () => {
+    // typescript-language-server emits TWO pushes after didOpen, neither
+    // carrying a version. An edit issued right after the open must see the
+    // EDIT's result, not the late open-generation push.
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 40 });
+
+    const openWait = client.waitForDiagnostics(PATH, { text: "open content", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 10));
+    serverResponses(push({ messages: ["old error"] })); // open push #1
+
+    await new Promise((r) => setTimeout(r, 10));
+    const editWait = client.waitForDiagnostics(PATH, { text: "edited content", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 5));
+    serverResponses(push({ messages: ["old error"] })); // late open push #2
+
+    // The quiet window closes (~40 ms after the last push), the deferred
+    // didChange is written, and only THEN does the edit's real push land.
+    await new Promise((r) => setTimeout(r, 70));
+    serverResponses(push({ messages: ["new error"] }));
+
+    const editResult = await editWait;
+    expect(editResult.timedOut).toBe(false);
+    expect(editResult.formatted).toContain("new error");
+    expect(editResult.formatted).not.toContain("old error");
+
+    const openResult = await openWait;
+    expect(openResult.formatted).toContain("old error");
+  });
+
+  it("COLD START: a late multi-push open burst cannot satisfy a back-to-back edit (unversioned)", async () => {
+    // Real cold typescript-language-server: the initial quiet window expires
+    // with NO push (the server takes ~2.4 s), then THREE pushes arrive over
+    // ~185 ms. The first late push must reopen the window, and a change issued
+    // right after it must be deferred until the whole burst goes quiet.
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 60 });
+
+    const openWait = client.waitForDiagnostics(PATH, { text: "clean v1", timeoutMs: 4000 });
+
+    // The initial window (60 ms) expires with no push at all.
+    await new Promise((r) => setTimeout(r, 90));
+    serverResponses(push({ messages: [] })); // open push #1, late
+    await new Promise((r) => setTimeout(r, 15));
+
+    const editWait = client.waitForDiagnostics(PATH, { text: "broken v2", timeoutMs: 4000 });
+    await new Promise((r) => setTimeout(r, 15));
+    serverResponses(push({ messages: [] })); // burst push #2 (stale generation)
+    await new Promise((r) => setTimeout(r, 15));
+    serverResponses(push({ messages: [] })); // burst push #3 (stale generation)
+
+    // Burst quiesces → the open settles clean and the deferred didChange is
+    // written. Only then does the real result for the edit arrive.
+    await new Promise((r) => setTimeout(r, 180));
+    serverResponses(push({ messages: ["real error"] }));
+
+    const edit = await editWait;
+    expect(edit.timedOut).toBe(false);
+    expect(edit.formatted).toContain("real error");
+
+    const open = await openWait;
+    expect(open.timedOut).toBe(false);
+    expect(open.formatted).toBe("");
+  });
+
+  it("the first unversioned push after a cold-start delay reopens the quiet window", async () => {
+    // Directly asserts the burst rule: a push arriving after the sync's
+    // initial window already expired must NOT resolve the wait immediately.
+    const { client, serverResponses } = await connectedClient({ unversionedSettleMs: 50 });
+    let resolved = false;
+
+    const wait = client.waitForDiagnostics(PATH, { text: "content", timeoutMs: 4000 }).then((r) => {
+      resolved = true;
+      return r;
+    });
+
+    await new Promise((r) => setTimeout(r, 120)); // initial window long gone
+    serverResponses(push({ messages: ["from the burst"] }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(false); // held: waiting for the burst to go quiet
+
+    const result = await wait;
+    expect(result.formatted).toContain("from the burst");
+  });
+
+  it("resolves as unchanged when a sync produces NO push and the last result was empty", async () => {
+    // typescript-language-server suppresses empty→empty publishes entirely.
+    const { client, serverResponses } = await connectedClient({
+      unversionedSettleMs: 20,
+      noPushGraceMs: 60,
+    });
+
+    const first = client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 15));
+    serverResponses(push({ messages: [] }));
+    expect((await first).formatted).toBe("");
+
+    // No push will ever answer this sync. The grace must report it as
+    // unchanged (not a 5 s "server skipped").
+    const started = Date.now();
+    const second = await client.waitForDiagnostics(PATH, { text: "v2", timeoutMs: 5000 });
+    expect(second.timedOut).toBe(false);
+    expect(second.formatted).toBe("");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("does NOT fall back to 'unchanged' when the last result was non-empty", async () => {
+    // A non-empty set means the server WILL publish (empty or different), so a
+    // missing push must keep waiting — never report stale data as current.
+    const { client, serverResponses } = await connectedClient({
+      unversionedSettleMs: 20,
+      noPushGraceMs: 40,
+    });
+
+    const first = client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 15));
+    serverResponses(push({ messages: ["existing error"] }));
+    expect((await first).formatted).toContain("existing error");
+
+    const second = await client.waitForDiagnostics(PATH, { text: "v2", timeoutMs: 150 });
+    expect(second.timedOut).toBe(true); // no push, non-empty previous set
+  });
+
+  it("defers a didChange that lands inside an unversioned quiet window", async () => {
+    const { client, sentMethods } = await connectedClient({ unversionedSettleMs: 40 });
+    await client.openWithText(PATH, "v1");
+    // Immediately change while the open's quiet window is open.
+    await client.change(PATH, "v2");
+    // The didChange is deferred — not yet written.
+    expect(sentMethods().filter((m) => m === "textDocument/didChange")).toHaveLength(0);
+    // ...and is written once the window closes.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(sentMethods().filter((m) => m === "textDocument/didChange")).toHaveLength(1);
+  });
+});
+
+/** Tiny stdin recorder: decoded JSON-RPC methods, in order. */
+function stdinMethods(): { record: (bytes: Uint8Array) => void; methods: () => string[] } {
+  const sent: string[] = [];
+  return {
+    record: (bytes) => {
+      const text = new TextDecoder().decode(bytes);
+      const headerEnd = text.indexOf("\r\n\r\n");
+      const msg = JSON.parse(text.slice(headerEnd + 4)) as { method?: string };
+      if (msg.method !== undefined) sent.push(msg.method);
+    },
+    methods: () => sent,
+  };
+}
+
+/**
+ * LSP FAILURE CONTAINMENT — the harness invariant: nothing an LSP server (or a
+ * bug in our own client) does may escape as an uncaught exception / unhandled
+ * rejection. Edits, turns and the host process keep working; the LSP feature
+ * degrades to "no diagnostics".
+ */
+describe("client failure containment", () => {
+  const PATH = "/project/src/c.ts";
+  const URI = "file:///project/src/c.ts";
+
+  function pushPayload(messages: readonly string[] = []): string {
+    return JSON.stringify({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: URI,
+        diagnostics: messages.map((message) => ({
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          severity: 1,
+          source: "ts",
+          message,
+        })),
+      },
+    });
+  }
+
+  interface Harness {
+    readonly client: LanguageServerClient;
+    readonly respond: (msg: string) => void;
+    readonly exit: () => void;
+  }
+
+  /**
+   * A client whose stdin write throws after `writeFailsAfter` successful
+   * writes — the "server died between notifications" (EPIPE) case. Writes in
+   * order: initialize request (1), initialized notification (2), didOpen (3),
+   * didChange (4), ...
+   */
+  async function connected(opts: {
+    readonly writeFailsAfter: number;
+    readonly killThrows?: boolean;
+    readonly fileWatcher?: FileWatcher;
+  }): Promise<Harness> {
+    const holder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitHandler: ProcessExitHandler | null = null;
+    let writes = 0;
+
+    const spawn: SpawnProcess = () => ({
+      stdin: {
+        write: () => {
+          writes += 1;
+          if (writes > opts.writeFailsAfter) throw new Error("EPIPE: broken pipe");
+        },
+      },
+      stdout: {
+        on: (_e, cb) => {
+          holder.cb = cb;
+        },
+      },
+      pid: 11,
+      kill: () => {
+        if (opts.killThrows === true) throw new Error("kill failed");
+      },
+      onExit: (handler) => {
+        exitHandler = handler;
+      },
+    });
+
+    const { client } = makeClient({
+      spawn,
+      unversionedSettleMs: 20,
+      ...(opts.fileWatcher !== undefined ? { fileWatcher: opts.fileWatcher } : {}),
+    });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 20));
+    holder.cb?.(encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })));
+    await startPromise;
+
+    return {
+      client,
+      respond: (msg) => holder.cb?.(encode(msg)),
+      exit: () => exitHandler?.({ code: 1 }),
+    };
+  }
+
+  it("a throwing stdin write in the settle timer is contained and breaks the client", async () => {
+    // didOpen (write 3) succeeds; the deferred didChange write (4) throws from
+    // inside setTimeout, where no caller can catch it.
+    const harness = await connected({ writeFailsAfter: 3 });
+    const client = harness.client;
+    expect(client.getState()).toBe("connected");
+
+    const open = client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 3000 });
+    await new Promise((r) => setTimeout(r, 5));
+    harness.respond(pushPayload([])); // arms the quiet window
+    const deferred = client.waitForDiagnostics(PATH, { text: "v2", timeoutMs: 3000 });
+
+    // Both promises settle (the open from the held burst, the deferred as
+    // skipped); nothing escapes the timer.
+    await expect(open).resolves.toBeDefined();
+    const second = await deferred;
+    expect(second.timedOut).toBe(true);
+
+    expect(client.getState()).toBe("error");
+    expect(client.getStateError()).toMatch(/failed to write textDocument\/didChange/);
+    expect(client.getStateError()).toMatch(/EPIPE/);
+  });
+
+  it("a write failure during initialization leaves the client in error (never masks it as connected)", async () => {
+    // initialize request (1) succeeds, the `initialized` notification (2) throws.
+    const harness = await connected({ writeFailsAfter: 1 });
+    expect(harness.client.getState()).toBe("error");
+    expect(harness.client.getStateError()).toMatch(/failed to write initialized/);
+  });
+
+  it("a throwing file-watcher event is contained", async () => {
+    let watcherCb: ((e: { type: "change"; path: string }) => void) | null = null;
+    const harness = await connected({
+      writeFailsAfter: Number.POSITIVE_INFINITY,
+      fileWatcher: (_root, onEvent) => {
+        watcherCb = onEvent as typeof watcherCb;
+        return { close: () => {} };
+      },
+    });
+    expect(harness.client.getState()).toBe("connected");
+
+    // A malformed event makes our callback throw (`.startsWith` on undefined);
+    // fs.watch would otherwise propagate it into the runtime.
+    expect(() =>
+      watcherCb?.({ type: "change", path: undefined as unknown as string }),
+    ).not.toThrow();
+    expect(harness.client.getState()).toBe("connected");
+  });
+
+  it("a malformed publishDiagnostics payload is contained", async () => {
+    const harness = await connected({ writeFailsAfter: Number.POSITIVE_INFINITY });
+    // params: null → reading params.uri throws inside the notification handler.
+    expect(() =>
+      harness.respond(
+        JSON.stringify({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: null }),
+      ),
+    ).not.toThrow();
+    expect(harness.client.getState()).toBe("connected");
+  });
+
+  it("a throwing kill() during a process exit is contained", async () => {
+    const harness = await connected({
+      writeFailsAfter: Number.POSITIVE_INFINITY,
+      killThrows: true,
+    });
+    expect(() => harness.exit()).not.toThrow();
+    expect(harness.client.getState()).toBe("error");
+  });
+
+  it("a spawn that throws (missing server binary) yields state error, never throws", async () => {
+    const { client } = makeClient({
+      spawn: () => {
+        throw new Error("ENOENT: no such file or directory, posix_spawn");
+      },
+    });
+
+    await expect(client.start()).resolves.toBeUndefined();
+    expect(client.getState()).toBe("error");
+    expect(client.getStateError()).toMatch(/ENOENT/);
+    // Teardown of a never-started client must also be safe.
+    expect(() => client.shutdown()).not.toThrow();
+  });
+
+  it("a server that crashes mid-check resolves as skipped instead of hanging", async () => {
+    const harness = await connected({ writeFailsAfter: Number.POSITIVE_INFINITY });
+    const wait = harness.client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 10_000 });
+    await new Promise((r) => setTimeout(r, 10));
+    harness.exit(); // crash mid-check
+    const result = await wait;
+    expect(result.timedOut).toBe(true);
+    expect(result.formatted).toBe("");
+  });
+});
+
+describe("client failure containment — injected dependencies", () => {
+  it("a throwing fileWatcher factory yields state:error (start catches)", async () => {
+    // The watcher factory runs inside initialize(); it throws AFTER the
+    // handshake, which must not reject start().
+    const spawn: SpawnProcess = () => {
+      let handler: ((data: Uint8Array) => void) | null = null;
+      return {
+        stdin: {
+          write: (bytes: Uint8Array) => {
+            const text = new TextDecoder().decode(bytes);
+            const headerEnd = text.indexOf("\r\n\r\n");
+            if (headerEnd === -1) return;
+            const msg = JSON.parse(text.slice(headerEnd + 4));
+            if (msg.method === "initialize") {
+              setTimeout(() => {
+                handler?.(
+                  encode(
+                    JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {} } }),
+                  ),
+                );
+              }, 5);
+            }
+          },
+        },
+        stdout: {
+          on: (_e, cb) => {
+            handler = cb;
+          },
+        },
+        pid: 2,
+        kill: () => {},
+      };
+    };
+
+    const { client } = makeClient({
+      spawn,
+      fileWatcher: () => {
+        throw new Error("watch failed");
+      },
+    });
+    await expect(client.start()).resolves.toBeUndefined();
+    expect(client.getState()).toBe("error");
+    expect(client.getStateError()).toMatch(/watch failed/);
+  });
+
+  it("a throwing fs.readText is contained and the wait resolves as skipped", async () => {
+    const { client, serverResponses } = makeClient({
+      fs: {
+        readText: async () => {
+          throw new Error("EACCES: permission denied");
+        },
+        exists: async () => false,
+      },
+    });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 20));
+    serverResponses(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
+    await startPromise;
+
+    const result = await client.waitForDiagnostics("/project/src/gone.ts", { timeoutMs: 120 });
+    expect(result.timedOut).toBe(true);
+    expect(result.formatted).toBe("");
+  });
+});
+
+/**
+ * A client that is not connected must fail FAST (skipped), never wait out the
+ * timeout. This is the real-server scenario: open + wait, `kill -9`, then call
+ * again on the same file (new content) and on a different file.
+ */
+describe("client unavailable-fast-fail", () => {
+  const PATH = "/project/src/dead.ts";
+  const OTHER = "/project/src/other.ts";
+
+  async function connectedClient(): Promise<{
+    readonly client: LanguageServerClient;
+    readonly respond: (msg: string) => void;
+    readonly exit: () => void;
+  }> {
+    const holder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitHandler: ProcessExitHandler | null = null;
+    const spawn: SpawnProcess = () => ({
+      stdin: { write: () => {} },
+      stdout: {
+        on: (_e, cb) => {
+          holder.cb = cb;
+        },
+      },
+      pid: 21,
+      kill: () => {},
+      onExit: (handler) => {
+        exitHandler = handler;
+      },
+    });
+    const { client } = makeClient({ spawn, unversionedSettleMs: 20 });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 20));
+    holder.cb?.(encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })));
+    await startPromise;
+    return {
+      client,
+      respond: (msg) => holder.cb?.(encode(msg)),
+      exit: () => exitHandler?.({ code: 1 }),
+    };
+  }
+
+  it("REPRO: after the server dies, calls on the same file AND another file return immediately", async () => {
+    const harness = await connectedClient();
+    const first = harness.client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 5));
+    harness.respond(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: { uri: `file://${PATH}`, diagnostics: [] },
+      }),
+    );
+    await first;
+    harness.exit();
+    expect(harness.client.getState()).toBe("error");
+
+    // Same file, NEW content — exactly the reported reproduction.
+    const sameStart = Date.now();
+    const same = await harness.client.waitForDiagnostics(PATH, {
+      text: "v2",
+      timeoutMs: 10_000,
+    });
+    const sameMs = Date.now() - sameStart;
+    // A different file (never opened at all).
+    const otherStart = Date.now();
+    const other = await harness.client.waitForDiagnostics(OTHER, {
+      text: "x",
+      timeoutMs: 10_000,
+    });
+    const otherMs = Date.now() - otherStart;
+
+    expect(sameMs).toBeLessThan(200);
+    expect(otherMs).toBeLessThan(200);
+    expect(same.timedOut).toBe(true);
+    expect(same.unavailable).toBe(true);
+    expect(same.formatted).toBe("");
+    expect(other.timedOut).toBe(true);
+    expect(other.unavailable).toBe(true);
+  });
+
+  it("fails fast on a never-started client", async () => {
+    const { client } = makeClient();
+    const started = Date.now();
+    const result = await client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 10_000 });
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(result.timedOut).toBe(true);
+    expect(result.unavailable).toBe(true);
+  });
+
+  it("fails fast on a shut-down client", async () => {
+    const harness = await connectedClient();
+    harness.client.shutdown();
+    const started = Date.now();
+    const result = await harness.client.waitForDiagnostics(PATH, { text: "v1", timeoutMs: 10_000 });
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(result.timedOut).toBe(true);
+    expect(result.unavailable).toBe(true);
+  });
+
+  it("covers the race: the client breaks between wait registration and the sync", async () => {
+    // `fs.readText` runs AFTER the waiter is registered and BEFORE the sync is
+    // written. Breaking the client there used to leave the waiter unfailed.
+    const holder: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
+    let exitHandler: ProcessExitHandler | null = null;
+    let broke = false;
+    const spawn: SpawnProcess = () => ({
+      stdin: { write: () => {} },
+      stdout: {
+        on: (_e, cb) => {
+          holder.cb = cb;
+        },
+      },
+      pid: 22,
+      kill: () => {
+        // The process dies as the client tries to read the file.
+      },
+      onExit: (handler) => {
+        exitHandler = handler;
+      },
+    });
+    const { client } = makeClient({
+      spawn,
+      unversionedSettleMs: 20,
+      fs: {
+        readText: async () => {
+          if (!broke) {
+            broke = true;
+            exitHandler?.({ code: 1 }); // break BEFORE the sync write
+          }
+          return "content";
+        },
+        exists: async () => true,
+      },
+    });
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 20));
+    holder.cb?.(encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } })));
+    await startPromise;
+    expect(client.getState()).toBe("connected");
+
+    const started = Date.now();
+    const result = await client.waitForDiagnostics(PATH, { timeoutMs: 10_000 });
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(result.timedOut).toBe(true);
+    expect(result.unavailable).toBe(true);
+  });
+
+  it("request() rejects immediately on a dead client (no request timeout)", async () => {
+    const harness = await connectedClient();
+    harness.exit();
+    const started = Date.now();
+    await expect(harness.client.request("textDocument/hover", {})).rejects.toThrow(/not connected/);
+    expect(Date.now() - started).toBeLessThan(200);
   });
 });
