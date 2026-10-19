@@ -801,3 +801,367 @@ describe("VisionHandoffService.consultVision", () => {
     expect(summon.mock.calls[0]?.[0].model).toBe("umans/umans-kimi-k2.7");
   });
 });
+
+// ── Lazy image resolution + per-image transcription cache ───────────────────
+
+/**
+ * Deps wired with a fake per-image cache, a fake compact-URL resolver, and a
+ * fake tmp-file deleter. All are outermost-edge fakes (vitest fns), never
+ * mocks of our own modules.
+ */
+function makeImageDeps(
+  cached: Readonly<Record<string, string>> = {},
+  overrides: Partial<VisionHandoffDeps> = {},
+): {
+  deps: VisionHandoffDeps;
+  cache: Map<string, string>;
+  getImageTranscriptions: ReturnType<typeof vi.fn>;
+  setImageTranscription: ReturnType<typeof vi.fn>;
+  resolveImageUrl: ReturnType<typeof vi.fn>;
+  deleteTmpImage: ReturnType<typeof vi.fn>;
+} {
+  const cache = new Map<string, string>(Object.entries(cached));
+  const getImageTranscriptions = vi.fn(async (_conversationId: string, urls: readonly string[]) => {
+    const out = new Map<string, string>();
+    for (const url of urls) {
+      const text = cache.get(url);
+      if (text !== undefined) out.set(url, text);
+    }
+    return out;
+  });
+  const setImageTranscription = vi.fn(
+    async (_conversationId: string, url: string, text: string) => {
+      cache.set(url, text);
+    },
+  );
+  const resolveImageUrl = vi.fn(async (url: string) => `data:image/png;base64,RESOLVED(${url})`);
+  const deleteTmpImage = vi.fn(async (_url: string) => {});
+  const deps = makeDeps({
+    getImageTranscriptions,
+    setImageTranscription,
+    resolveImageUrl,
+    deleteTmpImage,
+    ...overrides,
+  });
+  return {
+    deps,
+    cache,
+    getImageTranscriptions,
+    setImageTranscription,
+    resolveImageUrl,
+    deleteTmpImage,
+  };
+}
+
+/** A message list with one user message carrying `urls` as image chunks. */
+function imagesMessage(urls: readonly string[]): ChatMessage[] {
+  return [
+    {
+      role: "user",
+      chunks: [
+        { type: "text", text: "look at these" },
+        ...urls.map((url) => ({ type: "image" as const, url })),
+      ],
+    },
+  ];
+}
+
+/** The flat text of a provider message list (for placeholder assertions). */
+function flatText(messages: readonly ChatMessage[]): string {
+  return messages
+    .flatMap((m) => m.chunks)
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("\n");
+}
+
+describe("VisionHandoffService lazy image resolution", () => {
+  it("resolves only native images + cache misses (never cached transcribed images)", async () => {
+    const urls = [1, 2, 3, 4, 5].map((n) => `/images/conv-a/img${n}.png`);
+    const { deps, resolveImageUrl, getImageTranscriptions, setImageTranscription } = makeImageDeps({
+      [urls[0] as string]: "cached one",
+      [urls[1] as string]: "cached two",
+    });
+    const svc = createVisionHandoffService(deps);
+
+    const result = await svc.prepareForProvider(imagesMessage(urls), "umans/umans-kimi-k2.7", {
+      conversationId: "conv-a",
+      imageLimit: 2,
+    });
+
+    // Cache lookup asked ONLY for the images that need transcription.
+    expect(getImageTranscriptions).toHaveBeenCalledOnce();
+    expect(getImageTranscriptions.mock.calls[0]?.[1]).toEqual(urls.slice(0, 3));
+
+    // The resolver ran for the cache miss (img3) + the two native images
+    // (img4, img5) — never for the cached images img1/img2.
+    const resolvedUrls = resolveImageUrl.mock.calls.map((c) => c[0] as string);
+    expect(resolvedUrls.sort()).toEqual([urls[2], urls[3], urls[4]].sort());
+    expect(resolvedUrls).not.toContain(urls[0]);
+    expect(resolvedUrls).not.toContain(urls[1]);
+
+    // img3 was transcribed and cached under its PERSISTED url.
+    expect(setImageTranscription).toHaveBeenCalledOnce();
+    expect(setImageTranscription.mock.calls[0]?.[1]).toBe(urls[2]);
+
+    // Provider view: cached text, fresh text, then the two native images.
+    const chunks = result[0]?.chunks ?? [];
+    expect(flatText(result)).toContain("[Compacted image]: cached one");
+    expect(flatText(result)).toContain("[Compacted image]: cached two");
+    const native = chunks.filter((c) => c.type === "image");
+    expect(native.map((c) => (c as { url: string }).url)).toEqual([
+      `data:image/png;base64,RESOLVED(${urls[3]})`,
+      `data:image/png;base64,RESOLVED(${urls[4]})`,
+    ]);
+  });
+
+  it("caches a miss under the persisted URL and deletes the tmp file by compact URL", async () => {
+    const url = "/images/conv-b/img1.png";
+    const native = "/images/conv-b/img2.png";
+    const { deps, setImageTranscription, deleteTmpImage, resolveImageUrl } = makeImageDeps();
+    const svc = createVisionHandoffService(deps);
+
+    await svc.prepareForProvider(imagesMessage([url, native]), "umans/umans-kimi-k2.7", {
+      conversationId: "conv-b",
+      imageLimit: 1,
+    });
+
+    // The vision model was sent the RESOLVED data URL...
+    expect(resolveImageUrl).toHaveBeenCalledWith(url);
+    // ...but the cache write + deletion use the PERSISTED compact URL.
+    expect(setImageTranscription).toHaveBeenCalledWith(
+      "conv-b",
+      url,
+      expect.stringContaining(`DESCRIPTION of data:image/png;base64,RESOLVED(${url})`),
+    );
+    expect(deleteTmpImage).toHaveBeenCalledWith(url);
+    // The native image's file is NOT deleted.
+    expect(deleteTmpImage).not.toHaveBeenCalledWith(native);
+  });
+
+  it("second turn: no transcription and no reads of already-transcribed images", async () => {
+    const transcribed = "/images/conv-c/img1.png";
+    const native = "/images/conv-c/img2.png";
+    const { deps, resolveImageUrl, setImageTranscription } = makeImageDeps();
+    const svc = createVisionHandoffService(deps);
+    const opts = { conversationId: "conv-c", imageLimit: 1 };
+
+    await svc.prepareForProvider(
+      imagesMessage([transcribed, native]),
+      "umans/umans-kimi-k2.7",
+      opts,
+    );
+    expect(setImageTranscription).toHaveBeenCalledOnce();
+
+    resolveImageUrl.mockClear();
+    const visionProvider = deps.resolveModel("umans/umans-kimi-k2.7")?.provider;
+    const firstStreamCalls = (visionProvider?.stream as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    const second = await svc.prepareForProvider(
+      imagesMessage([transcribed, native]),
+      "umans/umans-kimi-k2.7",
+      opts,
+    );
+
+    // Zero transcription calls; the cached image is never resolved again.
+    expect((visionProvider?.stream as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+      firstStreamCalls,
+    );
+    expect(resolveImageUrl).toHaveBeenCalledTimes(1);
+    expect(resolveImageUrl).toHaveBeenCalledWith(native);
+    expect(flatText(second)).toContain("[Compacted image]: DESCRIPTION of");
+  });
+
+  it("a missing native image falls back to the unavailable placeholder (turn proceeds)", async () => {
+    const missing = "/images/conv-d/gone.png";
+    const present = "/images/conv-d/here.png";
+    const { deps } = makeImageDeps();
+    const resolve = deps.resolveImageUrl as ReturnType<typeof vi.fn>;
+    resolve.mockImplementation(async (url: string) => {
+      if (url === missing)
+        throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+      return `data:image/png;base64,RESOLVED(${url})`;
+    });
+    const svc = createVisionHandoffService(deps);
+
+    const result = await svc.prepareForProvider(
+      imagesMessage([missing, present]),
+      "umans/umans-kimi-k2.7",
+      {
+        conversationId: "conv-d",
+        imageLimit: 5,
+      },
+    );
+
+    expect(flatText(result)).toContain(
+      "[Image unavailable — the original file is no longer on disk.]",
+    );
+    // The readable image still travels natively.
+    expect(
+      result[0]?.chunks.some((c) => c.type === "image" && c.url.includes(`RESOLVED(${present})`)),
+    ).toBe(true);
+  });
+
+  it("a missing native image uses its cached transcription when one exists", async () => {
+    // The "imageLimit was raised after transcribed images were deleted" case.
+    const gone = "/images/conv-e/gone.png";
+    const { deps, getImageTranscriptions } = makeImageDeps({ [gone]: "a cached description" });
+    (deps.resolveImageUrl as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+    const svc = createVisionHandoffService(deps);
+
+    const result = await svc.prepareForProvider(imagesMessage([gone]), "umans/umans-kimi-k2.7", {
+      conversationId: "conv-e",
+      imageLimit: 5,
+    });
+
+    expect(flatText(result)).toContain("[Compacted image]: a cached description");
+    expect(getImageTranscriptions).toHaveBeenCalledWith("conv-e", [gone]);
+  });
+
+  it("a missing image that needs transcription is not cached (retryable, turn proceeds)", async () => {
+    const gone = "/images/conv-f/gone.png";
+    const native = "/images/conv-f/here.png";
+    const { deps, setImageTranscription, deleteTmpImage } = makeImageDeps();
+    (deps.resolveImageUrl as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url === gone) throw new Error("ENOENT");
+      return `data:image/png;base64,RESOLVED(${url})`;
+    });
+    const svc = createVisionHandoffService(deps);
+
+    const result = await svc.prepareForProvider(
+      imagesMessage([gone, native]),
+      "umans/umans-kimi-k2.7",
+      {
+        conversationId: "conv-f",
+        imageLimit: 1,
+      },
+    );
+
+    expect(flatText(result)).toContain(
+      "[Image unavailable — the original file is no longer on disk.]",
+    );
+    // No cache write and no delete for a failed resolve — it can be retried.
+    expect(setImageTranscription).not.toHaveBeenCalled();
+    expect(deleteTmpImage).not.toHaveBeenCalled();
+  });
+
+  it("abort mid-transcription writes no cache entry and deletes no file", async () => {
+    const hangingVision: ProviderContract = {
+      id: "vision-hang",
+      stream() {
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise<IteratorResult<ProviderEvent>>(() => {}), // never settles
+              return: () => Promise.resolve({ done: true, value: undefined }),
+            };
+          },
+        };
+      },
+    };
+    const urls = ["/images/conv-g/a.png", "/images/conv-g/b.png"];
+    const { deps, setImageTranscription, deleteTmpImage, resolveImageUrl } = makeImageDeps(
+      {},
+      { resolveModel: vi.fn(() => ({ provider: hangingVision, model: "vision-hang" })) },
+    );
+    const svc = createVisionHandoffService(deps);
+    const ac = new AbortController();
+
+    const promise = svc.prepareForProvider(imagesMessage(urls), "umans/umans-kimi-k2.7", {
+      conversationId: "conv-g",
+      imageLimit: 1,
+      compactionModel: "forced/vision-hang",
+      signal: ac.signal,
+    });
+    setTimeout(() => ac.abort(), 10);
+
+    await Promise.race([
+      promise,
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 500)),
+    ]);
+
+    expect(resolveImageUrl).toHaveBeenCalledWith(urls[0]);
+    expect(setImageTranscription).not.toHaveBeenCalled();
+    expect(deleteTmpImage).not.toHaveBeenCalled();
+  });
+
+  it("compaction disabled (limit 0) resolves all images natively", async () => {
+    const urls = ["/images/conv-h/a.png", "/images/conv-h/b.png"];
+    const { deps, resolveImageUrl } = makeImageDeps();
+    const svc = createVisionHandoffService(deps);
+
+    const result = await svc.prepareForProvider(imagesMessage(urls), "umans/umans-kimi-k2.7", {
+      conversationId: "conv-h",
+      imageLimit: 0,
+    });
+
+    expect(resolveImageUrl.mock.calls.map((c) => c[0])).toEqual(urls);
+    const images = result[0]?.chunks.filter((c) => c.type === "image") ?? [];
+    expect(images).toHaveLength(2);
+  });
+});
+
+describe("VisionHandoffService non-vision branch (lazy registry)", () => {
+  it("does not resolve during prepareForProvider and stores persisted URLs", async () => {
+    const url = "/images/conv-i/img1.png";
+    const { deps, resolveImageUrl } = makeImageDeps();
+    const svc = createVisionHandoffService(deps);
+
+    await svc.prepareForProvider(imagesMessage([url]), "umans/umans-glm-5.2", {
+      conversationId: "conv-i",
+    });
+
+    expect(resolveImageUrl).not.toHaveBeenCalled();
+    expect(svc.getRegisteredImage("conv-i", 1)?.url).toBe(url);
+  });
+
+  it("consultVision resolves the registered persisted URL on use", async () => {
+    const url = "/images/conv-j/img1.png";
+    const { deps, resolveImageUrl } = makeImageDeps();
+    const summon = vi.fn(async (_input: Record<string, unknown>) => ({
+      ok: true as const,
+      value: {
+        conversationId: "consultation-j",
+        workspaceId: "ws-1",
+        status: "idle" as const,
+        started: true,
+        reply: "saw it",
+      },
+    }));
+    deps.resolveAgentManagement = () => ({ summon }) as unknown as AgentManagementService;
+    const svc = createVisionHandoffService(deps);
+
+    await svc.prepareForProvider(imagesMessage([url]), "umans/umans-glm-5.2", {
+      conversationId: "conv-j",
+    });
+    expect(resolveImageUrl).not.toHaveBeenCalled();
+
+    const result = await svc.consultVision("What is it?", {
+      conversationId: "conv-j",
+      imageIds: [1],
+    });
+
+    expect("error" in result).toBe(false);
+    expect(resolveImageUrl).toHaveBeenCalledWith(url);
+    const call = summon.mock.calls[0]?.[0];
+    expect(call.images).toEqual([{ url: `data:image/png;base64,RESOLVED(${url})` }]);
+  });
+
+  it("consultVision reports a typed error when the image file is gone", async () => {
+    const url = "/images/conv-k/gone.png";
+    const { deps } = makeImageDeps();
+    (deps.resolveImageUrl as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("ENOENT"));
+    deps.resolveAgentManagement = () => ({ summon: vi.fn() }) as unknown as AgentManagementService;
+    const svc = createVisionHandoffService(deps);
+
+    await svc.prepareForProvider(imagesMessage([url]), "umans/umans-glm-5.2", {
+      conversationId: "conv-k",
+    });
+
+    const result = await svc.consultVision("What?", { conversationId: "conv-k", imageIds: [1] });
+    expect("error" in result).toBe(true);
+    if ("error" in result) expect(result.error).toContain("no longer available");
+  });
+});

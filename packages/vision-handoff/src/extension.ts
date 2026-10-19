@@ -183,9 +183,9 @@ export async function activate(host: HostAPI): Promise<void> {
         return undefined;
       }
     },
-    getImageTranscriptions: async (conversationId: string) => {
+    getImageTranscriptions: async (conversationId: string, urls: readonly string[]) => {
       const store = host.getService(conversationStoreHandle);
-      return store.getImageTranscriptions(conversationId);
+      return store.getImageTranscriptions(conversationId, urls);
     },
     setImageTranscription: async (conversationId: string, url: string, text: string) => {
       const store = host.getService(conversationStoreHandle);

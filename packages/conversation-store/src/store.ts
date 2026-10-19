@@ -21,7 +21,9 @@ import {
   compactThresholdKey,
   computerKey,
   cwdKey,
-  imageTranscriptionsKey,
+  imageTranscriptionKey,
+  imageTranscriptionPrefix,
+  legacyImageTranscriptionsKey,
   metaKey,
   metricsKey,
   metricsPrefix,
@@ -187,7 +189,7 @@ export interface ConversationStore {
   /**
    * Delete a conversation ENTIRELY: every persisted key in its `conv:{id}:*`
    * namespace (chunks, metrics, meta, cwd, model, computer, reasoning-effort,
-   * compact-percent, image-transcriptions, parent, toolPolicy,
+   * compact-percent, image transcriptions, parent, toolPolicy,
    * named-agent-selection, tab-group-parent) and its entry in the conversation
    * index. This is the normal conversation deletion lifecycle through which parent/toolPolicy
    * metadata is cleaned. Idempotent for an unknown conversation. Lineage
@@ -238,21 +240,50 @@ export interface ConversationStore {
   /** Set the compact percent (0-100, 0 = manual only). */
   readonly setCompactPercent: (conversationId: string, percent: number) => Promise<void>;
   /**
-   * Get the per-conversation image transcription cache: a map of image URL →
-   * transcription text. Used by the vision handoff to avoid re-transcribing
-   * old images that were compacted to text on a previous turn. Returns an
-   * empty map when none are cached.
+   * Get cached image transcriptions for the requested image URLs. The URLs are
+   * the ones PERSISTED in history (compact `/images/...` URLs or legacy inline
+   * `data:` URLs) — the cache key is a hash of that URL. Only the requested
+   * rows are read (one `get` each), never the whole conversation's cache.
+   * Returns a map keyed by the ORIGINAL URL, containing only the URLs that have
+   * a cached transcription.
    */
-  readonly getImageTranscriptions: (conversationId: string) => Promise<ReadonlyMap<string, string>>;
+  readonly getImageTranscriptions: (
+    conversationId: string,
+    urls: readonly string[],
+  ) => Promise<ReadonlyMap<string, string>>;
   /**
-   * Upsert a single image transcription into the per-conversation cache.
-   * Merges with any existing transcriptions (does NOT replace the whole map).
+   * Upsert a single image transcription into the per-conversation cache — ONE
+   * small row write keyed by `sha256(persisted image URL)`. No
+   * read-modify-write of a whole-conversation blob.
    */
   readonly setImageTranscription: (
     conversationId: string,
     imageUrl: string,
     transcription: string,
   ) => Promise<void>;
+  /**
+   * Idempotent one-time migration: convert legacy per-conversation
+   * `conv:<id>:image-transcriptions` blobs (a JSON map of resolved image URL →
+   * transcription text) into one small row per image, keyed by
+   * `sha256(persisted URL)`, then delete the legacy blob.
+   *
+   * Legacy conversations whose history stores the inline `data:` URL are
+   * preserved verbatim (`sha256(oldKey)` === `sha256(persisted URL)`). Entries
+   * from compact-URL conversations were keyed by the RESOLVED data URL, which
+   * cannot be matched without reading the temp files (the store has no
+   * filesystem access); those are re-transcribed once, on demand. A malformed
+   * blob is logged and skipped (left in place, never throws).
+   *
+   * Safe to re-run: a second run finds no legacy keys and is a no-op.
+   */
+  readonly migrateImageTranscriptions: () => Promise<{
+    /** Legacy blobs found and migrated (deleted). */
+    readonly blobs: number;
+    /** Per-image rows written. */
+    readonly migrated: number;
+    /** Malformed legacy blobs skipped (left in place). */
+    readonly skipped: number;
+  }>;
   /**
    * Get the global vision settings (image compaction limit + compaction model).
    * The limit defaults to 10 when never set; the compaction model defaults to
@@ -1216,6 +1247,11 @@ export function createConversationStore(
       for (const k of await storage.keys(metricsPrefix(conversationId))) {
         await storage.delete(k);
       }
+      // Per-image transcription rows: one hash-keyed row each. Prefix-deleted
+      // (rather than enumerated) alongside the legacy single-blob key.
+      for (const k of await storage.keys(imageTranscriptionPrefix(conversationId))) {
+        await storage.delete(k);
+      }
       for (const k of [
         seqKey(conversationId),
         metaKey(conversationId),
@@ -1224,7 +1260,7 @@ export function createConversationStore(
         reasoningEffortKey(conversationId),
         modelKey(conversationId),
         compactThresholdKey(conversationId),
-        imageTranscriptionsKey(conversationId),
+        legacyImageTranscriptionsKey(conversationId),
         parentKey(conversationId),
         tabGroupParentKey(conversationId),
         toolPolicyKey(conversationId),
@@ -1499,24 +1535,81 @@ export function createConversationStore(
       }
     },
 
-    async getImageTranscriptions(conversationId) {
-      const raw = await storage.get(imageTranscriptionsKey(conversationId));
-      if (raw === null) return new Map();
-      try {
-        const obj = JSON.parse(raw) as Record<string, string>;
-        return new Map(Object.entries(obj));
-      } catch {
-        return new Map();
+    async getImageTranscriptions(conversationId, urls) {
+      // Read ONLY the requested rows (one small `get` per URL). A missing row is
+      // a cache miss, not an error.
+      const result = new Map<string, string>();
+      for (const url of new Set(urls)) {
+        const text = await storage.get(imageTranscriptionKey(conversationId, url));
+        if (text !== null) result.set(url, text);
       }
+      return result;
     },
 
     async setImageTranscription(conversationId, imageUrl, transcription) {
-      const existing = await this.getImageTranscriptions(conversationId);
-      const merged = new Map(existing);
-      merged.set(imageUrl, transcription);
-      const obj: Record<string, string> = {};
-      for (const [k, v] of merged) obj[k] = v;
-      await storage.set(imageTranscriptionsKey(conversationId), JSON.stringify(obj));
+      // ONE small write. No read-modify-write of a whole-conversation blob.
+      await storage.set(imageTranscriptionKey(conversationId, imageUrl), transcription);
+    },
+
+    async migrateImageTranscriptions() {
+      // Legacy blobs live at `conv:<id>:image-transcriptions` (plural). The new
+      // per-image prefix is singular (`image-transcription:`) + a hash, so the
+      // suffix filter below cannot match a new row.
+      const legacySuffix = ":image-transcriptions";
+      const convPrefix = "conv:";
+      const keys = await storage.keys(convPrefix);
+      let blobs = 0;
+      let migrated = 0;
+      let skipped = 0;
+      for (const key of keys) {
+        if (!key.endsWith(legacySuffix)) continue;
+        const conversationId = key.slice(convPrefix.length, key.length - legacySuffix.length);
+        if (conversationId.length === 0) continue;
+        const raw = await storage.get(key);
+        if (raw === null) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (err) {
+          // "Never leave the system broken": a malformed blob must not fail
+          // boot. Log it and leave it in place (no data loss); it is never read
+          // by runtime code, so it stays inert.
+          skipped++;
+          if (logger !== undefined) {
+            logger.warn("skipping malformed legacy image-transcription blob", {
+              conversationId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          continue;
+        }
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          skipped++;
+          if (logger !== undefined) {
+            logger.warn("skipping malformed legacy image-transcription blob", {
+              conversationId,
+              reason: "not a JSON object",
+            });
+          }
+          continue;
+        }
+        // Bounded memory: one blob at a time; one tiny row per entry.
+        for (const [url, text] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof text !== "string" || url.length === 0) continue;
+          await storage.set(imageTranscriptionKey(conversationId, url), text);
+          migrated++;
+        }
+        await storage.delete(key);
+        blobs++;
+      }
+      if (logger !== undefined && (blobs > 0 || skipped > 0)) {
+        logger.info("conversation-store: migrated legacy image-transcription blobs", {
+          blobs,
+          migrated,
+          skipped,
+        });
+      }
+      return { blobs, migrated, skipped };
     },
 
     async getVisionSettings() {
