@@ -36,8 +36,8 @@ import {
 } from "./hooks.js";
 import { createMetricsAccumulator } from "./metrics.js";
 import {
+  appendCompacted,
   buildUserMessage,
-  compactReplay,
   defaultDispatchPolicy,
   delayFor,
   generateTurnId,
@@ -270,7 +270,7 @@ export interface CancelQueuedMessageResult {
 export type TurnEventListener = (event: AgentEvent) => void;
 
 interface ActiveTurn {
-  buffer: AgentEvent[];
+  buffer: readonly AgentEvent[];
   turnId: string;
   /** Aborts this turn's kernel runTurn (closeConversation). */
   controller: AbortController;
@@ -541,7 +541,7 @@ export function createSessionOrchestrator(
   function emitToHub(conversationId: string, event: AgentEvent): void {
     const turn = activeTurns.get(conversationId);
     if (turn !== undefined) {
-      turn.buffer.push(event);
+      turn.buffer = appendCompacted(turn.buffer, event);
     }
     const listeners = subscribers.get(conversationId);
     if (listeners !== undefined) {
@@ -1479,10 +1479,9 @@ export function createSessionOrchestrator(
       }
       const turn = activeTurns.get(conversationId);
       if (turn !== undefined) {
-        // Late-join: replay a COMPACTED snapshot (merged delta runs, no stale
-        // tool-output) — O(structure) frames instead of O(tokens). See
-        // `compactReplay`. Live events after this point stream verbatim.
-        const snapshot = compactReplay(turn.buffer);
+        // Already compacted on arrival. The immutable snapshot stays stable
+        // even if a listener synchronously causes another event to be emitted.
+        const snapshot = turn.buffer;
         listeners.add(listener);
         for (const event of snapshot) {
           listener(event);

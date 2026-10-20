@@ -1,6 +1,7 @@
-import type { ProviderContract } from "@dispatch/kernel";
+import type { AgentEvent, ProviderContract } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
+  appendCompacted,
   buildUserMessage,
   compactReplay,
   cumulativeSleepMs,
@@ -11,6 +12,7 @@ import {
   type MemorySample,
   memoryDelta,
   memorySampleAttributes,
+  REPLAY_TOOL_OUTPUT_BYTES,
   RETRY_BUDGET_MS,
   RETRY_SCHEDULE_MS,
   RETRY_TAIL_MS,
@@ -405,6 +407,163 @@ describe("compactReplay", () => {
     const out = compactReplay(input);
     expect(input).toEqual(copy);
     expect(out[1]).toBe(one);
+  });
+
+  const status = (value: string) => ({ type: "status", conversationId: C, status: value }) as const;
+  const fold = (events: readonly AgentEvent[]) =>
+    events.reduce(appendCompacted, [] as AgentEvent[]);
+
+  it("merges runs exposed by status replacement and non-tail output removal", () => {
+    const events = [
+      text("a"),
+      status("old"),
+      text("b"),
+      output("x", "log"),
+      text("c"),
+      call("other"),
+      result("x"),
+      status("new"),
+    ];
+    expect(fold(events)).toEqual([text("abc"), call("other"), result("x"), status("new")]);
+    expect(fold([result("x"), output("x", "late"), reason("a"), reason("b")])).toEqual([
+      result("x"),
+      reason("ab"),
+    ]);
+  });
+
+  it("preserves empty running output as a replay boundary until its result arrives", () => {
+    const events = [text("a"), output("x", ""), text("b")];
+    expect(compactReplay(events)).toEqual(events);
+    expect(fold(events)).toEqual(events);
+    expect(appendCompacted(fold(events), result("x"))).toEqual([text("ab"), result("x")]);
+  });
+
+  it("retains a per-call trailing 64 KiB across interleaved streams at original positions", () => {
+    const cap = REPLAY_TOOL_OUTPUT_BYTES;
+    const err = { ...output("a", "e".repeat(20_000)), stream: "stderr" } as const;
+    const events = [
+      output("a", `old${"a".repeat(40_000)}`),
+      call("b"),
+      output("b", "b".repeat(cap + 5)),
+      err,
+      text("barrier"),
+      output("a", "z".repeat(20_000)),
+    ];
+    const expected = [
+      output("a", "a".repeat(cap - 40_000)),
+      call("b"),
+      output("b", "b".repeat(cap)),
+      err,
+      text("barrier"),
+      output("a", "z".repeat(20_000)),
+    ];
+    expect(compactReplay(events)).toEqual(expected);
+    expect(fold(events)).toEqual(expected);
+    expect(appendCompacted(fold(events), result("a"))).toEqual([
+      call("b"),
+      output("b", "b".repeat(cap)),
+      text("barrier"),
+      result("a"),
+    ]);
+  });
+
+  it("caps UTF-8 bytes without splitting code points or backfilling older output", () => {
+    const data = `${"😀".repeat(20_000)}é`;
+    const events = [output("x", "old"), output("x", data), output("x", "z")];
+    const expected = [output("x", `${"😀".repeat(16_383)}é`), output("x", "z")];
+    expect(compactReplay(events)).toEqual(expected);
+    expect(fold(events)).toEqual(expected);
+    const bytes = fold(events).reduce(
+      (sum, e) => sum + (e.type === "tool-output" ? new TextEncoder().encode(e.data).length : 0),
+      0,
+    );
+    expect(bytes).toBeLessThanOrEqual(REPLAY_TOOL_OUTPUT_BYTES);
+  });
+
+  it("matches capped batch replay through repeated overflow, then drops all completed output", () => {
+    const all: AgentEvent[] = [call("x")];
+    let buffer = fold(all);
+    for (let i = 0; i < 100; i++) {
+      const event = output("x", `${i}:${"é😀x".repeat(300)}`);
+      all.push(event);
+      buffer = appendCompacted(buffer, event);
+      expect(buffer).toEqual(compactReplay(all));
+      const retained = buffer.filter((e) => e.type === "tool-output");
+      expect(
+        retained.reduce((sum, e) => sum + new TextEncoder().encode(e.data).length, 0),
+      ).toBeLessThanOrEqual(REPLAY_TOOL_OUTPUT_BYTES);
+    }
+    expect(appendCompacted(buffer, result("x"))).toEqual([call("x"), result("x")]);
+  });
+
+  it("leaves frozen inputs and earlier replay snapshots unchanged", () => {
+    const first = Object.freeze([Object.freeze(text("a")), Object.freeze(output("x", "log"))]);
+    const before = structuredClone(first);
+    const second = appendCompacted(first, Object.freeze(result("x")));
+    const snapshot = structuredClone(second);
+    appendCompacted(second, text("later"));
+    expect(first).toEqual(before);
+    expect(second).toEqual(snapshot);
+    expect(second).toEqual([text("a"), result("x")]);
+  });
+
+  it("matches batch replay for every prefix of seeded random event sequences", () => {
+    // Deterministic property test; no dependency or ambient randomness.
+    for (let seed = 1; seed <= 50; seed++) {
+      let state = seed;
+      const next = (n: number) => {
+        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+        return (state >>> 8) % n;
+      };
+      const all: AgentEvent[] = [];
+      let buffer: AgentEvent[] = [];
+      for (let i = 0; i < 100; i++) {
+        const id = `call-${next(4)}`;
+        const delta = ["", "a", "é", "😀"][next(4)] ?? "";
+        const variants: AgentEvent[] = [
+          text(delta, `turn-${next(2)}`),
+          reason(delta),
+          status(String(i)),
+          call(id),
+          result(id),
+          { ...output(id, delta.repeat(next(5))), stream: next(2) ? "stdout" : "stderr" },
+          {
+            type: "step-complete",
+            conversationId: C,
+            turnId: T,
+            stepId: `${T}#${i}`,
+            ttftMs: 1,
+            decodeMs: 2,
+            genTotalMs: 3,
+          },
+          { type: "steering", conversationId: C, turnId: T, text: delta, messageIds: [] },
+          { type: "turn-ended", conversationId: C, turnId: T, reason: "sealed" },
+          start,
+        ];
+        const event = variants[next(variants.length)];
+        if (event === undefined) throw new Error("missing generated event");
+        all.push(event);
+        buffer = appendCompacted(buffer, event);
+        expect(buffer, `seed ${seed}, prefix ${i + 1}`).toEqual(compactReplay(all));
+      }
+    }
+  });
+
+  it("100k deltas retain O(structure) events, not token history", () => {
+    let buffer: AgentEvent[] = [];
+    let peakLength = 0;
+    for (let i = 0; i < 100_000; i++) {
+      if (i % 10_000 === 0) buffer = appendCompacted(buffer, call(String(i)));
+      buffer = appendCompacted(buffer, i < 50_000 ? reason("r") : text("t"));
+      peakLength = Math.max(peakLength, buffer.length);
+    }
+    expect(peakLength).toBe(20);
+    expect(buffer).toHaveLength(20); // Ten structural barriers + ten delta runs.
+    expect(
+      buffer
+        .filter((e) => e.type === "text-delta" || e.type === "reasoning-delta")
+        .reduce((sum, e) => sum + e.delta.length, 0),
+    ).toBe(100_000);
   });
 
   it("collapses a long token stream to a single event", () => {

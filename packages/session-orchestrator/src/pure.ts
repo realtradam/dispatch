@@ -259,29 +259,36 @@ export function memoryDelta(before: MemorySample, after: MemorySample): MemorySa
   };
 }
 
+/** Maximum retained UTF-8 progress output per tool call (stdout + stderr). */
+export const REPLAY_TOOL_OUTPUT_BYTES = 64 * 1024;
+
+/** A code-point-aligned suffix; never retain a partial UTF-8 character. */
+function outputTail(data: string, budget: number): { data: string; bytes: number } {
+  let start = data.length;
+  let bytes = 0;
+  while (start > 0) {
+    const last = data.charCodeAt(start - 1);
+    const paired =
+      last >= 0xdc00 &&
+      last <= 0xdfff &&
+      start > 1 &&
+      data.charCodeAt(start - 2) >= 0xd800 &&
+      data.charCodeAt(start - 2) <= 0xdbff;
+    const size = paired ? 4 : last < 0x80 ? 1 : last < 0x800 ? 2 : 3;
+    if (bytes + size > budget) break;
+    bytes += size;
+    start -= paired ? 2 : 1;
+  }
+  return { data: start === 0 ? data : data.slice(start), bytes };
+}
+
 /**
- * Compact an in-flight turn's event buffer for a LATE-JOIN replay (a client
- * that subscribes mid-turn: a refresh, reconnect, or second device).
- *
- * The live stream emits one event per provider token chunk, so a long turn's
- * buffer holds thousands of tiny `text-delta` / `reasoning-delta` events. A
- * late-joiner folding them one-by-one does O(events) client work (each one a
- * separate WS frame + reactive cycle) — painfully slow on mobile. The replay
- * is purely historical, so it can be compacted without any latency tradeoff:
- *
- * - Each run of ADJACENT same-type, same-turn deltas is merged into ONE event
- *   whose `delta` is the concatenation. Byte-identical for every consumer that
- *   accumulates deltas by string concatenation (the FE reducer, the CLI).
- * - `tool-output` (incremental stdout/stderr of a running tool) is dropped for
- *   tool calls that already have a `tool-result` in the buffer — the result
- *   carries the full output, so the progress stream is redundant (and large).
- *   Output of a STILL-RUNNING tool is kept so the late-joiner sees progress.
- * - `status` events are free-form transient hints; only the LAST is kept.
- *
- * Every structural event (`turn-start`, `user-message`, `tool-call`,
- * `tool-result`, `usage`, `step-complete`, `steering`, `error`, `done`, …)
- * is kept, in order. Live streaming is NOT affected — only the subscribe-time
- * snapshot. Pure: input array → new array; the input is never mutated.
+ * Pure batch reference for late-join replay. Keep every structural event in
+ * order, only the last status, and no output for calls with a result (even if
+ * output arrives after the result). Running calls retain the trailing 64 KiB
+ * across both streams, at their original positions/with their stream metadata.
+ * Merge same-type/same-turn deltas adjacent AFTER discarded events are removed.
+ * Inputs are never mutated; live delivery is unaffected.
  */
 export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
   const finishedTools = new Set<string>();
@@ -293,8 +300,21 @@ export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
     else if (e.type === "status") lastStatus = i;
   }
 
+  const remaining = new Map<string, number>();
+  const outputs = new Map<number, AgentEvent>();
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e?.type !== "tool-output" || finishedTools.has(e.toolCallId)) continue;
+    const budget = remaining.get(e.toolCallId) ?? REPLAY_TOOL_OUTPUT_BYTES;
+    const tail = outputTail(e.data, budget);
+    // Once a chunk is truncated, earlier chunks cannot fit in the suffix.
+    remaining.set(e.toolCallId, tail.data.length < e.data.length ? 0 : budget - tail.bytes);
+    if (tail.data.length > 0 || e.data.length === 0) {
+      outputs.set(i, tail.data === e.data ? e : { ...e, data: tail.data });
+    }
+  }
+
   const out: AgentEvent[] = [];
-  // Pending merged delta (flushed when a different event interrupts the run).
   let pending: {
     type: "text-delta" | "reasoning-delta";
     base: AgentEvent;
@@ -312,7 +332,8 @@ export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
   };
 
   for (let i = 0; i < events.length; i++) {
-    const e = events[i];
+    const original = events[i];
+    const e = original?.type === "tool-output" ? outputs.get(i) : original;
     if (e === undefined) continue;
     if (e.type === "text-delta" || e.type === "reasoning-delta") {
       if (
@@ -327,11 +348,67 @@ export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
       }
       continue;
     }
-    if (e.type === "tool-output" && finishedTools.has(e.toolCallId)) continue;
     if (e.type === "status" && i !== lastStatus) continue;
     flush();
     out.push(e);
   }
   flush();
   return out;
+}
+
+/**
+ * Pure incremental replay: buffer must already be compacted. Token arrivals
+ * merge only the tail (copying the retained array); invalidations revisit only
+ * retained structure, never the
+ * raw token history. Returns a new buffer without mutating events or snapshots.
+ */
+export function appendCompacted(buffer: readonly AgentEvent[], event: AgentEvent): AgentEvent[] {
+  if (event.type === "status" || event.type === "tool-result" || event.type === "tool-output") {
+    if (
+      event.type === "tool-output" &&
+      buffer.some((e) => e.type === "tool-result" && e.toolCallId === event.toolCallId)
+    )
+      return [...buffer];
+    const candidates = [...buffer, event];
+    const kept: AgentEvent[] = [];
+    let budget = REPLAY_TOOL_OUTPUT_BYTES;
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      let e = candidates[i];
+      if (e === undefined) continue;
+      if (event.type === "status" && e.type === "status" && i < buffer.length) continue;
+      if (
+        e.type === "tool-output" &&
+        (event.type === "tool-result" || event.type === "tool-output") &&
+        e.toolCallId === event.toolCallId
+      ) {
+        if (event.type === "tool-result") continue;
+        const tail = outputTail(e.data, budget);
+        budget = tail.data.length < e.data.length ? 0 : budget - tail.bytes;
+        if (tail.data.length === 0 && e.data.length > 0) continue;
+        if (tail.data !== e.data) e = { ...e, data: tail.data };
+      }
+      kept.push(e);
+    }
+    const out: AgentEvent[] = [];
+    for (const e of kept.reverse()) {
+      const last = out[out.length - 1];
+      if (
+        (e.type === "text-delta" || e.type === "reasoning-delta") &&
+        last?.type === e.type &&
+        last.turnId === e.turnId
+      ) {
+        out[out.length - 1] = { ...last, delta: last.delta + e.delta };
+      } else out.push(e);
+    }
+    return out;
+  }
+  const last = buffer[buffer.length - 1];
+  if (
+    (event.type === "text-delta" || event.type === "reasoning-delta") &&
+    last?.type === event.type &&
+    last.turnId === event.turnId
+  ) {
+    return [...buffer.slice(0, -1), { ...last, delta: last.delta + event.delta }];
+  }
+  return [...buffer, event];
 }

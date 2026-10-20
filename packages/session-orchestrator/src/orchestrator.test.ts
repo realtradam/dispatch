@@ -2633,6 +2633,90 @@ describe("detached turn hub", () => {
     expect(lateEvents.slice(replayLen)).toEqual(earlyEvents.slice(earlySnapshot.length));
   });
 
+  it("late-join bounds running output, drops completed output, and leaves live delivery verbatim", async () => {
+    let releaseTool = () => {};
+    let releaseFinal = () => {};
+    let outputReady = () => {};
+    let finalReady = () => {};
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const finalGate = new Promise<void>((resolve) => {
+      releaseFinal = resolve;
+    });
+    const outputSeen = new Promise<void>((resolve) => {
+      outputReady = resolve;
+    });
+    const finalSeen = new Promise<void>((resolve) => {
+      finalReady = resolve;
+    });
+    let step = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        return (async function* () {
+          if (step++ === 0) {
+            yield { type: "tool-call", toolCallId: "x", toolName: "echo", input: {} } as const;
+            yield { type: "finish", reason: "tool-calls" } as const;
+          } else {
+            finalReady();
+            await finalGate;
+            yield { type: "text-delta", delta: "done" } as const;
+            yield { type: "finish", reason: "stop" } as const;
+          }
+        })();
+      },
+    };
+    const tool: ToolContract = {
+      name: "echo",
+      description: "progress",
+      parameters: { type: "object" },
+      async execute(_input, ctx) {
+        ctx.onOutput("a".repeat(50_000), "stdout");
+        ctx.onOutput("b".repeat(50_000), "stderr");
+        outputReady();
+        await toolGate;
+        return { content: "complete" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createConversationStore(storageFromMap()),
+      resolveProvider: () => provider,
+      resolveTools: () => [tool],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const live: AgentEvent[] = [];
+    const unsubLive = orchestrator.subscribe("replay-cap", (e) => live.push(e));
+    orchestrator.startTurn({ conversationId: "replay-cap", text: "run" });
+    try {
+      await outputSeen;
+      const running: AgentEvent[] = [];
+      const unsubRunning = orchestrator.subscribe("replay-cap", (e) => running.push(e));
+      unsubRunning();
+      expect(running).toEqual(compactReplay(live));
+      expect(running.filter((e) => e.type === "tool-output").map((e) => e.data.length)).toEqual([
+        15_536, 50_000,
+      ]);
+      expect(live.filter((e) => e.type === "tool-output").map((e) => e.data.length)).toEqual([
+        50_000, 50_000,
+      ]);
+      releaseTool();
+      await finalSeen;
+      const completed: AgentEvent[] = [];
+      const unsubCompleted = orchestrator.subscribe("replay-cap", (e) => completed.push(e));
+      unsubCompleted();
+      expect(completed).toEqual(compactReplay(live));
+      expect(completed.some((e) => e.type === "tool-output")).toBe(false);
+      expect(completed.some((e) => e.type === "tool-result")).toBe(true);
+    } finally {
+      releaseTool();
+      releaseFinal();
+      await waitForEvent(orchestrator, "replay-cap", "turn-ended");
+      unsubLive();
+    }
+  });
+
   it("subscriber persists across turns — one subscriber receives events from two sequential turns", async () => {
     const store = createInMemoryStore();
     const provider = createFakeProvider([
