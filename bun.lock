@@ -249,6 +249,10 @@
         "@dispatch/wire": "workspace:*",
       },
     },
+    "packages/network-policy": {
+      "name": "@dispatch/network-policy",
+      "version": "0.0.0",
+    },
     "packages/observability-collector": {
       "name": "@dispatch/observability-collector",
       "version": "0.0.0",
@@ -671,6 +675,8 @@
     "@dispatch/message-queue": ["@dispatch/message-queue@workspace:packages/message-queue"],
 
     "@dispatch/named-agents": ["@dispatch/named-agents@workspace:packages/named-agents"],
+
+    "@dispatch/network-policy": ["@dispatch/network-policy@workspace:packages/network-policy"],
 
     "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
 
