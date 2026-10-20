@@ -39,6 +39,45 @@ describe("LocalExecBackend", () => {
       expect(output).toContain("hi");
     });
 
+    it("decodes split UTF-8 on stdout and stderr", async () => {
+      const output = { stdout: "", stderr: "" };
+      const script = `const b = Buffer.from("😀é");
+        for (const s of [process.stdout, process.stderr]) {
+          s.write(b.subarray(0, 2));
+          setTimeout(() => s.write(b.subarray(2)), 50);
+        }`;
+      const result = await backend.spawn({
+        command: `${process.execPath} -e '${script}'`,
+        cwd: tmpDir,
+        signal: AbortSignal.timeout(5000),
+        timeout: 5000,
+        onOutput: (data, stream) => {
+          output[stream] += data;
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(output).toEqual({ stdout: "😀é", stderr: "😀é" });
+    });
+
+    it.each([
+      { command: "echo hi", missing: true, note: "spawn failed:" },
+      { command: "kill -KILL $$", missing: false, note: "[killed by SIGKILL]" },
+    ])("returns failure with diagnostic $note", async ({ command, missing, note }) => {
+      let output = "";
+      const result = await backend.spawn({
+        command,
+        cwd: missing ? join(tmpDir, "missing") : tmpDir,
+        signal: AbortSignal.timeout(5000),
+        timeout: 5000,
+        onOutput: (data) => {
+          output += data;
+        },
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain(note);
+      if (missing) expect(output).toContain("ENOENT");
+    });
+
     it("returns a non-zero exit code for a failing command", async () => {
       const result = await backend.spawn({
         command: "false",

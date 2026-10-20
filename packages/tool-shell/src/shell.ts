@@ -4,6 +4,9 @@ import type { ToolContract, ToolExecuteContext, ToolResult } from "@dispatch/ker
 
 const DEFAULT_TIMEOUT = 120_000;
 const OUTPUT_CAP = 50_000;
+const HARD_LIMIT = 50_000_000;
+const STREAM_LIMIT = 1_000_000;
+const STREAM_BATCH = 8_000;
 
 export interface ValidatedArgs {
   readonly command: string;
@@ -39,12 +42,38 @@ export function validateArgs(args: unknown): ValidatedArgs | { readonly error: s
   return { command: rawCommand, timeout };
 }
 
+function createCapture(cap: number) {
+  const headCap = Math.floor(cap * 0.4);
+  const tailCap = cap - headCap;
+  let head = "";
+  let tail = "";
+  let bytes = 0;
+  let chars = 0;
+  return {
+    append(data: string) {
+      bytes += Buffer.byteLength(data);
+      chars += data.length;
+      const take = Math.min(headCap - head.length, data.length);
+      head += data.slice(0, take);
+      tail = (tail + data.slice(take)).slice(-tailCap);
+      return bytes;
+    },
+    text() {
+      if (chars <= cap) return head + tail;
+      // Do not expose half a surrogate pair at either retained boundary.
+      const first = head.replace(/[\uD800-\uDBFF]$/, "");
+      const last = tail.replace(/^[\uDC00-\uDFFF]/, "");
+      const omitted = bytes - Buffer.byteLength(first + last);
+      return `${first}\n…[${omitted} bytes omitted]…\n${last}`;
+    },
+  };
+}
+
 export function truncateOutput(output: string, cap: number): string {
-  if (output.length <= cap) {
-    return output;
-  }
-  const truncated = output.slice(0, cap);
-  return `${truncated}\n\n[Output truncated: exceeded ${cap} characters]`;
+  if (output.length <= cap) return output;
+  const capture = createCapture(cap);
+  capture.append(output);
+  return capture.text();
 }
 
 export function buildResult(params: {
@@ -68,7 +97,7 @@ export function buildResult(params: {
     };
   }
   const exitCode = params.exitCode;
-  if (exitCode !== null && exitCode !== 0) {
+  if (exitCode !== 0) {
     return {
       content: truncateOutput(params.output, params.cap),
       isError: true,
@@ -127,9 +156,61 @@ export function createRunShellTool(deps: {
         });
       }
 
-      let output = "";
-      const appendOutput = (data: string, _stream: "stdout" | "stderr") => {
-        output += data;
+      const capture = createCapture(cap);
+      const limitController = new AbortController();
+      const signal = AbortSignal.any([ctx.signal, limitController.signal]);
+      let limited = false;
+      let streamedBytes = 0;
+      let pendingBytes = 0;
+      const pending = new Map<"stdout" | "stderr", string>();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const flush = () => {
+        clearTimeout(timer);
+        timer = undefined;
+        for (const [stream, data] of pending) ctx.onOutput(data, stream);
+        pending.clear();
+        pendingBytes = 0;
+      };
+      const onOutput = (data: string, stream: "stdout" | "stderr") => {
+        if (limited) return;
+        if (capture.append(data) > HARD_LIMIT) {
+          limited = true;
+          limitController.abort();
+        }
+        if (streamedBytes > STREAM_LIMIT) return;
+        const buffer = Buffer.from(data);
+        let offset = 0;
+        while (offset < buffer.length && streamedBytes < STREAM_LIMIT) {
+          const size = Math.min(STREAM_BATCH - pendingBytes, STREAM_LIMIT - streamedBytes);
+          // A fresh streaming decoder drops only an incomplete final UTF-8 sequence.
+          const part = new TextDecoder("utf-8", { ignoreBOM: true }).decode(
+            buffer.subarray(offset, offset + size),
+            {
+              stream: true,
+            },
+          );
+          const bytes = Buffer.byteLength(part);
+          if (bytes === 0) {
+            flush();
+            // The global budget may have less room than the next character needs.
+            if (size === STREAM_LIMIT - streamedBytes) break;
+            continue;
+          }
+          pending.set(stream, (pending.get(stream) ?? "") + part);
+          pendingBytes += bytes;
+          streamedBytes += bytes;
+          offset += bytes;
+          if (pendingBytes === STREAM_BATCH) flush();
+          else timer ??= setTimeout(flush, 100);
+        }
+        if (
+          (offset < buffer.length || streamedBytes === STREAM_LIMIT) &&
+          streamedBytes <= STREAM_LIMIT
+        ) {
+          flush();
+          ctx.onOutput("\n[streaming truncated at 1 MB]\n", "stderr");
+          streamedBytes = STREAM_LIMIT + 1;
+        }
       };
 
       const backend = deps.resolveBackend(ctx.computerId);
@@ -140,12 +221,9 @@ export function createRunShellTool(deps: {
         spawnResult = await backend.spawn({
           command,
           cwd: effectiveCwd,
-          signal: ctx.signal,
+          signal,
           timeout,
-          onOutput: (data, stream) => {
-            ctx.onOutput(data, stream);
-            appendOutput(data, stream);
-          },
+          onOutput,
         });
       } catch (err: unknown) {
         if (ctx.signal.aborted) {
@@ -153,22 +231,30 @@ export function createRunShellTool(deps: {
             exitCode: null,
             timedOut: false,
             aborted: true,
-            output,
-            cap,
+            output: capture.text(),
+            cap: Number.POSITIVE_INFINITY,
           });
         }
         return {
           content: `Error spawning command: ${err instanceof Error ? err.message : String(err)}`,
           isError: true,
         };
+      } finally {
+        flush();
       }
 
+      if (limited) {
+        return {
+          content: `${capture.text()}\n[Command killed: output exceeded 50 MB]`,
+          isError: true,
+        };
+      }
       return buildResult({
         exitCode: spawnResult.exitCode,
         timedOut: spawnResult.timedOut,
         aborted: spawnResult.aborted,
-        output,
-        cap,
+        output: capture.text(),
+        cap: Number.POSITIVE_INFINITY,
       });
     },
   };

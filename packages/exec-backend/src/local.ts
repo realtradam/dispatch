@@ -8,7 +8,7 @@ import type { DirEntry, ExecBackend, ExecResult, SpawnParams, StatResult } from 
  * Behavior is IDENTICAL to today's local tools:
  * - `spawn` mirrors `realSpawn` in `packages/tool-shell/src/spawn.ts` — same
  *   `sh -c` invocation, detached process-group kill on abort/timeout,
- *   close-based resolution, and spawn-error → `{ exitCode: 1 }`.
+ *   close-based resolution, and spawn-error diagnostics with `{ exitCode: 1 }`.
  * - `readFile`/`writeFile`/`stat`/`readdir` use the same `node:fs/promises`
  *   calls (utf8, `withFileTypes`) the tools make inline today, and throw the
  *   same node errors (carrying `.code`) so the tools' existing error branches
@@ -122,25 +122,29 @@ function localSpawn(params: SpawnParams): Promise<ExecResult> {
       settle({ exitCode: null, timedOut: true, aborted: false });
     }, params.timeout);
 
-    child.stdout.on("data", (chunk: Buffer) => {
-      params.onOutput(chunk.toString(), "stdout");
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (!settled) params.onOutput(chunk, "stdout");
     });
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      params.onOutput(chunk.toString(), "stderr");
+    child.stderr.on("data", (chunk: string) => {
+      if (!settled) params.onOutput(chunk, "stderr");
     });
 
     // Normal-completion path: wait for "close" so all stdout/stderr is captured.
     // If abort/timeout already settled, this is a no-op (settled === true).
-    child.on("close", (code) => {
-      settle({ exitCode: code, timedOut, aborted: false });
+    child.on("close", (code, signal) => {
+      if (!settled && signal) params.onOutput(`[killed by ${signal}]`, "stderr");
+      settle({ exitCode: code ?? 1, timedOut, aborted: false });
     });
 
     // Spawn error (e.g. bad cwd, sh not found). Kill the group just in case
     // and resolve — never leave the promise pending.
-    child.on("error", () => {
+    child.on("error", (error) => {
+      if (!settled) params.onOutput(`spawn failed: ${error.message}`, "stderr");
       killGroup();
       settle({ exitCode: 1, timedOut: false, aborted: false });
     });
+    if (params.signal.aborted) onAbort();
   });
 }
