@@ -27,7 +27,8 @@ export interface CompactionService {
    * the summary + at least the most recent `keepLastN` messages (whole tool
    * groups). Returns the result or an error object. No-ops if the conversation is too short (≤ keepLastN
    * messages). When `auto` is true, checks the compact-threshold setting and
-   * only compacts if the last turn's input tokens exceeded it.
+   * only compacts if the last turn's input tokens exceeded it. Concurrent compaction
+   * is rejected; a changed seq or generating state aborts before fork/replace.
    */
   readonly compact: (
     conversationId: string,
@@ -91,7 +92,7 @@ function formatMessagesForSummary(messages: readonly ChatMessage[]): string {
  * turn loop's `onStepBoundary`) can call the same shared core without duplicating
  * the summarization/fork/replace/emit logic. The active-conversation guard and
  * the threshold check are the CALLERS' policy (they differ between the two
- * paths) and are NOT performed here.
+ * paths). Manual/post-seal callers also request a pre-commit snapshot recheck.
  */
 interface PerformCompactionDeps {
   readonly conversationStore: ConversationStore;
@@ -151,11 +152,12 @@ interface PerformCompactionResult {
  * array keeps the store write and the kernel's replacement aligned (same
  * `recentKept` slice), avoiding the DB↔LLM structural divergence where
  * independent slices dropped different messages. When `opts.messages` is
- * omitted (the post-seal/manual `compact()` path — the turn has ended, so the
- * store is stable), the history is loaded from the store.
+ * omitted (the post-seal/manual `compact()` path), history is loaded from the
+ * store. That caller supplies isActive to validate its snapshot under exclusion
+ * before committing; the in-flight caller omits it and retains its existing path.
  *
- * Performs NO active-conversation guard and NO threshold check — those are the
- * callers' policy. No-ops (returns an error) when the conversation is too
+ * Entry guards and thresholds are caller policy. An optional isActive policy
+ * enables a locked seq/active recheck before commit. Returns an error when too
  * short to compact (including when a safe cut retains everything) or the summary is empty.
  */
 export async function performCompaction(
@@ -166,12 +168,23 @@ export async function performCompaction(
     readonly modelName?: string;
     /** The kernel's live messages array (in-flight path). Omit to load the store (post-seal/manual). */
     readonly messages?: readonly ChatMessage[];
+    /** Manual/post-seal policy only; omitted by the in-flight caller. */
+    readonly isActive?: () => boolean;
   },
 ): Promise<PerformCompactionResult | { readonly error: string }> {
   const { signal } = deps;
-  // Use the caller-supplied live messages (in-flight) or load the store
-  // (post-seal/manual — the store is stable once the turn has ended).
-  const history = opts.messages ?? (await deps.conversationStore.load(conversationId));
+  // Use live in-flight messages or capture a validated manual/post-seal snapshot.
+  const store = deps.conversationStore;
+  // Capture history and its cursor together, excluding all same-id writers.
+  // Do not hold the write lock across the slow provider request.
+  const snapshot =
+    opts.isActive === undefined
+      ? undefined
+      : await store.runExclusive(conversationId, async () => ({
+          history: await store.load(conversationId),
+          seq: (await store.loadSince(conversationId, undefined, { limit: 1 })).at(-1)?.seq ?? 0,
+        }));
+  const history = opts.messages ?? snapshot?.history ?? (await store.load(conversationId));
   const keepLastN = opts?.keepLastN ?? DEFAULT_KEEP_LAST_N;
 
   const keepStart = chooseKeepStart(history, keepLastN);
@@ -300,57 +313,68 @@ export async function performCompaction(
     return { error: "model produced empty summary" };
   }
 
-  // Non-destructive: fork the full pre-compaction history to a new
-  // archive conversation. The original conversation keeps its ID
-  // (so messaging between agents still works) and gets the compacted
-  // content. The archive inherits the original's compactedFrom,
-  // creating a chain: A → Y → X → ...
-  const archiveId = crypto.randomUUID();
-  await deps.conversationStore.forkHistory(conversationId, archiveId);
+  const commit = async (): Promise<PerformCompactionResult | { readonly error: string }> => {
+    if (snapshot !== undefined) {
+      const seq = (await store.loadSince(conversationId, undefined, { limit: 1 })).at(-1)?.seq ?? 0;
+      if (opts.isActive?.() || seq !== snapshot.seq) {
+        return { error: "conversation changed during compaction" };
+      }
+    }
+    // Non-destructive: fork the full pre-compaction history to a new
+    // archive conversation. The original conversation keeps its ID
+    // (so messaging between agents still works) and gets the compacted
+    // content. The archive inherits the original's compactedFrom,
+    // creating a chain: A → Y → X → ...
+    const archiveId = crypto.randomUUID();
+    await deps.conversationStore.forkHistory(conversationId, archiveId);
 
-  // Commit boundary: if the signal fires after forkHistory starts, let the
-  // fork settle (it writes to a NEW archive ID, not the live conversation —
-  // harmless if orphaned), then skip replaceHistory/setCompactedFrom. The
-  // archive is orphaned but the LIVE history is untouched, which is safe.
-  if (signal?.aborted) {
-    return { error: "aborted" };
-  }
+    // Commit boundary: if the signal fires after forkHistory starts, let the
+    // fork settle (it writes to a NEW archive ID, not the live conversation —
+    // harmless if orphaned), then skip replaceHistory/setCompactedFrom. The
+    // archive is orphaned but the LIVE history is untouched, which is safe.
+    if (signal?.aborted) {
+      return { error: "aborted" };
+    }
 
-  // Replace history: [system: summary] + the recent kept messages. `toKeep`
-  // is sliced from the caller-supplied live `messages` (in-flight) — the SAME
-  // slice returned below as `compactedMessages` — so the store and the kernel's
-  // working history stay byte-aligned (same messages kept/dropped).
-  const summaryMessage: ChatMessage = {
-    role: "system",
-    chunks: [
-      {
-        type: "text",
-        text: `The following is a summary of the previous conversation:\n\n${summary}`,
-      },
-    ],
+    // Replace history: [system: summary] + the recent kept messages. `toKeep`
+    // is sliced from the caller-supplied live `messages` (in-flight) — the SAME
+    // slice returned below as `compactedMessages` — so the store and the kernel's
+    // working history stay byte-aligned (same messages kept/dropped).
+    const summaryMessage: ChatMessage = {
+      role: "system",
+      chunks: [
+        {
+          type: "text",
+          text: `The following is a summary of the previous conversation:\n\n${summary}`,
+        },
+      ],
+    };
+
+    const compactedMessages: readonly ChatMessage[] = [summaryMessage, ...toKeep];
+    await deps.conversationStore.replaceHistory(conversationId, compactedMessages);
+    const historyEpoch = await deps.conversationStore.getHistoryEpoch(conversationId);
+    await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
+
+    deps.emit(conversationCompacted, {
+      conversationId,
+      historyEpoch,
+      newConversationId: archiveId,
+      messagesSummarized: toSummarize.length,
+      messagesKept: toKeep.length,
+    });
+
+    return {
+      summary,
+      newConversationId: archiveId,
+      messagesSummarized: toSummarize.length,
+      messagesKept: toKeep.length,
+      summaryMessage,
+      compactedMessages,
+    };
   };
-
-  const compactedMessages: readonly ChatMessage[] = [summaryMessage, ...toKeep];
-  await deps.conversationStore.replaceHistory(conversationId, compactedMessages);
-  const historyEpoch = await deps.conversationStore.getHistoryEpoch(conversationId);
-  await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
-
-  deps.emit(conversationCompacted, {
-    conversationId,
-    historyEpoch,
-    newConversationId: archiveId,
-    messagesSummarized: toSummarize.length,
-    messagesKept: toKeep.length,
-  });
-
-  return {
-    summary,
-    newConversationId: archiveId,
-    messagesSummarized: toSummarize.length,
-    messagesKept: toKeep.length,
-    summaryMessage,
-    compactedMessages,
-  };
+  // The store's lock is reentrant: fork/replace/setCompactedFrom can safely
+  // await their own store writes while this source lease remains held.
+  return snapshot === undefined ? commit() : store.runExclusive(conversationId, commit);
 }
 
 export function createCompactionService(
@@ -358,8 +382,9 @@ export function createCompactionService(
     readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
   },
   activeConversations: ReadonlySet<string>,
+  compacting: Map<string, Promise<void>> = new Map(),
 ): CompactionService {
-  return {
+  const service: CompactionService = {
     async compact(conversationId, opts) {
       if (activeConversations.has(conversationId)) {
         return { error: "conversation is generating" };
@@ -395,6 +420,7 @@ export function createCompactionService(
       // threshold — those are this caller's policy above). The length check
       // ("conversation too short to compact") lives inside the core.
       const outcome = await performCompaction(deps, conversationId, {
+        isActive: () => activeConversations.has(conversationId),
         ...(opts?.keepLastN !== undefined ? { keepLastN: opts.keepLastN } : {}),
         ...(opts?.modelName !== undefined ? { modelName: opts.modelName } : {}),
       });
@@ -408,6 +434,23 @@ export function createCompactionService(
         messagesKept,
       };
       return result;
+    },
+  };
+  return {
+    async compact(conversationId, opts) {
+      if (activeConversations.has(conversationId)) return { error: "conversation is generating" };
+      if (compacting.has(conversationId)) return { error: "conversation is compacting" };
+      let finish = () => {};
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      compacting.set(conversationId, pending);
+      try {
+        return await service.compact(conversationId, opts);
+      } finally {
+        compacting.delete(conversationId);
+        finish();
+      }
     },
   };
 }

@@ -277,10 +277,11 @@ interface ActiveTurn {
 }
 
 export interface SessionOrchestrator {
+  /** During compaction, queues when available (started=false), otherwise reserves a waiting turn. */
   startTurn(input: StartTurnInput): StartTurnResult;
   /**
    * The single entry transports call to deliver a user message. Owns the
-   * idle→startTurn vs active→queue decision (no separate `isActive` race —
+   * idle→startTurn vs active/compacting→queue decision (no separate `isActive` race —
    * `startTurn`'s single-flight guard is authoritative). When the conversation
    * is idle, starts a turn (the message is the opening prompt). When active,
    * enqueues onto the steering queue (if the message-queue extension is
@@ -463,6 +464,8 @@ export interface SessionOrchestratorBundle {
   readonly orchestrator: SessionOrchestrator;
   /** The shared active-conversations set, for use by createWarmService. */
   readonly activeConversations: ReadonlySet<string>;
+  /** Shared manual/post-seal compaction completion barriers. */
+  readonly compacting: Map<string, Promise<void>>;
 }
 
 /**
@@ -499,6 +502,8 @@ export function createSessionOrchestrator(
   deps: SessionOrchestratorDeps,
 ): SessionOrchestratorBundle {
   const activeConversations = new Set<string>();
+  const compacting = new Map<string, Promise<void>>();
+  const compactionQueueWaiters = new Set<string>();
   const subscribers = new Map<string, Set<TurnEventListener>>();
   const activeTurns = new Map<string, ActiveTurn>();
   // One stateless retry strategy shared by every turn (delayFor is pure; sleep
@@ -556,7 +561,10 @@ export function createSessionOrchestrator(
     const promptStartedAt = deps.now?.() ?? Date.now();
     const controller = new AbortController();
     activeTurns.set(conversationId, { buffer: [], turnId, controller });
-    activeConversations.add(conversationId);
+    const pendingCompaction = compacting.get(conversationId);
+    // A waiting turn owns the single-flight slot, but must not invalidate the
+    // compactor's generating-state recheck until the barrier has completed.
+    if (pendingCompaction === undefined) activeConversations.add(conversationId);
 
     emitToHub(conversationId, { type: "user-message", conversationId, turnId, text });
 
@@ -592,6 +600,10 @@ export function createSessionOrchestrator(
     // a different value and never invents one (only persists what the caller
     // explicitly passed). Legacy/ordinary conversations omit both → no-op.
     const workspaceSetupPromise = (async (): Promise<boolean> => {
+      if (pendingCompaction !== undefined) {
+        await pendingCompaction;
+        activeConversations.add(conversationId);
+      }
       const meta = await deps.conversationStore.getConversationMeta(conversationId);
       if (meta === null) {
         await deps.conversationStore.ensureWorkspace(workspaceId);
@@ -663,12 +675,20 @@ export function createSessionOrchestrator(
         .then((c) => c ?? undefined),
     );
 
-    const storedEffortPromise = deps.conversationStore.getReasoningEffort(conversationId);
+    const storedEffortPromise =
+      pendingCompaction === undefined
+        ? deps.conversationStore.getReasoningEffort(conversationId)
+        : workspaceSetupPromise.then(() =>
+            deps.conversationStore.getReasoningEffort(conversationId),
+          );
     // Resolve the persisted model (if any) in parallel with the other
     // per-conversation reads. The effective model name is
     // per-turn override → persisted → (undefined → default provider), the
     // same resolution chain as `resolveReasoningEffort`.
-    const storedModelPromise = deps.conversationStore.getModel(conversationId);
+    const storedModelPromise =
+      pendingCompaction === undefined
+        ? deps.conversationStore.getModel(conversationId)
+        : workspaceSetupPromise.then(() => deps.conversationStore.getModel(conversationId));
 
     const payloadPromise = Promise.all([
       effectiveCwdPromise,
@@ -1306,6 +1326,25 @@ export function createSessionOrchestrator(
       if (activeTurns.has(conversationId)) {
         return { started: false, reason: "already-active" };
       }
+      const pending = compacting.get(conversationId);
+      const queue = pending === undefined ? undefined : deps.resolveQueue?.();
+      if (pending !== undefined && queue !== undefined) {
+        queue.enqueue(conversationId, input.text);
+        if (!compactionQueueWaiters.has(conversationId)) {
+          compactionQueueWaiters.add(conversationId);
+          void pending.then(() => {
+            compactionQueueWaiters.delete(conversationId);
+            if (activeTurns.has(conversationId) || queue.getQueue(conversationId).length === 0)
+              return;
+            const text = queue
+              .drain(conversationId)
+              .map((message) => message.text)
+              .join("\n\n");
+            orchestrator.startTurn({ ...input, text });
+          });
+        }
+        return { started: false, reason: "already-active" };
+      }
       runTurnDetached(input);
       const turn = activeTurns.get(conversationId);
       const turnId = turn !== undefined ? turn.turnId : "";
@@ -1327,7 +1366,12 @@ export function createSessionOrchestrator(
       // message-queue extension isn't loaded this degrades: the message is
       // dropped and the snapshot is empty (feature off).
       const queue = deps.resolveQueue?.();
-      const snapshot = queue !== undefined ? queue.enqueue(conversationId, text) : [];
+      const snapshot =
+        queue === undefined
+          ? []
+          : compacting.has(conversationId) && !activeTurns.has(conversationId)
+            ? queue.getQueue(conversationId)
+            : queue.enqueue(conversationId, text);
       return { startedTurn: false, queue: snapshot };
     },
 
@@ -1454,7 +1498,7 @@ export function createSessionOrchestrator(
         ...(toolPolicy !== undefined ? { toolPolicy } : {}),
       };
       const result = orchestrator.startTurn(turnInput);
-      if (!result.started) {
+      if (!result.started && !compactionQueueWaiters.has(conversationId)) {
         const errorTurnId = generateTurnId();
         onEvent({
           type: "error",
@@ -1477,7 +1521,7 @@ export function createSessionOrchestrator(
     },
   };
 
-  return { orchestrator, activeConversations };
+  return { orchestrator, activeConversations, compacting };
 }
 
 /**
