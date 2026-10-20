@@ -1,3 +1,4 @@
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 /**
  * Service-level tests for the agent-management imperative shell (plan §14
  * backend). These exercise `listModels` + `summon` against the REAL
@@ -38,6 +39,7 @@ function makeStorage(): StorageNamespace & {
 } {
   const map = new Map<string, string>();
   return {
+    ...storageFromMap(map),
     async get(key) {
       return map.get(key) ?? null;
     },

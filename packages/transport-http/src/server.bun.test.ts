@@ -19,6 +19,7 @@ import {
   createLayoutProviderRegistry,
   layoutProviderRegistryHandle,
 } from "@dispatch/layout-provider-contract";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createApp } from "./app.js";
 import { createTransportHttpExtension } from "./index.js";
 import {
@@ -46,6 +47,7 @@ import {
 function memoryNamespace(): StorageNamespace {
   const store = new Map<string, string>();
   return {
+    ...storageFromMap(store),
     get: async (key) => store.get(key) ?? null,
     set: async (key, value) => {
       store.set(key, value);
@@ -252,6 +254,7 @@ function createFakeHostAPI(configOverrides: Record<string, unknown> = {}): HostA
     },
     storage() {
       return {
+        ...storageFromMap(new Map<string, string>()),
         get: async () => null,
         set: async () => {},
         delete: async () => {},

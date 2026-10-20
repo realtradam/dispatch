@@ -2,12 +2,14 @@ import { createConversationStore } from "@dispatch/conversation-store";
 import type { HostAPI, StorageNamespace } from "@dispatch/kernel";
 import type { ConversationListResponse } from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createApp } from "./app.js";
 import { conversationOpened, conversationTabGroupChanged } from "./seam.js";
 
 async function setup() {
   const data = new Map<string, string>();
   const storage: StorageNamespace = {
+    ...storageFromMap(data),
     get: async (key) => data.get(key) ?? null,
     set: async (key, value) => {
       data.set(key, value);

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import type { Migration } from "./migrate.js";
 import { computePending } from "./migrate.js";
 import type { SqliteStorageBackend } from "./storage.js";
@@ -310,6 +311,143 @@ describe("prefix query plans", () => {
           expect(plan).not.toContain("TEMP B-TREE");
         }
         expect(bounded.map((row) => row.detail).join("\n")).toContain("key<?");
+      } finally {
+        db.close();
+      }
+    } finally {
+      backend.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+for (const kind of ["sqlite", "memory"] as const) {
+  describe(`${kind} storage range/transaction contract`, () => {
+    let backend: SqliteStorageBackend | undefined;
+    let ns: ReturnType<typeof storageFromMap>;
+    beforeEach(async () => {
+      backend = kind === "sqlite" ? createSqliteStorage({ path: ":memory:" }) : undefined;
+      ns = backend?.storage("test") ?? storageFromMap();
+      for (const key of ["p:3", "p:1", "p:2", "q:1"]) await ns.set(key, key);
+      await backend?.storage("other").set("p:other", "other");
+    });
+    afterEach(() => backend?.close());
+
+    it("reads ordered key/value rows with forward and reverse limits", async () => {
+      expect(await ns.entries("p:")).toEqual([
+        ["p:1", "p:1"],
+        ["p:2", "p:2"],
+        ["p:3", "p:3"],
+      ]);
+      expect(await ns.entries("p:", { limit: 1 })).toEqual([["p:1", "p:1"]]);
+      expect(await ns.entries("p:", { reverse: true, limit: 2 })).toEqual([
+        ["p:3", "p:3"],
+        ["p:2", "p:2"],
+      ]);
+      expect(await ns.entries("", { reverse: true, limit: 1 })).toEqual([["q:1", "q:1"]]);
+    });
+    it("intersects exclusive full-key bounds regardless of direction", async () => {
+      for (const reverse of [false, true]) {
+        expect(await ns.entries("p:", { startAfter: "p:1", endBefore: "p:3", reverse })).toEqual([
+          ["p:2", "p:2"],
+        ]);
+        expect(await ns.entries("p:", { startAfter: "z", reverse })).toEqual([]);
+        expect(await ns.entries("p:", { endBefore: "a", reverse })).toEqual([]);
+        expect(await ns.entries("p:", { startAfter: "p:3", endBefore: "p:1", reverse })).toEqual(
+          [],
+        );
+      }
+    });
+    it("accepts zero, rejects invalid limits, and handles missing prefixes", async () => {
+      expect(await ns.entries("p:", { limit: 0 })).toEqual([]);
+      expect(await ns.entries("missing")).toEqual([]);
+      for (const limit of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        await expect(ns.entries("p:", { limit })).rejects.toThrow(RangeError);
+      }
+    });
+    it("counts literal prefixes in this namespace only", async () => {
+      for (const key of ["a_b", "acb", "a%b", "ABC"]) await ns.set(key, "v");
+      expect(await ns.count("p:")).toBe(3);
+      expect(await ns.count("")).toBe(8);
+      expect(await ns.count("a_")).toBe(1);
+      expect(await ns.count("a%")).toBe(1);
+      expect(await ns.count("abc")).toBe(0);
+      expect(await ns.entries("a_")).toEqual([["a_b", "v"]]);
+    });
+    it("filters exceptional Unicode prefixes before applying limit", async () => {
+      for (const key of ["a\uffff:1", "a\uffff:2", "a😀", "\uffff:x", "😀", "\ud7ff:x"])
+        await ns.set(key, "v");
+      for (const prefix of ["a\uffff", "\uffff", "\ud7ff"]) {
+        expect(await ns.count(prefix)).toBe(prefix === "a\uffff" ? 2 : 1);
+        expect(
+          (await ns.entries(prefix, { reverse: true, limit: 1 }))[0]?.[0].startsWith(prefix),
+        ).toBe(true);
+      }
+    });
+    it("commits synchronous writes, exposes read-your-writes, and returns the result", async () => {
+      const result = await ns.transaction((tx) => {
+        tx.set("p:4", "four");
+        tx.delete("p:1");
+        expect(tx.get("p:1")).toBeNull();
+        expect(tx.get("p:4")).toBe("four");
+        expect(tx.entries("p:", { reverse: true, limit: 1 })).toEqual([["p:4", "four"]]);
+        return 42;
+      });
+      expect(result).toBe(42);
+      expect(await ns.get("p:4")).toBe("four");
+      expect(await ns.count("p:")).toBe(3);
+    });
+    it("rolls back sets and deletes on throw and remains usable", async () => {
+      const before = await ns.entries("");
+      await expect(
+        ns.transaction((tx) => {
+          tx.set("p:1", "changed");
+          tx.set("new", "new");
+          tx.delete("p:2");
+          throw new Error("abort");
+        }),
+      ).rejects.toThrow("abort");
+      expect(await ns.entries("")).toEqual(before);
+      await ns.transaction((tx) => tx.set("ok", "ok"));
+      expect(await ns.get("ok")).toBe("ok");
+    });
+    it("rejects Promise-returning callbacks and rolls back", async () => {
+      await expect(
+        ns.transaction((tx) => {
+          tx.set("bad", "bad");
+          return Promise.resolve(1);
+        }),
+      ).rejects.toThrow("synchronous");
+      expect(await ns.get("bad")).toBeNull();
+    });
+  });
+}
+
+describe("SQLite connection pragmas", () => {
+  it("uses WAL, NORMAL synchronous commits, and a 5-second busy timeout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "storage-pragmas-"));
+    const path = join(dir, "test.db");
+    const backend = createSqliteStorage({ path });
+    try {
+      await backend.migrate("test", [
+        {
+          version: 1,
+          name: "capture-pragmas",
+          up: `
+        CREATE TABLE settings AS SELECT
+          (SELECT journal_mode FROM pragma_journal_mode) AS journal,
+          (SELECT synchronous FROM pragma_synchronous) AS sync,
+          (SELECT timeout FROM pragma_busy_timeout) AS timeout;
+      `,
+        },
+      ]);
+      const db = new Database(path, { readonly: true });
+      try {
+        expect(db.query("SELECT * FROM settings").get()).toEqual({
+          journal: "wal",
+          sync: 1,
+          timeout: 5000,
+        });
       } finally {
         db.close();
       }

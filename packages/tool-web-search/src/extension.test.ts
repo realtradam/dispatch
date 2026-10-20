@@ -1,5 +1,6 @@
 import { createLogger, type HostAPI, type ToolExecuteContext } from "@dispatch/kernel";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { activate, extension, manifest } from "./extension.js";
 
 function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
@@ -31,6 +32,7 @@ function makeFakeHost(overrides?: { configGet?: (key: string) => unknown }): {
     storage: vi.fn(() => {
       const map = new Map<string, string>();
       return {
+        ...storageFromMap(map),
         get: async (key: string) => map.get(key) ?? null,
         set: async (key: string, value: string) => {
           map.set(key, value);

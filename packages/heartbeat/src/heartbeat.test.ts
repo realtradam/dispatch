@@ -7,11 +7,13 @@ import type {
   TurnEventListener,
 } from "@dispatch/session-orchestrator";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createHeartbeatService } from "./heartbeat.js";
 
 function createMemoryStorage(): StorageNamespace {
   const data = new Map<string, string>();
   return {
+    ...storageFromMap(data),
     get: async (key) => data.get(key) ?? null,
     set: async (key, value) => {
       data.set(key, value);

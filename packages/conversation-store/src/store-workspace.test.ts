@@ -1,10 +1,12 @@
 import type { ChatMessage, StorageNamespace } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createConversationStore, isValidWorkspaceSlug } from "./store.js";
 
 function createMemoryStorage(): StorageNamespace {
   const data = new Map<string, string>();
   return {
+    ...storageFromMap(data),
     get: async (key) => data.get(key) ?? null,
     set: async (key, value) => {
       data.set(key, value);

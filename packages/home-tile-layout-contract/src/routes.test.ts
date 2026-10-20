@@ -1,11 +1,13 @@
 import { EMPTY_TILE_LAYOUT } from "@dispatch/tile-layout-contract";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createTileLayoutRouteHandlers, parseTileLayoutBody } from "./routes";
 import { createHomeTileLayoutService } from "./service";
 
 function makeService() {
   return createHomeTileLayoutService({
     storage: {
+      ...storageFromMap(new Map<string, string>()),
       get: async () => null,
       set: async () => {},
       delete: async () => {},

@@ -1,5 +1,6 @@
 import type { Logger, StorageNamespace } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import {
   hashImageUrl,
   imageTranscriptionKey,
@@ -23,6 +24,7 @@ function createMemoryStorage(): {
   const gets: string[] = [];
   const sets: string[] = [];
   const storage: StorageNamespace = {
+    ...storageFromMap(data),
     get: async (key) => {
       gets.push(key);
       return data.get(key) ?? null;

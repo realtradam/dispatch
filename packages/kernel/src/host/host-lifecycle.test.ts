@@ -26,6 +26,7 @@ import type {
 import type { ProviderContract } from "../contracts/provider.js";
 import type { ToolContract } from "../contracts/tool.js";
 import { createHost, type HostDeps, KERNEL_API_VERSION } from "./host.js";
+import { storageFromMap } from "./storage.test-support.js";
 
 // ── Injected fakes (effects, not mocks of our own modules) ───────────────
 
@@ -108,6 +109,7 @@ function createFakeStorageFactory(): (ns: string) => StorageNamespace {
     }
     const s = store;
     return {
+      ...storageFromMap(s),
       get: async (key: string) => s.get(key) ?? null,
       set: async (key: string, value: string) => {
         s.set(key, value);

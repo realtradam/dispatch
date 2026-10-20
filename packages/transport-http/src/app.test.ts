@@ -30,6 +30,7 @@ import type {
 } from "@dispatch/transport-contract";
 import type { Computer, ComputerEntry, Workspace } from "@dispatch/wire";
 import { describe, expect, it, vi } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createApp } from "./app.js";
 import { extractLastAssistantText } from "./logic.js";
 import type {
@@ -48,6 +49,7 @@ import { conversationOpened } from "./seam.js";
 function createMemStorage(): StorageNamespace {
   const map = new Map<string, string>();
   return {
+    ...storageFromMap(map),
     get: async (k) => map.get(k) ?? null,
     set: async (k, v) => {
       map.set(k, v);

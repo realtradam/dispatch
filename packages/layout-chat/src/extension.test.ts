@@ -1,3 +1,4 @@
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 /**
  * layout-chat integration tests — a REAL kernel host (createBus + createHost
  * + in-memory storage, the plugin-verify pattern — zero Dispatch mocks) with
@@ -59,6 +60,7 @@ function makeHostDeps() {
       }
       const s = store;
       return {
+        ...storageFromMap(s),
         get: async (key: string) => s.get(key) ?? null,
         set: async (key: string, value: string) => {
           s.set(key, value);

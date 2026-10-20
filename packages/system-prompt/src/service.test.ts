@@ -1,5 +1,6 @@
 import type { StorageNamespace } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import type { GitSpawnResult, ResolverAdapters, ResolverFs } from "./resolver.js";
 import { createSystemPromptService, DEFAULT_TEMPLATE } from "./service.js";
 
@@ -7,6 +8,7 @@ import { createSystemPromptService, DEFAULT_TEMPLATE } from "./service.js";
 function memoryStorage(): StorageNamespace {
   const store = new Map<string, string>();
   return {
+    ...storageFromMap(store),
     get: async (key: string) => store.get(key) ?? null,
     set: async (key: string, value: string) => {
       store.set(key, value);

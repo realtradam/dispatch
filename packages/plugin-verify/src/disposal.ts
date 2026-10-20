@@ -1,3 +1,4 @@
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 /**
  * The disposal-contract check — the test-host half of the verify-plugin
  * harness (plan 08 §8.3).
@@ -81,6 +82,7 @@ export function makeHostDeps(logger: Logger) {
       }
       const s = store;
       return {
+        ...storageFromMap(s),
         get: async (key: string) => s.get(key) ?? null,
         set: async (key: string, value: string) => {
           s.set(key, value);
