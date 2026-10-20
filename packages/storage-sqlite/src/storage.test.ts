@@ -1,8 +1,12 @@
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Migration } from "./migrate.js";
 import { computePending } from "./migrate.js";
 import type { SqliteStorageBackend } from "./storage.js";
-import { createSqliteStorage } from "./storage.js";
+import { createSqliteStorage, prefixUpperBound } from "./storage.js";
 
 describe("computePending (pure)", () => {
   it("returns all migrations when none applied", () => {
@@ -38,6 +42,27 @@ describe("computePending (pure)", () => {
     ];
     const result = computePending(new Set(), migrations);
     expect(result.map((m) => m.version)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("prefixUpperBound (pure)", () => {
+  it("increments the final UTF-16 code unit", () => {
+    expect(prefixUpperBound("conv:abc:chunk:")).toBe("conv:abc:chunk;");
+    expect(prefixUpperBound("a")).toBe("b");
+  });
+
+  it("returns null for an empty prefix", () => {
+    expect(prefixUpperBound("")).toBeNull();
+  });
+
+  it("drops trailing maximal code units before incrementing", () => {
+    expect(prefixUpperBound("ab\uffff")).toBe("ac");
+    expect(prefixUpperBound("ab\uffff\uffff")).toBe("ac");
+  });
+
+  it("returns null when no UTF-16 successor exists", () => {
+    expect(prefixUpperBound("\uffff")).toBeNull();
+    expect(prefixUpperBound("\uffff\uffff")).toBeNull();
   });
 });
 
@@ -109,6 +134,48 @@ describe("createSqliteStorage", () => {
       await ns.set("bar:1", "c");
       const keys = await ns.keys("foo");
       expect(keys.toSorted()).toEqual(["foo:1", "foo:2"]);
+    });
+
+    it("treats underscores, percent signs, and case literally", async () => {
+      const ns = backend.storage("test");
+      for (const key of ["conv:a_c:1", "conv:abc:1", "conv:a%c:1", "conv:ABC:1"]) {
+        await ns.set(key, "value");
+        await backend.storage("other").set(key, "other");
+      }
+      expect(await ns.keys("conv:a_c:")).toEqual(["conv:a_c:1"]);
+      expect(await ns.keys("conv:a%c:")).toEqual(["conv:a%c:1"]);
+      expect(await ns.keys("conv:ABC:")).toEqual(["conv:ABC:1"]);
+      expect(await ns.keys("conv:abc:")).toEqual(["conv:abc:1"]);
+    });
+
+    it("sorts both all-key and prefix results without caller sorting", async () => {
+      const ns = backend.storage("test");
+      for (const key of ["foo:z", "bar", "foo:a", "foo:B", ""]) {
+        await ns.set(key, "value");
+      }
+      expect(await ns.keys()).toEqual(["", "bar", "foo:B", "foo:a", "foo:z"]);
+      expect(await ns.keys("foo:")).toEqual(["foo:B", "foo:a", "foo:z"]);
+      expect(await ns.keys("")).toEqual(await ns.keys());
+    });
+
+    it("handles trailing maximal code units and prefixes with no successor", async () => {
+      const ns = backend.storage("test");
+      for (const key of ["a\uffff:z", "a\uffff:a", "a😀", "b", "\uffff", "\uffff:x", "😀"]) {
+        await ns.set(key, "value");
+      }
+      expect(await ns.keys("a\uffff")).toEqual(["a\uffff:a", "a\uffff:z"]);
+      expect(await ns.keys("\uffff")).toEqual(["\uffff", "\uffff:x"]);
+      expect(await ns.keys("\uffff\uffff")).toEqual([]);
+    });
+
+    it("preserves literal matches at UTF-16 and SQLite UTF-8 boundaries", async () => {
+      const ns = backend.storage("test");
+      for (const key of ["\ud7ff:x", "\ue000:x", "😀:x", "😁:x", "\u{10ffff}:x"]) {
+        await ns.set(key, "value");
+      }
+      for (const prefix of ["\ud7ff", "😀", "\u{10ffff}"]) {
+        expect(await ns.keys(prefix)).toEqual([`${prefix}:x`]);
+      }
     });
 
     it("returns empty for no matches", async () => {
@@ -214,5 +281,41 @@ describe("createSqliteStorage — persistence across reopen", () => {
 
     const { unlinkSync } = await import("node:fs");
     unlinkSync(tmpPath);
+  });
+});
+
+describe("prefix query plans", () => {
+  it("uses the primary-key index for bounded and no-successor queries without sorting", () => {
+    const dir = mkdtempSync(join(tmpdir(), "storage-prefix-plan-"));
+    const path = join(dir, "test.db");
+    const backend = createSqliteStorage({ path });
+    try {
+      const db = new Database(path, { readonly: true });
+      try {
+        const bounded = db
+          .query(`EXPLAIN QUERY PLAN
+          SELECT key FROM kv WHERE namespace = ?1 AND key >= ?2 AND key < ?3 ORDER BY key
+        `)
+          .all("test", "conv:abc:", "conv:abc;") as { detail: string }[];
+        const lowerOnly = db
+          .query(`EXPLAIN QUERY PLAN
+          SELECT key FROM kv WHERE namespace = ?1 AND key >= ?2 ORDER BY key
+        `)
+          .all("test", "\uffff") as { detail: string }[];
+        for (const rows of [bounded, lowerOnly]) {
+          const plan = rows.map((row) => row.detail).join("\n");
+          expect(plan).toContain("SEARCH kv USING COVERING INDEX sqlite_autoindex_kv_1");
+          expect(plan).toContain("namespace=? AND key>?");
+          expect(plan).not.toContain("SCAN");
+          expect(plan).not.toContain("TEMP B-TREE");
+        }
+        expect(bounded.map((row) => row.detail).join("\n")).toContain("key<?");
+      } finally {
+        db.close();
+      }
+    } finally {
+      backend.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

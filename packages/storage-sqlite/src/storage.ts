@@ -10,6 +10,17 @@ export interface SqliteStorageBackend {
 
 export type StorageFactory = (opts: { path: string }) => SqliteStorageBackend;
 
+/** UTF-16 prefix successor; null means that no finite successor exists. */
+export function prefixUpperBound(prefix: string): string | null {
+  for (let i = prefix.length - 1; i >= 0; i--) {
+    const unit = prefix.charCodeAt(i);
+    if (unit < 0xffff) {
+      return prefix.slice(0, i) + String.fromCharCode(unit + 1);
+    }
+  }
+  return null;
+}
+
 export function createSqliteStorage(opts: { path: string }): SqliteStorageBackend {
   const db = new Database(opts.path);
   db.exec("PRAGMA journal_mode = WAL;");
@@ -37,8 +48,13 @@ export function createSqliteStorage(opts: { path: string }): SqliteStorageBacken
   );
   const deleteStmt = db.prepare("DELETE FROM kv WHERE namespace = ?1 AND key = ?2");
   const hasStmt = db.prepare("SELECT 1 FROM kv WHERE namespace = ?1 AND key = ?2");
-  const keysAllStmt = db.prepare("SELECT key FROM kv WHERE namespace = ?1");
-  const keysPrefixStmt = db.prepare("SELECT key FROM kv WHERE namespace = ?1 AND key LIKE ?2");
+  const keysAllStmt = db.prepare("SELECT key FROM kv WHERE namespace = ?1 ORDER BY key");
+  const keysPrefixStmt = db.prepare(
+    "SELECT key FROM kv WHERE namespace = ?1 AND key >= ?2 AND key < ?3 ORDER BY key",
+  );
+  const keysFromStmt = db.prepare(
+    "SELECT key FROM kv WHERE namespace = ?1 AND key >= ?2 ORDER BY key",
+  );
   const appliedVersionsStmt = db.prepare("SELECT version FROM _migrations WHERE namespace = ?1");
   const recordMigrationStmt = db.prepare(
     "INSERT INTO _migrations (namespace, version, name) VALUES (?1, ?2, ?3)",
@@ -60,9 +76,22 @@ export function createSqliteStorage(opts: { path: string }): SqliteStorageBacken
         return hasStmt.get(namespace, key) !== null;
       },
       keys: async (prefix?: string) => {
-        if (prefix !== undefined) {
-          const rows = keysPrefixStmt.all(namespace, `${prefix}%`) as { key: string }[];
-          return rows.map((r) => r.key);
+        if (prefix !== undefined && prefix !== "") {
+          const upper = prefixUpperBound(prefix);
+          // A UTF-16 successor can be ill-formed at surrogate boundaries. SQLite
+          // compares UTF-8 bytes, so use a lower-only index range in that case.
+          const lowerOnly = upper === null || /[\ud800-\udfff]/u.test(upper);
+          const rows = (
+            lowerOnly
+              ? keysFromStmt.all(namespace, prefix)
+              : keysPrefixStmt.all(namespace, prefix, upper)
+          ) as { key: string }[];
+          const keys = rows.map((r) => r.key);
+          // Dropping U+FFFF can include supplementary code points in UTF-8 order;
+          // no-successor ranges can too. Keep those exceptional ranges literal.
+          return lowerOnly || prefix.endsWith("\uffff")
+            ? keys.filter((key) => key.startsWith(prefix))
+            : keys;
         }
         const rows = keysAllStmt.all(namespace) as { key: string }[];
         return rows.map((r) => r.key);
