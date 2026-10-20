@@ -21,7 +21,7 @@ import type {
 } from "@dispatch/kernel";
 import { createLogger, runTurn } from "@dispatch/kernel";
 import { createMessageQueueService } from "@dispatch/message-queue";
-import type { SystemPromptService } from "@dispatch/system-prompt";
+import { createSystemPromptService, type SystemPromptService } from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import {
@@ -5872,7 +5872,20 @@ describe("terminal turn-ended", () => {
       },
       resolveProvider: () => provider,
       resolveModel: () => (path === "unknown" ? undefined : { provider, model: "test" }),
-      resolveModelUsability: async () => path !== "unavailable",
+      resolveVisionHandoff: () => ({
+        storeImages: async () => [{ url: "/images/terminal/image.png", mediaType: "image/png" }],
+        prepareForProvider: async (messages) => messages,
+        purgeConversationImages: async () => {},
+      }),
+      resolveModelUsability: async () => {
+        if (path === "unknown" || path === "unavailable") {
+          expect((await store.load("terminal"))[0]?.chunks).toEqual([
+            { type: "text", text: "go" },
+            { type: "image", url: "/images/terminal/image.png" },
+          ]);
+        }
+        return path !== "unavailable";
+      },
       resolveTools: () => [],
       applyToolsFilter: identityApplyToolsFilter,
       runTurn,
@@ -5881,6 +5894,7 @@ describe("terminal turn-ended", () => {
     await orchestrator.handleMessage({
       conversationId: "terminal",
       text: "go",
+      images: [{ url: "data:image/png;base64,AAAA", mediaType: "image/png" }],
       modelName: "test/model",
       onEvent: (event) => events.push(event),
     });
@@ -5894,6 +5908,17 @@ describe("terminal turn-ended", () => {
       { type: "turn-ended", conversationId: "terminal", turnId: events[0]?.turnId, reason },
     ]);
     expect(events.at(-1)?.type).toBe("turn-ended");
+    if (reason === "rejected") {
+      expect(await store.load("terminal")).toEqual([
+        {
+          role: "user",
+          chunks: [
+            { type: "text", text: "go" },
+            { type: "image", url: "/images/terminal/image.png" },
+          ],
+        },
+      ]);
+    }
     expect(events.some((event) => event.type === "error")).toBe(
       reason === "error" || reason === "rejected",
     );
@@ -5902,5 +5927,250 @@ describe("terminal turn-ended", () => {
     );
     expect(orchestrator.isActive("terminal")).toBe(false);
     expect(activeConversations.size).toBe(0);
+  });
+});
+
+// Step 4.5: real store/queue/kernel integration at failure boundaries.
+describe("turn failure durability and queue policy", () => {
+  it.each([
+    "provider-error",
+    "thrown",
+    "rejected",
+  ])("carries queued input after %s", async (path) => {
+    const store = createConversationStore(storageFromMap());
+    const queue = createMessageQueueService({ id: () => "q", now: () => 0, notify: () => {} });
+    let calls = 0;
+    const provider: ProviderContract = {
+      id: "failure",
+      async *stream() {
+        if (path === "provider-error" && calls === 1) {
+          orchestrator.enqueue({ conversationId: "carry", text: "queued" });
+          yield { type: "error", message: "failed" };
+        } else yield { type: "finish", reason: "stop" };
+      },
+    };
+    const { orchestrator, activeConversations } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveQueue: () => queue,
+      resolveProvider: () => {
+        calls++;
+        if (path === "thrown" && calls === 1) {
+          orchestrator.enqueue({ conversationId: "carry", text: "queued" });
+          throw new Error("failed");
+        }
+        return provider;
+      },
+      resolveModel: () => {
+        orchestrator.enqueue({ conversationId: "carry", text: "queued" });
+        return undefined;
+      },
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const ended: AgentEvent[] = [];
+    const completed = new Promise<void>((resolve) =>
+      orchestrator.subscribe("carry", (event) => {
+        if (event.type === "turn-ended") {
+          ended.push(event);
+          if (ended.length === 2) resolve();
+        }
+      }),
+    );
+    orchestrator.startTurn({
+      conversationId: "carry",
+      text: "original",
+      ...(path === "rejected" ? { modelName: "invalid/model" } : {}),
+    });
+    await completed;
+    expect(ended.map((event) => event.type === "turn-ended" && event.reason)).toEqual([
+      path === "rejected" ? "rejected" : "error",
+      "sealed",
+    ]);
+    expect(
+      (await store.load("carry"))
+        .filter((message) => message.role === "user")
+        .map((message) => message.chunks),
+    ).toEqual([[{ type: "text", text: "original" }], [{ type: "text", text: "queued" }]]);
+    expect(queue.getQueue("carry")).toEqual([]);
+    expect(activeConversations.size).toBe(0);
+  });
+
+  it.each([
+    "stop",
+    "close",
+  ])("%s clears queued intent, rejects racing enqueue, and never carries stale input", async (operation) => {
+    const store = createConversationStore(storageFromMap());
+    const snapshots: number[] = [];
+    const queue = createMessageQueueService({
+      id: () => "q",
+      now: () => 0,
+      notify: () => snapshots.push(queue.getQueue("cancel").length),
+    });
+    let calls = 0;
+    const events: AgentEvent[] = [];
+    const provider: ProviderContract = {
+      id: "cancel",
+      async *stream() {
+        if (++calls === 1) {
+          orchestrator.enqueue({ conversationId: "cancel", text: "cancel one" });
+          orchestrator.enqueue({ conversationId: "cancel", text: "cancel two" });
+          if (operation === "close") orchestrator.closeConversation("cancel");
+          else orchestrator.stopTurn("cancel");
+          orchestrator.stopTurn("cancel");
+          expect(orchestrator.enqueue({ conversationId: "cancel", text: "racing" })).toEqual({
+            startedTurn: false,
+            queue: [],
+          });
+        }
+        yield { type: "finish", reason: "stop" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveQueue: () => queue,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    await orchestrator.handleMessage({
+      conversationId: "cancel",
+      text: "original",
+      onEvent: (event) => events.push(event),
+    });
+    expect(calls).toBe(1);
+    expect(events.at(-1)).toMatchObject({ type: "turn-ended", reason: "aborted" });
+    expect(events.some((event) => event.type === "steering")).toBe(false);
+    expect(snapshots).toEqual([1, 2, 0]);
+    await orchestrator.handleMessage({
+      conversationId: "cancel",
+      text: "explicit next",
+      onEvent: () => {},
+    });
+    expect((await store.load("cancel")).flatMap((message) => message.chunks)).toEqual([
+      { type: "text", text: "original" },
+      { type: "text", text: "explicit next" },
+    ]);
+  });
+});
+
+describe("persisted workspace and background failures", () => {
+  it("uses workspace X for initial and carried prompt construction and concurrency admission", async () => {
+    const store = createConversationStore(storageFromMap());
+    const prompt = createSystemPromptService({
+      storage: storageFromMap(),
+      adapters: {
+        spawn: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        fs: { readText: async () => "", exists: async () => false },
+      },
+    });
+    await prompt.setTemplate("[prompt:workspace_id]");
+    const queue = createMessageQueueService({ id: () => "q", now: () => 0, notify: () => {} });
+    const workspaces: string[] = [];
+    const prompts: string[] = [];
+    const provider: ProviderContract = {
+      id: "workspace",
+      async *stream(_messages, _tools, opts) {
+        prompts.push(opts?.systemPrompt ?? "missing");
+        if (prompts.length === 1) {
+          await store.setCwd("workspace", "/changed-cwd");
+          orchestrator.enqueue({ conversationId: "workspace", text: "carried" });
+        }
+        yield { type: "finish", reason: "stop" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveQueue: () => queue,
+      resolveSystemPrompt: () => prompt,
+      resolveConcurrencyLimiter: () => ({
+        acquire: async (_provider, _conversation, workspace) => {
+          workspaces.push(workspace);
+          return () => {};
+        },
+        reportRateLimit: () => {},
+      }),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    let ends = 0;
+    const completed = new Promise<void>((resolve) =>
+      orchestrator.subscribe("workspace", (event) => {
+        if (event.type === "turn-ended" && ++ends === 2) resolve();
+      }),
+    );
+    orchestrator.startTurn({
+      conversationId: "workspace",
+      text: "first",
+      workspaceId: "X",
+      cwd: "/initial-cwd",
+    });
+    await completed;
+    expect(workspaces).toEqual(["X", "X"]);
+    expect(prompts).toEqual(["X", "X"]);
+    expect((await prompt.getWithMeta("workspace")).cwd).toBe("/changed-cwd");
+  });
+
+  it("logs rejected background status, workspace, compaction and image cleanup work", async () => {
+    const store = createConversationStore(storageFromMap());
+    const records: LogRecord[] = [];
+    const logger = createLogger(
+      { extensionId: "session-orchestrator" },
+      { emit: (record) => records.push(record) },
+      { now: () => 0, newId: () => "log" },
+    );
+    const fail = async (): Promise<never> => {
+      throw new Error("background failure");
+    };
+    let closing = false;
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: {
+        ...store,
+        setConversationStatus: fail,
+        getWorkspaceId: async (id) => (closing ? fail() : store.getWorkspaceId(id)),
+      },
+      resolveProvider: () => createFakeProvider([[{ type: "finish", reason: "stop" }]]),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      logger,
+      resolveCompaction: () => ({ compact: fail }),
+      resolveVisionHandoff: () => ({
+        storeImages: async (_id, images) => images,
+        prepareForProvider: async (messages) => messages,
+        purgeConversationImages: fail,
+      }),
+    });
+    await orchestrator.handleMessage({
+      conversationId: "background",
+      text: "go",
+      onEvent: () => {},
+    });
+    // Flush nested best-effort branches, including the post-terminal settled hook.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    closing = true;
+    orchestrator.closeConversation("background");
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    for (const operation of [
+      "set active status",
+      "set idle status",
+      "set closed status",
+      "closed workspace",
+      "auto-compaction",
+      "purge conversation images",
+    ]) {
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          kind: "log",
+          level: "debug",
+          conversationId: "background",
+          msg: `orchestrator: ${operation} failed`,
+          attributes: { error: "background failure" },
+        }),
+      );
+    }
   });
 });
