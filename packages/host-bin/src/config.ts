@@ -1,3 +1,4 @@
+import { dirname, resolve } from "node:path";
 import type { ConfigAccess } from "@dispatch/kernel";
 import {
   formatOpenCodeEnvDiagnostics,
@@ -83,6 +84,16 @@ export function envToConfigMap(
     map["plugins.dir"] = env.DISPATCH_PLUGINS_DIR;
   }
 
+  map["vision.imageDir"] =
+    env.DISPATCH_IMAGE_DIR ??
+    resolve(dirname(env.DISPATCH_DB ?? "./.dispatch-data/dispatch.db"), "images");
+  const retention = env.DISPATCH_IMAGE_RETENTION_DAYS;
+  if (retention !== undefined) {
+    const days = Number(retention);
+    if (retention.trim() === "" || !Number.isFinite(days) || days < 0)
+      throw new Error("DISPATCH_IMAGE_RETENTION_DAYS must be a finite non-negative number");
+    map["vision.imageRetentionDays"] = days;
+  }
   return map;
 }
 

@@ -383,15 +383,17 @@ export function createApp(opts: CreateServerOptions): Hono {
 
   app.get("/health", (c) => c.json({ ok: true }));
 
-  // ── Tmp image serving (vision handoff) ──────────────────────────────────────
+  // ── Durable image serving (vision handoff) ──────────────────────────────────────
   app.get("/images/:conversationId/:imageId", async (c) => {
     const conversationId = c.req.param("conversationId");
     const imageId = c.req.param("imageId");
     if (!/^[A-Za-z0-9_-]{1,128}\.(png|jpe?g|webp|gif|bmp)$/.test(imageId)) {
       return c.json({ error: "Invalid image ID" }, 400);
     }
-    const imageDir = process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images";
-    const { resolve, sep } = await import("node:path");
+    const { dirname, resolve, sep } = await import("node:path");
+    const imageDir =
+      process.env.DISPATCH_IMAGE_DIR ??
+      resolve(dirname(process.env.DISPATCH_DB ?? "./.dispatch-data/dispatch.db"), "images");
     // Local defense in depth: transport-http is core, vision-handoff is standard.
     // Keep this pure path policy local instead of adding a cross-tier dependency.
     const containedPath = (root: string, ...segments: string[]): string | null => {

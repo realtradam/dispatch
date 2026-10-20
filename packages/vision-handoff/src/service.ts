@@ -106,13 +106,13 @@ export interface VisionHandoffDeps {
     transcription: string,
   ) => Promise<void>;
   /**
-   * Save an image data URL to a tmp file and return a compact URL
+   * Save an image data URL to a stored file and return a compact URL
    * (`/images/<conversationId>/<imageId>.<ext>`) that can be persisted in the
    * conversation store instead of the full data URL (which would be megabytes).
    * The frontend serves the image via `GET /images/...`; the provider resolves
    * it back to a data URL via {@link resolveImageUrl} at runtime. When `undefined`,
    * data URLs pass through unchanged (images persist in SQLite — the large-DB
-   * path, for environments without tmp file support).
+   * path, for environments without filesystem storage).
    */
   readonly saveImageToTmp?: (
     conversationId: string,
@@ -132,7 +132,7 @@ export interface VisionHandoffDeps {
    */
   readonly deleteTmpImage?: (compactUrl: string) => Promise<void>;
   /**
-   * Delete all tmp images for a conversation (on conversation close).
+   * Delete all stored images for a conversation (on conversation deletion).
    * Best-effort.
    */
   readonly deleteConversationImages?: (conversationId: string) => Promise<void>;
@@ -158,8 +158,8 @@ export interface VisionHandoffService {
   readonly isVisionCapable: (modelName: string | undefined) => Promise<boolean>;
 
   /**
-   * Store images to tmp files and return compact URLs. Each input image's data
-   * URL is saved to `/tmp/dispatch/images/<conversationId>/<uuid>.<ext>` and
+   * Store images on disk and return compact URLs. Each input image's data
+   * URL is saved to `<data dir>/images/<conversationId>/<uuid>.<ext>` and
    * replaced with a compact HTTP path (`/images/<conversationId>/<uuid>.<ext>`)
    * so the persisted conversation store holds a tiny string, not megabytes of
    * base64. When `saveImageToTmp` is not configured, data URLs pass through
@@ -171,7 +171,7 @@ export interface VisionHandoffService {
   ) => Promise<readonly ImageInput[]>;
 
   /**
-   * Delete all tmp images for a conversation (on close). Best-effort.
+   * Delete all stored images for a conversation (on deletion). Best-effort.
    */
   readonly purgeConversationImages: (conversationId: string) => Promise<void>;
 
@@ -336,7 +336,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
    * replaced by text; every other image is resolved to a data URL lazily (only
    * the ones actually sent natively). A resolution failure falls back to a
    * cached transcription when one exists, else to a short unavailable
-   * placeholder — so a missing tmp file never fails a turn.
+   * placeholder — so a missing stored file never fails a turn.
    *
    * `transcribed` maps PERSISTED URL → transcription text.
    */
@@ -523,7 +523,7 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
         if (convId !== undefined && deps.setImageTranscription !== undefined) {
           await deps.setImageTranscription(convId, entry.url, text);
         }
-        // The image has been transcribed to text — delete the tmp file
+        // The image has been transcribed to text — delete the stored file
         // (the transcription is cached, the raw image is no longer needed).
         // `entry.url` is the PERSISTED compact URL, so cleanup actually runs.
         if (deps.deleteTmpImage !== undefined) {
@@ -627,6 +627,13 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
       // URL and resolve it lazily inside `consultVision` when it is consulted.
       const vision = await resolveVisionModel(undefined, opts?.compactionModel ?? undefined);
       const convId = opts?.conversationId;
+      const cached =
+        convId !== undefined && deps.getImageTranscriptions !== undefined
+          ? await deps.getImageTranscriptions(
+              convId,
+              collectImageEntries(messages).map((entry) => entry.url),
+            )
+          : new Map<string, string>();
 
       const placeholderFn =
         vision !== undefined && convId !== undefined
@@ -658,7 +665,14 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
                 ...(chunk.mimeType !== undefined ? { mimeType: chunk.mimeType } : {}),
               });
             }
-            newChunks.push({ type: "text", text: placeholderFn(seqId) });
+            const transcription = cached.get(chunk.url);
+            newChunks.push({
+              type: "text",
+              text:
+                transcription === undefined
+                  ? placeholderFn(seqId)
+                  : `[Compacted image]: ${transcription}`,
+            });
           } else {
             newChunks.push(chunk);
           }

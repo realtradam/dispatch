@@ -9,17 +9,28 @@
  * image + the model's specific question, and returns the conversation ID + the
  * vision model's answer. Follow-ups go through the dispatch CLI.
  *
- * Images are saved to a tmp directory (`/tmp/dispatch/images/<convId>/`) so the
- * conversation store (SQLite) only holds a compact URL reference — not
- * megabytes of base64. Tmp files are purged on reboot (ephemeral dir), after
- * compaction (the transcription replaces the image), and on conversation close.
+ * Images live in the data directory, with compact URLs persisted in SQLite.
+ * Age-based retention bounds disk use; closing a conversation preserves images.
  *
  * Effects (filesystem, orchestrator) live here in the shell, injected into the
  * service. The pure decisions live in `pure.ts`. No `console.*`; logging via
  * `host.logger`.
  */
 
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  rmdir,
+  unlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { extname, isAbsolute, resolve as pathResolve, sep } from "node:path";
 import { agentManagementHandle } from "@dispatch/agent-management";
 import { conversationStoreHandle } from "@dispatch/conversation-store";
@@ -29,6 +40,7 @@ import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { type ToolAssembly, toolsFilter } from "@dispatch/session-orchestrator";
 import { filterVisionTools } from "./pure.js";
 import { createReadImageTool } from "./read-image.js";
+import { selectExpired } from "./retention.js";
 import { createVisionHandoffService, visionHandoffHandle } from "./service.js";
 import { createConsultVisionTool } from "./tool.js";
 
@@ -118,7 +130,7 @@ export function createImageFileStore(imageDir: string) {
   };
 
   /**
-   * Save a data URL image to a tmp file and return a compact HTTP path.
+   * Save a data URL image to a durable file and return a compact HTTP path.
    * The compact URL (`/images/<conversationId>/<uuid>.<ext>`) is what gets
    * persisted in the conversation store — a tiny string, not megabytes of base64.
    */
@@ -140,7 +152,7 @@ export function createImageFileStore(imageDir: string) {
 
   /**
    * Resolve a compact URL (`/images/<convId>/<imageId>`) back to a data URL by
-   * reading the tmp file. Data URLs and HTTP URLs pass through unchanged.
+   * reading the stored file. Data URLs and HTTP URLs pass through unchanged.
    */
   async function resolveImageUrl(url: string): Promise<string> {
     if (url.startsWith("data:") || url.startsWith("http")) return url;
@@ -163,7 +175,7 @@ export function createImageFileStore(imageDir: string) {
     }
   }
 
-  /** Delete all tmp images for a conversation (on close — best-effort). */
+  /** Delete all images for a deleted conversation (best-effort). */
   async function deleteConversationImages(conversationId: string): Promise<void> {
     const dir = conversationPath(conversationId);
     try {
@@ -173,10 +185,132 @@ export function createImageFileStore(imageDir: string) {
     }
   }
 
-  return { saveImageToTmp, resolveImageUrl, deleteTmpImage, deleteConversationImages };
+  // Inspect only regular image files directly inside real conversation directories.
+  // Never follow symlinks or recursively traverse unknown entries.
+  async function inventory(base: string) {
+    const files: { path: string; mtimeMs: number; size: number; conv: string; name: string }[] = [];
+    const dirs: string[] = [];
+    const entries = await readdir(base, { withFileTypes: true }).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^[A-Za-z0-9_-]{1,128}$/.test(entry.name)) continue;
+      const dir = requirePath(base, entry.name);
+      dirs.push(dir);
+      for (const image of await readdir(dir, { withFileTypes: true })) {
+        if (!image.isFile() || !/^[A-Za-z0-9_-]{1,128}\.(png|jpe?g|webp|gif|bmp)$/.test(image.name))
+          continue;
+        const path = requirePath(dir, image.name);
+        const stat = await lstat(path).catch((error) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        });
+        if (stat?.isFile())
+          files.push({
+            path,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            conv: entry.name,
+            name: image.name,
+          });
+      }
+    }
+    return { files, dirs };
+  }
+
+  async function sweep(nowMs: number, retentionDays: number) {
+    const { files, dirs } = await inventory(root);
+    let deleted = 0;
+    let bytesFreed = 0;
+    for (const file of selectExpired(files, nowMs, retentionDays)) {
+      try {
+        await unlink(requirePath(root, file.conv, file.name));
+        deleted++;
+        bytesFreed += file.size;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    for (const dir of dirs) {
+      await rmdir(dir).catch((error) => {
+        if (error.code !== "ENOTEMPTY" && error.code !== "ENOENT") throw error;
+      });
+    }
+    return { deleted, bytesFreed };
+  }
+
+  async function migrate(legacyDir: string, nowMs: number, retentionDays: number) {
+    if (pathResolve(legacyDir) === root) return;
+    const { files } = await inventory(pathResolve(legacyDir));
+    const expired = new Set(selectExpired(files, nowMs, retentionDays));
+    for (const file of files) {
+      if (expired.has(file)) continue;
+      const dest = requirePath(conversationPath(file.conv), file.name);
+      await mkdir(conversationPath(file.conv), { recursive: true });
+      const staging = `${dest}.${crypto.randomUUID()}.migration`;
+      try {
+        await copyFile(file.path, staging, constants.COPYFILE_EXCL);
+        await utimes(staging, file.mtimeMs / 1000, file.mtimeMs / 1000);
+        // Atomic exclusive publication: never overwrite or expose a partial copy.
+        await link(staging, dest);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      } finally {
+        await unlink(staging).catch(() => {});
+      }
+    }
+  }
+
+  return {
+    saveImageToTmp,
+    resolveImageUrl,
+    deleteTmpImage,
+    deleteConversationImages,
+    sweep,
+    migrate,
+  };
 }
 
-export async function activate(host: HostAPI): Promise<void> {
+const defaultEffects = {
+  legacyDir: "/tmp/dispatch/images",
+  now: Date.now,
+  schedule: (fn: () => void, intervalMs: number) => {
+    const timer = setInterval(fn, intervalMs);
+    timer.unref();
+    return () => clearInterval(timer);
+  },
+};
+interface Lifecycle {
+  cancelTimer: (() => void) | undefined;
+  maintenance: Promise<void>;
+  disposers: (() => void)[];
+}
+
+/** Instance-owned lifecycle; tests inject only clock/timer and legacy-root edges. */
+export function createVisionExtension(effects = defaultEffects): Extension {
+  const lifecycle: Lifecycle = {
+    cancelTimer: undefined,
+    maintenance: Promise.resolve(),
+    disposers: [],
+  };
+  return {
+    manifest,
+    activate: (host) => activateVision(host, effects, lifecycle),
+    async deactivate() {
+      lifecycle.cancelTimer?.();
+      lifecycle.cancelTimer = undefined;
+      await lifecycle.maintenance;
+      for (const dispose of lifecycle.disposers.splice(0)) dispose();
+    },
+  };
+}
+
+async function activateVision(
+  host: HostAPI,
+  effects: typeof defaultEffects,
+  lifecycle: Lifecycle,
+): Promise<void> {
   // dependsOn: ["credential-store"] (manifest) guarantees the service exists
   // here — getService throws when absent, which fails activation and lands
   // this extension in the host's disabled-with-reason list.
@@ -190,7 +324,33 @@ export async function activate(host: HostAPI): Promise<void> {
     return { provider, model: resolved.model };
   };
 
-  const imageFiles = createImageFileStore(process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images");
+  const imageFiles = createImageFileStore(
+    host.config.get<string>("vision.imageDir") ?? ".dispatch-data/images",
+  );
+  const retentionDays = host.config.get<number>("vision.imageRetentionDays") ?? 7;
+  let migrate = true;
+  const maintain = () => {
+    lifecycle.maintenance = lifecycle.maintenance
+      .then(async () => {
+        if (migrate) {
+          try {
+            await imageFiles.migrate(effects.legacyDir, effects.now(), retentionDays);
+            migrate = false;
+          } catch (error) {
+            host.logger.warn("vision-handoff: image migration failed", {
+              error: String(error),
+            });
+          }
+        }
+        const summary = await imageFiles.sweep(effects.now(), retentionDays);
+        host.logger.info("vision-handoff: image retention sweep", summary);
+      })
+      .catch((error) =>
+        host.logger.warn("vision-handoff: image retention failed", { error: String(error) }),
+      );
+    return lifecycle.maintenance;
+  };
+  await maintain();
   const service = createVisionHandoffService({
     credentialStore,
     resolveModel,
@@ -223,7 +383,7 @@ export async function activate(host: HostAPI): Promise<void> {
     logger: host.logger.child({ extensionId: "vision-handoff" }),
   });
 
-  host.provideService(visionHandoffHandle, service);
+  lifecycle.disposers.push(host.provideService(visionHandoffHandle, service));
   host.defineTool(createConsultVisionTool(service));
 
   // read_image — advertised ONLY to vision-capable models (the filter below
@@ -249,15 +409,24 @@ export async function activate(host: HostAPI): Promise<void> {
   // fallback (isVisionCapable). Final toolPolicy application runs AFTER this
   // filter (in session-orchestrator), so a `none`-policy consultation receives
   // neither tool regardless.
-  host.addFilter(toolsFilter, async (assembly: ToolAssembly): Promise<ToolAssembly> => {
-    const capable = await service.isVisionCapable(assembly.modelName);
-    const tools = filterVisionTools(assembly.tools, capable);
-    return { ...assembly, tools };
-  });
+  lifecycle.disposers.push(
+    host.addFilter(toolsFilter, async (assembly: ToolAssembly): Promise<ToolAssembly> => {
+      const capable = await service.isVisionCapable(assembly.modelName);
+      const tools = filterVisionTools(assembly.tools, capable);
+      return { ...assembly, tools };
+    }),
+  );
 
+  lifecycle.cancelTimer = effects.schedule(
+    () => {
+      void maintain();
+    },
+    6 * 60 * 60 * 1000,
+  );
   host.logger.info(
     "vision-handoff: registered (consult_vision + read_image tools, handoff service, model-aware tools filter)",
   );
 }
 
-export const extension: Extension = { manifest, activate };
+export const extension = createVisionExtension();
+export const activate = extension.activate;

@@ -6198,7 +6198,7 @@ describe("persisted workspace and background failures", () => {
     expect((await prompt.getWithMeta("workspace")).cwd).toBe("/changed-cwd");
   });
 
-  it("logs rejected background status, workspace, compaction and image cleanup work", async () => {
+  it("logs rejected background work but preserves images on close", async () => {
     const store = createConversationStore(storageFromMap());
     const records: LogRecord[] = [];
     const logger = createLogger(
@@ -6210,6 +6210,7 @@ describe("persisted workspace and background failures", () => {
       throw new Error("background failure");
     };
     let closing = false;
+    let purges = 0;
     const { orchestrator } = createSessionOrchestrator({
       conversationStore: {
         ...store,
@@ -6225,7 +6226,9 @@ describe("persisted workspace and background failures", () => {
       resolveVisionHandoff: () => ({
         storeImages: async (_id, images) => images,
         prepareForProvider: async (messages) => messages,
-        purgeConversationImages: fail,
+        purgeConversationImages: async () => {
+          purges++;
+        },
       }),
     });
     await orchestrator.handleMessage({
@@ -6238,13 +6241,13 @@ describe("persisted workspace and background failures", () => {
     closing = true;
     orchestrator.closeConversation("background");
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(purges).toBe(0);
     for (const operation of [
       "set active status",
       "set idle status",
       "set closed status",
       "closed workspace",
       "auto-compaction",
-      "purge conversation images",
     ]) {
       expect(records).toContainEqual(
         expect.objectContaining({

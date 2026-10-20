@@ -630,13 +630,20 @@ describe("GET /health", () => {
 });
 
 describe("GET /images filesystem containment", () => {
-  it("serves an image inside the configured root and returns 404 for a missing image", async () => {
+  it.each([
+    true,
+    false,
+  ])("serves durable images with override=%s and returns 404 for expiry", async (override) => {
     const dir = await mkdtemp(join(tmpdir(), "dispatch-http-images-"));
     const previous = process.env.DISPATCH_IMAGE_DIR;
-    process.env.DISPATCH_IMAGE_DIR = join(dir, "images");
+    const previousDb = process.env.DISPATCH_DB;
+    process.env.DISPATCH_DB = join(dir, "dispatch.db");
+    const imageRoot = join(dir, override ? "override-images" : "images");
+    if (override) process.env.DISPATCH_IMAGE_DIR = imageRoot;
+    else delete process.env.DISPATCH_IMAGE_DIR;
     try {
-      await mkdir(join(dir, "images", "mcp-test-001"), { recursive: true });
-      await writeFile(join(dir, "images", "mcp-test-001", "image.png"), "image bytes");
+      await mkdir(join(imageRoot, "mcp-test-001"), { recursive: true });
+      await writeFile(join(imageRoot, "mcp-test-001", "image.png"), "image bytes");
       const app = createApp({
         conversationStore: createFakeConversationStore(),
         orchestrator: createFakeOrchestrator([]),
@@ -651,6 +658,8 @@ describe("GET /images filesystem containment", () => {
     } finally {
       if (previous === undefined) delete process.env.DISPATCH_IMAGE_DIR;
       else process.env.DISPATCH_IMAGE_DIR = previous;
+      if (previousDb === undefined) delete process.env.DISPATCH_DB;
+      else process.env.DISPATCH_DB = previousDb;
       await rm(dir, { recursive: true, force: true });
     }
   });

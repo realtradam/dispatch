@@ -1302,12 +1302,6 @@ export function createSessionOrchestrator(
       void deps.conversationStore
         .setConversationStatus(conversationId, "closed")
         .catch(logFailure(conversationId, "set closed status"));
-      // Purge tmp images for this conversation (best-effort, fire-and-forget).
-      const vh = deps.resolveVisionHandoff?.();
-      if (vh !== undefined)
-        void vh
-          .purgeConversationImages(conversationId)
-          .catch(logFailure(conversationId, "purge conversation images"));
       return { abortedTurn };
     },
 

@@ -1165,3 +1165,19 @@ describe("VisionHandoffService non-vision branch (lazy registry)", () => {
     if ("error" in result) expect(result.error).toContain("no longer available");
   });
 });
+
+it("text-only preparation retains a cached description after image expiry without reading bytes", async () => {
+  const url = "/images/expired/gone.png";
+  const { deps, cache, resolveImageUrl, deleteTmpImage } = makeImageDeps({
+    [url]: "surviving description",
+  });
+  resolveImageUrl.mockRejectedValue(new Error("ENOENT"));
+  const svc = createVisionHandoffService(deps);
+  const result = await svc.prepareForProvider(imagesMessage([url]), "umans/umans-glm-5.2", {
+    conversationId: "expired",
+  });
+  expect(flatText(result)).toContain("[Compacted image]: surviving description");
+  expect(cache.get(url)).toBe("surviving description");
+  expect(resolveImageUrl).not.toHaveBeenCalled();
+  expect(deleteTmpImage).not.toHaveBeenCalled();
+});
