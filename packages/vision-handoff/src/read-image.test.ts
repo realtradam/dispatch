@@ -25,6 +25,8 @@ function makeBackend(opts: {
       return { exitCode: 0, timedOut: false, aborted: false };
     }),
     readFile: vi.fn(async () => ""),
+    readFileBytes: vi.fn(async () => new Uint8Array()),
+    writeFileAtomic: vi.fn(async () => {}),
     writeFile: vi.fn(async () => {}),
     readdir: vi.fn(async () => []),
     exists: vi.fn(async () => true),

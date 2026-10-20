@@ -14,6 +14,8 @@ describe("ExecBackend type conformance", () => {
         aborted: false,
       }),
       readFile: async (_path: string): Promise<string> => "",
+      readFileBytes: async () => new Uint8Array(),
+      writeFileAtomic: async () => {},
       writeFile: async (_path: string, _content: string): Promise<void> => {},
       stat: async (_path: string): Promise<StatResult> => ({ isFile: true, isDirectory: false }),
       readdir: async (_path: string): Promise<readonly DirEntry[]> => [],

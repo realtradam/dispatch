@@ -1,4 +1,15 @@
-import { writeFile as fsWriteFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  writeFile as fsWriteFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -137,6 +148,40 @@ describe("LocalExecBackend", () => {
       // Should resolve shortly after the 300ms timeout, well under 30s.
       expect(elapsed).toBeLessThan(10_000);
     });
+  });
+
+  it("reads raw invalid bytes losslessly", async () => {
+    const path = join(tmpDir, "bytes");
+    const bytes = Buffer.from([0xef, 0xbb, 0xbf, 0xff, 0xc3]);
+    await fsWriteFile(path, bytes);
+    expect(await backend.readFileBytes(path)).toEqual(bytes);
+  });
+
+  it("atomically replaces a symlink target, preserving mode and the symlink", async () => {
+    const target = join(tmpDir, "target");
+    const link = join(tmpDir, "link");
+    await fsWriteFile(target, "old");
+    await chmod(target, 0o751);
+    await symlink(target, link);
+    const held = await open(target, "r");
+    try {
+      await backend.writeFileAtomic(link, "new");
+      expect(await held.readFile("utf8")).toBe("old");
+      expect(await backend.readFile(link)).toBe("new");
+      expect((await stat(target)).mode & 0o7777).toBe(0o751);
+      expect((await lstat(link)).isSymbolicLink()).toBe(true);
+      expect((await readdir(tmpDir)).sort()).toEqual(["link", "target"]);
+    } finally {
+      await held.close();
+    }
+  });
+
+  it("refuses missing and non-regular destinations without temporary files", async () => {
+    await expect(backend.writeFileAtomic(join(tmpDir, "missing"), "new")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(backend.writeFileAtomic(tmpDir, "new")).rejects.toThrow("regular file");
+    expect(await readdir(tmpDir)).toEqual([]);
   });
 
   describe("stat", () => {

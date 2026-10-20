@@ -62,6 +62,12 @@ export function computeReplacement(
   newString: string,
   replaceAll: boolean,
 ): ReplacementSuccess | ReplacementError {
+  if (content.includes("\r\n")) {
+    // Normalize bare LF only, never double an explicit CRLF. Also handles a
+    // single-line match whose replacement introduces new lines.
+    oldString = oldString.replace(/(?<!\r)\n/g, "\r\n");
+    newString = newString.replace(/(?<!\r)\n/g, "\r\n");
+  }
   if (oldString === newString) {
     return { kind: "identical" };
   }
@@ -197,9 +203,9 @@ export function createEditFileTool(deps: {
       const backend: ExecBackend = deps.resolveBackend(ctx.computerId);
 
       // Read the file.
-      let content: string;
+      let bytes: Uint8Array;
       try {
-        content = await backend.readFile(resolvedPath);
+        bytes = await backend.readFileBytes(resolvedPath);
       } catch (err: unknown) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code === "ENOENT") {
@@ -209,6 +215,14 @@ export function createEditFileTool(deps: {
           content: `Error reading file: ${err instanceof Error ? err.message : String(err)}`,
           isError: true,
         };
+      }
+
+      let content: string;
+      try {
+        // ignoreBOM keeps U+FEFF in the text, so re-encoding preserves the BOM.
+        content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+      } catch {
+        return { content: "Error: File is not valid UTF-8; no changes made.", isError: true };
       }
 
       // Pure replacement decision.
@@ -236,7 +250,7 @@ export function createEditFileTool(deps: {
 
       // Write the modified content back.
       try {
-        await backend.writeFile(resolvedPath, result.content);
+        await backend.writeFileAtomic(resolvedPath, result.content);
       } catch (err: unknown) {
         return {
           content: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,

@@ -1,5 +1,9 @@
+import * as fs from "node:fs";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import type { Client, ClientChannel } from "ssh2";
+import type { Client, ClientChannel, SFTPWrapper } from "ssh2";
 import { describe, expect, it } from "vitest";
 import { createSshExecBackend, parsePgidHeader, shellQuote, wrapRemoteCommand } from "./backend.js";
 import type { SshConnection } from "./pool.js";
@@ -105,5 +109,69 @@ describe("remote process-group wrapper and header parser", () => {
     "x".repeat(32),
   ])("passes through an invalid header: %j", (text) => {
     expect(parsePgidHeader(text)).toEqual({ pgid: null, output: text, pending: false });
+  });
+});
+
+// The outermost SFTP/network edge delegates to a real temporary filesystem.
+// Failure injection proves no destination unlink/non-atomic fallback is used.
+describe("SFTP atomic replacement", () => {
+  it.each(["success", "write", "chmod", "rename", "unsupported"])("handles %s", async (failure) => {
+    const dir = await mkdtemp(join(tmpdir(), "sftp-atomic-"));
+    try {
+      const path = join(dir, "file");
+      const bytes = Buffer.from([0xef, 0xbb, 0xbf, 0xff]);
+      await writeFile(path, bytes, { mode: 0o751 });
+      const before = await stat(path);
+      const error = Object.assign(new Error("Permission denied"), { code: 4 });
+      const events: string[] = [];
+      const sftp = {
+        readFile: fs.readFile,
+        realpath: fs.realpath,
+        stat: fs.stat,
+        open: fs.open,
+        write: (...args: Parameters<typeof fs.write>) => {
+          if (failure === "write") (args.at(-1) as (err: Error) => void)(error);
+          else Reflect.apply(fs.write, fs, args);
+        },
+        fchmod: (fd: number, mode: number, cb: (err: Error | null) => void) => {
+          if (failure === "chmod") cb(error);
+          else fs.fchmod(fd, mode, cb);
+        },
+        close: (fd: number, cb: (err: Error | null) => void) => {
+          events.push("close");
+          fs.close(fd, cb);
+        },
+        unlink: (p: string, cb: (err: Error | null) => void) => {
+          expect(p).not.toBe(path);
+          fs.unlink(p, cb);
+        },
+        ext_openssh_rename: (from: string, to: string, cb: (err: Error | null) => void) => {
+          expect(events).toEqual(["close"]);
+          if (failure === "unsupported") throw new Error("Server does not support POSIX rename");
+          if (failure === "rename") cb(error);
+          else fs.rename(from, to, cb);
+        },
+      } as unknown as SFTPWrapper;
+      const conn = { getSftp: async () => sftp } as SshConnection;
+      const backend = createSshExecBackend("test", async () => conn);
+      expect(await backend.readFileBytes(path)).toEqual(bytes);
+      const operation = backend.writeFileAtomic(path, "new😀");
+      if (failure === "success") {
+        await operation;
+        expect(await readFile(path, "utf8")).toBe("new😀");
+        expect((await stat(path)).ino).not.toBe(before.ino);
+      } else {
+        await expect(operation).rejects.toMatchObject({
+          code: failure === "unsupported" ? "EIO" : "EACCES",
+        });
+        expect(await readFile(path)).toEqual(bytes);
+        expect((await stat(path)).ino).toBe(before.ino);
+      }
+      expect((await stat(path)).mode & 0o7777).toBe(0o751);
+      expect(events).toEqual(["close"]);
+      expect(await readdir(dir)).toEqual(["file"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

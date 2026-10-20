@@ -13,6 +13,7 @@
  * call connects (the resolver stays side-effect-free; see exec-backend service).
  */
 
+import { randomUUID } from "node:crypto";
 import type {
   DirEntry,
   ExecBackend,
@@ -20,7 +21,7 @@ import type {
   SpawnParams,
   StatResult,
 } from "@dispatch/exec-backend";
-import type { Client, ClientChannel } from "ssh2";
+import type { Client, ClientChannel, Stats } from "ssh2";
 import { mapSshError } from "./errors.js";
 import type { SshConnection } from "./pool.js";
 
@@ -56,6 +57,50 @@ export function createSshExecBackend(alias: string, acquire: AcquireConnection):
           else resolve(data.toString("utf8"));
         });
       });
+    },
+
+    async readFileBytes(path: string): Promise<Uint8Array> {
+      const sftp = await (await getConn()).getSftp();
+      return new Promise((resolve, reject) => {
+        sftp.readFile(path, (err, data) => {
+          if (err) reject(mapSshError(err, `readFileBytes ${path}`));
+          else resolve(data);
+        });
+      });
+    },
+
+    async writeFileAtomic(path: string, content: string): Promise<void> {
+      const sftp = await (await getConn()).getSftp();
+      const call = <T>(run: (cb: (err: Error | undefined | null, value: T) => void) => void) =>
+        new Promise<T>((resolve, reject) => {
+          try {
+            run((err, value) => {
+              if (err) reject(mapSshError(err, `writeFileAtomic ${path}`));
+              else resolve(value);
+            });
+          } catch (err) {
+            reject(mapSshError(err, `writeFileAtomic ${path}`));
+          }
+        });
+      const target = await call<string>((cb) => sftp.realpath(path, cb));
+      const original = await call<Stats>((cb) => sftp.stat(target, cb));
+      if (!original.isFile()) throw new Error("Atomic write requires a regular file");
+      const temporary = `${target}.dispatch-tmp-${randomUUID()}`;
+      const handle = await call<Buffer>((cb) => sftp.open(temporary, "wx", 0o600, cb));
+      try {
+        try {
+          const data = Buffer.from(content, "utf8");
+          await call<void>((cb) => sftp.write(handle, data, 0, data.length, 0, cb));
+          await call<void>((cb) => sftp.fchmod(handle, original.mode & 0o7777, cb));
+        } finally {
+          await call<void>((cb) => sftp.close(handle, cb));
+        }
+        // SFTP v3 rename cannot overwrite an existing file. Require the POSIX
+        // extension; never unlink the destination or silently degrade atomicity.
+        await call<void>((cb) => sftp.ext_openssh_rename(temporary, target, cb));
+      } finally {
+        await call<void>((cb) => sftp.unlink(temporary, cb)).catch(() => undefined);
+      }
     },
 
     async writeFile(path: string, content: string): Promise<void> {

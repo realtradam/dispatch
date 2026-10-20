@@ -64,6 +64,16 @@ export interface ExecBackend {
   /** Read a file as utf8 text. Throws node:fs-style errors with `.code`. */
   readonly readFile: (path: string) => Promise<string>;
 
+  /** Read raw bytes without lossy decoding. Throws node:fs-style errors with `.code`. */
+  readonly readFileBytes: (path: string) => Promise<Uint8Array>;
+
+  /**
+   * Replace an existing regular file via a same-directory temporary file + atomic rename.
+   * Follows symlinks, preserves permission bits (not ownership/ACLs/hard links), and
+   * cleans up on failure. No non-atomic fallback; no concurrent-writer or fsync guarantee.
+   */
+  readonly writeFileAtomic: (path: string, content: string) => Promise<void>;
+
   /** Write utf8 text to a file. Throws on failure (e.g. missing parent dir). */
   readonly writeFile: (path: string, content: string) => Promise<void>;
 

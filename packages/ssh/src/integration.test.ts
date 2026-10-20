@@ -11,7 +11,18 @@
  * SFTP fs ops, all over the real ssh2-under-Bun edge.
  */
 
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "@dispatch/kernel";
@@ -139,6 +150,27 @@ describe.skipIf(testEnv === null)("SshExecBackend against a real sshd", () => {
     await backend.writeFile(path, "hello-sftp");
     const content = await backend.readFile(path);
     expect(content).toBe("hello-sftp");
+  });
+
+  it("reads raw bytes and atomically replaces a symlink target with its mode intact", async () => {
+    const backend = createSshExecBackend("testremote", async (a) => pool.acquire(a));
+    const path = join(tmpRemoteDir, "atomic");
+    const link = join(tmpRemoteDir, "link");
+    const bytes = Buffer.from([0xef, 0xbb, 0xbf, 0xff]);
+    await writeFile(path, bytes);
+    await chmod(path, 0o751);
+    await symlink(path, link);
+    const before = await stat(path);
+    expect(await backend.readFileBytes(link)).toEqual(bytes);
+    const content = "new😀\r\n".repeat(10_000);
+    await backend.writeFileAtomic(link, content);
+    expect(await readFile(link, "utf8")).toBe(content);
+    expect((await stat(path)).mode & 0o7777).toBe(0o751);
+    expect((await stat(path)).ino).not.toBe(before.ino);
+    await backend.writeFileAtomic(link, "");
+    expect(await readFile(link, "utf8")).toBe("");
+    expect((await stat(path)).mode & 0o7777).toBe(0o751);
+    expect((await readdir(tmpRemoteDir)).sort()).toEqual(["atomic", "link"]);
   });
 
   it("stat reports isFile/isDirectory correctly", async () => {

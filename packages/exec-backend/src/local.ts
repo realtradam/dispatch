@@ -1,5 +1,16 @@
 import { spawn as nodeSpawn } from "node:child_process";
-import { access, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  access,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import type { DirEntry, ExecBackend, ExecResult, SpawnParams, StatResult } from "./backend.js";
 
 /**
@@ -24,6 +35,27 @@ export function createLocalExecBackend(): ExecBackend {
     spawn: localSpawn,
 
     readFile: (path) => readFile(path, "utf8"),
+
+    readFileBytes: (path) => readFile(path),
+
+    writeFileAtomic: async (path, content) => {
+      const target = await realpath(path);
+      const original = await stat(target);
+      if (!original.isFile()) throw new Error("Atomic write requires a regular file");
+      const temporary = `${target}.dispatch-tmp-${randomUUID()}`;
+      const handle = await open(temporary, "wx", 0o600);
+      try {
+        try {
+          await handle.writeFile(content, "utf8");
+          await handle.chmod(original.mode & 0o7777);
+        } finally {
+          await handle.close();
+        }
+        await rename(temporary, target);
+      } finally {
+        await unlink(temporary).catch(() => undefined);
+      }
+    },
 
     writeFile: (path, content) => writeFile(path, content, "utf8"),
 
