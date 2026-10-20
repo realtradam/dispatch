@@ -1,6 +1,6 @@
 import type { Extension, HostAPI, Logger, ToolContract } from "@dispatch/kernel";
 import type { ToolAssembly, toolsFilter } from "@dispatch/session-orchestrator";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { filterMcpTools, makeMcpExtension } from "./extension.js";
 import { encode, FrameDecoder } from "./framing.js";
 import type { SpawnedProcess, SpawnProcess } from "./transport.js";
@@ -93,7 +93,6 @@ interface FakeServer {
  * transport → framing → rpc → client → manager end to end.
  */
 function makeFakeSpawn(server: FakeServer): SpawnProcess {
-  const decoder = new FrameDecoder();
   let dataListeners: Array<(data: Uint8Array) => void> = [];
 
   const emit = (frame: Uint8Array) => {
@@ -104,6 +103,7 @@ function makeFakeSpawn(server: FakeServer): SpawnProcess {
     // Each spawn is a fresh process; reset listeners so a reconnect (after
     // shutdown) doesn't feed closed rpc instances.
     dataListeners = [];
+    const decoder = new FrameDecoder();
     const process: SpawnedProcess = {
       stdin: {
         write: (bytes: Uint8Array) => {
@@ -286,6 +286,67 @@ describe("mcp extension lifecycle", () => {
     if (!t) throw new Error(`tool ${name} not registered`);
     return t;
   }
+
+  it("binds concurrent turns and status to each cwd, without stale tools or duplicate registrations", async () => {
+    vi.useFakeTimers();
+    const spawned: string[] = [];
+    const ext = makeMcpExtension({
+      spawn: (command, opts) => {
+        spawned.push(opts.cwd);
+        return makeFakeSpawn(makeServer([tool("shared", opts.cwd), tool(opts.cwd.slice(1))]))(
+          command,
+          opts,
+        );
+      },
+      readFile: async (path) =>
+        path.endsWith(".dispatch/mcp.json") ? dispatchConfig({ same: { command: "fake" } }) : null,
+      getCwd: () => "/a",
+    });
+    const { host, tools, getFilter, getService } = makeFakeHost();
+    const defineTool = host.defineTool;
+    ext.activate({
+      ...host,
+      defineTool: (t) => {
+        if (tools.has(t.name)) throw new Error("Duplicate tool registration");
+        defineTool(t);
+      },
+    });
+    try {
+      const filter = requireFilter(getFilter);
+      const a = await filter(assembly([], "/a"));
+      const b = await filter(assembly([...tools.values()], "/b"));
+      expect(a.tools.map((t) => t.description)).toContain("[same] /a");
+      expect(b.tools.map((t) => t.description)).toContain("[same] /b");
+      expect(b.tools.map((t) => t.name)).not.toContain("same__a");
+      const service = getService() as {
+        status: (cwd: string) => Promise<readonly { state: string }[]>;
+      };
+      expect((await service.status("/unused"))[0].state).toBe("disconnected");
+      expect((await service.status("/a"))[0].state).toBe("connected");
+      // Old turn adapters must reconnect their own cwd after idle reaping.
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      for (const turn of [a, b]) {
+        const t = requireTool(new Map(turn.tools.map((t) => [t.name, t])), "same__shared");
+        expect(
+          (
+            await t.execute(
+              {},
+              {
+                toolCallId: "call",
+                onOutput: () => {},
+                signal: new AbortController().signal,
+                log: host.logger,
+              },
+            )
+          ).content,
+        ).toBe("ok");
+      }
+      expect(spawned).toEqual(["/a", "/b", "/a", "/b"]);
+    } finally {
+      ext.deactivate?.();
+      vi.useRealTimers();
+    }
+  });
 
   it("registers tools on connect", async () => {
     const server = makeServer([tool("create_object", "Create an object")]);

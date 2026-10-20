@@ -108,22 +108,30 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
       // Track which tool names belong to which server for the filter.
       const toolToServer = new Map<string, string>();
 
-      function registerToolsFromClient(serverId: string, client: McpClient): void {
+      function registerToolsFromClient(server: ResolvedMcpServer, cwd: string, client: McpClient) {
+        const serverId = server.id;
         const tools = client.getTools();
         for (const mcpTool of tools) {
           const name = namespace(serverId, mcpTool.name);
-          toolToServer.set(name, serverId);
-          host.defineTool(adaptTool(serverId, mcpTool, client));
+          if (!toolToServer.has(name)) {
+            toolToServer.set(name, serverId);
+            host.defineTool(adaptTool(serverId, mcpTool, client));
+          }
         }
+        return tools.map((tool) =>
+          adaptTool(serverId, tool, {
+            callTool: (name, args, signal) => manager.callTool(server, cwd, name, args, signal),
+          }),
+        );
       }
 
       async function connectAndRegister(
         server: ResolvedMcpServer,
         cwd: string,
         signal?: AbortSignal,
-      ): Promise<void> {
+      ) {
         const client = await manager.ensureConnected(server, cwd, signal);
-        registerToolsFromClient(server.id, client);
+        const tools = registerToolsFromClient(server, cwd, client);
 
         // Wire list_changed → re-list → re-register. onToolsChanged replaces
         // the handler; ensureConnected returns the same cached client so this
@@ -133,7 +141,7 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
         client.onToolsChanged(async () => {
           try {
             await client.listTools();
-            registerToolsFromClient(server.id, client);
+            registerToolsFromClient(server, cwd, client);
           } catch (err: unknown) {
             logger.error("MCP tools re-list failed", {
               serverId: server.id,
@@ -141,6 +149,7 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
             });
           }
         });
+        return tools;
       }
 
       // Resolve config + ensure servers connected, then drop tools whose
@@ -185,13 +194,14 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
         }
         const timer = setTimeout(() => controller.abort(), MCP_CONNECT_TIMEOUT_MS);
 
+        const currentTools = [];
         try {
           for (const server of servers) {
             try {
-              await connectAndRegister(server, cwd, controller.signal);
+              currentTools.push(...(await connectAndRegister(server, cwd, controller.signal)));
             } catch {
-              // Connection failure / timeout / aborted — the manager tracks
-              // broken state; we keep going (or abort cascades) below.
+              // Only shared handshake failures set backoff. A cancelled
+              // caller leaves the shared connection running for other turns.
             }
             if (controller.signal.aborted) break;
           }
@@ -200,12 +210,15 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
           parentSignal?.removeEventListener("abort", onParentAbort);
         }
 
-        const statuses = manager.status(servers);
-        const connectedIds = new Set(
-          statuses.filter((s) => s.state === "connected").map((s) => s.id),
-        );
-
-        return filterMcpTools(assembly, toolToServer, connectedIds);
+        // Host registrations provide ownership/discovery only. Each turn gets
+        // fresh adapters bound to its own config + cwd, never another turn's client.
+        return {
+          ...assembly,
+          tools: [
+            ...assembly.tools.filter((tool) => !toolToServer.has(tool.name)),
+            ...currentTools,
+          ],
+        };
       });
 
       // Provide the MCP service (status introspection).
@@ -214,7 +227,7 @@ export function makeMcpExtension(deps: McpExtensionDeps): Extension {
           const dispatchMcpJson = await deps.readFile(joinPath(cwd, ".dispatch", "mcp.json"));
           const opencodeJson = await deps.readFile(joinPath(cwd, "opencode.json"));
           const { servers } = resolveServers({ dispatchMcpJson, opencodeJson });
-          return manager.status(servers);
+          return manager.status(servers, cwd);
         },
       };
       host.provideService(mcpServiceHandle, service);
