@@ -9,6 +9,7 @@ export type {
   AgentEvent,
   StatusEvent,
   TurnDoneEvent,
+  TurnEndedEvent,
   TurnErrorEvent,
   TurnInputEvent,
   TurnProviderRetryEvent,

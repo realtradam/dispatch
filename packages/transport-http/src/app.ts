@@ -1759,9 +1759,9 @@ export function createApp(opts: CreateServerOptions): Hono {
   app.get("/conversations/:id/last", async (c) => {
     const conversationId = c.req.param("id");
 
-    // Subscribe BEFORE checking isActive — closes the race where a seal
+    // Subscribe BEFORE checking isActive — closes the race where a terminal event
     // fires between the check and the subscribe (we'd miss it). If idle,
-    // unsubscribe immediately; if active, wait for a `turn-sealed` event
+    // unsubscribe immediately; if active, wait for a `turn-ended` event
     // (or a 60s timeout, then proceed regardless of what's available).
     let turnId: string | undefined;
     let unsubscribe: (() => void) | undefined;
@@ -1776,7 +1776,7 @@ export function createApp(opts: CreateServerOptions): Hono {
           resolve();
         };
         unsubscribe = opts.orchestrator.subscribe(conversationId, (event) => {
-          if (event.type === "turn-sealed") {
+          if (event.type === "turn-ended") {
             turnId = event.turnId;
             finish();
           }
@@ -1785,7 +1785,7 @@ export function createApp(opts: CreateServerOptions): Hono {
           finish();
           return;
         }
-        // A seal may have fired synchronously during subscribe (the
+        // A terminal event may have fired synchronously during subscribe (the
         // real orchestrator never does this, but a fake might) — don't
         // arm a 60s timer for an already-settled promise.
         if (settled) return;

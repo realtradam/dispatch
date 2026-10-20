@@ -3940,7 +3940,12 @@ describe("GET /conversations/:id/last", () => {
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
       subscribe(conversationId, listener) {
-        const event = { type: "turn-sealed" as const, conversationId, turnId };
+        const event = {
+          type: "turn-ended" as const,
+          conversationId,
+          turnId,
+          reason: "sealed" as const,
+        };
         setTimeout(() => listener(event), 0);
         return () => {};
       },

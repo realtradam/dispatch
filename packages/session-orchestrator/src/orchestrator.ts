@@ -15,6 +15,7 @@ import type {
   RunTurnResult,
   ToolContract,
   ToolDispatchPolicy,
+  TurnEndedEvent,
 } from "@dispatch/kernel";
 import { defineService, type ServiceHandle } from "@dispatch/kernel";
 import type { MessageQueueService, QueuedMessage } from "@dispatch/message-queue";
@@ -705,7 +706,10 @@ export function createSessionOrchestrator(
       };
     });
 
-    payloadPromise.then((payload) => {
+    // Observe setup failures in lifecycle branches; the turn catch reports them.
+    const lifecyclePayloadPromise = payloadPromise.catch(() => undefined);
+    void lifecyclePayloadPromise.then((payload) => {
+      if (payload === undefined) return;
       deps.emit?.(turnStarted, payload);
       // Resolve the persisted workspace id (not the per-turn start option)
       // before emitting so the broadcast carries the correct workspace.
@@ -721,6 +725,7 @@ export function createSessionOrchestrator(
 
     void (async () => {
       let sealed = false;
+      let endReason: TurnEndedEvent["reason"] = "error";
       // Per-turn metrics accumulator. Hoisted out of the try so a turn that
       // THROWS (e.g. a store failure mid-turn) still persists the metrics it
       // accumulated — every turn that produced steps gets a metrics row, so
@@ -799,6 +804,7 @@ export function createSessionOrchestrator(
         ) {
           const usable = await deps.resolveModelUsability(effectiveModelName, turnWorkspaceId);
           if (!usable) {
+            endReason = "rejected";
             emitToHub(conversationId, {
               type: "error",
               conversationId,
@@ -812,6 +818,7 @@ export function createSessionOrchestrator(
         if (effectiveModelName !== undefined && deps.resolveModel !== undefined) {
           const resolved = deps.resolveModel(effectiveModelName);
           if (resolved === undefined) {
+            endReason = "rejected";
             emitToHub(conversationId, {
               type: "error",
               conversationId,
@@ -1211,6 +1218,13 @@ export function createSessionOrchestrator(
           },
         });
 
+        endReason =
+          result.finishReason === "error"
+            ? "error"
+            : result.finishReason === "aborted"
+              ? "aborted"
+              : "sealed";
+
         // Per-turn memory telemetry: capture a sample immediately AFTER the
         // stream completes and log the per-turn delta vs `memBefore`. A
         // positive rss delta on a sealed turn flags memory retained by the
@@ -1241,6 +1255,7 @@ export function createSessionOrchestrator(
         emitToHub(conversationId, { type: "turn-sealed", conversationId, turnId });
         sealed = true;
       } catch (err) {
+        endReason = "error";
         // Persist whatever metrics the failed turn accumulated (steps that
         // ran before the failure), so its row exists like any other turn's.
         // Best-effort: a store that is failing may fail again — never mask
@@ -1253,10 +1268,7 @@ export function createSessionOrchestrator(
             // Swallow — the turn's own error is what gets reported.
           }
         }
-        // A deliberate stop aborts the turn. The kernel already sealed a single
-        // `done("aborted")` event (its terminal). Do NOT emit an additional
-        // `error` — the client would see both an error and the aborted done
-        // event. Skipping here leaves `done("aborted")` as the sole terminal.
+        // Deliberate Stop is not an error; finally reports the terminal abort.
         if (!controller.signal.aborted) {
           const message = err instanceof Error ? err.message : String(err);
           emitToHub(conversationId, {
@@ -1268,6 +1280,12 @@ export function createSessionOrchestrator(
         }
       } finally {
         activeTurns.delete(conversationId);
+        emitToHub(conversationId, {
+          type: "turn-ended",
+          conversationId,
+          turnId,
+          reason: controller.signal.aborted ? "aborted" : endReason,
+        });
         // Abort-specific observability: log the deliberate cancellation with its
         // latency from turn start to the abort, tagged by conversation + turn.
         if (controller.signal.aborted) {
@@ -1289,7 +1307,8 @@ export function createSessionOrchestrator(
         if (!carried) {
           activeConversations.delete(conversationId);
         }
-        void payloadPromise.then((payload) => {
+        void lifecyclePayloadPromise.then((payload) => {
+          if (payload === undefined) return;
           deps.emit?.(turnSettled, payload);
           if (!carried) {
             // Resolve the persisted workspace id before emitting so the
@@ -1510,13 +1529,17 @@ export function createSessionOrchestrator(
       }
 
       await new Promise<void>((resolve) => {
-        const unsubscribe = orchestrator.subscribe(conversationId, (event) => {
+        let ended = false;
+        let unsubscribe: (() => void) | undefined;
+        unsubscribe = orchestrator.subscribe(conversationId, (event) => {
           onEvent(event);
-          if (event.type === "turn-sealed" || event.type === "error") {
-            unsubscribe();
+          if (event.type === "turn-ended") {
+            ended = true;
+            unsubscribe?.();
             resolve();
           }
         });
+        if (ended) unsubscribe();
       });
     },
   };

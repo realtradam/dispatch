@@ -30,7 +30,11 @@ import { describe, expect, it, vi } from "vitest";
 // Public barrel: allows isolated tests before orchestrator-owned workspace relinking.
 import { createMessageQueueService } from "../../message-queue/src/index.js";
 import { type AgentManagementDeps, createAgentManagementService } from "./service.js";
-import { createCancelAgentMessageTool, createSendAgentMessageTool } from "./tools/index.js";
+import {
+  createCancelAgentMessageTool,
+  createSendAgentMessageTool,
+  createSummonAgentTool,
+} from "./tools/index.js";
 
 // ─── in-memory StorageNamespace (the outermost edge) ────────────────────────
 
@@ -1112,5 +1116,71 @@ describe("global messaging resolution edge cases", () => {
     } finally {
       await f.finish();
     }
+  });
+});
+
+describe("terminal child turn waits", () => {
+  it.each([
+    "unknown",
+    "provider-error",
+    "send",
+  ])("returns child-turn-failed without a wait timeout: %s", async (path) => {
+    const { service: namedAgents } = await makeNamedAgents([
+      { id: "test", name: "Rejected child", model: "test/missing" },
+    ]);
+    const { deps } = makeDeps({ namedAgents, credentialStore: makeFakeCredentialStore([]) });
+    const store = deps.conversationStore;
+    const provider: ProviderContract = {
+      id: "test",
+      async *stream() {
+        yield { type: "error", message: "provider failed" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveModel: () => (path === "provider-error" ? { provider, model: "test" } : undefined),
+      resolveTools: () => [],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    const svc = createAgentManagementService({
+      ...deps,
+      resolveOrchestrator: () => orchestrator,
+      maxWaitMs: 120_000,
+    });
+    const error = {
+      code: "child-turn-failed",
+      message: path === "provider-error" ? "provider failed" : "unknown model: test/missing",
+    };
+    if (path === "send") {
+      await store.setConversationTitle("child", "child");
+      await store.setModel("child", "test/missing");
+      expect(
+        await svc.send({
+          callerConversationId: "caller",
+          conversationId: "child",
+          message: "go",
+          wait: true,
+        }),
+      ).toEqual({ ok: false, error });
+    } else {
+      const tool = createSummonAgentTool(svc);
+      const result = await tool.execute(
+        { agent: "Rejected child", task: "go", wait: true },
+        {
+          conversationId: "caller",
+          toolCallId: "summon",
+          signal: new AbortController().signal,
+          onOutput: () => {},
+          log: deps.logger,
+        },
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(error.code);
+      expect(result.content).toContain(error.message);
+      expect(result.content).not.toContain("timeout");
+    }
+    expect(orchestrator.getActiveConversationCount()).toBe(0);
   });
 });

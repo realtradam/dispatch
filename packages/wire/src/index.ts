@@ -340,6 +340,7 @@ export type AgentEvent =
   | TurnProviderRetryEvent
   | TurnDoneEvent
   | TurnSealedEvent
+  | TurnEndedEvent
   | TurnSteeringEvent;
 
 /** Status change for a conversation (e.g. idle → running). */
@@ -570,6 +571,18 @@ export interface TurnSealedEvent {
   readonly type: "turn-sealed";
   readonly conversationId: string;
   readonly turnId: string;
+}
+
+/**
+ * Exactly one terminal event per orchestrated turn, after any seal/error.
+ * `error` events can be non-terminal; consumers waiting for completion use this.
+ * Rejected turns never reached generation (for example an unknown model).
+ */
+export interface TurnEndedEvent {
+  readonly type: "turn-ended";
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly reason: "sealed" | "error" | "aborted" | "rejected";
 }
 
 /**

@@ -2517,7 +2517,7 @@ describe("detached turn hub", () => {
     expect(types[0]).toBe("user-message");
     expect(types[1]).toBe("turn-start");
     expect(types).toContain("text-delta");
-    expect(types[types.length - 1]).toBe("turn-sealed");
+    expect(types[types.length - 1]).toBe("turn-ended");
 
     const textDeltas = events.filter((e) => e.type === "text-delta");
     expect(textDeltas).toHaveLength(2);
@@ -2561,7 +2561,7 @@ describe("detached turn hub", () => {
     const types = eventsA.map((e) => e.type);
     expect(types[0]).toBe("user-message");
     expect(types[1]).toBe("turn-start");
-    expect(types[types.length - 1]).toBe("turn-sealed");
+    expect(types[types.length - 1]).toBe("turn-ended");
   });
 
   it("late-join replay — subscriber added mid-turn receives buffered events then live events, no gap/dup", async () => {
@@ -2796,7 +2796,7 @@ describe("detached turn hub", () => {
     expect(lateEvents).toHaveLength(0);
   });
 
-  it("handleMessage convenience — drives turn end-to-end via onEvent and resolves on seal", async () => {
+  it("handleMessage convenience — drives turn end-to-end via onEvent and resolves on turn-ended", async () => {
     const store = createInMemoryStore();
     const provider = createFakeProvider([
       [
@@ -2825,7 +2825,7 @@ describe("detached turn hub", () => {
     expect(types[0]).toBe("user-message");
     expect(types[1]).toBe("turn-start");
     expect(types).toContain("text-delta");
-    expect(types[types.length - 1]).toBe("turn-sealed");
+    expect(types[types.length - 1]).toBe("turn-ended");
 
     const stored = store.data.get("conv-hm");
     expect(stored).toHaveLength(2);
@@ -5827,5 +5827,80 @@ describe("vision handoff effective image limit (model image cap)", () => {
     });
 
     expect(modelInfoCalls).toBe(0);
+  });
+});
+
+describe("terminal turn-ended", () => {
+  it.each([
+    "sealed",
+    "provider-error",
+    "thrown",
+    "setup",
+    "unknown",
+    "unavailable",
+    "aborted",
+  ])("emits exactly one terminal event after persistence/error for %s", async (path) => {
+    const store = createConversationStore(storageFromMap());
+    const provider: ProviderContract = {
+      id: "terminal-test",
+      async *stream() {
+        if (path === "aborted") {
+          orchestrator.stopTurn("terminal");
+          orchestrator.stopTurn("terminal");
+        }
+        if (path === "provider-error") yield { type: "error", message: "provider failed" };
+        else yield { type: "finish", reason: "stop" };
+      },
+    };
+    const { orchestrator, activeConversations } = createSessionOrchestrator({
+      conversationStore: {
+        ...store,
+        ...(path === "thrown"
+          ? {
+              load: async () => {
+                throw new Error("load failed");
+              },
+            }
+          : {}),
+        ...(path === "setup"
+          ? {
+              getEffectiveCwd: async () => {
+                throw new Error("setup failed");
+              },
+            }
+          : {}),
+      },
+      resolveProvider: () => provider,
+      resolveModel: () => (path === "unknown" ? undefined : { provider, model: "test" }),
+      resolveModelUsability: async () => path !== "unavailable",
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const events: AgentEvent[] = [];
+    await orchestrator.handleMessage({
+      conversationId: "terminal",
+      text: "go",
+      modelName: "test/model",
+      onEvent: (event) => events.push(event),
+    });
+    const reason =
+      path === "unknown" || path === "unavailable"
+        ? "rejected"
+        : path === "sealed" || path === "aborted"
+          ? path
+          : "error";
+    expect(events.filter((event) => event.type === "turn-ended")).toEqual([
+      { type: "turn-ended", conversationId: "terminal", turnId: events[0]?.turnId, reason },
+    ]);
+    expect(events.at(-1)?.type).toBe("turn-ended");
+    expect(events.some((event) => event.type === "error")).toBe(
+      reason === "error" || reason === "rejected",
+    );
+    expect(events.some((event) => event.type === "turn-sealed")).toBe(
+      ["sealed", "aborted", "provider-error"].includes(path),
+    );
+    expect(orchestrator.isActive("terminal")).toBe(false);
+    expect(activeConversations.size).toBe(0);
   });
 });
