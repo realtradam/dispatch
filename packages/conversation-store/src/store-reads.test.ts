@@ -14,6 +14,18 @@ function trackedStorage(data: Map<string, string>) {
   };
   const storage: StorageNamespace = {
     ...reference,
+    transaction: (fn) =>
+      reference.transaction((tx) =>
+        fn({
+          ...tx,
+          entries: (prefix, opts) => {
+            reads.entries.push({ prefix, opts });
+            const rows = tx.entries(prefix, opts);
+            reads.rows += rows.length;
+            return rows;
+          },
+        }),
+      ),
     keys: async (prefix = "") => {
       reads.keys.push(prefix);
       return reference.keys(prefix);

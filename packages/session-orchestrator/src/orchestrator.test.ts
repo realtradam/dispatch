@@ -67,6 +67,9 @@ function createInMemoryStore(): ConversationStore & {
   // orchestrator's newness detection (meta === null) matches reality.
   const knownConversations = new Set<string>();
   return {
+    async runExclusive(_conversationId, fn) {
+      return await fn();
+    },
     data,
     metricsData,
     cwdData,

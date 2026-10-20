@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve as pathResolve } from "node:path";
 import type {
   ChatMessage,
@@ -40,8 +41,26 @@ import {
   workspaceKey,
 } from "./keys.js";
 import { reconcileWithReport } from "./reconcile.js";
+import { createWriteLock } from "./write-lock.js";
+
+type StorageTx = Parameters<Parameters<StorageNamespace["transaction"]>[0]>[0];
+export type ConversationExclusive = <T>(
+  conversationId: string,
+  fn: () => T | PromiseLike<T>,
+) => Promise<T>;
 
 export interface ConversationStore {
+  /**
+   * FIFO exclusion for this store instance, held across awaits. Sync/async results
+   * and failures propagate. Same-id calls and writes in the callback's async
+   * descendants reenter while its outer ownership is active; unrelated callers
+   * queue. Ownership is revoked when that outer callback settles, so escaped
+   * descendants subsequently queue normally. Await all work needing exclusion.
+   * Does not make the callback one transaction or lock reads. Different ids run
+   * independently; callers acquiring multiple ids must use a consistent order
+   * to avoid cycles. Fork locks only its target and snapshots source in its tx.
+   */
+  readonly runExclusive: ConversationExclusive;
   /**
    * Append messages to the log. `opts.turnId` stamps every appended chunk with
    * the turn that produced it (returned as `StoredChunk.turnId` by
@@ -233,6 +252,12 @@ export interface ConversationStore {
    * target's status is set to "closed" (it's an archive) and `compactedFrom`
    * is set to `sourceId`. Used by compaction to preserve the pre-compaction
    * history non-destructively before replacing it with a summary.
+   * Locks targetId only; source rows/scalars are one transaction snapshot,
+   * copied without parsing chunk values. For a stable source across fork +
+   * replace, hold runExclusive(sourceId) and await both operations. Use a fresh
+   * target: existing target-only rows are not removed (legacy copy behavior).
+   * Reciprocal forks while holding each other's target can deadlock, like any
+   * inconsistent multi-id acquisition. The pair is NOT one transaction.
    */
   readonly forkHistory: (sourceId: string, targetId: string) => Promise<void>;
   /** Get the compact percent (0-100, 0 = manual only), or null if unset. */
@@ -353,7 +378,9 @@ export interface ConversationStore {
    * Delete a workspace: (1) find all conversations with `workspaceId === id`,
    * (2) set each to `status = "closed"` and reassign `workspaceId = "default"`,
    * (3) delete the workspace entity. Returns `closedCount`. Throws if `id
-   * === "default"`.
+   * === "default"`. Locks the affected indexed conversations in sorted order, then
+   * revalidates workspace membership and mutates in one transaction. Call outside held
+   * conversation locks (or obey that same ordering) to avoid multi-id cycles.
    */
   readonly deleteWorkspace: (id: string) => Promise<{ closedCount: number }>;
   /**
@@ -724,6 +751,82 @@ export function createConversationStore(
   now: () => number = Date.now,
   serverDefaultCwd: string = process.cwd(),
 ): ConversationStore {
+  const lock = createWriteLock();
+  // Adapter-only async ownership, never module-global. Shared lease objects are
+  // revoked before unlocking; inherited/escaped async contexts cannot revive them.
+  const ownership = new AsyncLocalStorage<ReadonlyMap<string, { active: boolean }>>();
+  const runExclusive: ConversationExclusive = async (id, fn) => {
+    const inherited = ownership.getStore();
+    if (inherited?.get(id)?.active) return await fn();
+    return lock.runExclusive(id, async () => {
+      const lease = { active: true };
+      const context = new Map([...(inherited ?? [])].filter(([, owner]) => owner.active));
+      context.set(id, lease);
+      try {
+        return await ownership.run(context, fn);
+      } finally {
+        lease.active = false;
+      }
+    });
+  };
+  function write<T>(id: string, fn: (tx: StorageTx) => T): Promise<T> {
+    return runExclusive(id, () => storage.transaction(fn));
+  }
+
+  function updateMeta(
+    tx: StorageTx,
+    id: string,
+    patch: Partial<ConversationMetaRow>,
+    indexOnCreate = true,
+  ): void {
+    const raw = tx.get(metaKey(id));
+    const existing = raw === null ? null : parseMetaRow(raw);
+    const ts = now();
+    const base = existing ?? {
+      createdAt: ts,
+      lastActivityAt: ts,
+      title: "Untitled",
+      status: "idle",
+    };
+    tx.set(metaKey(id), JSON.stringify({ ...base, ...patch }));
+    if (existing === null && indexOnCreate) ensureInIndex(tx, id);
+  }
+
+  function updateWorkspace(
+    tx: StorageTx,
+    id: string,
+    patch: Partial<WorkspaceRow>,
+    ts = now(),
+  ): Workspace {
+    const base = readWorkspaceRowTx(tx, id) ?? {
+      title: id,
+      defaultCwd: null,
+      defaultComputerId: null,
+      starred: false,
+      archived: false,
+      createdAt: ts,
+      lastActivityAt: ts,
+    };
+    const row = { ...base, ...patch };
+    tx.set(workspaceKey(id), JSON.stringify(row));
+    return toWorkspace(id, row);
+  }
+
+  async function withLocks<T>(ids: readonly string[], fn: () => Promise<T>): Promise<T> {
+    const [id, ...rest] = ids;
+    return id === undefined ? fn() : runExclusive(id, () => withLocks(rest, fn));
+  }
+  function indexIds(raw: string | null): string[] {
+    try {
+      const parsed: unknown = JSON.parse(raw ?? "[]");
+      return Array.isArray(parsed)
+        ? [...new Set(parsed.filter((v): v is string => typeof v === "string"))]
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
   /** Batch the scalar metadata reads, shared by list and single-meta responses. */
   async function enrichMeta(meta: ConversationMeta): Promise<ConversationMeta> {
     const [model, parentConversationId, override] = await Promise.all([
@@ -740,14 +843,9 @@ export function createConversationStore(
     };
   }
 
-  /**
-   * Add `conversationId` to the persisted index (idempotent). The store is
-   * not highly concurrent — the session-orchestrator serializes turns per
-   * conversation — so a simple read-modify-write suffices; `listConversations`
-   * deduplicates on read in case of a race on this update.
-   */
-  async function ensureInIndex(conversationId: string): Promise<void> {
-    const raw = await storage.get(CONVERSATION_INDEX_KEY);
+  /** Index RMW is part of the caller's synchronous transaction. */
+  function ensureInIndex(tx: StorageTx, conversationId: string): void {
+    const raw = tx.get(CONVERSATION_INDEX_KEY);
     let ids: string[];
     if (raw === null) {
       ids = [];
@@ -762,7 +860,7 @@ export function createConversationStore(
     }
     if (ids.includes(conversationId)) return;
     ids.push(conversationId);
-    await storage.set(CONVERSATION_INDEX_KEY, JSON.stringify(ids));
+    tx.set(CONVERSATION_INDEX_KEY, JSON.stringify(ids));
   }
 
   /**
@@ -774,6 +872,11 @@ export function createConversationStore(
     return parseWorkspaceRow(raw);
   }
 
+  function readWorkspaceRowTx(tx: StorageTx, id: string): WorkspaceRow | null {
+    const raw = tx.get(workspaceKey(id));
+    return raw === null ? null : parseWorkspaceRow(raw);
+  }
+
   /**
    * Bump a workspace's `lastActivityAt` to `ts`. Creates the workspace row on
    * miss (with `title = id`, `defaultCwd = null`, `createdAt/lastActivityAt
@@ -781,29 +884,8 @@ export function createConversationStore(
    * synthesized `"default"` — is recorded. Does NOT touch `title` or
    * `defaultCwd` on an existing row.
    */
-  async function bumpWorkspaceLastActivityAt(workspaceId: string, ts: number): Promise<void> {
-    const existing = await readWorkspaceRow(workspaceId);
-    const row: WorkspaceRow =
-      existing === null
-        ? {
-            title: workspaceId,
-            defaultCwd: null,
-            defaultComputerId: null,
-            starred: false,
-            archived: false,
-            createdAt: ts,
-            lastActivityAt: ts,
-          }
-        : {
-            title: existing.title,
-            defaultCwd: existing.defaultCwd,
-            defaultComputerId: existing.defaultComputerId,
-            starred: existing.starred,
-            archived: existing.archived,
-            createdAt: existing.createdAt,
-            lastActivityAt: ts,
-          };
-    await storage.set(workspaceKey(workspaceId), JSON.stringify(row));
+  function bumpWorkspaceLastActivityAt(tx: StorageTx, workspaceId: string, ts: number): void {
+    updateWorkspace(tx, workspaceId, { lastActivityAt: ts }, ts);
   }
 
   /**
@@ -812,12 +894,13 @@ export function createConversationStore(
    * `turnIdOf(flatIdx)` resolves the producing turn of the flatIdx-th chunk
    * (flattened across all messages, in order) — `undefined` = none.
    */
-  async function appendChunks(
+  function appendChunks(
+    tx: StorageTx,
     conversationId: string,
     messages: readonly ChatMessage[],
     turnIdOf: (flatIdx: number) => string | undefined,
-  ): Promise<void> {
-    const raw = await storage.get(seqKey(conversationId));
+  ): void {
+    const raw = tx.get(seqKey(conversationId));
     let seq = parseSeq(raw) + 1;
     let flat = 0;
 
@@ -836,18 +919,18 @@ export function createConversationStore(
           chunkIdx,
           ...(turnId !== undefined ? { turnId } : {}),
         };
-        await storage.set(chunkKey(conversationId, seq), JSON.stringify(entry));
+        tx.set(chunkKey(conversationId, seq), JSON.stringify(entry));
         seq++;
       }
     }
 
-    await storage.set(seqKey(conversationId), String(seq - 1));
+    tx.set(seqKey(conversationId), String(seq - 1));
 
     // Metadata upsert: track createdAt/lastActivityAt/title and keep the
     // conversation discoverable in the index.
     const ts = now();
     let conversationWorkspaceId = DEFAULT_WORKSPACE_ID;
-    const metaRaw = await storage.get(metaKey(conversationId));
+    const metaRaw = tx.get(metaKey(conversationId));
     if (metaRaw === null) {
       const row: ConversationMetaRow = {
         createdAt: ts,
@@ -855,8 +938,8 @@ export function createConversationStore(
         title: extractTitle(messages),
         status: "idle",
       };
-      await storage.set(metaKey(conversationId), JSON.stringify(row));
-      await ensureInIndex(conversationId);
+      tx.set(metaKey(conversationId), JSON.stringify(row));
+      ensureInIndex(tx, conversationId);
     } else {
       const existing = parseMetaRow(metaRaw);
       if (existing === null) {
@@ -867,8 +950,8 @@ export function createConversationStore(
           title: extractTitle(messages),
           status: "idle",
         };
-        await storage.set(metaKey(conversationId), JSON.stringify(row));
-        await ensureInIndex(conversationId);
+        tx.set(metaKey(conversationId), JSON.stringify(row));
+        ensureInIndex(tx, conversationId);
       } else {
         conversationWorkspaceId = existing.workspaceId ?? DEFAULT_WORKSPACE_ID;
         const title =
@@ -885,17 +968,19 @@ export function createConversationStore(
             : {}),
           ...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
         };
-        await storage.set(metaKey(conversationId), JSON.stringify(row));
+        tx.set(metaKey(conversationId), JSON.stringify(row));
       }
     }
     // Bump the owning workspace's lastActivityAt to this append's time.
-    await bumpWorkspaceLastActivityAt(conversationWorkspaceId, ts);
+    bumpWorkspaceLastActivityAt(tx, conversationWorkspaceId, ts);
   }
 
   return {
+    runExclusive,
+
     async append(conversationId, messages, opts) {
       const turnId = opts?.turnId;
-      await appendChunks(conversationId, messages, () => turnId);
+      await write(conversationId, (tx) => appendChunks(tx, conversationId, messages, () => turnId));
     },
 
     async load(conversationId) {
@@ -1008,10 +1093,12 @@ export function createConversationStore(
     },
 
     async appendMetrics(conversationId, metrics) {
-      const raw = await storage.get(metricsSeqKey(conversationId));
-      const ordinal = parseSeq(raw) + 1;
-      await storage.set(metricsKey(conversationId, ordinal), JSON.stringify(metrics));
-      await storage.set(metricsSeqKey(conversationId), String(ordinal));
+      return write(conversationId, (tx) => {
+        const raw = tx.get(metricsSeqKey(conversationId));
+        const ordinal = parseSeq(raw) + 1;
+        tx.set(metricsKey(conversationId, ordinal), JSON.stringify(metrics));
+        tx.set(metricsSeqKey(conversationId), String(ordinal));
+      });
     },
 
     async loadMetrics(conversationId) {
@@ -1025,18 +1112,22 @@ export function createConversationStore(
     },
 
     async setCwd(conversationId, cwd) {
-      await storage.set(cwdKey(conversationId), cwd);
-      if (logger !== undefined) {
-        logger.debug("cwd set", { conversationId });
-      }
+      return write(conversationId, (tx) => {
+        tx.set(cwdKey(conversationId), cwd);
+        if (logger !== undefined) {
+          logger.debug("cwd set", { conversationId });
+        }
+      });
     },
 
     async clearCwd(conversationId) {
-      // Idempotent: deleting an already-absent key is a no-op (no error).
-      await storage.delete(cwdKey(conversationId));
-      if (logger !== undefined) {
-        logger.debug("cwd cleared", { conversationId });
-      }
+      return write(conversationId, (tx) => {
+        // Idempotent: deleting an already-absent key is a no-op (no error).
+        tx.delete(cwdKey(conversationId));
+        if (logger !== undefined) {
+          logger.debug("cwd cleared", { conversationId });
+        }
+      });
     },
 
     async getComputerId(conversationId) {
@@ -1044,29 +1135,33 @@ export function createConversationStore(
     },
 
     async setComputerId(conversationId, alias) {
-      // `null` is the "local" sentinel: clear the persisted key so it does
-      // NOT linger to shadow the workspace defaultComputerId. Idempotent
-      // (deleting an already-absent key is a no-op). Mirrors `setModel`'s
-      // clear-on-sentinel pattern.
-      if (alias === null) {
-        await storage.delete(computerKey(conversationId));
-        if (logger !== undefined) {
-          logger.debug("computer cleared", { conversationId });
+      return write(conversationId, (tx) => {
+        // `null` is the "local" sentinel: clear the persisted key so it does
+        // NOT linger to shadow the workspace defaultComputerId. Idempotent
+        // (deleting an already-absent key is a no-op). Mirrors `setModel`'s
+        // clear-on-sentinel pattern.
+        if (alias === null) {
+          tx.delete(computerKey(conversationId));
+          if (logger !== undefined) {
+            logger.debug("computer cleared", { conversationId });
+          }
+          return;
         }
-        return;
-      }
-      await storage.set(computerKey(conversationId), alias);
-      if (logger !== undefined) {
-        logger.debug("computer set", { conversationId });
-      }
+        tx.set(computerKey(conversationId), alias);
+        if (logger !== undefined) {
+          logger.debug("computer set", { conversationId });
+        }
+      });
     },
 
     async clearComputerId(conversationId) {
-      // Idempotent: deleting an already-absent key is a no-op (no error).
-      await storage.delete(computerKey(conversationId));
-      if (logger !== undefined) {
-        logger.debug("computer cleared", { conversationId });
-      }
+      return write(conversationId, (tx) => {
+        // Idempotent: deleting an already-absent key is a no-op (no error).
+        tx.delete(computerKey(conversationId));
+        if (logger !== undefined) {
+          logger.debug("computer cleared", { conversationId });
+        }
+      });
     },
 
     async getReasoningEffort(conversationId) {
@@ -1074,10 +1169,12 @@ export function createConversationStore(
     },
 
     async setReasoningEffort(conversationId, effort) {
-      await storage.set(reasoningEffortKey(conversationId), effort);
-      if (logger !== undefined) {
-        logger.debug("reasoning-effort set", { conversationId });
-      }
+      return write(conversationId, (tx) => {
+        tx.set(reasoningEffortKey(conversationId), effort);
+        if (logger !== undefined) {
+          logger.debug("reasoning-effort set", { conversationId });
+        }
+      });
     },
 
     async getModel(conversationId) {
@@ -1085,41 +1182,39 @@ export function createConversationStore(
     },
 
     async setModel(conversationId, model) {
-      if (model === "") {
-        // Idempotent clear: an empty model clears the persisted selection.
-        // Deleting an already-absent key is a no-op. Clearing the model also
-        // clears the Named Agent selection snapshot — the frozen friendly
-        // label is meaningless once the model selection is gone (they are
-        // set together, so they clear together).
-        await storage.delete(modelKey(conversationId));
-        await storage.delete(namedAgentSelectionKey(conversationId));
-        if (logger !== undefined) {
-          logger.debug("model cleared", { conversationId });
+      return write(conversationId, (tx) => {
+        if (model === "") {
+          // Idempotent clear: an empty model clears the persisted selection.
+          // Deleting an already-absent key is a no-op. Clearing the model also
+          // clears the Named Agent selection snapshot — the frozen friendly
+          // label is meaningless once the model selection is gone (they are
+          // set together, so they clear together).
+          tx.delete(modelKey(conversationId));
+          tx.delete(namedAgentSelectionKey(conversationId));
+          if (logger !== undefined) {
+            logger.debug("model cleared", { conversationId });
+          }
+          return;
         }
-        return;
-      }
-      await storage.set(modelKey(conversationId), model);
-      if (logger !== undefined) {
-        logger.debug("model set", { conversationId });
-      }
+        tx.set(modelKey(conversationId), model);
+        if (logger !== undefined) {
+          logger.debug("model set", { conversationId });
+        }
+      });
     },
 
     async migrateLegacyOpenCodeModels() {
-      // Enumerate every persisted `conv:<id>:model` key.
-      const legacyPrefix = "opencode/";
-      const modelSuffix = ":model";
-      const convKeys = await storage.keys("conv:");
+      const suffix = ":model";
       let migrated = 0;
-      for (const key of convKeys) {
-        if (!key.endsWith(modelSuffix)) continue;
-        const raw = await storage.get(key);
-        if (raw === null) continue;
-        if (!raw.startsWith(legacyPrefix)) continue; // only the obsolete namespace
-        const model = raw.slice(legacyPrefix.length);
-        if (model.length === 0) continue;
-        // Migrate `opencode/<model>` → `opencode-1/<model>`.
-        await storage.set(key, `opencode-1/${model}`);
-        migrated++;
+      for (const key of await storage.keys("conv:")) {
+        if (!key.endsWith(suffix)) continue;
+        const id = key.slice(5, -suffix.length);
+        migrated += await write(id, (tx) => {
+          const raw = tx.get(key);
+          if (raw === null || !raw.startsWith("opencode/") || raw.length === 9) return 0;
+          tx.set(key, `opencode-1/${raw.slice(9)}`);
+          return 1;
+        });
       }
       return migrated;
     },
@@ -1131,8 +1226,10 @@ export function createConversationStore(
     },
 
     async setTabGroupParentId(conversationId, parentId) {
-      // Absence means lineage fallback; empty string means explicitly ungrouped.
-      await storage.set(tabGroupParentKey(conversationId), parentId ?? "");
+      return write(conversationId, (tx) => {
+        // Absence means lineage fallback; empty string means explicitly ungrouped.
+        tx.set(tabGroupParentKey(conversationId), parentId ?? "");
+      });
     },
 
     async getParentConversationId(conversationId) {
@@ -1140,38 +1237,40 @@ export function createConversationStore(
     },
 
     async setParentConversationId(conversationId, parentId) {
-      // Self-parent is a trivial cycle — refuse it outright.
-      if (conversationId === parentId) {
-        if (logger !== undefined) {
-          logger.warn("refused self-parent (would form a trivial cycle)", { conversationId });
-        }
-        return;
-      }
-      // Cycle guard: setting `conversationId → parentId` closes a loop iff
-      // `conversationId` is already an ancestor of `parentId` (i.e. parentId
-      // descends from conversationId). Walk parentId's ancestor chain; if we
-      // ever reach `conversationId`, refuse the write so cycles cannot arise
-      // through this public write-on-create path (§7.4). Non-cycle writes
-      // still upsert (a later acyclic set overwrites an earlier parent).
-      let cursor: string | null = parentId;
-      const guard = new Set<string>();
-      while (cursor !== null) {
-        if (cursor === conversationId) {
+      return write(conversationId, (tx) => {
+        // Self-parent is a trivial cycle — refuse it outright.
+        if (conversationId === parentId) {
           if (logger !== undefined) {
-            logger.warn("refused cyclic parent link", { conversationId, parentId });
+            logger.warn("refused self-parent (would form a trivial cycle)", { conversationId });
           }
           return;
         }
-        // Defensive: stop walking if the persisted lineage already contains a
-        // cycle (should be unreachable via this path, but never loop forever).
-        if (guard.has(cursor)) break;
-        guard.add(cursor);
-        cursor = await storage.get(parentKey(cursor));
-      }
-      await storage.set(parentKey(conversationId), parentId);
-      if (logger !== undefined) {
-        logger.debug("parentConversationId set", { conversationId });
-      }
+        // Cycle guard: setting `conversationId → parentId` closes a loop iff
+        // `conversationId` is already an ancestor of `parentId` (i.e. parentId
+        // descends from conversationId). Walk parentId's ancestor chain; if we
+        // ever reach `conversationId`, refuse the write so cycles cannot arise
+        // through this public write-on-create path (§7.4). Non-cycle writes
+        // still upsert (a later acyclic set overwrites an earlier parent).
+        let cursor: string | null = parentId;
+        const guard = new Set<string>();
+        while (cursor !== null) {
+          if (cursor === conversationId) {
+            if (logger !== undefined) {
+              logger.warn("refused cyclic parent link", { conversationId, parentId });
+            }
+            return;
+          }
+          // Defensive: stop walking if the persisted lineage already contains a
+          // cycle (should be unreachable via this path, but never loop forever).
+          if (guard.has(cursor)) break;
+          guard.add(cursor);
+          cursor = tx.get(parentKey(cursor));
+        }
+        tx.set(parentKey(conversationId), parentId);
+        if (logger !== undefined) {
+          logger.debug("parentConversationId set", { conversationId });
+        }
+      });
     },
 
     async getToolPolicy(conversationId) {
@@ -1180,10 +1279,12 @@ export function createConversationStore(
     },
 
     async setToolPolicy(conversationId, policy) {
-      await storage.set(toolPolicyKey(conversationId), JSON.stringify(policy));
-      if (logger !== undefined) {
-        logger.debug("toolPolicy set", { conversationId });
-      }
+      return write(conversationId, (tx) => {
+        tx.set(toolPolicyKey(conversationId), JSON.stringify(policy));
+        if (logger !== undefined) {
+          logger.debug("toolPolicy set", { conversationId });
+        }
+      });
     },
 
     async getNamedAgentSelection(conversationId) {
@@ -1192,10 +1293,12 @@ export function createConversationStore(
     },
 
     async setNamedAgentSelection(conversationId, snapshot) {
-      await storage.set(namedAgentSelectionKey(conversationId), JSON.stringify(snapshot));
-      if (logger !== undefined) {
-        logger.debug("named-agent-selection set", { conversationId });
-      }
+      return write(conversationId, (tx) => {
+        tx.set(namedAgentSelectionKey(conversationId), JSON.stringify(snapshot));
+        if (logger !== undefined) {
+          logger.debug("named-agent-selection set", { conversationId });
+        }
+      });
     },
 
     async listChildren(parentId) {
@@ -1227,61 +1330,63 @@ export function createConversationStore(
       return children;
     },
     async deleteConversation(conversationId) {
-      // Purge every persisted key for this conversation. The seq-suffixed
-      // chunk and metrics keys are removed via their segment prefixes
-      // (`chunkPrefix`/`metricsPrefix`); the scalar metadata keys (including
-      // the lineage `parent` and `toolPolicy` keys) are deleted explicitly.
-      // This explicit enumeration avoids a bare `conv:{id}:` prefix scan,
-      // which would be unsafe if a conversation id ever contained a colon.
-      for (const k of await storage.keys(chunkPrefix(conversationId))) {
-        await storage.delete(k);
-      }
-      for (const k of await storage.keys(metricsPrefix(conversationId))) {
-        await storage.delete(k);
-      }
-      // Per-image transcription rows: one hash-keyed row each. Prefix-deleted
-      // (rather than enumerated) alongside the legacy single-blob key.
-      for (const k of await storage.keys(imageTranscriptionPrefix(conversationId))) {
-        await storage.delete(k);
-      }
-      for (const k of [
-        seqKey(conversationId),
-        metaKey(conversationId),
-        cwdKey(conversationId),
-        computerKey(conversationId),
-        reasoningEffortKey(conversationId),
-        modelKey(conversationId),
-        compactThresholdKey(conversationId),
-        legacyImageTranscriptionsKey(conversationId),
-        parentKey(conversationId),
-        tabGroupParentKey(conversationId),
-        toolPolicyKey(conversationId),
-        namedAgentSelectionKey(conversationId),
-        metricsSeqKey(conversationId),
-      ]) {
-        await storage.delete(k);
-      }
-      // Remove the conversation from the persisted index (idempotent if
-      // absent).
-      const indexRaw = await storage.get(CONVERSATION_INDEX_KEY);
-      if (indexRaw !== null) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(indexRaw);
-        } catch {
-          parsed = [];
+      return write(conversationId, (tx) => {
+        // Purge every persisted key for this conversation. The seq-suffixed
+        // chunk and metrics keys are removed via their segment prefixes
+        // (`chunkPrefix`/`metricsPrefix`); the scalar metadata keys (including
+        // the lineage `parent` and `toolPolicy` keys) are deleted explicitly.
+        // This explicit enumeration avoids a bare `conv:{id}:` prefix scan,
+        // which would be unsafe if a conversation id ever contained a colon.
+        for (const k of tx.entries(chunkPrefix(conversationId)).map(([key]) => key)) {
+          tx.delete(k);
         }
-        const ids = Array.isArray(parsed)
-          ? (parsed.filter((v) => typeof v === "string") as string[])
-          : [];
-        const filtered = ids.filter((id) => id !== conversationId);
-        if (filtered.length !== ids.length) {
-          await storage.set(CONVERSATION_INDEX_KEY, JSON.stringify(filtered));
+        for (const k of tx.entries(metricsPrefix(conversationId)).map(([key]) => key)) {
+          tx.delete(k);
         }
-      }
-      if (logger !== undefined) {
-        logger.debug("conversation deleted", { conversationId });
-      }
+        // Per-image transcription rows: one hash-keyed row each. Prefix-deleted
+        // (rather than enumerated) alongside the legacy single-blob key.
+        for (const k of tx.entries(imageTranscriptionPrefix(conversationId)).map(([key]) => key)) {
+          tx.delete(k);
+        }
+        for (const k of [
+          seqKey(conversationId),
+          metaKey(conversationId),
+          cwdKey(conversationId),
+          computerKey(conversationId),
+          reasoningEffortKey(conversationId),
+          modelKey(conversationId),
+          compactThresholdKey(conversationId),
+          legacyImageTranscriptionsKey(conversationId),
+          parentKey(conversationId),
+          tabGroupParentKey(conversationId),
+          toolPolicyKey(conversationId),
+          namedAgentSelectionKey(conversationId),
+          metricsSeqKey(conversationId),
+        ]) {
+          tx.delete(k);
+        }
+        // Remove the conversation from the persisted index (idempotent if
+        // absent).
+        const indexRaw = tx.get(CONVERSATION_INDEX_KEY);
+        if (indexRaw !== null) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(indexRaw);
+          } catch {
+            parsed = [];
+          }
+          const ids = Array.isArray(parsed)
+            ? (parsed.filter((v) => typeof v === "string") as string[])
+            : [];
+          const filtered = ids.filter((id) => id !== conversationId);
+          if (filtered.length !== ids.length) {
+            tx.set(CONVERSATION_INDEX_KEY, JSON.stringify(filtered));
+          }
+        }
+        if (logger !== undefined) {
+          logger.debug("conversation deleted", { conversationId });
+        }
+      });
     },
     async listConversations(filter) {
       const raw = await storage.get(CONVERSATION_INDEX_KEY);
@@ -1293,7 +1398,7 @@ export function createConversationStore(
         return [];
       }
       if (!Array.isArray(parsed)) return [];
-      // Deduplicate (in case of a race on the index update) while preserving
+      // Deduplicate legacy index entries while preserving
       // first-seen order.
       const seen = new Set<string>();
       const ids: string[] = [];
@@ -1337,43 +1442,7 @@ export function createConversationStore(
     },
 
     async setConversationTitle(conversationId, title) {
-      const ts = now();
-      const raw = await storage.get(metaKey(conversationId));
-      if (raw === null) {
-        // Title set before any message was appended — create a minimal row.
-        const row: ConversationMetaRow = {
-          createdAt: ts,
-          lastActivityAt: ts,
-          title,
-          status: "idle",
-        };
-        await storage.set(metaKey(conversationId), JSON.stringify(row));
-        await ensureInIndex(conversationId);
-        return;
-      }
-      const existing = parseMetaRow(raw);
-      if (existing === null) {
-        // Corrupt row — rewrite from scratch with this title.
-        const row: ConversationMetaRow = {
-          createdAt: ts,
-          lastActivityAt: ts,
-          title,
-          status: "idle",
-        };
-        await storage.set(metaKey(conversationId), JSON.stringify(row));
-        await ensureInIndex(conversationId);
-        return;
-      }
-      // Preserve createdAt + lastActivityAt + status; update only the title.
-      const row: ConversationMetaRow = {
-        createdAt: existing.createdAt,
-        lastActivityAt: existing.lastActivityAt,
-        title,
-        status: existing.status,
-        ...(existing.compactedFrom !== undefined ? { compactedFrom: existing.compactedFrom } : {}),
-        ...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
-      };
-      await storage.set(metaKey(conversationId), JSON.stringify(row));
+      await write(conversationId, (tx) => updateMeta(tx, conversationId, { title }));
     },
 
     async getConversationStatus(conversationId) {
@@ -1385,129 +1454,97 @@ export function createConversationStore(
     },
 
     async setConversationStatus(conversationId, status) {
-      const ts = now();
-      const raw = await storage.get(metaKey(conversationId));
-      if (raw === null) {
-        // Status set before any message was appended — create a minimal row.
-        const row: ConversationMetaRow = {
-          createdAt: ts,
-          lastActivityAt: ts,
-          title: "Untitled",
-          status,
-        };
-        await storage.set(metaKey(conversationId), JSON.stringify(row));
-        await ensureInIndex(conversationId);
-        return;
-      }
-      const existing = parseMetaRow(raw);
-      if (existing === null) {
-        const row: ConversationMetaRow = {
-          createdAt: ts,
-          lastActivityAt: ts,
-          title: "Untitled",
-          status,
-        };
-        await storage.set(metaKey(conversationId), JSON.stringify(row));
-        await ensureInIndex(conversationId);
-        return;
-      }
-      const row: ConversationMetaRow = {
-        createdAt: existing.createdAt,
-        lastActivityAt: existing.lastActivityAt,
-        title: existing.title,
-        status,
-        ...(existing.compactedFrom !== undefined ? { compactedFrom: existing.compactedFrom } : {}),
-        ...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
-      };
-      await storage.set(metaKey(conversationId), JSON.stringify(row));
+      await write(conversationId, (tx) => updateMeta(tx, conversationId, { status }));
     },
 
     async replaceHistory(conversationId, messages) {
-      const keys = await storage.keys(chunkPrefix(conversationId));
+      return write(conversationId, (tx) => {
+        const rows = tx.entries(chunkPrefix(conversationId));
 
-      // Carry each kept chunk's `turnId` over. Compaction keeps a verbatim
-      // recent TAIL of the old history ([summary, ...recent]); align the new
-      // chunk list against the old one from the END and copy the turnId while
-      // role + content match exactly (the summary never matches, so the walk
-      // stops there). Keeps per-turn metrics placement exact after compaction.
-      const oldEntries: PersistedChunkEntry[] = [];
-      for (const k of [...keys].sort()) {
-        const value = await storage.get(k);
-        if (value === null) continue;
-        try {
-          oldEntries.push(JSON.parse(value) as PersistedChunkEntry);
-        } catch {
-          // Corrupt row — cannot match; ignore.
+        // Carry each kept chunk's `turnId` over. Compaction keeps a verbatim
+        // recent TAIL of the old history ([summary, ...recent]); align the new
+        // chunk list against the old one from the END and copy the turnId while
+        // role + content match exactly (the summary never matches, so the walk
+        // stops there). Keeps per-turn metrics placement exact after compaction.
+        const oldEntries: PersistedChunkEntry[] = [];
+        for (const [, value] of rows) {
+          try {
+            oldEntries.push(JSON.parse(value) as PersistedChunkEntry);
+          } catch {
+            // Corrupt row — cannot match; ignore.
+          }
         }
-      }
-      const flat: { readonly role: Role; readonly chunk: Chunk }[] = [];
-      for (const m of messages) for (const chunk of m.chunks) flat.push({ role: m.role, chunk });
-      const turnIds: (string | undefined)[] = flat.map(() => undefined);
-      for (let i = flat.length - 1, j = oldEntries.length - 1; i >= 0 && j >= 0; i--, j--) {
-        const n = flat[i];
-        const o = oldEntries[j];
-        if (n === undefined || o === undefined) break;
-        if (n.role !== o.role || JSON.stringify(n.chunk) !== JSON.stringify(o.chunk)) break;
-        turnIds[i] = o.turnId;
-      }
+        const flat: { readonly role: Role; readonly chunk: Chunk }[] = [];
+        for (const m of messages) for (const chunk of m.chunks) flat.push({ role: m.role, chunk });
+        const turnIds: (string | undefined)[] = flat.map(() => undefined);
+        for (let i = flat.length - 1, j = oldEntries.length - 1; i >= 0 && j >= 0; i--, j--) {
+          const n = flat[i];
+          const o = oldEntries[j];
+          if (n === undefined || o === undefined) break;
+          if (n.role !== o.role || JSON.stringify(n.chunk) !== JSON.stringify(o.chunk)) break;
+          turnIds[i] = o.turnId;
+        }
 
-      // Delete all existing chunks.
-      for (const k of keys) {
-        await storage.delete(k);
-      }
-      // Reset the seq counter so the new messages start from seq 1.
-      await storage.set(seqKey(conversationId), "0");
-      // Append the new messages (re-uses the append logic for seq numbering +
-      // metadata upsert) in ONE call so msgIdx-based message boundaries are
-      // unchanged; each kept chunk keeps its producing turn.
-      await appendChunks(conversationId, messages, (flatIdx) => turnIds[flatIdx]);
+        // Delete all existing chunks.
+        for (const [k] of rows) {
+          tx.delete(k);
+        }
+        // Reset the seq counter so the new messages start from seq 1.
+        tx.set(seqKey(conversationId), "0");
+        // Append the new messages (re-uses the append logic for seq numbering +
+        // metadata upsert) in ONE call so msgIdx-based message boundaries are
+        // unchanged; each kept chunk keeps its producing turn.
+        appendChunks(tx, conversationId, messages, (flatIdx) => turnIds[flatIdx]);
+      });
     },
 
     async forkHistory(sourceId, targetId) {
-      // Copy all chunks from source to target, re-numbered from seq 1.
-      const rows = await storage.entries(chunkPrefix(sourceId));
-      let seq = 1;
-      for (const [, value] of rows) {
-        await storage.set(chunkKey(targetId, seq), value);
-        seq++;
-      }
-      await storage.set(seqKey(targetId), String(Math.max(seq - 1, 0)));
-
-      // Copy metadata with archive title + closed status.
-      // Inherit compactedFrom from the source so archives chain:
-      // A → Y → X (each archive points to the previous one).
-      const metaRaw = await storage.get(metaKey(sourceId));
-      if (metaRaw !== null) {
-        const existing = parseMetaRow(metaRaw);
-        if (existing !== null) {
-          const row: ConversationMetaRow = {
-            createdAt: existing.createdAt,
-            lastActivityAt: existing.lastActivityAt,
-            title: `Archive: ${existing.title}`,
-            status: "closed",
-            ...(existing.compactedFrom !== undefined
-              ? { compactedFrom: existing.compactedFrom }
-              : {}),
-            ...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
-          };
-          await storage.set(metaKey(targetId), JSON.stringify(row));
+      return write(targetId, (tx) => {
+        // Copy all chunks from source to target, re-numbered from seq 1.
+        const rows = tx.entries(chunkPrefix(sourceId));
+        let seq = 1;
+        for (const [, value] of rows) {
+          tx.set(chunkKey(targetId, seq), value);
+          seq++;
         }
-      }
-      await ensureInIndex(targetId);
+        tx.set(seqKey(targetId), String(Math.max(seq - 1, 0)));
 
-      // Copy cwd + reasoning-effort + model + computer (so the archive is self-contained).
-      const cwd = await storage.get(cwdKey(sourceId));
-      if (cwd !== null) await storage.set(cwdKey(targetId), cwd);
-      const effort = await storage.get(reasoningEffortKey(sourceId));
-      if (effort !== null) await storage.set(reasoningEffortKey(targetId), effort);
-      const model = await storage.get(modelKey(sourceId));
-      if (model !== null) await storage.set(modelKey(targetId), model);
-      const computerId = await storage.get(computerKey(sourceId));
-      if (computerId !== null) await storage.set(computerKey(targetId), computerId);
-      // Copy the Named Agent selection snapshot so the archive stays faithful to
-      // how the source was selected (a re-selection label frozen at select time).
-      const snapshot = await this.getNamedAgentSelection(sourceId);
-      if (snapshot !== null) await this.setNamedAgentSelection(targetId, snapshot);
+        // Copy metadata with archive title + closed status.
+        // Inherit compactedFrom from the source so archives chain:
+        // A → Y → X (each archive points to the previous one).
+        const metaRaw = tx.get(metaKey(sourceId));
+        if (metaRaw !== null) {
+          const existing = parseMetaRow(metaRaw);
+          if (existing !== null) {
+            const row: ConversationMetaRow = {
+              createdAt: existing.createdAt,
+              lastActivityAt: existing.lastActivityAt,
+              title: `Archive: ${existing.title}`,
+              status: "closed",
+              ...(existing.compactedFrom !== undefined
+                ? { compactedFrom: existing.compactedFrom }
+                : {}),
+              ...(existing.workspaceId !== undefined ? { workspaceId: existing.workspaceId } : {}),
+            };
+            tx.set(metaKey(targetId), JSON.stringify(row));
+          }
+        }
+        ensureInIndex(tx, targetId);
+
+        // Copy cwd + reasoning-effort + model + computer (so the archive is self-contained).
+        const cwd = tx.get(cwdKey(sourceId));
+        if (cwd !== null) tx.set(cwdKey(targetId), cwd);
+        const effort = tx.get(reasoningEffortKey(sourceId));
+        if (effort !== null) tx.set(reasoningEffortKey(targetId), effort);
+        const model = tx.get(modelKey(sourceId));
+        if (model !== null) tx.set(modelKey(targetId), model);
+        const computerId = tx.get(computerKey(sourceId));
+        if (computerId !== null) tx.set(computerKey(targetId), computerId);
+        // Copy the Named Agent selection snapshot so the archive stays faithful to
+        // how the source was selected (a re-selection label frozen at select time).
+        const snapshot = parseNamedAgentSelectionSnapshot(tx.get(namedAgentSelectionKey(sourceId)));
+        if (snapshot !== null) tx.set(namedAgentSelectionKey(targetId), JSON.stringify(snapshot));
+      });
     },
 
     async getCompactPercent(conversationId) {
@@ -1518,10 +1555,12 @@ export function createConversationStore(
     },
 
     async setCompactPercent(conversationId, percent) {
-      await storage.set(compactThresholdKey(conversationId), String(percent));
-      if (logger !== undefined) {
-        logger.debug("compact-percent set", { conversationId, percent });
-      }
+      return write(conversationId, (tx) => {
+        tx.set(compactThresholdKey(conversationId), String(percent));
+        if (logger !== undefined) {
+          logger.debug("compact-percent set", { conversationId, percent });
+        }
+      });
     },
 
     async getImageTranscriptions(conversationId, urls) {
@@ -1536,8 +1575,10 @@ export function createConversationStore(
     },
 
     async setImageTranscription(conversationId, imageUrl, transcription) {
-      // ONE small write. No read-modify-write of a whole-conversation blob.
-      await storage.set(imageTranscriptionKey(conversationId, imageUrl), transcription);
+      return write(conversationId, (tx) => {
+        // ONE small write. No read-modify-write of a whole-conversation blob.
+        tx.set(imageTranscriptionKey(conversationId, imageUrl), transcription);
+      });
     },
 
     async migrateImageTranscriptions() {
@@ -1554,42 +1595,44 @@ export function createConversationStore(
         if (!key.endsWith(legacySuffix)) continue;
         const conversationId = key.slice(convPrefix.length, key.length - legacySuffix.length);
         if (conversationId.length === 0) continue;
-        const raw = await storage.get(key);
-        if (raw === null) continue;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch (err) {
-          // "Never leave the system broken": a malformed blob must not fail
-          // boot. Log it and leave it in place (no data loss); it is never read
-          // by runtime code, so it stays inert.
-          skipped++;
-          if (logger !== undefined) {
-            logger.warn("skipping malformed legacy image-transcription blob", {
-              conversationId,
-              error: err instanceof Error ? err.message : String(err),
-            });
+        await write(conversationId, (tx) => {
+          const raw = tx.get(key);
+          if (raw === null) return;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(raw);
+          } catch (err) {
+            // "Never leave the system broken": a malformed blob must not fail
+            // boot. Log it and leave it in place (no data loss); it is never read
+            // by runtime code, so it stays inert.
+            skipped++;
+            if (logger !== undefined) {
+              logger.warn("skipping malformed legacy image-transcription blob", {
+                conversationId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+            return;
           }
-          continue;
-        }
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-          skipped++;
-          if (logger !== undefined) {
-            logger.warn("skipping malformed legacy image-transcription blob", {
-              conversationId,
-              reason: "not a JSON object",
-            });
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            skipped++;
+            if (logger !== undefined) {
+              logger.warn("skipping malformed legacy image-transcription blob", {
+                conversationId,
+                reason: "not a JSON object",
+              });
+            }
+            return;
           }
-          continue;
-        }
-        // Bounded memory: one blob at a time; one tiny row per entry.
-        for (const [url, text] of Object.entries(parsed as Record<string, unknown>)) {
-          if (typeof text !== "string" || url.length === 0) continue;
-          await storage.set(imageTranscriptionKey(conversationId, url), text);
-          migrated++;
-        }
-        await storage.delete(key);
-        blobs++;
+          // Bounded memory: one blob at a time; one tiny row per entry.
+          for (const [url, text] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof text !== "string" || url.length === 0) continue;
+            tx.set(imageTranscriptionKey(conversationId, url), text);
+            migrated++;
+          }
+          tx.delete(key);
+          blobs++;
+        });
       }
       if (logger !== undefined && (blobs > 0 || skipped > 0)) {
         logger.info("conversation-store: migrated legacy image-transcription blobs", {
@@ -1628,18 +1671,8 @@ export function createConversationStore(
     },
 
     async setCompactedFrom(conversationId, newConversationId) {
-      const raw = await storage.get(metaKey(conversationId));
-      const existing = raw !== null ? parseMetaRow(raw) : null;
-      const ts = now();
-      const row: ConversationMetaRow = existing ?? {
-        createdAt: ts,
-        lastActivityAt: ts,
-        title: "Untitled",
-        status: "idle",
-      };
-      await storage.set(
-        metaKey(conversationId),
-        JSON.stringify({ ...row, compactedFrom: newConversationId }),
+      await write(conversationId, (tx) =>
+        updateMeta(tx, conversationId, { compactedFrom: newConversationId }, false),
       );
     },
 
@@ -1665,208 +1698,91 @@ export function createConversationStore(
     },
 
     async ensureWorkspace(id, opts) {
-      const existing = await readWorkspaceRow(id);
-      if (existing !== null) return toWorkspace(id, existing);
-      // Absent — create with defaults. The synthesized "default" is also
-      // materialized here when first explicitly ensured.
-      const ts = now();
-      const row: WorkspaceRow = {
-        title: opts?.title ?? id,
-        defaultCwd: opts?.defaultCwd ?? null,
-        defaultComputerId: opts?.defaultComputerId ?? null,
-        starred: false,
-        archived: false,
-        createdAt: ts,
-        lastActivityAt: ts,
-      };
-      await storage.set(workspaceKey(id), JSON.stringify(row));
-      return toWorkspace(id, row);
+      return storage.transaction((tx) => {
+        const existing = readWorkspaceRowTx(tx, id);
+        if (existing !== null) return toWorkspace(id, existing);
+        // Absent — create with defaults. The synthesized "default" is also
+        // materialized here when first explicitly ensured.
+        const ts = now();
+        const row: WorkspaceRow = {
+          title: opts?.title ?? id,
+          defaultCwd: opts?.defaultCwd ?? null,
+          defaultComputerId: opts?.defaultComputerId ?? null,
+          starred: false,
+          archived: false,
+          createdAt: ts,
+          lastActivityAt: ts,
+        };
+        tx.set(workspaceKey(id), JSON.stringify(row));
+        return toWorkspace(id, row);
+      });
     },
 
     async setWorkspaceTitle(id, title) {
-      const existing = await readWorkspaceRow(id);
-      const ts = now();
-      const base =
-        existing === null
-          ? {
-              title: id,
-              defaultCwd: null as string | null,
-              defaultComputerId: null as string | null,
-              starred: false as boolean,
-              archived: false as boolean,
-              createdAt: ts,
-              lastActivityAt: ts,
-            }
-          : existing;
-      const row: WorkspaceRow = {
-        title,
-        defaultCwd: base.defaultCwd,
-        defaultComputerId: base.defaultComputerId,
-        starred: base.starred,
-        archived: base.archived,
-        createdAt: base.createdAt,
-        lastActivityAt: base.lastActivityAt,
-      };
-      await storage.set(workspaceKey(id), JSON.stringify(row));
-      return toWorkspace(id, row);
+      const result = await storage.transaction((tx) => updateWorkspace(tx, id, { title }));
+      return result;
     },
 
     async setWorkspaceDefaultCwd(id, defaultCwd) {
-      const existing = await readWorkspaceRow(id);
-      const ts = now();
-      const base =
-        existing === null
-          ? {
-              title: id,
-              defaultCwd: null as string | null,
-              defaultComputerId: null as string | null,
-              starred: false as boolean,
-              archived: false as boolean,
-              createdAt: ts,
-              lastActivityAt: ts,
-            }
-          : existing;
-      const row: WorkspaceRow = {
-        title: base.title,
-        defaultCwd,
-        defaultComputerId: base.defaultComputerId,
-        starred: base.starred,
-        archived: base.archived,
-        createdAt: base.createdAt,
-        lastActivityAt: base.lastActivityAt,
-      };
-      await storage.set(workspaceKey(id), JSON.stringify(row));
-      return toWorkspace(id, row);
+      const result = await storage.transaction((tx) => updateWorkspace(tx, id, { defaultCwd }));
+      return result;
     },
 
     async setWorkspaceDefaultComputerId(id, defaultComputerId) {
-      const existing = await readWorkspaceRow(id);
-      const ts = now();
-      const base =
-        existing === null
-          ? {
-              title: id,
-              defaultCwd: null as string | null,
-              defaultComputerId: null as string | null,
-              starred: false as boolean,
-              archived: false as boolean,
-              createdAt: ts,
-              lastActivityAt: ts,
-            }
-          : existing;
-      const row: WorkspaceRow = {
-        title: base.title,
-        defaultCwd: base.defaultCwd,
-        defaultComputerId,
-        starred: base.starred,
-        archived: base.archived,
-        createdAt: base.createdAt,
-        lastActivityAt: base.lastActivityAt,
-      };
-      await storage.set(workspaceKey(id), JSON.stringify(row));
-      return toWorkspace(id, row);
+      const result = await storage.transaction((tx) =>
+        updateWorkspace(tx, id, { defaultComputerId }),
+      );
+      return result;
     },
 
     async setWorkspaceStarred(id, starred) {
-      const existing = await readWorkspaceRow(id);
-      const ts = now();
-      const base =
-        existing === null
-          ? {
-              title: id,
-              defaultCwd: null as string | null,
-              defaultComputerId: null as string | null,
-              archived: false as boolean,
-              createdAt: ts,
-              lastActivityAt: ts,
-            }
-          : existing;
-      const row: WorkspaceRow = {
-        title: base.title,
-        defaultCwd: base.defaultCwd,
-        defaultComputerId: base.defaultComputerId,
-        starred,
-        archived: base.archived,
-        createdAt: base.createdAt,
-        lastActivityAt: base.lastActivityAt,
-      };
-      await storage.set(workspaceKey(id), JSON.stringify(row));
-      if (logger !== undefined) {
-        logger.debug("workspace starred set", { workspaceId: id, starred });
-      }
-      return toWorkspace(id, row);
+      const result = await storage.transaction((tx) => updateWorkspace(tx, id, { starred }));
+      if (logger !== undefined) logger.debug("workspace starred set", { workspaceId: id, starred });
+      return result;
     },
 
     async setWorkspaceArchived(id, archived) {
-      const existing = await readWorkspaceRow(id);
-      const ts = now();
-      const base =
-        existing === null
-          ? {
-              title: id,
-              defaultCwd: null as string | null,
-              defaultComputerId: null as string | null,
-              starred: false as boolean,
-              createdAt: ts,
-              lastActivityAt: ts,
-            }
-          : existing;
-      const row: WorkspaceRow = {
-        title: base.title,
-        defaultCwd: base.defaultCwd,
-        defaultComputerId: base.defaultComputerId,
-        starred: base.starred,
-        archived,
-        createdAt: base.createdAt,
-        lastActivityAt: base.lastActivityAt,
-      };
-      await storage.set(workspaceKey(id), JSON.stringify(row));
-      if (logger !== undefined) {
+      const result = await storage.transaction((tx) => updateWorkspace(tx, id, { archived }));
+      if (logger !== undefined)
         logger.debug("workspace archived set", { workspaceId: id, archived });
-      }
-      return toWorkspace(id, row);
+      return result;
     },
 
     async deleteWorkspace(id) {
       if (id === DEFAULT_WORKSPACE_ID) {
         throw new Error('The "default" workspace cannot be deleted.');
       }
-      // (1) Find all conversations with workspaceId === id, (2) set each
-      // to status "closed" and reassign workspaceId to "default".
-      let closedCount = 0;
-      const indexRaw = await storage.get(CONVERSATION_INDEX_KEY);
-      if (indexRaw !== null) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(indexRaw);
-        } catch {
-          parsed = [];
+      // Snapshot affected ids, lock in stable order, then revalidate membership:
+      // a create/reassignment during acquisition must not introduce an unlocked write.
+      for (;;) {
+        const ids: string[] = [];
+        for (const convId of indexIds(await storage.get(CONVERSATION_INDEX_KEY))) {
+          const raw = await storage.get(metaKey(convId));
+          const row = raw === null ? null : parseMetaRow(raw);
+          if (row?.workspaceId === id) ids.push(convId);
         }
-        const ids = Array.isArray(parsed)
-          ? (parsed.filter((v) => typeof v === "string") as string[])
-          : [];
-        for (const convId of ids) {
-          const metaRaw = await storage.get(metaKey(convId));
-          if (metaRaw === null) continue;
-          const row = parseMetaRow(metaRaw);
-          if (row === null) continue;
-          const wsId = row.workspaceId ?? DEFAULT_WORKSPACE_ID;
-          if (wsId !== id) continue;
-          const updated: ConversationMetaRow = {
-            createdAt: row.createdAt,
-            lastActivityAt: row.lastActivityAt,
-            title: row.title,
-            status: "closed",
-            ...(row.compactedFrom !== undefined ? { compactedFrom: row.compactedFrom } : {}),
-            workspaceId: DEFAULT_WORKSPACE_ID,
-          };
-          await storage.set(metaKey(convId), JSON.stringify(updated));
-          closedCount++;
-        }
+        const result = await withLocks(ids.sort(), () =>
+          storage.transaction((tx) => {
+            const affected: Array<readonly [string, ConversationMetaRow]> = [];
+            for (const convId of indexIds(tx.get(CONVERSATION_INDEX_KEY))) {
+              const raw = tx.get(metaKey(convId));
+              const row = raw === null ? null : parseMetaRow(raw);
+              if (row?.workspaceId !== id) continue;
+              if (!ids.includes(convId)) return undefined;
+              affected.push([convId, row]);
+            }
+            for (const [convId, row] of affected) {
+              tx.set(
+                metaKey(convId),
+                JSON.stringify({ ...row, status: "closed", workspaceId: DEFAULT_WORKSPACE_ID }),
+              );
+            }
+            tx.delete(workspaceKey(id));
+            return { closedCount: affected.length };
+          }),
+        );
+        if (result !== undefined) return result;
       }
-      // (3) Delete the workspace entity.
-      await storage.delete(workspaceKey(id));
-      return { closedCount };
     },
 
     async listWorkspaces() {
@@ -1938,44 +1854,7 @@ export function createConversationStore(
     },
 
     async setWorkspaceId(conversationId, workspaceId) {
-      const ts = now();
-      const raw = await storage.get(metaKey(conversationId));
-      if (raw === null) {
-        // Conversation doesn't exist yet — create a minimal metadata row
-        // (like setConversationStatus does), with the workspace assigned.
-        const row: ConversationMetaRow = {
-          createdAt: ts,
-          lastActivityAt: ts,
-          title: "Untitled",
-          status: "idle",
-          workspaceId,
-        };
-        await storage.set(metaKey(conversationId), JSON.stringify(row));
-        await ensureInIndex(conversationId);
-        return;
-      }
-      const existing = parseMetaRow(raw);
-      if (existing === null) {
-        const row: ConversationMetaRow = {
-          createdAt: ts,
-          lastActivityAt: ts,
-          title: "Untitled",
-          status: "idle",
-          workspaceId,
-        };
-        await storage.set(metaKey(conversationId), JSON.stringify(row));
-        await ensureInIndex(conversationId);
-        return;
-      }
-      const row: ConversationMetaRow = {
-        createdAt: existing.createdAt,
-        lastActivityAt: existing.lastActivityAt,
-        title: existing.title,
-        status: existing.status,
-        ...(existing.compactedFrom !== undefined ? { compactedFrom: existing.compactedFrom } : {}),
-        workspaceId,
-      };
-      await storage.set(metaKey(conversationId), JSON.stringify(row));
+      await write(conversationId, (tx) => updateMeta(tx, conversationId, { workspaceId }));
     },
 
     async getEffectiveCwd(conversationId, overrideCwd) {

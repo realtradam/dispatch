@@ -86,6 +86,9 @@ function fakeLogger(): Logger {
 
 function fakeConversationStore(): ConversationStore {
   return {
+    async runExclusive(_conversationId, fn) {
+      return await fn();
+    },
     async append() {},
     async load() {
       return [];

@@ -125,6 +125,9 @@ function createFakeConversationStore(
     lastActivityAt: 0,
   };
   return {
+    async runExclusive(_conversationId, fn) {
+      return await fn();
+    },
     async append() {},
     async load() {
       return [];

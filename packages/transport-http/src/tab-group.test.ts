@@ -180,7 +180,7 @@ describe("PUT /conversations/:id/tab-group", () => {
 
   it("returns 500 without broadcasting when persistence fails", async () => {
     const { put, storage, events } = await setup();
-    storage.set = async () => {
+    storage.transaction = async () => {
       throw new Error("storage unavailable");
     };
     expect((await put({ parentId: null })).status).toBe(500);

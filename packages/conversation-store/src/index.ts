@@ -5,7 +5,7 @@ export { reconcile, reconcileWithReport } from "./reconcile.js";
 // Pure repair helpers for corrupted transcripts (duplicate tool-call chunks).
 export type { DedupeResult } from "./repair.js";
 export { countChunks, dedupeDuplicateToolChunks } from "./repair.js";
-export type { ConversationStore } from "./store.js";
+export type { ConversationExclusive, ConversationStore } from "./store.js";
 export {
   conversationStoreHandle,
   createConversationStore,
