@@ -2,15 +2,12 @@ import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
   AgentEvent,
   ChatMessage,
-  CompactionResult,
-  ConversationStatus,
   ConversationToolPolicy,
   EventHookDescriptor,
   ImageInput,
   Logger,
   ModelInfo,
   ProviderContract,
-  ProviderEvent,
   ProviderStreamOptions,
   ReasoningEffort,
   RetryStrategy,
@@ -18,18 +15,24 @@ import type {
   RunTurnResult,
   ToolContract,
   ToolDispatchPolicy,
-  UsageEvent,
 } from "@dispatch/kernel";
-import {
-  abortableIteration,
-  defineEventHook,
-  defineService,
-  type ServiceHandle,
-} from "@dispatch/kernel";
+import { defineService, type ServiceHandle } from "@dispatch/kernel";
 import type { MessageQueueService, QueuedMessage } from "@dispatch/message-queue";
 import type { ConcurrencyLimiter } from "@dispatch/provider-concurrency";
 import { wrapProviderWithConcurrency } from "@dispatch/provider-concurrency";
 import type { SystemPromptService } from "@dispatch/system-prompt";
+import {
+  type CompactionService,
+  DEFAULT_COMPACT_PERCENT,
+  DEFAULT_KEEP_LAST_N,
+  performCompaction,
+} from "./compaction.js";
+import {
+  conversationClosed,
+  conversationStatusChanged,
+  turnSettled,
+  turnStarted,
+} from "./hooks.js";
 import { createMetricsAccumulator } from "./metrics.js";
 import {
   buildUserMessage,
@@ -44,6 +47,36 @@ import {
   resolveReasoningEffort,
 } from "./pure.js";
 import { applyToolPolicy, type ToolAssembly } from "./tools-filter.js";
+
+export {
+  type CompactionService,
+  compactionHandle,
+  createCompactionService,
+} from "./compaction.js";
+export {
+  type ConversationClosedPayload,
+  type ConversationCompactedPayload,
+  type ConversationOpenedPayload,
+  type ConversationStatusChangedPayload,
+  type ConversationTabGroupChangedPayload,
+  conversationClosed,
+  conversationCompacted,
+  conversationOpened,
+  conversationStatusChanged,
+  conversationTabGroupChanged,
+  type TurnLifecyclePayload,
+  turnSettled,
+  turnStarted,
+  type WarmCompletedPayload,
+  warmCompleted,
+} from "./hooks.js";
+export {
+  cacheWarmHandle,
+  createWarmService,
+  type WarmResult,
+  type WarmService,
+  type WarmServiceDeps,
+} from "./warm.js";
 
 // --- Vision handoff (lazy, optional) ---
 
@@ -243,169 +276,6 @@ interface ActiveTurn {
   controller: AbortController;
 }
 
-// --- Lifecycle event hooks ---
-
-/** Context carried on turn-lifecycle events, enough to replicate the turn's request prefix. */
-export interface TurnLifecyclePayload {
-  readonly conversationId: string;
-  readonly cwd?: string;
-  /** The computer this turn executes on (SSH alias), mirroring `cwd`. */
-  readonly computerId?: string;
-  readonly modelName?: string;
-}
-
-/** Fired when a turn STARTS driving a conversation (consumers cancel warming timers). */
-export const turnStarted: EventHookDescriptor<TurnLifecyclePayload> =
-  defineEventHook<TurnLifecyclePayload>("session-orchestrator/turn-started");
-
-/** Fired when a turn SETTLES (sealed) for a conversation (consumers arm warming timers). */
-export const turnSettled: EventHookDescriptor<TurnLifecyclePayload> =
-  defineEventHook<TurnLifecyclePayload>("session-orchestrator/turn-settled");
-
-/** Payload for the conversationClosed bus event. */
-export interface ConversationClosedPayload {
-  readonly conversationId: string;
-}
-
-/**
- * Fired when a client EXPLICITLY closes a conversation (tab close — NOT a mere
- * disconnect). Consumers stop per-conversation background work (e.g. cache-warming
- * disables its schedule). Emitted by `SessionOrchestrator.closeConversation`.
- */
-export const conversationClosed: EventHookDescriptor<ConversationClosedPayload> =
-  defineEventHook<ConversationClosedPayload>("session-orchestrator/conversation-closed");
-
-/** Payload for the conversationOpened bus event. */
-export interface ConversationOpenedPayload {
-  readonly conversationId: string;
-  /**
-   * The conversation's actual persisted workspace id (resolved from the
-   * store, not the per-turn start option), so a frontend can open/focus the
-   * tab in the correct workspace. Falls back to `"default"`.
-   */
-  readonly workspaceId: string;
-  /**
-   * The conversation's persisted per-conversation model (`<credential>/<model>`),
-   * when one is set — so a frontend can stamp the newly-opened tab with the
-   * conversation's ACTUAL model instead of the currently-selected global model
-   * (fix-toolcall-duplicate-keys plan Part 4). Absent = default provider model.
-   */
-  readonly model?: string;
-  /** Effective visual group parent; absent = ungrouped. */
-  readonly tabGroupParentId?: string;
-}
-
-/**
- * Fired when a client requests to "open" a conversation (e.g. the CLI `--open`
- * flag). Transport-ws subscribes and broadcasts a `conversation.open` WS
- * message to all connected frontend clients. The frontend decides whether to
- * open/focus a tab — the backend just signals.
- */
-export const conversationOpened: EventHookDescriptor<ConversationOpenedPayload> =
-  defineEventHook<ConversationOpenedPayload>("session-orchestrator/conversation-opened");
-
-/** Purely visual grouping metadata; never changes lineage or manageability. */
-export interface ConversationTabGroupChangedPayload {
-  readonly conversationId: string;
-  readonly workspaceId: string;
-  readonly tabGroupParentId: string | null;
-}
-
-export const conversationTabGroupChanged: EventHookDescriptor<ConversationTabGroupChangedPayload> =
-  defineEventHook<ConversationTabGroupChangedPayload>(
-    "session-orchestrator/conversation-tab-group-changed",
-  );
-
-/** Payload for the conversationStatusChanged bus event. */
-export interface ConversationStatusChangedPayload {
-  readonly conversationId: string;
-  readonly status: ConversationStatus;
-  /**
-   * The conversation's actual persisted workspace id (resolved from the
-   * store, not the per-turn start option), so a frontend can sync the tab
-   * in the correct workspace. Falls back to `"default"`.
-   */
-  readonly workspaceId: string;
-}
-
-/**
- * Fired when a conversation's lifecycle status changes (active/idle/closed).
- * Transport-ws subscribes and broadcasts a `conversation.statusChanged` WS
- * message to all connected frontend clients so tabs sync across devices.
- */
-export const conversationStatusChanged: EventHookDescriptor<ConversationStatusChangedPayload> =
-  defineEventHook<ConversationStatusChangedPayload>(
-    "session-orchestrator/conversation-status-changed",
-  );
-
-/** Payload for the conversationCompacted bus event. */
-export interface ConversationCompactedPayload {
-  readonly conversationId: string;
-  readonly newConversationId: string;
-  readonly messagesSummarized: number;
-  readonly messagesKept: number;
-  /** Persisted history epoch read immediately after replacement. */
-  readonly historyEpoch: number;
-}
-
-/**
- * Fired when a conversation's history has been compacted (old messages
- * summarized, recent messages retained). Transport-ws subscribes and
- * broadcasts a `conversation.compacted` WS message so the FE reloads history.
- */
-export const conversationCompacted: EventHookDescriptor<ConversationCompactedPayload> =
-  defineEventHook<ConversationCompactedPayload>("session-orchestrator/conversation-compacted");
-
-/** Payload for the warmCompleted bus event. */
-export interface WarmCompletedPayload {
-  readonly conversationId: string;
-  readonly usage: WarmResult;
-}
-
-/** Fired when a warm probe succeeds (both automatic and manual paths). */
-export const warmCompleted: EventHookDescriptor<WarmCompletedPayload> =
-  defineEventHook<WarmCompletedPayload>("session-orchestrator/warm-completed");
-
-// --- Warm service ---
-
-export interface WarmResult {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly cacheReadTokens: number;
-  readonly cacheWriteTokens: number;
-}
-
-export interface WarmService {
-  readonly warm: (
-    conversationId: string,
-    opts?: { readonly cwd?: string; readonly modelName?: string },
-  ) => Promise<WarmResult | { readonly error: string }>;
-}
-
-export const cacheWarmHandle: ServiceHandle<WarmService> = defineService<WarmService>(
-  "session-orchestrator/warm",
-);
-
-// --- Compaction service ---
-
-export interface CompactionService {
-  /**
-   * Compact a conversation: summarize old messages and replace history with
-   * the summary + the most recent `keepLastN` messages. Returns the result
-   * or an error object. No-ops if the conversation is too short (≤ keepLastN
-   * messages). When `auto` is true, checks the compact-threshold setting and
-   * only compacts if the last turn's input tokens exceeded it.
-   */
-  readonly compact: (
-    conversationId: string,
-    opts?: { readonly keepLastN?: number; readonly modelName?: string; readonly auto?: boolean },
-  ) => Promise<CompactionResult | { readonly error: string }>;
-}
-
-export const compactionHandle: ServiceHandle<CompactionService> = defineService<CompactionService>(
-  "session-orchestrator/compaction",
-);
-
 export interface SessionOrchestrator {
   startTurn(input: StartTurnInput): StartTurnResult;
   /**
@@ -589,11 +459,6 @@ export interface SessionOrchestratorDeps {
   readonly emit?: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
 }
 
-/** Deps for the warm service — emit is REQUIRED so warmCompleted is never silently dropped. */
-export type WarmServiceDeps = SessionOrchestratorDeps & {
-  readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
-};
-
 export interface SessionOrchestratorBundle {
   readonly orchestrator: SessionOrchestrator;
   /** The shared active-conversations set, for use by createWarmService. */
@@ -672,20 +537,21 @@ export function createSessionOrchestrator(
     return result.started;
   }
 
-  function runTurnDetached(
-    conversationId: string,
-    text: string,
-    modelName: string | undefined,
-    cwd: string | undefined,
-    computerId: string | undefined,
-    reasoningEffortOverride: ReasoningEffort | undefined,
-    workspaceId: string,
-    systemPromptOverride: string | undefined,
-    images: readonly ImageInput[] | undefined,
-    title: string | undefined,
-    parentConversationId: string | undefined,
-    toolPolicy: ConversationToolPolicy | undefined,
-  ): void {
+  function runTurnDetached({
+    conversationId,
+    text,
+    modelName,
+    cwd,
+    computerId,
+    reasoningEffort: reasoningEffortOverride,
+    workspaceId: requestedWorkspaceId,
+    systemPrompt: systemPromptOverride,
+    images,
+    title,
+    parentConversationId,
+    toolPolicy,
+  }: StartTurnInput): void {
+    const workspaceId = requestedWorkspaceId ?? "default";
     const turnId = generateTurnId();
     const promptStartedAt = deps.now?.() ?? Date.now();
     const controller = new AbortController();
@@ -1435,37 +1301,12 @@ export function createSessionOrchestrator(
   }
 
   const orchestrator: SessionOrchestrator = {
-    startTurn({
-      conversationId,
-      text,
-      modelName,
-      cwd,
-      computerId,
-      reasoningEffort,
-      workspaceId,
-      systemPrompt,
-      images,
-      title,
-      parentConversationId,
-      toolPolicy,
-    }) {
+    startTurn(input) {
+      const { conversationId } = input;
       if (activeTurns.has(conversationId)) {
         return { started: false, reason: "already-active" };
       }
-      runTurnDetached(
-        conversationId,
-        text,
-        modelName,
-        cwd,
-        computerId,
-        reasoningEffort,
-        workspaceId ?? "default",
-        systemPrompt,
-        images,
-        title,
-        parentConversationId,
-        toolPolicy,
-      );
+      runTurnDetached(input);
       const turn = activeTurns.get(conversationId);
       const turnId = turn !== undefined ? turn.turnId : "";
       return { started: true, turnId };
@@ -1639,144 +1480,6 @@ export function createSessionOrchestrator(
   return { orchestrator, activeConversations };
 }
 
-export function createWarmService(
-  deps: WarmServiceDeps,
-  activeConversations: ReadonlySet<string>,
-): WarmService {
-  return {
-    async warm(conversationId, opts) {
-      if (activeConversations.has(conversationId)) {
-        return { error: "conversation is generating" };
-      }
-
-      const history = await deps.conversationStore.load(conversationId);
-      if (history.length === 0) {
-        return { error: "no history" };
-      }
-
-      let provider: ProviderContract;
-      let modelOverride: string | undefined;
-
-      // Resolve the model the SAME way the real turn does: per-turn override
-      // → persisted per-conversation model → default provider. A mismatch here
-      // silently busts the prompt cache (the model block of the prompt prefix
-      // diverges from the real turn's). Warm is a probe — it does NOT persist
-      // (no setModel), it only reads so it sends the same model the next real
-      // turn will. See notes/observability-design.md §3.1.
-      const storedModel = await deps.conversationStore.getModel(conversationId);
-      const effectiveModelName = resolveModelName(opts?.modelName, storedModel);
-
-      if (effectiveModelName !== undefined && deps.resolveModel !== undefined) {
-        const resolved = deps.resolveModel(effectiveModelName);
-        if (resolved === undefined) {
-          return { error: `unknown model: ${effectiveModelName}` };
-        }
-        provider = resolved.provider;
-        modelOverride = resolved.model;
-      } else {
-        provider = deps.resolveProvider();
-      }
-
-      // Per-workspace model-unavailable rule (§8) — the warm probe warms the
-      // SAME model the next real turn would use; when that model is not
-      // usable in this conversation's workspace the real turn will error
-      // immediately, so warming it would be a wasted provider round-trip.
-      const warmWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
-      if (
-        effectiveModelName !== undefined &&
-        deps.resolveModelUsability !== undefined &&
-        !(await deps.resolveModelUsability(effectiveModelName, warmWorkspaceId))
-      ) {
-        return { error: `model ${effectiveModelName} unavailable — pick another` };
-      }
-
-      // Wrap with concurrency limiting (same as the main turn path).
-      const warmLimiter = deps.resolveConcurrencyLimiter?.();
-      if (warmLimiter !== undefined) {
-        provider = wrapProviderWithConcurrency(
-          provider,
-          warmLimiter,
-          conversationId,
-          warmWorkspaceId,
-          deps.now?.() ?? Date.now(),
-        );
-      }
-
-      const baseTools = deps.resolveTools();
-      // Resolve cwd the SAME way handleMessage does — pass opts.cwd as the overrideCwd
-      // The tools filter is cwd-sensitive (e.g. skill discovery rewrites the
-      // `load_skill` description per-cwd). If the warm assembles tools under a
-      // different cwd than the real turn, the tools block — the FIRST bytes of
-      // the prompt-cache prefix — diverges and the cache misses entirely (0%).
-      // A manual reheat sends no cwd, so without this fallback it would warm the
-      // wrong prefix. See notes/observability-design.md §3.1.
-      const cwd =
-        (await deps.conversationStore.getEffectiveCwd(conversationId, opts?.cwd)) ?? undefined;
-      const filtered = await deps.applyToolsFilter({
-        tools: baseTools,
-        conversationId,
-        ...(cwd !== undefined ? { cwd } : {}),
-        // Same workspace context as the real turn's assembly, so
-        // workspace-aware filters (the MCP injection short-circuit) behave
-        // identically during a warm (§6.3).
-        ...(warmWorkspaceId !== undefined ? { workspaceId: warmWorkspaceId } : {}),
-      });
-      // Same per-workspace tool gate as the real turn — a warm prefix that
-      // includes workspace-gated tools the real turn drops would cache-miss
-      // on the next real turn (coherence, §6.3).
-      const assembled =
-        deps.applyWorkspaceGate !== undefined ? await deps.applyWorkspaceGate(filtered) : filtered;
-
-      // Resolve reasoning effort the SAME way the real turn does (stored → "high";
-      // no per-turn override on warm). A mismatch here silently busts the prompt cache.
-      const storedEffort = await deps.conversationStore.getReasoningEffort(conversationId);
-      const resolvedEffort = resolveReasoningEffort(undefined, storedEffort);
-
-      const probeMsg: ChatMessage = {
-        role: "user",
-        chunks: [{ type: "text", text: "reply with just a ." }],
-      };
-      const messages = [...history, probeMsg];
-
-      // Capture the warm send as a `provider.request` span, flagged `warm: true`
-      // so it can be diffed against the corresponding real turn's request (the
-      // prompt-cache 0%-hit debugging workflow — see notes/observability-design.md
-      // §3.1). Without this the warm body is invisible and the cache bust is
-      // undebuggable. The child-bound `warm` attribute flows into the span the
-      // provider opens (kernel logger merges child attrs into span attributes).
-      const warmLogger = deps.logger?.child({ conversationId, attrs: { warm: true } });
-      const providerOpts: ProviderStreamOptions = {
-        maxTokens: 1,
-        reasoningEffort: resolvedEffort,
-        ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-        ...(warmLogger !== undefined ? { logger: warmLogger } : {}),
-      };
-
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let cacheReadTokens = 0;
-      let cacheWriteTokens = 0;
-
-      for await (const event of provider.stream(messages, assembled.tools, providerOpts)) {
-        if ((event as ProviderEvent).type === "usage") {
-          const usageEvent = event as UsageEvent;
-          inputTokens = usageEvent.usage.inputTokens;
-          outputTokens = usageEvent.usage.outputTokens;
-          cacheReadTokens = usageEvent.usage.cacheReadTokens ?? 0;
-          cacheWriteTokens = usageEvent.usage.cacheWriteTokens ?? 0;
-        }
-      }
-
-      const result: WarmResult = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
-      deps.emit(warmCompleted, { conversationId, usage: result });
-      return result;
-    },
-  };
-}
-
-const DEFAULT_KEEP_LAST_N = 10;
-const DEFAULT_COMPACT_PERCENT = 85;
-
 /**
  * No-op emit used as a fallback when the orchestrator is constructed without an
  * `emit` (some tests). `performCompaction` requires a non-optional `emit` (it
@@ -1786,352 +1489,3 @@ const DEFAULT_COMPACT_PERCENT = 85;
  */
 const noopEmit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void =
   () => {};
-
-const COMPACTION_SYSTEM_PROMPT =
-  "You are a conversation summarizer. Summarize the following conversation concord concisely but comprehensively. " +
-  "Focus on key decisions, context, file paths, and any unresolved questions. " +
-  "The summary must preserve enough detail for the conversation to continue with full context.";
-
-function formatMessagesForSummary(messages: readonly ChatMessage[]): string {
-  return messages
-    .map((msg) => {
-      const text = msg.chunks
-        .map((c) => {
-          if (c.type === "text") return c.text;
-          if (c.type === "tool-call") return `[tool: ${c.toolName}]`;
-          if (c.type === "tool-result") return `[tool result: ${c.content.slice(0, 200)}]`;
-          return "";
-        })
-        .join("");
-      return `${msg.role}: ${text}`;
-    })
-    .join("\n\n");
-}
-
-/**
- * Deps for {@link performCompaction} — the subset of `SessionOrchestratorDeps`
- * needed to summarize old history, fork it to an archive, and replace it with
- * a summary + recent messages. Structural so both the compaction SERVICE
- * (`compact`, manual + post-seal auto) and the IN-FLIGHT compaction path (the
- * turn loop's `onStepBoundary`) can call the same shared core without duplicating
- * the summarization/fork/replace/emit logic. The active-conversation guard and
- * the threshold check are the CALLERS' policy (they differ between the two
- * paths) and are NOT performed here.
- */
-interface PerformCompactionDeps {
-  readonly conversationStore: ConversationStore;
-  readonly resolveProvider: () => ProviderContract;
-  readonly resolveModel?: (
-    modelName: string,
-  ) => { provider: ProviderContract; model: string } | undefined;
-  readonly resolveSystemPrompt?: () => SystemPromptService | undefined;
-  readonly resolveConcurrencyLimiter?: () => ConcurrencyLimiter | undefined;
-  readonly logger?: Logger;
-  readonly now?: () => number;
-  readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
-  /**
-   * Optional cancellation signal for the in-flight path. When provided, an
-   * abort prevents compaction from starting new work (provider stream,
-   * fork/replace), and causes the provider consumption to be raced against the
-   * signal. Manual / post-seal / background callers omit it — cancellation is
-   * only supplied by the active-turn caller.
-   */
-  readonly signal?: AbortSignal;
-}
-
-/** Result of a successful {@link performCompaction}. */
-interface PerformCompactionResult {
-  readonly summary: string;
-  readonly newConversationId: string;
-  readonly messagesSummarized: number;
-  readonly messagesKept: number;
-  /**
-   * The system-role summary message that heads the compacted history
-   * (`[summaryMessage, ...recentKept]`). Returned so the in-flight caller can
-   * build the kernel's replacement history with the SAME summary object.
-   */
-  readonly summaryMessage: ChatMessage;
-  /**
-   * The full compacted history `[summaryMessage, ...recentKept]` exactly as
-   * written to the store. The in-flight caller returns this to the kernel so
-   * the kernel's working history and the store stay byte-aligned (the same
-   * `recentKept` slice — taken from the caller-supplied live `messages` — is
-   * used for BOTH the store write and this return value).
-   */
-  readonly compactedMessages: readonly ChatMessage[];
-}
-
-/**
- * The shared compaction core: summarize the oldest `history.length -
- * keepLastN` messages via a provider stream, fork the full pre-compaction
- * history to an archive (non-destructive), and replace the live history with
- * `[summaryMessage, ...recentKept]`. Emits `conversationCompacted`. Returns the
- * result (incl. the `summaryMessage` + the `compactedMessages`) or an error.
- *
- * History source: when `opts.messages` is provided (the in-flight path), it is
- * used as the authoritative history — this is the kernel's LIVE messages array,
- * which includes mid-turn steering messages (and the vision-transformed
- * provider view) that a store reload could miss (the steering persist may not
- * have completed, or — before this fix — was never done at all). Using the live
- * array keeps the store write and the kernel's replacement aligned (same
- * `recentKept` slice), avoiding the DB↔LLM structural divergence where
- * independent slices dropped different messages. When `opts.messages` is
- * omitted (the post-seal/manual `compact()` path — the turn has ended, so the
- * store is stable), the history is loaded from the store.
- *
- * Performs NO active-conversation guard and NO threshold check — those are the
- * callers' policy. No-ops (returns an error) when the conversation is too
- * short to compact (≤ keepLastN messages) or the summary is empty.
- */
-async function performCompaction(
-  deps: PerformCompactionDeps,
-  conversationId: string,
-  opts: {
-    readonly keepLastN?: number;
-    readonly modelName?: string;
-    /** The kernel's live messages array (in-flight path). Omit to load the store (post-seal/manual). */
-    readonly messages?: readonly ChatMessage[];
-  },
-): Promise<PerformCompactionResult | { readonly error: string }> {
-  const { signal } = deps;
-  // Use the caller-supplied live messages (in-flight) or load the store
-  // (post-seal/manual — the store is stable once the turn has ended).
-  const history = opts.messages ?? (await deps.conversationStore.load(conversationId));
-  const keepLastN = opts?.keepLastN ?? DEFAULT_KEEP_LAST_N;
-
-  if (history.length <= keepLastN) {
-    return { error: "conversation too short to compact" };
-  }
-
-  // Abort before any summarization work: don't start a provider call or WOTE
-  // fork/replace after cancellation.
-  if (signal?.aborted) {
-    return { error: "aborted" };
-  }
-
-  // Split: old messages to summarize + recent messages to keep.
-  const toSummarize = history.slice(0, history.length - keepLastN);
-  const toKeep = history.slice(history.length - keepLastN);
-
-  // Resolve provider
-  let provider: ProviderContract;
-  let modelOverride: string | undefined;
-  if (opts?.modelName !== undefined && deps.resolveModel !== undefined) {
-    const resolved = deps.resolveModel(opts.modelName);
-    if (resolved === undefined) return { error: `unknown model: ${opts.modelName}` };
-    provider = resolved.provider;
-    modelOverride = resolved.model;
-  } else {
-    provider = deps.resolveProvider();
-  }
-
-  // Wrap with concurrency limiting (same as the main turn path).
-  const compactionLimiter = deps.resolveConcurrencyLimiter?.();
-  if (compactionLimiter !== undefined) {
-    const compactionWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
-    provider = wrapProviderWithConcurrency(
-      provider,
-      compactionLimiter,
-      conversationId,
-      compactionWorkspaceId,
-      deps.now?.() ?? Date.now(),
-    );
-  }
-
-  // Build the summarization request: system prompt + conversation text + instruction
-  const conversationText = formatMessagesForSummary(toSummarize);
-  const summaryRequest: ChatMessage = {
-    role: "user",
-    chunks: [
-      {
-        type: "text",
-        text: `Please summarize the following conversation:\n\n${conversationText}`,
-      },
-    ],
-  };
-
-  const providerOpts: ProviderStreamOptions = {
-    maxTokens: 2000,
-    ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-    ...(deps.logger !== undefined
-      ? { logger: deps.logger.child({ conversationId, attrs: { compaction: true } }) }
-      : {}),
-  };
-
-  // Reconstruct the system prompt on compaction (fresh variable
-  // resolution — files/cwd/time may have changed since construction).
-  // The construct call also persists the result for future turns. When
-  // the system-prompt service is unavailable, fall back to the
-  // compaction-only system prompt (current behavior, no regression).
-  const systemPromptService = deps.resolveSystemPrompt?.();
-  let compactionSystemPrompt: string;
-  if (systemPromptService !== undefined) {
-    const cwd = (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? process.cwd();
-    const workspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
-    const computerId = await deps.conversationStore.getEffectiveComputer(conversationId);
-    const constructed = await systemPromptService.construct(conversationId, cwd, {
-      ...(opts?.modelName !== undefined ? { model: opts.modelName } : {}),
-      workspaceId,
-      ...(computerId !== null ? { computerId } : {}),
-    });
-    compactionSystemPrompt = `${constructed}\n\n${COMPACTION_SYSTEM_PROMPT}`;
-  } else {
-    compactionSystemPrompt = COMPACTION_SYSTEM_PROMPT;
-  }
-
-  // Call the provider and accumulate the summary. Thread the signal into the
-  // ProviderStreamOptions (so the concurrency wrapper's acquire is cancellable)
-  // AND race the iterator consumption against it (defensive barrier).
-  const compactionOpts: ProviderStreamOptions = {
-    ...providerOpts,
-    systemPrompt: compactionSystemPrompt,
-    ...(signal !== undefined ? { signal } : {}),
-  };
-  let summary = "";
-  if (signal !== undefined) {
-    const stream = provider.stream([summaryRequest], [], compactionOpts);
-    const iterator = stream[Symbol.asyncIterator]();
-    for await (const event of abortableIteration(iterator, signal)) {
-      if ((event as ProviderEvent).type === "text-delta") {
-        summary += (event as { delta: string }).delta;
-      } else if ((event as ProviderEvent).type === "error") {
-        // A deliberate abort is cancellation, not a provider error.
-        if (signal.aborted) return { error: "aborted" };
-        return { error: (event as { message: string }).message };
-      }
-    }
-  } else {
-    for await (const event of provider.stream([summaryRequest], [], compactionOpts)) {
-      if ((event as ProviderEvent).type === "text-delta") {
-        summary += (event as { delta: string }).delta;
-      } else if ((event as ProviderEvent).type === "error") {
-        return { error: (event as { message: string }).message };
-      }
-    }
-  }
-
-  // Abort after summarization but before fork/replace: do not fork or replace
-  // history (the archive would be orphaned and the live history untouched,
-  // which is safe, but skipping is cleaner — nothing was modified yet). Checked
-  // BEFORE the empty-summary check so a deliberate abort is never misreported
-  // as "model produced empty summary" (which can happen when the abort fires
-  // before any summary text is streamed).
-  if (signal?.aborted) {
-    return { error: "aborted" };
-  }
-
-  if (summary.trim().length === 0) {
-    return { error: "model produced empty summary" };
-  }
-
-  // Non-destructive: fork the full pre-compaction history to a new
-  // archive conversation. The original conversation keeps its ID
-  // (so messaging between agents still works) and gets the compacted
-  // content. The archive inherits the original's compactedFrom,
-  // creating a chain: A → Y → X → ...
-  const archiveId = crypto.randomUUID();
-  await deps.conversationStore.forkHistory(conversationId, archiveId);
-
-  // Commit boundary: if the signal fires after forkHistory starts, let the
-  // fork settle (it writes to a NEW archive ID, not the live conversation —
-  // harmless if orphaned), then skip replaceHistory/setCompactedFrom. The
-  // archive is orphaned but the LIVE history is untouched, which is safe.
-  if (signal?.aborted) {
-    return { error: "aborted" };
-  }
-
-  // Replace history: [system: summary] + the recent kept messages. `toKeep`
-  // is sliced from the caller-supplied live `messages` (in-flight) — the SAME
-  // slice returned below as `compactedMessages` — so the store and the kernel's
-  // working history stay byte-aligned (same messages kept/dropped).
-  const summaryMessage: ChatMessage = {
-    role: "system",
-    chunks: [
-      {
-        type: "text",
-        text: `The following is a summary of the previous conversation:\n\n${summary}`,
-      },
-    ],
-  };
-
-  const compactedMessages: readonly ChatMessage[] = [summaryMessage, ...toKeep];
-  await deps.conversationStore.replaceHistory(conversationId, compactedMessages);
-  const historyEpoch = await deps.conversationStore.getHistoryEpoch(conversationId);
-  await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
-
-  deps.emit(conversationCompacted, {
-    conversationId,
-    historyEpoch,
-    newConversationId: archiveId,
-    messagesSummarized: toSummarize.length,
-    messagesKept: toKeep.length,
-  });
-
-  return {
-    summary,
-    newConversationId: archiveId,
-    messagesSummarized: toSummarize.length,
-    messagesKept: toKeep.length,
-    summaryMessage,
-    compactedMessages,
-  };
-}
-
-export function createCompactionService(
-  deps: SessionOrchestratorDeps & {
-    readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
-  },
-  activeConversations: ReadonlySet<string>,
-): CompactionService {
-  return {
-    async compact(conversationId, opts) {
-      if (activeConversations.has(conversationId)) {
-        return { error: "conversation is generating" };
-      }
-
-      // Auto mode: check if contextSize exceeds percent of contextWindow.
-      // The threshold check is the caller's policy (uses persisted turn
-      // metrics) and is NOT performed by the shared `performCompaction` core.
-      if (opts?.auto === true) {
-        const stored = await deps.conversationStore.getCompactPercent(conversationId);
-        const percent = stored ?? DEFAULT_COMPACT_PERCENT;
-        if (percent <= 0) return { error: "auto-compact disabled" };
-        const metrics = await deps.conversationStore.loadMetrics(conversationId);
-        const lastTurn = metrics[metrics.length - 1];
-        if (lastTurn === undefined) return { error: "no metrics" };
-        const contextSize = lastTurn.contextSize;
-        if (contextSize === undefined) return { error: "no context size" };
-
-        // Resolve the model's context window.
-        const modelName = opts.modelName;
-        if (modelName === undefined || deps.resolveModelInfo === undefined) {
-          return { error: "cannot resolve model info" };
-        }
-        const info = await deps.resolveModelInfo(modelName);
-        if (info?.contextWindow === undefined) {
-          return { error: "model context window unknown" };
-        }
-        const threshold = Math.floor(info.contextWindow * (percent / 100));
-        if (contextSize < threshold) return { error: "threshold not exceeded" };
-      }
-
-      // Shared summarize + fork + replace + emit core (no active guard, no
-      // threshold — those are this caller's policy above). The length check
-      // ("conversation too short to compact") lives inside the core.
-      const outcome = await performCompaction(deps, conversationId, {
-        ...(opts?.keepLastN !== undefined ? { keepLastN: opts.keepLastN } : {}),
-        ...(opts?.modelName !== undefined ? { modelName: opts.modelName } : {}),
-      });
-      if ("error" in outcome) return { error: outcome.error };
-
-      const { summary, newConversationId, messagesSummarized, messagesKept } = outcome;
-      const result: CompactionResult = {
-        summary,
-        newConversationId,
-        messagesSummarized,
-        messagesKept,
-      };
-      return result;
-    },
-  };
-}
