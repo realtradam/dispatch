@@ -23,6 +23,11 @@ export interface TimerDeps {
 
 // --- Warmer interface ---
 
+export interface CacheWarmingState extends ConversationState {
+  readonly lastError: string | null;
+  readonly backoffMultiplier: number;
+}
+
 export interface CacheWarmer {
   /** Handle a turnStarted event — mark conversation active, cancel pending warm. */
   readonly onTurnStarted: (conversationId: string) => void;
@@ -42,7 +47,7 @@ export interface CacheWarmer {
   readonly onConversationClosed: (conversationId: string) => Promise<void>;
 
   /** Get the current state for a conversation (for surface rendering). */
-  readonly getState: (conversationId: string) => ConversationState;
+  readonly getState: (conversationId: string) => CacheWarmingState;
 
   /** Get the stored context for a conversation. */
   readonly getContext: (conversationId: string) => ConversationContext;
@@ -73,7 +78,9 @@ export interface CacheWarmerDeps {
 
 // Warming is OPT-IN per conversation (CR-4a): default OFF, no warm scheduled
 // until the user enables it.
-const DEFAULT_STATE: ConversationState = {
+const DEFAULT_STATE: CacheWarmingState = {
+  lastError: null,
+  backoffMultiplier: 1,
   enabled: false,
   intervalMs: DEFAULT_INTERVAL_MS,
   active: false,
@@ -86,15 +93,16 @@ const DEFAULT_STATE: ConversationState = {
 
 export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
   // Per-conversation runtime state (not persisted — reconstructed from storage + events)
-  const states = new Map<string, ConversationState>();
+  const states = new Map<string, CacheWarmingState>();
   // Per-conversation context from latest lifecycle event
   const contexts = new Map<string, ConversationContext>();
   // Per-conversation pending timer id
   const timers = new Map<string, number>();
   // Monotonic token per conversation for in-flight invalidation
   let nextToken = 1;
+  let disposed = false;
 
-  function getState(conversationId: string): ConversationState {
+  function getState(conversationId: string): CacheWarmingState {
     return states.get(conversationId) ?? DEFAULT_STATE;
   }
 
@@ -102,7 +110,7 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
     return contexts.get(conversationId) ?? {};
   }
 
-  function setState(conversationId: string, state: ConversationState): void {
+  function setState(conversationId: string, state: CacheWarmingState): void {
     states.set(conversationId, state);
   }
 
@@ -112,30 +120,31 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
       deps.timers.clearTimer(existing);
       timers.delete(conversationId);
     }
-    mergeState(conversationId, { nextWarmAt: null });
+    mergeState(conversationId, { token: nextToken++, nextWarmAt: null });
   }
 
   function armTimer(conversationId: string): void {
     cancelTimer(conversationId);
     const state = getState(conversationId);
-    if (!state.enabled || state.active) return;
+    if (disposed || !state.enabled || state.active) return;
 
     const token = nextToken++;
     const nowMs = deps.now();
-    const nextWarmAt = nowMs + state.intervalMs;
+    const delayMs = state.intervalMs * state.backoffMultiplier;
+    const nextWarmAt = nowMs + delayMs;
     setState(conversationId, { ...state, token, nextWarmAt });
 
     const timerId = deps.timers.setTimer(() => {
       timers.delete(conversationId);
       void fireWarm(conversationId, token);
-    }, state.intervalMs);
+    }, delayMs);
 
     timers.set(conversationId, timerId);
   }
 
   async function fireWarm(conversationId: string, token: number): Promise<void> {
     const state = getState(conversationId);
-    if (!shouldWarm(state, token)) {
+    if (disposed || !shouldWarm(state, token)) {
       deps.logger.debug("cache-warming: skip warm (superseded or disabled)", {
         conversationId,
       });
@@ -145,10 +154,26 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
     const ctx = getContext(conversationId);
     deps.logger.debug("cache-warming: firing warm", { conversationId });
 
-    await deps.warm(conversationId, {
-      ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
-      ...(ctx.modelName !== undefined ? { modelName: ctx.modelName } : {}),
-    });
+    try {
+      const result = await deps.warm(conversationId, {
+        ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
+        ...(ctx.modelName !== undefined ? { modelName: ctx.modelName } : {}),
+      });
+      if ("error" in result) throw new Error(result.error);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.logger.error("cache-warming: warm failed", { conversationId, error: message });
+      // A newer lifecycle event/schedule owns this conversation now. Never let
+      // an old in-flight failure overwrite it or restart a stopped schedule.
+      const current = getState(conversationId);
+      if (disposed || !shouldWarm(current, token)) return;
+      mergeState(conversationId, {
+        lastError: message,
+        backoffMultiplier: Math.min(4, current.backoffMultiplier * 2),
+      });
+      armTimer(conversationId);
+      deps.onSurfaceChange();
+    }
 
     // Result processing is handled by the warmCompleted event handler.
     // Timer re-arm is also handled there on success.
@@ -168,8 +193,8 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 
   function mergeState(
     conversationId: string,
-    partial: Partial<ConversationState>,
-  ): ConversationState {
+    partial: Partial<CacheWarmingState>,
+  ): CacheWarmingState {
     const current = getState(conversationId);
     const updated = { ...current, ...partial };
     setState(conversationId, updated);
@@ -205,7 +230,7 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
       const state = getState(conversationId);
 
       // Drop if the conversation became active while the warm was in flight
-      if (state.active) {
+      if (disposed || state.active) {
         deps.logger.debug("cache-warming: dropping warm result (conversation active)", {
           conversationId,
         });
@@ -217,6 +242,8 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
       const nowMs = deps.now();
       setState(conversationId, {
         ...state,
+        lastError: null,
+        backoffMultiplier: 1,
         lastPct: pct,
         lastExpectedPct: expectedPct,
         lastWarmAt: nowMs,
@@ -300,6 +327,7 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
     },
 
     dispose() {
+      disposed = true;
       for (const [conversationId] of timers) {
         cancelTimer(conversationId);
       }

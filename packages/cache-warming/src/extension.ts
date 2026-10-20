@@ -49,7 +49,13 @@ export function activate(host: HostAPI): void {
     timers: {
       setTimer(fn, ms) {
         const id = nextTimerId++;
-        timeoutMap.set(id, setTimeout(fn, ms));
+        timeoutMap.set(
+          id,
+          setTimeout(() => {
+            timeoutMap.delete(id);
+            fn();
+          }, ms),
+        );
         return id;
       },
       clearTimer(id) {
@@ -95,7 +101,7 @@ export function activate(host: HostAPI): void {
       return buildDefaultSpec();
     }
     const state = warmer.getState(convId);
-    return buildConversationSpec(
+    const spec = buildConversationSpec(
       state.enabled,
       state.intervalMs,
       state.lastPct,
@@ -103,6 +109,13 @@ export function activate(host: HostAPI): void {
       state.nextWarmAt,
       state.lastWarmAt,
     );
+    return {
+      ...spec,
+      fields: [
+        ...spec.fields,
+        { kind: "stat", label: "Last Error", value: state.lastError ?? "—" },
+      ],
+    };
   }
 
   async function invoke(
