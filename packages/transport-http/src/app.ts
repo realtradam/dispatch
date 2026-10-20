@@ -70,7 +70,8 @@ import type {
   WorkspacePluginsResponse,
   WorkspaceResponse,
 } from "@dispatch/transport-contract";
-import { Hono } from "hono";
+import { parseConversationId } from "@dispatch/transport-contract";
+import { Hono, type MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import {
   computeCachePct,
@@ -360,13 +361,23 @@ export function createApp(opts: CreateServerOptions): Hono {
     }),
   );
 
+  // Register before handlers; cover both the root ID route and every descendant.
+  const validateConversationParam: MiddlewareHandler = async (c, next) => {
+    const parsed = parseConversationId(c.req.param("id") ?? c.req.param("conversationId"));
+    if (typeof parsed !== "string") return c.json(parsed, 400);
+    await next();
+  };
+  app.use("/conversations/:id", validateConversationParam);
+  app.use("/conversations/:id/*", validateConversationParam);
+  app.use("/images/:conversationId/:imageId", validateConversationParam);
+
   app.get("/health", (c) => c.json({ ok: true }));
 
   // ── Tmp image serving (vision handoff) ──────────────────────────────────────
   app.get("/images/:conversationId/:imageId", async (c) => {
     const conversationId = c.req.param("conversationId");
     const imageId = c.req.param("imageId");
-    if (imageId.includes("/") || imageId.includes("..")) {
+    if (!/^[A-Za-z0-9_-]{1,128}\.(png|jpe?g|webp|gif|bmp)$/.test(imageId)) {
       return c.json({ error: "Invalid image ID" }, 400);
     }
     const imageDir = process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images";

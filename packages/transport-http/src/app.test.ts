@@ -29,7 +29,7 @@ import type {
   WorkspaceResponse,
 } from "@dispatch/transport-contract";
 import type { Computer, ComputerEntry, Workspace } from "@dispatch/wire";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import { extractLastAssistantText } from "./logic.js";
 import type {
@@ -5333,5 +5333,134 @@ describe("PUT /workspaces/:id/heartbeat", () => {
     });
     expect(res.status).toBe(200);
     expect(hb.captured[0]?.update.inactiveOnly).toBeUndefined();
+  });
+});
+
+describe("conversation ID boundary validation", () => {
+  const routes = [
+    ["GET", ""],
+    ["GET", "/metrics"],
+    ["GET", "/status"],
+    ["POST", "/close"],
+    ["POST", "/stop"],
+    ["POST", "/queue"],
+    ["DELETE", "/queue/message-1"],
+    ["GET", "/cwd"],
+    ["PUT", "/cwd"],
+    ["DELETE", "/cwd"],
+    ["GET", "/computer"],
+    ["PUT", "/computer"],
+    ["DELETE", "/computer"],
+    ["GET", "/reasoning-effort"],
+    ["PUT", "/reasoning-effort"],
+    ["GET", "/model"],
+    ["PUT", "/model"],
+    ["GET", "/lsp"],
+    ["GET", "/mcp"],
+    ["GET", "/last"],
+    ["POST", "/open"],
+    ["PUT", "/tab-group"],
+    ["PUT", "/title"],
+    ["POST", "/compact"],
+    ["GET", "/compact-percent"],
+    ["PUT", "/compact-percent"],
+  ];
+  const badIds = [
+    "..%2F..%2Ftmp",
+    "a%5Cb",
+    "a%3Ab",
+    "a%25b",
+    "%252F",
+    "%00",
+    "%20",
+    "%C3%A9",
+    "a".repeat(129),
+  ];
+  const setup = () => {
+    const orchestrator = createFakeOrchestrator([]);
+    const close = vi.spyOn(orchestrator, "closeConversation");
+    const store = createFakeConversationStore();
+    const load = vi.spyOn(store, "loadSince");
+    const app = createApp({
+      orchestrator,
+      conversationStore: store,
+      logger: createFakeLogger(),
+      warmService: createFakeWarmService({ error: "not used" }),
+    });
+    return { app, close, load };
+  };
+
+  it.each(routes)("rejects invalid IDs before %s /conversations/:id%s", async (method, suffix) => {
+    const { app, close, load } = setup();
+    for (const id of badIds) {
+      const res = await app.request(`/conversations/${id}${suffix}`, { method });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: expect.stringContaining("conversationId") });
+    }
+    expect(close).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "550e8400-e29b-41d4-a716-446655440000",
+    "mcp-test-001",
+    "A_0-z",
+    "a".repeat(128),
+  ])("allows valid conversation ID %s", async (id) => {
+    const { app, close, load } = setup();
+    expect((await app.request(`/conversations/${id}`)).status).toBe(200);
+    expect(load).toHaveBeenCalledWith(id, 0);
+    expect((await app.request(`/conversations/${id}/close`, { method: "POST" })).status).toBe(200);
+    expect(close).toHaveBeenCalledWith(id);
+  });
+
+  it("rejects traversal and malformed image IDs before filesystem access", async () => {
+    const { app } = setup();
+    const paths = [
+      "/images/..%2F..%2Fetc/passwd",
+      ...badIds.map((id) => `/images/${id}/ok.png`),
+      ...[
+        "..%2Fsecret.png",
+        "a%5Cb.png",
+        "a.txt",
+        "a.svg",
+        "a.PNG",
+        "a.png%00",
+        `${"a".repeat(129)}.png`,
+      ].map((id) => `/images/valid/${id}`),
+    ];
+    for (const path of paths) expect((await app.request(path)).status).toBe(400);
+  });
+
+  it("rejects invalid tab-group parent IDs before store access", async () => {
+    const store = createFakeConversationStore();
+    const readMeta = vi.spyOn(store, "getConversationMeta");
+    const app = createApp({
+      orchestrator: createFakeOrchestrator([]),
+      conversationStore: store,
+      logger: createFakeLogger(),
+    });
+    for (const parentId of ["../tmp", "a/b", "a".repeat(129), 42]) {
+      const res = await app.request("/conversations/valid/tab-group", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parentId }),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(readMeta).not.toHaveBeenCalled();
+  });
+
+  it.each(["/chat", "/chat/warm"])("rejects invalid body IDs at %s", async (path) => {
+    const { app } = setup();
+    for (const conversationId of [null, 42, false, {}, [], "", "../tmp", "a".repeat(129)]) {
+      const res = await app.request(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId, message: "hi" }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: expect.stringContaining("conversationId") });
+    }
   });
 });

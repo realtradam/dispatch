@@ -18,6 +18,7 @@ import type {
   WorkspaceSetMessage,
   WsClientMessage,
 } from "@dispatch/transport-contract";
+import { parseConversationId } from "@dispatch/transport-contract";
 import type { SurfaceCatalog, SurfaceServerMessage } from "@dispatch/ui-contract";
 
 // ── Result types ────────────────────────────────────────────────────────────
@@ -212,6 +213,25 @@ export function routeClientMessage(
   connSubs: ReadonlySet<string>,
   msg: WsClientMessage,
 ): RouteResult {
+  if (msg.type !== "workspace.set") {
+    const optional = msg.type === "chat.send" || !msg.type.startsWith("chat.");
+    if (msg.conversationId !== undefined || !optional) {
+      const parsed = parseConversationId(msg.conversationId);
+      if (typeof parsed !== "string") {
+        if (msg.type === "subscribe" || msg.type === "unsubscribe" || msg.type === "invoke") {
+          return {
+            kind: "surface",
+            replies: [{ type: "error", surfaceId: msg.surfaceId, message: parsed.error }],
+          };
+        }
+        return {
+          kind: "chat-error",
+          conversationId: typeof msg.conversationId === "string" ? msg.conversationId : undefined,
+          errorMessage: parsed.error,
+        };
+      }
+    }
+  }
   switch (msg.type) {
     case "subscribe":
       return handleSubscribe(registry, connSubs, msg.surfaceId, msg.conversationId);
@@ -333,21 +353,14 @@ function handleChatQueue(msg: ChatQueueMessage): ChatQueueRouteResult | ChatRout
 }
 
 /**
- * Validate a chat.queue.cancel: both `conversationId` and `messageId` must be
- * non-empty strings. Invalid → `chat-error` (the shell replies with `chat.error`,
+ * Validate a chat.queue.cancel: the router validates `conversationId`;
+ * `messageId` must be a non-empty string. Invalid → `chat-error` (the shell replies with `chat.error`,
  * same style as a malformed `chat.queue`; the orchestrator is never called).
  * Valid → `chat-queue-cancel` (the shell calls `orchestrator.cancelQueuedMessage`).
  */
 function handleChatQueueCancel(
   msg: ChatQueueCancelMessage,
 ): ChatQueueCancelRouteResult | ChatRouteError {
-  if (typeof msg.conversationId !== "string" || msg.conversationId.length === 0) {
-    return {
-      kind: "chat-error",
-      conversationId: msg.conversationId,
-      errorMessage: "chat.queue.cancel requires a non-empty string `conversationId`",
-    };
-  }
   if (typeof msg.messageId !== "string" || msg.messageId.length === 0) {
     return {
       kind: "chat-error",

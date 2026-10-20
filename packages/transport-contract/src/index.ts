@@ -2,13 +2,14 @@
  * Transport contract — the typed description of Dispatch's client–server API
  * (HTTP + WebSocket).
  *
- * This package is types-only (zero runtime). It is the single shared surface
+ * This package defines types plus pure conversation-ID boundary validation.
+ * That deliberate runtime exception is not a shared codec. It is the shared surface
  * every client imports to know how to talk to the backend — the CLI, the web
  * frontend (in its own repo), any third-party client — and the transport-http /
  * transport-ws servers import to know what they must accept and emit.
  *
  * Each side owns its OWN (de)serialization: there is deliberately no shared
- * parse/serialize helper here (isolation-over-DRY). The contract is the SHAPES,
+ * wire parse/serialize helper here (isolation-over-DRY). The contract is the SHAPES,
  * not the codec. The streaming response payload is the kernel's `AgentEvent`
  * union, re-exported here so a client has one import for the whole wire.
  *
@@ -59,6 +60,7 @@ export type {
   Workspace,
   WorkspaceEntry,
 } from "@dispatch/wire";
+export { isValidConversationId, parseConversationId } from "./conversation-id.js";
 
 /**
  * Request body for `POST /chat` (sent as JSON).
@@ -71,6 +73,8 @@ export interface ChatRequest {
   /**
    * The conversation to continue. Omit to start a fresh conversation — the
    * server mints an id and returns it via the `X-Conversation-Id` header.
+   * When supplied, must match `^[A-Za-z0-9_-]{1,128}$` (UUIDs and legacy IDs).
+   * Empty, null, and non-string values are rejected, not treated as absent.
    */
   readonly conversationId?: string;
 

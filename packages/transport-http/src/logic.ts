@@ -6,7 +6,11 @@ import type {
   ReasoningEffort,
   StoredChunk,
 } from "@dispatch/kernel";
-import type { PluginOpResponse, SetTabGroupRequest } from "@dispatch/transport-contract";
+import {
+  type PluginOpResponse,
+  parseConversationId,
+  type SetTabGroupRequest,
+} from "@dispatch/transport-contract";
 import type { NamedAgentSelectionSnapshot } from "@dispatch/wire";
 
 const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
@@ -141,10 +145,10 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
     return { error: "Field 'message' is required and must be a non-empty string" };
   }
 
-  const conversationId =
-    typeof obj.conversationId === "string" && obj.conversationId.length > 0
-      ? obj.conversationId
-      : generateId();
+  const conversationId = parseConversationId(
+    obj.conversationId === undefined ? generateId() : obj.conversationId,
+  );
+  if (typeof conversationId !== "string") return conversationId;
 
   const result: ChatCommand = { conversationId, message: message.trim() };
 
@@ -298,10 +302,8 @@ export function parseWarmBody(body: unknown): WarmBodyParsed | ParseError {
 
   const obj = body as Record<string, unknown>;
 
-  const conversationId = obj.conversationId;
-  if (typeof conversationId !== "string" || conversationId.length === 0) {
-    return { error: "Field 'conversationId' is required and must be a non-empty string" };
-  }
+  const conversationId = parseConversationId(obj.conversationId);
+  if (typeof conversationId !== "string") return conversationId;
 
   const result: Record<string, unknown> = { conversationId };
 
@@ -572,10 +574,11 @@ export function parseTabGroupBody(body: unknown): SetTabGroupRequest | ParseErro
     return { error: "Request body must be a JSON object" };
   }
   const parentId = (body as Record<string, unknown>).parentId;
-  if (parentId !== null && (typeof parentId !== "string" || parentId.trim().length === 0)) {
-    return { error: "Field 'parentId' must be a non-empty string or null" };
-  }
-  return { parentId };
+  // null explicitly clears the visual parent; every non-null value is a conversation ID.
+  if (parentId === null) return { parentId };
+  const parsed = parseConversationId(parentId);
+  if (typeof parsed !== "string") return { error: `Field 'parentId': ${parsed.error}` };
+  return { parentId: parsed };
 }
 
 // ── Local image serving (Markdown image embedding) ──────────────────────────
