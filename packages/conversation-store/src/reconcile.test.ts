@@ -433,6 +433,7 @@ describe("reconcile", () => {
       repairedToolCallIds: [],
       strippedErrorChunks: 0,
       droppedEmptyMessages: 0,
+      droppedOrphanToolResults: 0,
     });
   });
 
@@ -491,5 +492,77 @@ describe("reconcile", () => {
     const { messages: result, report } = reconcileWithReport(messages);
     expect(result).toEqual(messages);
     expect(report.droppedEmptyMessages).toBe(0);
+  });
+
+  it("drops and counts orphan results while keeping matched parallel results and sibling content", () => {
+    const call: ChatMessage = {
+      role: "assistant",
+      chunks: ["a", "b"].map((toolCallId) => ({
+        type: "tool-call",
+        toolCallId,
+        toolName: "t",
+        input: {},
+      })),
+    };
+    const toolResult = (toolCallId: string): ChatMessage["chunks"][number] => ({
+      type: "tool-result",
+      toolCallId,
+      toolName: "t",
+      content: "ok",
+      isError: false,
+    });
+    const matched: ChatMessage = { role: "tool", chunks: [toolResult("a")] };
+    const sibling = { type: "text" as const, text: "preserved" };
+    const messages: ChatMessage[] = [
+      { role: "tool", chunks: [toolResult("missing")] },
+      call,
+      matched,
+      { role: "tool", chunks: [toolResult("other"), toolResult("b"), sibling] },
+    ];
+    const before = structuredClone(messages);
+    const { messages: result, report } = reconcileWithReport(messages);
+    expect(result).toEqual([call, matched, { role: "tool", chunks: [toolResult("b"), sibling] }]);
+    expect(result[0]).toBe(call);
+    expect(result[1]).toBe(matched);
+    expect(result[2]?.chunks[1]).toBe(sibling);
+    expect(report).toEqual({
+      repairedCount: 0,
+      repairedToolCallIds: [],
+      strippedErrorChunks: 0,
+      droppedEmptyMessages: 1,
+      droppedOrphanToolResults: 2,
+    });
+    expect(messages).toEqual(before);
+    expect(reconcileWithReport(result).report.droppedOrphanToolResults).toBe(0);
+  });
+
+  it("requires a preceding assistant tool-call, not a later call or a non-assistant call", () => {
+    const chunk = { type: "tool-call" as const, toolCallId: "late", toolName: "t", input: {} };
+    const messages: ChatMessage[] = [
+      { role: "user", chunks: [chunk] },
+      {
+        role: "tool",
+        chunks: [
+          {
+            type: "tool-result",
+            toolCallId: "late",
+            toolName: "t",
+            content: "premature",
+            isError: false,
+          },
+        ],
+      },
+      { role: "assistant", chunks: [chunk] },
+    ];
+    const { messages: result, report } = reconcileWithReport(messages);
+    expect(report.droppedOrphanToolResults).toBe(1);
+    expect(report.droppedEmptyMessages).toBe(1);
+    expect(report.repairedToolCallIds).toEqual(["late"]);
+    expect(result[2]?.chunks[0]).toMatchObject({
+      type: "tool-result",
+      toolCallId: "late",
+      isError: true,
+    });
+    expect(reconcile(result)).toEqual(result);
   });
 });

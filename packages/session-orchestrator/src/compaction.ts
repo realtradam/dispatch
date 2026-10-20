@@ -24,8 +24,8 @@ import type { SessionOrchestratorDeps } from "./orchestrator.js";
 export interface CompactionService {
   /**
    * Compact a conversation: summarize old messages and replace history with
-   * the summary + the most recent `keepLastN` messages. Returns the result
-   * or an error object. No-ops if the conversation is too short (≤ keepLastN
+   * the summary + at least the most recent `keepLastN` messages (whole tool
+   * groups). Returns the result or an error object. No-ops if the conversation is too short (≤ keepLastN
    * messages). When `auto` is true, checks the compact-threshold setting and
    * only compacts if the last turn's input tokens exceeded it.
    */
@@ -42,8 +42,28 @@ export const compactionHandle: ServiceHandle<CompactionService> = defineService<
 export const DEFAULT_KEEP_LAST_N = 10;
 export const DEFAULT_COMPACT_PERCENT = 85;
 
+/**
+ * Keep at least the requested tail without splitting a tool-call/result group.
+ * Synthetic image user messages have no distinct marker: recognize them by an
+ * image chunk immediately after tool results. Return null if nothing can be summarized.
+ */
+export function chooseKeepStart(history: readonly ChatMessage[], keepLastN: number): number | null {
+  if (history.length === 0 || history.length <= keepLastN) return null;
+  let start = history.length - keepLastN;
+  while (start > 0) {
+    const message = history[start];
+    const toolImage =
+      message?.role === "user" &&
+      message.chunks.some((chunk) => chunk.type === "image") &&
+      history[start - 1]?.role === "tool";
+    if (message?.role !== "tool" && !toolImage) break;
+    start--;
+  }
+  return start > 0 ? start : null;
+}
+
 const COMPACTION_SYSTEM_PROMPT =
-  "You are a conversation summarizer. Summarize the following conversation concord concisely but comprehensively. " +
+  "You are a conversation summarizer. Summarize the following conversation concisely but comprehensively. " +
   "Focus on key decisions, context, file paths, and any unresolved questions. " +
   "The summary must preserve enough detail for the conversation to continue with full context.";
 
@@ -117,8 +137,8 @@ interface PerformCompactionResult {
 }
 
 /**
- * The shared compaction core: summarize the oldest `history.length -
- * keepLastN` messages via a provider stream, fork the full pre-compaction
+ * The shared compaction core: choose a safe tool-group boundary and summarize
+ * the older messages via a provider stream, fork the full pre-compaction
  * history to an archive (non-destructive), and replace the live history with
  * `[summaryMessage, ...recentKept]`. Emits `conversationCompacted`. Returns the
  * result (incl. the `summaryMessage` + the `compactedMessages`) or an error.
@@ -136,7 +156,7 @@ interface PerformCompactionResult {
  *
  * Performs NO active-conversation guard and NO threshold check — those are the
  * callers' policy. No-ops (returns an error) when the conversation is too
- * short to compact (≤ keepLastN messages) or the summary is empty.
+ * short to compact (including when a safe cut retains everything) or the summary is empty.
  */
 export async function performCompaction(
   deps: PerformCompactionDeps,
@@ -154,7 +174,8 @@ export async function performCompaction(
   const history = opts.messages ?? (await deps.conversationStore.load(conversationId));
   const keepLastN = opts?.keepLastN ?? DEFAULT_KEEP_LAST_N;
 
-  if (history.length <= keepLastN) {
+  const keepStart = chooseKeepStart(history, keepLastN);
+  if (keepStart === null) {
     return { error: "conversation too short to compact" };
   }
 
@@ -165,8 +186,8 @@ export async function performCompaction(
   }
 
   // Split: old messages to summarize + recent messages to keep.
-  const toSummarize = history.slice(0, history.length - keepLastN);
-  const toKeep = history.slice(history.length - keepLastN);
+  const toSummarize = history.slice(0, keepStart);
+  const toKeep = history.slice(keepStart);
 
   // Resolve provider
   let provider: ProviderContract;
