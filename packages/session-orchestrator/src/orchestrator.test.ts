@@ -1,5 +1,5 @@
 import { resolve as pathResolve } from "node:path";
-import type { ConversationStore } from "@dispatch/conversation-store";
+import { type ConversationStore, createConversationStore } from "@dispatch/conversation-store";
 import type {
   AgentEvent,
   ChatMessage,
@@ -23,6 +23,7 @@ import { createLogger, runTurn } from "@dispatch/kernel";
 import { createMessageQueueService } from "@dispatch/message-queue";
 import type { SystemPromptService } from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import {
   type ConversationCompactedPayload,
   type ConversationOpenedPayload,
@@ -67,6 +68,9 @@ function createInMemoryStore(): ConversationStore & {
   // orchestrator's newness detection (meta === null) matches reality.
   const knownConversations = new Set<string>();
   return {
+    async getHistoryEpoch() {
+      return 0;
+    },
     async runExclusive(_conversationId, fn) {
       return await fn();
     },
@@ -4585,8 +4589,17 @@ describe("system prompt: compaction flow", () => {
   }
 
   it("Compaction: construct + append — compaction flow calls construct → result appended with COMPACTION_SYSTEM_PROMPT → combined string set as systemPrompt", async () => {
-    const store = createInMemoryStore();
-    seedHistory(store, "conv-compact-sp", 15);
+    const store = createConversationStore(storageFromMap());
+    await store.append(
+      "conv-compact-sp",
+      Array.from({ length: 15 }, (_, i) => ({
+        role: i % 2 === 0 ? "user" : "assistant",
+        chunks: [{ type: "text", text: `message ${i}` }],
+      })),
+    );
+    // Start above epoch zero to catch a hard-coded/default broadcast value.
+    await store.replaceHistory("conv-compact-sp", await store.load("conv-compact-sp"));
+    const compactedEvents: ConversationCompactedPayload[] = [];
 
     const constructCalls: Array<{
       conversationId: string;
@@ -4618,7 +4631,10 @@ describe("system prompt: compaction flow", () => {
             constructCalls.push({ conversationId, cwd, model: context?.model });
             return "RECONSTRUCTED_PROMPT";
           }),
-        emit: () => {},
+        emit: (hook, payload) => {
+          if (hook === conversationCompacted)
+            compactedEvents.push(payload as ConversationCompactedPayload);
+        },
       },
       new Set(),
     );
@@ -4628,6 +4644,9 @@ describe("system prompt: compaction flow", () => {
     });
 
     expect("summary" in result).toBe(true);
+    expect(compactedEvents).toHaveLength(1);
+    expect(compactedEvents[0]?.historyEpoch).toBe(2);
+    expect(await store.getHistoryEpoch("conv-compact-sp")).toBe(2);
     expect(constructCalls).toHaveLength(1);
     expect(constructCalls[0]?.conversationId).toBe("conv-compact-sp");
     expect(constructCalls[0]?.model).toBe("compaction-model");

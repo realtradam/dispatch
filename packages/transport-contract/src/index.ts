@@ -255,10 +255,15 @@ export interface DeleteNamedAgentResponse {
  * tail sync = `?sinceSeq=<cursor>` (no limit); page older history in =
  * `?beforeSeq=<oldestLoadedSeq>&limit=<k>`.
  *
- * Seq numbering is **1-based and gap-free** (a CONTRACTUAL GUARANTEE — see
- * `StoredChunk` in `@dispatch/wire`): a client can derive "older chunks exist"
- * purely from `oldestLoaded.seq > 1`; there is deliberately no
- * `earliestSeq`/`hasOlder` response field.
+ * Seq is positive and never reused within a conversation, even when history is
+ * replaced. The retained log need not start at 1, so `oldestLoaded.seq > 1`
+ * does not prove older chunks exist. An empty/short backfill page can establish
+ * that no earlier chunks remain.
+ *
+ * `historyEpoch` is the persisted replacement count (missing storage value = 0).
+ * Every successful replacement, including an empty one, increments it once.
+ * On a different epoch, clients invalidate their conversation cache and refetch
+ * with `sinceSeq=0` (optionally windowed), even if this response has no chunks.
  *
  * `chunks` is the RAW, append-order, seq-ordered slice of the conversation log
  * selected + windowed as above. It is NOT reconciled: a dangling tool-call is
@@ -284,6 +289,7 @@ export interface DeleteNamedAgentResponse {
 export interface ConversationHistoryResponse {
   readonly chunks: readonly StoredChunk[];
   readonly latestSeq: number;
+  readonly historyEpoch: number;
 }
 
 /**
@@ -959,8 +965,10 @@ export interface ConversationStatusChangedMessage {
 
 /**
  * Broadcast to all connected WS clients when a conversation's history has been
- * compacted (summarized). The frontend should reload the conversation history
- * via `GET /conversations/:id` to reflect the compacted state.
+ * compacted (summarized). `historyEpoch` is the persisted replacement count:
+ * missing storage value = 0; every successful replacement increments it once,
+ * including empty replacements. On a different epoch, clients invalidate their
+ * conversation cache and refetch `GET /conversations/:id?sinceSeq=0`.
  */
 export interface ConversationCompactedMessage {
   readonly type: "conversation.compacted";
@@ -968,6 +976,7 @@ export interface ConversationCompactedMessage {
   readonly newConversationId: string;
   readonly messagesSummarized: number;
   readonly messagesKept: number;
+  readonly historyEpoch: number;
 }
 
 // ─── Plugin manager (plan 05) ────────────────────────────────────────────────

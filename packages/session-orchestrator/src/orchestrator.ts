@@ -344,6 +344,8 @@ export interface ConversationCompactedPayload {
   readonly newConversationId: string;
   readonly messagesSummarized: number;
   readonly messagesKept: number;
+  /** Persisted history epoch read immediately after replacement. */
+  readonly historyEpoch: number;
 }
 
 /**
@@ -2054,10 +2056,12 @@ async function performCompaction(
 
   const compactedMessages: readonly ChatMessage[] = [summaryMessage, ...toKeep];
   await deps.conversationStore.replaceHistory(conversationId, compactedMessages);
+  const historyEpoch = await deps.conversationStore.getHistoryEpoch(conversationId);
   await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
 
   deps.emit(conversationCompacted, {
     conversationId,
+    historyEpoch,
     newConversationId: archiveId,
     messagesSummarized: toSummarize.length,
     messagesKept: toKeep.length,

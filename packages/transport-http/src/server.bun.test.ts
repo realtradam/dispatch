@@ -86,6 +86,9 @@ function fakeLogger(): Logger {
 
 function fakeConversationStore(): ConversationStore {
   return {
+    async getHistoryEpoch() {
+      return 0;
+    },
     async runExclusive(_conversationId, fn) {
       return await fn();
     },

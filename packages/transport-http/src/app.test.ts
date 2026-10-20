@@ -125,6 +125,9 @@ function createFakeConversationStore(
     lastActivityAt: 0,
   };
   return {
+    async getHistoryEpoch() {
+      return 0;
+    },
     async runExclusive(_conversationId, fn) {
       return await fn();
     },
@@ -1388,7 +1391,7 @@ describe("GET /conversations/:id", () => {
         chunk: { type: "thinking", text: "" },
       },
     ];
-    expect(body).toEqual({ chunks: expected.slice(offset), latestSeq: 5 });
+    expect(body).toEqual({ chunks: expected.slice(offset), latestSeq: 5, historyEpoch: 0 });
     for (const row of body.chunks) {
       if (row.chunk.type === "thinking") {
         expect(row.chunk).not.toHaveProperty("signature");
@@ -1540,6 +1543,12 @@ describe("GET /conversations/:id", () => {
         readonly window: { readonly beforeSeq?: number; readonly limit?: number } | undefined;
       }[] = [];
       const store: ConversationStore = {
+        async runExclusive(_id, fn) {
+          return await fn();
+        },
+        async getHistoryEpoch() {
+          return 0;
+        },
         async append() {},
         async load() {
           return [];
@@ -1661,6 +1670,12 @@ describe("GET /conversations/:id", () => {
     // forwarded as undefined — preserving the existing two-arg call shape.
     const argCounts: number[] = [];
     const store: ConversationStore = {
+      async runExclusive(_id, fn) {
+        return await fn();
+      },
+      async getHistoryEpoch() {
+        return 0;
+      },
       async append() {},
       async load() {
         return [];

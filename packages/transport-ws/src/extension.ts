@@ -284,9 +284,16 @@ export function createTransportWsExtension(): Extension {
       disposers.push(
         host.on(
           conversationCompacted,
-          ({ conversationId, newConversationId, messagesSummarized, messagesKept }) => {
+          ({
+            conversationId,
+            newConversationId,
+            messagesSummarized,
+            messagesKept,
+            historyEpoch,
+          }) => {
             broadcast({
               type: "conversation.compacted",
+              historyEpoch,
               conversationId,
               newConversationId,
               messagesSummarized,

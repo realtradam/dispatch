@@ -536,10 +536,17 @@ export function createApp(opts: CreateServerOptions): Hono {
         : undefined;
 
     try {
-      const chunks =
-        window !== undefined
-          ? await opts.conversationStore.loadSince(conversationId, sinceSeqResult, window)
-          : await opts.conversationStore.loadSince(conversationId, sinceSeqResult);
+      const { chunks, historyEpoch } = await opts.conversationStore.runExclusive(
+        conversationId,
+        async () => {
+          const chunks =
+            window !== undefined
+              ? await opts.conversationStore.loadSince(conversationId, sinceSeqResult, window)
+              : await opts.conversationStore.loadSince(conversationId, sinceSeqResult);
+          const historyEpoch = await opts.conversationStore.getHistoryEpoch(conversationId);
+          return { chunks, historyEpoch };
+        },
+      );
       const latestSeq =
         chunks.length > 0 ? (chunks[chunks.length - 1]?.seq ?? sinceSeqResult) : sinceSeqResult;
       log.info("conversations: read", {
@@ -547,7 +554,11 @@ export function createApp(opts: CreateServerOptions): Hono {
         sinceSeq: sinceSeqResult,
         count: chunks.length,
       });
-      const body: ConversationHistoryResponse = { chunks: projectHistoryChunks(chunks), latestSeq };
+      const body: ConversationHistoryResponse = {
+        chunks: projectHistoryChunks(chunks),
+        latestSeq,
+        historyEpoch,
+      };
       return c.json(body, 200);
     } catch (err) {
       log.error("conversations: store failure", { err });

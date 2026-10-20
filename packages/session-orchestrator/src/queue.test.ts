@@ -38,6 +38,9 @@ function createInMemoryStore(): ConversationStore & {
   const parentData = new Map<string, string>();
   const toolPolicyData = new Map<string, ConversationToolPolicy>();
   return {
+    async getHistoryEpoch() {
+      return 0;
+    },
     async runExclusive(_conversationId, fn) {
       return await fn();
     },

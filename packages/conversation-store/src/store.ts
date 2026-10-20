@@ -44,6 +44,8 @@ import {
 import { reconcileWithReport } from "./reconcile.js";
 import { createWriteLock } from "./write-lock.js";
 
+const historyEpochKey = (conversationId: string) => `conv:${conversationId}:history-epoch`;
+
 type StorageTx = Parameters<Parameters<StorageNamespace["transaction"]>[0]>[0];
 export type ConversationExclusive = <T>(
   conversationId: string,
@@ -96,15 +98,18 @@ export interface ConversationStore {
    *   `beforeSeq`) is treated as ABSENT (full selection); this method never
    *   throws on bad window input. The transport validates and 400s upstream.
    *
-   * Seq numbering is 1-based and gap-free, so a client derives "older chunks
-   * exist" purely from the oldest returned `seq > 1`; there is deliberately no
-   * `earliestSeq`/high-water-mark API.
+   * Seq is positive and never reused within this conversation, including across
+   * replacements. The retained log need not start at 1; `oldest.seq > 1` alone
+   * does not imply older chunks exist. Compare `getHistoryEpoch` across reads
+   * to detect replacement and invalidate cached history.
    */
   readonly loadSince: (
     conversationId: string,
     sinceSeq?: number,
     window?: { readonly beforeSeq?: number; readonly limit?: number },
   ) => Promise<readonly StoredChunk[]>;
+  /** Missing persisted epoch is 0; each successful replacement increments it once. */
+  readonly getHistoryEpoch: (conversationId: string) => Promise<number>;
   readonly appendMetrics: (conversationId: string, metrics: TurnMetrics) => Promise<void>;
   readonly loadMetrics: (conversationId: string) => Promise<readonly TurnMetrics[]>;
   /** The persisted working directory for a conversation, or null if never set. */
@@ -239,9 +244,11 @@ export interface ConversationStore {
   ) => Promise<void>;
   /**
    * Replace the entire conversation history with the given messages. Deletes
-   * all existing chunks, resets the seq counter, and appends the new messages.
+   * all existing chunks and appends new messages above the previous seq maximum.
+   * Increments the history epoch once, including for an empty replacement.
    * Used by compaction to replace old history with a summary + recent messages.
-   * Metadata (createdAt, title, status) is preserved.
+   * Metadata (createdAt, title, status) and kept-tail turnIds are preserved.
+   * Chunks, seq, message ordinals and epoch roll back together on failure.
    */
   readonly replaceHistory: (
     conversationId: string,
@@ -1467,6 +1474,10 @@ export function createConversationStore(
       await write(conversationId, (tx) => updateMeta(tx, conversationId, { status }));
     },
 
+    async getHistoryEpoch(conversationId) {
+      return parseSeq(await storage.get(historyEpochKey(conversationId)));
+    },
+
     async replaceHistory(conversationId, messages) {
       return write(conversationId, (tx) => {
         const rows = tx.entries(chunkPrefix(conversationId));
@@ -1499,12 +1510,12 @@ export function createConversationStore(
         for (const [k] of rows) {
           tx.delete(k);
         }
-        // Reset the seq counter so the new messages start from seq 1.
-        tx.set(seqKey(conversationId), "0");
         // Append the new messages (re-uses the append logic for seq numbering +
         // metadata upsert) in ONE call. Message ordinals continue from the
         // existing counter; each kept chunk keeps its producing turn.
         appendChunks(tx, conversationId, messages, (flatIdx) => turnIds[flatIdx]);
+        const epochKey = historyEpochKey(conversationId);
+        tx.set(epochKey, String(parseSeq(tx.get(epochKey)) + 1));
       });
     },
 
