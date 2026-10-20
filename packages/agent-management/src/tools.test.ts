@@ -64,3 +64,28 @@ describe("agent-management tool concurrencySafe declarations", () => {
     expect(EXPECTED).toHaveLength(7);
   });
 });
+
+describe("agent-management messaging descriptions", () => {
+  for (const factory of [createSendAgentMessageTool, createCancelAgentMessageTool]) {
+    it(`${factory(unusedService).name} describes global resolution and self exclusion`, () => {
+      const tool = factory(unusedService);
+      expect(tool.description).toContain("existing");
+      expect(tool.description).toContain("globally unique prefix");
+      expect(tool.description).toContain("workspaces");
+      expect(tool.description).toContain("yourself");
+      const description = tool.parameters.properties?.conversationId?.description;
+      expect(description).toContain("globally unique prefix (>=4 chars)");
+      expect(description).toContain("except self");
+      expect(description).not.toContain("descendant");
+    });
+  }
+
+  it("list distinguishes metadata scope and unrestricted messaging", () => {
+    const tool = createListAgentsTool(unusedService);
+    expect(tool.description).toContain("read/open still limited to descendants");
+    expect(tool.description).toContain(
+      "messaging can target any existing conversation except self",
+    );
+    expect(tool.description).not.toContain("mutations still limited");
+  });
+});

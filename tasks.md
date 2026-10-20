@@ -80,3 +80,46 @@ passed (114 provider tests); Biome clean. Independent integration reviews found
 no blocking signature-feature bugs. Decisions and request-local recovery's
 non-durable exclusion limitation are recorded in provider `THINKING.md`.
 No live API probe was performed; no real credentials were read for validation.
+
+## feature/unrestricted-agent-messaging — unrestricted messaging
+
+- [x] Read rules and canonical vocabulary; installed dependencies with `bun install`
+  in the isolated feature worktree (no lockfile changes).
+- [x] Extend existing `agent-management` messaging target resolution to all existing
+  conversations; preserve unrelated list/read/open policies and delivery semantics.
+- [x] Regression coverage for parent/full/short IDs, siblings, unrelated and
+  cross-workspace targets, queue/cancel, ambiguity, and validation.
+- [x] Update messaging descriptions and project documentation.
+- [x] Independently run typecheck, Vitest, Bun integration tests, and Biome.
+- [x] Commit only this feature branch; no merge or push (single feature commit).
+
+Ownership wave: `agent-management` package owner implements code/tests; independent
+read-only deployment assessor examines bundled loading/reload semantics. Orchestrator
+owns root documentation and verification. No unrelated live messages, replay, server restart,
+force reload, privileged operations, or main-checkout/frontend edits permitted.
+Deployment assessment complete: **skip hotfix; user rebuild/deploy needed**. Ordinary
+reload imports a directory plugin rather than the updated worktree automatically;
+unload-then-load has no rollback/atomic handoff, and active turns retain captured
+tools/descriptions. No live replacement was performed. See the local assessment
+report for source references and read-only plugin/process probes.
+
+Task-agent setup only: cleared the invalid inherited SSH alias `remote` on the
+two newly created task conversations so their tools execute locally on the backend
+host. This is not a deployment change; no unrelated conversation was modified.
+
+Verification (orchestrator rerun): `bun run typecheck` exit 0; `bun run test`
+3509 passed / 7 skipped across 186 passed files / 1 skipped; `bun run test:bun`
+145 passed / 0 failed; `bun run check` checked 657 files, no warnings/infos.
+Package coverage increased from 76 to 103 tests (+27), using real in-memory
+conversation-store/session-orchestrator/message-queue with an outer provider edge.
+A second `bun install` refreshed `bun.lock` for the new test-only message-queue
+dependency/reference. Standalone backend compiled successfully into ignored
+worktree `dist/dispatch-server` (not installed or run). Plugin lifecycle verification
+tests passed in the full suite. No leaked test server/collector processes observed.
+Live read-only follow-up: health OK, same PID 2351539 and original start time.
+Independent read-only code/docs review found no blockers. Related guidance follow-up
+completed: send-result `read_agent` recommendations explicitly defer to the independent
+read policy, with three additional regression cases. Root list-scope/feature
+descriptions aligned; pre-existing Named Agent skill wording not changed by this
+narrowly scoped messaging patch. All checks and backend compilation rerun green
+after the follow-up.

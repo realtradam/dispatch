@@ -1,10 +1,11 @@
 /**
- * send_agent_message — sends a message to an existing managed conversation
+ * send_agent_message — sends a message to an existing conversation (except self)
  * (plan §6.5). There is NO delivery parameter: if the target is idle a new
  * turn starts; if it is active the message is queued for steering (the
  * orchestrator's existing behavior handles both). `wait` defaults false; when
  * the message starts a new turn, wait=true waits for that turn; when the
- * message is queued, wait=true is rejected (use read_agent after delivery).
+ * message is queued, wait=true is rejected. After delivery, the caller can use
+ * read_agent only within its separate read scope (descendants and self).
  * `open` defaults false for follow-ups. The target's persisted workspace,
  * model, tool policy, and computer remain authoritative.
  */
@@ -19,9 +20,10 @@ export function createSendAgentMessageTool(service: AgentManagementService): Too
     description:
       "Send a message to an existing agent conversation. If the agent is idle a " +
       "new turn starts; if it is active the message is queued for steering " +
-      "(automatic — no delivery mode to choose). Accepts a full id or short-id " +
-      "prefix. Only your descendants are valid targets (you cannot send to " +
-      "yourself). 'files' are text files folded into the message (like --file). " +
+      "(automatic — no delivery mode to choose). Accepts a full id or globally unique prefix " +
+      "(>=4 chars) across all existing conversations. Targets may be parents, siblings, " +
+      "unrelated roots, or in other workspaces (not yourself). 'files' are text files " +
+      "folded into the message (like --file). " +
       "wait=true waits only when a new turn starts (rejected when queued). " +
       "open=true opens the conversation in the frontend (default false).",
     parameters: {
@@ -29,7 +31,8 @@ export function createSendAgentMessageTool(service: AgentManagementService): Too
       properties: {
         conversationId: {
           type: "string",
-          description: "Full conversation id or short-id prefix (>=4 chars) of a descendant.",
+          description:
+            "Full conversation id or globally unique prefix (>=4 chars), any workspace/lineage except self.",
         },
         message: {
           type: "string",

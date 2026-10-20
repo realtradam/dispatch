@@ -18,6 +18,7 @@ import {
   formatFileAttachments,
   formatListAgentsResult,
   formatListModelsResult,
+  formatSendAgentResult,
   formatSummonResult,
   MIN_SHORT_ID_LEN,
   parseToolAccess,
@@ -237,9 +238,10 @@ describe("decideAccess", () => {
     expect(r.allowed).toBe(false);
     expect(r.reason).toBeDefined();
   });
-  it("rejects non-descendant, non-self targets", () => {
+  it("allows messaging but rejects read/open on non-descendant, non-self targets", () => {
     expect(decideAccess("read", { isSelf: false, isDescendant: false }).allowed).toBe(false);
-    expect(decideAccess("mutate", { isSelf: false, isDescendant: false }).allowed).toBe(false);
+    expect(decideAccess("open", { isSelf: false, isDescendant: false }).allowed).toBe(false);
+    expect(decideAccess("mutate", { isSelf: false, isDescendant: false }).allowed).toBe(true);
   });
 });
 
@@ -390,4 +392,36 @@ describe("formatters", () => {
     });
     expect(s).toContain("truncated");
   });
+});
+
+describe("listing labels after global messaging", () => {
+  it("does not label non-descendants as read-only or conflate lineage with messaging", () => {
+    const output = formatListAgentsResult({
+      agents: [
+        toAgentEntry(meta("child000-one"), null, null, true),
+        toAgentEntry(meta("other000-one"), null, null, false),
+      ],
+      truncated: false,
+    });
+    expect(output).toContain("descendant (read/open allowed)");
+    expect(output).toContain("non-descendant");
+    expect(output).not.toContain("read-only");
+    expect(output).not.toContain("manageable");
+  });
+});
+
+describe("send result guidance respects the separate read policy", () => {
+  for (const [name, result] of [
+    ["queued", { delivered: "queued" }],
+    ["wait timeout", { delivered: "started-turn", waitTimeout: true }],
+    ["wait cancellation", { delivered: "started-turn", waitCancelled: true }],
+  ] as const) {
+    it(`${name} does not promise read access to globally messaged targets`, () => {
+      const output = formatSendAgentResult({ conversationId: "synthetic-target", ...result });
+      expect(output).toContain("read_agent only if");
+      expect(output).toContain("separate read scope (descendants and self)");
+      expect(output).not.toContain("parent");
+      if (name === "wait cancellation") expect(output).toContain("Wait cancelled by the caller");
+    });
+  }
 });

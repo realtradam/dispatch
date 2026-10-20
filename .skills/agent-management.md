@@ -14,10 +14,10 @@ operations the tools deliberately exclude (stop, compact, reasoning streams).
 |---|---|
 | `list_agent_models` | Discover exact model names (with optional `query`, `vision`, `limit`) you can pass to `summon_agent`. |
 | `summon_agent` | Start a new **subagent** conversation and its first turn. |
-| `list_agents` | List conversations you can manage (defaults to your workspace's direct children). |
+| `list_agents` | List direct children by default (across workspaces), or select descendant/workspace scope. |
 | `read_agent` | Read a subagent's latest assistant **text** or its status. |
-| `send_agent_message` | Send a message to a managed conversation (starts a turn when idle, queues for steering when active). |
-| `cancel_agent_message` | Cancel one queued message on a managed conversation. |
+| `send_agent_message` | Send to any existing conversation except yourself (starts a turn when idle, queues for steering when active). |
+| `cancel_agent_message` | Cancel one queued message on any existing conversation except yourself. |
 | `open_agent` | Signal connected frontends to open/focus a managed conversation. |
 
 ## Summoning a subagent (`summon_agent`)
@@ -41,23 +41,28 @@ operations the tools deliberately exclude (stop, compact, reasoning streams).
 - **Read**: `read_agent` accepts a full `conversationId` or an unambiguous
   short-ID prefix (4+ chars) within your authorized scope. It returns the last
   assistant **text only** — never reasoning or tool streams.
-- **Send**: `send_agent_message` delivers like a normal user message — starts a
-  new turn when the target is idle, queues for mid-turn steering when active.
-  `wait: true` only settles for the idle-starts-turn case.
+- **Send**: `send_agent_message` accepts any existing conversation except the
+  caller itself, including parents, siblings, unrelated conversations, and targets
+  in another workspace. Use a full ID or unique prefix of at least four characters;
+  prefixes resolve across all existing conversations, and ambiguity returns candidates
+  without delivering. Delivery starts a new turn when idle or queues for mid-turn
+  steering when active. `wait: true` is rejected when the target is active.
 - **Cancel a queued message**: `cancel_agent_message{conversationId, messageId}`
-  is idempotent; it cannot retract steering already injected into a turn.
+  uses the same global target resolution and self-target restriction as send. It is
+  idempotent; it cannot retract steering already injected into a turn.
 - **Open in the frontend**: `open_agent` signals connected frontends; the
   frontend decides whether to focus the tab.
 
 ## Scope & safety
 
-- You may manage the conversations you **summoned** and their **descendants**.
-  Workspace-wide `list_agents` may list concise metadata in your workspace.
-- Mutating operations are limited to descendants — you generally cannot
-  send/cancel yourself from inside your own active turn.
-- Full IDs are authorization-checked; short IDs resolve only within your
-  authorized candidate set (a short prefix never leaks an unrelated
-  conversation).
+- **Messaging is not lineage- or workspace-restricted.** Send and queued-message
+  cancellation resolve full IDs and unique prefixes across all existing conversations.
+  Neither operation may target the caller itself.
+- `read_agent` and `open_agent` retain their existing caller/descendant scope,
+  including scoped prefix resolution. Permission to send does not grant read access.
+- `list_agents` still defaults to direct children; workspace-wide listing returns
+  concise metadata in the selected workspace. Its `manageable` field describes
+  descendant management scope, not whether a conversation can receive messages.
 
 ## What the tools deliberately exclude
 

@@ -30,6 +30,9 @@
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/wire": "workspace:*",
       },
+      "devDependencies": {
+        "@dispatch/message-queue": "workspace:*",
+      },
     },
     "packages/cache-warming": {
       "name": "@dispatch/cache-warming",

@@ -8,6 +8,7 @@
     { "path": "../conversation-store" },
     { "path": "../credential-store" },
     { "path": "../named-agents" },
-    { "path": "../session-orchestrator" }
+    { "path": "../session-orchestrator" },
+    { "path": "../message-queue" }
   ]
 }

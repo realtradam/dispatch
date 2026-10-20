@@ -15,7 +15,9 @@ export function createCancelAgentMessageTool(service: AgentManagementService): T
     name: "cancel_agent_message",
     description:
       "Cancel a single queued message (by its messageId from send_agent_message) " +
-      "so it never runs. Only targets descendants. Idempotent: returns " +
+      "so it never runs. Targets any existing conversation across all workspaces " +
+      "and lineages except yourself, by full id or globally unique prefix (>=4 chars). " +
+      "Idempotent: returns " +
       "cancelled=false if the message was already delivered, already cancelled, " +
       "or unknown. Cannot retract steering already injected into an in-flight turn.",
     parameters: {
@@ -23,7 +25,8 @@ export function createCancelAgentMessageTool(service: AgentManagementService): T
       properties: {
         conversationId: {
           type: "string",
-          description: "Full conversation id or short-id prefix (>=4 chars) of a descendant.",
+          description:
+            "Full conversation id or globally unique prefix (>=4 chars), any workspace/lineage except self.",
         },
         messageId: {
           type: "string",

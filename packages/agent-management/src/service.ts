@@ -183,14 +183,14 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
 
   /**
    * Resolve a target conversation id (full or short prefix) and authorize the
-   * caller for `op`. Full ids are authorization-checked against the lineage
-   * chain; short prefixes are resolved ONLY inside the authorized candidate set
-   * (plan §7.3 — never leak non-authorized conversations).
+   * caller for read/open ONLY. Messaging uses a separate global resolver so its
+   * wider scope cannot widen non-messaging operations. Full ids are checked
+   * against lineage; short prefixes use only descendants and self.
    */
   async function resolveTarget(
     callerId: string,
     idInput: string,
-    op: AccessOperation,
+    op: Exclude<AccessOperation, "mutate">,
   ): Promise<Result<string>> {
     // Full id path: the exact id matches a known conversation.
     const meta = await store.getConversationMeta(idInput);
@@ -199,15 +199,14 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       const isDescendant = isSelf ? false : await isDescendantOf(callerId, idInput);
       const access = decideAccess(op, { isSelf, isDescendant });
       if (!access.allowed) {
-        return err("forbidden", access.reason ?? "target is not manageable by the caller");
+        return err("forbidden", access.reason ?? "target is outside the caller's read/open scope");
       }
       return ok(idInput);
     }
 
     // Short-prefix path: resolve inside the authorized candidate set only.
     const descendants = await collectDescendants(callerId);
-    const candidates =
-      op === "read" || op === "open" ? [...descendants, callerId] : [...descendants];
+    const candidates = [...descendants, callerId];
     const res = resolveShortId(candidates, idInput);
     switch (res.kind) {
       case "too-short":
@@ -216,7 +215,10 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
           `conversation id prefix must be at least 4 characters (got "${idInput}")`,
         );
       case "none":
-        return err("unknown-conversation", `no manageable conversation matches "${idInput}"`);
+        return err(
+          "unknown-conversation",
+          `no readable/openable conversation matches "${idInput}"`,
+        );
       case "ambiguous":
         return err(
           "ambiguous-conversation",
@@ -226,6 +228,42 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       case "unique":
         return ok(res.id);
     }
+  }
+
+  /** Resolve messaging targets globally, with no lineage/workspace/status filter. */
+  async function resolveMessagingTarget(
+    callerId: string,
+    idInput: string,
+  ): Promise<Result<string>> {
+    const meta = await store.getConversationMeta(idInput);
+    let targetId = idInput;
+    if (meta === null) {
+      const candidates = (await store.listConversations()).map((conversation) => conversation.id);
+      const resolution = resolveShortId(candidates, idInput);
+      switch (resolution.kind) {
+        case "too-short":
+          return err(
+            "invalid-input",
+            `conversation id prefix must be at least 4 characters (got "${idInput}")`,
+          );
+        case "none":
+          return err("unknown-conversation", `no existing conversation matches "${idInput}"`);
+        case "ambiguous":
+          return err(
+            "ambiguous-conversation",
+            `multiple conversations match "${idInput}"`,
+            resolution.candidates,
+          );
+        case "unique":
+          targetId = resolution.id;
+      }
+    }
+    const access = decideAccess("mutate", {
+      isSelf: targetId === callerId,
+      isDescendant: false,
+    });
+    if (!access.allowed) return err("forbidden", access.reason ?? "cannot message yourself");
+    return ok(targetId);
   }
 
   // ── private: file reading + composition ──────────────────────────────────
@@ -257,7 +295,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
    * Wait for a target conversation's active turn to settle. Race-free: subscribe
    * BEFORE checking isActive (closes the race where a seal fires between the
    * check and the subscribe). Unsubscribes in every path (settled/timeout/abort).
-   * Propagates the parent's AbortSignal to waiting only — never stops the child.
+   * Propagates the caller's AbortSignal to waiting only — never stops the target.
    */
   function waitForTurnSettled(
     orchestrator: SessionOrchestrator,
@@ -774,7 +812,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       return err("invalid-input", "'message' is required and must be a non-empty string");
     }
 
-    const target = await resolveTarget(callerId, input.conversationId, "mutate");
+    const target = await resolveMessagingTarget(callerId, input.conversationId);
     if (!target.ok) return target;
     const conversationId = target.value;
 
@@ -814,7 +852,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       if (input.wait === true) {
         return err(
           "invalid-input",
-          "wait: true is not supported when the message is queued (target was active); use read_agent after delivery",
+          "wait: true is not supported when the message is queued (target was active); after delivery, use read_agent only if the target is within your separate read scope (descendants and self)",
         );
       }
       const last = queue[queue.length - 1];
@@ -872,7 +910,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       return err("invalid-input", "'messageId' is required");
     }
 
-    const target = await resolveTarget(callerId, input.conversationId, "mutate");
+    const target = await resolveMessagingTarget(callerId, input.conversationId);
     if (!target.ok) return target;
     const conversationId = target.value;
 

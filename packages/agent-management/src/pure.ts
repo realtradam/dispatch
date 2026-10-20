@@ -38,10 +38,10 @@ export type ShortIdResolution =
   | { readonly kind: "ambiguous"; readonly candidates: readonly string[] };
 
 /**
- * Resolve a short-ID prefix against an AUTHORIZED candidate set (plan §7.3).
+ * Resolve a short-ID prefix against the supplied candidate set.
  * Prefixes shorter than {@link MIN_SHORT_ID_LEN} are rejected. Only candidate
- * IDs that start with the prefix are considered — the caller never learns about
- * conversations outside its authorized set.
+ * IDs that start with the prefix are considered. The shell supplies all existing
+ * conversations for messaging, but only authorized conversations for read/open.
  */
 export function resolveShortId(candidates: readonly string[], prefix: string): ShortIdResolution {
   if (prefix.length < MIN_SHORT_ID_LEN) return { kind: "too-short" };
@@ -152,14 +152,15 @@ export function formatFileAttachments(
 
 // ─── Access decisions (plan §7) ─────────────────────────────────────────────
 
+/** `mutate` is the legacy name for messaging (send/cancel), not general management. */
 export type AccessOperation = "read" | "open" | "mutate";
 
 /**
  * Decide whether the caller may perform `op` on a target, given whether the
  * target is the caller itself and whether it is a descendant of the caller.
  *
- * - Mutations (`send`, `cancel`) are limited to descendants (self is rejected —
- *   self-steering has the message queue / user-input paths; plan §7.4).
+ * - Messaging (`mutate`: `send`, `cancel`) allows any existing conversation,
+ *   regardless of lineage/workspace, except self (use steering instead).
  * - `read`/`open` are allowed on descendants AND on the caller's own
  *   conversation (plan §7.2 point 3).
  */
@@ -167,6 +168,7 @@ export function decideAccess(
   op: AccessOperation,
   ctx: { readonly isSelf: boolean; readonly isDescendant: boolean },
 ): { readonly allowed: boolean; readonly reason?: string } {
+  if (op === "mutate" && !ctx.isSelf) return { allowed: true };
   if (ctx.isDescendant) return { allowed: true };
   if (ctx.isSelf && (op === "read" || op === "open")) return { allowed: true };
   if (ctx.isSelf && op === "mutate") {
@@ -291,7 +293,7 @@ export function formatSummonResult(r: SummonAgentResult): string {
     return `${head}\nWait timed out — the agent is still running. Use read_agent to check its reply later.`;
   }
   if (r.waitCancelled === true) {
-    return `${head}\nWait cancelled by the parent — the agent is still running. Use read_agent to check its reply later.`;
+    return `${head}\nWait cancelled by the caller — the agent is still running. Use read_agent to check its reply later.`;
   }
   if (r.reply !== undefined) {
     const note = r.truncated === true ? " (truncated)" : "";
@@ -313,7 +315,7 @@ export function formatListAgentsResult(r: {
     parts.push(`ws=${a.workspaceId}`);
     if (a.parentConversationId !== undefined)
       parts.push(`parent=${shortId(a.parentConversationId)}`);
-    parts.push(a.manageable ? "manageable" : "read-only");
+    parts.push(a.manageable ? "descendant (read/open allowed)" : "non-descendant");
     return `  ${parts.join(" ")}`;
   });
   const tail = r.truncated ? "\n(results truncated — increase limit or narrow the query)" : "";
@@ -342,14 +344,14 @@ export function formatSendAgentResult(r: {
 }): string {
   if (r.delivered === "queued") {
     const id = r.messageId !== undefined ? ` messageId=${r.messageId}` : "";
-    return `Message queued for agent ${shortId(r.conversationId)} (id: ${r.conversationId}).${id} Use read_agent after it is delivered.`;
+    return `Message queued for agent ${shortId(r.conversationId)} (id: ${r.conversationId}).${id} After delivery, use read_agent only if the target is within your separate read scope (descendants and self).`;
   }
   const head = `Message delivered — new turn started for agent ${shortId(r.conversationId)} (id: ${r.conversationId}).`;
   if (r.waitTimeout === true) {
-    return `${head}\nWait timed out — the agent is still running. Use read_agent to check its reply later.`;
+    return `${head}\nWait timed out — the agent is still running. To check its reply later, use read_agent only if the target is within your separate read scope (descendants and self).`;
   }
   if (r.waitCancelled === true) {
-    return `${head}\nWait cancelled by the parent — the agent is still running. Use read_agent to check its reply later.`;
+    return `${head}\nWait cancelled by the caller — the agent is still running. To check its reply later, use read_agent only if the target is within your separate read scope (descendants and self).`;
   }
   if (r.reply !== undefined) {
     const note = r.truncated === true ? " (truncated)" : "";

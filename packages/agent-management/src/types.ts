@@ -5,7 +5,9 @@
  * Every input carries an explicit `callerConversationId` that the tool
  * implementation supplies from `ToolExecuteContext` (never from model-provided
  * arguments), so a caller cannot forge its identity. The service resolves
- * caller context and enforces lineage-based access (plan §7).
+ * caller context. Messaging resolves across all existing conversations, regardless
+ * of lineage/workspace, except self. Read/open remain limited to descendants
+ * and self; list retains its children/descendants/workspace scopes.
  *
  * The `summon` method's input is WIDER than the `summon_agent` AI tool schema:
  * it accepts `systemPrompt` and `images` (service-level fields for
@@ -178,7 +180,7 @@ export interface AgentEntry {
   readonly parentConversationId?: string;
   readonly createdAt: number;
   readonly lastActivityAt: number;
-  /** Whether the caller may MUTATE this conversation (descendant). */
+  /** Legacy descendant flag for read/open scope; NOT a messaging permission. */
   readonly manageable: boolean;
 }
 
@@ -209,6 +211,7 @@ export interface ReadAgentResult {
 
 // ─── send_agent_message ─────────────────────────────────────────────────────
 
+/** Message any existing conversation except self; prefixes must be globally unique (4+ chars). */
 export interface SendAgentInput {
   readonly callerConversationId: string;
   readonly conversationId: string;
@@ -233,6 +236,7 @@ export interface SendAgentResult {
 
 // ─── cancel_agent_message ───────────────────────────────────────────────────
 
+/** Cancel on any existing conversation except self; same global resolution as send. */
 export interface CancelAgentMessageInput {
   readonly callerConversationId: string;
   readonly conversationId: string;

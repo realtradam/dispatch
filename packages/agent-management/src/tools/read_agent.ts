@@ -16,7 +16,7 @@ export function createReadAgentTool(service: AgentManagementService): ToolContra
     description:
       "Read an agent's latest assistant reply and status without replaying its " +
       "full stream. Accepts a full conversation id or a short-id prefix (at " +
-      "least 4 characters) resolved within your manageable scope. Ambiguous " +
+      "least 4 characters) resolved within your read scope (descendants and self). Ambiguous " +
       "prefixes return candidates. Returns only assistant text — never private " +
       "reasoning. Set wait=true to block until the agent's active turn settles " +
       "(stopping you cancels the wait but leaves the agent running).",

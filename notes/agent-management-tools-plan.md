@@ -1,6 +1,8 @@
 # Agent Management Tools and Vision Isolation Plan
 
-> **Status:** Design proposal; no feature implementation has begun.
+> **Status:** Original design proposal, subsequently implemented. The messaging access
+> policy below was revised on 2026-10-20 at the user’s request: send/cancel are no
+> longer descendant-only. Unrelated read/open/list policies are unchanged.
 > **Scope:** Dispatch backend plus the backend-owned skills/orchestration documentation that teaches
 > agents how to use the capability. The existing CLI remains supported.
 > **Decision ownership:** Extension granularity and new canonical vocabulary are user decisions under
@@ -347,7 +349,9 @@ Semantics:
 
 ### 6.5 `send_agent_message`
 
-Sends a message to an existing managed conversation.
+Sends a message to any existing conversation except the caller itself, regardless of lineage
+or workspace. Full IDs and globally unique prefixes of at least four characters are accepted;
+ambiguous prefixes return candidates without delivering.
 
 ```ts
 send_agent_message({
@@ -368,8 +372,8 @@ mode parameter — the orchestrator's existing behavior handles both cases autom
   rejected in the first version: the existing message-queue contract exposes a stable queued-message
   ID but not an end-to-end "this queued message caused this later turn" correlation. Inventing that
   correlation inside agent management would duplicate queue ownership. A future message-queue
-  contract change may enable correlated queued-message waiting; until then the parent uses
-  `read_agent` after queue delivery.
+  contract change may enable correlated queued-message waiting; until then use `read_agent`
+  after queue delivery only where its separate read-access policy permits.
 - `open` defaults to `false` for follow-ups.
 - The conversation's persisted workspace, model, tool policy, and computer remain authoritative.
 
@@ -457,7 +461,7 @@ from the source to the replacement.
 
 ### 7.2 Recommended AI access policy
 
-By default, an agent-management tool caller may manage:
+For non-messaging operations, an agent-management tool caller may manage:
 
 1. Conversations it directly summoned.
 2. Descendants of those conversations.
@@ -468,8 +472,10 @@ Workspace-wide listing or control should require an explicit argument and a sepa
 policy. My recommendation for the initial release is:
 
 - `list_agents relationship: workspace` may list concise metadata in the caller's workspace.
-- Mutating operations remain limited to descendants.
-- Cross-workspace operations are allowed only for descendants the caller created there.
+- `read_agent` and `open_agent` retain caller/descendant scope.
+- `send_agent_message` and `cancel_agent_message` may target any existing conversation except
+  the caller, including parents, siblings, unrelated conversations, and other workspaces.
+  These messaging operations do not require a workspace override.
 - A requested workspace override must reference an existing workspace; AI tools do not auto-create
   typo workspaces.
 
@@ -478,8 +484,9 @@ project's current threat model still treats installed extensions as trusted.
 
 ### 7.3 Short-ID resolution
 
-Resolve prefixes only inside the caller's authorized candidate set. This prevents a short prefix
-from leaking or selecting an unrelated conversation. Full IDs are still authorization-checked.
+For send/cancel, resolve full IDs and prefixes across all existing conversations. Prefixes must
+be at least four characters and unique globally; ambiguity returns candidates without effects.
+For read/open, retain the caller's authorized candidate set and full-ID authorization checks.
 
 ### 7.4 Self-management and cycles
 
@@ -959,7 +966,8 @@ Job:
   `list_agent_models`, `summon_agent`, `list_agents`, `read_agent`, `send_agent_message`,
   `cancel_agent_message`, and `open_agent`.
 - Resolve caller workspace/working directory/computer through injected stores.
-- Enforce lineage-based target access and scoped short-ID resolution.
+- Enforce operation-specific target access: global existing-conversation resolution for
+  send/cancel (except self), and lineage-scoped target access/resolution for read/open.
 - Read and compose text files with local/remote containment.
 - Implement event-driven waiting, cancellation, timeout, unsubscribe, and result limits.
 - Use existing orchestrator/message-queue/open behavior instead of duplicating it.
@@ -974,9 +982,11 @@ Required tests, grouped by public operation:
 - **list:** children/descendants/workspace; status/query/limit; no unauthorized metadata leak;
   stable result shape.
 - **read:** full and short IDs; ambiguity; unauthorized target; no reasoning; wait/timeout/abort.
-- **send:** idle starts a turn, active queues; files; waiting; existing policy and
-  workspace remain authoritative.
-- **cancel message:** queued, already delivered, unknown, unauthorized, and idempotent cancellation.
+- **send:** parent full ID and 8-/4-character prefixes; sibling, unrelated, and cross-workspace
+  targets; idle starts a turn, active queues; files; waiting; existing policy and workspace remain
+  authoritative; unknown/too-short/ambiguous targets have no delivery effects.
+- **cancel message:** global target resolution; queued, already delivered, unknown, ambiguous,
+  self-target rejection, and idempotent cancellation.
 - **open:** emits typed hook with persisted workspace.
 - **shell:** logs via injected logger; no prompt/file contents in attributes; all subscriptions and
   resources cleaned up.
@@ -1072,9 +1082,10 @@ No feature work is trusted from an agent's report alone.
    the parent cancels the wait but leaves the child running.
 3. `list_agent_models` returns exact summonable model names and vision metadata without exposing
    credential secrets.
-4. `list_agents`, `read_agent`, `send_agent_message`, `cancel_agent_message`, and `open_agent`
-   operate on authorized descendants with both full and unambiguous short IDs.
-5. An unauthorized sibling conversation cannot be read or mutated through the tools.
+4. `list_agents`, `read_agent`, and `open_agent` retain their existing scope. Send/cancel
+   accept full IDs and globally unambiguous prefixes for any existing conversation except self.
+5. A sibling conversation may receive messages and queued-message cancellation but cannot be read
+   or opened through these tools unless otherwise authorized.
 6. `send_agent_message` starts a new turn when the target is idle and queues when active.
 7. The existing CLI continues to pass its current command tests and live smoke tests unchanged.
 8. A non-vision model with a pasted screenshot sees `consult_vision` but not `read_image`.
@@ -1117,7 +1128,7 @@ boundaries and need separate awareness or coordination:
 | Risk | Mitigation |
 |---|---|
 | Tool restrictions rely only on prompting | Durable conversation tool policy applied last in assembly; provider receives an empty tool list. |
-| AI tool becomes an unrestricted server-wide admin surface | Lineage-based access, workspace-scoped listing, authorized short-ID resolution, self-target rejection. |
+| AI tool becomes an unrestricted server-wide admin surface | Read/open lineage scope, scoped listing, self-target rejection, and no stop/delete/configuration tools. Messaging is intentionally server-wide. |
 | Parent blocks indefinitely on a child | Non-blocking defaults, event-driven bounded wait, cancellation cleanup, child independence. |
 | Duplicate orchestration logic diverges from CLI/backend behavior | Typed service delegates to existing orchestrator/queue/open contracts; no CLI subprocess. |
 | Workspace defaults depend on frontend/global state | Resolve persisted caller workspace through injected conversation-store service. |
@@ -1155,8 +1166,10 @@ boundary/vocabulary decisions are confirmed.
    - AI workspace override must reference an existing workspace.
 
 5. Access:
-   - **mutations limited to descendants; workspace-wide concise listing allowed**;
-   - alternative: all conversations in the caller workspace are manageable.
+   - **Revised 2026-10-20:** messaging (send/cancel) is unrestricted by lineage/workspace,
+     except self-target rejection; other operation scopes remain unchanged.
+   - Original decision (superseded for messaging): mutations limited to descendants;
+     workspace-wide concise listing allowed.
 
 6. Tool control:
    - **public summon schema exposes only `toolAccess: all | none`** while persistence supports

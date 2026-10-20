@@ -15,5 +15,8 @@
     "@dispatch/credential-store": "workspace:*",
     "@dispatch/named-agents": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*"
+  },
+  "devDependencies": {
+    "@dispatch/message-queue": "workspace:*"
   }
 }

@@ -1,5 +1,5 @@
 /**
- * list_agents — lists manageable conversations, defaulting to the caller's
+ * list_agents — lists conversation metadata, defaulting to the caller's
  * current workspace (plan §6.3). Defaults: relationship=children,
  * status=[active,queued,idle], newest activity first, bounded result count.
  * Returns concise machine-readable JSON text, never a terminal table.
@@ -15,12 +15,13 @@ export function createListAgentsTool(service: AgentManagementService): ToolContr
   return {
     name: "list_agents",
     description:
-      "List agent conversations you can manage. By default lists your direct " +
+      "List agent conversation metadata. By default lists your direct " +
       "children (conversations you summoned) with active/queued/idle status, " +
       "newest activity first. Use relationship=descendants for the full " +
       "descendant tree, or relationship=workspace for all conversations in " +
-      "your workspace (concise metadata; mutations still limited to your " +
-      "descendants). Returns stable machine-readable text.",
+      "your workspace (concise metadata; read/open still limited to descendants " +
+      "and self, while messaging can target any existing conversation except self). " +
+      "Returns stable machine-readable text.",
     parameters: {
       type: "object",
       properties: {
