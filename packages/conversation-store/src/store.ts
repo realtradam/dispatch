@@ -30,6 +30,7 @@ import {
   metricsPrefix,
   metricsSeqKey,
   modelKey,
+  msgSeqKey,
   namedAgentSelectionKey,
   parentKey,
   parseSeq,
@@ -491,6 +492,8 @@ interface PersistedChunkEntry {
   readonly chunk: Chunk;
   readonly role: Role;
   readonly msgIdx: number;
+  /** Conversation-wide message ordinal (absent on legacy rows). */
+  readonly msgOrd?: number;
   readonly chunkIdx: number;
   /** The producing turn (absent on legacy rows / out-of-turn writes). */
   readonly turnId?: string;
@@ -890,7 +893,7 @@ export function createConversationStore(
 
   /**
    * The shared append writer: persists `messages` as seq-numbered chunk rows
-   * (msgIdx/chunkIdx per message, local to this call) and upserts metadata.
+   * (msgOrd per message; msgIdx/chunkIdx local to this call) and upserts metadata.
    * `turnIdOf(flatIdx)` resolves the producing turn of the flatIdx-th chunk
    * (flattened across all messages, in order) — `undefined` = none.
    */
@@ -902,11 +905,13 @@ export function createConversationStore(
   ): void {
     const raw = tx.get(seqKey(conversationId));
     let seq = parseSeq(raw) + 1;
+    let msgSeq = parseSeq(tx.get(msgSeqKey(conversationId)));
     let flat = 0;
 
     for (let msgIdx = 0; msgIdx < messages.length; msgIdx++) {
       const msg = messages[msgIdx];
       if (msg === undefined) continue;
+      const msgOrd = ++msgSeq;
       for (let chunkIdx = 0; chunkIdx < msg.chunks.length; chunkIdx++) {
         const chunk = msg.chunks[chunkIdx];
         const flatIdx = flat++;
@@ -916,6 +921,7 @@ export function createConversationStore(
           chunk,
           role: msg.role,
           msgIdx,
+          msgOrd,
           chunkIdx,
           ...(turnId !== undefined ? { turnId } : {}),
         };
@@ -925,6 +931,7 @@ export function createConversationStore(
     }
 
     tx.set(seqKey(conversationId), String(seq - 1));
+    tx.set(msgSeqKey(conversationId), String(msgSeq));
 
     // Metadata upsert: track createdAt/lastActivityAt/title and keep the
     // conversation discoverable in the index.
@@ -991,6 +998,7 @@ export function createConversationStore(
       let currentChunks: Chunk[] = [];
       let currentRole: Role | undefined;
       let currentMsgIdx = -1;
+      let currentMsgOrd: number | undefined;
 
       for (const [key, value] of rows) {
         let entry: PersistedChunkEntry;
@@ -1011,27 +1019,29 @@ export function createConversationStore(
           continue;
         }
 
-        // A message boundary is detected when EITHER the msgIdx changes OR the
-        // role changes. The msgIdx alone is insufficient because append() assigns
-        // it as a LOCAL index (reset to 0 for each call) — so consecutive
-        // single-message appends (e.g. the orchestrator's per-step persistence:
-        // append([user]) then append([assistant]) then append([user])...) all
-        // share msgIdx=0 and would collapse into one message without the role
-        // check. The role check restores correct boundaries for the common
-        // alternating user/assistant/tool pattern.
-        if (entry.msgIdx !== currentMsgIdx || entry.role !== currentRole) {
-          if (currentMsgIdx >= 0 && currentRole !== undefined) {
+        // Explicit and legacy identities are separate domains: equal numeric
+        // values must never merge across a legacy/new boundary. Within legacy
+        // runs retain the exact index/role heuristic and emission guards.
+        if (
+          (entry.msgOrd === undefined) !== (currentMsgOrd === undefined) ||
+          (entry.msgOrd !== undefined
+            ? entry.msgOrd !== currentMsgOrd
+            : entry.msgIdx !== currentMsgIdx) ||
+          entry.role !== currentRole
+        ) {
+          if ((currentMsgOrd !== undefined || currentMsgIdx >= 0) && currentRole !== undefined) {
             messages.push({ role: currentRole, chunks: currentChunks });
           }
           currentChunks = [];
           currentRole = entry.role;
           currentMsgIdx = entry.msgIdx;
+          currentMsgOrd = entry.msgOrd;
         }
 
         currentChunks.push(entry.chunk);
       }
 
-      if (currentMsgIdx >= 0 && currentRole !== undefined) {
+      if ((currentMsgOrd !== undefined || currentMsgIdx >= 0) && currentRole !== undefined) {
         messages.push({ role: currentRole, chunks: currentChunks });
       }
 
@@ -1492,8 +1502,8 @@ export function createConversationStore(
         // Reset the seq counter so the new messages start from seq 1.
         tx.set(seqKey(conversationId), "0");
         // Append the new messages (re-uses the append logic for seq numbering +
-        // metadata upsert) in ONE call so msgIdx-based message boundaries are
-        // unchanged; each kept chunk keeps its producing turn.
+        // metadata upsert) in ONE call. Message ordinals continue from the
+        // existing counter; each kept chunk keeps its producing turn.
         appendChunks(tx, conversationId, messages, (flatIdx) => turnIds[flatIdx]);
       });
     },
@@ -1503,11 +1513,17 @@ export function createConversationStore(
         // Copy all chunks from source to target, re-numbered from seq 1.
         const rows = tx.entries(chunkPrefix(sourceId));
         let seq = 1;
+        const msgSeq = Math.max(
+          parseSeq(tx.get(msgSeqKey(sourceId))),
+          parseSeq(tx.get(msgSeqKey(targetId))),
+        );
         for (const [, value] of rows) {
+          // Copy raw chunk values without parsing, including corrupt/opaque rows.
           tx.set(chunkKey(targetId, seq), value);
           seq++;
         }
         tx.set(seqKey(targetId), String(Math.max(seq - 1, 0)));
+        tx.set(msgSeqKey(targetId), String(msgSeq));
 
         // Copy metadata with archive title + closed status.
         // Inherit compactedFrom from the source so archives chain:
