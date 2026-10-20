@@ -12,6 +12,7 @@
     "@dispatch/heartbeat": "workspace:*",
     "@dispatch/home-tile-layout-contract": "workspace:*",
     "@dispatch/kernel": "workspace:*",
+    "@dispatch/network-policy": "workspace:*",
     "@dispatch/layout-contract": "workspace:*",
     "@dispatch/layout-provider-contract": "workspace:*",
     "@dispatch/lsp": "workspace:*",

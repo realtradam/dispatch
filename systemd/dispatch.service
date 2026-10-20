@@ -1,6 +1,7 @@
 [Unit]
 Description=Dispatch AI Agent Server
-After=network.target
+After=network-online.target tailscaled.service
+Wants=network-online.target
 
 [Service]
 Type=simple

@@ -8,6 +8,7 @@
   "dependencies": {
     "@dispatch/home-tile-layout-contract": "workspace:*",
     "@dispatch/kernel": "workspace:*",
+    "@dispatch/network-policy": "workspace:*",
     "@dispatch/layout-provider-contract": "workspace:*",
     "@dispatch/plugin-manager": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*",

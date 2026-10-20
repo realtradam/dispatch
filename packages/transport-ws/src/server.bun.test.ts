@@ -1380,3 +1380,22 @@ describe("visual grouping hooks through the real WS extension", () => {
     }
   });
 });
+
+describe("real multi-listener lifecycle", () => {
+  test("binds both loopbacks on ephemeral ports and releases both", async () => {
+    const { startListeners } = await import("./extension.js");
+    const listeners = startListeners(
+      ["127.0.0.1", "::1"],
+      [],
+      (hostname) => Bun.serve({ hostname, port: 0, fetch: () => Response.json({ ok: true }) }),
+      fakeLogger(),
+    );
+    const urls = listeners.servers.map((server) => server.url.toString());
+    try {
+      for (const url of urls) expect((await fetch(url)).status).toBe(200);
+    } finally {
+      listeners.stop();
+    }
+    for (const url of urls) await expect(fetch(url)).rejects.toThrow();
+  });
+});

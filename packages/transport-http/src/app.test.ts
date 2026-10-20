@@ -2079,38 +2079,43 @@ describe("CORS", () => {
     });
   }
 
-  it("POST /chat response carries Access-Control-Allow-Origin: *", async () => {
+  it("POST /chat response carries reflected Access-Control-Allow-Origin", async () => {
     const app = createTestApp();
     const res = await app.request("/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:24204" },
       body: JSON.stringify({ message: "hi", conversationId: "conv1" }),
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:24204");
   });
 
   it("GET /models response carries the CORS headers", async () => {
     const app = createTestApp();
-    const res = await app.request("/models");
+    const res = await app.request("/models", { headers: { Origin: "http://localhost:24204" } });
     expect(res.status).toBe(200);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:24204");
     expect(res.headers.get("Access-Control-Expose-Headers")).toBeDefined();
   });
 
   it("GET /conversations/:id response carries the CORS headers", async () => {
     const app = createTestApp();
-    const res = await app.request("/conversations/conv1");
+    const res = await app.request("/conversations/conv1", {
+      headers: { Origin: "http://localhost:24204" },
+    });
     expect(res.status).toBe(200);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:24204");
     expect(res.headers.get("Access-Control-Expose-Headers")).toBeDefined();
   });
 
   it("OPTIONS preflight for /chat returns 204 with Allow-Methods + Allow-Headers", async () => {
     const app = createTestApp();
-    const res = await app.request("/chat", { method: "OPTIONS" });
+    const res = await app.request("/chat", {
+      method: "OPTIONS",
+      headers: { Origin: "http://localhost:24204" },
+    });
     expect(res.status).toBe(204);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:24204");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("GET");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("OPTIONS");
@@ -5505,5 +5510,54 @@ describe("conversation ID boundary validation", () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: expect.stringContaining("conversationId") });
     }
+  });
+});
+
+describe("network guard before all routes", () => {
+  const app = () =>
+    createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      allowedHosts: new Set(["localhost", "PII_REDACTED_DEVICE_01"]),
+    });
+  it.each([
+    "/health",
+    "/chat",
+    "/not-a-route",
+    "/images/conv/img.png",
+  ])("rejects Host before %s", async (path) => {
+    const res = await app().fetch(
+      new Request(`http://localhost${path}`, { headers: { Host: "evil.com" } }),
+    );
+    expect(res.status).toBe(421);
+    expect(await res.json()).toEqual({ error: expect.any(String) });
+  });
+  it.each(["https://evil.com", "null", "file://localhost"])("rejects Origin %s", async (origin) => {
+    const res = await app().request("/health", { headers: { Origin: origin } });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+  it("reflects allowed Origin and handles preflight; missing Origin is allowed", async () => {
+    for (const method of ["GET", "OPTIONS"]) {
+      const res = await app().request("/health", {
+        method,
+        headers: { Origin: "http://PII_REDACTED_DEVICE_01:24204" },
+      });
+      expect(res.status).toBe(method === "GET" ? 200 : 204);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://PII_REDACTED_DEVICE_01:24204");
+      expect(res.headers.get("Vary")).toContain("Origin");
+    }
+    const res = await app().request("/health");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(
+      (
+        await app().request("/health", {
+          method: "OPTIONS",
+          headers: { Origin: "https://evil.com" },
+        })
+      ).status,
+    ).toBe(403);
   });
 });

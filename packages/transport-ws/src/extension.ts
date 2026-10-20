@@ -7,8 +7,9 @@
  */
 
 import { tileLayoutChanged } from "@dispatch/home-tile-layout-contract";
-import type { Extension, HostAPI } from "@dispatch/kernel";
+import type { Extension, HostAPI, Logger } from "@dispatch/kernel";
 import { layoutChanged } from "@dispatch/layout-provider-contract";
+import { buildAllowedHosts, checkHost, checkOrigin } from "@dispatch/network-policy";
 import { extensionsChanged } from "@dispatch/plugin-manager";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
 import {
@@ -44,8 +45,59 @@ interface ConnectionState {
 
 type Ws = Bun.ServerWebSocket<ConnectionState>;
 
+/** Own each listener and retry timer; a fatal bind rolls back earlier listeners. */
+export function startListeners<T extends { stop(closeActive?: boolean): unknown }>(
+  addresses: readonly string[],
+  tailscaleIps: readonly string[],
+  bind: (address: string) => T,
+  logger: Pick<Logger, "warn">,
+) {
+  const servers: T[] = [];
+  const timers: ReturnType<typeof setInterval>[] = [];
+  const stop = () => {
+    for (const timer of timers) clearInterval(timer);
+    for (const server of servers) server.stop(true);
+    timers.length = 0;
+    servers.length = 0;
+  };
+  try {
+    for (const address of addresses) {
+      try {
+        servers.push(bind(address));
+      } catch (error) {
+        if (!tailscaleIps.includes(address)) throw error;
+        logger.warn("Tailscale bind failed; retrying every 10s", { address });
+        const timer = setInterval(() => {
+          try {
+            servers.push(bind(address));
+            clearInterval(timer);
+          } catch {
+            // Remains unavailable; keep the same bounded retry timer.
+          }
+        }, 10_000);
+        timers.push(timer);
+      }
+    }
+  } catch (error) {
+    stop();
+    throw error;
+  }
+  return { servers, stop };
+}
+
+/** The HTTP handshake is guarded before any upgrade or connection state allocation. */
+export function guardUpgrade(req: Request, allowed: ReadonlySet<string>): Response | undefined {
+  const host = checkHost(req.headers.get("host") ?? new URL(req.url).host, allowed);
+  if (host !== "ok") return Response.json({ error: host.reason }, { status: host.status });
+  const origin = checkOrigin(req.headers.get("origin"), allowed);
+  if (origin !== "ok") return Response.json({ error: origin.reason }, { status: origin.status });
+  return undefined;
+}
+
 export function createTransportWsExtension(): Extension {
-  let server: ReturnType<typeof Bun.serve<ConnectionState>> | undefined;
+  let listeners:
+    | ReturnType<typeof startListeners<ReturnType<typeof Bun.serve<ConnectionState>>>>
+    | undefined;
   /** Every currently-connected WS client — used for global fan-out broadcasts. */
   const connections = new Set<Ws>();
   /** Disposers for host hook subscriptions (drained on deactivate). */
@@ -287,9 +339,28 @@ export function createTransportWsExtension(): Extension {
         }),
       );
 
-      server = Bun.serve<ConnectionState>({
+      const policy = host.config.get<{
+        allowedHosts: ReadonlySet<string>;
+        bindAddresses: readonly string[];
+        tailscaleIps: readonly string[];
+      }>("networkPolicy") ?? {
+        allowedHosts: buildAllowedHosts({ env: {} }),
+        bindAddresses: ["127.0.0.1", "::1"],
+        tailscaleIps: [],
+      };
+      const options: Bun.ServeOptions<ConnectionState> = {
         port,
         fetch(req, srv) {
+          const denied = guardUpgrade(req, policy.allowedHosts);
+          if (denied) {
+            logger.warn("transport-ws: rejected request", {
+              host: req.headers.get("host"),
+              origin: req.headers.get("origin"),
+              status: denied.status,
+            });
+            return denied;
+          }
+          if (new URL(req.url).pathname === "/health") return Response.json({ ok: true });
           const initial: ConnectionState = {
             subs: new Set(),
             providerDisposers: new Map(),
@@ -536,7 +607,19 @@ export function createTransportWsExtension(): Extension {
             logger.debug("transport-ws: connection close");
           },
         },
-      });
+      };
+      try {
+        listeners = startListeners(
+          policy.bindAddresses,
+          policy.tailscaleIps,
+          (hostname) => Bun.serve<ConnectionState>({ ...options, hostname }),
+          logger,
+        );
+      } catch (error) {
+        for (const dispose of disposers) dispose();
+        disposers.length = 0;
+        throw error;
+      }
 
       logger.info?.("transport-ws: surface WebSocket listening", { port });
     },
@@ -547,10 +630,8 @@ export function createTransportWsExtension(): Extension {
       }
       disposers.length = 0;
       connections.clear();
-      if (server) {
-        server.stop();
-        server = undefined;
-      }
+      listeners?.stop();
+      listeners = undefined;
     },
   };
 }

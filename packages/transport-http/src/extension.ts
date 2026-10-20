@@ -1,4 +1,5 @@
-import type { Extension, HostAPI, Manifest, ServiceHandle } from "@dispatch/kernel";
+import type { Extension, HostAPI, Logger, Manifest, ServiceHandle } from "@dispatch/kernel";
+import { buildAllowedHosts } from "@dispatch/network-policy";
 import { createApp } from "./app.js";
 import {
   accountUsageServiceHandle,
@@ -115,16 +116,56 @@ export const manifest: Manifest = {
  * inline at each use below.
  */
 
+/** Own each listener and retry timer; a fatal bind rolls back earlier listeners. */
+export function startListeners<T extends { stop(closeActive?: boolean): unknown }>(
+  addresses: readonly string[],
+  tailscaleIps: readonly string[],
+  bind: (address: string) => T,
+  logger: Pick<Logger, "warn">,
+) {
+  const servers: T[] = [];
+  const timers: ReturnType<typeof setInterval>[] = [];
+  const stop = () => {
+    for (const timer of timers) clearInterval(timer);
+    for (const server of servers) server.stop(true);
+    timers.length = 0;
+    servers.length = 0;
+  };
+  try {
+    for (const address of addresses) {
+      try {
+        servers.push(bind(address));
+      } catch (error) {
+        if (!tailscaleIps.includes(address)) throw error;
+        logger.warn("Tailscale bind failed; retrying every 10s", { address });
+        const timer = setInterval(() => {
+          try {
+            servers.push(bind(address));
+            clearInterval(timer);
+          } catch {
+            // Remains unavailable; keep the same bounded retry timer.
+          }
+        }, 10_000);
+        timers.push(timer);
+      }
+    }
+  } catch (error) {
+    stop();
+    throw error;
+  }
+  return { servers, stop };
+}
+
 export function createTransportHttpExtension(): Extension & {
   readonly _testServer: ReturnType<typeof Bun.serve> | undefined;
 } {
-  let server: ReturnType<typeof Bun.serve> | undefined;
+  let listeners: ReturnType<typeof startListeners<ReturnType<typeof Bun.serve>>> | undefined;
   /** Availability-subscription disposers (disposed on deactivate). */
   let availabilityDisposers: Array<() => void> = [];
 
   return {
     get _testServer() {
-      return server;
+      return listeners?.servers[0];
     },
     manifest,
     async activate(host: HostAPI) {
@@ -194,11 +235,21 @@ export function createTransportHttpExtension(): Extension & {
       ];
 
       const logger = host.logger;
+      const policy = host.config.get<{
+        allowedHosts: ReadonlySet<string>;
+        bindAddresses: readonly string[];
+        tailscaleIps: readonly string[];
+      }>("networkPolicy") ?? {
+        allowedHosts: buildAllowedHosts({ env: {} }),
+        bindAddresses: ["127.0.0.1", "::1"],
+        tailscaleIps: [],
+      };
 
       // The optional services are passed as LIVE GETTERS: each request
       // re-reads the slot's current value (undefined → the route's degrade
       // path), so the app never holds a stale service reference.
       const app = createApp({
+        allowedHosts: policy.allowedHosts,
         conversationStore,
         orchestrator,
         credentialStore,
@@ -260,11 +311,18 @@ export function createTransportHttpExtension(): Extension & {
 
       const port = host.config.get<number>("httpPort") ?? 24203;
 
-      server = Bun.serve({
-        port,
-        fetch: app.fetch,
-        idleTimeout: 0,
-      });
+      try {
+        listeners = startListeners(
+          policy.bindAddresses,
+          policy.tailscaleIps,
+          (hostname) => Bun.serve({ hostname, port, fetch: app.fetch, idleTimeout: 0 }),
+          logger,
+        );
+      } catch (error) {
+        for (const dispose of availabilityDisposers) dispose();
+        availabilityDisposers = [];
+        throw error;
+      }
 
       logger.info("transport-http: listening", { port });
     },
@@ -275,10 +333,8 @@ export function createTransportHttpExtension(): Extension & {
       // idempotent; the host force-cleans any we somehow missed).
       for (const dispose of availabilityDisposers) dispose();
       availabilityDisposers = [];
-      if (server) {
-        server.stop();
-        server = undefined;
-      }
+      listeners?.stop();
+      listeners = undefined;
     },
   };
 }

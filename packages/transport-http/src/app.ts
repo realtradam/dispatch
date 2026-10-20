@@ -4,6 +4,7 @@ import { createTileLayoutRouteHandlers } from "@dispatch/home-tile-layout-contra
 import type { AgentEvent, HostAPI, Logger, PluginTier } from "@dispatch/kernel";
 import type { LayoutProviderRegistry } from "@dispatch/layout-provider-contract";
 import { createLayoutRouteHandlers } from "@dispatch/layout-provider-contract";
+import { buildAllowedHosts, checkHost, checkOrigin, corsOriginFor } from "@dispatch/network-policy";
 import { DEFAULT_TEMPLATE, getVariableCatalog } from "@dispatch/system-prompt";
 import type {
   AccountUsageProviderId,
@@ -130,6 +131,7 @@ import {
 } from "./seam.js";
 
 export interface CreateServerOptions {
+  readonly allowedHosts?: ReadonlySet<string>;
   readonly conversationStore: ConversationStore;
   readonly orchestrator: SessionOrchestrator;
   readonly credentialStore: CredentialStore;
@@ -352,10 +354,18 @@ export function createApp(opts: CreateServerOptions): Hono {
     }
   }
 
+  const allowed = opts.allowedHosts ?? buildAllowedHosts({ env: {} });
+  app.use("*", async (c, next) => {
+    const host = checkHost(c.req.header("host") ?? new URL(c.req.url).host, allowed);
+    if (host !== "ok") return c.json({ error: host.reason }, host.status);
+    const origin = checkOrigin(c.req.header("origin"), allowed);
+    if (origin !== "ok") return c.json({ error: origin.reason }, origin.status);
+    await next();
+  });
   app.use(
     "*",
     cors({
-      origin: "*",
+      origin: (origin) => corsOriginFor(origin, allowed),
       allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
       allowHeaders: ["Content-Type"],
     }),
