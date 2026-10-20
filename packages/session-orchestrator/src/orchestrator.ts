@@ -8,7 +8,6 @@ import type {
   Logger,
   ModelInfo,
   ProviderContract,
-  ProviderStreamOptions,
   ReasoningEffort,
   RetryStrategy,
   RunTurnInput,
@@ -22,6 +21,7 @@ import type { MessageQueueService, QueuedMessage } from "@dispatch/message-queue
 import type { ConcurrencyLimiter } from "@dispatch/provider-concurrency";
 import { wrapProviderWithConcurrency } from "@dispatch/provider-concurrency";
 import type { SystemPromptService } from "@dispatch/system-prompt";
+import { assembleTurnRequest, TurnRequestRejected } from "./assemble.js";
 import {
   type CompactionService,
   DEFAULT_COMPACT_PERCENT,
@@ -47,7 +47,7 @@ import {
   resolveModelName,
   resolveReasoningEffort,
 } from "./pure.js";
-import { applyToolPolicy, type ToolAssembly } from "./tools-filter.js";
+import type { ToolAssembly } from "./tools-filter.js";
 
 export {
   type CompactionService,
@@ -818,81 +818,24 @@ export function createSessionOrchestrator(
         // Make input durable before model validation or any provider/prompt work.
         await deps.conversationStore.append(conversationId, [userMsg], { turnId });
 
-        // Workspace assignment for new conversations happens BEFORE
-        // effective-cwd resolution (see workspaceSetupPromise above) so
-        // getEffectiveCwd resolves against the intended workspace, not
-        // the stale "default". The history-load + append flow below is
-        // otherwise unchanged.
-
-        let provider: ProviderContract;
-        let modelOverride: string | undefined;
-
-        // Per-workspace model-unavailable rule (§8, plan 06 §6.5): a model
-        // that is KNOWN but whose provider is not usable in this
-        // conversation's workspace (disabled there, or globally unloaded)
-        // is an IMMEDIATE, EXPLICIT error surfaced in the conversation —
-        // NEVER a silent fallback to another model. The check runs before
-        // resolveModel so a globally-unloaded provider surfaces as
-        // "unavailable" rather than the (misleading) "unknown model".
-        if (
-          effectiveModelName !== undefined &&
-          turnWorkspaceId !== undefined &&
-          deps.resolveModelUsability !== undefined
-        ) {
-          const usable = await deps.resolveModelUsability(effectiveModelName, turnWorkspaceId);
-          if (!usable) {
-            endReason = "rejected";
-            emitToHub(conversationId, {
-              type: "error",
-              conversationId,
-              turnId,
-              message: `model ${effectiveModelName} unavailable — pick another`,
-            });
-            return;
-          }
-        }
-
-        if (effectiveModelName !== undefined && deps.resolveModel !== undefined) {
-          const resolved = deps.resolveModel(effectiveModelName);
-          if (resolved === undefined) {
-            endReason = "rejected";
-            emitToHub(conversationId, {
-              type: "error",
-              conversationId,
-              turnId,
-              message: `unknown model: ${effectiveModelName}`,
-            });
-            return;
-          }
-          provider = resolved.provider;
-          modelOverride = resolved.model;
-          // Persist the resolved model so it sticks for future turns
-          // and browser sessions (per-conversation model persistence).
-          // Only stamped when a model was actually used — NOT on the
-          // default-provider fallthrough (nothing to persist). Idempotent
-          // when the value is unchanged (re-stamps the same persisted
-          // model). The early `return` above means an unknown model is
-          // never persisted.
-          await deps.conversationStore.setModel(conversationId, effectiveModelName);
-        } else {
-          provider = deps.resolveProvider();
-        }
-
-        // Wrap the resolved provider with concurrency limiting when the
-        // provider-concurrency extension is loaded. The slot is acquired
-        // before the stream starts (before the HTTP request) and released
-        // when the stream completes (after all tokens are generated). The
-        // promptStartedAt (turn start time) is used for oldest-agent-first
-        // scheduling when multiple agents are queued.
-        //
-        // Status lifecycle with concurrency: "active" is emitted early (in
-        // payloadPromise.then, before this code runs). If acquire() blocks,
-        // onQueued emits "queued" (broadcast-only — persisted status stays
-        // "active"). When the slot is granted, onAcquired emits "active"
-        // again, transitioning "queued" → "active" so the FE switches from
-        // the loading ring back to dots. A request that gets a slot
-        // immediately never emits "queued" — onAcquired fires right after
-        // the early "active", which is a harmless no-op re-broadcast.
+        const turnLogger = deps.logger?.child({ conversationId, turnId });
+        const request = await assembleTurnRequest(deps, {
+          conversationId,
+          signal: controller.signal,
+          messages: [...history, userMsg],
+          isNewConversation,
+          context: {
+            effectiveCwd,
+            effectiveComputerId,
+            effectiveModelName,
+            resolvedEffort,
+            turnWorkspaceId,
+          },
+          ...(systemPromptOverride !== undefined ? { systemPrompt: systemPromptOverride } : {}),
+          ...(turnLogger !== undefined ? { logger: turnLogger } : {}),
+        });
+        let { provider } = request;
+        const { providerOpts, providerMessages } = request;
         const limiter = deps.resolveConcurrencyLimiter?.();
         if (limiter !== undefined) {
           provider = wrapProviderWithConcurrency(
@@ -906,121 +849,10 @@ export function createSessionOrchestrator(
           );
         }
 
-        const baseTools = deps.resolveTools();
-        const filtered = await deps.applyToolsFilter({
-          tools: baseTools,
-          conversationId,
-          ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-          ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
-          // Thread the resolved model name into the assembly so model-aware
-          // filters (e.g. vision-handoff hiding consult_vision from
-          // vision-capable models) see which model is being used this turn.
-          // Omitted (undefined) on the default-provider fallthrough — model-
-          // aware filters treat absence as "unknown metadata".
-          ...(effectiveModelName !== undefined ? { modelName: effectiveModelName } : {}),
-          // Thread the conversation's persisted workspace into the assembly
-          // so workspace-aware filters (the MCP injection short-circuit) and
-          // the workspace tool gate below see the enforcement context (§6.3).
-          ...(turnWorkspaceId !== undefined ? { workspaceId: turnWorkspaceId } : {}),
-          // Thread the turn's abort signal into the filter chain so a filter
-          // awaiting slow I/O (the MCP tools filter connecting to MCP servers)
-          // can be interrupted by POST /conversations/:id/stop instead of
-          // blocking the turn until its own timeout fires.
-          signal: controller.signal,
-        });
-        // Per-workspace tool gate (plan 06 §6.3) — runs AFTER the entire
-        // toolsFilter chain (so no injection filter can re-add a dropped
-        // tool) and BEFORE applyToolPolicy (the conversation policy below
-        // stays the final word). Absent dep → no workspace gating (degrade
-        // open; the extension wires the ledger + workspace-plugin-config
-        // services reactively).
-        const gated =
-          deps.applyWorkspaceGate !== undefined
-            ? await deps.applyWorkspaceGate(filtered)
-            : filtered;
-        // Apply the persisted conversation tool policy LAST — after the entire
-        // toolsFilter chain AND the workspace tool gate — so NO extension
-        // filter can re-add a tool into a restricted conversation (plan §10.2),
-        // and no workspace-gated tool can sneak back via the policy either
-        // (the policy narrows the GATED set). A `mode: "none"` conversation
-        // (e.g. a vision consultation) receives an empty tool set on every
-        // turn; legacy/ordinary conversations without a persisted policy resolve
-        // to `{ mode: "all" }` (passthrough — byte-identical to today). The
-        // policy is read from the store each turn, so it survives follow-up
-        // turns and a backend restart (durable). This MUST run after
-        // applyToolsFilter, never as a filter IN the chain — otherwise a later
-        // filter could re-introduce a restricted tool.
-        const persistedPolicy = await deps.conversationStore.getToolPolicy(conversationId);
-        const policy = persistedPolicy ?? ({ mode: "all" } as const);
-        const assembled = applyToolPolicy(gated, policy);
         const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
-        const turnLogger = deps.logger?.child({ conversationId, turnId });
         const emitAndAccumulate = (event: AgentEvent): void => {
           metrics.ingest(event);
           emitToHub(conversationId, event);
-        };
-
-        // Resolve the system prompt for this turn (cache-safe). On the
-        // FIRST turn of a new conversation, construct it once (resolves all
-        // template variables + persists the result). On subsequent turns,
-        // reuse the persisted prompt via `getWithMeta` — but ONLY when the
-        // stored cwd matches the current effective cwd. If the cwd changed
-        // since the prompt was constructed (or no prompt was ever stored),
-        // reconstruct against the new cwd so the prompt is never stale.
-        // This preserves the cache-safe design (construct once per cwd,
-        // reuse on subsequent turns with the same cwd) while fixing the bug
-        // where a cwd change left the prompt stale. When the system-prompt
-        // service isn't loaded, no system prompt is sent (current behavior
-        // preserved).
-        //
-        // EXPLICIT OVERRIDE: when `systemPromptOverride` is provided (a
-        // string, incl. empty), it is sent to the provider AS-IS and the
-        // system-prompt service is bypassed entirely (no construct/reuse).
-        // This lets a caller that owns its own prompt (e.g. the heartbeat
-        // extension) drive a turn without the templated workspace prompt.
-        let systemPrompt: string | undefined;
-        if (systemPromptOverride !== undefined) {
-          systemPrompt = systemPromptOverride;
-        } else {
-          const systemPromptService = deps.resolveSystemPrompt?.();
-          if (systemPromptService !== undefined) {
-            if (isNewConversation) {
-              systemPrompt = await systemPromptService.construct(
-                conversationId,
-                effectiveCwd ?? process.cwd(),
-                {
-                  ...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
-                  workspaceId: turnWorkspaceId,
-                  ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
-                },
-              );
-            } else {
-              const meta = await systemPromptService.getWithMeta(conversationId);
-              const currentCwd = effectiveCwd ?? process.cwd();
-              const currentComputerId = effectiveComputerId ?? null;
-              // Invalidate when cwd OR computerId changed (switching computers
-              // must rebuild the prompt against the remote OS/hostname).
-              if (
-                meta.prompt !== null &&
-                meta.cwd === currentCwd &&
-                meta.computerId === currentComputerId
-              ) {
-                systemPrompt = meta.prompt;
-              } else {
-                systemPrompt = await systemPromptService.construct(conversationId, currentCwd, {
-                  ...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
-                  workspaceId: turnWorkspaceId,
-                  ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
-                });
-              }
-            }
-          }
-        }
-
-        const providerOpts: ProviderStreamOptions = {
-          reasoningEffort: resolvedEffort,
-          ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-          ...(systemPrompt !== undefined ? { systemPrompt } : {}),
         };
 
         // Resolve the steering queue once for this turn. When present, wire
@@ -1080,59 +912,10 @@ export function createSessionOrchestrator(
                     });
               };
 
-        // Vision handoff: transform the message list for the provider. When the
-        // active model is vision-capable, images pass through natively (no-op).
-        // When it is NOT vision-capable, image chunks are transcribed to text
-        // descriptions via a vision-capable model — so a text-only model can
-        // still reason about images. The PERSISTED user message keeps the
-        // original image chunks (appended below); only the provider's view is
-        // transcribed. When the vision-handoff service isn't loaded, images pass
-        // through unchanged (correct for vision models; text-only models would
-        // then receive image content their API may reject — degrades off cleanly
-        // for text-only turns with no images).
-        const visionHandoff = deps.resolveVisionHandoff?.();
-        let providerMessages: readonly ChatMessage[] = [...history, userMsg];
-        if (visionHandoff !== undefined) {
-          const visionSettings = await deps.conversationStore.getVisionSettings();
-          // A per-model image-count cap (e.g. umans' known 8) can be LOWER
-          // than the GLOBAL vision compaction limit. Clamp here so at turn
-          // start the oldest images beyond the model's cap are TRANSCRIBED
-          // (information preserved) instead of reaching the provider and
-          // being placeholder-evicted by the adapter's last-resort wire cap.
-          // `imageLimit <= 0` means "disabled" in the vision settings (no
-          // global limit), so a reported model cap still applies. Only looked
-          // up when the turn actually carries images — a text-only turn must
-          // not pay an extra upstream model-list call.
-          const hasImages = providerMessages.some((message) =>
-            message.chunks.some((chunk) => chunk.type === "image"),
-          );
-          const modelMaxImages =
-            hasImages && effectiveModelName !== undefined && deps.resolveModelInfo !== undefined
-              ? (await deps.resolveModelInfo(effectiveModelName))?.maxImages
-              : undefined;
-          const imageLimit =
-            modelMaxImages === undefined
-              ? visionSettings.imageLimit
-              : visionSettings.imageLimit > 0
-                ? Math.min(visionSettings.imageLimit, modelMaxImages)
-                : modelMaxImages;
-          providerMessages = await visionHandoff.prepareForProvider(
-            providerMessages,
-            effectiveModelName,
-            {
-              conversationId,
-              imageLimit,
-              compactionModel: visionSettings.compactionModel,
-              signal: controller.signal,
-              ...(turnLogger !== undefined ? { logger: turnLogger } : {}),
-            },
-          );
-        }
-
         const opts: RunTurnInput = {
           provider,
           messages: providerMessages,
-          tools: assembled.tools,
+          tools: request.tools,
           dispatch,
           emit: emitAndAccumulate,
           conversationId,
@@ -1294,7 +1077,7 @@ export function createSessionOrchestrator(
 
         emitToHub(conversationId, { type: "turn-sealed", conversationId, turnId });
       } catch (err) {
-        endReason = "error";
+        endReason = err instanceof TurnRequestRejected ? "rejected" : "error";
         // Persist whatever metrics the failed turn accumulated (steps that
         // ran before the failure), so its row exists like any other turn's.
         // Best-effort: a store that is failing may fail again — never mask
