@@ -46,7 +46,8 @@ it("forwards the compaction hook epoch to every connection without starting a se
     const sent: string[][] = [[], []];
     for (const messages of sent) {
       options?.websocket?.open?.({
-        data: {},
+        data: { subs: new Set(), chatSubscriptions: new Map(), providerDisposers: new Map() },
+        getBufferedAmount: () => 0,
         send: (message: string) => {
           messages.push(message);
         },

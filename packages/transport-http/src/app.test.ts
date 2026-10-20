@@ -31,7 +31,7 @@ import type {
 import type { Computer, ComputerEntry, Workspace } from "@dispatch/wire";
 import { describe, expect, it, vi } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
-import { createApp } from "./app.js";
+import { createApp, retainThroughputEvent } from "./app.js";
 import { extractLastAssistantText } from "./logic.js";
 import type {
   ComputerService,
@@ -2160,6 +2160,52 @@ describe("throughput recording + GET /metrics/throughput", () => {
       body: JSON.stringify(body),
     });
   }
+
+  it("retains only metric events across a large stream, with every event still on the wire", async () => {
+    const base = { conversationId: "c1", turnId: "t1" };
+    const events: AgentEvent[] = Array.from({ length: 10_000 }, (_, i) => ({
+      ...base,
+      type: "text-delta",
+      delta: `token${i}`,
+    }));
+    events.push(
+      { ...base, type: "tool-output", toolCallId: "call", output: "large output" },
+      { ...base, type: "usage", usage: { inputTokens: 1, outputTokens: 999 } },
+      { ...base, type: "step-complete", stepId: "t1#0" as StepId, genTotalMs: 1000 },
+      { ...base, type: "step-complete", stepId: "t1#1" as StepId, genTotalMs: 2000 },
+      { ...base, type: "done", reason: "stop", usage: { inputTokens: 2, outputTokens: 300 } },
+      { ...base, type: "turn-ended", reason: "sealed" },
+    );
+    const retained: Parameters<typeof retainThroughputEvent>[0] = [];
+    for (const event of events) retainThroughputEvent(retained, event);
+    expect(retained.map((event) => event.type)).toEqual([
+      "usage",
+      "step-complete",
+      "step-complete",
+      "done",
+    ]);
+    const store = createThroughputStore({ storage: createMemStorage() });
+    const app = appWith(store, events);
+    const response = await postChat(app, {
+      conversationId: "c1",
+      message: "go",
+      model: "test/model",
+    });
+    expect(
+      (await response.text())
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual(events);
+    const report = (await (
+      await app.request(`/metrics/throughput?period=day&date=${day}`)
+    ).json()) as ThroughputResponse;
+    expect(report.models[0]).toMatchObject({
+      totalOutputTokens: 300,
+      totalGenMs: 3000,
+      tokensPerSecond: 100,
+    });
+  });
 
   it("records a per-model sample from a turn and aggregates it (token-weighted tok/s)", async () => {
     const store = createThroughputStore({ storage: createMemStorage() });

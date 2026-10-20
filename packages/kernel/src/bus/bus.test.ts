@@ -187,6 +187,57 @@ describe("filter hooks", () => {
     expect(result).toBe("start-first-second");
   });
 
+  it("caches per hook, invalidates on add/remove, and preserves in-flight snapshots", async () => {
+    let sorts = 0;
+    bus = createBus(logger, (entries) => {
+      sorts++;
+      return sortFilters(entries);
+    });
+    const hook = defineFilter<string>("test/cached");
+    const other = defineFilter<string>("test/other");
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    bus.addFilter(
+      hook,
+      async (value) => {
+        await gate;
+        return `${value}-first`;
+      },
+      { priority: -1 },
+    );
+    const remove = bus.addFilter(hook, (value) => `${value}-second`);
+    bus.addFilter(hook, (value) => `${value}-third`);
+    bus.addFilter(other, (value) => `${value}-other`);
+    const pending = bus.applyFilters(hook, "start");
+    remove();
+    bus.addFilter(hook, (value) => `${value}-new`);
+    release();
+    expect(await pending).toBe("start-first-second-third");
+    expect(await bus.applyFilters(hook, "start")).toBe("start-first-third-new");
+    expect(await bus.applyFilters(other, "start")).toBe("start-other");
+    for (let i = 0; i < 100; i++) {
+      expect(await bus.applyFilters(hook, "start")).toBe("start-first-third-new");
+    }
+    remove(); // stale disposer must not evict the cache
+    await bus.applyFilters(hook, "start");
+    expect(sorts).toBe(3);
+    const removeOther = bus.addFilter(other, (value) => `${value}-extra`);
+    await bus.applyFilters(other, "start");
+    removeOther();
+    await bus.applyFilters(other, "start");
+    await bus.applyFilters(hook, "start");
+    expect(sorts).toBe(5);
+  });
+
+  it("invalidates an emptied chain before re-registration", async () => {
+    const hook = defineFilter<string>("test/empty-cache");
+    const remove = bus.addFilter(hook, (value) => `${value}-old`);
+    expect(await bus.applyFilters(hook, "start")).toBe("start-old");
+    remove();
+    expect(await bus.applyFilters(hook, "start")).toBe("start");
+    bus.addFilter(hook, (value) => `${value}-new`);
+    expect(await bus.applyFilters(hook, "start")).toBe("start-new");
+  });
+
   it("fail-open passes value through on throw", async () => {
     const hook = defineFilter<number>("test/fail-open");
 

@@ -75,9 +75,11 @@ interface StoredFilterEntry {
   readonly order: number;
 }
 
-export function createBus(logger: Logger): Bus {
+/** The optional sorter is injected so cache behavior can be measured without internal mocks. */
+export function createBus(logger: Logger, sort: typeof sortFilters = sortFilters): Bus {
   const eventHandlers = new Map<string, Set<unknown>>();
   const filterEntries = new Map<string, StoredFilterEntry[]>();
+  const sortedFilters = new Map<string, readonly unknown[]>();
   const services = new Map<string, unknown>();
   // Reactive-registry subscriber sets, keyed by service-handle id. Available
   // callbacks receive the implementation; unavailable callbacks take none.
@@ -167,11 +169,15 @@ export function createBus(logger: Logger): Bus {
         order: filterOrderCounter++,
       };
       entries.push(entry);
+      sortedFilters.delete(hook.id);
       return () => {
         const current = filterEntries.get(hook.id);
         if (current === undefined) return;
         const idx = current.indexOf(entry);
-        if (idx !== -1) current.splice(idx, 1);
+        if (idx !== -1) {
+          current.splice(idx, 1);
+          sortedFilters.delete(hook.id);
+        }
       };
     },
 
@@ -182,8 +188,11 @@ export function createBus(logger: Logger): Bus {
     ): Promise<T> {
       const entries = filterEntries.get(hook.id);
       if (entries === undefined || entries.length === 0) return value;
-      const sorted = sortFilters(entries as ReadonlyArray<FilterEntry<T>>);
-      const fns = sorted.map((e) => e.fn) as Array<FilterHandler<T>>;
+      let fns = sortedFilters.get(hook.id) as readonly FilterHandler<T>[] | undefined;
+      if (fns === undefined) {
+        fns = sort(entries as ReadonlyArray<FilterEntry<T>>).map((entry) => entry.fn);
+        sortedFilters.set(hook.id, fns);
+      }
       return applyFilterChain(fns, value, logger, hook.id, opts?.failClosed ?? false);
     },
 

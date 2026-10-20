@@ -318,6 +318,15 @@ function currentThroughputStore(opts: CreateServerOptions): ThroughputStore {
   return opts.throughputStore ?? noopThroughputStore;
 }
 
+/** Only small metric packets are retained by /chat; all events still stream verbatim. */
+type ThroughputEvent = Extract<AgentEvent, { type: "usage" | "step-complete" | "done" }>;
+
+export function retainThroughputEvent(events: ThroughputEvent[], event: AgentEvent): void {
+  if (event.type === "usage" || event.type === "step-complete" || event.type === "done") {
+    events.push(event);
+  }
+}
+
 export function createApp(opts: CreateServerOptions): Hono {
   const app = new Hono();
   const log = opts.logger ?? noopLogger;
@@ -976,7 +985,7 @@ export function createApp(opts: CreateServerOptions): Hono {
       }
     }
 
-    const events: AgentEvent[] = [];
+    const events: ThroughputEvent[] = [];
     let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
     let streamClosed = false;
 
@@ -1016,7 +1025,7 @@ export function createApp(opts: CreateServerOptions): Hono {
       conversationId,
       text: message,
       onEvent: (event) => {
-        events.push(event);
+        retainThroughputEvent(events, event);
         safeEnqueue(new TextEncoder().encode(serializeEventLine(event)));
       },
       ...(model !== undefined ? { modelName: model } : {}),

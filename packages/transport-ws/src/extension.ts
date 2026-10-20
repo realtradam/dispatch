@@ -31,6 +31,7 @@ import { catalogMessageFiltered, routeClientMessage, subKey } from "./router.js"
 
 /** Active provider subscriptions + chat subscription disposers for a single WS connection. */
 interface ConnectionState {
+  closed?: boolean;
   readonly subs: Set<string>;
   readonly providerDisposers: Map<string, () => void>;
   /** Per-conversation chat subscription disposers (orchestrator.subscribe). */
@@ -102,6 +103,29 @@ export function createTransportWsExtension(): Extension {
   const connections = new Set<Ws>();
   /** Disposers for host hook subscriptions (drained on deactivate). */
   const disposers: Array<() => void> = [];
+  let connectionLogger: Logger | undefined;
+
+  function disposeConnection(ws: Ws): void {
+    connections.delete(ws);
+    const state = ws.data;
+    state.closed = true;
+    const subscriptions = [
+      ...state.chatSubscriptions.values(),
+      ...state.providerDisposers.values(),
+    ];
+    state.chatSubscriptions.clear();
+    state.providerDisposers.clear();
+    state.subs.clear();
+    for (const dispose of subscriptions) {
+      try {
+        dispose();
+      } catch (err) {
+        connectionLogger?.warn("transport-ws: subscription disposal failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
 
   return {
     manifest,
@@ -109,11 +133,23 @@ export function createTransportWsExtension(): Extension {
       const registry: SurfaceRegistry = host.getService(surfaceRegistryHandle);
       const orchestrator: SessionOrchestrator = host.getService(sessionOrchestratorHandle);
       const logger = host.logger;
+      connectionLogger = logger;
       const port = host.config.get<number>("surfaceWsPort") ?? 24205;
 
       function send(ws: Ws, msg: WsServerMessage): void {
+        if (ws.data.closed) return;
         try {
+          const closeIfBackpressured = () => {
+            const bufferedBytes = ws.getBufferedAmount();
+            if (bufferedBytes <= 8 * 1024 * 1024) return false;
+            logger.warn("transport-ws: closing slow consumer", { bufferedBytes });
+            disposeConnection(ws);
+            ws.close(1013, "Slow consumer; reconnect and resync");
+            return true;
+          };
+          if (closeIfBackpressured()) return;
           ws.send(JSON.stringify(msg));
+          closeIfBackpressured();
         } catch {
           // Connection may have been dropped; swallow.
         }
@@ -174,13 +210,14 @@ export function createTransportWsExtension(): Extension {
        * buffered events to new subscribers (late-join), then streams live.
        */
       function ensureChatSubscribed(ws: Ws, state: ConnectionState, conversationId: string): void {
-        if (state.chatSubscriptions.has(conversationId)) {
+        if (state.closed || state.chatSubscriptions.has(conversationId)) {
           return;
         }
         const unsubscribe = orchestrator.subscribe(conversationId, (event) => {
           send(ws, { type: "chat.delta", event });
         });
-        state.chatSubscriptions.set(conversationId, unsubscribe);
+        if (state.closed) unsubscribe();
+        else state.chatSubscriptions.set(conversationId, unsubscribe);
       }
 
       function subscribeToProvider(
@@ -191,7 +228,7 @@ export function createTransportWsExtension(): Extension {
         state: ConnectionState,
       ): void {
         const key = subKey(surfaceId, conversationId);
-        if (!provider.subscribe || state.providerDisposers.has(key)) {
+        if (state.closed || !provider.subscribe || state.providerDisposers.has(key)) {
           return;
         }
         const context: SurfaceContext | undefined =
@@ -226,7 +263,8 @@ export function createTransportWsExtension(): Extension {
             // Provider threw — log but don't kill the connection.
           }
         });
-        state.providerDisposers.set(key, dispose);
+        if (state.closed) dispose();
+        else state.providerDisposers.set(key, dispose);
       }
 
       function unsubscribeFromProvider(state: ConnectionState, key: string): void {
@@ -389,7 +427,7 @@ export function createTransportWsExtension(): Extension {
 
           async message(ws, message) {
             const state = ws.data;
-            if (!state) return;
+            if (!state || state.closed) return;
 
             let parsed: WsClientMessage;
             try {
@@ -615,19 +653,7 @@ export function createTransportWsExtension(): Extension {
           },
 
           close(ws) {
-            connections.delete(ws);
-            const state = ws.data;
-            if (state) {
-              // Dispose all chat subscriptions (does NOT abort turns).
-              for (const dispose of state.chatSubscriptions.values()) {
-                dispose();
-              }
-              state.chatSubscriptions.clear();
-              // Dispose surface provider subscriptions.
-              for (const dispose of state.providerDisposers.values()) {
-                dispose();
-              }
-            }
+            disposeConnection(ws);
             logger.debug("transport-ws: connection close");
           },
         },
@@ -653,7 +679,7 @@ export function createTransportWsExtension(): Extension {
         dispose();
       }
       disposers.length = 0;
-      connections.clear();
+      for (const ws of connections) disposeConnection(ws);
       listeners?.stop();
       listeners = undefined;
     },

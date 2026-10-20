@@ -62,6 +62,7 @@ it("WS queue awaits storage, forwards images/computerId, subscribes on start and
   const sent: string[] = [];
   const ws = {
     data: { subs: new Set(), chatSubscriptions: new Map(), providerDisposers: new Map() },
+    getBufferedAmount: () => 0,
     send: (message: string) => sent.push(message),
   } as unknown as Bun.ServerWebSocket<unknown>;
   const input = {
