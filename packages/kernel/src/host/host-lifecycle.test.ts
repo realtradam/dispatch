@@ -259,6 +259,134 @@ describe("runtime load/unload/reload", () => {
     };
   });
 
+  describe("registration ownership", () => {
+    it.each([
+      "tool",
+      "provider",
+      "auth",
+    ] as const)("rejects another owner's %s at boot and runtime without sweeping the first owner", async (kind) => {
+      const tool = createFakeTool("shared");
+      const provider = createFakeProvider("shared");
+      const auth = createFakeAuth("shared");
+      const register = (api: HostAPI) => {
+        if (kind === "tool") api.defineTool(tool);
+        if (kind === "provider") api.defineProvider(provider);
+        if (kind === "auth") api.defineAuth(auth);
+      };
+      const first = createExtension("first", { activate: register });
+      const second = createExtension("second", {
+        activate: (api) => {
+          api.defineTool(createFakeTool("partial"));
+          register(api);
+        },
+      });
+      const host = createHost([first, second], deps);
+      const assertFirstSurvives = () => {
+        expect(host.getTool("partial")).toBeUndefined();
+        expect(host.getExtensions().map((m) => m.id)).toEqual(["first"]);
+        if (kind === "tool") {
+          expect(host.getTool("shared")).toBe(tool);
+          expect(host.getToolOwners().get("shared")).toBe("first");
+        }
+        if (kind === "provider") {
+          expect(host.getProvider("shared")).toBe(provider);
+          expect(host.getProviderOwners().get("shared")).toBe("first");
+        }
+        if (kind === "auth") expect(host.getAuthProvider("shared")).toBe(auth);
+      };
+      await host.activate();
+      expect(host.getDisabled()[0]?.reason).toBe(
+        `Activation failed: ${kind} shared already registered by first`,
+      );
+      assertFirstSurvives();
+      expect((await host.unloadExtension("second")).ok).toBe(false);
+      assertFirstSurvives();
+      expect((await host.loadExtension(second)).ok).toBe(false);
+      expect(host.getDisabled()).toHaveLength(1);
+      assertFirstSurvives();
+      await host.unloadExtension("first");
+      expect((await host.loadExtension(second)).ok).toBe(true);
+      expect(host.getDisabled()).toHaveLength(0);
+      expect((await host.unloadExtension("second")).ok).toBe(true);
+      expect(host.getTools().size).toBe(0);
+      expect(host.getProviders().size).toBe(0);
+      expect(host.getAuthProviders().size).toBe(0);
+    });
+
+    it("replaces all same-owner registrations and removes replacements on unload", async () => {
+      const tool = createFakeTool("shared");
+      const provider = createFakeProvider("shared");
+      const auth = createFakeAuth("shared");
+      const host = createHost(
+        [
+          createExtension("owner", {
+            activate: (api) => {
+              api.defineTool(createFakeTool("shared"));
+              api.defineProvider(createFakeProvider("shared"));
+              api.defineAuth(createFakeAuth("shared"));
+              api.defineTool(tool);
+              api.defineProvider(provider);
+              api.defineAuth(auth);
+            },
+          }),
+        ],
+        deps,
+      );
+      await host.activate();
+      expect(host.getDisabled()).toEqual([]);
+      expect(host.getTool("shared")).toBe(tool);
+      expect(host.getProvider("shared")).toBe(provider);
+      expect(host.getAuthProvider("shared")).toBe(auth);
+      expect((await host.unloadExtension("owner")).ok).toBe(true);
+      expect(host.getTools().size).toBe(0);
+      expect(host.getProviders().size).toBe(0);
+      expect(host.getAuthProviders().size).toBe(0);
+    });
+  });
+
+  describe("boot dependency failures", () => {
+    it.each([
+      "failed",
+      "incompatible",
+    ] as const)("skips dependents of a %s extension transitively but activates independent extensions", async (failure) => {
+      const calls: string[] = [];
+      const base = createExtension("base", {
+        apiVersion: failure === "incompatible" ? "^99.0.0" : `^${KERNEL_API_VERSION}`,
+        activate: () => {
+          throw new Error("boot failure");
+        },
+      });
+      const middle = createExtension("middle", {
+        dependsOn: ["base"],
+        activate: () => {
+          calls.push("middle");
+        },
+      });
+      const leaf = createExtension("leaf", {
+        dependsOn: ["base", "middle"],
+        activate: () => {
+          calls.push("leaf");
+        },
+      });
+      const independent = createExtension("independent", {
+        activate: () => {
+          calls.push("independent");
+        },
+      });
+      const host = createHost([leaf, middle, base, independent], deps);
+      await host.activate();
+      expect(calls).toEqual(["independent"]);
+      expect(host.getExtensions().map((m) => m.id)).toEqual(["independent"]);
+      expect(host.getDisabled()).toHaveLength(3);
+      expect(host.getDisabled().find((d) => d.manifest.id === "middle")?.reason).toBe(
+        'Extension "middle" depends on "base", which is not loaded',
+      );
+      expect(host.getDisabled().find((d) => d.manifest.id === "leaf")?.reason).toBe(
+        'Extension "leaf" depends on "base", "middle", which are not loaded',
+      );
+    });
+  });
+
   describe("loadExtension", () => {
     it("activates a new extension at runtime; its registrations become visible", async () => {
       const tool = createFakeTool("late-tool");
@@ -314,6 +442,29 @@ describe("runtime load/unload/reload", () => {
       expect(result.disabled?.reason).toContain("ghost");
       expect(result.disabled?.reason).toContain("not loaded");
       expect(host.getDisabled()).toHaveLength(1);
+    });
+
+    it("replaces disabled entries across failure kinds and clears them after recovery", async () => {
+      const host = createHost([], deps);
+      await host.activate();
+      const attempts = [
+        createExtension("retry", { apiVersion: "^99.0.0" }),
+        createExtension("retry", { dependsOn: ["ghost"] }),
+        createExtension("retry", {
+          activate: () => {
+            throw new Error("latest failure");
+          },
+        }),
+      ];
+      for (const ext of attempts) {
+        const result = await host.loadExtension(ext);
+        expect(result.ok).toBe(false);
+        expect(host.getDisabled()).toEqual([result.disabled]);
+        expect(result.disabled?.manifest).toBe(ext.manifest);
+      }
+      expect(host.getDisabled()[0]?.reason).toBe("Activation failed: latest failure");
+      expect((await host.loadExtension(createExtension("retry"))).ok).toBe(true);
+      expect(host.getDisabled()).toEqual([]);
     });
 
     it("accepts a dependency that is currently loaded", async () => {
