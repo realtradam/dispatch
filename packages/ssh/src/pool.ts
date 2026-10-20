@@ -38,6 +38,9 @@ export type SshConnectionState = "disconnected" | "connecting" | "connected" | "
  */
 export interface SshConnection {
   readonly getClient: () => Promise<Client>;
+  /** Holds an idle-reap lease through exec AND cancellation cleanup. */
+  readonly withExec: <T>(run: (client: Client) => Promise<T>) => Promise<T>;
+  readonly inFlightExecs: number;
   readonly getSftp: () => Promise<import("ssh2").SFTPWrapper>;
   readonly close: () => Promise<void>;
   readonly state: SshConnectionState;
@@ -111,6 +114,7 @@ export function createSshConnectionPool(deps: SshPoolDeps): SshConnectionPool {
     const client = deps.newClient();
     let sftp: import("ssh2").SFTPWrapper | null = null;
     let connectPromise: Promise<void> | null = null;
+    let inFlightExecs = 0;
 
     // Permanent error listener — without it, a post-connect ssh2 'error'
     // (re-key/keepalive timeout) escapes uncaught → process crash. cleanup()
@@ -155,6 +159,18 @@ export function createSshConnectionPool(deps: SshPoolDeps): SshConnectionPool {
     };
 
     const conn: SshConnection = {
+      get inFlightExecs() {
+        return inFlightExecs;
+      },
+      async withExec(run) {
+        inFlightExecs++;
+        try {
+          return await run(await conn.getClient());
+        } finally {
+          inFlightExecs--;
+          touch();
+        }
+      },
       get state() {
         return state.value;
       },
@@ -455,7 +471,7 @@ function startReaper(
     const e = entries.get(computerId);
     if (e === undefined) return;
     const idle = Date.now() - e.lastUsedAt;
-    if (idle >= IDLE_REAP_MS) {
+    if (e.conn.inFlightExecs === 0 && idle >= IDLE_REAP_MS) {
       deps.logger.info("reaping idle ssh connection", { alias: computerId, idleMs: idle });
       void e.conn.close().then(() => {
         stopReaper(e);

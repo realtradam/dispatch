@@ -13,7 +13,7 @@ import { EventEmitter } from "node:events";
 import type { Logger } from "@dispatch/kernel";
 import type { Computer } from "@dispatch/wire";
 import type { Client } from "ssh2";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSshConnectionPool } from "./pool.js";
 
 const computer: Computer = {
@@ -98,6 +98,7 @@ describe("SshConnectionPool — permanent pooled-client error listener", () => {
 
   afterEach(async () => {
     await pool?.closeAll();
+    vi.useRealTimers();
   });
 
   it("captures a post-connect 'error' without throwing, sets state=error, and logs", async () => {
@@ -172,5 +173,32 @@ describe("SshConnectionPool — permanent pooled-client error listener", () => {
     expect(errorCalls).toHaveLength(1);
     expect(errorCalls[0]?.msg).toBe("ssh: pooled client error");
     expect(errorCalls[0]?.message).toBe("connect refused");
+  });
+  it("does not reap concurrent execs; completion (including failure) resets idle time", async () => {
+    const { client } = fakeClient();
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    pool = createSshConnectionPool(makeDeps(client, capturingLogger([])));
+    const conn = await pool.acquire("testremote");
+    let finish = (): void => undefined;
+    const first = conn.withExec(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const second = conn.withExec(async () => {
+      throw new Error("exec failed");
+    });
+    await expect(second).rejects.toThrow("exec failed");
+    expect(conn.inFlightExecs).toBe(1);
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    expect(pool.status()).toHaveLength(1);
+    finish();
+    await first;
+    expect(conn.inFlightExecs).toBe(0);
+    await vi.advanceTimersByTimeAsync(14 * 60_000);
+    expect(pool.status()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pool.status()).toHaveLength(0);
   });
 });
