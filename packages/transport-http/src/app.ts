@@ -436,17 +436,37 @@ export function createApp(opts: CreateServerOptions): Hono {
     if (isLocalImageRequestError(request)) {
       return c.json({ error: request.error }, 400);
     }
-    const { readFile: fsReadFile } = await import("node:fs/promises");
-    let buf: Uint8Array;
+    const { open, stat } = await import("node:fs/promises");
+    const maxImageBytes = 25 * 1024 * 1024;
+    let header: Uint8Array;
     try {
-      buf = await fsReadFile(request.path);
+      const info = await stat(request.path);
+      if (!info.isFile()) {
+        return c.json({ error: "Image must be a regular file" }, 400);
+      }
+      if (info.size > maxImageBytes) {
+        return c.json({ error: "Image exceeds the 25 MiB size limit" }, 413);
+      }
+      const file = await open(request.path, "r");
+      try {
+        const buffer = new Uint8Array(16);
+        let length = 0;
+        while (length < buffer.length) {
+          const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+          if (bytesRead === 0) break;
+          length += bytesRead;
+        }
+        header = buffer.subarray(0, length);
+      } finally {
+        await file.close();
+      }
     } catch {
       return c.json({ error: "Image not found" }, 404);
     }
-    if (!matchesImageMagicBytes(buf, request.extension)) {
+    if (!matchesImageMagicBytes(header, request.extension)) {
       return c.json({ error: "File content does not match the image format" }, 400);
     }
-    return new Response(buf, {
+    return new Response(Bun.file(request.path), {
       headers: {
         "Content-Type": request.mime,
         "Cache-Control": "no-cache",

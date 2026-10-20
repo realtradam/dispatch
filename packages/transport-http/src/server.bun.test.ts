@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
 import {
   type Bus,
@@ -730,4 +734,102 @@ describe("real multi-listener lifecycle", () => {
     }
     for (const url of urls) await expect(fetch(url)).rejects.toThrow();
   });
+});
+
+// Bun.file responses must be exercised in Bun, not the Node-based Vitest suite.
+describe("GET /local-image streaming", () => {
+  const pngBytes = new Uint8Array(
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB1sAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  );
+  const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]);
+  const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x10, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+  const gifBytes = new TextEncoder().encode("GIF89a");
+  const bmpBytes = new TextEncoder().encode("BM6\0\0\0");
+
+  const formats: readonly {
+    readonly ext: string;
+    readonly mime: string;
+    readonly bytes: Uint8Array;
+  }[] = [
+    { ext: ".png", mime: "image/png", bytes: pngBytes },
+    { ext: ".jpg", mime: "image/jpeg", bytes: jpegBytes },
+    { ext: ".jpeg", mime: "image/jpeg", bytes: jpegBytes },
+    { ext: ".webp", mime: "image/webp", bytes: webpBytes },
+    { ext: ".gif", mime: "image/gif", bytes: gifBytes },
+    { ext: ".bmp", mime: "image/bmp", bytes: bmpBytes },
+  ];
+
+  function createTestApp() {
+    return createApp({
+      conversationStore: fakeConversationStore(),
+      orchestrator: fakeOrchestrator(),
+      credentialStore: fakeCredentialStore(),
+    });
+  }
+
+  async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "dispatch-local-image-"));
+    try {
+      await fn(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("serves a real image file of each whitelisted format with its MIME type", async () => {
+    await withTempDir(async (dir) => {
+      const app = createTestApp();
+      for (const format of formats) {
+        const file = join(dir, `pic${format.ext}`);
+        await writeFile(file, format.bytes);
+        const res = await app.request(`/local-image?path=${encodeURIComponent(file)}`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toBe(format.mime);
+        expect(res.headers.get("cache-control")).toBe("no-cache");
+        expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(new Uint8Array(await res.arrayBuffer())).toEqual(format.bytes);
+      }
+    });
+  });
+
+  test("streams a PNG at the inclusive 25 MiB limit", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "limit.png");
+      await writeFile(file, pngBytes);
+      await truncate(file, 25 * 1024 * 1024);
+      const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+      expect(res.status).toBe(200);
+      const reader = res.body?.getReader();
+      if (reader === undefined) throw new Error("Expected a streamed response body");
+      let total = 0;
+      let chunks = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (total === 0) expect(value.subarray(0, pngBytes.length)).toEqual(pngBytes);
+        total += value.length;
+        chunks++;
+      }
+      expect(total).toBe(25 * 1024 * 1024);
+      expect(chunks).toBeGreaterThan(1);
+    });
+  });
+
+  test.skipIf(Bun.which("mkfifo") === null)(
+    "rejects a FIFO named x.png without a writer",
+    async () => {
+      await withTempDir(async (dir) => {
+        const file = join(dir, "x.png");
+        const result = spawnSync("mkfifo", [file]);
+        expect(result.status).toBe(0);
+        const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Image must be a regular file" });
+      });
+    },
+    2000,
+  );
 });
