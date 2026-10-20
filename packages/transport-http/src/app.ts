@@ -381,9 +381,19 @@ export function createApp(opts: CreateServerOptions): Hono {
       return c.json({ error: "Invalid image ID" }, 400);
     }
     const imageDir = process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images";
-    const { join } = await import("node:path");
+    const { resolve, sep } = await import("node:path");
+    // Local defense in depth: transport-http is core, vision-handoff is standard.
+    // Keep this pure path policy local instead of adding a cross-tier dependency.
+    const containedPath = (root: string, ...segments: string[]): string | null => {
+      if (segments.some((segment) => segment.includes("%") || segment.includes("\0"))) return null;
+      const base = resolve(root);
+      const path = resolve(base, ...segments);
+      const prefix = base.endsWith(sep) ? base : base + sep;
+      return path === base || path.startsWith(prefix) ? path : null;
+    };
+    const filePath = containedPath(imageDir, conversationId, imageId);
+    if (filePath === null) return c.json({ error: "Invalid image path" }, 400);
     const { readFile: fsReadFile } = await import("node:fs/promises");
-    const filePath = join(imageDir, conversationId, imageId);
     try {
       const buf = await fsReadFile(filePath);
       const ext = imageId.toLowerCase();

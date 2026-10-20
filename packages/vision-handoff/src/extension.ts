@@ -20,7 +20,7 @@
  */
 
 import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
-import { extname, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { extname, isAbsolute, resolve as pathResolve, sep } from "node:path";
 import { agentManagementHandle } from "@dispatch/agent-management";
 import { conversationStoreHandle } from "@dispatch/conversation-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
@@ -50,8 +50,6 @@ export const manifest: Manifest = {
     tools: ["consult_vision", "read_image"],
   },
 };
-
-const IMAGE_DIR = process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images";
 
 /** MIME types for recognized image extensions. */
 const MIME_BY_EXT: Readonly<Record<string, string>> = {
@@ -86,67 +84,96 @@ async function readFileAsDataUrl(path: string, cwd?: string): Promise<string> {
 }
 
 /**
- * Save a data URL image to a tmp file and return a compact HTTP path.
- * The compact URL (`/images/<conversationId>/<uuid>.<ext>`) is what gets
- * persisted in the conversation store — a tiny string, not megabytes of base64.
+ * Lexical containment only (no filesystem I/O). Callers pass decoded segments;
+ * reject percent escapes rather than risk interpreting encoded traversal later.
+ * This does not resolve symlinks; the image directory must be application-owned.
  */
-async function saveImageToTmp(
-  conversationId: string,
-  dataUrl: string,
-  mimeType?: string,
-): Promise<string> {
-  const mime = mimeType ?? "image/png";
-  const ext = EXT_BY_MIME[mime] ?? ".png";
-  const imageId = `${crypto.randomUUID()}${ext}`;
-  const dir = join(IMAGE_DIR, conversationId);
-  await mkdir(dir, { recursive: true });
-  const filePath = join(dir, imageId);
-  const base64 = dataUrl.split(",")[1] ?? "";
-  await writeFile(filePath, Buffer.from(base64, "base64"));
-  return `/images/${conversationId}/${imageId}`;
+export function containedPath(root: string, ...segments: string[]): string | null {
+  if (segments.some((segment) => segment.includes("%") || segment.includes("\0"))) return null;
+  const base = pathResolve(root);
+  const path = pathResolve(base, ...segments);
+  const prefix = base.endsWith(sep) ? base : base + sep;
+  return path === base || path.startsWith(prefix) ? path : null;
 }
 
-/**
- * Resolve a compact URL (`/images/<convId>/<imageId>`) back to a data URL by
- * reading the tmp file. Data URLs and HTTP URLs pass through unchanged.
- */
-async function resolveImageUrl(url: string): Promise<string> {
-  if (url.startsWith("data:") || url.startsWith("http")) return url;
-  if (!url.startsWith("/images/")) return url;
-  const parts = url.split("/"); // ["", "images", convId, imageId]
-  const convId = parts[2];
-  const imageId = parts[3];
-  if (convId === undefined || imageId === undefined) return url;
-  const filePath = join(IMAGE_DIR, convId, imageId);
-  const buf = await readFile(filePath);
-  const ext = extname(imageId).toLowerCase();
-  const mime = MIME_BY_EXT[ext] ?? "image/png";
-  return `data:${mime};base64,${buf.toString("base64")}`;
-}
+/** Bind filesystem effects to an explicit image root (also isolates tests). */
+export function createImageFileStore(imageDir: string) {
+  const root = pathResolve(imageDir);
+  const requirePath = (base: string, ...segments: string[]): string => {
+    const path = containedPath(base, ...segments);
+    if (path === null) throw new Error("Invalid image path");
+    return path;
+  };
+  const conversationPath = (conversationId: string): string => {
+    const dir = requirePath(root, conversationId);
+    if (dir === root) throw new Error("Invalid image path");
+    return dir;
+  };
+  const compactImagePath = (url: string) => {
+    const parts = url.split("/");
+    const convId = parts[2];
+    const imageId = parts[3];
+    if (parts.length !== 4 || !convId || !imageId) throw new Error("Invalid image path");
+    return { filePath: requirePath(conversationPath(convId), imageId), imageId };
+  };
 
-/** Delete a single tmp image file (after compaction — best-effort). */
-async function deleteTmpImage(compactUrl: string): Promise<void> {
-  if (!compactUrl.startsWith("/images/")) return;
-  const parts = compactUrl.split("/");
-  const convId = parts[2];
-  const imageId = parts[3];
-  if (convId === undefined || imageId === undefined) return;
-  const filePath = join(IMAGE_DIR, convId, imageId);
-  try {
-    await unlink(filePath);
-  } catch {
-    // Best-effort — file may already be deleted.
+  /**
+   * Save a data URL image to a tmp file and return a compact HTTP path.
+   * The compact URL (`/images/<conversationId>/<uuid>.<ext>`) is what gets
+   * persisted in the conversation store — a tiny string, not megabytes of base64.
+   */
+  async function saveImageToTmp(
+    conversationId: string,
+    dataUrl: string,
+    mimeType?: string,
+  ): Promise<string> {
+    const mime = mimeType ?? "image/png";
+    const ext = EXT_BY_MIME[mime] ?? ".png";
+    const imageId = `${crypto.randomUUID()}${ext}`;
+    const dir = conversationPath(conversationId);
+    await mkdir(dir, { recursive: true });
+    const filePath = requirePath(dir, imageId);
+    const base64 = dataUrl.split(",")[1] ?? "";
+    await writeFile(filePath, Buffer.from(base64, "base64"));
+    return `/images/${conversationId}/${imageId}`;
   }
-}
 
-/** Delete all tmp images for a conversation (on close — best-effort). */
-async function deleteConversationImages(conversationId: string): Promise<void> {
-  const dir = join(IMAGE_DIR, conversationId);
-  try {
-    await rm(dir, { recursive: true, force: true });
-  } catch {
-    // Best-effort.
+  /**
+   * Resolve a compact URL (`/images/<convId>/<imageId>`) back to a data URL by
+   * reading the tmp file. Data URLs and HTTP URLs pass through unchanged.
+   */
+  async function resolveImageUrl(url: string): Promise<string> {
+    if (url.startsWith("data:") || url.startsWith("http")) return url;
+    if (!url.startsWith("/images/")) return url;
+    const { filePath, imageId } = compactImagePath(url);
+    const buf = await readFile(filePath);
+    const ext = extname(imageId).toLowerCase();
+    const mime = MIME_BY_EXT[ext] ?? "image/png";
+    return `data:${mime};base64,${buf.toString("base64")}`;
   }
+
+  /** Delete a single tmp image file (after compaction — best-effort). */
+  async function deleteTmpImage(compactUrl: string): Promise<void> {
+    if (!compactUrl.startsWith("/images/")) return;
+    const { filePath } = compactImagePath(compactUrl);
+    try {
+      await unlink(filePath);
+    } catch {
+      // Best-effort — file may already be deleted.
+    }
+  }
+
+  /** Delete all tmp images for a conversation (on close — best-effort). */
+  async function deleteConversationImages(conversationId: string): Promise<void> {
+    const dir = conversationPath(conversationId);
+    try {
+      await rm(dir, { recursive: true, force: true });
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  return { saveImageToTmp, resolveImageUrl, deleteTmpImage, deleteConversationImages };
 }
 
 export async function activate(host: HostAPI): Promise<void> {
@@ -163,14 +190,12 @@ export async function activate(host: HostAPI): Promise<void> {
     return { provider, model: resolved.model };
   };
 
+  const imageFiles = createImageFileStore(process.env.DISPATCH_IMAGE_DIR ?? "/tmp/dispatch/images");
   const service = createVisionHandoffService({
     credentialStore,
     resolveModel,
     readFileAsDataUrl,
-    saveImageToTmp,
-    resolveImageUrl,
-    deleteTmpImage,
-    deleteConversationImages,
+    ...imageFiles,
     // Lazily resolve the AgentManagementService — consultations are started via
     // its `summon` method (plan §11 hard isolation). Lazy so activation order
     // doesn't matter; `undefined` degrades consult_vision with an error.

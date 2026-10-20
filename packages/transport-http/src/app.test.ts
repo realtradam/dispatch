@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCredentialStore } from "@dispatch/credential-store";
@@ -618,6 +618,49 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+});
+
+describe("GET /images filesystem containment", () => {
+  it("serves an image inside the configured root and returns 404 for a missing image", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dispatch-http-images-"));
+    const previous = process.env.DISPATCH_IMAGE_DIR;
+    process.env.DISPATCH_IMAGE_DIR = join(dir, "images");
+    try {
+      await mkdir(join(dir, "images", "mcp-test-001"), { recursive: true });
+      await writeFile(join(dir, "images", "mcp-test-001", "image.png"), "image bytes");
+      const app = createApp({
+        conversationStore: createFakeConversationStore(),
+        orchestrator: createFakeOrchestrator([]),
+        credentialStore: createFakeCredentialStore([]),
+        logger: noopLogger,
+      });
+      const response = await app.request("/images/mcp-test-001/image.png");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("image/png");
+      expect(await response.text()).toBe("image bytes");
+      expect((await app.request("/images/mcp-test-001/missing.png")).status).toBe(404);
+    } finally {
+      if (previous === undefined) delete process.env.DISPATCH_IMAGE_DIR;
+      else process.env.DISPATCH_IMAGE_DIR = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "/images/..%2foutside/sentinel.png",
+    "/images/%2foutside/sentinel.png",
+    "/images/%252e%252e%252foutside/sentinel.png",
+    "/images/conv/..%2foutside%2fsentinel.png",
+    "/images/conv/%2foutside%2fsentinel.png",
+  ])("rejects unsafe path %s", async (url) => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    expect((await app.request(url)).status).toBe(400);
   });
 });
 
