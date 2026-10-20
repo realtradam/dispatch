@@ -1,4 +1,4 @@
-import type { ProviderEvent } from "@dispatch/kernel";
+import type { ProviderEvent, Usage } from "@dispatch/kernel";
 
 interface ToolCallAccumulator {
   id: string;
@@ -39,16 +39,61 @@ interface SSEChunk {
   };
 }
 
+interface ParserState {
+  toolCalls: Map<number, ToolCallAccumulator>;
+  finished: boolean;
+  done: boolean;
+  usage?: Usage;
+}
+
+/** One parser per response; usage snapshots are retained until DONE or EOF. */
+export function createSSEParser() {
+  const state: ParserState = { toolCalls: new Map(), finished: false, done: false };
+  let ended = false;
+  return {
+    get done() {
+      return state.done;
+    },
+    push(line: string): ProviderEvent[] {
+      return ended ? [] : parseLines([line], state);
+    },
+    end(): ProviderEvent[] {
+      if (ended) return [];
+      ended = true;
+      const events: ProviderEvent[] = [];
+      if (state.usage) events.push({ type: "usage", usage: state.usage });
+      if (state.toolCalls.size > 0 || (!state.finished && !state.done)) {
+        events.push({ type: "error", message: "stream ended prematurely", retryable: true });
+      }
+      return events;
+    },
+  };
+}
+
 export function parseSSELines(lines: readonly string[]): ProviderEvent[] {
+  const parser = createSSEParser();
   const events: ProviderEvent[] = [];
-  const toolCalls = new Map<number, ToolCallAccumulator>();
+  for (const line of lines) {
+    events.push(...parser.push(line));
+    if (parser.done) break;
+  }
+  return [...events, ...parser.end()];
+}
+
+function parseLines(lines: readonly string[], state: ParserState): ProviderEvent[] {
+  const events: ProviderEvent[] = [];
+  const { toolCalls } = state;
 
   for (const line of lines) {
+    if (state.done) break;
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) continue;
 
     const data = trimmed.slice(5).trim();
-    if (data === "[DONE]") break;
+    if (data === "[DONE]") {
+      state.done = true;
+      break;
+    }
 
     let chunk: SSEChunk;
     try {
@@ -62,11 +107,11 @@ export function parseSSELines(lines: readonly string[]): ProviderEvent[] {
       for (const choice of chunk.choices) {
         const delta = choice.delta;
 
-        if (delta.content) {
+        if (typeof delta.content === "string" && delta.content) {
           events.push({ type: "text-delta", delta: delta.content });
         }
 
-        if (delta.reasoning_content) {
+        if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
           events.push({ type: "reasoning-delta", delta: delta.reasoning_content });
         }
 
@@ -91,6 +136,7 @@ export function parseSSELines(lines: readonly string[]): ProviderEvent[] {
         }
 
         if (choice.finish_reason) {
+          state.finished = true;
           const sortedIndices = [...toolCalls.keys()].sort((a, b) => a - b);
           for (const idx of sortedIndices) {
             const acc = toolCalls.get(idx);
@@ -108,6 +154,7 @@ export function parseSSELines(lines: readonly string[]): ProviderEvent[] {
               input,
             });
           }
+          toolCalls.clear();
           events.push({ type: "finish", reason: choice.finish_reason });
         }
       }
@@ -122,15 +169,12 @@ export function parseSSELines(lines: readonly string[]): ProviderEvent[] {
       // shadow it with 0. Fall back to nested when flat is 0/absent, then to flat.
       const cacheRead = flat || (nested ?? flat);
       const cacheWrite = chunk.usage.cache_write_tokens;
-      events.push({
-        type: "usage",
-        usage: {
-          inputTokens: chunk.usage.prompt_tokens ?? 0,
-          outputTokens: chunk.usage.completion_tokens ?? 0,
-          ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
-          ...(cacheWrite !== undefined ? { cacheWriteTokens: cacheWrite } : {}),
-        },
-      });
+      state.usage = {
+        inputTokens: chunk.usage.prompt_tokens ?? 0,
+        outputTokens: chunk.usage.completion_tokens ?? 0,
+        ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
+        ...(cacheWrite !== undefined ? { cacheWriteTokens: cacheWrite } : {}),
+      };
     }
   }
 

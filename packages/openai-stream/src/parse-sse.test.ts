@@ -1,8 +1,19 @@
 import type { ProviderEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
-import { parseSSELines } from "./parse-sse.js";
+import { createSSEParser, parseSSELines } from "./parse-sse.js";
 
 describe("parseSSELines", () => {
+  it("defers snapshots until end and finalizes only once", () => {
+    const parser = createSSEParser();
+    expect(parser.push('data: {"usage":{"prompt_tokens":10,"completion_tokens":1}}')).toEqual([]);
+    expect(parser.push('data: {"usage":{"prompt_tokens":20,"completion_tokens":2}}')).toEqual([]);
+    expect(parser.push("data: [DONE]")).toEqual([]);
+    expect(parser.done).toBe(true);
+    expect(parser.end()).toEqual([{ type: "usage", usage: { inputTokens: 20, outputTokens: 2 } }]);
+    expect(parser.end()).toEqual([]);
+    expect(parser.push('data: {"usage":{"prompt_tokens":99}}')).toEqual([]);
+  });
+
   it("parses text delta events", () => {
     const lines = [
       'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"},"index":0}]}',
