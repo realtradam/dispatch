@@ -900,17 +900,14 @@ export function createConversationStore(
 
     async load(conversationId) {
       const prefix = chunkPrefix(conversationId);
-      const keys = await storage.keys(prefix);
-      const sorted = [...keys].sort();
+      const rows = await storage.entries(prefix);
 
       const messages: ChatMessage[] = [];
       let currentChunks: Chunk[] = [];
       let currentRole: Role | undefined;
       let currentMsgIdx = -1;
 
-      for (const key of sorted) {
-        const value = await storage.get(key);
-        if (value === null) continue;
+      for (const [key, value] of rows) {
         let entry: PersistedChunkEntry;
         try {
           entry = JSON.parse(value) as PersistedChunkEntry;
@@ -975,35 +972,39 @@ export function createConversationStore(
 
     async loadSince(conversationId, sinceSeq, window) {
       const prefix = chunkPrefix(conversationId);
-      const keys = await storage.keys(prefix);
-      const sorted = [...keys].sort();
-
-      const result: StoredChunk[] = [];
       const minSeq = sinceSeqBase(sinceSeq);
       // Forgiving: a non-positive / non-integer bound is treated as ABSENT.
       const beforeSeq = positiveInt(window?.beforeSeq);
-      const limit = positiveInt(window?.limit);
+      const requestedLimit = positiveInt(window?.limit);
+      // Unsafe integer limits used to return the full selection. Do not pass
+      // them to entries, whose stricter contract rejects them with RangeError.
+      const limit = Number.isSafeInteger(requestedLimit) ? requestedLimit : undefined;
+      let rows: ReadonlyArray<readonly [string, string]>;
+      if (minSeq >= 10_000_000_000 || (beforeSeq ?? 0) >= 10_000_000_000) {
+        // pad10 is a minimum width, not a numeric encoding for larger bounds
+        // (which can even stringify in exponent notation). Preserve the old
+        // numeric selection + binary key order for these exceptional inputs.
+        rows = (await storage.entries(prefix)).filter(([key]) => {
+          const seq = parseSeq(key.split(":").pop() ?? null);
+          return seq > minSeq && (beforeSeq === undefined || seq < beforeSeq);
+        });
+        if (limit !== undefined) rows = rows.slice(-limit);
+      } else {
+        rows = await storage.entries(prefix, {
+          startAfter: chunkKey(conversationId, minSeq),
+          ...(beforeSeq === undefined ? {} : { endBefore: chunkKey(conversationId, beforeSeq) }),
+          ...(limit === undefined ? {} : { reverse: true, limit }),
+        });
+        if (limit !== undefined) rows = [...rows].reverse();
+      }
 
-      for (const key of sorted) {
+      return rows.map(([key, value]): StoredChunk => {
         const seq = parseSeq(key.split(":").pop() ?? null);
-        if (seq <= minSeq) continue;
-        if (beforeSeq !== undefined && seq >= beforeSeq) continue;
-        const value = await storage.get(key);
-        if (value === null) continue;
         const entry = JSON.parse(value) as PersistedChunkEntry;
-        result.push(
-          typeof entry.turnId === "string"
-            ? { seq, role: entry.role, chunk: entry.chunk, turnId: entry.turnId }
-            : { seq, role: entry.role, chunk: entry.chunk },
-        );
-      }
-
-      // Window: keep only the NEWEST `limit` chunks, still ascending by seq.
-      if (limit !== undefined && result.length > limit) {
-        return result.slice(result.length - limit);
-      }
-
-      return result;
+        return typeof entry.turnId === "string"
+          ? { seq, role: entry.role, chunk: entry.chunk, turnId: entry.turnId }
+          : { seq, role: entry.role, chunk: entry.chunk };
+      });
     },
 
     async appendMetrics(conversationId, metrics) {
@@ -1015,17 +1016,8 @@ export function createConversationStore(
 
     async loadMetrics(conversationId) {
       const prefix = metricsPrefix(conversationId);
-      const keys = await storage.keys(prefix);
-      const sorted = [...keys].sort();
-
-      const result: TurnMetrics[] = [];
-      for (const key of sorted) {
-        const value = await storage.get(key);
-        if (value === null) continue;
-        result.push(JSON.parse(value) as TurnMetrics);
-      }
-
-      return result;
+      const rows = await storage.entries(prefix);
+      return rows.map(([, value]) => JSON.parse(value) as TurnMetrics);
     },
 
     async getCwd(conversationId) {
@@ -1473,12 +1465,9 @@ export function createConversationStore(
 
     async forkHistory(sourceId, targetId) {
       // Copy all chunks from source to target, re-numbered from seq 1.
-      const keys = await storage.keys(chunkPrefix(sourceId));
-      const sorted = [...keys].sort();
+      const rows = await storage.entries(chunkPrefix(sourceId));
       let seq = 1;
-      for (const key of sorted) {
-        const value = await storage.get(key);
-        if (value === null) continue;
+      for (const [, value] of rows) {
         await storage.set(chunkKey(targetId, seq), value);
         seq++;
       }
