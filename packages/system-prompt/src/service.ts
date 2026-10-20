@@ -97,25 +97,37 @@ async function resolveTemplate(
  * Create a `SystemPromptService` backed by a storage namespace + adapters.
  * State is owned (not ambient): the storage reference lives in this closure.
  */
-export function createSystemPromptService(deps: SystemPromptServiceDeps): SystemPromptService {
+export function createSystemPromptService(deps: SystemPromptServiceDeps): SystemPromptService & {
+  readonly delete: (conversationId: string) => Promise<void>;
+} {
+  const constructions = new Map<string, object>();
   return {
     async construct(conversationId, cwd, context) {
-      let template = await deps.storage.get(TEMPLATE_KEY);
-      if (template === null) template = DEFAULT_TEMPLATE;
+      const lease = {};
+      constructions.set(conversationId, lease);
+      try {
+        let template = await deps.storage.get(TEMPLATE_KEY);
+        if (template === null) template = DEFAULT_TEMPLATE;
 
-      const result = await resolveTemplate(deps, template, cwd, {
-        conversationId,
-        ...(context?.model !== undefined ? { model: context.model } : {}),
-        ...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
-        ...(context?.computerId !== undefined ? { computerId: context.computerId } : {}),
-      });
+        const result = await resolveTemplate(deps, template, cwd, {
+          conversationId,
+          ...(context?.model !== undefined ? { model: context.model } : {}),
+          ...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
+          ...(context?.computerId !== undefined ? { computerId: context.computerId } : {}),
+        });
 
-      await deps.storage.set(resolvedKey(conversationId), result);
-      await deps.storage.set(resolvedCwdKey(conversationId), cwd);
-      // Store the computerId (or empty string for local) so the cache can be
-      // invalidated when the computer changes.
-      await deps.storage.set(resolvedComputerIdKey(conversationId), context?.computerId ?? "");
-      return result;
+        await deps.storage.transaction((tx) => {
+          if (constructions.get(conversationId) !== lease) return;
+          tx.set(resolvedKey(conversationId), result);
+          tx.set(resolvedCwdKey(conversationId), cwd);
+          // Store the computerId (or empty string for local) so the cache can be
+          // invalidated when the computer changes.
+          tx.set(resolvedComputerIdKey(conversationId), context?.computerId ?? "");
+        });
+        return result;
+      } finally {
+        if (constructions.get(conversationId) === lease) constructions.delete(conversationId);
+      }
     },
 
     async resolveText(template, cwd, context) {
@@ -124,6 +136,18 @@ export function createSystemPromptService(deps: SystemPromptServiceDeps): System
       // default-empty prompts hit this every run).
       if (template === "") return "";
       return resolveTemplate(deps, template, cwd, context);
+    },
+
+    async delete(conversationId) {
+      constructions.delete(conversationId);
+      await deps.storage.transaction((tx) => {
+        for (const key of [
+          resolvedKey(conversationId),
+          resolvedCwdKey(conversationId),
+          resolvedComputerIdKey(conversationId),
+        ])
+          tx.delete(key);
+      });
     },
 
     async get(conversationId) {

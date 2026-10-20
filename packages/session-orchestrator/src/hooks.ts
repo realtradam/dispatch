@@ -1,3 +1,5 @@
+export { type ConversationDeletedPayload, conversationDeleted } from "@dispatch/conversation-store";
+
 import {
   type ConversationStatus,
   defineEventHook,

@@ -13,7 +13,7 @@ import type {
   StoredChunk,
   TurnMetrics,
 } from "@dispatch/kernel";
-import { defineService } from "@dispatch/kernel";
+import { defineEventHook, defineService } from "@dispatch/kernel";
 import type { NamedAgentSelectionSnapshot, Workspace, WorkspaceEntry } from "@dispatch/wire";
 import {
   CONVERSATION_INDEX_KEY,
@@ -51,6 +51,16 @@ import { reconcileWithReport } from "./reconcile.js";
 import { createWriteLock } from "./write-lock.js";
 
 const historyEpochKey = (conversationId: string) => `conv:${conversationId}:history-epoch`;
+
+/** Emitted after a successful deletion commit, including idempotent retries.
+ * Cleanup listeners are fire-and-forget/error-isolated, not part of the transaction.
+ */
+export interface ConversationDeletedPayload {
+  readonly conversationId: string;
+}
+export const conversationDeleted = defineEventHook<ConversationDeletedPayload>(
+  "conversation-store/conversation-deleted",
+);
 
 type StorageTx = Parameters<Parameters<StorageNamespace["transaction"]>[0]>[0];
 export type ConversationExclusive = <T>(
@@ -766,6 +776,8 @@ export function createConversationStore(
   logger?: Logger,
   now: () => number = Date.now,
   serverDefaultCwd: string = process.cwd(),
+  // Inject a non-throwing emitter; notification is not a rollback boundary.
+  onDeleted: (payload: ConversationDeletedPayload) => void = () => {},
 ): ConversationStore {
   const lock = createWriteLock();
   // Adapter-only async ownership, never module-global. Shared lease objects are
@@ -785,8 +797,12 @@ export function createConversationStore(
       }
     });
   };
-  function write<T>(id: string, fn: (tx: StorageTx) => T): Promise<T> {
-    return runExclusive(id, () => storage.transaction(fn));
+  function write<T>(id: string, fn: (tx: StorageTx) => T, afterCommit?: () => void): Promise<T> {
+    return runExclusive(id, async () => {
+      const result = await storage.transaction(fn);
+      afterCommit?.();
+      return result;
+    });
   }
 
   function updateMeta(
@@ -1346,7 +1362,7 @@ export function createConversationStore(
       );
     },
     async deleteConversation(conversationId) {
-      return write(conversationId, (tx) => {
+      const removeRows = (tx: StorageTx) => {
         // Purge every persisted key for this conversation. The seq-suffixed
         // chunk and metrics keys are removed via their segment prefixes
         // (`chunkPrefix`/`metricsPrefix`); the scalar metadata keys (including
@@ -1366,6 +1382,8 @@ export function createConversationStore(
         }
         for (const k of [
           seqKey(conversationId),
+          msgSeqKey(conversationId),
+          historyEpochKey(conversationId),
           metaKey(conversationId),
           `${LISTING_PREFIX}${conversationId}`,
           cwdKey(conversationId),
@@ -1403,7 +1421,8 @@ export function createConversationStore(
         if (logger !== undefined) {
           logger.debug("conversation deleted", { conversationId });
         }
-      });
+      };
+      return write(conversationId, removeRows, () => onDeleted({ conversationId }));
     },
     async listConversations(filter) {
       const rows = await readListingRows(storage);

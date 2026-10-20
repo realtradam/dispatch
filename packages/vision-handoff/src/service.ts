@@ -582,6 +582,8 @@ export function createVisionHandoffService(deps: VisionHandoffDeps): VisionHando
     },
 
     async purgeConversationImages(conversationId: string): Promise<void> {
+      // Deterministic memory cleanup, even without an adapter or if disk deletion fails.
+      imageRegistry.delete(conversationId);
       if (deps.deleteConversationImages === undefined) return;
       try {
         await deps.deleteConversationImages(conversationId);

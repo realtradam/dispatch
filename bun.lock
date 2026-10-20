@@ -446,6 +446,7 @@
       "name": "@dispatch/system-prompt",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
         "@dispatch/exec-backend": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",

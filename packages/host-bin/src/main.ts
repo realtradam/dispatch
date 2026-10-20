@@ -45,11 +45,15 @@ import {
 import { reconcilePlugins, resolvePluginsDir } from "./plugin-reconcile.js";
 import { createShutdownController, EXIT_CODES } from "./shutdown-controller.js";
 
-function createEmptySecrets(): SecretsAccess {
+export function createEmptySecrets(): SecretsAccess {
   return {
     get: async () => null,
-    set: async () => {},
-    delete: async () => {},
+    set: async () => {
+      throw new Error("secrets store not configured");
+    },
+    delete: async () => {
+      throw new Error("secrets store not configured");
+    },
   };
 }
 

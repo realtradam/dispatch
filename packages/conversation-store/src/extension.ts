@@ -1,6 +1,6 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { initializeConversationListIndex } from "./list-index.js";
-import { conversationStoreHandle, createConversationStore } from "./store.js";
+import { conversationDeleted, conversationStoreHandle, createConversationStore } from "./store.js";
 
 export const manifest: Manifest = {
   id: "conversation-store",
@@ -10,7 +10,10 @@ export const manifest: Manifest = {
   tier: "core",
   trust: "bundled",
   capabilities: { db: true },
-  contributes: { services: ["conversation-store/store"] },
+  contributes: {
+    services: ["conversation-store/store"],
+    hooks: [conversationDeleted.id],
+  },
   activation: "eager",
 };
 
@@ -18,7 +21,13 @@ export const extension: Extension = {
   manifest,
   activate: async (host: HostAPI) => {
     const storage = host.storage("conversation-store");
-    const store = createConversationStore(storage, host.logger, undefined, process.cwd());
+    const store = createConversationStore(
+      storage,
+      host.logger,
+      undefined,
+      process.cwd(),
+      (payload) => host.emit(conversationDeleted, payload),
+    );
 
     // One-time persisted-state migration: rewrite obsolete `opencode/<model>`
     // per-conversation model values to the numbered `opencode-1/<model>`

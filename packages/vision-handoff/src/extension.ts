@@ -37,7 +37,11 @@ import { conversationStoreHandle } from "@dispatch/conversation-store";
 import { credentialStoreHandle } from "@dispatch/credential-store";
 import { execBackendHandle } from "@dispatch/exec-backend";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
-import { type ToolAssembly, toolsFilter } from "@dispatch/session-orchestrator";
+import {
+  conversationDeleted,
+  type ToolAssembly,
+  toolsFilter,
+} from "@dispatch/session-orchestrator";
 import { filterVisionTools } from "./pure.js";
 import { createReadImageTool } from "./read-image.js";
 import { selectExpired } from "./retention.js";
@@ -384,6 +388,11 @@ async function activateVision(
   });
 
   lifecycle.disposers.push(host.provideService(visionHandoffHandle, service));
+  lifecycle.disposers.push(
+    host.on(conversationDeleted, ({ conversationId }) =>
+      service.purgeConversationImages(conversationId),
+    ),
+  );
   host.defineTool(createConsultVisionTool(service));
 
   // read_image — advertised ONLY to vision-capable models (the filter below

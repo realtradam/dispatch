@@ -295,3 +295,73 @@ it("pure keyed mutex propagates sync throws and removes idle entries without los
   expect(await last).toBe(7);
   expect(tails.size).toBe(0);
 });
+
+describe("deletion notification seam", () => {
+  it("notifies only after commit, including retries, and removes new scalar keys", async () => {
+    const data = new Map<string, string>();
+    const storage = storageFromMap(data);
+    let notified = 0;
+    const store = createConversationStore(
+      storage,
+      undefined,
+      undefined,
+      undefined,
+      ({ conversationId }) => {
+        expect(conversationId).toBe("c");
+        expect([...data.keys()].filter((k) => k.startsWith("conv:c:"))).toEqual([]);
+        notified++;
+      },
+    );
+    await store.append("c", message("original"));
+    await store.replaceHistory("c", message("replacement"));
+    await store.setConversationTitle("keep", "untouched");
+    await store.runExclusive("c", () => store.deleteConversation("c"));
+    await store.deleteConversation("c");
+    expect(notified).toBe(2);
+    expect((await store.listConversations()).map((m) => m.id)).toEqual(["keep"]);
+  });
+
+  it("rolls back failed deletion without notifying and waits for the same-id owner", async () => {
+    const data = new Map<string, string>();
+    const storage = storageFromMap(data);
+    let fail = false,
+      notified = 0;
+    const store = createConversationStore(
+      {
+        ...storage,
+        transaction: (fn) =>
+          storage.transaction((tx) => {
+            const result = fn(tx);
+            if (fail) throw new Error("delete failure");
+            return result;
+          }),
+      },
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        notified++;
+      },
+    );
+    await store.append("c", message("original"));
+    const before = new Map(data);
+    fail = true;
+    await expect(store.deleteConversation("c")).rejects.toThrow("delete failure");
+    expect(data).toEqual(before);
+    expect(notified).toBe(0);
+    fail = false;
+    const held = gate(),
+      entered = gate();
+    const owner = store.runExclusive("c", async () => {
+      entered.open();
+      await held.promise;
+    });
+    await entered.promise;
+    const deletion = store.deleteConversation("c");
+    await Promise.resolve();
+    expect(notified).toBe(0);
+    held.open();
+    await Promise.all([owner, deletion]);
+    expect(notified).toBe(1);
+  });
+});

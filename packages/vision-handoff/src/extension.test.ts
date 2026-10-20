@@ -11,10 +11,14 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { conversationStoreHandle, createConversationStore } from "@dispatch/conversation-store";
 import { createCredentialStoreExtension } from "@dispatch/credential-store";
 import { createBus, createHost, createLogger, type LogRecord } from "@dispatch/kernel";
+import { conversationDeleted } from "@dispatch/session-orchestrator";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { containedPath, createImageFileStore, createVisionExtension } from "./extension.js";
+import { visionHandoffHandle } from "./service.js";
 
 const dataUrl = "data:image/png;base64,aW1hZ2U=";
 
@@ -180,7 +184,24 @@ it("sweeps at activation and on the six-hour timer, then unloads without danglin
   const logDeps = { now: () => now, newId: () => "test" };
   const host = createHost(
     [
-      createCredentialStoreExtension({ credentials: [] }),
+      {
+        manifest: {
+          id: "fixture-provider",
+          name: "Fixture",
+          version: "0.0.0",
+          apiVersion: "^0.1.0",
+          tier: "providers",
+          trust: "bundled",
+        },
+        activate: (api) => {
+          api.defineProvider({
+            id: "fixture",
+            listModels: async () => [{ id: "vision", vision: true }],
+            stream: async function* () {},
+          });
+        },
+      },
+      createCredentialStoreExtension({ credentials: [{ name: "fixture", providerId: "fixture" }] }),
       createVisionExtension({
         legacyDir: join(dir, "absent"),
         now: () => now,
@@ -218,6 +239,22 @@ it("sweeps at activation and on the six-hour timer, then unloads without danglin
     await host.activate();
     expect(await readdir(root)).toEqual([]);
     expect(host.getExtensions().some((entry) => entry.id === "vision-handoff")).toBe(true);
+    const api = host.getHostAPI();
+    const removeStore = api.provideService(
+      conversationStoreHandle,
+      createConversationStore(storageFromMap()),
+    );
+    const service = api.getService(visionHandoffHandle);
+    const deleted = await files.saveImageToTmp("deleted", dataUrl);
+    await service.prepareForProvider(
+      [{ role: "user", chunks: [{ type: "image", url: deleted }] }],
+      undefined,
+      { conversationId: "deleted" },
+    );
+    expect(service.getRegisteredImage("deleted", 1)).toBeDefined();
+    api.emit(conversationDeleted, { conversationId: "deleted" });
+    await expect.poll(() => readdir(root)).toEqual([]);
+    expect(service.getRegisteredImage("deleted", 1)).toBeUndefined();
     const recent = await files.saveImageToTmp("recent", dataUrl);
     now += 8 * 86_400_000;
     tick();
@@ -225,6 +262,10 @@ it("sweeps at activation and on the six-hour timer, then unloads without danglin
     expect(result).toMatchObject({ ok: true });
     expect(result.dangling ?? []).toEqual([]);
     expect(cancelled).toBe(true);
+    const survivor = await files.saveImageToTmp("after-unload", dataUrl);
+    api.emit(conversationDeleted, { conversationId: "after-unload" });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await files.resolveImageUrl(survivor)).toBe(dataUrl);
     expect(
       records.filter(
         (record) => record.kind === "log" && record.msg === "vision-handoff: image retention sweep",
@@ -234,6 +275,7 @@ it("sweeps at activation and on the six-hour timer, then unloads without danglin
       expect.objectContaining({ level: "info", attributes: { deleted: 1, bytesFreed: 5 } }),
     ]);
     await expect(files.resolveImageUrl(recent)).rejects.toThrow();
+    removeStore();
   } finally {
     await host.deactivate();
     await rm(dir, { recursive: true, force: true });

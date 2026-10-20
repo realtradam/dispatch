@@ -7,14 +7,26 @@ import {
 } from "@dispatch/kernel";
 import {
   cacheWarmHandle,
+  conversationDeleted,
   type WarmResult,
   type WarmService,
   warmCompleted,
 } from "@dispatch/session-orchestrator";
-import { createSurfaceRegistry, surfaceRegistryHandle } from "@dispatch/surface-registry";
+import {
+  createSurfaceRegistry,
+  createSurfaceRegistryExtension,
+  surfaceRegistryHandle,
+} from "@dispatch/surface-registry";
 import { describe, expect, it, vi } from "vitest";
+import {
+  conversationStoreHandle,
+  conversationDeleted as storeDeleted,
+  extension as storeExtension,
+} from "../../conversation-store/dist/index.js";
+import { createExecBackendExtension } from "../../exec-backend/src/index.js";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
-import { activate } from "./extension.js";
+import { extension as promptExtension } from "../../system-prompt/src/index.js";
+import { activate, createCacheWarmingExtension } from "./extension.js";
 import { MIN_INTERVAL_MS } from "./pure.js";
 import { createCacheWarmer, type TimerDeps } from "./warmer.js";
 
@@ -750,4 +762,149 @@ describe("CacheWarmer", () => {
       vi.useRealTimers();
     }
   });
+});
+
+it("real store deletion cleans prompt/warming rows and schedules; subscriptions dispose on unload", async () => {
+  vi.useFakeTimers();
+  const namespaces = new Map<string, Map<string, string>>();
+  const host = createHost(
+    [
+      storeExtension,
+      promptExtension,
+      createCacheWarmingExtension(),
+      createExecBackendExtension(),
+      createSurfaceRegistryExtension(),
+      {
+        manifest: {
+          id: "session-orchestrator",
+          name: "warm boundary",
+          version: "0.0.0",
+          apiVersion: "^0.1.0",
+          tier: "core",
+          trust: "bundled",
+        },
+        activate: (api) => {
+          api.provideService(cacheWarmHandle, { warm: async () => WARM_RESULT });
+        },
+      },
+    ],
+    {
+      logger: makeLogger(),
+      bus: createBus(makeLogger()),
+      storageFactory: (name) => {
+        let data = namespaces.get(name);
+        if (!data) {
+          data = new Map();
+          namespaces.set(name, data);
+        }
+        return storageFromMap(data);
+      },
+      config: { get: () => undefined, getAll: () => ({}) },
+      secrets: { get: async () => null, set: async () => {}, delete: async () => {} },
+      permissions: { check: async () => ({ allowed: true }) },
+      scheduler: { register: () => {}, unregister: () => {} },
+      events: { emit: () => {} },
+      logSink: { emit: () => {} },
+      logDeps: { now: () => 0, newId: () => "test" },
+    },
+  );
+  const api = host.getHostAPI();
+  try {
+    await host.activate();
+    const registry = api.getService(surfaceRegistryHandle);
+    expect(conversationDeleted).toBe(storeDeleted);
+    const store = api.getService(conversationStoreHandle);
+    const promptRows = namespaces.get("system-prompt");
+    if (!promptRows) throw new Error("prompt not loaded");
+    promptRows.set("template", "keep global template");
+    for (const id of ["deleted", "keep"]) {
+      await store.setConversationTitle(id, id);
+      for (const prefix of ["resolved:", "resolved-cwd:", "resolved-computer:"])
+        promptRows.set(prefix + id, id);
+      await registry
+        .getSurface("cache-warming")
+        ?.invoke("cache-warming/toggle", undefined, { conversationId: id });
+    }
+    expect(vi.getTimerCount()).toBe(2);
+    await store.deleteConversation("deleted");
+    await vi.advanceTimersByTimeAsync(0);
+    expect([...promptRows.keys()]).toEqual([
+      "template",
+      "resolved:keep",
+      "resolved-cwd:keep",
+      "resolved-computer:keep",
+    ]);
+    expect(namespaces.get("cache-warming")?.size).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+    await store.deleteConversation("deleted");
+    for (const id of ["system-prompt", "cache-warming"]) {
+      const unloaded = await host.unloadExtension(id);
+      expect(unloaded).toMatchObject({ ok: true });
+      expect(unloaded.dangling ?? []).toEqual([]);
+    }
+    expect(vi.getTimerCount()).toBe(0);
+    expect(registry.getSurface("cache-warming")).toBeUndefined();
+    await store.deleteConversation("keep");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(promptRows.get("resolved:keep")).toBe("keep");
+    expect(namespaces.get("cache-warming")?.size).toBe(1);
+  } finally {
+    await host.deactivate();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
+it("deletion invalidates late warm success/failure and forgets settings/context", async () => {
+  let fail = (_result: { error: string }) => {};
+  const deps = makeDeps({
+    warm: () =>
+      new Promise((resolve) => {
+        fail = resolve;
+      }),
+  });
+  const warmer = createCacheWarmer(deps);
+  await warmer.setEnabled("deleted", true);
+  warmer.onTurnSettled("deleted", { cwd: "/fixture" });
+  deps.timers.flush();
+  await warmer.onConversationDeleted("deleted");
+  fail({ error: "late failure" });
+  await Promise.resolve();
+  warmer.onWarmCompleted({ conversationId: "deleted", usage: WARM_RESULT });
+  warmer.onTurnSettled("deleted", { cwd: "/stale" });
+  await warmer.onConversationClosed("deleted");
+  await warmer.setEnabled("deleted", true);
+  await warmer.setIntervalMs("deleted", 60_000);
+  expect(await deps.storage.keys()).toEqual([]);
+  expect(warmer.getContext("deleted")).toEqual({});
+  expect(warmer.getState("deleted")).toMatchObject({
+    enabled: false,
+    lastError: null,
+    lastWarmAt: null,
+  });
+  expect(deps.timers.delays()).toEqual([]);
+  warmer.dispose();
+});
+
+it.each([
+  "enable",
+  "interval",
+])("a pending %s settings read cannot recreate deleted rows", async (action) => {
+  const deps = makeDeps();
+  let release = (_value: string | null) => {};
+  const reading = new Promise<string | null>((resolve) => {
+    release = resolve;
+  });
+  const warmer = createCacheWarmer({ ...deps, storage: { ...deps.storage, get: () => reading } });
+  const update =
+    action === "enable"
+      ? warmer.setEnabled("deleted", true)
+      : warmer.setIntervalMs("deleted", 60_000);
+  await warmer.onConversationDeleted("deleted");
+  release(null);
+  await update;
+  expect(await deps.storage.keys()).toEqual([]);
+  expect(warmer.getState("deleted").enabled).toBe(false);
+  expect(deps.timers.delays()).toEqual([]);
+  warmer.dispose();
 });

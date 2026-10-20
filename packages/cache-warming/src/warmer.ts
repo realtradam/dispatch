@@ -46,6 +46,9 @@ export interface CacheWarmer {
    */
   readonly onConversationClosed: (conversationId: string) => Promise<void>;
 
+  /** Cancel work, forget runtime state and delete persisted settings. */
+  readonly onConversationDeleted: (conversationId: string) => Promise<void>;
+
   /** Get the current state for a conversation (for surface rendering). */
   readonly getState: (conversationId: string) => CacheWarmingState;
 
@@ -101,6 +104,8 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
   // Monotonic token per conversation for in-flight invalidation
   let nextToken = 1;
   let disposed = false;
+  // Ignore late lifecycle/results and settings writes after deletion.
+  const deleted = new Set<string>();
 
   function getState(conversationId: string): CacheWarmingState {
     return states.get(conversationId) ?? DEFAULT_STATE;
@@ -188,7 +193,10 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
     conversationId: string,
     settings: ConversationSettings,
   ): Promise<void> {
-    await deps.storage.set(settingsKey(conversationId), serializeSettings(settings));
+    await deps.storage.transaction((tx) => {
+      if (!deleted.has(conversationId))
+        tx.set(settingsKey(conversationId), serializeSettings(settings));
+    });
   }
 
   function mergeState(
@@ -203,6 +211,7 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 
   return {
     onTurnStarted(conversationId) {
+      if (deleted.has(conversationId)) return;
       deps.logger.debug("cache-warming: turn started", { conversationId });
       mergeState(conversationId, { active: true });
       cancelTimer(conversationId);
@@ -212,6 +221,7 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
     },
 
     onTurnSettled(conversationId, ctx) {
+      if (deleted.has(conversationId)) return;
       deps.logger.debug("cache-warming: turn settled", { conversationId });
       contexts.set(conversationId, ctx);
       mergeState(conversationId, { active: false });
@@ -229,9 +239,9 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
       const { conversationId, usage } = payload;
       const state = getState(conversationId);
 
-      // Drop if the conversation became active while the warm was in flight
-      if (disposed || state.active) {
-        deps.logger.debug("cache-warming: dropping warm result (conversation active)", {
+      // Drop if the conversation became active/deleted, or the warmer was disposed.
+      if (disposed || state.active || deleted.has(conversationId)) {
+        deps.logger.debug("cache-warming: dropping warm result (active, deleted or disposed)", {
           conversationId,
         });
         return;
@@ -271,7 +281,17 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
     getState,
     getContext,
 
+    async onConversationDeleted(conversationId) {
+      deleted.add(conversationId);
+      cancelTimer(conversationId);
+      states.delete(conversationId);
+      contexts.delete(conversationId);
+      await deps.storage.delete(settingsKey(conversationId));
+      deps.onSurfaceChange();
+    },
+
     async onConversationClosed(conversationId) {
+      if (deleted.has(conversationId)) return;
       deps.logger.debug("cache-warming: conversation closed", { conversationId });
       // Synchronous part FIRST: stop the schedule + flip enabled in memory so
       // any racing turnSettled sees enabled=false and never re-arms.
@@ -287,8 +307,10 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
 
     async setEnabled(conversationId, enabled) {
       const settings = await loadSettings(conversationId);
+      if (deleted.has(conversationId)) return settings;
       const updated = { ...settings, enabled };
       await persistSettings(conversationId, updated);
+      if (deleted.has(conversationId)) return updated;
       // Merge the FULL settings (not just `enabled`) so re-enabling restores
       // the persisted interval into runtime state.
       mergeState(conversationId, updated);
@@ -312,8 +334,10 @@ export function createCacheWarmer(deps: CacheWarmerDeps): CacheWarmer {
           ? MIN_INTERVAL_MS
           : Math.max(MIN_INTERVAL_MS, Math.round(intervalMs));
       const settings = await loadSettings(conversationId);
+      if (deleted.has(conversationId)) return settings;
       const updated = { ...settings, intervalMs: clamped };
       await persistSettings(conversationId, updated);
+      if (deleted.has(conversationId)) return updated;
       mergeState(conversationId, { intervalMs: clamped });
 
       // Re-arm with new interval if currently armed
