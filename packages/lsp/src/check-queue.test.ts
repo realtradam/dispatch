@@ -855,3 +855,62 @@ describe("DiagnosticsCheckQueue — skipped checks must not corrupt the baseline
     expect(fake.enqueued).toHaveLength(1);
   });
 });
+
+describe("async notice delivery", () => {
+  it.each([
+    "close",
+    "stop",
+    "dispose",
+  ] as const)("%s removes a queued notice even when its id arrives late", async (operation) => {
+    const fake = makeDelivery();
+    fake.setActive("c1", true);
+    let resolve!: (value: NoticeEnqueueResult) => void;
+    const pending = new Promise<NoticeEnqueueResult>((done) => {
+      resolve = done;
+    });
+    const queue = new DiagnosticsCheckQueue({
+      check: async () => outcome([err("new")]),
+      delivery: { ...fake.delivery, enqueue: () => pending },
+    });
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, cwd: CWD });
+    await tick();
+    if (operation === "close") queue.purgeConversation("c1");
+    else if (operation === "dispose") queue.dispose();
+    else fake.emit("c1", { type: "done", conversationId: "c1", turnId: "t", reason: "aborted" });
+    resolve({ startedTurn: false, messageId: "late-id" });
+    await tick();
+    expect(fake.cancelled.map((entry) => entry.messageId)).toContain("late-id");
+    queue.dispose();
+  });
+
+  it("contains rejected enqueue promises and serializes notices until pending ids are known", async () => {
+    const fake = makeDelivery();
+    fake.setActive("c1", true);
+    let reject!: (error: Error) => void;
+    const pending = new Promise<NoticeEnqueueResult>((_done, fail) => {
+      reject = fail;
+    });
+    let calls = 0;
+    const warnings: string[] = [];
+    const queue = new DiagnosticsCheckQueue({
+      check: async ({ filePath }) => outcome([err(filePath)]),
+      delivery: {
+        ...fake.delivery,
+        enqueue: (input) =>
+          ++calls === 1 ? pending : Promise.resolve(fake.delivery.enqueue(input)),
+      },
+      logger: { warn: (message) => warnings.push(message) },
+    });
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, cwd: CWD });
+    await tick();
+    queue.queueCheck({ conversationId: "c1", filePath: "/proj/b.ts", cwd: CWD });
+    await tick();
+    expect(calls).toBe(1);
+    reject(new Error("storage failed"));
+    await queue.listResults("c1");
+    expect(calls).toBe(2);
+    expect(warnings).toContain("LSP notice enqueue failed");
+    queue.purgeConversation("c1");
+    expect(fake.cancelled).toHaveLength(1);
+  });
+});

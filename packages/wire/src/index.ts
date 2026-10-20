@@ -304,6 +304,11 @@ export interface QueuedMessage {
   readonly text: string;
   /** When the message was enqueued (epoch-ms). */
   readonly queuedAt: number;
+  /** Compact stored image URLs (never inline base64 when vision storage is available). */
+  readonly images?: readonly ImageInput[];
+  readonly computerId?: string;
+  /** Included in queue surface snapshots, including zero for text-only items. */
+  readonly imageCount?: number;
 }
 
 /**
@@ -603,6 +608,8 @@ export interface TurnEndedEvent {
  * event per drain; the combined text of all drained messages.
  */
 export interface TurnSteeringEvent {
+  /** Compact image references for live rendering; persisted chunks retain queue order. */
+  readonly images?: readonly ImageInput[];
   readonly type: "steering";
   readonly conversationId: string;
   readonly turnId: string;

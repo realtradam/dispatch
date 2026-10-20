@@ -6013,12 +6013,12 @@ describe("turn failure durability and queue policy", () => {
       id: "cancel",
       async *stream() {
         if (++calls === 1) {
-          orchestrator.enqueue({ conversationId: "cancel", text: "cancel one" });
-          orchestrator.enqueue({ conversationId: "cancel", text: "cancel two" });
+          await orchestrator.enqueue({ conversationId: "cancel", text: "cancel one" });
+          await orchestrator.enqueue({ conversationId: "cancel", text: "cancel two" });
           if (operation === "close") orchestrator.closeConversation("cancel");
           else orchestrator.stopTurn("cancel");
           orchestrator.stopTurn("cancel");
-          expect(orchestrator.enqueue({ conversationId: "cancel", text: "racing" })).toEqual({
+          expect(await orchestrator.enqueue({ conversationId: "cancel", text: "racing" })).toEqual({
             startedTurn: false,
             queue: [],
           });

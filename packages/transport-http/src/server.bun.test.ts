@@ -172,7 +172,7 @@ function fakeOrchestrator(): SessionOrchestrator {
     isActive() {
       return false;
     },
-    enqueue() {
+    async enqueue() {
       return { startedTurn: false, queue: [] };
     },
     closeConversation() {

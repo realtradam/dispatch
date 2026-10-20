@@ -909,3 +909,33 @@ describe("conversation ID boundary validation", () => {
     }
   });
 });
+
+describe("chat.queue images", () => {
+  it("routes images-only input with computerId", () => {
+    const input = {
+      type: "chat.queue" as const,
+      conversationId: "c",
+      text: "",
+      images: [{ url: "data:image/png;base64,AAAA", mimeType: "image/png" }],
+      computerId: "remote",
+    };
+    expect(routeClientMessage(fakeRegistry([]), new Set(), input)).toEqual({
+      kind: "chat-queue",
+      conversationId: "c",
+      text: "",
+      images: input.images,
+      computerId: "remote",
+    });
+  });
+  it.each([
+    { images: "bad" },
+    { images: [null] },
+    { images: [{ url: "" }] },
+    { images: [{ url: "x", mimeType: 3 }] },
+    { computerId: 3 },
+    { images: [] },
+  ])("rejects malformed or empty images-only input: %j", (extra) => {
+    const input = { type: "chat.queue", conversationId: "c", text: "", ...extra };
+    expect(routeClientMessage(fakeRegistry([]), new Set(), input as never).kind).toBe("chat-error");
+  });
+});

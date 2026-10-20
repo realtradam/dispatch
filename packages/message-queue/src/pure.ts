@@ -38,8 +38,15 @@ export function enqueue(
   conversationId: string,
   text: string,
   deps: QueueDeps,
+  opts?: Pick<QueuedMessage, "images" | "computerId">,
 ): QueuedMessage[] {
-  const message: QueuedMessage = { id: deps.id(), text, queuedAt: deps.now() };
+  const message: QueuedMessage = {
+    id: deps.id(),
+    text,
+    queuedAt: deps.now(),
+    ...(opts?.images !== undefined ? { images: opts.images.map((image) => ({ ...image })) } : {}),
+    ...(opts?.computerId !== undefined ? { computerId: opts.computerId } : {}),
+  };
   const existing = state.get(conversationId);
   if (existing === undefined) {
     state.set(conversationId, [message]);
@@ -126,7 +133,9 @@ export function combine(messages: readonly QueuedMessage[]): string {
  * I/O; the surface-registry re-fetches this on every notify.
  */
 export function buildQueueSpec(messages: readonly QueuedMessage[]): SurfaceSpec {
-  const payload: QueuePayload = { messages };
+  const payload: QueuePayload = {
+    messages: messages.map((message) => ({ ...message, imageCount: message.images?.length ?? 0 })),
+  };
   const field: CustomField = {
     kind: "custom",
     rendererId: MESSAGE_QUEUE_RENDERER_ID,

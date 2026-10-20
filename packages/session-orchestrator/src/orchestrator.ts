@@ -227,16 +227,15 @@ export interface EnqueueInput {
   readonly text: string;
   /**
    * Images attached (the steering / opening message analog of
-   * `StartTurnInput.images`). Threaded to `startTurn` when the conversation is
-   * idle (the message starts a turn). Additive optional.
+   * `StartTurnInput.images`). Stored before insertion, then delivered as steering
+   * or carried into the opening message of a new turn.
    */
   readonly images?: readonly ImageInput[];
   /** Workspace to stamp on a new conversation. Defaults to `"default"`. */
   readonly workspaceId?: string;
   /**
-   * Per-turn computer override (SSH alias), threaded to `startTurn` when the
-   * conversation is idle (the message starts a turn). Additive optional —
-   * mirrors `workspaceId` on this type (enqueue does not carry `cwd`).
+   * Computer override (SSH alias). Last explicit queued override wins on carry;
+   * steering persists it for the next turn, never switches live tool context.
    */
   readonly computerId?: string;
 }
@@ -287,9 +286,10 @@ export interface SessionOrchestrator {
    * is idle, starts a turn (the message is the opening prompt). When active,
    * enqueues onto the steering queue (if the message-queue extension is
    * loaded); with no queue extension loaded the message is dropped and the
-   * returned snapshot is empty (degraded — feature off).
+   * returned snapshot is empty (degraded — feature off). Await the result: image
+   * storage precedes insertion, failures reject, and Stop cancels pending insertion.
    */
-  enqueue(input: EnqueueInput): EnqueueResult;
+  enqueue(input: EnqueueInput): Promise<EnqueueResult>;
   /**
    * Cancel (remove) a SINGLE queued message by id so it never runs. The single
    * entry transports call to cancel a queued steering message. Resolves the
@@ -509,6 +509,8 @@ export function createSessionOrchestrator(
   const compactionQueueWaiters = new Set<string>();
   const subscribers = new Map<string, Set<TurnEventListener>>();
   const activeTurns = new Map<string, ActiveTurn>();
+  // Serialize image storage/insertion per conversation; Stop invalidates in-flight work.
+  const pendingEnqueues = new Map<string, { cancelled: boolean; tail?: Promise<EnqueueResult> }>();
   // One stateless retry strategy shared by every turn (delayFor is pure; sleep
   // is a stateless setTimeout closure). Wired into each RunTurnInput.retry.
   const retryStrategy = createRetryStrategy();
@@ -549,6 +551,16 @@ export function createSessionOrchestrator(
     }
   }
 
+  function queuedInput(messages: readonly QueuedMessage[]) {
+    const computerId = messages.findLast((message) => message.computerId !== undefined)?.computerId;
+    return {
+      text: messages.map((message) => message.text).join("\n\n"),
+      images: messages.flatMap((message) => message.images ?? []),
+      // One turn has one computer. The last explicit queued override wins.
+      ...(computerId !== undefined ? { computerId } : {}),
+    };
+  }
+
   /**
    * Post-turn carry: if a steering queue is available and non-empty, drain it,
    * combine, and start a NEW detached turn whose opening `user-message` carries
@@ -563,8 +575,7 @@ export function createSessionOrchestrator(
     if (queue === undefined) return false;
     if (queue.getQueue(conversationId).length === 0) return false;
     const drained = queue.drain(conversationId);
-    const combined = drained.map((q) => q.text).join("\n\n");
-    const result = orchestrator.startTurn({ conversationId, text: combined });
+    const result = orchestrator.startTurn({ conversationId, ...queuedInput(drained) });
     return result.started;
   }
 
@@ -1028,10 +1039,19 @@ export function createSessionOrchestrator(
                 const queued = queue.drain(conversationId);
                 if (queued.length === 0) return [];
                 const steerText = queued.map((q) => q.text).join("\n\n");
+                const combined = queuedInput(queued);
                 const steeringMessage: ChatMessage = {
                   role: "user",
-                  chunks: [{ type: "text", text: steerText }],
+                  chunks: queued.some((message) => message.images?.length)
+                    ? queued.flatMap(
+                        (message) => buildUserMessage(message.text, message.images).chunks,
+                      )
+                    : buildUserMessage(steerText).chunks,
                 };
+                // Steering does not switch an in-flight tool context; persist for the next turn.
+                if (combined.computerId !== undefined) {
+                  await deps.conversationStore.setComputerId(conversationId, combined.computerId);
+                }
                 // Persist the injected steering message to the store as part
                 // of the SAME critical section as the injection, so it is
                 // never lost. Without this, the message would live only in
@@ -1049,8 +1069,15 @@ export function createSessionOrchestrator(
                   conversationId,
                   turnId,
                   text: steerText,
+                  ...(combined.images.length ? { images: combined.images } : {}),
                 });
-                return [steeringMessage];
+                const vision = deps.resolveVisionHandoff?.();
+                return vision === undefined
+                  ? [steeringMessage]
+                  : vision.prepareForProvider([steeringMessage], effectiveModelName, {
+                      conversationId,
+                      signal: controller.signal,
+                    });
               };
 
         // Vision handoff: transform the message list for the provider. When the
@@ -1356,28 +1383,8 @@ export function createSessionOrchestrator(
       if (activeTurns.has(conversationId)) {
         return { started: false, reason: "already-active" };
       }
-      const pending = compacting.get(conversationId);
-      const queue = pending === undefined ? undefined : deps.resolveQueue?.();
-      if (pending !== undefined && queue !== undefined) {
-        queue.enqueue(conversationId, input.text);
-        if (!compactionQueueWaiters.has(conversationId)) {
-          compactionQueueWaiters.add(conversationId);
-          void pending
-            .then(() => {
-              compactionQueueWaiters.delete(conversationId);
-              if (activeTurns.has(conversationId) || queue.getQueue(conversationId).length === 0)
-                return;
-              const text = queue
-                .drain(conversationId)
-                .map((message) => message.text)
-                .join("\n\n");
-              orchestrator.startTurn({ ...input, text });
-            })
-            .catch((err) => {
-              compactionQueueWaiters.delete(conversationId);
-              logFailure(conversationId, "compaction queue carry")(err);
-            });
-        }
+      if (compacting.has(conversationId) && deps.resolveQueue?.() !== undefined) {
+        void orchestrator.enqueue(input).catch(logFailure(conversationId, "compaction enqueue"));
         return { started: false, reason: "already-active" };
       }
       runTurnDetached(input);
@@ -1386,31 +1393,69 @@ export function createSessionOrchestrator(
       return { started: true, turnId };
     },
 
-    enqueue({ conversationId, text, workspaceId, computerId, images }) {
-      if (activeTurns.get(conversationId)?.controller.signal.aborted) {
-        return { startedTurn: false, queue: [] };
+    enqueue(input) {
+      const { conversationId } = input;
+      let pending = pendingEnqueues.get(conversationId);
+      if (pending === undefined || pending.cancelled) {
+        pending = { cancelled: false };
+        pendingEnqueues.set(conversationId, pending);
       }
-      const result = orchestrator.startTurn({
-        conversationId,
-        text,
-        ...(workspaceId !== undefined ? { workspaceId } : {}),
-        ...(computerId !== undefined ? { computerId } : {}),
-        ...(images !== undefined ? { images } : {}),
+      const state = pending;
+      const deliver = async (): Promise<EnqueueResult> => {
+        const dropped: EnqueueResult = { startedTurn: false, queue: [] };
+        if (state.cancelled || activeTurns.get(conversationId)?.controller.signal.aborted)
+          return dropped;
+        const vision = deps.resolveVisionHandoff?.();
+        const images =
+          input.images?.length && vision !== undefined
+            ? await vision.storeImages(conversationId, input.images)
+            : input.images;
+        // Storage can outlive Stop/Close or the original turn. Recheck before delivery.
+        if (state.cancelled || activeTurns.get(conversationId)?.controller.signal.aborted)
+          return dropped;
+        const stored = { ...input, ...(images !== undefined ? { images } : {}) };
+        const queue = deps.resolveQueue?.();
+        const barrier = compacting.get(conversationId);
+        if (barrier === undefined || queue === undefined) {
+          if (orchestrator.startTurn(stored).started) return { startedTurn: true, queue: [] };
+        }
+        if (queue === undefined) return dropped;
+        const snapshot = queue.enqueue(conversationId, input.text, stored);
+        if (barrier !== undefined && !compactionQueueWaiters.has(conversationId)) {
+          compactionQueueWaiters.add(conversationId);
+          void barrier
+            .then(() => {
+              compactionQueueWaiters.delete(conversationId);
+              if (activeTurns.has(conversationId) || !queue.getQueue(conversationId).length) return;
+              const { images: _images, computerId: _computerId, ...options } = stored;
+              orchestrator.startTurn({ ...options, ...queuedInput(queue.drain(conversationId)) });
+            })
+            .catch((error) => {
+              compactionQueueWaiters.delete(conversationId);
+              logFailure(conversationId, "compaction queue carry")(error);
+            });
+        }
+        return { startedTurn: false, queue: snapshot };
+      };
+      const previous = state.tail;
+      let complete!: (value: EnqueueResult | PromiseLike<EnqueueResult>) => void;
+      let fail!: (error: unknown) => void;
+      const result = new Promise<EnqueueResult>((resolve, reject) => {
+        complete = resolve;
+        fail = reject;
       });
-      if (result.started) {
-        return { startedTurn: true, queue: [] };
-      }
-      // Already active → enqueue onto the steering queue. When the
-      // message-queue extension isn't loaded this degrades: the message is
-      // dropped and the snapshot is empty (feature off).
-      const queue = deps.resolveQueue?.();
-      const snapshot =
-        queue === undefined
-          ? []
-          : compacting.has(conversationId) && !activeTurns.has(conversationId)
-            ? queue.getQueue(conversationId)
-            : queue.enqueue(conversationId, text);
-      return { startedTurn: false, queue: snapshot };
+      state.tail = result;
+      void (previous === undefined ? deliver() : previous.then(deliver, deliver)).then(
+        complete,
+        fail,
+      );
+      const cleanup = () => {
+        if (pendingEnqueues.get(conversationId) === state && state.tail === result) {
+          pendingEnqueues.delete(conversationId);
+        }
+      };
+      void result.then(cleanup, cleanup);
+      return result;
     },
 
     cancelQueuedMessage({ conversationId, messageId }) {
@@ -1485,6 +1530,8 @@ export function createSessionOrchestrator(
     },
 
     stopTurn(conversationId) {
+      const pending = pendingEnqueues.get(conversationId);
+      if (pending !== undefined) pending.cancelled = true;
       const turn = activeTurns.get(conversationId);
       const abortedTurn = turn !== undefined;
       if (turn !== undefined) {
@@ -1497,7 +1544,7 @@ export function createSessionOrchestrator(
 
     stopAll() {
       let stopped = 0;
-      for (const conversationId of [...activeConversations]) {
+      for (const conversationId of new Set([...activeConversations, ...pendingEnqueues.keys()])) {
         if (orchestrator.stopTurn(conversationId).abortedTurn) stopped++;
       }
       return { stopped };
@@ -1532,7 +1579,14 @@ export function createSessionOrchestrator(
         ...(parentConversationId !== undefined ? { parentConversationId } : {}),
         ...(toolPolicy !== undefined ? { toolPolicy } : {}),
       };
-      const result = orchestrator.startTurn(turnInput);
+      // Compaction deferral may await image storage. Wait for insertion before
+      // checking the carry waiter, otherwise an image-only request looks rejected.
+      const result =
+        compacting.has(conversationId) &&
+        !activeTurns.has(conversationId) &&
+        deps.resolveQueue?.() !== undefined
+          ? { started: (await orchestrator.enqueue(turnInput)).startedTurn }
+          : orchestrator.startTurn(turnInput);
       if (!result.started && !compactionQueueWaiters.has(conversationId)) {
         const errorTurnId = generateTurnId();
         onEvent({

@@ -550,9 +550,12 @@ export interface SetVisionSettingsRequest {
  * works regardless of generation state. The resolved queue + whether a turn was
  * started are returned in `QueueResponse`.
  *
- * `text` must be non-empty (after trim) → HTTP 400 `{ error }` otherwise.
+ * `text` must be a string; empty/whitespace text requires at least one image.
+ * Invalid bodies return HTTP 400 `{ error }`.
  */
 export interface QueueRequest {
+  readonly images?: readonly ImageInput[];
+  readonly computerId?: string;
   readonly text: string;
   /**
    * The workspace to assign the conversation to (if a new conversation is
@@ -805,6 +808,8 @@ export interface ChatUnsubscribeMessage {
  * latter being equivalent to `chat.send`).
  */
 export interface ChatQueueMessage {
+  readonly images?: readonly ImageInput[];
+  readonly computerId?: string;
   readonly type: "chat.queue";
   readonly conversationId: string;
   readonly text: string;

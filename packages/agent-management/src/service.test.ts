@@ -101,7 +101,7 @@ function makeFakeOrchestrator(): SessionOrchestrator & {
       startTurnCalls.push(input);
       return { started: true as const, turnId: "turn-1" };
     },
-    enqueue: vi.fn(() => ({ startedTurn: true, queue: [] })),
+    enqueue: vi.fn(async () => ({ startedTurn: true, queue: [] })),
     cancelQueuedMessage: vi.fn(() => ({ cancelled: false, queue: [] })),
     subscribe: vi.fn(() => () => {}),
     isActive: vi.fn(() => false),

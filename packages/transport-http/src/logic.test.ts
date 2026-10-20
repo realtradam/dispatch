@@ -852,3 +852,25 @@ describe("matchesImageMagicBytes", () => {
     expect(matchesImageMagicBytes(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), ".svg")).toBe(false);
   });
 });
+
+describe("queue image validation", () => {
+  it("accepts images-only input and computerId together with workspaceId", () => {
+    const images = [{ url: "data:image/png;base64,AAAA", mimeType: "image/png" }];
+    expect(parseQueueBody({ text: " ", images, computerId: "remote", workspaceId: "w" })).toEqual({
+      text: "",
+      images,
+      computerId: "remote",
+      workspaceId: "w",
+    });
+  });
+  it.each([
+    { images: "bad" },
+    { images: [null] },
+    { images: [{ url: "" }] },
+    { images: [{ url: "x", mimeType: 3 }] },
+    { computerId: 3 },
+    { images: [] },
+  ])("rejects malformed or empty images-only input: %j", (extra) => {
+    expect(isParseError(parseQueueBody({ text: "", ...extra }))).toBe(true);
+  });
+});

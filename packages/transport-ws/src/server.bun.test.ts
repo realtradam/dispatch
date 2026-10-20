@@ -158,7 +158,7 @@ function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
       }
       return { started: true, turnId: "fake-turn-id" };
     },
-    enqueue(input) {
+    async enqueue(input) {
       enqueueCalls.push({
         conversationId: input.conversationId,
         text: input.text,
@@ -228,7 +228,7 @@ function fakeOrchestratorWithBroadcast(): SessionOrchestrator & {
     startTurn(_input) {
       return { started: true, turnId: "fake-turn-id" };
     },
-    enqueue(input) {
+    async enqueue(input) {
       enqueueCalls.push({
         conversationId: input.conversationId,
         text: input.text,
@@ -308,7 +308,7 @@ function startServer(
         ws.send(JSON.stringify(catalogMessage(registry)));
       },
 
-      message(ws, raw) {
+      async message(ws, raw) {
         const state = ws.data;
         if (!state) return;
 
@@ -405,7 +405,7 @@ function startServer(
             // Mirror extension.ts: fire-and-forget. On startedTurn:true
             // auto-subscribe the sender (deltas stream); on false emit
             // nothing back.
-            const enqueueResult = orchestrator.enqueue({
+            const enqueueResult = await orchestrator.enqueue({
               conversationId: result.conversationId,
               text: result.text,
               ...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),

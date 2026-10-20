@@ -66,7 +66,7 @@ export interface NoticeDelivery {
   readonly enqueue: (input: {
     readonly conversationId: string;
     readonly text: string;
-  }) => NoticeEnqueueResult;
+  }) => NoticeEnqueueResult | Promise<NoticeEnqueueResult>;
   /** True when a still-queued message was removed (i.e. it was NOT delivered). */
   readonly cancel: (input: {
     readonly conversationId: string;
@@ -110,6 +110,7 @@ interface PendingFile {
 }
 
 interface PendingNotice {
+  discarded?: boolean;
   text: string;
   messageId: string | undefined;
   files: Map<string, PendingFile>;
@@ -141,6 +142,7 @@ interface ConversationState {
   cwd: string;
   files: Map<string, FileState>;
   pending: PendingNotice | null;
+  deliveryTail: Promise<void> | null;
   /** Consecutive turns this queue auto-started with no user message between. */
   autoTurns: number;
   /** The most recent turn was stopped/aborted by the user — respect Stop. */
@@ -376,7 +378,17 @@ export class DiagnosticsCheckQueue {
             filePath: file.filePath,
           });
         }
-        this.recomputePending(conv);
+        const previous = conv.deliveryTail;
+        const delivery =
+          previous === null
+            ? this.recomputePending(conv)
+            : previous.then(() => this.recomputePending(conv));
+        conv.deliveryTail = delivery;
+        try {
+          await delivery;
+        } finally {
+          if (conv.deliveryTail === delivery) conv.deliveryTail = null;
+        }
         return;
       }
     } catch (error: unknown) {
@@ -407,12 +419,12 @@ export class DiagnosticsCheckQueue {
     }
   }
 
-  private deliveryEnqueue(input: {
+  private async deliveryEnqueue(input: {
     readonly conversationId: string;
     readonly text: string;
-  }): NoticeEnqueueResult {
+  }): Promise<NoticeEnqueueResult> {
     try {
-      const result = this.deps.delivery.enqueue(input);
+      const result = await this.deps.delivery.enqueue(input);
       return {
         startedTurn: result?.startedTurn === true,
         messageId: typeof result?.messageId === "string" ? result.messageId : undefined,
@@ -452,7 +464,7 @@ export class DiagnosticsCheckQueue {
    * announced but not yet delivered, the file's issues are re-included —
    * nothing the agent was never told can be silently marked as told.
    */
-  private recomputePending(conv: ConversationState): void {
+  private async recomputePending(conv: ConversationState): Promise<void> {
     if (conv.closed) return;
 
     // Settle the previously queued notice BEFORE diffing. `cancelQueuedMessage`
@@ -494,7 +506,7 @@ export class DiagnosticsCheckQueue {
 
     const text = formatNotice(counts, conv.cwd);
     if (text === "") return;
-    this.deliver(conv, text, files);
+    await this.deliver(conv, text, files);
   }
 
   /** Record the pending notice's issues as TOLD (what the agent now knows). */
@@ -505,7 +517,11 @@ export class DiagnosticsCheckQueue {
     }
   }
 
-  private deliver(conv: ConversationState, text: string, files: Map<string, PendingFile>): void {
+  private async deliver(
+    conv: ConversationState,
+    text: string,
+    files: Map<string, PendingFile>,
+  ): Promise<void> {
     if (conv.closed) return;
     // The orchestrator may have become available since this conversation's
     // first check (subscriptions are resolved lazily).
@@ -516,7 +532,12 @@ export class DiagnosticsCheckQueue {
     if (this.deliveryIsActive(conv.id)) {
       // Mid-turn: the message-queue steering path — drained at the next tool-result
       // boundary (or carried into a new turn after seal).
-      const result = this.deliveryEnqueue({ conversationId: conv.id, text });
+      const result = await this.deliveryEnqueue({ conversationId: conv.id, text });
+      if (pending.discarded || conv.closed) {
+        if (result.messageId !== undefined)
+          this.deliveryCancel({ conversationId: conv.id, messageId: result.messageId });
+        return;
+      }
       pending.messageId = result.messageId;
       if (result.startedTurn) this.markDelivered(conv, pending);
       return;
@@ -534,7 +555,12 @@ export class DiagnosticsCheckQueue {
     }
 
     conv.expectedAutoText = text;
-    const result = this.deliveryEnqueue({ conversationId: conv.id, text });
+    const result = await this.deliveryEnqueue({ conversationId: conv.id, text });
+    if (pending.discarded || conv.closed) {
+      if (result.messageId !== undefined)
+        this.deliveryCancel({ conversationId: conv.id, messageId: result.messageId });
+      return;
+    }
     if (result.startedTurn) {
       conv.autoTurns += 1;
       this.markDelivered(conv, pending);
@@ -556,6 +582,7 @@ export class DiagnosticsCheckQueue {
     const pending = conv.pending;
     conv.pending = null;
     conv.expectedAutoText = null;
+    if (pending !== null) pending.discarded = true;
     if (pending === null || pending.messageId === undefined) return;
     this.deliveryCancel({ conversationId: conv.id, messageId: pending.messageId });
   }
@@ -670,6 +697,7 @@ export class DiagnosticsCheckQueue {
         cwd: "",
         files: new Map(),
         pending: null,
+        deliveryTail: null,
         autoTurns: 0,
         lastTurnAborted: false,
         expectedAutoText: null,

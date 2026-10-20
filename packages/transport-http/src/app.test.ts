@@ -299,7 +299,7 @@ function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
     isActive() {
       return false;
     },
-    enqueue() {
+    async enqueue() {
       return { startedTurn: false, queue: [] };
     },
     cancelQueuedMessage() {
@@ -338,7 +338,7 @@ function createCapturingOrchestrator(): SessionOrchestrator & {
     isActive() {
       return false;
     },
-    enqueue() {
+    async enqueue() {
       return { startedTurn: false, queue: [] };
     },
     cancelQueuedMessage() {
@@ -367,7 +367,7 @@ function createThrowingOrchestrator(error: Error): SessionOrchestrator {
     isActive() {
       return false;
     },
-    enqueue() {
+    async enqueue() {
       return { startedTurn: false, queue: [] };
     },
     cancelQueuedMessage() {
@@ -2282,7 +2282,7 @@ describe("POST /conversations/:id/queue", () => {
     ];
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         return { startedTurn: false, queue };
       },
     };
@@ -2310,7 +2310,7 @@ describe("POST /conversations/:id/queue", () => {
     let enqueueCalled = false;
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         enqueueCalled = true;
         return { startedTurn: false, queue: [] };
       },
@@ -2338,7 +2338,7 @@ describe("POST /conversations/:id/queue", () => {
     let enqueueCalled = false;
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         enqueueCalled = true;
         return { startedTurn: false, queue: [] };
       },
@@ -2365,7 +2365,7 @@ describe("POST /conversations/:id/queue", () => {
   it("enqueue returns startedTurn:true (was idle) → response echoes it", async () => {
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         return { startedTurn: true, queue: [] };
       },
     };
@@ -2396,7 +2396,7 @@ describe("POST /conversations/:id/queue", () => {
     ];
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         return { startedTurn: false, queue };
       },
     };
@@ -2420,11 +2420,32 @@ describe("POST /conversations/:id/queue", () => {
     expect(body.queue).toEqual(queue);
   });
 
-  it("forwards the path conversationId and trimmed text to enqueue", async () => {
+  it("returns a JSON error when awaited enqueue storage rejects", async () => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: {
+        ...createFakeOrchestrator([]),
+        async enqueue() {
+          throw new Error("disk full");
+        },
+      },
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/conversations/c/queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "", images: [{ url: "data:image/png;base64,AAAA" }] }),
+    });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Failed to enqueue message" });
+  });
+
+  it("awaits enqueue and forwards images/computerId with the path id and trimmed text", async () => {
     const calls: { conversationId: string; text: string }[] = [];
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue(input) {
+      async enqueue(input) {
         calls.push(input);
         return { startedTurn: false, queue: [] };
       },
@@ -2439,13 +2460,22 @@ describe("POST /conversations/:id/queue", () => {
     const res = await app.request("/conversations/conv-1/queue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "  hello world  " }),
+      body: JSON.stringify({
+        text: "  hello world  ",
+        images: [{ url: "data:image/png;base64,AAAA" }],
+        computerId: "remote",
+      }),
     });
 
     expect(res.status).toBe(200);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.conversationId).toBe("conv-1");
-    expect(calls[0]?.text).toBe("hello world");
+    expect(calls[0]).toEqual({
+      conversationId: "conv-1",
+      text: "hello world",
+      images: [{ url: "data:image/png;base64,AAAA" }],
+      computerId: "remote",
+    });
   });
 
   it("returns 400 for invalid JSON body", async () => {
@@ -2490,7 +2520,7 @@ describe("POST /conversations/:id/queue", () => {
     const logger = createFakeLogger();
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         return { startedTurn: true, queue: [] };
       },
     };

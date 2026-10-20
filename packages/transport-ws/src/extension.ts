@@ -387,7 +387,7 @@ export function createTransportWsExtension(): Extension {
             void catalogForConnection(ws.data).then((msg) => send(ws, msg));
           },
 
-          message(ws, message) {
+          async message(ws, message) {
             const state = ws.data;
             if (!state) return;
 
@@ -523,11 +523,28 @@ export function createTransportWsExtension(): Extension {
                 // turn's events stream to it (same as chat.send); on
                 // startedTurn:false (queued for steering) we emit NOTHING
                 // back and do not auto-subscribe.
-                const enqueueResult = orchestrator.enqueue({
-                  conversationId: result.conversationId,
-                  text: result.text,
-                  ...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
-                });
+                const enqueueResult = await orchestrator
+                  .enqueue({
+                    conversationId: result.conversationId,
+                    text: result.text,
+                    ...(result.images !== undefined ? { images: result.images } : {}),
+                    ...(result.computerId !== undefined ? { computerId: result.computerId } : {}),
+                    ...(result.workspaceId !== undefined
+                      ? { workspaceId: result.workspaceId }
+                      : {}),
+                  })
+                  .catch((error: unknown) => {
+                    logger.warn("transport-ws: queue storage failed", {
+                      conversationId: result.conversationId,
+                    });
+                    send(ws, {
+                      type: "chat.error",
+                      conversationId: result.conversationId,
+                      message: error instanceof Error ? error.message : String(error),
+                    });
+                    return undefined;
+                  });
+                if (enqueueResult === undefined) break;
                 if (enqueueResult.startedTurn) {
                   ensureChatSubscribed(ws, state, result.conversationId);
                 }

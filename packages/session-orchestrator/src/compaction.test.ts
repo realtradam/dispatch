@@ -288,7 +288,7 @@ describe("manual/post-seal compaction exclusion", () => {
     const started = f.orchestrator.startTurn({ conversationId: "c", text: "new question" });
     expect(started.started).toBe(!withQueue);
     if (withQueue) {
-      const queued = f.orchestrator.enqueue({ conversationId: "c", text: "follow-up" });
+      const queued = await f.orchestrator.enqueue({ conversationId: "c", text: "follow-up" });
       expect(queued.startedTurn).toBe(false);
       expect(queued.queue.map((message) => message.text)).toEqual(["new question", "follow-up"]);
     } else {
@@ -417,9 +417,9 @@ describe("manual/post-seal compaction exclusion", () => {
     const f = compactionFixture();
     expect("error" in (await f.service.compact("c", { auto }))).toBe(true);
     expect(f.compacting.size).toBe(0);
-    expect(f.orchestrator.enqueue({ conversationId: "c", text: "not blocked" }).startedTurn).toBe(
-      true,
-    );
+    expect(
+      (await f.orchestrator.enqueue({ conversationId: "c", text: "not blocked" })).startedTurn,
+    ).toBe(true);
     await f.settled.promise;
   });
 

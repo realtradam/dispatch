@@ -1290,15 +1290,12 @@ export function createApp(opts: CreateServerOptions): Hono {
       return c.json({ error: parsed.error }, 400);
     }
 
-    // `enqueue` is synchronous and owns the idle→startTurn vs active→queue
-    // decision (no separate `isActive` race) — it does not throw for an
-    // unknown/idle conversation, which instead starts a turn. Mirrors the
-    // direct sync call used by `POST /conversations/:id/close`.
-    const { startedTurn, queue } = opts.orchestrator.enqueue({
-      conversationId,
-      text: parsed.text,
-      ...(parsed.workspaceId !== undefined ? { workspaceId: parsed.workspaceId } : {}),
+    const result = await opts.orchestrator.enqueue({ conversationId, ...parsed }).catch(() => {
+      log.warn("conversations/queue: image storage failed", { conversationId });
+      return undefined;
     });
+    if (result === undefined) return c.json({ error: "Failed to enqueue message" }, 500);
+    const { startedTurn, queue } = result;
     log.info("conversations: enqueued", {
       conversationId,
       startedTurn,

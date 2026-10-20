@@ -840,7 +840,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     // enqueue owns the idle→startTurn vs active→queue decision (no delivery
     // parameter — plan §6.5). The target's persisted workspace/model/computer
     // remain authoritative (no workspaceId override passed).
-    const enqueueResult = orchestrator.enqueue({ conversationId, text: composedText });
+    const enqueueResult = await orchestrator.enqueue({ conversationId, text: composedText });
     log.info("agent-management.send", {
       callerId,
       targetId: conversationId,
