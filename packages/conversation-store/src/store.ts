@@ -41,6 +41,12 @@ import {
   VISION_SETTINGS_KEY,
   workspaceKey,
 } from "./keys.js";
+import {
+  LISTING_PREFIX,
+  type ListingRow,
+  readListingRows,
+  refreshListingRow,
+} from "./list-index.js";
 import { reconcileWithReport } from "./reconcile.js";
 import { createWriteLock } from "./write-lock.js";
 
@@ -800,6 +806,7 @@ export function createConversationStore(
     };
     tx.set(metaKey(id), JSON.stringify({ ...base, ...patch }));
     if (existing === null && indexOnCreate) ensureInIndex(tx, id);
+    refreshListingRow(tx, id);
   }
 
   function updateWorkspace(
@@ -837,13 +844,21 @@ export function createConversationStore(
     }
   }
 
-  /** Batch the scalar metadata reads, shared by list and single-meta responses. */
-  async function enrichMeta(meta: ConversationMeta): Promise<ConversationMeta> {
-    const [model, parentConversationId, override] = await Promise.all([
-      storage.get(modelKey(meta.id)),
-      storage.get(parentKey(meta.id)),
-      storage.get(tabGroupParentKey(meta.id)),
-    ]);
+  /** Listing scalars are already batched; single-meta requests read just three keys. */
+  function enrichMeta(meta: ConversationMeta, listing: ListingRow): ConversationMeta;
+  function enrichMeta(meta: ConversationMeta): Promise<ConversationMeta>;
+  function enrichMeta(
+    meta: ConversationMeta,
+    listing?: ListingRow,
+  ): ConversationMeta | Promise<ConversationMeta> {
+    if (listing === undefined) {
+      return Promise.all([
+        storage.get(modelKey(meta.id)),
+        storage.get(parentKey(meta.id)),
+        storage.get(tabGroupParentKey(meta.id)),
+      ]).then(([model, parent, override]) => enrichMeta(meta, [null, model, parent, override]));
+    }
+    const [, model, parentConversationId, override] = listing;
     const tabGroupParentId = override === null ? parentConversationId : override || null;
     return {
       ...meta,
@@ -985,6 +1000,7 @@ export function createConversationStore(
         tx.set(metaKey(conversationId), JSON.stringify(row));
       }
     }
+    refreshListingRow(tx, conversationId);
     // Bump the owning workspace's lastActivityAt to this append's time.
     bumpWorkspaceLastActivityAt(tx, conversationWorkspaceId, ts);
   }
@@ -1208,12 +1224,14 @@ export function createConversationStore(
           // set together, so they clear together).
           tx.delete(modelKey(conversationId));
           tx.delete(namedAgentSelectionKey(conversationId));
+          refreshListingRow(tx, conversationId);
           if (logger !== undefined) {
             logger.debug("model cleared", { conversationId });
           }
           return;
         }
         tx.set(modelKey(conversationId), model);
+        refreshListingRow(tx, conversationId);
         if (logger !== undefined) {
           logger.debug("model set", { conversationId });
         }
@@ -1230,6 +1248,7 @@ export function createConversationStore(
           const raw = tx.get(key);
           if (raw === null || !raw.startsWith("opencode/") || raw.length === 9) return 0;
           tx.set(key, `opencode-1/${raw.slice(9)}`);
+          refreshListingRow(tx, id);
           return 1;
         });
       }
@@ -1246,6 +1265,7 @@ export function createConversationStore(
       return write(conversationId, (tx) => {
         // Absence means lineage fallback; empty string means explicitly ungrouped.
         tx.set(tabGroupParentKey(conversationId), parentId ?? "");
+        refreshListingRow(tx, conversationId);
       });
     },
 
@@ -1284,6 +1304,7 @@ export function createConversationStore(
           cursor = tx.get(parentKey(cursor));
         }
         tx.set(parentKey(conversationId), parentId);
+        refreshListingRow(tx, conversationId);
         if (logger !== undefined) {
           logger.debug("parentConversationId set", { conversationId });
         }
@@ -1319,32 +1340,10 @@ export function createConversationStore(
     },
 
     async listChildren(parentId) {
-      // Scan the conversation index; for each conversation, read its
-      // persisted parent pointer and keep those matching `parentId`.
-      // `setParentConversationId` does not touch the index, so a child with a
-      // parent set but no meta row is still discoverable here only if it is in
-      // the index — which it is whenever it was created via the store (append
-      // / status / title / workspace all call `ensureInIndex`).
-      const raw = await storage.get(CONVERSATION_INDEX_KEY);
-      if (raw === null) return [];
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        return [];
-      }
-      if (!Array.isArray(parsed)) return [];
-      const seen = new Set<string>();
-      const children: string[] = [];
-      for (const v of parsed) {
-        if (typeof v !== "string" || seen.has(v)) continue;
-        seen.add(v);
-        const parent = await storage.get(parentKey(v));
-        if (parent === parentId) {
-          children.push(v);
-        }
-      }
-      return children;
+      const rows = await readListingRows(storage);
+      return indexIds(await storage.get(CONVERSATION_INDEX_KEY)).filter(
+        (id) => rows.get(id)?.[2] === parentId,
+      );
     },
     async deleteConversation(conversationId) {
       return write(conversationId, (tx) => {
@@ -1368,6 +1367,7 @@ export function createConversationStore(
         for (const k of [
           seqKey(conversationId),
           metaKey(conversationId),
+          `${LISTING_PREFIX}${conversationId}`,
           cwdKey(conversationId),
           computerKey(conversationId),
           reasoningEffortKey(conversationId),
@@ -1406,6 +1406,7 @@ export function createConversationStore(
       });
     },
     async listConversations(filter) {
+      const rows = await readListingRows(storage);
       const raw = await storage.get(CONVERSATION_INDEX_KEY);
       if (raw === null) return [];
       let parsed: unknown;
@@ -1427,10 +1428,11 @@ export function createConversationStore(
 
       const statusFilter = filter?.status;
       const workspaceFilter = filter?.workspaceId;
-      const metas: ConversationMeta[] = [];
+      const enriched: ConversationMeta[] = [];
       for (const id of ids) {
-        const metaRaw = await storage.get(metaKey(id));
-        if (metaRaw === null) continue;
+        const listing = rows.get(id);
+        const metaRaw = listing?.[0] ?? null;
+        if (metaRaw === null || listing === undefined) continue;
         const row = parseMetaRow(metaRaw);
         if (row === null) continue;
         if (statusFilter !== undefined && !statusFilter.includes(row.status)) continue;
@@ -1438,11 +1440,8 @@ export function createConversationStore(
           const wsId = row.workspaceId ?? DEFAULT_WORKSPACE_ID;
           if (wsId !== workspaceFilter) continue;
         }
-        metas.push(toMeta(id, row));
+        enriched.push(enrichMeta(toMeta(id, row), listing));
       }
-      // Surface the persisted model, lineage, and effective visual group parent.
-      // Point lookups alongside the existing meta scans; batched for the small index.
-      const enriched = await Promise.all(metas.map((m) => enrichMeta(m)));
 
       // Sort by lastActivityAt descending (most recent first). Stable sort
       // keeps first-seen (index) order for ties.
@@ -1571,6 +1570,7 @@ export function createConversationStore(
         // how the source was selected (a re-selection label frozen at select time).
         const snapshot = parseNamedAgentSelectionSnapshot(tx.get(namedAgentSelectionKey(sourceId)));
         if (snapshot !== null) tx.set(namedAgentSelectionKey(targetId), JSON.stringify(snapshot));
+        refreshListingRow(tx, targetId);
       });
     },
 
@@ -1803,6 +1803,7 @@ export function createConversationStore(
                 metaKey(convId),
                 JSON.stringify({ ...row, status: "closed", workspaceId: DEFAULT_WORKSPACE_ID }),
               );
+              refreshListingRow(tx, convId);
             }
             tx.delete(workspaceKey(id));
             return { closedCount: affected.length };
@@ -1813,16 +1814,15 @@ export function createConversationStore(
     },
 
     async listWorkspaces() {
+      const rows = await readListingRows(storage);
       // Collect persisted workspace rows via the `workspace:` key prefix.
       const wsPrefix = "workspace:";
-      const wsKeys = await storage.keys(wsPrefix);
+      const wsRows = await storage.entries(wsPrefix);
       const byId = new Map<string, Workspace>();
-      for (const key of wsKeys) {
+      for (const [key, raw] of wsRows) {
         // Key shape: `workspace:<id>`. Strip the prefix to recover the id.
         const id = key.slice(wsPrefix.length);
         if (id.length === 0) continue;
-        const raw = await storage.get(key);
-        if (raw === null) continue;
         const row = parseWorkspaceRow(raw);
         if (row === null) continue;
         byId.set(id, toWorkspace(id, row));
@@ -1855,7 +1855,7 @@ export function createConversationStore(
           ? (parsed.filter((v) => typeof v === "string") as string[])
           : [];
         for (const convId of ids) {
-          const metaRaw = await storage.get(metaKey(convId));
+          const metaRaw = rows.get(convId)?.[0] ?? null;
           if (metaRaw === null) continue;
           const row = parseMetaRow(metaRaw);
           if (row === null) continue;

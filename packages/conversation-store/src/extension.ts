@@ -1,4 +1,5 @@
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
+import { initializeConversationListIndex } from "./list-index.js";
 import { conversationStoreHandle, createConversationStore } from "./store.js";
 
 export const manifest: Manifest = {
@@ -50,6 +51,8 @@ export const extension: Extension = {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+
+    await initializeConversationListIndex(storage);
 
     const stale = await store.listConversations({ status: ["active"] });
     for (const m of stale) {
