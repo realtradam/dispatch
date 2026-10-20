@@ -44,12 +44,14 @@ export async function executeToolCall(
   // completes normally and the existing signal.aborted → finishReason =
   // "aborted" path seals the turn cleanly (done event), letting the
   // caller's finally clear active state and the FE clear its spinner.
+  let onAbort: (() => void) | undefined;
   try {
     const toolPromise = tool.execute(call.input, ctx);
     const abortPromise = new Promise<ToolResult>((resolve) => {
-      signal.addEventListener("abort", () => resolve({ content: "Aborted", isError: true }), {
-        once: true,
-      });
+      onAbort = () => resolve({ content: "Aborted", isError: true });
+      signal.addEventListener("abort", onAbort, { once: true });
+      // execute() may have synchronously aborted before the listener was installed.
+      if (signal.aborted) onAbort();
     });
     // Swallow late rejections from the orphaned tool promise: the tool
     // may reject after the race already resolved with "Aborted".
@@ -58,6 +60,8 @@ export async function executeToolCall(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { content: `Tool execution error: ${message}`, isError: true };
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -82,7 +86,6 @@ export function createStepDispatcher(
   let unsafeRunning = false;
   const queue: QueueEntry[] = [];
   const allPromises: Array<{ id: string; promise: Promise<ToolResult> }> = [];
-  const dedupMap = new Map<string, Promise<ToolResult>>();
 
   function canStart(isConcurrencySafe: boolean): boolean {
     if (unsafeRunning) return false;
@@ -125,20 +128,11 @@ export function createStepDispatcher(
 
   function submit(call: ToolCall): void {
     const tool = toolMap.get(call.name);
-    const key = `${call.name}:${JSON.stringify(call.input)}`;
-
-    const existing = dedupMap.get(key);
-    if (existing !== undefined) {
-      allPromises.push({ id: call.id, promise: existing });
-      return;
-    }
-
     const promise = new Promise<ToolResult>((resolve) => {
       queue.push({ call, tool, resolve });
       tryStartNext();
     });
 
-    dedupMap.set(key, promise);
     allPromises.push({ id: call.id, promise });
   }
 

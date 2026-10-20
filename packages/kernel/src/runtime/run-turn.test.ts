@@ -76,6 +76,40 @@ const userMessage: ChatMessage = {
 };
 
 describe("runTurn", () => {
+  it.each([
+    "noop",
+    "body-disabled",
+  ])("does not serialize prompt bodies with the %s logger", async (kind) => {
+    let serialized = 0;
+    const message = {
+      ...userMessage,
+      toJSON() {
+        serialized++;
+        throw new Error("prompt serialization must remain lazy");
+      },
+    };
+    const result = await runTurn({
+      provider: createFakeProvider([[{ type: "finish", reason: "stop" }]]),
+      messages: [message],
+      tools: [],
+      dispatch: { maxConcurrent: 1, eager: false },
+      conversationId: "conv-1",
+      turnId: "turn-1",
+      emit: () => {},
+      ...(kind === "noop"
+        ? {}
+        : {
+            logger: createLogger(
+              { extensionId: "test" },
+              { recordsBodies: false, emit: () => {} },
+              { now: () => 0, newId: () => "id" },
+            ),
+          }),
+    });
+    expect(result.finishReason).toBe("stop");
+    expect(serialized).toBe(0);
+  });
+
   it("emits events with the conversationId and turnId from input", async () => {
     const provider = createFakeProvider([
       [
@@ -1117,19 +1151,23 @@ describe("runTurn", () => {
     expect(chunks[0]).toEqual({ type: "text", text: "kept" });
   });
 
-  it("de-duplicates identical tool calls in a batch", async () => {
+  it.each([
+    false,
+    true,
+  ])("executes identical run_shell calls independently with eager=%s", async (eager) => {
     let execCount = 0;
 
-    const tool = createFakeTool("dedup", async (_input) => {
+    const tool = createFakeTool("run_shell", async (_input, ctx) => {
       execCount++;
+      ctx.onOutput(`output-${execCount}`, "stdout");
       return { content: `result-${execCount}` };
     });
 
     const provider = createFakeProvider([
       [
-        { type: "tool-call", toolCallId: "tc1", toolName: "dedup", input: { x: 1 } },
-        { type: "tool-call", toolCallId: "tc2", toolName: "dedup", input: { x: 1 } },
-        { type: "tool-call", toolCallId: "tc3", toolName: "dedup", input: { x: 2 } },
+        { type: "tool-call", toolCallId: "tc1", toolName: "run_shell", input: { x: 1 } },
+        { type: "tool-call", toolCallId: "tc2", toolName: "run_shell", input: { x: 1 } },
+        { type: "tool-call", toolCallId: "tc3", toolName: "run_shell", input: { x: 2 } },
         { type: "finish", reason: "tool-calls" },
       ],
       [
@@ -1144,13 +1182,13 @@ describe("runTurn", () => {
       provider,
       messages: [userMessage],
       tools: [tool],
-      dispatch: { maxConcurrent: 1, eager: false },
+      dispatch: { maxConcurrent: 1, eager },
       conversationId: "tab-test",
       turnId: "turn-test",
       emit,
     });
 
-    expect(execCount).toBe(2);
+    expect(execCount).toBe(3);
 
     const toolResults = events.filter((e) => e.type === "tool-result");
     expect(toolResults).toHaveLength(3);
@@ -1164,13 +1202,18 @@ describe("runTurn", () => {
     expect(tc3Result).toBeDefined();
 
     if (tc1Result?.type === "tool-result" && tc2Result?.type === "tool-result") {
-      expect(tc1Result.content).toBe(tc2Result.content);
+      expect(tc2Result.content).toBe("result-2");
       expect(tc1Result.content).toBe("result-1");
     }
     if (tc3Result?.type === "tool-result") {
-      expect(tc3Result.content).toBe("result-2");
+      expect(tc3Result.content).toBe("result-3");
     }
 
+    expect(events.filter((e) => e.type === "tool-output").map((e) => e.toolCallId)).toEqual([
+      "tc1",
+      "tc2",
+      "tc3",
+    ]);
     expect(result.finishReason).toBe("stop");
   });
 
@@ -3205,6 +3248,50 @@ describe("runTurn", () => {
   });
 
   describe("contextSize", () => {
+    it.each([
+      "aborted",
+      "error",
+      "stop",
+      "zero-usage",
+    ])("uses the last usage-reporting step when the final step ends with %s", async (outcome) => {
+      const ac = new AbortController();
+      const { events, emit } = createCollectingEmit();
+      let step = 0;
+      const provider: ProviderContract = {
+        id: "fake",
+        async *stream() {
+          if (step++ === 0) {
+            yield { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} };
+            yield { type: "usage", usage: { inputTokens: 100, outputTokens: 20 } };
+            yield { type: "finish", reason: "tool-calls" };
+          } else if (outcome === "aborted") {
+            ac.abort();
+          } else if (outcome === "error") {
+            yield { type: "error", message: "failed", retryable: false };
+          } else {
+            if (outcome === "zero-usage") {
+              yield { type: "usage", usage: { inputTokens: 0, outputTokens: 0 } };
+            }
+            yield { type: "finish", reason: "stop" };
+          }
+        },
+      };
+      const result = await runTurn({
+        provider,
+        messages: [userMessage],
+        tools: [createFakeTool("echo")],
+        dispatch: { maxConcurrent: 1, eager: false },
+        conversationId: "conv-1",
+        turnId: "turn-1",
+        signal: ac.signal,
+        emit,
+      });
+      expect(result.finishReason).toBe(outcome === "zero-usage" ? "stop" : outcome);
+      expect(events.find((e) => e.type === "done")?.contextSize).toBe(
+        outcome === "zero-usage" ? 0 : 120,
+      );
+    });
+
     it("single-step turn: contextSize equals step inputTokens + outputTokens", async () => {
       const provider = createFakeProvider([
         [
