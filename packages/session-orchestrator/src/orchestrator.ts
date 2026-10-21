@@ -37,6 +37,7 @@ import {
 import { createMetricsAccumulator } from "./metrics.js";
 import {
   appendCompacted,
+  boundedSnapshotReplay,
   buildUserMessage,
   createReplayBuffer,
   defaultDispatchPolicy,
@@ -326,7 +327,25 @@ export interface SessionOrchestrator {
     readonly conversationId: string;
     readonly messageId: string;
   }): CancelQueuedMessageResult;
-  subscribe(conversationId: string, listener: TurnEventListener): () => void;
+  /**
+   * Subscribe to live events, after an immutable synchronous replay. The optional
+   * replay policy preflights a bounded snapshot BEFORE delivery. If any event is
+   * rejected or maxEvents is exceeded, no partial replay is delivered; onOmitted
+   * runs instead, then live delivery continues unmodified. accept must be pure
+   * (apart from caller-owned budget accounting), not emit events or perform I/O.
+   * Default callers retain full replay semantics.
+   */
+  subscribe(
+    conversationId: string,
+    listener: TurnEventListener,
+    options?: {
+      readonly replay: {
+        readonly maxEvents: number;
+        readonly accept: (event: AgentEvent) => boolean;
+        readonly onOmitted: (turnId: string) => void;
+      };
+    },
+  ): () => void;
   isActive(conversationId: string): boolean;
   /**
    * The number of conversations currently driving a turn (in the
@@ -1400,7 +1419,7 @@ export function createSessionOrchestrator(
       return { cancelled, queue: snapshot };
     },
 
-    subscribe(conversationId, listener) {
+    subscribe(conversationId, listener, options) {
       let listeners = subscribers.get(conversationId);
       if (listeners === undefined) {
         listeners = new Set();
@@ -1410,11 +1429,12 @@ export function createSessionOrchestrator(
       if (turn !== undefined) {
         // Already compacted on arrival. The immutable snapshot stays stable
         // even if a listener synchronously causes another event to be emitted.
-        const snapshot = snapshotReplay(turn.buffer);
+        const snapshot = options
+          ? boundedSnapshotReplay(turn.buffer, options.replay.maxEvents, options.replay.accept)
+          : snapshotReplay(turn.buffer);
         listeners.add(listener);
-        for (const event of snapshot) {
-          listener(event);
-        }
+        if (snapshot === undefined) options?.replay.onOmitted(turn.turnId);
+        else for (const event of snapshot) listener(event);
       } else {
         listeners.add(listener);
       }

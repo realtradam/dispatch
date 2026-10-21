@@ -512,3 +512,18 @@ export function snapshotReplay(buffer: ReplayBuffer): readonly AgentEvent[] {
   for (let node = buffer.first; node !== undefined; node = node.next) snapshot.push(node.event);
   return Object.freeze(snapshot);
 }
+
+/** All-or-nothing replay preflight; never allocate more than maxEvents references. */
+export function boundedSnapshotReplay(
+  buffer: ReplayBuffer,
+  maxEvents: number,
+  accept: (event: AgentEvent) => boolean,
+): readonly AgentEvent[] | undefined {
+  if (buffer.size > maxEvents) return undefined;
+  const snapshot: AgentEvent[] = [];
+  for (let node = buffer.first; node !== undefined; node = node.next) {
+    if (!accept(node.event)) return undefined;
+    snapshot.push(node.event);
+  }
+  return Object.freeze(snapshot);
+}

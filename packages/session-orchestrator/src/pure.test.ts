@@ -2,6 +2,7 @@ import type { AgentEvent, ProviderContract } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
   appendCompacted,
+  boundedSnapshotReplay,
   buildUserMessage,
   compactReplay,
   createReplayBuffer,
@@ -655,5 +656,54 @@ describe("compactReplay", () => {
     const out = compactReplay(many);
     expect(out).toHaveLength(1);
     expect((out[0] as { delta: string }).delta).toBe(many.map((e) => e.delta).join(""));
+  });
+});
+
+describe("bounded replay snapshot", () => {
+  it("rejects by count without visiting nodes or allocating a full snapshot", () => {
+    const buffer = createReplayBuffer();
+    for (let i = 0; i < 5000; i++)
+      appendCompacted(buffer, {
+        type: "tool-result",
+        conversationId: "c",
+        turnId: "t",
+        toolCallId: String(i),
+        toolName: "echo",
+        content: "ok",
+        isError: false,
+      });
+    let visits = 0;
+    expect(
+      boundedSnapshotReplay(buffer, 256, () => {
+        visits++;
+        return true;
+      }),
+    ).toBeUndefined();
+    expect(visits).toBe(0);
+    expect(buffer.size).toBe(5000);
+  });
+
+  it("is all-or-nothing and preserves full replay/default snapshots and reentrant stability", () => {
+    const buffer = createReplayBuffer();
+    appendCompacted(buffer, { type: "text-delta", conversationId: "c", turnId: "t", delta: "old" });
+    appendCompacted(buffer, {
+      type: "tool-result",
+      conversationId: "c",
+      turnId: "t",
+      toolCallId: "x",
+      toolName: "echo",
+      content: "large",
+      isError: false,
+    });
+    const original = snapshotReplay(buffer);
+    expect(
+      boundedSnapshotReplay(buffer, 256, (event) => event.type !== "tool-result"),
+    ).toBeUndefined();
+    const snapshot = boundedSnapshotReplay(buffer, 256, () => true);
+    expect(snapshot).toEqual(original);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    appendCompacted(buffer, { type: "text-delta", conversationId: "c", turnId: "t", delta: "new" });
+    expect(snapshot).toEqual(original);
+    expect(snapshotReplay(buffer)).toHaveLength(3);
   });
 });

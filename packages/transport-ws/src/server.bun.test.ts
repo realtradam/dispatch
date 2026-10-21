@@ -6,10 +6,12 @@ import {
   type ErrorAttributes,
   type HostAPI,
   type Logger,
+  runTurn,
 } from "@dispatch/kernel";
 import {
   conversationOpened,
   conversationTabGroupChanged,
+  createSessionOrchestrator,
   type SessionOrchestrator,
   sessionOrchestratorHandle,
   type TurnEventListener,
@@ -22,6 +24,8 @@ import {
 } from "@dispatch/surface-registry";
 import type { ConversationStatus, WsServerMessage } from "@dispatch/transport-contract";
 import type { SurfaceCatalogEntry, SurfaceClientMessage, SurfaceSpec } from "@dispatch/ui-contract";
+import { createConversationStore } from "../../conversation-store/src/index.js";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createTransportWsExtension } from "./extension.js";
 import { catalogMessage, routeClientMessage, subKey } from "./router.js";
 
@@ -1397,5 +1401,99 @@ describe("real multi-listener lifecycle", () => {
       listeners.stop();
     }
     for (const url of urls) await expect(fetch(url)).rejects.toThrow();
+  });
+});
+
+describe("bounded late-join replay through the real extension", () => {
+  test("oversized replay reaches live updates on one socket", async () => {
+    const release = Promise.withResolvers<void>();
+    const ready = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    const payload = "x".repeat(9 * 1024 * 1024);
+    let step = 0;
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createConversationStore(storageFromMap()),
+      resolveProvider: () => ({
+        id: "fixture",
+        async *stream() {
+          if (step++ === 0) {
+            yield { type: "tool-call", toolCallId: "x", toolName: "echo", input: { payload } };
+            yield { type: "finish", reason: "tool-calls" };
+          } else {
+            ready.resolve();
+            await release.promise;
+            yield { type: "text-delta", delta: "live-after-replay" };
+            yield { type: "finish", reason: "stop" };
+          }
+        },
+      }),
+      resolveTools: () => [
+        {
+          name: "echo",
+          description: "fixture",
+          parameters: { type: "object" },
+          concurrencySafe: true,
+          execute: async () => ({ content: payload }),
+        },
+      ],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    const dispose = orchestrator.subscribe("bounded", (event) => {
+      if (event.type === "turn-ended") ended.resolve();
+    });
+    const bus = createBus(fakeLogger());
+    bus.provideService(sessionOrchestratorHandle, orchestrator);
+    bus.provideService(surfaceRegistryHandle, fakeRegistry([fakeProvider("demo")]));
+    const extension = createTransportWsExtension();
+    const host = {
+      logger: fakeLogger(),
+      getService: bus.getService,
+      tryGetService: bus.tryGetService,
+      on: bus.on,
+      getExtensions: () => [],
+      config: {
+        get: (key: string) =>
+          key === "surfaceWsPort"
+            ? 34205
+            : key === "networkPolicy"
+              ? {
+                  allowedHosts: new Set(["localhost", "127.0.0.1"]),
+                  bindAddresses: ["127.0.0.1"],
+                  tailscaleIps: [],
+                }
+              : undefined,
+      },
+    } as unknown as HostAPI;
+    let ws: WebSocket | undefined;
+    let closes = 0;
+    try {
+      await extension.activate(host);
+      orchestrator.startTurn({ conversationId: "bounded", text: "run" });
+      await ready.promise;
+      ws = new WebSocket("ws://127.0.0.1:34205");
+      ws.addEventListener("close", () => closes++);
+      await waitForMessage(ws);
+      const notice = waitForMessage(ws);
+      ws.send(JSON.stringify({ type: "chat.subscribe", conversationId: "bounded" }));
+      expect(await notice).toMatchObject({ type: "chat.resync-required", reason: "replay-limit" });
+      const surface = waitForMessage(ws);
+      ws.send(JSON.stringify({ type: "subscribe", surfaceId: "demo" }));
+      expect(await surface).toMatchObject({ type: "surface" });
+      const live = waitForMessage(ws);
+      release.resolve();
+      expect(await live).toMatchObject({
+        type: "chat.delta",
+        event: { type: "text-delta", delta: "live-after-replay" },
+      });
+      await ended.promise;
+      expect(closes).toBe(0);
+    } finally {
+      release.resolve();
+      if (orchestrator.isActive("bounded")) await ended.promise;
+      ws?.close();
+      dispose();
+      await extension.deactivate?.();
+    }
   });
 });

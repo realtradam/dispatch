@@ -756,6 +756,23 @@ export interface ChatDeltaMessage {
 }
 
 /**
+ * Replay or a single live payload exceeded the WS delivery budget. No partial
+ * replay/placeholder payload is sent; live subscription remains active. The
+ * client must refetch committed history over HTTP and reconcile provisional
+ * content by turn/step identity (not append duplicates). While this turn is
+ * active, use a bounded single-flight history refresh (step-complete may precede
+ * persistence), and a final refresh on turn-ended including aborted/failed
+ * terminals, so omitted data committed after this notice is recovered.
+ * This is not a transport failure and must not trigger reconnect/resubscribe.
+ */
+export interface ChatResyncRequiredMessage {
+  readonly type: "chat.resync-required";
+  readonly conversationId: string;
+  readonly turnId?: string;
+  readonly reason: "replay-limit" | "payload-limit";
+}
+
+/**
  * Server → client: a chat-scoped TRANSPORT error — e.g. a malformed `chat.send`
  * or a failure before a turn could start. (Errors DURING a turn arrive as a
  * `TurnErrorEvent` inside a `chat.delta`.)
@@ -792,7 +809,10 @@ export interface ChatQueuedMessage {
  * `turn-start`), then streams subsequent live events. If no turn is in-flight,
  * nothing is replayed (the client relies on `GET /conversations/:id` history).
  * A client infers "generating" from a replayed `turn-start` with no matching
- * `done`/`turn-sealed` yet. Idempotent per `(connection, conversationId)`.
+ * `done`/`turn-sealed` yet. A bounded transport may replace the WHOLE replay
+ * with chat.resync-required; in that case its turnId identifies an active turn,
+ * and the client must recover committed content over HTTP (see that message).
+ * Idempotent per `(connection, conversationId)`.
  *
  * NOTE: `chat.send` auto-subscribes the sending connection, so a client only needs
  * `chat.subscribe` for conversations it is viewing but did not send to.
@@ -924,6 +944,7 @@ export type WsServerMessage =
   | ChatDeltaMessage
   | ChatErrorMessage
   | ChatQueuedMessage
+  | ChatResyncRequiredMessage
   | ConversationOpenMessage
   | ConversationTabGroupChangedMessage
   | ConversationStatusChangedMessage

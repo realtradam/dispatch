@@ -28,6 +28,7 @@ import {
 } from "@dispatch/workspace-plugin-config";
 import { manifest } from "./manifest.js";
 import { catalogMessageFiltered, routeClientMessage, subKey } from "./router.js";
+import { jsonByteBound } from "./serialization.js";
 
 /** Active provider subscriptions + chat subscription disposers for a single WS connection. */
 interface ConnectionState {
@@ -104,9 +105,19 @@ export function createTransportWsExtension(): Extension {
   /** Disposers for host hook subscriptions (drained on deactivate). */
   const disposers: Array<() => void> = [];
   let connectionLogger: Logger | undefined;
+  const watchdogs = new Map<
+    Ws,
+    {
+      timer: ReturnType<typeof setInterval>;
+      sentBytes: number;
+    }
+  >();
 
   function disposeConnection(ws: Ws): void {
     connections.delete(ws);
+    const watchdog = watchdogs.get(ws);
+    if (watchdog !== undefined) clearInterval(watchdog.timer);
+    watchdogs.delete(ws);
     const state = ws.data;
     state.closed = true;
     const subscriptions = [
@@ -148,8 +159,59 @@ export function createTransportWsExtension(): Extension {
             return true;
           };
           if (closeIfBackpressured()) return;
-          ws.send(JSON.stringify(msg));
-          closeIfBackpressured();
+          // A single unbounded tool payload must not create an unbounded socket
+          // copy or close/replay loop. Full data stays in HTTP history.
+          const frameBudget = msg.type === "chat.delta" ? 256 * 1024 : 1024 * 1024;
+          if (jsonByteBound(msg, frameBudget) === undefined) {
+            if (msg.type === "chat.delta") {
+              send(ws, {
+                type: "chat.resync-required",
+                conversationId: msg.event.conversationId,
+                ...("turnId" in msg.event ? { turnId: msg.event.turnId } : {}),
+                reason: "payload-limit",
+              });
+            } else {
+              logger.warn("transport-ws: oversized non-chat message omitted", { type: msg.type });
+              send(ws, {
+                type: "error",
+                message: "WebSocket payload exceeds delivery limit",
+              });
+            }
+            return;
+          }
+          const serialized = JSON.stringify(msg);
+          ws.send(serialized);
+          const existingWatchdog = watchdogs.get(ws);
+          if (existingWatchdog) existingWatchdog.sentBytes += Buffer.byteLength(serialized);
+          if (closeIfBackpressured()) return;
+          // Even an idle consumer stuck below 8 MiB must eventually be disposed.
+          // Only lack of progress times out; a slowly draining socket survives.
+          if (ws.getBufferedAmount() > 0 && !watchdogs.has(ws)) {
+            let previous = ws.getBufferedAmount();
+            let lastProgress = Date.now();
+            const watchdog = {
+              sentBytes: 0,
+              timer: setInterval(() => {
+                const bufferedBytes = ws.getBufferedAmount();
+                if (bufferedBytes === 0 || ws.data.closed) {
+                  clearInterval(watchdog.timer);
+                  watchdogs.delete(ws);
+                  return;
+                }
+                // Account for new writes: a stable backlog under continuous
+                // traffic is progress, not a stuck socket.
+                if (bufferedBytes < previous + watchdog.sentBytes) lastProgress = Date.now();
+                previous = bufferedBytes;
+                watchdog.sentBytes = 0;
+                if (Date.now() - lastProgress >= 30_000) {
+                  logger.warn("transport-ws: closing stalled consumer", { bufferedBytes });
+                  disposeConnection(ws);
+                  ws.close(1013, "Stalled consumer; reconnect and resync");
+                }
+              }, 5_000),
+            };
+            watchdogs.set(ws, watchdog);
+          }
         } catch {
           // Connection may have been dropped; swallow.
         }
@@ -213,9 +275,40 @@ export function createTransportWsExtension(): Extension {
         if (state.closed || state.chatSubscriptions.has(conversationId)) {
           return;
         }
-        const unsubscribe = orchestrator.subscribe(conversationId, (event) => {
-          send(ws, { type: "chat.delta", event });
-        });
+        // All-or-nothing preflight avoids both partial provisional transcripts
+        // and synchronous replay bursts. Across ANY number of subscriptions,
+        // replay can fill at most 1 MiB of socket backlog. No per-client replay
+        // queue or serialized snapshot is retained. Other surfaces/live streams
+        // get the remaining slow-consumer headroom.
+        if (state.chatSubscriptions.size + state.subs.size >= 256) {
+          disposeConnection(ws);
+          ws.close(1008, "Too many subscriptions");
+          return;
+        }
+        let budget = Math.min(256 * 1024, Math.max(0, 1024 * 1024 - ws.getBufferedAmount()));
+        const unsubscribe = orchestrator.subscribe(
+          conversationId,
+          (event) => send(ws, { type: "chat.delta", event }),
+          {
+            replay: {
+              maxEvents: 256,
+              accept(event) {
+                const bytes = jsonByteBound({ type: "chat.delta", event }, budget);
+                if (bytes === undefined) return false;
+                budget -= bytes;
+                return true;
+              },
+              onOmitted(turnId) {
+                send(ws, {
+                  type: "chat.resync-required",
+                  conversationId,
+                  turnId,
+                  reason: "replay-limit",
+                });
+              },
+            },
+          },
+        );
         if (state.closed) unsubscribe();
         else state.chatSubscriptions.set(conversationId, unsubscribe);
       }
@@ -455,6 +548,11 @@ export function createTransportWsExtension(): Extension {
                 if (result.subChange) {
                   const key = subKey(result.subChange.surfaceId, result.subChange.conversationId);
                   if (result.subChange.op === "add") {
+                    if (state.chatSubscriptions.size + state.subs.size >= 256) {
+                      disposeConnection(ws);
+                      ws.close(1008, "Too many subscriptions");
+                      return;
+                    }
                     state.subs.add(key);
                     const provider = registry.getSurface(result.subChange.surfaceId);
                     if (provider) {
@@ -511,6 +609,7 @@ export function createTransportWsExtension(): Extension {
                 const resolvedId = result.conversationId ?? crypto.randomUUID();
                 // Auto-subscribe the sender so it sees the turn's events.
                 ensureChatSubscribed(ws, state, resolvedId);
+                if (state.closed) return;
                 // Start the turn detached from this connection.
                 const startResult = orchestrator.startTurn({
                   conversationId: resolvedId,

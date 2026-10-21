@@ -469,3 +469,19 @@ it("types additive queued acknowledgement and optional send correlation", () => 
   };
   expect(ack.type).toBe("chat.queued");
 });
+
+it("accepts additive resync notices with and without a turn identity", () => {
+  const replay: import("./index.js").WsServerMessage = {
+    type: "chat.resync-required",
+    conversationId: "c",
+    turnId: "t",
+    reason: "replay-limit",
+  };
+  const live: import("./index.js").WsServerMessage = {
+    type: "chat.resync-required",
+    conversationId: "c",
+    reason: "payload-limit",
+  };
+  expect(replay.type).toBe("chat.resync-required");
+  expect(live.type).toBe("chat.resync-required");
+});
