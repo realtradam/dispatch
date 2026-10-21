@@ -62,51 +62,42 @@ export function computeReplacement(
   newString: string,
   replaceAll: boolean,
 ): ReplacementSuccess | ReplacementError {
-  if (content.includes("\r\n")) {
-    // Normalize bare LF only, never double an explicit CRLF. Also handles a
-    // single-line match whose replacement introduces new lines.
-    oldString = oldString.replace(/(?<!\r)\n/g, "\r\n");
-    newString = newString.replace(/(?<!\r)\n/g, "\r\n");
-  }
-  if (oldString === newString) {
-    return { kind: "identical" };
-  }
+  if (oldString === newString) return { kind: "identical" };
+  if (oldString === "") return { kind: "notFound" };
 
-  if (oldString === "") {
-    return { kind: "notFound" };
+  // Exact matches take precedence, even if another EOL spelling also occurs.
+  let matches = [...content.matchAll(new RegExp(escapeRegExp(oldString), "g"))];
+  if (matches.length === 0 && oldString.includes("\n")) {
+    // Only relax line endings, never other whitespace. Keep original offsets and
+    // matched bytes so mixed-EOL regions need no whole-file normalization.
+    const pattern = oldString.split(/\r?\n/).map(escapeRegExp).join("\r?\n");
+    matches = [...content.matchAll(new RegExp(pattern, "g"))];
   }
+  if (matches.length === 0) return { kind: "notFound" };
+  if (!replaceAll && matches.length > 1) return { kind: "notUnique", count: matches.length };
 
-  if (!content.includes(oldString)) {
-    return { kind: "notFound" };
+  const parts: string[] = [];
+  let offset = 0;
+  for (const match of matches) {
+    // Prefer the first EOL INSIDE the match. For single-line edits use the
+    // terminating EOL, then the preceding EOL (last line), then LF (no EOL).
+    const eol =
+      /\r?\n/.exec(match[0])?.[0] ??
+      /\r?\n/.exec(content.slice(match.index + match[0].length))?.[0] ??
+      (content.lastIndexOf("\n", match.index - 1) > 0 &&
+      content[content.lastIndexOf("\n", match.index - 1) - 1] === "\r"
+        ? "\r\n"
+        : "\n");
+    parts.push(content.slice(offset, match.index), newString.replace(/\r?\n/g, eol));
+    offset = match.index + match[0].length;
   }
+  parts.push(content.slice(offset));
+  const result = parts.join("");
+  return result === content ? { kind: "identical" } : { content: result, count: matches.length };
+}
 
-  if (replaceAll) {
-    const parts = content.split(oldString);
-    const count = parts.length - 1;
-    return { content: parts.join(newString), count };
-  }
-
-  // Single replacement — check uniqueness.
-  const firstIndex = content.indexOf(oldString);
-  const secondIndex = content.indexOf(oldString, firstIndex + oldString.length);
-  if (secondIndex !== -1) {
-    // Count total occurrences.
-    let count = 0;
-    let idx = 0;
-    while (true) {
-      idx = content.indexOf(oldString, idx);
-      if (idx === -1) break;
-      count++;
-      idx += oldString.length;
-    }
-    return { kind: "notUnique", count };
-  }
-
-  return {
-    content:
-      content.slice(0, firstIndex) + newString + content.slice(firstIndex + oldString.length),
-    count: 1,
-  };
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // --- Diagnostics hook ---
