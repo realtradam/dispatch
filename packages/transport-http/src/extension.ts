@@ -280,11 +280,14 @@ export function createTransportHttpExtension(): Extension & {
       // Stable request-policy view: guards/CORS see the latest complete publication.
       const allowedHosts = new Set(policy.allowedHosts);
 
+      const imageDir = host.config.get<string>("vision.imageDir");
+
       // The optional services are passed as LIVE GETTERS: each request
       // re-reads the slot's current value (undefined → the route's degrade
       // path), so the app never holds a stale service reference.
       const app = createApp({
         allowedHosts,
+        ...(imageDir !== undefined ? { imageDir } : {}),
         conversationStore,
         orchestrator,
         credentialStore,

@@ -24,6 +24,8 @@ import type {
 
 export interface CreateServerOptions {
   readonly allowedHosts?: ReadonlySet<string>;
+  /** Boot-resolved durable image root. Absent → /images returns 404; no ambient fallback. */
+  readonly imageDir?: string;
   readonly conversationStore: ConversationStore;
   readonly orchestrator: SessionOrchestrator;
   readonly credentialStore: CredentialStore;

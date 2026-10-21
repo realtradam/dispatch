@@ -161,3 +161,12 @@ it("derives durable images beside the DB, with explicit overrides and zero reten
       "DISPATCH_IMAGE_RETENTION_DAYS",
     );
 });
+
+it("resolves relative image overrides and DB paths once at boot", () => {
+  expect(envToConfigMap({ DISPATCH_IMAGE_DIR: "relative-images" })["vision.imageDir"]).toBe(
+    resolve("relative-images"),
+  );
+  expect(envToConfigMap({ DISPATCH_DB: "relative-data/dispatch.db" })["vision.imageDir"]).toBe(
+    resolve("relative-data/images"),
+  );
+});

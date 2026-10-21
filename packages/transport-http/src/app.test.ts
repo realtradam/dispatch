@@ -30,6 +30,7 @@ import type {
 } from "@dispatch/transport-contract";
 import type { Computer, ComputerEntry, Workspace } from "@dispatch/wire";
 import { describe, expect, it, vi } from "vitest";
+import { envToConfigMap } from "../../host-bin/src/config.js";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createApp, retainThroughputEvent } from "./app.js";
 import { extractLastAssistantText } from "./logic.js";
@@ -637,10 +638,15 @@ describe("GET /images filesystem containment", () => {
     const dir = await mkdtemp(join(tmpdir(), "dispatch-http-images-"));
     const previous = process.env.DISPATCH_IMAGE_DIR;
     const previousDb = process.env.DISPATCH_DB;
-    process.env.DISPATCH_DB = join(dir, "dispatch.db");
+    const env = {
+      DISPATCH_DB: join(dir, "dispatch.db"),
+      ...(override ? { DISPATCH_IMAGE_DIR: join(dir, "override-images") } : {}),
+    };
+    const imageDir = envToConfigMap(env)["vision.imageDir"] as string;
     const imageRoot = join(dir, override ? "override-images" : "images");
-    if (override) process.env.DISPATCH_IMAGE_DIR = imageRoot;
-    else delete process.env.DISPATCH_IMAGE_DIR;
+    // Ambient environment deliberately disagrees with boot configuration.
+    process.env.DISPATCH_IMAGE_DIR = join(dir, "decoy");
+    process.env.DISPATCH_DB = join(dir, "decoy-db", "dispatch.db");
     try {
       await mkdir(join(imageRoot, "mcp-test-001"), { recursive: true });
       await writeFile(join(imageRoot, "mcp-test-001", "image.png"), "image bytes");
@@ -649,6 +655,7 @@ describe("GET /images filesystem containment", () => {
         orchestrator: createFakeOrchestrator([]),
         credentialStore: createFakeCredentialStore([]),
         logger: noopLogger,
+        imageDir,
       });
       const response = await app.request("/images/mcp-test-001/image.png");
       expect(response.status).toBe(200);
@@ -662,6 +669,16 @@ describe("GET /images filesystem containment", () => {
       else process.env.DISPATCH_DB = previousDb;
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("returns 404 when no image root is injected", async () => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    expect((await app.request("/images/conv/image.png")).status).toBe(404);
   });
 
   it.each([

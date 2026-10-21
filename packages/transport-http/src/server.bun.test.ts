@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
@@ -19,6 +19,7 @@ import {
   createLayoutProviderRegistry,
   layoutProviderRegistryHandle,
 } from "@dispatch/layout-provider-contract";
+import { envToConfigMap } from "../../host-bin/src/config.js";
 import { createNetworkPolicyMonitor } from "../../host-bin/src/network.js";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createApp } from "./app.js";
@@ -382,6 +383,59 @@ describe("extension lifecycle", () => {
       expect(true).toBe(false);
     } catch {
       // expected — server stopped
+    }
+  });
+});
+
+describe("boot-resolved durable image root", () => {
+  test.each([
+    true,
+    false,
+  ])("serves host config after cwd/env changes (override=%s)", async (override) => {
+    const dir = await mkdtemp(join(tmpdir(), "http-image-boot-"));
+    const cwd = process.cwd();
+    const previousImageDir = process.env.DISPATCH_IMAGE_DIR;
+    const previousDb = process.env.DISPATCH_DB;
+    const ext = createTransportHttpExtension();
+    try {
+      process.chdir(dir);
+      const config = envToConfigMap(
+        override ? { DISPATCH_IMAGE_DIR: "custom-images" } : { DISPATCH_DB: "data/dispatch.db" },
+      );
+      const root = config["vision.imageDir"] as string;
+      expect(root).toBe(join(dir, override ? "custom-images" : "data/images"));
+      await mkdir(join(root, "conv"), { recursive: true });
+      await writeFile(join(root, "conv", "image.png"), "boot image");
+      await mkdir(join(dir, "later"));
+      process.chdir(join(dir, "later"));
+      process.env.DISPATCH_IMAGE_DIR = join(dir, "decoy");
+      process.env.DISPATCH_DB = join(dir, "decoy-db", "dispatch.db");
+      await ext.activate(
+        createFakeHostAPI({
+          ...config,
+          httpPort: 0,
+          networkPolicy: {
+            allowedHosts: new Set(["localhost"]),
+            bindAddresses: ["127.0.0.1"],
+            tailscaleIps: [],
+          },
+        }),
+      );
+      process.chdir(cwd);
+      const response = await fetch(
+        `http://localhost:${ext._testServer?.port}/images/conv/image.png`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("image/png");
+      expect(await response.text()).toBe("boot image");
+    } finally {
+      await ext.deactivate?.();
+      process.chdir(cwd);
+      if (previousImageDir === undefined) delete process.env.DISPATCH_IMAGE_DIR;
+      else process.env.DISPATCH_IMAGE_DIR = previousImageDir;
+      if (previousDb === undefined) delete process.env.DISPATCH_DB;
+      else process.env.DISPATCH_DB = previousDb;
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

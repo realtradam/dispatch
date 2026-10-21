@@ -1,3 +1,4 @@
+import { resolve, sep } from "node:path";
 import type { Hono } from "hono";
 import {
   isLocalImageRequestError,
@@ -6,7 +7,9 @@ import {
 } from "../logic.js";
 import type { RouteOptions } from "../route-options.js";
 
-export function mount(app: Hono, _options: RouteOptions): void {
+export function mount(app: Hono, { config }: RouteOptions): void {
+  // Snapshot at mount, not per request (also stabilizes embedded relative roots).
+  const imageDir = config.imageDir === undefined ? undefined : resolve(config.imageDir);
   // ── Durable image serving (vision handoff) ──────────────────────────────────────
   app.get("/images/:conversationId/:imageId", async (c) => {
     const conversationId = c.req.param("conversationId");
@@ -14,10 +17,7 @@ export function mount(app: Hono, _options: RouteOptions): void {
     if (!/^[A-Za-z0-9_-]{1,128}\.(png|jpe?g|webp|gif|bmp)$/.test(imageId)) {
       return c.json({ error: "Invalid image ID" }, 400);
     }
-    const { dirname, resolve, sep } = await import("node:path");
-    const imageDir =
-      process.env.DISPATCH_IMAGE_DIR ??
-      resolve(dirname(process.env.DISPATCH_DB ?? "./.dispatch-data/dispatch.db"), "images");
+    if (imageDir === undefined) return c.json({ error: "Image not found" }, 404);
     // Local defense in depth: transport-http is core, vision-handoff is standard.
     // Keep this pure path policy local instead of adding a cross-tier dependency.
     const containedPath = (root: string, ...segments: string[]): string | null => {

@@ -213,7 +213,10 @@ it("refreshes listeners and Host/Origin guards together and unsubscribes on unlo
       onServiceAvailable: bus.onServiceAvailable,
       onServiceUnavailable: bus.onServiceUnavailable,
       getExtensions: () => [],
-      config: { get: (key: string) => (key === "networkPolicy" ? policy : 34203) },
+      config: {
+        get: (key: string) =>
+          key === "networkPolicy" ? policy : key === "httpPort" ? 34203 : undefined,
+      },
     } as unknown as HostAPI);
     const fetch = options[0]?.fetch;
     if (!fetch) throw new Error("missing fetch");
