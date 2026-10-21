@@ -302,8 +302,9 @@ describe("createRunShellTool", () => {
       }),
     );
     expect(chunks).toEqual([
-      { data: "line1\nline2\n", stream: "stdout" },
+      { data: "line1\n", stream: "stdout" },
       { data: "err1\n", stream: "stderr" },
+      { data: "line2\n", stream: "stdout" },
     ]);
   });
 
@@ -503,7 +504,7 @@ describe("bounded shell output", () => {
     expect(result.content).toBe(text);
   });
 
-  it("coalesces alternating streams rather than emitting one event per tiny chunk", async () => {
+  it("preserves every alternating-stream run in arrival order", async () => {
     const chunks: string[] = [];
     const tool = createRunShellTool({
       workdir: "/tmp",
@@ -518,8 +519,58 @@ describe("bounded shell output", () => {
         },
       }),
     });
-    await tool.execute({ command: "test" }, stubCtx({ onOutput: (s) => chunks.push(s) }));
-    expect(chunks).toEqual(["a".repeat(1000), "b".repeat(1000)]);
+    const result = await tool.execute(
+      { command: "test" },
+      stubCtx({ onOutput: (s) => chunks.push(s) }),
+    );
+    expect(chunks).toEqual(Array.from({ length: 1000 }, () => ["a", "b"]).flat());
+    expect(result.content).toBe("ab".repeat(1000));
+  });
+
+  it("coalesces only consecutive runs across timer, byte-boundary and final flushes", async () => {
+    vi.useFakeTimers();
+    try {
+      const chunks: Array<{ data: string; stream: "stdout" | "stderr" }> = [];
+      const expected = [
+        { data: "out1out2", stream: "stdout" },
+        { data: "err1err2", stream: "stderr" },
+        { data: "out3", stream: "stdout" },
+        { data: "é".repeat(3999), stream: "stderr" },
+        { data: "😀!", stream: "stdout" },
+        { data: "last", stream: "stderr" },
+      ];
+      const tool = createRunShellTool({
+        workdir: "/tmp",
+        resolveBackend: () => ({
+          ...localExecBackend,
+          spawn: async ({ onOutput }) => {
+            onOutput("out1", "stdout");
+            onOutput("out2", "stdout");
+            onOutput("err1", "stderr");
+            onOutput("err2", "stderr");
+            onOutput("out3", "stdout");
+            expect(chunks).toEqual([]);
+            await vi.advanceTimersByTimeAsync(100);
+            expect(chunks).toEqual(expected.slice(0, 3));
+            onOutput("é".repeat(3999), "stderr");
+            onOutput("😀", "stdout"); // Won't fit: flush before this character.
+            expect(chunks).toEqual(expected.slice(0, 4));
+            onOutput("!", "stdout");
+            onOutput("last", "stderr");
+            return { exitCode: 0, timedOut: false, aborted: false };
+          },
+        }),
+      });
+      const result = await tool.execute(
+        { command: "test" },
+        stubCtx({ onOutput: (data, stream) => chunks.push({ data, stream }) }),
+      );
+      expect(chunks).toEqual(expected);
+      expect(result.content).toBe(expected.map(({ data }) => data).join(""));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cleans up the streaming timer when spawn rejects", async () => {

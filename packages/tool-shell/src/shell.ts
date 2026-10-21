@@ -162,13 +162,13 @@ export function createRunShellTool(deps: {
       let limited = false;
       let streamedBytes = 0;
       let pendingBytes = 0;
-      const pending = new Map<"stdout" | "stderr", string>();
+      const pending: Array<{ stream: "stdout" | "stderr"; data: string }> = [];
       let timer: ReturnType<typeof setTimeout> | undefined;
       const flush = () => {
         clearTimeout(timer);
         timer = undefined;
-        for (const [stream, data] of pending) ctx.onOutput(data, stream);
-        pending.clear();
+        for (const { stream, data } of pending) ctx.onOutput(data, stream);
+        pending.length = 0;
         pendingBytes = 0;
       };
       const onOutput = (data: string, stream: "stdout" | "stderr") => {
@@ -196,7 +196,10 @@ export function createRunShellTool(deps: {
             if (size === STREAM_LIMIT - streamedBytes) break;
             continue;
           }
-          pending.set(stream, (pending.get(stream) ?? "") + part);
+          // Coalesce only adjacent chunks: grouping by stream reorders output.
+          const last = pending.at(-1);
+          if (last?.stream === stream) last.data += part;
+          else pending.push({ stream, data: part });
           pendingBytes += bytes;
           streamedBytes += bytes;
           offset += bytes;
