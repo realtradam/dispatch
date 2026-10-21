@@ -219,3 +219,100 @@ it("WS chat.send acknowledges actual compaction admission, never false already-g
     await extension.deactivate?.();
   }
 });
+
+it.each([
+  "chat.send",
+  "chat.queue",
+] as const)("%s receipts wait for storage and correlate pre-admission failures", async (type) => {
+  const logger = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Logger;
+  const bus = createBus(logger);
+  bus.provideService(surfaceRegistryHandle, {
+    getCatalog: () => [],
+    getSurface: () => undefined,
+    register: () => () => {},
+  });
+  const memory = storageFromMap();
+  const commit = Promise.withResolvers<void>();
+  const store = createConversationStore({
+    ...memory,
+    async transaction(fn) {
+      await commit.promise;
+      return memory.transaction(fn);
+    },
+  });
+  const { orchestrator } = createSessionOrchestrator({
+    conversationStore: store,
+    resolveProvider: () => ({
+      id: "fake",
+      async *stream() {
+        yield { type: "finish", reason: "stop" };
+      },
+    }),
+    resolveTools: () => [],
+    applyToolsFilter: async (assembly) => assembly,
+    runTurn,
+  });
+  bus.provideService(sessionOrchestratorHandle, orchestrator);
+  let options: Bun.ServeOptions<unknown> | undefined;
+  vi.stubGlobal("Bun", {
+    serve: (opts: Bun.ServeOptions<unknown>) => {
+      options = opts;
+      return { stop() {} };
+    },
+  });
+  const extension = createTransportWsExtension();
+  const host = {
+    logger,
+    getService: bus.getService,
+    tryGetService: bus.tryGetService,
+    on: bus.on,
+    getExtensions: () => [],
+    config: {
+      get: (key: string) =>
+        key === "networkPolicy"
+          ? {
+              allowedHosts: new Set(["localhost"]),
+              bindAddresses: ["127.0.0.1"],
+              tailscaleIps: [],
+            }
+          : undefined,
+    },
+  } as unknown as HostAPI;
+  const sent: unknown[] = [];
+  const ws = {
+    data: { subs: new Set(), chatSubscriptions: new Map(), providerDisposers: new Map() },
+    getBufferedAmount: () => 0,
+    send: (message: string) => sent.push(JSON.parse(message)),
+  } as unknown as Bun.ServerWebSocket<unknown>;
+  try {
+    await extension.activate(host);
+    const ended = Promise.withResolvers<void>();
+    const dispose = orchestrator.subscribe("receipt", (event) => {
+      if (event.type === "turn-ended") ended.resolve();
+    });
+    await options?.websocket?.message(
+      ws,
+      JSON.stringify({
+        type,
+        conversationId: "receipt",
+        requestId: "r",
+        message: "mine",
+        text: "mine",
+      }),
+    );
+    expect(sent).not.toContainEqual(expect.objectContaining({ type: "chat.accepted" }));
+    commit.reject(new Error("disk full"));
+    await ended.promise;
+    expect(sent).toContainEqual({
+      type: "chat.error",
+      conversationId: "receipt",
+      requestId: "r",
+      message: "disk full",
+    });
+    expect(await store.load("receipt")).toEqual([]);
+    dispose();
+  } finally {
+    commit.resolve();
+    await extension.deactivate?.();
+  }
+});

@@ -740,7 +740,7 @@ export interface WarmResponse {
  */
 export interface ChatSendMessage extends ChatRequest {
   readonly type: "chat.send";
-  /** Optional client correlation token, echoed by chat.queued. */
+  /** Optional client correlation token, echoed by admission replies. Not an idempotency key. */
   readonly requestId?: string;
 }
 
@@ -780,7 +780,22 @@ export interface ChatResyncRequiredMessage {
 export interface ChatErrorMessage {
   readonly type: "chat.error";
   readonly conversationId?: string;
+  readonly requestId?: string;
   readonly message: string;
+}
+
+/** Sent to the sender only AFTER its opening message is stored or queue insertion completes. */
+export interface ChatAcceptedMessage {
+  readonly type: "chat.accepted";
+  readonly conversationId: string;
+  readonly requestId: string;
+}
+
+/** A rejected watcher does not disconnect the socket or reject chat input. */
+export interface ChatSubscriptionRejectedMessage {
+  readonly type: "chat.subscription-rejected";
+  readonly conversationId: string;
+  readonly reason: "subscription-limit";
 }
 
 /**
@@ -788,7 +803,7 @@ export interface ChatErrorMessage {
  * storage/insertion. Not a transcript event: remove the correlated optimistic
  * opening message and display the authoritative message-queue surface instead.
  * Live user-message/steering and history resync remain transcript-authoritative.
- * Old clients safely ignore this additive message. No ack for ordinary starts.
+ * Old clients safely ignore this additive message. Ordinary starts use chat.accepted.
  */
 export interface ChatQueuedMessage {
   readonly type: "chat.queued";
@@ -814,8 +829,8 @@ export interface ChatQueuedMessage {
  * and the client must recover committed content over HTTP (see that message).
  * Idempotent per `(connection, conversationId)`.
  *
- * NOTE: `chat.send` auto-subscribes the sending connection, so a client only needs
- * `chat.subscribe` for conversations it is viewing but did not send to.
+ * NOTE: `chat.send` tries to auto-subscribe the sender within the shared watcher budget.
+ * Watcher rejection is nonfatal and never gates input admission.
  */
 export interface ChatSubscribeMessage {
   readonly type: "chat.subscribe";
@@ -836,15 +851,17 @@ export interface ChatUnsubscribeMessage {
 /**
  * Client → server: enqueue a message onto a conversation's message queue while
  * a turn is generating (steering). The WebSocket counterpart of the HTTP
- * `POST /conversations/:id/queue` (`QueueRequest`). Fire-and-forget: success is
- * confirmed by the message-queue SURFACE updating (the FE renders the queue
- * from the surface, not from a reply here); a failure (malformed/empty text,
+ * `POST /conversations/:id/queue` (`QueueRequest`). With `requestId`, acceptance is
+ * confirmed by `chat.accepted` after queue insertion or opening-message storage.
+ * The queue surface remains authoritative for its current contents. Without a
+ * correlation token, legacy clients use surface/stream updates. A failure (malformed/empty text,
  * unknown conversation) arrives as a `chat.error`. When no turn is active, the
  * enqueue starts a new turn (the turn's events stream as `chat.delta`s), so a
  * client reuses this op for both "queue while generating" and "send" (the
  * latter being equivalent to `chat.send`).
  */
 export interface ChatQueueMessage {
+  readonly requestId?: string;
   readonly images?: readonly ImageInput[];
   readonly computerId?: string;
   readonly type: "chat.queue";
@@ -943,6 +960,8 @@ export type WsServerMessage =
   | SurfaceServerMessage
   | ChatDeltaMessage
   | ChatErrorMessage
+  | ChatAcceptedMessage
+  | ChatSubscriptionRejectedMessage
   | ChatQueuedMessage
   | ChatResyncRequiredMessage
   | ConversationOpenMessage

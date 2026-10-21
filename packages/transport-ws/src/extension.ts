@@ -38,6 +38,7 @@ import { jsonByteBound, serializeWithinBudget } from "./serialization.js";
 
 /** Active provider subscriptions + chat subscription disposers for a single WS connection. */
 interface ConnectionState {
+  readonly connectionId?: string;
   closed?: boolean;
   readonly subs: Set<string>;
   readonly providerDisposers: Map<string, () => void>;
@@ -322,8 +323,17 @@ export function createTransportWsExtension(): Extension {
         // headroom below the 8 MiB close bound. No serialized replay queue is
         // retained; reference snapshots are bounded by actual envelope bytes.
         if (state.chatSubscriptions.size + state.subs.size >= 256) {
-          disposeConnection(ws);
-          ws.close(1008, "Too many subscriptions");
+          logger.warn("transport-ws: chat subscription rejected", {
+            connectionId: state.connectionId ?? null,
+            conversationId,
+            chatSubscriptions: state.chatSubscriptions.size,
+            surfaceSubscriptions: state.subs.size,
+          });
+          send(ws, {
+            type: "chat.subscription-rejected",
+            conversationId,
+            reason: "subscription-limit",
+          });
           return;
         }
         let budget = Math.min(
@@ -542,6 +552,7 @@ export function createTransportWsExtension(): Extension {
           }
           if (new URL(req.url).pathname === "/health") return Response.json({ ok: true });
           const initial: ConnectionState = {
+            connectionId: crypto.randomUUID(),
             subs: new Set(),
             providerDisposers: new Map(),
             chatSubscriptions: new Map(),
@@ -553,7 +564,9 @@ export function createTransportWsExtension(): Extension {
         websocket: {
           open(ws) {
             connections.add(ws);
-            logger.debug("transport-ws: connection open");
+            logger.debug("transport-ws: connection open", {
+              connectionId: ws.data.connectionId ?? null,
+            });
             // Initial catalog push (plan 06 §6.4): a connection that has not
             // declared a workspace (none can have yet) gets the unfiltered
             // global catalog — backward compatible.
@@ -590,9 +603,21 @@ export function createTransportWsExtension(): Extension {
                 if (result.subChange) {
                   const key = subKey(result.subChange.surfaceId, result.subChange.conversationId);
                   if (result.subChange.op === "add") {
-                    if (state.chatSubscriptions.size + state.subs.size >= 256) {
-                      disposeConnection(ws);
-                      ws.close(1008, "Too many subscriptions");
+                    if (
+                      !state.subs.has(key) &&
+                      state.chatSubscriptions.size + state.subs.size >= 256
+                    ) {
+                      logger.warn("transport-ws: surface subscription rejected", {
+                        connectionId: state.connectionId ?? null,
+                        surfaceId: result.subChange.surfaceId,
+                        chatSubscriptions: state.chatSubscriptions.size,
+                        surfaceSubscriptions: state.subs.size,
+                      });
+                      send(ws, {
+                        type: "error",
+                        surfaceId: result.subChange.surfaceId,
+                        message: "Too many subscriptions",
+                      });
                       return;
                     }
                     state.subs.add(key);
@@ -651,9 +676,31 @@ export function createTransportWsExtension(): Extension {
                 const resolvedId = result.conversationId ?? crypto.randomUUID();
                 // Auto-subscribe the sender so it sees the turn's events.
                 ensureChatSubscribed(ws, state, resolvedId);
-                if (state.closed) return;
                 // Start the turn detached from this connection.
                 const startResult = orchestrator.startTurn({
+                  onAdmission(admission) {
+                    if (admission.accepted)
+                      logger.info("transport-ws: chat.send durably accepted", {
+                        conversationId: resolvedId,
+                        ...(result.requestId !== undefined ? { requestId: result.requestId } : {}),
+                      });
+                    if (result.requestId === undefined) return;
+                    send(
+                      ws,
+                      admission.accepted
+                        ? {
+                            type: "chat.accepted",
+                            conversationId: resolvedId,
+                            requestId: result.requestId,
+                          }
+                        : {
+                            type: "chat.error",
+                            conversationId: resolvedId,
+                            requestId: result.requestId,
+                            message: admission.message,
+                          },
+                    );
+                  },
                   conversationId: resolvedId,
                   text: result.message,
                   ...(result.model !== undefined ? { modelName: result.model } : {}),
@@ -685,6 +732,7 @@ export function createTransportWsExtension(): Extension {
                         type: "chat.error",
                         conversationId: resolvedId,
                         message: "input cancelled before queue admission",
+                        ...(result.requestId !== undefined ? { requestId: result.requestId } : {}),
                       });
                     }
                   } catch (error) {
@@ -692,6 +740,7 @@ export function createTransportWsExtension(): Extension {
                       type: "chat.error",
                       conversationId: resolvedId,
                       message: error instanceof Error ? error.message : String(error),
+                      ...(result.requestId !== undefined ? { requestId: result.requestId } : {}),
                     });
                   }
                 } else if (!startResult.started) {
@@ -699,9 +748,10 @@ export function createTransportWsExtension(): Extension {
                     type: "chat.error",
                     conversationId: resolvedId,
                     message: "a turn is already generating for this conversation",
+                    ...(result.requestId !== undefined ? { requestId: result.requestId } : {}),
                   });
                 } else {
-                  logger.info?.("transport-ws: chat.send accepted", {
+                  logger.info?.("transport-ws: chat.send started; awaiting admission", {
                     conversationId: resolvedId,
                     model: result.model ?? null,
                   });
@@ -733,6 +783,30 @@ export function createTransportWsExtension(): Extension {
                 // back and do not auto-subscribe.
                 const enqueueResult = await orchestrator
                   .enqueue({
+                    ...(result.requestId === undefined
+                      ? {}
+                      : {
+                          onAdmission(
+                            admission: { accepted: true } | { accepted: false; message: string },
+                          ) {
+                            if (result.requestId === undefined) return;
+                            send(
+                              ws,
+                              admission.accepted
+                                ? {
+                                    type: "chat.accepted",
+                                    conversationId: result.conversationId,
+                                    requestId: result.requestId,
+                                  }
+                                : {
+                                    type: "chat.error",
+                                    conversationId: result.conversationId,
+                                    requestId: result.requestId,
+                                    message: admission.message,
+                                  },
+                            );
+                          },
+                        }),
                     conversationId: result.conversationId,
                     text: result.text,
                     ...(result.images !== undefined ? { images: result.images } : {}),
@@ -749,12 +823,29 @@ export function createTransportWsExtension(): Extension {
                       type: "chat.error",
                       conversationId: result.conversationId,
                       message: error instanceof Error ? error.message : String(error),
+                      ...(result.requestId !== undefined ? { requestId: result.requestId } : {}),
                     });
                     return undefined;
                   });
                 if (enqueueResult === undefined) break;
                 if (enqueueResult.startedTurn) {
                   ensureChatSubscribed(ws, state, result.conversationId);
+                } else if (result.requestId !== undefined) {
+                  send(
+                    ws,
+                    enqueueResult.messageId !== undefined
+                      ? {
+                          type: "chat.accepted",
+                          conversationId: result.conversationId,
+                          requestId: result.requestId,
+                        }
+                      : {
+                          type: "chat.error",
+                          conversationId: result.conversationId,
+                          requestId: result.requestId,
+                          message: "Input was not admitted to the queue",
+                        },
+                  );
                 }
                 logger.info?.("transport-ws: chat.queue accepted", {
                   conversationId: result.conversationId,
@@ -793,6 +884,10 @@ export function createTransportWsExtension(): Extension {
                     ? { conversationId: result.conversationId }
                     : {}),
                   message: result.errorMessage,
+                  ...((parsed.type === "chat.send" || parsed.type === "chat.queue") &&
+                  typeof parsed.requestId === "string"
+                    ? { requestId: parsed.requestId }
+                    : {}),
                 });
                 break;
               }
@@ -822,9 +917,13 @@ export function createTransportWsExtension(): Extension {
             }
           },
 
-          close(ws) {
+          close(ws, code, reason) {
             disposeConnection(ws);
-            logger.debug("transport-ws: connection close");
+            logger.debug("transport-ws: connection close", {
+              connectionId: ws.data.connectionId ?? null,
+              code,
+              reason,
+            });
           },
         },
       };

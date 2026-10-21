@@ -1682,3 +1682,145 @@ describe("last-known-good policy through real listeners", () => {
     expect(tick).toBeUndefined();
   });
 });
+
+describe("subscription overflow and durable delivery through the real extension", () => {
+  test("339 subscriptions keep the socket usable; receipts follow storage and disconnect cannot cancel admission", async () => {
+    const logger = fakeLogger();
+    const bus = createBus(logger);
+    const memory = storageFromMap();
+    let storageGate = Promise.withResolvers<void>();
+    const store = createConversationStore({
+      ...memory,
+      async transaction(fn) {
+        await storageGate.promise;
+        return memory.transaction(fn);
+      },
+    });
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => ({
+        id: "test",
+        async *stream() {
+          yield { type: "finish", reason: "stop" };
+        },
+      }),
+      resolveTools: () => [],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    bus.provideService(sessionOrchestratorHandle, orchestrator);
+    bus.provideService(surfaceRegistryHandle, fakeRegistry([fakeProvider("demo")]));
+    const reservation = Bun.serve({ port: 0, fetch: () => new Response("test") });
+    const port = reservation.port;
+    reservation.stop(true);
+    const extension = createTransportWsExtension();
+    const host = {
+      logger,
+      getService: bus.getService,
+      tryGetService: bus.tryGetService,
+      on: bus.on,
+      getExtensions: () => [],
+      config: {
+        get: (key: string) =>
+          key === "surfaceWsPort"
+            ? port
+            : key === "networkPolicy"
+              ? {
+                  allowedHosts: new Set(["127.0.0.1"]),
+                  bindAddresses: ["127.0.0.1"],
+                  tailscaleIps: [],
+                }
+              : undefined,
+      },
+    } as unknown as HostAPI;
+    const clients: WebSocket[] = [];
+    const until = async (condition: () => boolean, phase = "delivery") => {
+      const deadline = Date.now() + 5000;
+      while (!condition()) {
+        if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${phase}`);
+        await Bun.sleep(5);
+      }
+    };
+    const connect = async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      clients.push(ws);
+      const messages: WsServerMessage[] = [];
+      ws.addEventListener("message", (event) => messages.push(JSON.parse(String(event.data))));
+      await until(() => messages.some((message) => message.type === "catalog"), "catalog");
+      return { ws, messages };
+    };
+    try {
+      await extension.activate(host);
+      const { ws, messages } = await connect();
+      for (let i = 0; i < 339; i++)
+        ws.send(JSON.stringify({ type: "chat.subscribe", conversationId: `idle-${i}` }));
+      await until(
+        () =>
+          messages.filter((message) => message.type === "chat.subscription-rejected").length === 83,
+        "339 subscriptions",
+      );
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.send(
+        JSON.stringify({
+          type: "chat.send",
+          conversationId: "admitted",
+          message: "keep me",
+          requestId: "first",
+        }),
+      );
+      await until(
+        () =>
+          messages.filter((message) => message.type === "chat.subscription-rejected").length === 84,
+        "send at cap",
+      );
+      expect(messages.some((message) => message.type === "chat.accepted")).toBe(false);
+      storageGate.resolve();
+      await until(() => messages.some((message) => message.type === "chat.accepted"), "receipt");
+      expect(messages).toContainEqual({
+        type: "chat.accepted",
+        conversationId: "admitted",
+        requestId: "first",
+      });
+      expect((await store.load("admitted"))[0]).toMatchObject({
+        role: "user",
+        chunks: [{ type: "text", text: "keep me" }],
+      });
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      await until(() => !orchestrator.isActive("admitted"), "first turn end");
+
+      storageGate = Promise.withResolvers<void>();
+      // This frame is parsed, then the peer disappears before storage/receipt.
+      ws.send(
+        JSON.stringify({
+          type: "chat.send",
+          conversationId: "uncertain",
+          message: "survive disconnect",
+          requestId: "second",
+        }),
+      );
+      await until(() => orchestrator.isActive("uncertain"), "second turn start/end");
+      ws.close();
+      await until(() => ws.readyState === WebSocket.CLOSED, "peer close");
+      storageGate.resolve();
+      await until(() => !orchestrator.isActive("uncertain"), "second turn start/end");
+      const reconnected = await connect();
+      reconnected.ws.send(JSON.stringify({ type: "chat.subscribe", conversationId: "uncertain" }));
+      const history = await store.load("uncertain");
+      expect(history.filter((message) => message.role === "user")).toHaveLength(1);
+      expect(history[0]).toMatchObject({ chunks: [{ type: "text", text: "survive disconnect" }] });
+    } finally {
+      storageGate.resolve();
+      await Promise.all(
+        clients.map((ws) =>
+          ws.readyState === WebSocket.CLOSED
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => {
+                ws.addEventListener("close", () => resolve(), { once: true });
+                ws.close();
+              }),
+        ),
+      );
+      await extension.deactivate?.();
+    }
+  }, 20_000);
+});

@@ -139,6 +139,10 @@ export const visionHandoffLocalHandle: ServiceHandle<VisionHandoffService> =
 // --- Broadcast hub types ---
 
 export interface StartTurnInput {
+  /** Transport receipt; success fires only after the opening message append commits. */
+  readonly onAdmission?: (
+    result: { accepted: true } | { accepted: false; message: string },
+  ) => void;
   readonly conversationId: string;
   readonly text: string;
   /**
@@ -233,6 +237,7 @@ export type StartTurnResult =
 
 /** Input to `SessionOrchestrator.enqueue` — the single entry transports call. */
 export interface EnqueueInput {
+  readonly onAdmission?: NonNullable<StartTurnInput["onAdmission"]>;
   readonly conversationId: string;
   readonly text: string;
   /**
@@ -682,11 +687,13 @@ export function createSessionOrchestrator(
       title,
       parentConversationId,
       toolPolicy,
+      onAdmission,
     }: StartTurnInput,
     waiter?: InputWaiter,
   ): void {
     const workspaceId = requestedWorkspaceId ?? "default";
     const turnId = generateTurnId();
+    let inputStored = false;
     const promptStartedAt = deps.now?.() ?? Date.now();
     const controller = new AbortController();
     const turn: ActiveTurn = {
@@ -917,6 +924,8 @@ export function createSessionOrchestrator(
         const userMsg = buildUserMessage(text, storedImages);
         // Make input durable before model validation or any provider/prompt work.
         await deps.conversationStore.append(conversationId, [userMsg], { turnId });
+        inputStored = true;
+        onAdmission?.({ accepted: true });
 
         const turnLogger = deps.logger?.child({ conversationId, turnId });
         const request = await assembleTurnRequest(deps, {
@@ -1183,6 +1192,12 @@ export function createSessionOrchestrator(
 
         emitToHub(conversationId, { type: "turn-sealed", conversationId, turnId });
       } catch (err) {
+        if (!inputStored) {
+          onAdmission?.({
+            accepted: false,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
         endReason = err instanceof TurnRequestRejected ? "rejected" : "error";
         // Persist whatever metrics the failed turn accumulated (steps that
         // ran before the failure), so its row exists like any other turn's.

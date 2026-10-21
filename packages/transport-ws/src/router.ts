@@ -97,6 +97,7 @@ export interface ChatUnsubscribeRouteResult {
  * (startedTurn:true — the shell auto-subscribes the sender, same as chat.send).
  */
 export interface ChatQueueRouteResult {
+  readonly requestId?: string;
   readonly images?: ChatQueueMessage["images"];
   readonly computerId?: string;
   readonly kind: "chat-queue";
@@ -365,6 +366,13 @@ function handleChatUnsubscribe(msg: ChatUnsubscribeMessage): ChatUnsubscribeRout
  * called). Valid → `chat-queue` (the shell calls `orchestrator.enqueue`).
  */
 function handleChatQueue(msg: ChatQueueMessage): ChatQueueRouteResult | ChatRouteError {
+  if (msg.requestId !== undefined && typeof msg.requestId !== "string") {
+    return {
+      kind: "chat-error",
+      conversationId: msg.conversationId,
+      errorMessage: "chat.queue: requestId must be a string",
+    };
+  }
   const images = parseImages(msg.images, msg.conversationId, "chat.queue");
   if (images !== undefined && "kind" in images) return images;
   if (msg.computerId !== undefined && typeof msg.computerId !== "string") {
@@ -383,6 +391,7 @@ function handleChatQueue(msg: ChatQueueMessage): ChatQueueRouteResult | ChatRout
   }
   return {
     kind: "chat-queue",
+    ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
     conversationId: msg.conversationId,
     text: msg.text,
     ...(msg.workspaceId !== undefined ? { workspaceId: msg.workspaceId } : {}),

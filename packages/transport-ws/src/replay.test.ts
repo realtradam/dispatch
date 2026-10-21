@@ -398,8 +398,38 @@ it("bounds subscription metadata across chat and surface subscriptions", async (
     }
     expect(f.close).not.toHaveBeenCalled();
     await f.message({ type: "chat.subscribe", conversationId: "over-limit" });
-    expect(f.close).toHaveBeenCalledExactlyOnceWith(1008, "Too many subscriptions");
-    expect(f.disposals()).toEqual({ chat: 255, surface: 1 });
+    expect(f.close).not.toHaveBeenCalled();
+    expect(f.sent.map((message) => JSON.parse(message))).toContainEqual({
+      type: "chat.subscription-rejected",
+      conversationId: "over-limit",
+      reason: "subscription-limit",
+    });
+    expect(f.disposals()).toEqual({ chat: 0, surface: 0 });
+    // A rejected watcher must never gate input admission, even on the same socket.
+    await f.message({
+      type: "chat.send",
+      conversationId: "at-cap",
+      message: "keep this",
+      requestId: "receipt",
+    });
+    await vi.waitFor(() =>
+      expect(f.sent.map((message) => JSON.parse(message))).toContainEqual({
+        type: "chat.accepted",
+        conversationId: "at-cap",
+        requestId: "receipt",
+      }),
+    );
+    expect((await f.store.load("at-cap"))[0]).toMatchObject({
+      role: "user",
+      chunks: [{ type: "text", text: "keep this" }],
+    });
+    // Freeing a slot makes the previously rejected watcher usable again.
+    await f.message({ type: "chat.unsubscribe", conversationId: "idle-0" });
+    const before = f.sent.length;
+    await f.message({ type: "chat.subscribe", conversationId: "over-limit" });
+    expect(f.sent.slice(before).some((message) => message.includes("subscription-rejected"))).toBe(
+      false,
+    );
   } finally {
     await f.cleanup();
   }
