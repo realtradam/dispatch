@@ -1,6 +1,6 @@
 # Instant Stop — Problem 1: Backend Cancellation Does Not Interrupt Every Wait
 
-**Status:** Investigated; not implemented  
+**Status:** Implemented — merged to `dev` (a3f752d, fbcb39e, 17fab5e; merge 61e497a)
 **Scope:** Backend kernel, provider contract/adapters, provider concurrency, and turn-boundary callbacks  
 **Goal:** After `POST /conversations/:id/stop`, the active backend turn must settle promptly even if a provider, concurrency wait, network read, or turn-boundary callback is stuck.
 
