@@ -2717,6 +2717,86 @@ describe("detached turn hub", () => {
     }
   });
 
+  it("subscribe snapshot survives synchronous listener output that evicts pending replay events", async () => {
+    let emitOutput: ((data: string) => void) | undefined;
+    let releaseTool = () => {};
+    let toolReady = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      toolReady = resolve;
+    });
+    let step = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        return (async function* () {
+          if (step++ === 0) {
+            yield { type: "tool-call", toolCallId: "x", toolName: "echo", input: {} } as const;
+            yield { type: "finish", reason: "tool-calls" } as const;
+          } else yield { type: "finish", reason: "stop" } as const;
+        })();
+      },
+    };
+    const tool: ToolContract = {
+      name: "echo",
+      description: "progress",
+      parameters: { type: "object" },
+      async execute(_input, ctx) {
+        emitOutput = (data) => ctx.onOutput(data, "stdout");
+        emitOutput("old-a");
+        emitOutput("old-b");
+        toolReady();
+        await gate;
+        return { content: "complete" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createConversationStore(storageFromMap()),
+      resolveProvider: () => provider,
+      resolveTools: () => [tool],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const live: AgentEvent[] = [];
+    const unsubLive = orchestrator.subscribe("reentrant-replay", (event) => live.push(event));
+    let unsubLate = () => {};
+    orchestrator.startTurn({ conversationId: "reentrant-replay", text: "run" });
+    try {
+      await ready;
+      const expected = compactReplay(live);
+      const replay: AgentEvent[] = [];
+      let reentered = false;
+      const replacement = "z".repeat(65536);
+      unsubLate = orchestrator.subscribe("reentrant-replay", (event) => {
+        replay.push(event);
+        if (!reentered) {
+          reentered = true;
+          emitOutput?.(replacement);
+        }
+      });
+      // Reentrant live delivery occurs after the first replay event, not as
+      // part of the captured snapshot. The remaining old output must survive.
+      expect(replay[1]).toMatchObject({ type: "tool-output", data: replacement });
+      expect([replay[0], ...replay.slice(2)]).toEqual(expected);
+      const current: AgentEvent[] = [];
+      orchestrator.subscribe("reentrant-replay", (event) => current.push(event))();
+      expect(current).toEqual(compactReplay(live));
+      expect(
+        current.filter((event) => event.type === "tool-output").map((event) => event.data),
+      ).toEqual([replacement]);
+      expect(
+        expected.filter((event) => event.type === "tool-output").map((event) => event.data),
+      ).toEqual(["old-a", "old-b"]);
+    } finally {
+      releaseTool();
+      await waitForEvent(orchestrator, "reentrant-replay", "turn-ended");
+      unsubLate();
+      unsubLive();
+    }
+  });
+
   it("subscriber persists across turns — one subscriber receives events from two sequential turns", async () => {
     const store = createInMemoryStore();
     const provider = createFakeProvider([

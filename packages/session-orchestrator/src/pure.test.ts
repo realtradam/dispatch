@@ -4,6 +4,7 @@ import {
   appendCompacted,
   buildUserMessage,
   compactReplay,
+  createReplayBuffer,
   cumulativeSleepMs,
   DISPATCH_TOOL_MAX_CONCURRENT_ENV,
   defaultDispatchPolicy,
@@ -19,6 +20,7 @@ import {
   resolveDispatchPolicy,
   resolveReasoningEffort,
   selectFirstProvider,
+  snapshotReplay,
 } from "./pure.js";
 
 describe("buildUserMessage", () => {
@@ -410,8 +412,9 @@ describe("compactReplay", () => {
   });
 
   const status = (value: string) => ({ type: "status", conversationId: C, status: value }) as const;
-  const fold = (events: readonly AgentEvent[]) =>
-    events.reduce(appendCompacted, [] as AgentEvent[]);
+  const foldBuffer = (events: readonly AgentEvent[]) =>
+    events.reduce(appendCompacted, createReplayBuffer());
+  const fold = (events: readonly AgentEvent[]) => snapshotReplay(foldBuffer(events));
 
   it("merges runs exposed by status replacement and non-tail output removal", () => {
     const events = [
@@ -435,7 +438,10 @@ describe("compactReplay", () => {
     const events = [text("a"), output("x", ""), text("b")];
     expect(compactReplay(events)).toEqual(events);
     expect(fold(events)).toEqual(events);
-    expect(appendCompacted(fold(events), result("x"))).toEqual([text("ab"), result("x")]);
+    expect(snapshotReplay(appendCompacted(foldBuffer(events), result("x")))).toEqual([
+      text("ab"),
+      result("x"),
+    ]);
   });
 
   it("retains a per-call trailing 64 KiB across interleaved streams at original positions", () => {
@@ -459,7 +465,7 @@ describe("compactReplay", () => {
     ];
     expect(compactReplay(events)).toEqual(expected);
     expect(fold(events)).toEqual(expected);
-    expect(appendCompacted(fold(events), result("a"))).toEqual([
+    expect(snapshotReplay(appendCompacted(foldBuffer(events), result("a")))).toEqual([
       call("b"),
       output("b", "b".repeat(cap)),
       text("barrier"),
@@ -482,29 +488,107 @@ describe("compactReplay", () => {
 
   it("matches capped batch replay through repeated overflow, then drops all completed output", () => {
     const all: AgentEvent[] = [call("x")];
-    let buffer = fold(all);
+    let buffer = foldBuffer(all);
     for (let i = 0; i < 100; i++) {
       const event = output("x", `${i}:${"é😀x".repeat(300)}`);
       all.push(event);
       buffer = appendCompacted(buffer, event);
-      expect(buffer).toEqual(compactReplay(all));
-      const retained = buffer.filter((e) => e.type === "tool-output");
+      expect(snapshotReplay(buffer)).toEqual(compactReplay(all));
+      const retained = snapshotReplay(buffer).filter((e) => e.type === "tool-output");
       expect(
         retained.reduce((sum, e) => sum + new TextEncoder().encode(e.data).length, 0),
       ).toBeLessThanOrEqual(REPLAY_TOOL_OUTPUT_BYTES);
     }
-    expect(appendCompacted(buffer, result("x"))).toEqual([call("x"), result("x")]);
+    expect(snapshotReplay(appendCompacted(buffer, result("x")))).toEqual([call("x"), result("x")]);
   });
 
   it("leaves frozen inputs and earlier replay snapshots unchanged", () => {
     const first = Object.freeze([Object.freeze(text("a")), Object.freeze(output("x", "log"))]);
     const before = structuredClone(first);
-    const second = appendCompacted(first, Object.freeze(result("x")));
+    const buffer = foldBuffer(first);
+    const earlier = snapshotReplay(buffer);
+    appendCompacted(buffer, Object.freeze(result("x")));
+    const second = snapshotReplay(buffer);
     const snapshot = structuredClone(second);
-    appendCompacted(second, text("later"));
+    appendCompacted(buffer, text("later"));
+    expect(earlier).toEqual(before);
+    expect(Object.isFrozen(earlier)).toBe(true);
     expect(first).toEqual(before);
     expect(second).toEqual(snapshot);
     expect(second).toEqual([text("a"), result("x")]);
+  });
+
+  it("keeps snapshots stable through tail replacement, non-tail merges and output eviction", () => {
+    const events = [text("a"), status("old"), text("b"), output("x", "old"), text("c")];
+    const buffer = foldBuffer(events);
+    const snapshot = snapshotReplay(buffer);
+    const before = structuredClone(snapshot);
+    appendCompacted(buffer, text("tail"));
+    appendCompacted(buffer, output("x", "z".repeat(REPLAY_TOOL_OUTPUT_BYTES)));
+    appendCompacted(buffer, result("x"));
+    appendCompacted(buffer, status("new"));
+    expect(snapshot).toEqual(before);
+    expect(snapshotReplay(buffer)).toEqual([text("abctail"), result("x"), status("new")]);
+  });
+
+  it("matches batch prefixes under Unicode overflow, empty boundaries and many interleaved calls", () => {
+    let seed = 72;
+    const buffer = createReplayBuffer();
+    const all: AgentEvent[] = [];
+    for (let i = 0; i < 250; i++) {
+      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+      const id = String(seed % 7);
+      const event =
+        i % 19 === 0
+          ? result(id)
+          : i % 5 === 0
+            ? status(String(i))
+            : i % 3 === 0
+              ? text(String(i))
+              : output(id, ["", "😀éx".repeat(7000), "é".repeat(33000), "z"][seed % 4] ?? "");
+      all.push(event);
+      appendCompacted(buffer, Object.freeze(event));
+      expect(snapshotReplay(buffer), `overflow prefix ${i}`).toEqual(compactReplay(all));
+    }
+  });
+
+  it("indexes nonempty output separately while preserving empty boundaries until completion", () => {
+    const buffer = createReplayBuffer();
+    for (let i = 0; i < 10_000; i++) {
+      appendCompacted(buffer, text("a"));
+      appendCompacted(buffer, output("x", ""));
+    }
+    const cap = "z".repeat(REPLAY_TOOL_OUTPUT_BYTES);
+    appendCompacted(buffer, output("x", cap));
+    for (let i = 0; i < 1000; i++) appendCompacted(buffer, output("x", "z"));
+    expect(buffer.outputs.get("x")?.nodes.size).toBe(11_001);
+    expect(buffer.outputs.get("x")?.nonempty.size).toBe(1001);
+    expect(buffer.outputs.get("x")?.bytes).toBe(REPLAY_TOOL_OUTPUT_BYTES);
+    expect(
+      snapshotReplay(buffer).filter((event) => event.type === "tool-output" && !event.data),
+    ).toHaveLength(10_000);
+    appendCompacted(buffer, result("x"));
+    expect(buffer.outputs.size).toBe(0);
+    expect(snapshotReplay(buffer)).toEqual([text("a".repeat(10_000)), result("x")]);
+  });
+
+  it("updates indexed boundaries without replacing unrelated retained nodes", () => {
+    const buffer = createReplayBuffer();
+    for (let i = 0; i < 5000; i++) appendCompacted(buffer, call(String(i)));
+    const first = buffer.first;
+    const outputs = buffer.outputs;
+    for (let i = 0; i < 1000; i++) {
+      appendCompacted(buffer, text("a"));
+      appendCompacted(buffer, status(String(i)));
+      appendCompacted(buffer, output("live", "x".repeat(1024)));
+      appendCompacted(buffer, output(String(i), "progress"));
+      appendCompacted(buffer, result(String(i)));
+      expect(buffer.first).toBe(first);
+      expect(buffer.outputs).toBe(outputs);
+    }
+    expect(buffer.outputs.size).toBe(1);
+    expect(buffer.outputs.get("live")?.bytes).toBe(REPLAY_TOOL_OUTPUT_BYTES);
+    expect(buffer.outputs.get("live")?.nodes.size).toBe(64);
   });
 
   it("matches batch replay for every prefix of seeded random event sequences", () => {
@@ -516,7 +600,7 @@ describe("compactReplay", () => {
         return (state >>> 8) % n;
       };
       const all: AgentEvent[] = [];
-      let buffer: AgentEvent[] = [];
+      let buffer = createReplayBuffer();
       for (let i = 0; i < 100; i++) {
         const id = `call-${next(4)}`;
         const delta = ["", "a", "é", "😀"][next(4)] ?? "";
@@ -544,23 +628,23 @@ describe("compactReplay", () => {
         if (event === undefined) throw new Error("missing generated event");
         all.push(event);
         buffer = appendCompacted(buffer, event);
-        expect(buffer, `seed ${seed}, prefix ${i + 1}`).toEqual(compactReplay(all));
+        expect(snapshotReplay(buffer), `seed ${seed}, prefix ${i + 1}`).toEqual(compactReplay(all));
       }
     }
   });
 
   it("100k deltas retain O(structure) events, not token history", () => {
-    let buffer: AgentEvent[] = [];
+    let buffer = createReplayBuffer();
     let peakLength = 0;
     for (let i = 0; i < 100_000; i++) {
       if (i % 10_000 === 0) buffer = appendCompacted(buffer, call(String(i)));
       buffer = appendCompacted(buffer, i < 50_000 ? reason("r") : text("t"));
-      peakLength = Math.max(peakLength, buffer.length);
+      peakLength = Math.max(peakLength, buffer.size);
     }
     expect(peakLength).toBe(20);
-    expect(buffer).toHaveLength(20); // Ten structural barriers + ten delta runs.
+    expect(snapshotReplay(buffer)).toHaveLength(20); // Ten structural barriers + ten delta runs.
     expect(
-      buffer
+      snapshotReplay(buffer)
         .filter((e) => e.type === "text-delta" || e.type === "reasoning-delta")
         .reduce((sum, e) => sum + e.delta.length, 0),
     ).toBe(100_000);

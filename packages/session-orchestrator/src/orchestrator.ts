@@ -38,14 +38,17 @@ import { createMetricsAccumulator } from "./metrics.js";
 import {
   appendCompacted,
   buildUserMessage,
+  createReplayBuffer,
   defaultDispatchPolicy,
   delayFor,
   generateTurnId,
   type MemorySample,
   memoryDelta,
   memorySampleAttributes,
+  type ReplayBuffer,
   resolveModelName,
   resolveReasoningEffort,
+  snapshotReplay,
 } from "./pure.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
@@ -285,7 +288,7 @@ interface InputWaiter {
 }
 
 interface ActiveTurn {
-  buffer: readonly AgentEvent[];
+  buffer: ReplayBuffer;
   turnId: string;
   /** Close cancels carry; Stop only interrupts the current turn. */
   cancelQueuedInput: boolean;
@@ -609,7 +612,7 @@ export function createSessionOrchestrator(
   function emitToHub(conversationId: string, event: AgentEvent): void {
     const turn = activeTurns.get(conversationId);
     if (turn !== undefined) {
-      turn.buffer = appendCompacted(turn.buffer, event);
+      appendCompacted(turn.buffer, event);
     }
     const listeners = subscribers.get(conversationId);
     if (listeners !== undefined) {
@@ -667,7 +670,12 @@ export function createSessionOrchestrator(
     const turnId = generateTurnId();
     const promptStartedAt = deps.now?.() ?? Date.now();
     const controller = new AbortController();
-    const turn: ActiveTurn = { buffer: [], turnId, controller, cancelQueuedInput: false };
+    const turn: ActiveTurn = {
+      buffer: createReplayBuffer(),
+      turnId,
+      controller,
+      cancelQueuedInput: false,
+    };
     activeTurns.set(conversationId, turn);
     const pendingCompaction = compacting.get(conversationId);
     // A waiting turn owns the single-flight slot, but must not invalidate the
@@ -1402,7 +1410,7 @@ export function createSessionOrchestrator(
       if (turn !== undefined) {
         // Already compacted on arrival. The immutable snapshot stays stable
         // even if a listener synchronously causes another event to be emitted.
-        const snapshot = turn.buffer;
+        const snapshot = snapshotReplay(turn.buffer);
         listeners.add(listener);
         for (const event of snapshot) {
           listener(event);

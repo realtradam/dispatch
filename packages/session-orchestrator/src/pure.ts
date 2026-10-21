@@ -356,59 +356,159 @@ export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
   return out;
 }
 
+/** Internal retained list; events are replaced, never mutated (snapshots share them). */
+interface ReplayNode {
+  event: AgentEvent;
+  previous: ReplayNode | undefined;
+  next: ReplayNode | undefined;
+  bytes: number;
+}
+
+interface ReplayOutput {
+  readonly nodes: Set<ReplayNode>;
+  /** Nonempty nodes only: empty output boundaries must not slow down trimming. */
+  readonly nonempty: Set<ReplayNode>;
+  bytes: number;
+}
+
 /**
- * Pure incremental replay: buffer must already be compacted. Token arrivals
- * merge only the tail (copying the retained array); invalidations revisit only
- * retained structure, never the
- * raw token history. Returns a new buffer without mutating events or snapshots.
+ * Explicitly owned, I/O-free accumulator. Mutable bookkeeping is private to a turn;
+ * only snapshotReplay's immutable event array may escape to replay listeners.
+ * No raw event history, tombstones, ambient caches, or retained-array copies.
  */
-export function appendCompacted(buffer: readonly AgentEvent[], event: AgentEvent): AgentEvent[] {
-  if (event.type === "status" || event.type === "tool-result" || event.type === "tool-output") {
-    if (
-      event.type === "tool-output" &&
-      buffer.some((e) => e.type === "tool-result" && e.toolCallId === event.toolCallId)
-    )
-      return [...buffer];
-    const candidates = [...buffer, event];
-    const kept: AgentEvent[] = [];
-    let budget = REPLAY_TOOL_OUTPUT_BYTES;
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      let e = candidates[i];
-      if (e === undefined) continue;
-      if (event.type === "status" && e.type === "status" && i < buffer.length) continue;
-      if (
-        e.type === "tool-output" &&
-        (event.type === "tool-result" || event.type === "tool-output") &&
-        e.toolCallId === event.toolCallId
-      ) {
-        if (event.type === "tool-result") continue;
-        const tail = outputTail(e.data, budget);
-        budget = tail.data.length < e.data.length ? 0 : budget - tail.bytes;
-        if (tail.data.length === 0 && e.data.length > 0) continue;
-        if (tail.data !== e.data) e = { ...e, data: tail.data };
-      }
-      kept.push(e);
-    }
-    const out: AgentEvent[] = [];
-    for (const e of kept.reverse()) {
-      const last = out[out.length - 1];
-      if (
-        (e.type === "text-delta" || e.type === "reasoning-delta") &&
-        last?.type === e.type &&
-        last.turnId === e.turnId
-      ) {
-        out[out.length - 1] = { ...last, delta: last.delta + e.delta };
-      } else out.push(e);
-    }
-    return out;
-  }
-  const last = buffer[buffer.length - 1];
+export interface ReplayBuffer {
+  first: ReplayNode | undefined;
+  last: ReplayNode | undefined;
+  status: ReplayNode | undefined;
+  readonly outputs: Map<string, ReplayOutput>;
+  readonly finishedTools: Set<string>;
+  size: number;
+}
+
+export function createReplayBuffer(): ReplayBuffer {
+  return {
+    first: undefined,
+    last: undefined,
+    status: undefined,
+    outputs: new Map(),
+    finishedTools: new Set(),
+    size: 0,
+  };
+}
+
+function mergeDeltas(left: ReplayNode | undefined, right: AgentEvent): boolean {
+  const event = left?.event;
   if (
-    (event.type === "text-delta" || event.type === "reasoning-delta") &&
-    last?.type === event.type &&
-    last.turnId === event.turnId
+    left !== undefined &&
+    (event?.type === "text-delta" || event?.type === "reasoning-delta") &&
+    right.type === event.type &&
+    right.turnId === event.turnId
   ) {
-    return [...buffer.slice(0, -1), { ...last, delta: last.delta + event.delta }];
+    left.event = { ...event, delta: event.delta + right.delta };
+    return true;
   }
-  return [...buffer, event];
+  return false;
+}
+
+function unlinkReplay(buffer: ReplayBuffer, node: ReplayNode): void {
+  const { previous, next } = node;
+  if (previous === undefined) buffer.first = next;
+  else previous.next = next;
+  if (next === undefined) buffer.last = previous;
+  else next.previous = previous;
+  buffer.size--;
+  node.previous = undefined;
+  node.next = undefined;
+  // Only the two newly adjacent neighbours can merge. Both are deltas, so
+  // removing the right neighbour cannot invalidate a status/output index.
+  if (next !== undefined && mergeDeltas(previous, next.event)) unlinkReplay(buffer, next);
+}
+
+/** Remove just enough leading code points; work is charged to bytes evicted. */
+function trimOutput(node: ReplayNode, excess: number): number {
+  const event = node.event;
+  if (event.type !== "tool-output") throw new Error("invalid replay output index");
+  let offset = 0;
+  let removed = 0;
+  while (removed < excess) {
+    const code = event.data.codePointAt(offset) ?? 0;
+    removed += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    offset += code > 0xffff ? 2 : 1;
+  }
+  node.event = { ...event, data: event.data.slice(offset) };
+  node.bytes -= removed;
+  return removed;
+}
+
+/**
+ * Append to caller-owned state, returning it for foldl(append) equivalence tests.
+ * Deltas/status are O(1) in retained size. Output work is O(incoming bytes +
+ * evicted bytes/nodes); results visit only their own output nodes, each once.
+ * Removing a boundary re-merges adjacent deltas in place, including non-tail runs.
+ */
+export function appendCompacted(buffer: ReplayBuffer, event: AgentEvent): ReplayBuffer {
+  let output: ReplayOutput | undefined;
+  let bytes = 0;
+  if (event.type === "status") {
+    if (buffer.status !== undefined) unlinkReplay(buffer, buffer.status);
+  } else if (event.type === "tool-result") {
+    buffer.finishedTools.add(event.toolCallId);
+    const prior = buffer.outputs.get(event.toolCallId);
+    if (prior !== undefined) {
+      for (const node of prior.nodes) unlinkReplay(buffer, node);
+      buffer.outputs.delete(event.toolCallId);
+    }
+  } else if (event.type === "tool-output") {
+    if (buffer.finishedTools.has(event.toolCallId)) return buffer;
+    const tail = outputTail(event.data, REPLAY_TOOL_OUTPUT_BYTES);
+    // A nonempty event whose final character cannot fit is absent, not a boundary.
+    if (tail.data.length === 0 && event.data.length > 0) return buffer;
+    output = buffer.outputs.get(event.toolCallId);
+    if (output === undefined) {
+      output = { nodes: new Set(), nonempty: new Set(), bytes: 0 };
+      buffer.outputs.set(event.toolCallId, output);
+    }
+    bytes = tail.bytes;
+    const truncated = tail.data.length < event.data.length;
+    if (truncated) event = { ...event, data: tail.data };
+    // An oversized chunk consumes the entire suffix budget, including a gap
+    // at a multibyte boundary: no backfilling earlier chunks into that gap.
+    for (const node of output.nonempty) {
+      if (!truncated && output.bytes + bytes <= REPLAY_TOOL_OUTPUT_BYTES) break;
+      const excess = output.bytes + bytes - REPLAY_TOOL_OUTPUT_BYTES;
+      if (truncated || node.bytes <= excess) {
+        output.bytes -= node.bytes;
+        output.nodes.delete(node);
+        output.nonempty.delete(node);
+        unlinkReplay(buffer, node);
+      } else {
+        output.bytes -= trimOutput(node, excess);
+        break;
+      }
+    }
+  }
+  if (mergeDeltas(buffer.last, event)) return buffer;
+  const node: ReplayNode = { event, bytes, previous: buffer.last, next: undefined };
+  if (buffer.last === undefined) buffer.first = node;
+  else buffer.last.next = node;
+  buffer.last = node;
+  buffer.size++;
+  if (event.type === "status") buffer.status = node;
+  if (output !== undefined) {
+    output.nodes.add(node);
+    if (bytes > 0) output.nonempty.add(node);
+    output.bytes += bytes;
+  }
+  return buffer;
+}
+
+/**
+ * O(R) only at subscribe: freeze the array before invoking any listener. Shared
+ * event objects are stable because append replaces them rather than mutating.
+ * A reentrant append/unlink cannot change this traversal or later replay events.
+ */
+export function snapshotReplay(buffer: ReplayBuffer): readonly AgentEvent[] {
+  const snapshot: AgentEvent[] = [];
+  for (let node = buffer.first; node !== undefined; node = node.next) snapshot.push(node.event);
+  return Object.freeze(snapshot);
 }
