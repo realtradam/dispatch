@@ -740,6 +740,8 @@ export interface WarmResponse {
  */
 export interface ChatSendMessage extends ChatRequest {
   readonly type: "chat.send";
+  /** Optional client correlation token, echoed by chat.queued. */
+  readonly requestId?: string;
 }
 
 /**
@@ -762,6 +764,21 @@ export interface ChatErrorMessage {
   readonly type: "chat.error";
   readonly conversationId?: string;
   readonly message: string;
+}
+
+/**
+ * Accepted chat.send deferred behind compaction, sent only to its sender AFTER
+ * storage/insertion. Not a transcript event: remove the correlated optimistic
+ * opening message and display the authoritative message-queue surface instead.
+ * Live user-message/steering and history resync remain transcript-authoritative.
+ * Old clients safely ignore this additive message. No ack for ordinary starts.
+ */
+export interface ChatQueuedMessage {
+  readonly type: "chat.queued";
+  readonly conversationId: string;
+  readonly reason: "compaction";
+  readonly messageId: string;
+  readonly requestId?: string;
 }
 
 /**
@@ -906,6 +923,7 @@ export type WsServerMessage =
   | SurfaceServerMessage
   | ChatDeltaMessage
   | ChatErrorMessage
+  | ChatQueuedMessage
   | ConversationOpenMessage
   | ConversationTabGroupChangedMessage
   | ConversationStatusChangedMessage

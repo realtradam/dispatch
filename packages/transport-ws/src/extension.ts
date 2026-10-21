@@ -524,7 +524,36 @@ export function createTransportWsExtension(): Extension {
                   ...(result.computerId !== undefined ? { computerId: result.computerId } : {}),
                   ...(result.images !== undefined ? { images: result.images } : {}),
                 });
-                if (!startResult.started) {
+                if (!startResult.started && startResult.reason === "queued-behind-compaction") {
+                  try {
+                    const admission = await startResult.admission;
+                    if (admission.messageId !== undefined) {
+                      logger.info?.("transport-ws: chat.send queued behind compaction", {
+                        conversationId: resolvedId,
+                        messageId: admission.messageId,
+                      });
+                      send(ws, {
+                        type: "chat.queued",
+                        conversationId: resolvedId,
+                        reason: "compaction",
+                        messageId: admission.messageId,
+                        ...(result.requestId !== undefined ? { requestId: result.requestId } : {}),
+                      });
+                    } else if (!admission.startedTurn) {
+                      send(ws, {
+                        type: "chat.error",
+                        conversationId: resolvedId,
+                        message: "input cancelled before queue admission",
+                      });
+                    }
+                  } catch (error) {
+                    send(ws, {
+                      type: "chat.error",
+                      conversationId: resolvedId,
+                      message: error instanceof Error ? error.message : String(error),
+                    });
+                  }
+                } else if (!startResult.started) {
                   send(ws, {
                     type: "chat.error",
                     conversationId: resolvedId,

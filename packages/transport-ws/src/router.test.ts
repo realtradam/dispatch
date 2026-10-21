@@ -316,6 +316,29 @@ describe("routeClientMessage", () => {
   });
 
   describe("chat.send", () => {
+    it("forwards optional request correlation and rejects a non-string token", () => {
+      const registry = fakeRegistry([]);
+      expect(
+        routeClientMessage(registry, new Set(), {
+          type: "chat.send",
+          conversationId: "c",
+          message: "mine",
+          requestId: "request-1",
+        }),
+      ).toMatchObject({ kind: "chat", requestId: "request-1" });
+      expect(
+        routeClientMessage(registry, new Set(), {
+          type: "chat.send",
+          conversationId: "c",
+          message: "mine",
+          requestId: 42,
+        } as unknown as WsClientMessage),
+      ).toMatchObject({
+        kind: "chat-error",
+        errorMessage: "chat.send: requestId must be a string",
+      });
+    });
+
     it("classifies a chat.send message", () => {
       const registry = fakeRegistry([]);
       const connSubs = new Set<string>();

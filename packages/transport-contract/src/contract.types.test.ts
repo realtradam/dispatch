@@ -453,3 +453,19 @@ it("queue HTTP/WS inputs and snapshots carry additive image/computer metadata", 
   expect(ws.images).toEqual(response.images);
   expect(ws.computerId).toBe(response.computerId);
 });
+
+it("types additive queued acknowledgement and optional send correlation", () => {
+  const send: import("./index.js").ChatSendMessage = {
+    type: "chat.send",
+    message: "mine",
+    requestId: "request-1",
+  };
+  const ack: import("./index.js").WsServerMessage = {
+    type: "chat.queued",
+    conversationId: "c",
+    reason: "compaction",
+    messageId: "item-1",
+    requestId: send.requestId ?? "",
+  };
+  expect(ack.type).toBe("chat.queued");
+});

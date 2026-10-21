@@ -219,7 +219,13 @@ export interface StartTurnInput {
 
 export type StartTurnResult =
   | { readonly started: true; readonly turnId: string }
-  | { readonly started: false; readonly reason: "already-active" };
+  | { readonly started: false; readonly reason: "already-active" }
+  | {
+      readonly started: false;
+      readonly reason: "queued-behind-compaction";
+      /** Resolves after storage/insertion; rejects on admission failure. */
+      readonly admission: Promise<EnqueueResult>;
+    };
 
 /** Input to `SessionOrchestrator.enqueue` — the single entry transports call. */
 export interface EnqueueInput {
@@ -249,6 +255,8 @@ export interface EnqueueInput {
  * is dropped, see `enqueue` docs).
  */
 export interface EnqueueResult {
+  /** Present on actual insertion, including compaction-deferred admission. */
+  readonly messageId?: string;
   readonly startedTurn: boolean;
   readonly queue: readonly QueuedMessage[];
 }
@@ -269,6 +277,13 @@ export interface CancelQueuedMessageResult {
 
 export type TurnEventListener = (event: AgentEvent) => void;
 
+interface InputWaiter {
+  readonly input: StartTurnInput;
+  messageId?: string;
+  started(turnId: string): void;
+  terminal(reason: "dropped" | "superseded" | "failed", message: string): void;
+}
+
 interface ActiveTurn {
   buffer: readonly AgentEvent[];
   turnId: string;
@@ -279,7 +294,11 @@ interface ActiveTurn {
 }
 
 export interface SessionOrchestrator {
-  /** During compaction, queues when available (started=false), otherwise reserves a waiting turn. */
+  /**
+   * During compaction returns queued-behind-compaction plus admission (storage /
+   * insertion); otherwise reserves a waiting turn if no queue is available.
+   * already-active is rejection only, never accepted input.
+   */
   startTurn(input: StartTurnInput): StartTurnResult;
   /**
    * The single entry transports call to deliver a user message. Owns the
@@ -346,6 +365,12 @@ export interface SessionOrchestrator {
    * during forced unload, just as it does for an individual Stop.
    */
   stopAll(): { readonly stopped: number };
+  /**
+   * Streams ONLY this input's turn through turn-ended. Deferred inputs cancelled
+   * by Close/item cancel, consumed into a combined/steering turn, or failing
+   * admission/start instead receive request-local error + turn-ended(rejected).
+   * Those request-local terminals are not broadcast as actual turn history.
+   */
   handleMessage(input: {
     conversationId: string;
     text: string;
@@ -511,7 +536,45 @@ export function createSessionOrchestrator(
 ): SessionOrchestratorBundle {
   const activeConversations = new Set<string>();
   const compacting = new Map<string, Promise<void>>();
-  const compactionQueueWaiters = new Set<string>();
+  const compactionQueueWaiters = new Map<string, { barrier: Promise<void> }>();
+  const inputWaiters = new Map<string, Set<InputWaiter>>();
+
+  function finishInputs(
+    conversationId: string,
+    reason: "dropped" | "superseded" | "failed",
+    message: string,
+    ids?: ReadonlySet<string>,
+  ): void {
+    for (const waiter of [...(inputWaiters.get(conversationId) ?? [])]) {
+      if (ids === undefined || (waiter.messageId !== undefined && ids.has(waiter.messageId))) {
+        waiter.terminal(reason, message);
+      }
+    }
+  }
+
+  function startQueued(input: StartTurnInput, messages: readonly QueuedMessage[]): boolean {
+    const ids = new Set(messages.map((message) => message.id));
+    const owner =
+      messages.length === 1
+        ? [...(inputWaiters.get(input.conversationId) ?? [])].find(
+            (waiter) => waiter.messageId === messages[0]?.id,
+          )
+        : undefined;
+    finishInputs(
+      input.conversationId,
+      "superseded",
+      "input consumed into a combined turn",
+      new Set([...ids].filter((id) => id !== owner?.messageId)),
+    );
+    const result = startInput(
+      owner === undefined ? input : { ...owner.input, ...queuedInput(messages) },
+      owner,
+    );
+    if (!result.started) {
+      finishInputs(input.conversationId, "failed", "queued turn could not start", ids);
+    }
+    return result.started;
+  }
   const subscribers = new Map<string, Set<TurnEventListener>>();
   const activeTurns = new Map<string, ActiveTurn>();
   // Serialize image storage/insertion per conversation; only Close invalidates work.
@@ -580,24 +643,26 @@ export function createSessionOrchestrator(
     if (queue === undefined) return false;
     if (queue.getQueue(conversationId).length === 0) return false;
     const drained = queue.drain(conversationId);
-    const result = orchestrator.startTurn({ conversationId, ...queuedInput(drained) });
-    return result.started;
+    return startQueued({ conversationId, ...queuedInput(drained) }, drained);
   }
 
-  function runTurnDetached({
-    conversationId,
-    text,
-    modelName,
-    cwd,
-    computerId,
-    reasoningEffort: reasoningEffortOverride,
-    workspaceId: requestedWorkspaceId,
-    systemPrompt: systemPromptOverride,
-    images,
-    title,
-    parentConversationId,
-    toolPolicy,
-  }: StartTurnInput): void {
+  function runTurnDetached(
+    {
+      conversationId,
+      text,
+      modelName,
+      cwd,
+      computerId,
+      reasoningEffort: reasoningEffortOverride,
+      workspaceId: requestedWorkspaceId,
+      systemPrompt: systemPromptOverride,
+      images,
+      title,
+      parentConversationId,
+      toolPolicy,
+    }: StartTurnInput,
+    waiter?: InputWaiter,
+  ): void {
     const workspaceId = requestedWorkspaceId ?? "default";
     const turnId = generateTurnId();
     const promptStartedAt = deps.now?.() ?? Date.now();
@@ -609,6 +674,8 @@ export function createSessionOrchestrator(
     // compactor's generating-state recheck until the barrier has completed.
     if (pendingCompaction === undefined) activeConversations.add(conversationId);
 
+    // Bind the caller before the first synchronous event (no replay/microtask dependency).
+    waiter?.started(turnId);
     emitToHub(conversationId, { type: "user-message", conversationId, turnId, text });
 
     // For a NEW conversation the workspace MUST be assigned (persisted)
@@ -876,6 +943,12 @@ export function createSessionOrchestrator(
                 if (controller.signal.aborted) return [];
                 const queued = queue.drain(conversationId);
                 if (queued.length === 0) return [];
+                finishInputs(
+                  conversationId,
+                  "superseded",
+                  "input consumed as steering into another turn",
+                  new Set(queued.map((message) => message.id)),
+                );
                 const steerText = queued.map((q) => q.text).join("\n\n");
                 const combined = queuedInput(queued);
                 const steeringMessage: ChatMessage = {
@@ -1165,84 +1238,144 @@ export function createSessionOrchestrator(
     })().catch(logFailure(conversationId, "detached turn", turnId));
   }
 
+  function startInput(input: StartTurnInput, waiter?: InputWaiter): StartTurnResult {
+    const { conversationId } = input;
+    if (activeTurns.has(conversationId)) return { started: false, reason: "already-active" };
+    if (compacting.has(conversationId) && deps.resolveQueue?.() !== undefined) {
+      return {
+        started: false,
+        reason: "queued-behind-compaction",
+        admission: enqueueInput(input, waiter),
+      };
+    }
+    runTurnDetached(input, waiter);
+    return { started: true, turnId: activeTurns.get(conversationId)?.turnId ?? "" };
+  }
+
+  function enqueueInput(input: EnqueueInput, waiter?: InputWaiter): Promise<EnqueueResult> {
+    const { conversationId } = input;
+    let pending = pendingEnqueues.get(conversationId);
+    if (pending === undefined || pending.cancelled) {
+      pending = { cancelled: false };
+      pendingEnqueues.set(conversationId, pending);
+    }
+    const state = pending;
+    const deliver = async (): Promise<EnqueueResult> => {
+      const dropped: EnqueueResult = { startedTurn: false, queue: [] };
+      if (state.cancelled || activeTurns.get(conversationId)?.cancelQueuedInput) {
+        waiter?.terminal("dropped", "input cancelled by Close");
+        return dropped;
+      }
+      const vision = deps.resolveVisionHandoff?.();
+      const images =
+        input.images?.length && vision !== undefined
+          ? await vision.storeImages(conversationId, input.images)
+          : input.images;
+      // Storage can outlive Close or the original turn. Stop preserves this work.
+      if (state.cancelled || activeTurns.get(conversationId)?.cancelQueuedInput) {
+        waiter?.terminal("dropped", "input cancelled by Close");
+        return dropped;
+      }
+      const stored = { ...input, ...(images !== undefined ? { images } : {}) };
+      const queue = deps.resolveQueue?.();
+      const barrier = compacting.get(conversationId);
+      if (barrier === undefined || queue === undefined) {
+        if (startInput(stored, waiter).started) return { startedTurn: true, queue: [] };
+      }
+      if (queue === undefined) {
+        waiter?.terminal("dropped", "message queue unavailable");
+        return dropped;
+      }
+      const snapshot = queue.enqueue(conversationId, input.text, stored);
+      const messageId = snapshot.at(-1)?.id;
+      if (waiter !== undefined && messageId !== undefined) waiter.messageId = messageId;
+      // Queue notifications may synchronously cancel/close/reenter during insertion.
+      if (
+        messageId !== undefined &&
+        !queue.getQueue(conversationId).some((m) => m.id === messageId)
+      ) {
+        waiter?.terminal(
+          state.cancelled ? "dropped" : "superseded",
+          "input removed during insertion",
+        );
+      }
+      if (
+        barrier !== undefined &&
+        compactionQueueWaiters.get(conversationId)?.barrier !== barrier
+      ) {
+        // Unique registration identity: Close + re-enqueue on the SAME barrier
+        // must not let the old continuation claim the new request/options.
+        const registration = { barrier };
+        compactionQueueWaiters.set(conversationId, registration);
+        const failDeferred = (error: unknown) => {
+          if (compactionQueueWaiters.get(conversationId) !== registration) return;
+          compactionQueueWaiters.delete(conversationId);
+          finishInputs(conversationId, "failed", "compaction barrier/start failed");
+          try {
+            queue.drain(conversationId);
+          } catch (drainError) {
+            logFailure(conversationId, "failed compaction queue drain")(drainError);
+          }
+          logFailure(conversationId, "compaction queue carry")(error);
+        };
+        void barrier.then(() => {
+          if (compactionQueueWaiters.get(conversationId) !== registration) return;
+          try {
+            if (activeTurns.has(conversationId)) return; // steering/carry owns delivery now
+            if (!queue.getQueue(conversationId).length) {
+              finishInputs(conversationId, "dropped", "deferred queue is empty");
+              return;
+            }
+            const { images: _images, computerId: _computerId, ...options } = stored;
+            const drained = queue.drain(conversationId);
+            // A queue-surface observer can synchronously Close while drain publishes.
+            if (compactionQueueWaiters.get(conversationId) !== registration) return;
+            startQueued({ ...options, ...queuedInput(drained) }, drained);
+          } catch (error) {
+            failDeferred(error);
+          } finally {
+            if (compactionQueueWaiters.get(conversationId) === registration) {
+              compactionQueueWaiters.delete(conversationId);
+            }
+          }
+        }, failDeferred);
+      }
+      return {
+        startedTurn: false,
+        queue: snapshot,
+        ...(messageId !== undefined ? { messageId } : {}),
+      };
+    };
+    const previous = state.tail;
+    let complete!: (value: EnqueueResult | PromiseLike<EnqueueResult>) => void;
+    let fail!: (error: unknown) => void;
+    const result = new Promise<EnqueueResult>((resolve, reject) => {
+      complete = resolve;
+      fail = reject;
+    });
+    state.tail = result;
+    void (previous === undefined ? deliver() : previous.then(deliver, deliver)).then(
+      complete,
+      fail,
+    );
+    const cleanup = () => {
+      if (pendingEnqueues.get(conversationId) === state && state.tail === result) {
+        pendingEnqueues.delete(conversationId);
+      }
+    };
+    void result.then(cleanup, cleanup);
+    return result;
+  }
+
   const orchestrator: SessionOrchestrator = {
     startTurn(input) {
-      const { conversationId } = input;
-      if (activeTurns.has(conversationId)) {
-        return { started: false, reason: "already-active" };
+      const result = startInput(input);
+      if (!result.started && result.reason === "queued-behind-compaction") {
+        void result.admission.catch(logFailure(input.conversationId, "compaction enqueue"));
       }
-      if (compacting.has(conversationId) && deps.resolveQueue?.() !== undefined) {
-        void orchestrator.enqueue(input).catch(logFailure(conversationId, "compaction enqueue"));
-        return { started: false, reason: "already-active" };
-      }
-      runTurnDetached(input);
-      const turn = activeTurns.get(conversationId);
-      const turnId = turn !== undefined ? turn.turnId : "";
-      return { started: true, turnId };
-    },
-
-    enqueue(input) {
-      const { conversationId } = input;
-      let pending = pendingEnqueues.get(conversationId);
-      if (pending === undefined || pending.cancelled) {
-        pending = { cancelled: false };
-        pendingEnqueues.set(conversationId, pending);
-      }
-      const state = pending;
-      const deliver = async (): Promise<EnqueueResult> => {
-        const dropped: EnqueueResult = { startedTurn: false, queue: [] };
-        if (state.cancelled || activeTurns.get(conversationId)?.cancelQueuedInput) return dropped;
-        const vision = deps.resolveVisionHandoff?.();
-        const images =
-          input.images?.length && vision !== undefined
-            ? await vision.storeImages(conversationId, input.images)
-            : input.images;
-        // Storage can outlive Close or the original turn. Stop preserves this work.
-        if (state.cancelled || activeTurns.get(conversationId)?.cancelQueuedInput) return dropped;
-        const stored = { ...input, ...(images !== undefined ? { images } : {}) };
-        const queue = deps.resolveQueue?.();
-        const barrier = compacting.get(conversationId);
-        if (barrier === undefined || queue === undefined) {
-          if (orchestrator.startTurn(stored).started) return { startedTurn: true, queue: [] };
-        }
-        if (queue === undefined) return dropped;
-        const snapshot = queue.enqueue(conversationId, input.text, stored);
-        if (barrier !== undefined && !compactionQueueWaiters.has(conversationId)) {
-          compactionQueueWaiters.add(conversationId);
-          void barrier
-            .then(() => {
-              compactionQueueWaiters.delete(conversationId);
-              if (activeTurns.has(conversationId) || !queue.getQueue(conversationId).length) return;
-              const { images: _images, computerId: _computerId, ...options } = stored;
-              orchestrator.startTurn({ ...options, ...queuedInput(queue.drain(conversationId)) });
-            })
-            .catch((error) => {
-              compactionQueueWaiters.delete(conversationId);
-              logFailure(conversationId, "compaction queue carry")(error);
-            });
-        }
-        return { startedTurn: false, queue: snapshot };
-      };
-      const previous = state.tail;
-      let complete!: (value: EnqueueResult | PromiseLike<EnqueueResult>) => void;
-      let fail!: (error: unknown) => void;
-      const result = new Promise<EnqueueResult>((resolve, reject) => {
-        complete = resolve;
-        fail = reject;
-      });
-      state.tail = result;
-      void (previous === undefined ? deliver() : previous.then(deliver, deliver)).then(
-        complete,
-        fail,
-      );
-      const cleanup = () => {
-        if (pendingEnqueues.get(conversationId) === state && state.tail === result) {
-          pendingEnqueues.delete(conversationId);
-        }
-      };
-      void result.then(cleanup, cleanup);
       return result;
     },
+    enqueue: enqueueInput,
 
     cancelQueuedMessage({ conversationId, messageId }) {
       // When the message-queue extension isn't loaded this degrades: nothing to
@@ -1254,6 +1387,8 @@ export function createSessionOrchestrator(
       const beforeLen = queue.getQueue(conversationId).length;
       const snapshot = queue.cancel(conversationId, messageId);
       const cancelled = snapshot.length < beforeLen;
+      if (cancelled)
+        finishInputs(conversationId, "dropped", "queued input cancelled", new Set([messageId]));
       return { cancelled, queue: snapshot };
     },
 
@@ -1298,9 +1433,11 @@ export function createSessionOrchestrator(
       // Mark cancellation BEFORE abort callbacks or queue surface notifications can reenter.
       const pending = pendingEnqueues.get(conversationId);
       if (pending !== undefined) pending.cancelled = true;
+      compactionQueueWaiters.delete(conversationId);
       const turn = activeTurns.get(conversationId);
       if (turn !== undefined) turn.cancelQueuedInput = true;
       const { abortedTurn } = orchestrator.stopTurn(conversationId);
+      finishInputs(conversationId, "dropped", "input cancelled by Close");
       deps.resolveQueue?.()?.drain(conversationId);
       deps.emit?.(conversationClosed, { conversationId });
       // Resolve the persisted workspace id before emitting so the
@@ -1361,37 +1498,75 @@ export function createSessionOrchestrator(
         ...(parentConversationId !== undefined ? { parentConversationId } : {}),
         ...(toolPolicy !== undefined ? { toolPolicy } : {}),
       };
-      // Compaction deferral may await image storage. Wait for insertion before
-      // checking the carry waiter, otherwise an image-only request looks rejected.
-      const result =
-        compacting.has(conversationId) &&
-        !activeTurns.has(conversationId) &&
-        deps.resolveQueue?.() !== undefined
-          ? { started: (await orchestrator.enqueue(turnInput)).startedTurn }
-          : orchestrator.startTurn(turnInput);
-      if (!result.started && !compactionQueueWaiters.has(conversationId)) {
-        const errorTurnId = generateTurnId();
-        onEvent({
-          type: "error",
-          conversationId,
-          turnId: errorTurnId,
-          message: "turn already active for this conversation",
-        });
-        return;
-      }
-
       await new Promise<void>((resolve) => {
-        let ended = false;
+        let ownTurnId: string | undefined;
+        let settled = false;
         let unsubscribe: (() => void) | undefined;
+        const remove = () => {
+          inputWaiters.get(conversationId)?.delete(waiter);
+          if (inputWaiters.get(conversationId)?.size === 0) inputWaiters.delete(conversationId);
+        };
+        const finish = () => {
+          settled = true;
+          remove();
+          unsubscribe?.();
+          resolve();
+        };
+        const waiter: InputWaiter = {
+          input: turnInput,
+          started(turnId) {
+            if (settled) return;
+            ownTurnId = turnId;
+            remove(); // turn-ended now owns completion, not Close/cancel
+          },
+          terminal(reason, message) {
+            if (settled) return;
+            const turnId = generateTurnId();
+            try {
+              onEvent({ type: "error", conversationId, turnId, message: `${reason}: ${message}` });
+              onEvent({ type: "turn-ended", conversationId, turnId, reason: "rejected" });
+            } finally {
+              finish();
+            }
+          },
+        };
+        let waiters = inputWaiters.get(conversationId);
+        if (waiters === undefined) {
+          waiters = new Set();
+          inputWaiters.set(conversationId, waiters);
+        }
+        waiters.add(waiter);
+        // Subscribe BEFORE start/enqueue, and filter by the bound turn id. Replayed
+        // or unrelated turns cannot become this request's response.
         unsubscribe = orchestrator.subscribe(conversationId, (event) => {
-          onEvent(event);
-          if (event.type === "turn-ended") {
-            ended = true;
-            unsubscribe?.();
-            resolve();
+          if (
+            settled ||
+            ownTurnId === undefined ||
+            !("turnId" in event) ||
+            event.turnId !== ownTurnId
+          )
+            return;
+          try {
+            onEvent(event);
+          } finally {
+            if (event.type === "turn-ended") finish();
           }
         });
-        if (ended) unsubscribe();
+        if (settled) unsubscribe();
+        try {
+          const result = startInput(turnInput, waiter);
+          if (!result.started) {
+            if (result.reason === "already-active") {
+              waiter.terminal("failed", "turn already active for this conversation");
+            } else {
+              void result.admission.catch((error) =>
+                waiter.terminal("failed", error instanceof Error ? error.message : String(error)),
+              );
+            }
+          }
+        } catch (error) {
+          waiter.terminal("failed", error instanceof Error ? error.message : String(error));
+        }
       });
     },
   };

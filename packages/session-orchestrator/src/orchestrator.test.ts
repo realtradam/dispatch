@@ -2965,11 +2965,12 @@ describe("detached turn hub", () => {
 
     await secondPromise;
 
-    expect(secondEvents).toHaveLength(1);
+    expect(secondEvents).toHaveLength(2);
     expect(secondEvents[0]?.type).toBe("error");
     expect((secondEvents[0] as AgentEvent & { type: "error" }).message).toBe(
-      "turn already active for this conversation",
+      "failed: turn already active for this conversation",
     );
+    expect(secondEvents[1]).toMatchObject({ type: "turn-ended", reason: "rejected" });
 
     resolveRunTurn?.();
     await firstPromise;

@@ -3,6 +3,7 @@ import { type AgentEvent, type ProviderContract, runTurn } from "@dispatch/kerne
 import { createSessionOrchestrator } from "@dispatch/session-orchestrator";
 import { describe, expect, it } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
+import { createMessageQueueService } from "../../message-queue/src/index.js";
 import { createApp } from "./app.js";
 
 const provider: ProviderContract = {
@@ -94,5 +95,72 @@ describe("HTTP terminal turn completion", () => {
       content: "",
       turnId: expect.any(String),
     });
+  });
+});
+
+describe("HTTP compaction-deferred completion", () => {
+  it.each([
+    "start",
+    "stop",
+    "close",
+    "cancel",
+    "combined",
+    "barrier-failure",
+  ])("/chat settles on %s", async (action) => {
+    const store = createConversationStore(storageFromMap());
+    let id = 0;
+    const queue = createMessageQueueService({ id: () => String(++id), now: () => 0, notify() {} });
+    const { orchestrator, compacting } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveQueue: () => queue,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    const barrier = Promise.withResolvers<void>();
+    compacting.set("c", barrier.promise);
+    const app = createApp({
+      conversationStore: store,
+      orchestrator,
+      credentialStore: {} as Parameters<typeof createApp>[0]["credentialStore"],
+    });
+    const response = await app.request("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId: "c", message: "mine" }),
+    });
+    expect(response.status).toBe(200);
+    expect(queue.getQueue("c").map((message) => message.text)).toEqual(["mine"]);
+    if (action === "stop") orchestrator.stopTurn("c");
+    if (action === "close") orchestrator.closeConversation("c");
+    if (action === "cancel")
+      orchestrator.cancelQueuedMessage({ conversationId: "c", messageId: "1" });
+    if (action === "combined") await orchestrator.enqueue({ conversationId: "c", text: "other" });
+    compacting.delete("c");
+    if (action === "barrier-failure") barrier.reject(new Error("failed"));
+    else barrier.resolve();
+    const events: AgentEvent[] = (await response.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    if (action === "start" || action === "stop") {
+      expect(events[0]).toMatchObject({ type: "user-message", text: "mine" });
+      expect(events.some((e) => e.type === "text-delta")).toBe(true);
+      expect(events.at(-1)).toMatchObject({ type: "turn-ended", reason: "sealed" });
+    } else {
+      expect(events.map((event) => event.type)).toEqual(["error", "turn-ended"]);
+      expect(events[0]).toMatchObject({
+        message: expect.stringContaining(
+          action === "combined"
+            ? "superseded"
+            : action === "barrier-failure"
+              ? "failed"
+              : "dropped",
+        ),
+      });
+      expect(events.at(-1)).toMatchObject({ reason: "rejected" });
+    }
+    expect(events.filter((e) => e.type === "turn-ended")).toHaveLength(1);
   });
 });

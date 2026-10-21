@@ -45,6 +45,7 @@ export interface SurfaceRouteResult {
 
 /** The effect a validated chat.send should produce. */
 export interface ChatRouteResult {
+  readonly requestId?: string;
   readonly kind: "chat";
   readonly conversationId: string | undefined;
   readonly message: string;
@@ -326,10 +327,18 @@ function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError 
       errorMessage: `chat.send: invalid reasoningEffort "${msg.reasoningEffort}" — must be one of: low, medium, high, xhigh, max`,
     };
   }
+  if (msg.requestId !== undefined && typeof msg.requestId !== "string") {
+    return {
+      kind: "chat-error",
+      conversationId: msg.conversationId,
+      errorMessage: "chat.send: requestId must be a string",
+    };
+  }
   const images = parseImages(msg.images, msg.conversationId, "chat.send");
   if (images !== undefined && "kind" in images) return images;
   return {
     kind: "chat",
+    ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
     conversationId: msg.conversationId,
     message: msg.message,
     model: msg.model,
