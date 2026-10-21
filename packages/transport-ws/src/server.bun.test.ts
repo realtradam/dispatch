@@ -25,6 +25,7 @@ import {
 import type { ConversationStatus, WsServerMessage } from "@dispatch/transport-contract";
 import type { SurfaceCatalogEntry, SurfaceClientMessage, SurfaceSpec } from "@dispatch/ui-contract";
 import { createConversationStore } from "../../conversation-store/src/index.js";
+import { createNetworkPolicyMonitor } from "../../host-bin/src/network.js";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createTransportWsExtension } from "./extension.js";
 import { catalogMessage, routeClientMessage, subKey } from "./router.js";
@@ -1576,5 +1577,108 @@ describe("live policy listener withdrawal", () => {
       await ext.deactivate?.();
     }
     expect(notify).toBeUndefined();
+  });
+});
+
+describe("last-known-good policy through real listeners", () => {
+  test("retains clients across failed probes, recovers, and withdraws on positive logout", async () => {
+    const logger = fakeLogger();
+    let raw = JSON.stringify({
+      Self: {
+        TailscaleIPs: ["127.0.0.1"],
+        DNSName: "late.tailnet.ts.net.",
+        HostName: "verified-os",
+      },
+    });
+    let failed = false;
+    let tick: (() => void) | undefined;
+    const monitor = await createNetworkPolicyMonitor({ DISPATCH_BIND: "tailscale" }, logger, {
+      status: async () => {
+        if (failed) throw new Error("transient timeout");
+        return raw;
+      },
+      resolve: async () => ["127.0.0.1"],
+      schedule(callback) {
+        tick = callback;
+        return () => {
+          tick = undefined;
+        };
+      },
+    });
+    const poll = async () => {
+      const callback = tick;
+      tick = undefined;
+      expect(callback).toBeDefined();
+      callback?.();
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+    };
+    const bus = createBus(logger);
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createConversationStore(storageFromMap()),
+      resolveProvider: () => {
+        throw new Error("unused provider");
+      },
+      resolveTools: () => [],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    bus.provideService(sessionOrchestratorHandle, orchestrator);
+    bus.provideService(surfaceRegistryHandle, fakeRegistry([fakeProvider("demo")]));
+    const ext = createTransportWsExtension();
+    let ws: WebSocket | undefined;
+    try {
+      await ext.activate({
+        logger,
+        getService: bus.getService,
+        tryGetService: bus.tryGetService,
+        on: bus.on,
+        getExtensions: () => [],
+        config: {
+          get: (key: string) =>
+            key === "networkPolicy" ? monitor.policy : key === "surfaceWsPort" ? 34205 : undefined,
+        },
+      } as unknown as HostAPI);
+      ws = new WebSocket("ws://127.0.0.1:34205");
+      await waitForMessage(ws);
+      let closes = 0;
+      ws.addEventListener("close", () => closes++);
+      failed = true;
+      for (let i = 0; i < 3; i++) {
+        await poll();
+        const received = waitForMessage(ws);
+        ws.send(JSON.stringify({ type: "subscribe", surfaceId: "demo" }));
+        expect(await received).toMatchObject({ type: "surface" });
+      }
+      expect(closes).toBe(0);
+      failed = false;
+      raw = JSON.stringify({
+        Self: { TailscaleIPs: ["127.0.0.1"], DNSName: "recovered.tailnet.ts.net." },
+      });
+      await poll();
+      expect(
+        (
+          await fetch("http://127.0.0.1:34205/health", {
+            headers: { Host: "recovered.tailnet.ts.net" },
+          })
+        ).status,
+      ).toBe(200);
+      const received = waitForMessage(ws);
+      ws.send(JSON.stringify({ type: "subscribe", surfaceId: "demo" }));
+      expect(await received).toMatchObject({ type: "surface" });
+      expect(closes).toBe(0);
+      const closed = new Promise<void>((resolve) =>
+        ws?.addEventListener("close", () => resolve(), { once: true }),
+      );
+      raw = JSON.stringify({ BackendState: "NeedsLogin", Self: null });
+      await poll();
+      await closed;
+      expect(closes).toBe(1);
+      await expect(fetch("http://127.0.0.1:34205/health")).rejects.toThrow();
+    } finally {
+      monitor.stop();
+      ws?.close();
+      await ext.deactivate?.();
+    }
+    expect(tick).toBeUndefined();
   });
 });

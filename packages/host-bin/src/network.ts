@@ -38,57 +38,90 @@ const detectionEffects: NetworkDetectionEffects = {
   },
 };
 
-/** One detection at the I/O edge; a missing tailnet may have zero pending listeners. */
+/** Only a validated response is evidence for withdrawing previously discovered authority.
+ * Missing Self/IP fields in a running/unknown state are an incomplete probe, not logout.
+ */
+function validateStatus(raw: string): string {
+  const status: unknown = JSON.parse(raw);
+  if (!status || typeof status !== "object" || Array.isArray(status))
+    throw new Error("Invalid Tailscale status");
+  if ("BackendState" in status && typeof status.BackendState !== "string")
+    throw new Error("Invalid Tailscale backend state");
+  if (
+    "BackendState" in status &&
+    ["Stopped", "NeedsLogin", "NeedsMachineAuth"].includes(status.BackendState as string)
+  )
+    return JSON.stringify({ Self: { TailscaleIPs: [] } });
+  if (
+    !("Self" in status) ||
+    !status.Self ||
+    typeof status.Self !== "object" ||
+    Array.isArray(status.Self)
+  )
+    throw new Error("Missing Tailscale Self");
+  const self = status.Self as Record<string, unknown>;
+  if (
+    !("TailscaleIPs" in self) ||
+    (self.TailscaleIPs !== null && !Array.isArray(self.TailscaleIPs))
+  )
+    throw new Error("Missing or invalid Tailscale IP list");
+  for (const ip of self.TailscaleIPs ?? []) {
+    if (typeof ip !== "string" || !isIP(ip)) throw new Error("Invalid Tailscale IP");
+  }
+  for (const field of ["HostName", "DNSName"] as const) {
+    const value = self[field];
+    if (value != null && (typeof value !== "string" || (value !== "" && !normalizeHost(value))))
+      throw new Error("Invalid Tailscale name");
+  }
+  return raw;
+}
+
+async function detectDiscoveredPolicy(
+  env: Readonly<Record<string, string | undefined>>,
+  effects: NetworkDetectionEffects,
+): Promise<Pick<NetworkPolicySnapshot, "allowedHosts" | "tailscaleIps">> {
+  const status = validateStatus(await effects.status());
+  const self = JSON.parse(status).Self;
+  const allowedHosts = new Set(buildAllowedHosts({ tailscaleStatusJson: status, env }));
+  const tailscaleIps: string[] = [];
+  for (const ip of self.TailscaleIPs ?? []) {
+    if (ip !== "0.0.0.0" && normalizeHost(ip) !== "::") tailscaleIps.push(normalizeHost(ip));
+  }
+  // No hostname verification is needed when the status positively has no IPs.
+  if (self.HostName && tailscaleIps.length) {
+    const ips = await effects.resolve(self.HostName);
+    const hostname = normalizeHost(self.HostName);
+    if (hostname && ips.some((ip) => tailscaleIps.includes(normalizeHost(ip))))
+      allowedHosts.add(hostname);
+  }
+  return { allowedHosts, tailscaleIps };
+}
+
+/** Boot remains tolerant: no discovery means loopback and explicit settings. */
 export async function detectNetworkPolicy(
   env: Readonly<Record<string, string | undefined>>,
   logger: Pick<Logger, "warn">,
   effects: NetworkDetectionEffects = detectionEffects,
 ): Promise<NetworkPolicySnapshot> {
-  let status: string | undefined;
+  let discovered: Pick<NetworkPolicySnapshot, "allowedHosts" | "tailscaleIps"> = {
+    allowedHosts: buildAllowedHosts({ env }),
+    tailscaleIps: [],
+  };
   try {
-    status = await effects.status();
+    discovered = await detectDiscoveredPolicy(env, effects);
   } catch {
     logger.warn(
       "network: Tailscale detection unavailable; using loopback and explicit env settings",
     );
   }
-  const allowedHosts = new Set(
-    buildAllowedHosts({
-      ...(status !== undefined ? { tailscaleStatusJson: status } : {}),
-      env: {
-        ...(env.DISPATCH_ALLOWED_HOSTS !== undefined
-          ? { DISPATCH_ALLOWED_HOSTS: env.DISPATCH_ALLOWED_HOSTS }
-          : {}),
-        ...(env.DISPATCH_TAILSCALE_NAME !== undefined
-          ? { DISPATCH_TAILSCALE_NAME: env.DISPATCH_TAILSCALE_NAME }
-          : {}),
-      },
-    }),
-  );
-  const tailscaleIps: string[] = [];
-  try {
-    const self = JSON.parse(status ?? "{}").Self;
-    for (const ip of self?.TailscaleIPs ?? []) {
-      if (typeof ip === "string" && isIP(ip) && ip !== "0.0.0.0" && normalizeHost(ip) !== "::")
-        tailscaleIps.push(normalizeHost(ip));
-    }
-    if (typeof self?.HostName === "string") {
-      const ips = await effects.resolve(self.HostName);
-      const hostname = normalizeHost(self.HostName);
-      if (hostname && ips.some((ip) => tailscaleIps.includes(normalizeHost(ip))))
-        allowedHosts.add(hostname);
-    }
-  } catch {
-    // Missing/malformed status or unresolvable OS hostname: never widen the allowlist.
-  }
   const { addresses: bindAddresses, warnings } = await resolveBindTokens(env.DISPATCH_BIND, {
-    tailscaleIps,
+    tailscaleIps: discovered.tailscaleIps,
     resolveHostname: effects.resolve,
   });
   for (const warning of warnings) logger.warn(`network: ${warning}`);
   if (bindAddresses.length === 0 && !includesTailscale(env.DISPATCH_BIND))
     throw new Error("network: no bind addresses resolved");
-  return { allowedHosts, bindAddresses, tailscaleIps };
+  return { ...discovered, bindAddresses };
 }
 
 export interface NetworkMonitorEffects extends NetworkDetectionEffects {
@@ -97,7 +130,7 @@ export interface NetworkMonitorEffects extends NetworkDetectionEffects {
 }
 
 /** Composition-root owner. No transport dependency; each subscriber owns its listeners.
- * Failed detection revokes discovered hosts/IPs rather than accumulating stale authority.
+ * Failed probes retain last-known-good discovery; only validated status can revoke it.
  * Explicit bind names are resolved once, not polled into a broader interface set.
  */
 export async function createNetworkPolicyMonitor(
@@ -124,17 +157,36 @@ export async function createNetworkPolicyMonitor(
     : { addresses: [], warnings: [] };
   for (const warning of fixed.warnings) logger.warn(`network: ${warning}`);
   const detect = async (): Promise<NetworkPolicySnapshot> => {
-    const detected = await detectNetworkPolicy(
-      { ...env, DISPATCH_BIND: "tailscale" },
-      logger,
-      effects,
-    );
+    const detected = await detectDiscoveredPolicy(env, effects);
     return {
       ...detected,
       bindAddresses: [...new Set([...fixed.addresses, ...detected.tailscaleIps])],
     };
   };
-  let current = dynamic ? await detect() : await detectNetworkPolicy(env, logger, effects);
+  let failed = false;
+  const warnFailure = () => {
+    // One warning per uninterrupted error streak, including a boot failure.
+    if (!failed)
+      logger.warn(
+        "network: Tailscale probe failed; retaining last-known-good policy and retrying in 10s",
+      );
+    failed = true;
+  };
+  let current: NetworkPolicySnapshot;
+  if (dynamic) {
+    current = {
+      allowedHosts: buildAllowedHosts({ env }),
+      bindAddresses: fixed.addresses,
+      tailscaleIps: [],
+    };
+    try {
+      current = await detect();
+    } catch {
+      warnFailure();
+    }
+  } else {
+    current = await detectNetworkPolicy(env, logger, effects);
+  }
   const subscribers = new Set<(snapshot: NetworkPolicySnapshot) => void>();
   let stopped = false;
   let cancelTimer: (() => void) | undefined;
@@ -164,7 +216,9 @@ export async function createNetworkPolicyMonitor(
   const poll = async () => {
     try {
       const next = await detect();
-      if (stopped || sameNetworkPolicy(current, next)) return;
+      if (stopped) return;
+      failed = false;
+      if (sameNetworkPolicy(current, next)) return;
       current = next;
       logger.warn("network: refreshed Tailscale policy", {
         addresses: next.bindAddresses.join(","),
@@ -177,7 +231,7 @@ export async function createNetworkPolicyMonitor(
         }
       }
     } catch {
-      logger.warn("network: policy refresh failed; retrying in 10s");
+      if (!stopped) warnFailure();
     } finally {
       schedule();
     }

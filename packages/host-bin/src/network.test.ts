@@ -146,11 +146,14 @@ describe("live network policy", () => {
     expect(checkHost("new-name.tailnet.ts.net", policy.allowedHosts)).toBe("ok");
     fail = true;
     await timer.tick();
+    expect(policy.bindAddresses).toEqual(["127.0.0.1", "::1", "100.64.0.2"]);
+    expect(checkHost("100.64.0.2", policy.allowedHosts)).toBe("ok");
+    expect(checkOrigin("http://new-name.tailnet.ts.net", policy.allowedHosts)).toBe("ok");
+    fail = false;
+    raw = JSON.stringify({ Self: { TailscaleIPs: [] } });
+    await timer.tick();
     expect(policy.bindAddresses).toEqual(["127.0.0.1", "::1"]);
     expect(checkHost("100.64.0.2", policy.allowedHosts)).toMatchObject({ status: 421 });
-    expect(checkOrigin("http://new-name.tailnet.ts.net", policy.allowedHosts)).toMatchObject({
-      status: 403,
-    });
     expect(checkHost("explicit", policy.allowedHosts)).toBe("ok");
     unsubscribe?.();
     changed.mockClear();
@@ -160,6 +163,119 @@ describe("live network policy", () => {
     monitor.stop();
     monitor.stop();
     expect(timer.pending()).toBe(false);
+  });
+
+  it.each([
+    "timeout",
+    "unavailable",
+    "malformed",
+    "incomplete",
+    "invalid-ips",
+    "invalid-name",
+    "invalid-state",
+    "dns",
+  ])("retains the last-known-good snapshot on %s, deduplicates failures and recovers", async (failure) => {
+    const timer = clock();
+    let broken = false;
+    let ip = "100.64.0.1";
+    const warn = vi.fn();
+    const monitor = await createNetworkPolicyMonitor(
+      {},
+      { warn },
+      {
+        status: async () => {
+          if (broken) {
+            if (failure === "timeout" || failure === "unavailable") throw new Error(failure);
+            if (failure === "malformed") return "not json";
+            if (failure === "incomplete")
+              return JSON.stringify({ BackendState: "Running", Self: {} });
+            if (failure === "invalid-ips")
+              return JSON.stringify({ Self: { TailscaleIPs: ["bad"] } });
+            if (failure === "invalid-state") return JSON.stringify({ BackendState: ["Stopped"] });
+            if (failure === "invalid-name")
+              return JSON.stringify({ Self: { TailscaleIPs: [], DNSName: 12 } });
+          }
+          return statusFor([ip]);
+        },
+        resolve: async () => {
+          if (broken && failure === "dns") throw new Error("DNS failed");
+          return [ip];
+        },
+        schedule: timer.schedule,
+      },
+    );
+    const initial = monitor.policy.allowedHosts;
+    const changed = vi.fn();
+    monitor.policy.subscribe?.(changed);
+    broken = true;
+    for (let i = 0; i < 30; i++) await timer.tick();
+    expect(monitor.policy.allowedHosts).toBe(initial);
+    expect(monitor.policy.bindAddresses).toEqual(["127.0.0.1", "::1", ip]);
+    expect(changed).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenLastCalledWith(expect.stringContaining("retaining last-known-good"));
+    broken = false;
+    await timer.tick(); // even unchanged successful status resets the warning streak
+    expect(changed).not.toHaveBeenCalled();
+    broken = true;
+    await timer.tick();
+    expect(warn).toHaveBeenCalledTimes(2);
+    broken = false;
+    ip = "100.64.0.2";
+    await timer.tick();
+    expect(changed).toHaveBeenCalledOnce();
+    expect(monitor.policy.bindAddresses).toEqual(["127.0.0.1", "::1", ip]);
+    expect(checkHost("100.64.0.1", monitor.policy.allowedHosts)).toMatchObject({ status: 421 });
+    monitor.stop();
+  });
+
+  it.each([
+    { Self: { TailscaleIPs: [] } },
+    { Self: { TailscaleIPs: null } },
+    { BackendState: "NeedsLogin", Self: null },
+    { BackendState: "Stopped" },
+    { BackendState: "NeedsMachineAuth" },
+  ])("withdraws discovery on a validated positive no-IP status %j", async (empty) => {
+    const timer = clock();
+    let raw = statusFor(["100.64.0.1"]);
+    const monitor = await createNetworkPolicyMonitor(
+      { DISPATCH_TAILSCALE_NAME: "explicit-name" },
+      { warn: vi.fn() },
+      {
+        status: async () => raw,
+        resolve: async () => ["100.64.0.1"],
+        schedule: timer.schedule,
+      },
+    );
+    raw = JSON.stringify(empty);
+    await timer.tick();
+    expect(monitor.policy.bindAddresses).toEqual(["127.0.0.1", "::1"]);
+    expect(checkHost("100.64.0.1", monitor.policy.allowedHosts)).toMatchObject({ status: 421 });
+    expect(checkHost("PII_REDACTED_DEVICE_01.tailnet.ts.net", monitor.policy.allowedHosts)).toMatchObject({
+      status: 421,
+    });
+    expect(checkHost("explicit-name", monitor.policy.allowedHosts)).toBe("ok");
+    monitor.stop();
+  });
+
+  it("deduplicates errors from boot until a successful probe", async () => {
+    const timer = clock();
+    const warn = vi.fn();
+    const monitor = await createNetworkPolicyMonitor(
+      {},
+      { warn },
+      {
+        status: async () => {
+          throw new Error("missing Tailscale");
+        },
+        resolve: async () => [],
+        schedule: timer.schedule,
+      },
+    );
+    for (let i = 0; i < 30; i++) await timer.tick();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(monitor.policy.bindAddresses).toEqual(["127.0.0.1", "::1"]);
+    monitor.stop();
   });
 
   it("never overlaps probes and ignores an in-flight detection after shutdown", async () => {
@@ -253,7 +369,7 @@ describe("live network policy", () => {
       },
     );
     expect(monitor.policy.bindAddresses).toEqual(["127.0.0.1"]);
-    raw = JSON.stringify({ Self: { TailscaleIPs: ["100.64.0.1", "::", "0.0.0.0", "bad"] } });
+    raw = JSON.stringify({ Self: { TailscaleIPs: ["100.64.0.1", "::", "0.0.0.0"] } });
     await timer.tick();
     expect(monitor.policy.bindAddresses).toEqual(["127.0.0.1", "100.64.0.1"]);
     expect(resolve).toHaveBeenCalledTimes(1);
