@@ -6083,7 +6083,7 @@ describe("turn failure durability and queue policy", () => {
   it.each([
     "stop",
     "close",
-  ])("%s clears queued intent, rejects racing enqueue, and never carries stale input", async (operation) => {
+  ])("%s applies its queue policy to existing and abort-window input", async (operation) => {
     const store = createConversationStore(storageFromMap());
     const snapshots: number[] = [];
     const queue = createMessageQueueService({
@@ -6102,10 +6102,11 @@ describe("turn failure durability and queue policy", () => {
           if (operation === "close") orchestrator.closeConversation("cancel");
           else orchestrator.stopTurn("cancel");
           orchestrator.stopTurn("cancel");
-          expect(await orchestrator.enqueue({ conversationId: "cancel", text: "racing" })).toEqual({
-            startedTurn: false,
-            queue: [],
-          });
+          const racing = await orchestrator.enqueue({ conversationId: "cancel", text: "racing" });
+          expect(racing.startedTurn).toBe(false);
+          expect(racing.queue.map((message) => message.text)).toEqual(
+            operation === "close" ? [] : ["cancel one", "cancel two", "racing"],
+          );
         }
         yield { type: "finish", reason: "stop" };
       },
@@ -6118,15 +6119,42 @@ describe("turn failure durability and queue policy", () => {
       applyToolsFilter: identityApplyToolsFilter,
       runTurn,
     });
+    const allEvents: AgentEvent[] = [];
+    const completed = new Promise<void>((resolve) =>
+      orchestrator.subscribe("cancel", (event) => {
+        allEvents.push(event);
+        if (
+          allEvents.filter((item) => item.type === "turn-ended").length ===
+          (operation === "close" ? 1 : 2)
+        )
+          resolve();
+      }),
+    );
     await orchestrator.handleMessage({
       conversationId: "cancel",
       text: "original",
       onEvent: (event) => events.push(event),
     });
-    expect(calls).toBe(1);
+    await completed;
+    expect(calls).toBe(operation === "close" ? 1 : 2);
+    expect(
+      allEvents.filter((event) => event.type === "user-message").map((event) => event.text),
+    ).toEqual(
+      operation === "close" ? ["original"] : ["original", "cancel one\n\ncancel two\n\nracing"],
+    );
+    if (operation === "stop") {
+      const terminal = allEvents.findIndex((event) => event.type === "turn-ended");
+      const carried = allEvents.findIndex(
+        (event) => event.type === "user-message" && event.text !== "original",
+      );
+      expect(terminal).toBeLessThan(carried);
+      expect(
+        allEvents.filter((event) => event.type === "turn-ended").map((event) => event.reason),
+      ).toEqual(["aborted", "sealed"]);
+    }
     expect(events.at(-1)).toMatchObject({ type: "turn-ended", reason: "aborted" });
     expect(events.some((event) => event.type === "steering")).toBe(false);
-    expect(snapshots).toEqual([1, 2, 0]);
+    expect(snapshots).toEqual(operation === "close" ? [1, 2, 0] : [1, 2, 3, 0]);
     await orchestrator.handleMessage({
       conversationId: "cancel",
       text: "explicit next",
@@ -6134,6 +6162,9 @@ describe("turn failure durability and queue policy", () => {
     });
     expect((await store.load("cancel")).flatMap((message) => message.chunks)).toEqual([
       { type: "text", text: "original" },
+      ...(operation === "stop"
+        ? [{ type: "text", text: "cancel one\n\ncancel two\n\nracing" }]
+        : []),
       { type: "text", text: "explicit next" },
     ]);
   });

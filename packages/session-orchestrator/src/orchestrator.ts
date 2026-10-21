@@ -272,7 +272,9 @@ export type TurnEventListener = (event: AgentEvent) => void;
 interface ActiveTurn {
   buffer: readonly AgentEvent[];
   turnId: string;
-  /** Aborts this turn's kernel runTurn (closeConversation). */
+  /** Close cancels carry; Stop only interrupts the current turn. */
+  cancelQueuedInput: boolean;
+  /** Aborts this turn's kernel runTurn (Stop or Close). */
   controller: AbortController;
 }
 
@@ -287,7 +289,7 @@ export interface SessionOrchestrator {
    * enqueues onto the steering queue (if the message-queue extension is
    * loaded); with no queue extension loaded the message is dropped and the
    * returned snapshot is empty (degraded — feature off). Await the result: image
-   * storage precedes insertion, failures reject, and Stop cancels pending insertion.
+   * storage precedes insertion, failures reject, and Close cancels pending insertion.
    */
   enqueue(input: EnqueueInput): Promise<EnqueueResult>;
   /**
@@ -316,7 +318,8 @@ export interface SessionOrchestrator {
    * socket disconnect, which never touches the turn): aborts any in-flight turn
    * (the kernel finishes with `finishReason: "aborted"`, partial messages are
    * persisted and the turn seals normally) and emits the `conversationClosed`
-   * hook so per-conversation background work (cache-warming) stops.
+   * hook so per-conversation background work (cache-warming) stops. Cancels
+   * queued and storage-pending input; the closed turn never carries or restarts.
    * Idempotent — closing an idle/unknown conversation just emits the hook.
    */
   closeConversation(conversationId: string): { readonly abortedTurn: boolean };
@@ -325,9 +328,10 @@ export interface SessionOrchestrator {
    * the turn's AbortController — the kernel finishes with
    * `finishReason: "aborted"`, partial messages are persisted, and the turn
    * seals normally (status transitions active → idle via the normal settle
-   * path). Pending steering is cancelled (queue surface cleared); enqueue
-   * while stopping is dropped. No automatic carry runs after Stop or Close.
-   * Idempotent — stopping an idle/unknown conversation clears any stale queue.
+   * path). Queued and storage-pending input is preserved, including input
+   * arriving during abort cleanup, and carried into a new turn after the
+   * aborted terminal. Steering stays suppressed in the aborted turn.
+   * Stopping an idle/unknown conversation never drops waiting input.
    */
   stopTurn(conversationId: string): { readonly abortedTurn: boolean };
   /**
@@ -338,7 +342,8 @@ export interface SessionOrchestrator {
    * active conversations and applies the same per-conversation stop as
    * `stopTurn` — the kernel finishes each with `finishReason: "aborted"`,
    * partial messages persist, turns seal normally. Returns how many
-   * conversations had an in-flight turn aborted.
+   * conversations had an in-flight turn aborted. Queued input carries even
+   * during forced unload, just as it does for an individual Stop.
    */
   stopAll(): { readonly stopped: number };
   handleMessage(input: {
@@ -509,7 +514,7 @@ export function createSessionOrchestrator(
   const compactionQueueWaiters = new Set<string>();
   const subscribers = new Map<string, Set<TurnEventListener>>();
   const activeTurns = new Map<string, ActiveTurn>();
-  // Serialize image storage/insertion per conversation; Stop invalidates in-flight work.
+  // Serialize image storage/insertion per conversation; only Close invalidates work.
   const pendingEnqueues = new Map<string, { cancelled: boolean; tail?: Promise<EnqueueResult> }>();
   // One stateless retry strategy shared by every turn (delayFor is pure; sleep
   // is a stateless setTimeout closure). Wired into each RunTurnInput.retry.
@@ -597,7 +602,8 @@ export function createSessionOrchestrator(
     const turnId = generateTurnId();
     const promptStartedAt = deps.now?.() ?? Date.now();
     const controller = new AbortController();
-    activeTurns.set(conversationId, { buffer: [], turnId, controller });
+    const turn: ActiveTurn = { buffer: [], turnId, controller, cancelQueuedInput: false };
+    activeTurns.set(conversationId, turn);
     const pendingCompaction = compacting.get(conversationId);
     // A waiting turn owns the single-flight slot, but must not invalidate the
     // compactor's generating-state recheck until the barrier has completed.
@@ -1125,9 +1131,8 @@ export function createSessionOrchestrator(
         // The new turn re-adds to activeTurns + activeConversations, so skip
         // the activeConversations.delete when carried. May chain (user keeps
         // steering) — each carried turn's own finally re-checks the queue.
-        // Stop/Close cancels pending intent; only non-aborted outcomes carry.
-        const carried =
-          !controller.signal.aborted && endReason !== "aborted" && tryCarryQueue(conversationId);
+        // Stop interrupts work, not intent. Close alone suppresses the carry.
+        const carried = !turn.cancelQueuedInput && tryCarryQueue(conversationId);
         if (!carried) {
           activeConversations.delete(conversationId);
         }
@@ -1186,16 +1191,14 @@ export function createSessionOrchestrator(
       const state = pending;
       const deliver = async (): Promise<EnqueueResult> => {
         const dropped: EnqueueResult = { startedTurn: false, queue: [] };
-        if (state.cancelled || activeTurns.get(conversationId)?.controller.signal.aborted)
-          return dropped;
+        if (state.cancelled || activeTurns.get(conversationId)?.cancelQueuedInput) return dropped;
         const vision = deps.resolveVisionHandoff?.();
         const images =
           input.images?.length && vision !== undefined
             ? await vision.storeImages(conversationId, input.images)
             : input.images;
-        // Storage can outlive Stop/Close or the original turn. Recheck before delivery.
-        if (state.cancelled || activeTurns.get(conversationId)?.controller.signal.aborted)
-          return dropped;
+        // Storage can outlive Close or the original turn. Stop preserves this work.
+        if (state.cancelled || activeTurns.get(conversationId)?.cancelQueuedInput) return dropped;
         const stored = { ...input, ...(images !== undefined ? { images } : {}) };
         const queue = deps.resolveQueue?.();
         const barrier = compacting.get(conversationId);
@@ -1292,7 +1295,13 @@ export function createSessionOrchestrator(
     },
 
     closeConversation(conversationId) {
+      // Mark cancellation BEFORE abort callbacks or queue surface notifications can reenter.
+      const pending = pendingEnqueues.get(conversationId);
+      if (pending !== undefined) pending.cancelled = true;
+      const turn = activeTurns.get(conversationId);
+      if (turn !== undefined) turn.cancelQueuedInput = true;
       const { abortedTurn } = orchestrator.stopTurn(conversationId);
+      deps.resolveQueue?.()?.drain(conversationId);
       deps.emit?.(conversationClosed, { conversationId });
       // Resolve the persisted workspace id before emitting so the
       // broadcast carries the correct workspace. The hook is
@@ -1306,21 +1315,18 @@ export function createSessionOrchestrator(
     },
 
     stopTurn(conversationId) {
-      const pending = pendingEnqueues.get(conversationId);
-      if (pending !== undefined) pending.cancelled = true;
       const turn = activeTurns.get(conversationId);
       const abortedTurn = turn !== undefined;
       if (turn !== undefined) {
-        // Record cancellation synchronously before clearing/notifying the queue.
+        // Keep queued and storage-pending input for the post-terminal carry.
         turn.controller.abort();
       }
-      deps.resolveQueue?.()?.drain(conversationId);
       return { abortedTurn };
     },
 
     stopAll() {
       let stopped = 0;
-      for (const conversationId of new Set([...activeConversations, ...pendingEnqueues.keys()])) {
+      for (const conversationId of [...activeTurns.keys()]) {
         if (orchestrator.stopTurn(conversationId).abortedTurn) stopped++;
       }
       return { stopped };

@@ -36,13 +36,18 @@ const tool: ToolContract = {
 };
 
 function fixture(
-  mode: "steering" | "carry" | "error" = "carry",
+  mode: "steering" | "carry" | "error" | "tool" = "carry",
   storageGate?: ReturnType<typeof gate>,
+  settleGate?: ReturnType<typeof gate>,
 ) {
   const store = createConversationStore(storageFromMap());
   const entered = gate();
   const release = gate();
   const stored = gate();
+  const toolEntered = gate();
+  const toolAborted = gate();
+  const settling = gate();
+  let appends = 0;
   let id = 0;
   const queue = createMessageQueueService({
     id: () => String(++id),
@@ -51,6 +56,7 @@ function fixture(
   });
   const requests: { messages: readonly ChatMessage[]; computerId?: string }[] = [];
   const events: AgentEvent[] = [];
+  const compactions: string[] = [];
   const vision: VisionHandoffService = {
     storeImages: async (_id, input) => {
       stored.resolve();
@@ -69,8 +75,9 @@ function fixture(
       providerRequests.push([...messages]);
       if (++calls === 1) {
         entered.resolve();
-        await release.promise;
-        if (mode === "steering") {
+        yield { type: "text-delta", delta: "partial" };
+        if (mode !== "tool") await release.promise;
+        if (mode === "steering" || mode === "tool") {
           yield { type: "tool-call", toolCallId: "echo-1", toolName: "echo", input: {} };
           yield { type: "finish", reason: "tool-calls" };
           return;
@@ -84,11 +91,46 @@ function fixture(
     },
   };
   const bundle = createSessionOrchestrator({
-    conversationStore: store,
+    conversationStore: {
+      ...store,
+      appendMetrics: async (...args) => {
+        if (++appends === 1) {
+          settling.resolve();
+          await settleGate?.promise;
+        }
+        await store.appendMetrics(...args);
+      },
+    },
     resolveProvider: () => provider,
     resolveQueue: () => queue,
     resolveVisionHandoff: () => vision,
-    resolveTools: () => [tool],
+    resolveCompaction: () => ({
+      compact: async (id) => {
+        compactions.push(id);
+        return { skipped: true, reason: "below threshold" };
+      },
+    }),
+    resolveTools: () => [
+      mode !== "tool"
+        ? tool
+        : {
+            ...tool,
+            execute: async (_input, ctx) => {
+              toolEntered.resolve();
+              await new Promise<void>((resolve) =>
+                ctx.signal.addEventListener(
+                  "abort",
+                  () => {
+                    toolAborted.resolve();
+                    resolve();
+                  },
+                  { once: true },
+                ),
+              );
+              return { content: "aborted tool" };
+            },
+          },
+    ],
     applyToolsFilter: async (assembly) => assembly,
     runTurn: (input) => {
       requests.push({
@@ -98,7 +140,14 @@ function fixture(
       return runTurn(input);
     },
   });
-  bundle.orchestrator.subscribe("c", (event) => events.push(event));
+  bundle.orchestrator.subscribe("c", (event) => {
+    // Carry must open synchronously after the old terminal, with no compaction/idle gap.
+    if (event.type === "user-message" && event.text === "one\n\ntwo") {
+      expect(compactions).toEqual([]);
+      expect(bundle.activeConversations.has("c")).toBe(true);
+    }
+    events.push(event);
+  });
   const ended = (count: number) =>
     new Promise<void>((resolve) => {
       const unsubscribe = bundle.orchestrator.subscribe("c", () => {
@@ -115,6 +164,9 @@ function fixture(
     entered,
     release,
     stored,
+    toolEntered,
+    toolAborted,
+    settling,
     requests,
     providerRequests,
     events,
@@ -127,8 +179,10 @@ describe("queued images and computer metadata", () => {
     "steering",
     "carry",
     "error",
+    "stop",
+    "stopAll",
   ] as const)("stores compact images before %s and persists delivery", async (mode) => {
-    const f = fixture(mode);
+    const f = fixture(mode === "stop" || mode === "stopAll" ? "steering" : mode);
     f.orchestrator.startTurn({ conversationId: "c", text: "opening", computerId: "original" });
     await f.entered.promise;
     const first = await f.orchestrator.enqueue({
@@ -154,8 +208,16 @@ describe("queued images and computer metadata", () => {
     const field = buildQueueSpec(second.queue).fields[0];
     expect(field).toMatchObject({ payload: { messages: [{ imageCount: 1 }, { imageCount: 1 }] } });
     const completed = f.ended(mode === "steering" ? 1 : 2);
+    if (mode === "stop") f.orchestrator.stopTurn("c");
+    if (mode === "stopAll") expect(f.orchestrator.stopAll()).toEqual({ stopped: 1 });
     f.release.resolve();
     await completed;
+    if (mode === "stop" || mode === "stopAll") {
+      expect(
+        f.events.filter((event) => event.type === "turn-ended").map((event) => event.reason),
+      ).toEqual(["aborted", "sealed"]);
+      expect(f.events.some((event) => event.type === "steering")).toBe(false);
+    }
     const users = (await f.store.load("c")).filter((message) => message.role === "user");
     expect(users.at(-1)?.chunks).toEqual(
       mode === "steering"
@@ -191,29 +253,52 @@ describe("queued images and computer metadata", () => {
     "stop",
     "close",
     "stopAll",
-  ] as const)("%s cancels storage-pending input without leaking into a later turn", async (operation) => {
+  ] as const)("%s applies its queue policy to storage-pending input in FIFO order", async (operation) => {
     const storage = gate();
     const f = fixture("carry", storage);
     f.orchestrator.startTurn({ conversationId: "c", text: "opening" });
     await f.entered.promise;
-    const pending = f.orchestrator.enqueue({ conversationId: "c", text: "cancelled", images });
+    const pending = f.orchestrator.enqueue({
+      conversationId: "c",
+      text: "pending image",
+      images,
+      computerId: "remote-a",
+    });
     await f.stored.promise;
-    const behind = f.orchestrator.enqueue({ conversationId: "c", text: "also cancelled" });
+    const behind = f.orchestrator.enqueue({ conversationId: "c", text: "following text" });
     if (operation === "close") f.orchestrator.closeConversation("c");
     else if (operation === "stopAll") f.orchestrator.stopAll();
     else f.orchestrator.stopTurn("c");
     const completed = f.ended(1);
     f.release.resolve();
     await completed;
-    const restarted = f.ended(2);
-    expect(
-      (await f.orchestrator.enqueue({ conversationId: "c", text: "explicit restart" })).startedTurn,
-    ).toBe(true);
-    await restarted;
-    storage.resolve();
-    expect(await pending).toEqual({ startedTurn: false, queue: [] });
-    expect(await behind).toEqual({ startedTurn: false, queue: [] });
-    expect(JSON.stringify(await f.store.load("c"))).not.toContain("cancelled");
+    if (operation === "close") {
+      const restarted = f.ended(2);
+      expect(
+        (await f.orchestrator.enqueue({ conversationId: "c", text: "explicit restart" }))
+          .startedTurn,
+      ).toBe(true);
+      await restarted;
+      storage.resolve();
+      expect(await pending).toEqual({ startedTurn: false, queue: [] });
+      expect(await behind).toEqual({ startedTurn: false, queue: [] });
+      expect(JSON.stringify(await f.store.load("c"))).not.toContain("pending image");
+      expect(JSON.stringify(await f.store.load("c"))).not.toContain("following text");
+    } else {
+      const carried = f.ended(3);
+      storage.resolve();
+      expect((await pending).startedTurn).toBe(true);
+      await behind;
+      await carried;
+      expect(
+        f.events.filter((event) => event.type === "user-message").map((event) => event.text),
+      ).toEqual(["opening", "pending image", "following text"]);
+      expect(
+        (await f.store.load("c")).filter((message) => message.role === "user")[1]?.chunks,
+      ).toEqual([{ type: "text", text: "pending image" }, ...imageChunks]);
+      expect(f.requests[1]?.computerId).toBe("remote-a");
+      expect(f.events.some((event) => event.type === "steering")).toBe(false);
+    }
     expect(f.queue.getQueue("c")).toEqual([]);
   });
 
@@ -321,14 +406,213 @@ it("rejects failed image storage without inserting input and allows later enqueu
   await completed;
 });
 
-it("Stop cancels an idle storage-pending enqueue before any turn has started", async () => {
+it.each([
+  "stop",
+  "stopAll",
+] as const)("%s preserves an idle storage-pending enqueue before any turn has started", async (operation) => {
   const storage = gate();
   const f = fixture("carry", storage);
   const pending = f.orchestrator.enqueue({ conversationId: "c", text: "", images });
   await f.stored.promise;
-  expect(f.orchestrator.stopTurn("c")).toEqual({ abortedTurn: false });
+  if (operation === "stop") expect(f.orchestrator.stopTurn("c")).toEqual({ abortedTurn: false });
+  else expect(f.orchestrator.stopAll()).toEqual({ stopped: 0 });
+  const completed = f.ended(1);
   storage.resolve();
-  expect(await pending).toEqual({ startedTurn: false, queue: [] });
-  expect(f.requests).toEqual([]);
-  expect(await f.store.load("c")).toEqual([]);
+  expect(await pending).toEqual({ startedTurn: true, queue: [] });
+  await f.entered.promise;
+  f.release.resolve();
+  await completed;
+  expect(f.requests).toHaveLength(1);
+  expect((await f.store.load("c"))[0]?.chunks).toEqual(imageChunks);
+});
+
+it("Stop aborts an executing tool before carrying queued input, without steering it", async () => {
+  const f = fixture("tool");
+  f.orchestrator.startTurn({ conversationId: "c", text: "opening" });
+  await f.toolEntered.promise;
+  await f.orchestrator.enqueue({ conversationId: "c", text: "queued after tool" });
+  const completed = f.ended(2);
+  expect(f.orchestrator.stopTurn("c")).toEqual({ abortedTurn: true });
+  await f.toolAborted.promise;
+  await completed;
+  expect(
+    f.events.filter((event) => event.type === "turn-ended").map((event) => event.reason),
+  ).toEqual(["aborted", "sealed"]);
+  const terminal = f.events.findIndex((event) => event.type === "turn-ended");
+  const carried = f.events.findIndex(
+    (event) => event.type === "user-message" && event.text === "queued after tool",
+  );
+  expect(terminal).toBeLessThan(carried);
+  expect(f.events.some((event) => event.type === "steering")).toBe(false);
+  expect(f.providerRequests).toHaveLength(2);
+  expect(f.orchestrator.isActive("c")).toBe(false);
+  expect(JSON.stringify(await f.store.load("c"))).toContain("partial");
+});
+
+it.each([
+  "stop",
+  "close",
+] as const)("%s with compaction-deferred input preserves its policy", async (operation) => {
+  const f = fixture();
+  const barrier = gate();
+  f.compacting.set("c", barrier.promise);
+  const deferred = await f.orchestrator.enqueue({ conversationId: "c", text: "deferred", images });
+  expect(deferred.startedTurn).toBe(false);
+  expect(deferred.queue).toHaveLength(1);
+  if (operation === "stop") {
+    expect(f.orchestrator.stopTurn("c")).toEqual({ abortedTurn: false });
+    expect(f.queue.getQueue("c")).toEqual(deferred.queue);
+    const completed = f.ended(1);
+    f.compacting.delete("c");
+    barrier.resolve();
+    await f.entered.promise;
+    f.release.resolve();
+    await completed;
+    expect((await f.store.load("c"))[0]?.chunks).toEqual([
+      { type: "text", text: "deferred" },
+      ...imageChunks,
+    ]);
+  } else {
+    f.orchestrator.closeConversation("c");
+    f.compacting.delete("c");
+    barrier.resolve();
+    // Observe the registered waiter before asserting that it did not restart.
+    await barrier.promise;
+    expect(f.events).toEqual([]);
+    expect(await f.store.load("c")).toEqual([]);
+  }
+  expect(f.queue.getQueue("c")).toEqual([]);
+});
+
+it("item cancellation after Stop but before carry removes only that input", async () => {
+  const f = fixture();
+  f.orchestrator.startTurn({ conversationId: "c", text: "opening" });
+  await f.entered.promise;
+  const first = await f.orchestrator.enqueue({ conversationId: "c", text: "cancel me" });
+  await f.orchestrator.enqueue({ conversationId: "c", text: "keep me" });
+  const id = first.queue[0]?.id;
+  if (id === undefined) throw new Error("missing queued id");
+  const completed = f.ended(2);
+  f.orchestrator.stopTurn("c");
+  expect(f.orchestrator.cancelQueuedMessage({ conversationId: "c", messageId: id }).cancelled).toBe(
+    true,
+  );
+  await completed;
+  expect(
+    f.events.filter((event) => event.type === "user-message").map((event) => event.text),
+  ).toEqual(["opening", "keep me"]);
+  expect(JSON.stringify(await f.store.load("c"))).not.toContain("cancel me");
+  f.release.resolve();
+});
+
+it("repeated Stop aborts a carried turn and carries its new queue exactly once", async () => {
+  const store = createConversationStore(storageFromMap());
+  let id = 0;
+  const queue = createMessageQueueService({
+    id: () => String(++id),
+    now: () => 0,
+    notify: () => {},
+  });
+  const entered = [gate(), gate()];
+  let calls = 0;
+  const provider: ProviderContract = {
+    id: "repeated-stop",
+    async *stream() {
+      const gate = entered[calls++];
+      if (gate !== undefined) {
+        yield { type: "text-delta", delta: "partial" };
+        gate.resolve();
+        await new Promise<void>(() => {}); // Deliberately ignores abort: consumer must interrupt.
+      }
+      yield { type: "finish", reason: "stop" };
+    },
+  };
+  const { orchestrator, activeConversations } = createSessionOrchestrator({
+    conversationStore: store,
+    resolveProvider: () => provider,
+    resolveQueue: () => queue,
+    resolveTools: () => [],
+    applyToolsFilter: async (assembly) => assembly,
+    runTurn,
+  });
+  const events: AgentEvent[] = [];
+  const completed = new Promise<void>((resolve) =>
+    orchestrator.subscribe("c", (event) => {
+      events.push(event);
+      if (events.filter((event) => event.type === "turn-ended").length === 3) resolve();
+    }),
+  );
+  orchestrator.startTurn({ conversationId: "c", text: "opening" });
+  await entered[0]?.promise;
+  await orchestrator.enqueue({ conversationId: "c", text: "first carry" });
+  orchestrator.stopTurn("c");
+  orchestrator.stopTurn("c");
+  await entered[1]?.promise;
+  await orchestrator.enqueue({ conversationId: "c", text: "second carry" });
+  orchestrator.stopTurn("c");
+  await completed;
+  const ended = events.filter((event) => event.type === "turn-ended");
+  expect(ended.map((event) => event.reason)).toEqual(["aborted", "aborted", "sealed"]);
+  expect(new Set(ended.map((event) => event.turnId)).size).toBe(3);
+  expect(
+    events.filter((event) => event.type === "user-message").map((event) => event.text),
+  ).toEqual(["opening", "first carry", "second carry"]);
+  expect(events.filter((event) => event.type === "done").map((event) => event.reason)).toEqual([
+    "aborted",
+    "aborted",
+    "stop",
+  ]);
+  expect(events.some((event) => event.type === "steering")).toBe(false);
+  expect(queue.getQueue("c")).toEqual([]);
+  expect(activeConversations.size).toBe(0);
+  expect(orchestrator.stopTurn("c")).toEqual({ abortedTurn: false });
+  expect(
+    (await store.load("c"))
+      .filter((message) => message.role === "user")
+      .map((message) => message.chunks),
+  ).toEqual(["opening", "first carry", "second carry"].map((text) => [{ type: "text", text }]));
+});
+
+it("pending image storage finishing during abort cleanup joins the immediate FIFO carry", async () => {
+  const storage = gate();
+  const settle = gate();
+  const f = fixture("carry", storage, settle);
+  f.orchestrator.startTurn({ conversationId: "c", text: "opening" });
+  await f.entered.promise;
+  await f.orchestrator.enqueue({ conversationId: "c", text: "before storage" });
+  const pending = f.orchestrator.enqueue({ conversationId: "c", text: "pending image", images });
+  await f.stored.promise;
+  f.orchestrator.stopTurn("c");
+  const behind = f.orchestrator.enqueue({
+    conversationId: "c",
+    text: "abort-window text",
+    computerId: "remote-b",
+  });
+  await f.settling.promise;
+  expect(f.events.filter((event) => event.type === "done").map((event) => event.reason)).toEqual([
+    "aborted",
+  ]);
+  storage.resolve();
+  expect((await pending).startedTurn).toBe(false);
+  expect((await behind).queue.map((message) => message.text)).toEqual([
+    "before storage",
+    "pending image",
+    "abort-window text",
+  ]);
+  const completed = f.ended(2);
+  settle.resolve();
+  await completed;
+  expect(
+    f.events.filter((event) => event.type === "user-message").map((event) => event.text),
+  ).toEqual(["opening", "before storage\n\npending image\n\nabort-window text"]);
+  expect(f.events.some((event) => event.type === "steering")).toBe(false);
+  expect((await f.store.load("c")).filter((message) => message.role === "user")[1]?.chunks).toEqual(
+    [
+      { type: "text", text: "before storage\n\npending image\n\nabort-window text" },
+      ...imageChunks,
+    ],
+  );
+  expect(f.requests[1]?.computerId).toBe("remote-b");
+  expect(f.queue.getQueue("c")).toEqual([]);
+  f.release.resolve();
 });
