@@ -1497,3 +1497,84 @@ describe("bounded late-join replay through the real extension", () => {
     }
   });
 });
+
+describe("live policy listener withdrawal", () => {
+  test("late-binds loopback, admits new names, and disconnects clients on withdrawal", async () => {
+    const bus = createBus(fakeLogger());
+    const store = createConversationStore(storageFromMap());
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => {
+        throw new Error("unused provider");
+      },
+      resolveTools: () => [],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    bus.provideService(sessionOrchestratorHandle, orchestrator);
+    bus.provideService(surfaceRegistryHandle, fakeRegistry([]));
+    let notify:
+      | ((snapshot: import("@dispatch/network-policy").NetworkPolicySnapshot) => void)
+      | undefined;
+    const initial = {
+      allowedHosts: new Set(["localhost", "127.0.0.1"]),
+      bindAddresses: [],
+      tailscaleIps: [],
+    };
+    const host = {
+      logger: fakeLogger(),
+      getService: bus.getService,
+      tryGetService: bus.tryGetService,
+      on: bus.on,
+      getExtensions: () => [],
+      config: {
+        get: (key: string) =>
+          key === "networkPolicy"
+            ? {
+                ...initial,
+                subscribe(listener: typeof notify) {
+                  notify = listener;
+                  return () => {
+                    notify = undefined;
+                  };
+                },
+              }
+            : key === "surfaceWsPort"
+              ? 34205
+              : undefined,
+      },
+    } as unknown as HostAPI;
+    const ext = createTransportWsExtension();
+    let ws: WebSocket | undefined;
+    try {
+      await ext.activate(host);
+      notify?.({
+        allowedHosts: new Set(["localhost", "127.0.0.1", "late.tailnet.ts.net"]),
+        bindAddresses: ["127.0.0.1"],
+        tailscaleIps: ["127.0.0.1"],
+      });
+      expect(
+        (
+          await fetch("http://127.0.0.1:34205/health", {
+            headers: {
+              Host: "late.tailnet.ts.net",
+              Origin: "http://late.tailnet.ts.net",
+            },
+          })
+        ).status,
+      ).toBe(200);
+      ws = new WebSocket("ws://127.0.0.1:34205");
+      await waitForMessage(ws);
+      const closed = new Promise<void>((resolve) =>
+        ws?.addEventListener("close", () => resolve(), { once: true }),
+      );
+      notify?.(initial);
+      await closed;
+      await expect(fetch("http://127.0.0.1:34205/health")).rejects.toThrow();
+    } finally {
+      ws?.close();
+      await ext.deactivate?.();
+    }
+    expect(notify).toBeUndefined();
+  });
+});

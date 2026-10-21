@@ -1,5 +1,23 @@
+import { conversationStoreHandle, createConversationStore } from "@dispatch/conversation-store";
+import { createCredentialStore, credentialStoreHandle } from "@dispatch/credential-store";
+import { createBus, type HostAPI, type Logger, runTurn } from "@dispatch/kernel";
+import {
+  buildAllowedHosts,
+  type NetworkPolicyConfig,
+  type NetworkPolicySnapshot,
+} from "@dispatch/network-policy";
+import {
+  cacheWarmHandle,
+  compactionHandle,
+  createCompactionService,
+  createSessionOrchestrator,
+  createWarmService,
+  sessionOrchestratorHandle,
+} from "@dispatch/session-orchestrator";
+import { createSystemPromptService, systemPromptHandle } from "@dispatch/system-prompt";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startListeners } from "./extension.js";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
+import { createTransportHttpExtension, startListeners } from "./extension.js";
 
 describe("HTTP listener lifecycle", () => {
   afterEach(() => vi.useRealTimers());
@@ -53,4 +71,204 @@ describe("HTTP listener lifecycle", () => {
     ).toThrow("occupied");
     expect(stop).toHaveBeenCalledOnce();
   });
+});
+
+describe("dynamic listener reconciliation", () => {
+  it("adds once, removes stale servers/retries, and ignores late retry callbacks after stop", () => {
+    const scheduled = new Set<() => void>();
+    const callbacks: Array<() => void> = [];
+    const bind = vi.fn((address: string) => {
+      if (address === "100.64.0.2") throw new Error("not assigned");
+      return { stop: vi.fn() };
+    });
+    const listeners = startListeners(
+      ["127.0.0.1"],
+      [],
+      bind,
+      { warn: vi.fn() },
+      (callback, delay) => {
+        expect(delay).toBe(10_000);
+        scheduled.add(callback);
+        callbacks.push(callback);
+        return () => {
+          scheduled.delete(callback);
+        };
+      },
+    );
+    const loopback = listeners.servers[0];
+    const next = {
+      bindAddresses: ["127.0.0.1", "100.64.0.1", "100.64.0.2"],
+      tailscaleIps: ["100.64.0.1", "100.64.0.2"],
+    };
+    listeners.update(next);
+    const tailnet = listeners.servers[1];
+    listeners.update(next);
+    expect(bind).toHaveBeenCalledTimes(3);
+    expect(scheduled.size).toBe(1);
+    listeners.update({ bindAddresses: ["127.0.0.1", "100.64.0.3"], tailscaleIps: ["100.64.0.3"] });
+    expect(tailnet?.stop).toHaveBeenCalledWith(true);
+    expect(loopback?.stop).not.toHaveBeenCalled();
+    expect(scheduled.size).toBe(0);
+    for (const callback of callbacks) callback();
+    expect(bind).toHaveBeenCalledTimes(4);
+    // Removing and re-adding an unavailable IP must not revive its OLD retry.
+    listeners.update(next);
+    expect(bind).toHaveBeenCalledTimes(6);
+    expect(scheduled.size).toBe(1);
+    callbacks[0]?.();
+    expect(bind).toHaveBeenCalledTimes(6);
+    listeners.stop();
+    listeners.stop();
+    listeners.update(next);
+    for (const callback of callbacks) callback();
+    expect(bind).toHaveBeenCalledTimes(6);
+    expect(scheduled.size).toBe(0);
+    expect(loopback?.stop).toHaveBeenCalledOnce();
+    expect(listeners.servers).toEqual([]);
+  });
+
+  it("starts pending with zero addresses, then binds IPv4 and IPv6", () => {
+    const bind = vi.fn(() => ({ stop: vi.fn() }));
+    const listeners = startListeners([], [], bind, { warn: vi.fn() });
+    expect(bind).not.toHaveBeenCalled();
+    listeners.update({
+      bindAddresses: ["100.64.0.1", "fd7a:115c:a1e0::1"],
+      tailscaleIps: ["100.64.0.1", "fd7a:115c:a1e0::1"],
+    });
+    expect(bind.mock.calls).toHaveLength(2);
+    expect(listeners.servers).toHaveLength(2);
+    listeners.stop();
+  });
+});
+
+// Real extension/app/guard, fake only the host composition and Bun listener edge.
+it("refreshes listeners and Host/Origin guards together and unsubscribes on unload", async () => {
+  const logger = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Logger;
+  const bus = createBus(logger);
+
+  const deps = {
+    conversationStore: createConversationStore(storageFromMap()),
+    resolveProvider: () => {
+      throw new Error("no network provider in network-policy test");
+    },
+    resolveTools: () => [],
+    runTurn,
+    applyToolsFilter: async (assembly: import("@dispatch/session-orchestrator").ToolAssembly) =>
+      assembly,
+    emit: bus.emit,
+  };
+  const bundle = createSessionOrchestrator(deps);
+  bus.provideService(sessionOrchestratorHandle, bundle.orchestrator);
+  bus.provideService(conversationStoreHandle, deps.conversationStore);
+  bus.provideService(
+    credentialStoreHandle,
+    createCredentialStore({ credentials: [], getProvider: () => undefined }),
+  );
+  bus.provideService(cacheWarmHandle, createWarmService(deps, bundle.activeConversations));
+  bus.provideService(compactionHandle, createCompactionService(deps, bundle.activeConversations));
+  bus.provideService(
+    systemPromptHandle,
+    createSystemPromptService({
+      storage: storageFromMap(),
+      adapters: {
+        spawn: async () => ({ stdout: "", stderr: "", exitCode: 1 }),
+        fs: { exists: async () => false, readText: async () => "" },
+      },
+    }),
+  );
+
+  let snapshot: NetworkPolicySnapshot = {
+    allowedHosts: buildAllowedHosts({ env: {} }),
+    bindAddresses: ["127.0.0.1"],
+    tailscaleIps: [],
+  };
+  const subscribers = new Set<(snapshot: NetworkPolicySnapshot) => void>();
+  const policy: NetworkPolicyConfig = {
+    ...snapshot,
+    subscribe(listener) {
+      subscribers.add(listener);
+      return () => {
+        subscribers.delete(listener);
+      };
+    },
+  };
+  const options: Array<Bun.ServeOptions<unknown>> = [];
+  const stops: Array<ReturnType<typeof vi.fn>> = [];
+  vi.stubGlobal("Bun", {
+    serve: (opts: Bun.ServeOptions<unknown>) => {
+      options.push(opts);
+      const stop = vi.fn();
+      stops.push(stop);
+      return { stop };
+    },
+  });
+  const extension = createTransportHttpExtension();
+  try {
+    await extension.activate({
+      logger,
+      emit: bus.emit,
+      getService: bus.getService,
+      tryGetService: bus.tryGetService,
+      on: bus.on,
+      onServiceAvailable: bus.onServiceAvailable,
+      onServiceUnavailable: bus.onServiceUnavailable,
+      getExtensions: () => [],
+      config: { get: (key: string) => (key === "networkPolicy" ? policy : 34203) },
+    } as unknown as HostAPI);
+    const fetch = options[0]?.fetch;
+    if (!fetch) throw new Error("missing fetch");
+    const request = async (host: string, origin?: string) => {
+      const headers = new Headers({ Host: host });
+      if (origin !== undefined) headers.set("Origin", origin);
+      const response = await fetch.call(
+        {} as never,
+        new Request("http://localhost/health", { headers }),
+        {} as never,
+      );
+      if (!response) throw new Error("missing response");
+      return response;
+    };
+    expect((await request("100.64.0.1")).status).toBe(421);
+    expect((await request("localhost", "http://phone.tailnet.ts.net")).status).toBe(403);
+    snapshot = {
+      allowedHosts: buildAllowedHosts({
+        env: {},
+        tailscaleStatusJson: JSON.stringify({
+          Self: {
+            DNSName: "phone.tailnet.ts.net.",
+            TailscaleIPs: ["100.64.0.1", "fd7a:115c:a1e0::1"],
+          },
+        }),
+      }),
+      bindAddresses: ["127.0.0.1", "100.64.0.1", "fd7a:115c:a1e0::1"],
+      tailscaleIps: ["100.64.0.1", "fd7a:115c:a1e0::1"],
+    };
+    for (const subscriber of subscribers) subscriber(snapshot);
+    expect(options.map((option) => option.hostname)).toEqual(snapshot.bindAddresses);
+    for (const host of ["100.64.0.1", "[fd7a:115c:a1e0::1]", "phone", "phone.tailnet.ts.net"]) {
+      const response = await request(host, `http://${host}:34204`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe(`http://${host}:34204`);
+      expect(response.headers.get("vary")).toContain("Origin");
+    }
+    expect((await request("evil.com")).status).toBe(421);
+    expect((await request("localhost", "https://phone.tailnet.ts.net.evil.com")).status).toBe(403);
+    for (const subscriber of subscribers)
+      subscriber({
+        allowedHosts: buildAllowedHosts({ env: {} }),
+        bindAddresses: ["127.0.0.1"],
+        tailscaleIps: [],
+      });
+    expect(stops[0]).not.toHaveBeenCalled();
+    expect(stops[1]).toHaveBeenCalledWith(true);
+    expect(stops[2]).toHaveBeenCalledWith(true);
+    expect((await request("100.64.0.1")).status).toBe(421);
+    expect((await request("localhost", "http://phone.tailnet.ts.net")).status).toBe(403);
+    await extension.deactivate?.();
+    expect(subscribers.size).toBe(0);
+    expect(stops[0]).toHaveBeenCalledWith(true);
+  } finally {
+    await extension.deactivate?.();
+    vi.unstubAllGlobals();
+  }
 });

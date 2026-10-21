@@ -1,4 +1,35 @@
 /** Pure network policy. No environment reads, DNS calls, subprocesses or listeners. */
+export interface NetworkPolicySnapshot {
+  readonly allowedHosts: ReadonlySet<string>;
+  readonly bindAddresses: readonly string[];
+  readonly tailscaleIps: readonly string[];
+}
+
+/** Host-owned live config. Plain snapshots remain valid for embedded transports.
+ * Publication precedes synchronous notifications; subscribe does not replay.
+ * Disposing a subscription prevents further notifications (including after unload).
+ */
+export interface NetworkPolicyConfig extends NetworkPolicySnapshot {
+  readonly subscribe?: (listener: (snapshot: NetworkPolicySnapshot) => void) => () => void;
+}
+
+/** Default bind policy includes Tailscale; explicit loopback-only needs no polling. */
+export function includesTailscale(spec: string | undefined): boolean {
+  return (spec ?? "loopback,tailscale")
+    .split(",")
+    .some((token) => token.trim().toLowerCase() === "tailscale");
+}
+
+/** Order-independent equality avoids restarting/re-notifying on status ordering noise. */
+export function sameNetworkPolicy(a: NetworkPolicySnapshot, b: NetworkPolicySnapshot): boolean {
+  const same = (left: ReadonlySet<string>, right: ReadonlySet<string>) =>
+    left.size === right.size && [...left].every((value) => right.has(value));
+  return (
+    same(a.allowedHosts, b.allowedHosts) &&
+    same(new Set(a.bindAddresses), new Set(b.bindAddresses)) &&
+    same(new Set(a.tailscaleIps), new Set(b.tailscaleIps))
+  );
+}
 export interface NetworkPolicyEnv {
   readonly DISPATCH_ALLOWED_HOSTS?: string;
   readonly DISPATCH_TAILSCALE_NAME?: string;

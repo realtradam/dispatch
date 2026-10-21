@@ -842,3 +842,51 @@ describe("GET /local-image streaming", () => {
     2000,
   );
 });
+
+describe("live policy listener withdrawal", () => {
+  test("late-binds a disposable loopback listener and releases it on withdrawal", async () => {
+    let notify:
+      | ((snapshot: import("@dispatch/network-policy").NetworkPolicySnapshot) => void)
+      | undefined;
+    const initial = {
+      allowedHosts: new Set(["localhost", "127.0.0.1"]),
+      bindAddresses: [],
+      tailscaleIps: [],
+    };
+    const ext = createTransportHttpExtension();
+    const host = createFakeHostAPI({
+      httpPort: 34203,
+      networkPolicy: {
+        ...initial,
+        subscribe(listener: typeof notify) {
+          notify = listener;
+          return () => {
+            notify = undefined;
+          };
+        },
+      },
+    });
+    try {
+      await ext.activate(host);
+      expect(ext._testServer).toBeUndefined();
+      notify?.({
+        allowedHosts: new Set(["localhost", "127.0.0.1", "late.tailnet.ts.net"]),
+        bindAddresses: ["127.0.0.1"],
+        tailscaleIps: ["127.0.0.1"],
+      });
+      const response = await fetch("http://127.0.0.1:34203/health", {
+        headers: { Host: "late.tailnet.ts.net", Origin: "http://late.tailnet.ts.net" },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe(
+        "http://late.tailnet.ts.net",
+      );
+      notify?.(initial);
+      expect(ext._testServer).toBeUndefined();
+      await expect(fetch("http://127.0.0.1:34203/health")).rejects.toThrow();
+    } finally {
+      await ext.deactivate?.();
+    }
+    expect(notify).toBeUndefined();
+  });
+});

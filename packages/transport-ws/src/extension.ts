@@ -9,7 +9,13 @@
 import { tileLayoutChanged } from "@dispatch/home-tile-layout-contract";
 import type { Extension, HostAPI, Logger } from "@dispatch/kernel";
 import { layoutChanged } from "@dispatch/layout-provider-contract";
-import { buildAllowedHosts, checkHost, checkOrigin } from "@dispatch/network-policy";
+import {
+  buildAllowedHosts,
+  checkHost,
+  checkOrigin,
+  type NetworkPolicyConfig,
+  type NetworkPolicySnapshot,
+} from "@dispatch/network-policy";
 import { extensionsChanged } from "@dispatch/plugin-manager";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
 import {
@@ -47,44 +53,77 @@ interface ConnectionState {
 
 type Ws = Bun.ServerWebSocket<ConnectionState>;
 
-/** Own each listener and retry timer; a fatal bind rolls back earlier listeners. */
+/** Transport-owned reconciliation; timers/binds are injectable outer edges. */
 export function startListeners<T extends { stop(closeActive?: boolean): unknown }>(
   addresses: readonly string[],
   tailscaleIps: readonly string[],
   bind: (address: string) => T,
   logger: Pick<Logger, "warn">,
+  schedule: (callback: () => void, delayMs: number) => () => void = (callback, delayMs) => {
+    const timer = setInterval(callback, delayMs);
+    return () => clearInterval(timer);
+  },
 ) {
-  const servers: T[] = [];
-  const timers: ReturnType<typeof setInterval>[] = [];
+  const active = new Map<string, T>();
+  const retries = new Map<string, () => void>();
+  let stopped = false;
   const stop = () => {
-    for (const timer of timers) clearInterval(timer);
-    for (const server of servers) server.stop(true);
-    timers.length = 0;
-    servers.length = 0;
+    stopped = true;
+    for (const cancel of retries.values()) cancel();
+    retries.clear();
+    for (const server of active.values()) server.stop(true);
+    active.clear();
   };
-  try {
-    for (const address of addresses) {
+  const update = (next: Pick<NetworkPolicySnapshot, "bindAddresses" | "tailscaleIps">) => {
+    if (stopped) return;
+    const desired = new Set(next.bindAddresses);
+    // Withdraw listeners and their active clients, not just future accepts.
+    for (const [address, cancel] of retries) {
+      if (!desired.has(address)) {
+        cancel();
+        retries.delete(address);
+      }
+    }
+    for (const [address, server] of active) {
+      if (!desired.has(address)) {
+        server.stop(true);
+        active.delete(address);
+      }
+    }
+    for (const address of desired) {
+      if (active.has(address) || retries.has(address)) continue;
       try {
-        servers.push(bind(address));
+        active.set(address, bind(address));
       } catch (error) {
-        if (!tailscaleIps.includes(address)) throw error;
+        if (!next.tailscaleIps.includes(address)) throw error;
         logger.warn("Tailscale bind failed; retrying every 10s", { address });
-        const timer = setInterval(() => {
+        const cancel = schedule(() => {
+          if (stopped || retries.get(address) !== cancel) return;
           try {
-            servers.push(bind(address));
-            clearInterval(timer);
+            active.set(address, bind(address));
+            retries.get(address)?.();
+            retries.delete(address);
           } catch {
             // Remains unavailable; keep the same bounded retry timer.
           }
         }, 10_000);
-        timers.push(timer);
+        retries.set(address, cancel);
       }
     }
+  };
+  try {
+    update({ bindAddresses: addresses, tailscaleIps });
   } catch (error) {
     stop();
     throw error;
   }
-  return { servers, stop };
+  return {
+    get servers() {
+      return [...active.values()];
+    },
+    update,
+    stop,
+  };
 }
 
 /** The HTTP handshake is guarded before any upgrade or connection state allocation. */
@@ -482,19 +521,17 @@ export function createTransportWsExtension(): Extension {
         }),
       );
 
-      const policy = host.config.get<{
-        allowedHosts: ReadonlySet<string>;
-        bindAddresses: readonly string[];
-        tailscaleIps: readonly string[];
-      }>("networkPolicy") ?? {
+      const policy = host.config.get<NetworkPolicyConfig>("networkPolicy") ?? {
         allowedHosts: buildAllowedHosts({ env: {} }),
         bindAddresses: ["127.0.0.1", "::1"],
         tailscaleIps: [],
       };
+      // Stable request-policy view: guards/CORS see the latest complete publication.
+      const allowedHosts = new Set(policy.allowedHosts);
       const options: Bun.ServeOptions<ConnectionState> = {
         port,
         fetch(req, srv) {
-          const denied = guardUpgrade(req, policy.allowedHosts);
+          const denied = guardUpgrade(req, allowedHosts);
           if (denied) {
             logger.warn("transport-ws: rejected request", {
               host: req.headers.get("host"),
@@ -798,7 +835,15 @@ export function createTransportWsExtension(): Extension {
           (hostname) => Bun.serve<ConnectionState>({ ...options, hostname }),
           logger,
         );
+        const unsubscribe = policy.subscribe?.((next) => {
+          allowedHosts.clear();
+          for (const host of next.allowedHosts) allowedHosts.add(host);
+          listeners?.update(next);
+        });
+        if (unsubscribe) disposers.push(unsubscribe);
       } catch (error) {
+        listeners?.stop();
+        listeners = undefined;
         for (const dispose of disposers) dispose();
         disposers.length = 0;
         throw error;

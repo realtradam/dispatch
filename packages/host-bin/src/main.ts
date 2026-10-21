@@ -32,7 +32,7 @@ import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
 import { loadExternalExtensions } from "./load-external.js";
 import { startMemoryTelemetry } from "./mem-telemetry.js";
-import { detectNetworkPolicy } from "./network.js";
+import { createNetworkPolicyMonitor } from "./network.js";
 import {
   ensurePluginsDir,
   loadPlugin,
@@ -123,7 +123,8 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
   const storageFactory = (namespace: string): StorageNamespace => sqliteBackend.storage(namespace);
 
   const configMap = envToConfigMap(process.env as Readonly<Record<string, string | undefined>>);
-  configMap.networkPolicy = await detectNetworkPolicy(process.env, logger);
+  const networkMonitor = await createNetworkPolicyMonitor(process.env, logger);
+  configMap.networkPolicy = networkMonitor.policy;
   const config: ConfigAccess = configMapToAccess(configMap);
 
   const deps: HostDeps = {
@@ -406,6 +407,7 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
   // so the decisions are unit-tested without touching this process.
   const shutdownController = createShutdownController({
     cleanup: async () => {
+      networkMonitor.stop();
       memoryTelemetry?.stop();
       logger.info("Shutting down — deactivating extensions");
       await host.deactivate();

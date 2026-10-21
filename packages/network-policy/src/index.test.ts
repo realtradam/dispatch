@@ -4,8 +4,10 @@ import {
   checkHost,
   checkOrigin,
   corsOriginFor,
+  includesTailscale,
   normalizeHost,
   resolveBindTokens,
+  sameNetworkPolicy,
 } from "./index.js";
 
 const tailscaleStatusJson = JSON.stringify({
@@ -186,5 +188,37 @@ describe("bind token resolution", () => {
     expect((await resolveBindTokens("localhost:80", { tailscaleIps: [] })).warnings).toHaveLength(
       1,
     );
+  });
+});
+
+describe("live policy decisions", () => {
+  it.each([
+    [undefined, true],
+    ["loopback", false],
+    ["tailscale", true],
+    ["loopback, TAILSCALE ", true],
+    ["my-tailscale-host", false],
+    ["all", false],
+  ])("detects only the exact Tailscale token in %s", (spec, expected) => {
+    expect(includesTailscale(spec)).toBe(expected);
+  });
+  it("compares all policy fields without depending on address order", () => {
+    const initial = {
+      allowedHosts: new Set(["localhost", "arch"]),
+      bindAddresses: ["127.0.0.1", "100.64.0.1"],
+      tailscaleIps: ["100.64.0.1"],
+    };
+    expect(
+      sameNetworkPolicy(initial, {
+        ...initial,
+        allowedHosts: new Set(["arch", "localhost"]),
+        bindAddresses: ["100.64.0.1", "127.0.0.1"],
+      }),
+    ).toBe(true);
+    expect(sameNetworkPolicy(initial, { ...initial, allowedHosts: new Set(["localhost"]) })).toBe(
+      false,
+    );
+    expect(sameNetworkPolicy(initial, { ...initial, bindAddresses: ["127.0.0.1"] })).toBe(false);
+    expect(sameNetworkPolicy(initial, { ...initial, tailscaleIps: [] })).toBe(false);
   });
 });
