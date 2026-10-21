@@ -2,13 +2,14 @@
  * Transport contract — the typed description of Dispatch's client–server API
  * (HTTP + WebSocket).
  *
- * This package is types-only (zero runtime). It is the single shared surface
+ * This package defines types plus pure conversation-ID boundary validation.
+ * That deliberate runtime exception is not a shared codec. It is the shared surface
  * every client imports to know how to talk to the backend — the CLI, the web
  * frontend (in its own repo), any third-party client — and the transport-http /
  * transport-ws servers import to know what they must accept and emit.
  *
  * Each side owns its OWN (de)serialization: there is deliberately no shared
- * parse/serialize helper here (isolation-over-DRY). The contract is the SHAPES,
+ * wire parse/serialize helper here (isolation-over-DRY). The contract is the SHAPES,
  * not the codec. The streaming response payload is the kernel's `AgentEvent`
  * union, re-exported here so a client has one import for the whole wire.
  *
@@ -59,6 +60,7 @@ export type {
   Workspace,
   WorkspaceEntry,
 } from "@dispatch/wire";
+export { isValidConversationId, parseConversationId } from "./conversation-id.js";
 
 /**
  * Request body for `POST /chat` (sent as JSON).
@@ -71,6 +73,8 @@ export interface ChatRequest {
   /**
    * The conversation to continue. Omit to start a fresh conversation — the
    * server mints an id and returns it via the `X-Conversation-Id` header.
+   * When supplied, must match `^[A-Za-z0-9_-]{1,128}$` (UUIDs and legacy IDs).
+   * Empty, null, and non-string values are rejected, not treated as absent.
    */
   readonly conversationId?: string;
 
@@ -251,10 +255,15 @@ export interface DeleteNamedAgentResponse {
  * tail sync = `?sinceSeq=<cursor>` (no limit); page older history in =
  * `?beforeSeq=<oldestLoadedSeq>&limit=<k>`.
  *
- * Seq numbering is **1-based and gap-free** (a CONTRACTUAL GUARANTEE — see
- * `StoredChunk` in `@dispatch/wire`): a client can derive "older chunks exist"
- * purely from `oldestLoaded.seq > 1`; there is deliberately no
- * `earliestSeq`/`hasOlder` response field.
+ * Seq is positive and never reused within a conversation, even when history is
+ * replaced. The retained log need not start at 1, so `oldestLoaded.seq > 1`
+ * does not prove older chunks exist. An empty/short backfill page can establish
+ * that no earlier chunks remain.
+ *
+ * `historyEpoch` is the persisted replacement count (missing storage value = 0).
+ * Every successful replacement, including an empty one, increments it once.
+ * On a different epoch, clients invalidate their conversation cache and refetch
+ * with `sinceSeq=0` (optionally windowed), even if this response has no chunks.
  *
  * `chunks` is the RAW, append-order, seq-ordered slice of the conversation log
  * selected + windowed as above. It is NOT reconciled: a dangling tool-call is
@@ -280,6 +289,7 @@ export interface DeleteNamedAgentResponse {
 export interface ConversationHistoryResponse {
   readonly chunks: readonly StoredChunk[];
   readonly latestSeq: number;
+  readonly historyEpoch: number;
 }
 
 /**
@@ -540,9 +550,12 @@ export interface SetVisionSettingsRequest {
  * works regardless of generation state. The resolved queue + whether a turn was
  * started are returned in `QueueResponse`.
  *
- * `text` must be non-empty (after trim) → HTTP 400 `{ error }` otherwise.
+ * `text` must be a string; empty/whitespace text requires at least one image.
+ * Invalid bodies return HTTP 400 `{ error }`.
  */
 export interface QueueRequest {
+  readonly images?: readonly ImageInput[];
+  readonly computerId?: string;
   readonly text: string;
   /**
    * The workspace to assign the conversation to (if a new conversation is
@@ -727,6 +740,8 @@ export interface WarmResponse {
  */
 export interface ChatSendMessage extends ChatRequest {
   readonly type: "chat.send";
+  /** Optional client correlation token, echoed by chat.queued. */
+  readonly requestId?: string;
 }
 
 /**
@@ -741,6 +756,23 @@ export interface ChatDeltaMessage {
 }
 
 /**
+ * Replay or a single live payload exceeded the WS delivery budget. No partial
+ * replay/placeholder payload is sent; live subscription remains active. The
+ * client must refetch committed history over HTTP and reconcile provisional
+ * content by turn/step identity (not append duplicates). While this turn is
+ * active, use a bounded single-flight history refresh (step-complete may precede
+ * persistence), and a final refresh on turn-ended including aborted/failed
+ * terminals, so omitted data committed after this notice is recovered.
+ * This is not a transport failure and must not trigger reconnect/resubscribe.
+ */
+export interface ChatResyncRequiredMessage {
+  readonly type: "chat.resync-required";
+  readonly conversationId: string;
+  readonly turnId?: string;
+  readonly reason: "replay-limit" | "payload-limit";
+}
+
+/**
  * Server → client: a chat-scoped TRANSPORT error — e.g. a malformed `chat.send`
  * or a failure before a turn could start. (Errors DURING a turn arrive as a
  * `TurnErrorEvent` inside a `chat.delta`.)
@@ -749,6 +781,21 @@ export interface ChatErrorMessage {
   readonly type: "chat.error";
   readonly conversationId?: string;
   readonly message: string;
+}
+
+/**
+ * Accepted chat.send deferred behind compaction, sent only to its sender AFTER
+ * storage/insertion. Not a transcript event: remove the correlated optimistic
+ * opening message and display the authoritative message-queue surface instead.
+ * Live user-message/steering and history resync remain transcript-authoritative.
+ * Old clients safely ignore this additive message. No ack for ordinary starts.
+ */
+export interface ChatQueuedMessage {
+  readonly type: "chat.queued";
+  readonly conversationId: string;
+  readonly reason: "compaction";
+  readonly messageId: string;
+  readonly requestId?: string;
 }
 
 /**
@@ -762,7 +809,10 @@ export interface ChatErrorMessage {
  * `turn-start`), then streams subsequent live events. If no turn is in-flight,
  * nothing is replayed (the client relies on `GET /conversations/:id` history).
  * A client infers "generating" from a replayed `turn-start` with no matching
- * `done`/`turn-sealed` yet. Idempotent per `(connection, conversationId)`.
+ * `done`/`turn-sealed` yet. A bounded transport may replace the WHOLE replay
+ * with chat.resync-required; in that case its turnId identifies an active turn,
+ * and the client must recover committed content over HTTP (see that message).
+ * Idempotent per `(connection, conversationId)`.
  *
  * NOTE: `chat.send` auto-subscribes the sending connection, so a client only needs
  * `chat.subscribe` for conversations it is viewing but did not send to.
@@ -795,6 +845,8 @@ export interface ChatUnsubscribeMessage {
  * latter being equivalent to `chat.send`).
  */
 export interface ChatQueueMessage {
+  readonly images?: readonly ImageInput[];
+  readonly computerId?: string;
   readonly type: "chat.queue";
   readonly conversationId: string;
   readonly text: string;
@@ -891,6 +943,8 @@ export type WsServerMessage =
   | SurfaceServerMessage
   | ChatDeltaMessage
   | ChatErrorMessage
+  | ChatQueuedMessage
+  | ChatResyncRequiredMessage
   | ConversationOpenMessage
   | ConversationTabGroupChangedMessage
   | ConversationStatusChangedMessage
@@ -955,8 +1009,10 @@ export interface ConversationStatusChangedMessage {
 
 /**
  * Broadcast to all connected WS clients when a conversation's history has been
- * compacted (summarized). The frontend should reload the conversation history
- * via `GET /conversations/:id` to reflect the compacted state.
+ * compacted (summarized). `historyEpoch` is the persisted replacement count:
+ * missing storage value = 0; every successful replacement increments it once,
+ * including empty replacements. On a different epoch, clients invalidate their
+ * conversation cache and refetch `GET /conversations/:id?sinceSeq=0`.
  */
 export interface ConversationCompactedMessage {
   readonly type: "conversation.compacted";
@@ -964,6 +1020,7 @@ export interface ConversationCompactedMessage {
   readonly newConversationId: string;
   readonly messagesSummarized: number;
   readonly messagesKept: number;
+  readonly historyEpoch: number;
 }
 
 // ─── Plugin manager (plan 05) ────────────────────────────────────────────────

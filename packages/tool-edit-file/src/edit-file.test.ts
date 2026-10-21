@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { localExecBackend } from "@dispatch/exec-backend";
@@ -108,6 +108,70 @@ describe("validateArgs", () => {
 });
 
 describe("computeReplacement", () => {
+  it("keeps uniqueness and identical checks after CRLF normalization", () => {
+    expect(computeReplacement("a\r\nb a\r\nb", "a\nb", "x", false)).toEqual({
+      kind: "notUnique",
+      count: 2,
+    });
+    expect(computeReplacement("a\r\nb", "a\nb", "a\r\nb", false)).toEqual({ kind: "identical" });
+    expect(computeReplacement("a\nb", "a\nb", "c\nd", false)).toEqual({
+      content: "c\nd",
+      count: 1,
+    });
+  });
+
+  it.each([
+    { content: "header\r\na\nb\n", old: "a\nb", replacement: "x\ny", expected: "header\r\nx\ny\n" },
+    {
+      content: "a\nb\nother\r\na\r\nb",
+      old: "a\nb",
+      replacement: "x\ny",
+      expected: "x\ny\nother\r\na\r\nb",
+    },
+    {
+      content: "a\r\nb\nother\na\nb",
+      old: "a\r\nb",
+      replacement: "x\ny",
+      expected: "x\r\ny\nother\na\nb",
+    },
+    {
+      content: "header\r\na\nb\n",
+      old: "a\r\nb",
+      replacement: "x\r\ny",
+      expected: "header\r\nx\ny\n",
+    },
+    { content: "a\r\nb\nc", old: "a\nb\nc", replacement: "x\ny", expected: "x\r\ny" },
+    { content: "top\r\na\nb", old: "a", replacement: "x\r\ny", expected: "top\r\nx\ny\nb" },
+    { content: "top\r\na", old: "a", replacement: "x\ny", expected: "top\r\nx\r\ny" },
+    { content: "a\nb", old: "a\nb", replacement: "x\r\ny", expected: "x\ny" },
+  ])("uses the matched region EOL: $content / $old", ({ content, old, replacement, expected }) => {
+    expect(computeReplacement(content, old, replacement, false)).toEqual({
+      content: expected,
+      count: 1,
+    });
+  });
+
+  it("adapts replaceAll insertions to each single-line match's local EOL", () => {
+    expect(computeReplacement("a\nb\r\na\r\nb", "a", "x\ny", true)).toEqual({
+      content: "x\ny\nb\r\nx\r\ny\r\nb",
+      count: 2,
+    });
+  });
+
+  it("treats regex and replacement metacharacters literally in the fallback", () => {
+    expect(computeReplacement("[a].*\r\n(b)$", "[a].*\n(b)$", "$&\n$1", false)).toEqual({
+      content: "$&\r\n$1",
+      count: 1,
+    });
+  });
+
+  it("checks fallback uniqueness across both EOL conventions", () => {
+    expect(computeReplacement("a\r\nb\nc a\nb\r\nc", "a\nb\nc", "x", false)).toEqual({
+      kind: "notUnique",
+      count: 2,
+    });
+  });
+
   it("replaces a single occurrence", () => {
     const result = computeReplacement("hello world", "world", "there", false);
     expect(result).toEqual({ content: "hello there", count: 1 });
@@ -167,6 +231,74 @@ describe("computeReplacement", () => {
 });
 
 describe("createEditFileTool", () => {
+  it.each([
+    Buffer.from([0xff]),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from([0xe2, 0x82]),
+  ])("refuses invalid UTF-8 %j without replacing the file or changing any bytes", async (invalid) => {
+    const path = join(workdir, "invalid.txt");
+    const bytes = Buffer.from([0x61, ...invalid, 0x62]);
+    await writeFile(path, bytes);
+    const before = await stat(path);
+    const result = await makeTool().execute(
+      { path, oldString: "a", newString: "changed" },
+      stubCtx(),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("not valid UTF-8");
+    expect(await readFile(path)).toEqual(bytes);
+    expect((await stat(path)).ino).toBe(before.ino);
+    expect(await readdir(workdir)).toEqual(["invalid.txt"]);
+  });
+
+  it.each([
+    { oldString: "one\ntwo", newString: "new\nlines", replaceAll: true },
+    { oldString: "one\r\ntwo", newString: "new\r\nlines", replaceAll: true },
+    { oldString: "one", newString: "new\nlines", replaceAll: false },
+  ])("preserves CRLF and BOM with $oldString", async (args) => {
+    const path = join(workdir, "crlf.txt");
+    await writeFile(path, "\ufeffone\r\ntwo\r\none\r\ntwo\r\n");
+    const input = args.replaceAll ? undefined : "\ufeffone\r\ntwo\r\n";
+    if (input) await writeFile(path, input);
+    const result = await makeTool().execute({ path, ...args }, stubCtx());
+    expect(result.isError).toBeUndefined();
+    const expected = args.replaceAll
+      ? "\ufeffnew\r\nlines\r\nnew\r\nlines\r\n"
+      : "\ufeffnew\r\nlines\r\ntwo\r\n";
+    expect(await readFile(path)).toEqual(Buffer.from(expected));
+  });
+
+  it("atomically edits an LF region in mixed-EOL UTF-8 while preserving bytes and mode", async () => {
+    const path = join(workdir, "mixed.sh");
+    await writeFile(path, "\ufeffheader\r\nold\nlines\nuntouched é\r\n");
+    await chmod(path, 0o751);
+    const before = await stat(path);
+    const result = await makeTool().execute(
+      { path, oldString: "old\nlines", newString: "new\ntext" },
+      stubCtx(),
+    );
+    expect(result.isError).toBeUndefined();
+    expect(await readFile(path)).toEqual(Buffer.from("\ufeffheader\r\nnew\ntext\nuntouched é\r\n"));
+    expect((await stat(path)).mode & 0o7777).toBe(0o751);
+    expect((await stat(path)).ino).not.toBe(before.ino);
+    expect(await readdir(workdir)).toEqual(["mixed.sh"]);
+  });
+
+  it("preserves executable mode and atomically replaces the file", async () => {
+    const path = join(workdir, "script.sh");
+    await writeFile(path, "echo old\n");
+    await chmod(path, 0o751);
+    const before = await stat(path);
+    expect(
+      (await makeTool().execute({ path, oldString: "old", newString: "new" }, stubCtx())).isError,
+    ).toBeUndefined();
+    const after = await stat(path);
+    expect(after.mode & 0o7777).toBe(0o751);
+    expect(after.ino).not.toBe(before.ino);
+    expect(await readFile(path, "utf8")).toBe("echo new\n");
+    expect(await readdir(workdir)).toEqual(["script.sh"]);
+  });
+
   it("replaces a single occurrence", async () => {
     const filePath = join(workdir, "test.txt");
     await writeFile(filePath, "hello world\n", "utf8");

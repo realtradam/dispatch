@@ -135,7 +135,7 @@ export function createLogger(
     name: string,
     spanAttrs?: Attributes,
     parentSpanId?: string,
-    body?: string,
+    body?: string | (() => string),
   ): Span {
     const spanId = deps.newId();
     const mergedParent = parentSpanId ?? state.ctx.spanId;
@@ -147,7 +147,15 @@ export function createLogger(
       ...(mergedParent !== undefined ? { parentSpanId: mergedParent } : {}),
     };
 
-    const openRecord = buildSpanOpen(state, name, spanId, spanAttrs, body, mergedParent);
+    let recordedBody: string | undefined;
+    if (sink.recordsBodies !== false) {
+      try {
+        recordedBody = typeof body === "function" ? body() : body;
+      } catch {
+        // Body construction is observability too — never break the caller (D7).
+      }
+    }
+    const openRecord = buildSpanOpen(state, name, spanId, spanAttrs, recordedBody, mergedParent);
     const spanAttrsMutable: Record<string, string | number | boolean | null> =
       spanAttrs !== undefined ? { ...spanAttrs } : {};
     const links: SpanLink[] = [];
@@ -172,7 +180,7 @@ export function createLogger(
       addLink(target, reason): void {
         links.push(buildSpanLink(target, reason));
       },
-      child(childName: string, childAttrs?: Attributes, childBody?: string): Span {
+      child(childName: string, childAttrs?: Attributes, childBody?: string | (() => string)): Span {
         return makeSpan(childName, childAttrs, spanId, childBody);
       },
       end(outcome?): void {
@@ -220,7 +228,9 @@ export function createLogger(
           ...(mergedParent !== undefined ? { parentSpanId: mergedParent } : {}),
           ...(mergedCloseAttrs !== undefined ? { attributes: mergedCloseAttrs } : {}),
           ...(hasLinks ? { links: [...links] } : {}),
-          ...(outcome?.body !== undefined ? { body: outcome.body } : {}),
+          ...(sink.recordsBodies !== false && outcome?.body !== undefined
+            ? { body: outcome.body }
+            : {}),
         };
         try {
           sink.emit(closeRecord);
@@ -301,7 +311,7 @@ export function createLogger(
       const newAttrs = mergeAttributes(state.attrs, childCtx.attrs);
       return createLogger(newCtx, sink, deps, newAttrs);
     },
-    span(name: string, attrs?: Attributes, body?: string): Span {
+    span(name: string, attrs?: Attributes, body?: string | (() => string)): Span {
       return makeSpan(name, attrs, undefined, body);
     },
   };

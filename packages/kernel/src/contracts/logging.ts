@@ -53,8 +53,8 @@ export interface Span {
     target: { readonly spanId: string; readonly turnId?: string },
     reason?: string,
   ) => void;
-  /** Open a child span nested under this one. */
-  readonly child: (name: string, attrs?: Attributes, body?: string) => Span;
+  /** Open a child span nested under this one, with the same lazy-body guarantees as Logger.span. */
+  readonly child: (name: string, attrs?: Attributes, body?: string | (() => string)) => Span;
   /**
    * Close this span. Records duration + status. Optionally records an
    * error, additional attributes, and/or a body payload.
@@ -84,8 +84,12 @@ export interface Logger {
    * Explicit values passed down (P3 — no ambient state).
    */
   readonly child: (ctx: Partial<LogContext> & { readonly attrs?: Attributes }) => Logger;
-  /** Open a new span. Emits a `span-open` record immediately (D3). */
-  readonly span: (name: string, attrs?: Attributes, body?: string) => Span;
+  /**
+   * Open a new span. Emits a `span-open` record immediately (D3).
+   * Body thunks run synchronously only if the sink records bodies; noop
+   * loggers never evaluate them. Body construction failures are isolated.
+   */
+  readonly span: (name: string, attrs?: Attributes, body?: string | (() => string)) => Span;
 }
 
 /**
@@ -179,6 +183,8 @@ export interface SpanCloseRecord {
  * a concrete implementation. Kernel never lets sink errors escape (D7).
  */
 export interface LogSink {
+  /** Defaults to true for compatibility. False skips bodies and their thunks. */
+  readonly recordsBodies?: boolean;
   readonly emit: (record: LogRecord) => void;
 }
 

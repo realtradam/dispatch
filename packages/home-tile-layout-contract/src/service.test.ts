@@ -1,11 +1,13 @@
 import { EMPTY_TILE_LAYOUT } from "@dispatch/tile-layout-contract";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createHomeTileLayoutService, tileLayoutStorageKey } from "./service";
 
 /** In-memory StorageNamespace fake (the repo's storage contract, minus keys/has). */
 function fakeStorage() {
   const map = new Map<string, string>();
   return {
+    ...storageFromMap(map),
     get: async (key: string) => map.get(key) ?? null,
     set: async (key: string, value: string) => void map.set(key, value),
     delete: async (key: string) => void map.delete(key),

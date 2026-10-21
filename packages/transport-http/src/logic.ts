@@ -6,7 +6,11 @@ import type {
   ReasoningEffort,
   StoredChunk,
 } from "@dispatch/kernel";
-import type { PluginOpResponse, SetTabGroupRequest } from "@dispatch/transport-contract";
+import {
+  type PluginOpResponse,
+  parseConversationId,
+  type SetTabGroupRequest,
+} from "@dispatch/transport-contract";
 import type { NamedAgentSelectionSnapshot } from "@dispatch/wire";
 
 const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = [
@@ -141,10 +145,10 @@ export function parseChatBody(body: unknown, generateId: () => string): ParseRes
     return { error: "Field 'message' is required and must be a non-empty string" };
   }
 
-  const conversationId =
-    typeof obj.conversationId === "string" && obj.conversationId.length > 0
-      ? obj.conversationId
-      : generateId();
+  const conversationId = parseConversationId(
+    obj.conversationId === undefined ? generateId() : obj.conversationId,
+  );
+  if (typeof conversationId !== "string") return conversationId;
 
   const result: ChatCommand = { conversationId, message: message.trim() };
 
@@ -298,10 +302,8 @@ export function parseWarmBody(body: unknown): WarmBodyParsed | ParseError {
 
   const obj = body as Record<string, unknown>;
 
-  const conversationId = obj.conversationId;
-  if (typeof conversationId !== "string" || conversationId.length === 0) {
-    return { error: "Field 'conversationId' is required and must be a non-empty string" };
-  }
+  const conversationId = parseConversationId(obj.conversationId);
+  if (typeof conversationId !== "string") return conversationId;
 
   const result: Record<string, unknown> = { conversationId };
 
@@ -337,43 +339,68 @@ export function computeExpectedCacheRate(
 }
 
 /**
- * Parsed body for `POST /conversations/:id/queue` (`QueueRequest`). Only the
- * `text` field — `conversationId` comes from the path param, not the body, so it
- * is deliberately NOT part of this parse result.
+ * Parsed queue content/options. `conversationId` comes from the validated path
+ * param, not the body, so it is deliberately NOT part of this parse result.
  */
 export interface QueueBodyParsed {
+  readonly images?: readonly { readonly url: string; readonly mimeType?: string }[];
+  readonly computerId?: string;
   readonly text: string;
   readonly workspaceId?: string;
 }
 
 /**
  * Parse + validate a `POST /conversations/:id/queue` body (`QueueRequest`).
- * `text` must be a non-empty string after trim — invalid/missing →
- * {@link ParseError}. The TRIMMED text is returned (forwarded to
- * `orchestrator.enqueue`), mirroring how `parseChatBody` forwards a trimmed
+ * `text` must be a string; empty/whitespace text requires at least one image.
+ * Invalid/missing content returns {@link ParseError}. Trimmed text is forwarded to
+ * `orchestrator.enqueue`, mirroring how `parseChatBody` forwards a trimmed
  * `message`.
  */
 export function parseQueueBody(body: unknown): QueueBodyParsed | ParseError {
   if (body === null || typeof body !== "object") {
     return { error: "Request body must be a JSON object" };
   }
-
   const obj = body as Record<string, unknown>;
-
-  const text = obj.text;
-  if (typeof text !== "string" || text.trim().length === 0) {
-    return { error: "Field 'text' is required and must be a non-empty string" };
+  if (typeof obj.text !== "string") {
+    return { error: "Field 'text' is required and must be a string" };
   }
-
-  const result: QueueBodyParsed = { text: text.trim() };
-
-  if (obj.workspaceId !== undefined) {
-    if (typeof obj.workspaceId !== "string") {
-      return { error: "Field 'workspaceId' must be a string" };
+  const result: QueueBodyParsed = { text: obj.text.trim() };
+  for (const key of ["workspaceId", "computerId"] as const) {
+    if (obj[key] !== undefined) {
+      if (typeof obj[key] !== "string") return { error: `Field '${key}' must be a string` };
+      (result as { workspaceId?: string; computerId?: string })[key] = obj[key];
     }
-    return { text: text.trim(), workspaceId: obj.workspaceId };
+  }
+  if (obj.images !== undefined) {
+    if (!Array.isArray(obj.images)) {
+      return { error: "Field 'images' must be an array" };
+    }
+    const images: { url: string; mimeType?: string }[] = [];
+    for (const entry of obj.images) {
+      if (entry === null || typeof entry !== "object") {
+        return { error: "Each image must be an object with a 'url' string" };
+      }
+      const img = entry as { url?: unknown; mimeType?: unknown };
+      if (typeof img.url !== "string" || img.url.length === 0) {
+        return { error: "Each image must have a non-empty string 'url'" };
+      }
+      const parsed: { url: string; mimeType?: string } = { url: img.url };
+      if (img.mimeType !== undefined) {
+        if (typeof img.mimeType !== "string") {
+          return { error: "Field 'mimeType' on an image must be a string" };
+        }
+        parsed.mimeType = img.mimeType;
+      }
+      images.push(parsed);
+    }
+    if (images.length > 0) {
+      (result as { images?: readonly { url: string; mimeType?: string }[] }).images = images;
+    }
   }
 
+  if (result.text.length === 0 && !result.images?.length) {
+    return { error: "Field 'text' must be non-empty unless images are attached" };
+  }
   return result;
 }
 
@@ -572,10 +599,11 @@ export function parseTabGroupBody(body: unknown): SetTabGroupRequest | ParseErro
     return { error: "Request body must be a JSON object" };
   }
   const parentId = (body as Record<string, unknown>).parentId;
-  if (parentId !== null && (typeof parentId !== "string" || parentId.trim().length === 0)) {
-    return { error: "Field 'parentId' must be a non-empty string or null" };
-  }
-  return { parentId };
+  // null explicitly clears the visual parent; every non-null value is a conversation ID.
+  if (parentId === null) return { parentId };
+  const parsed = parseConversationId(parentId);
+  if (typeof parsed !== "string") return { error: `Field 'parentId': ${parsed.error}` };
+  return { parentId: parsed };
 }
 
 // ── Local image serving (Markdown image embedding) ──────────────────────────

@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
 import {
   type Bus,
@@ -15,6 +19,9 @@ import {
   createLayoutProviderRegistry,
   layoutProviderRegistryHandle,
 } from "@dispatch/layout-provider-contract";
+import { envToConfigMap } from "../../host-bin/src/config.js";
+import { createNetworkPolicyMonitor } from "../../host-bin/src/network.js";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createApp } from "./app.js";
 import { createTransportHttpExtension } from "./index.js";
 import {
@@ -42,6 +49,7 @@ import {
 function memoryNamespace(): StorageNamespace {
   const store = new Map<string, string>();
   return {
+    ...storageFromMap(store),
     get: async (key) => store.get(key) ?? null,
     set: async (key, value) => {
       store.set(key, value);
@@ -80,6 +88,12 @@ function fakeLogger(): Logger {
 
 function fakeConversationStore(): ConversationStore {
   return {
+    async getHistoryEpoch() {
+      return 0;
+    },
+    async runExclusive(_conversationId, fn) {
+      return await fn();
+    },
     async append() {},
     async load() {
       return [];
@@ -160,7 +174,7 @@ function fakeOrchestrator(): SessionOrchestrator {
     isActive() {
       return false;
     },
-    enqueue() {
+    async enqueue() {
       return { startedTurn: false, queue: [] };
     },
     closeConversation() {
@@ -248,6 +262,7 @@ function createFakeHostAPI(configOverrides: Record<string, unknown> = {}): HostA
     },
     storage() {
       return {
+        ...storageFromMap(new Map<string, string>()),
         get: async () => null,
         set: async () => {},
         delete: async () => {},
@@ -368,6 +383,59 @@ describe("extension lifecycle", () => {
       expect(true).toBe(false);
     } catch {
       // expected — server stopped
+    }
+  });
+});
+
+describe("boot-resolved durable image root", () => {
+  test.each([
+    true,
+    false,
+  ])("serves host config after cwd/env changes (override=%s)", async (override) => {
+    const dir = await mkdtemp(join(tmpdir(), "http-image-boot-"));
+    const cwd = process.cwd();
+    const previousImageDir = process.env.DISPATCH_IMAGE_DIR;
+    const previousDb = process.env.DISPATCH_DB;
+    const ext = createTransportHttpExtension();
+    try {
+      process.chdir(dir);
+      const config = envToConfigMap(
+        override ? { DISPATCH_IMAGE_DIR: "custom-images" } : { DISPATCH_DB: "data/dispatch.db" },
+      );
+      const root = config["vision.imageDir"] as string;
+      expect(root).toBe(join(dir, override ? "custom-images" : "data/images"));
+      await mkdir(join(root, "conv"), { recursive: true });
+      await writeFile(join(root, "conv", "image.png"), "boot image");
+      await mkdir(join(dir, "later"));
+      process.chdir(join(dir, "later"));
+      process.env.DISPATCH_IMAGE_DIR = join(dir, "decoy");
+      process.env.DISPATCH_DB = join(dir, "decoy-db", "dispatch.db");
+      await ext.activate(
+        createFakeHostAPI({
+          ...config,
+          httpPort: 0,
+          networkPolicy: {
+            allowedHosts: new Set(["localhost"]),
+            bindAddresses: ["127.0.0.1"],
+            tailscaleIps: [],
+          },
+        }),
+      );
+      process.chdir(cwd);
+      const response = await fetch(
+        `http://localhost:${ext._testServer?.port}/images/conv/image.png`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("image/png");
+      expect(await response.text()).toBe("boot image");
+    } finally {
+      await ext.deactivate?.();
+      process.chdir(cwd);
+      if (previousImageDir === undefined) delete process.env.DISPATCH_IMAGE_DIR;
+      else process.env.DISPATCH_IMAGE_DIR = previousImageDir;
+      if (previousDb === undefined) delete process.env.DISPATCH_DB;
+      else process.env.DISPATCH_DB = previousDb;
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
@@ -710,5 +778,240 @@ describe("reactive service registry (plan 03)", () => {
     } finally {
       ext2.deactivate?.();
     }
+  });
+});
+
+describe("real multi-listener lifecycle", () => {
+  test("binds both loopbacks on ephemeral ports and releases both", async () => {
+    const { startListeners } = await import("./extension.js");
+    const listeners = startListeners(
+      ["127.0.0.1", "::1"],
+      [],
+      (hostname) => Bun.serve({ hostname, port: 0, fetch: () => Response.json({ ok: true }) }),
+      fakeLogger(),
+    );
+    const urls = listeners.servers.map((server) => server.url.toString());
+    try {
+      for (const url of urls) expect((await fetch(url)).status).toBe(200);
+    } finally {
+      listeners.stop();
+    }
+    for (const url of urls) await expect(fetch(url)).rejects.toThrow();
+  });
+});
+
+// Bun.file responses must be exercised in Bun, not the Node-based Vitest suite.
+describe("GET /local-image streaming", () => {
+  const pngBytes = new Uint8Array(
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB1sAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  );
+  const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]);
+  const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x10, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+  const gifBytes = new TextEncoder().encode("GIF89a");
+  const bmpBytes = new TextEncoder().encode("BM6\0\0\0");
+
+  const formats: readonly {
+    readonly ext: string;
+    readonly mime: string;
+    readonly bytes: Uint8Array;
+  }[] = [
+    { ext: ".png", mime: "image/png", bytes: pngBytes },
+    { ext: ".jpg", mime: "image/jpeg", bytes: jpegBytes },
+    { ext: ".jpeg", mime: "image/jpeg", bytes: jpegBytes },
+    { ext: ".webp", mime: "image/webp", bytes: webpBytes },
+    { ext: ".gif", mime: "image/gif", bytes: gifBytes },
+    { ext: ".bmp", mime: "image/bmp", bytes: bmpBytes },
+  ];
+
+  function createTestApp() {
+    return createApp({
+      conversationStore: fakeConversationStore(),
+      orchestrator: fakeOrchestrator(),
+      credentialStore: fakeCredentialStore(),
+    });
+  }
+
+  async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "dispatch-local-image-"));
+    try {
+      await fn(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("serves a real image file of each whitelisted format with its MIME type", async () => {
+    await withTempDir(async (dir) => {
+      const app = createTestApp();
+      for (const format of formats) {
+        const file = join(dir, `pic${format.ext}`);
+        await writeFile(file, format.bytes);
+        const res = await app.request(`/local-image?path=${encodeURIComponent(file)}`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toBe(format.mime);
+        expect(res.headers.get("cache-control")).toBe("no-cache");
+        expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(new Uint8Array(await res.arrayBuffer())).toEqual(format.bytes);
+      }
+    });
+  });
+
+  test("streams a PNG at the inclusive 25 MiB limit", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "limit.png");
+      await writeFile(file, pngBytes);
+      await truncate(file, 25 * 1024 * 1024);
+      const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+      expect(res.status).toBe(200);
+      const reader = res.body?.getReader();
+      if (reader === undefined) throw new Error("Expected a streamed response body");
+      let total = 0;
+      let chunks = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (total === 0) expect(value.subarray(0, pngBytes.length)).toEqual(pngBytes);
+        total += value.length;
+        chunks++;
+      }
+      expect(total).toBe(25 * 1024 * 1024);
+      expect(chunks).toBeGreaterThan(1);
+    });
+  });
+
+  test.skipIf(Bun.which("mkfifo") === null)(
+    "rejects a FIFO named x.png without a writer",
+    async () => {
+      await withTempDir(async (dir) => {
+        const file = join(dir, "x.png");
+        const result = spawnSync("mkfifo", [file]);
+        expect(result.status).toBe(0);
+        const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Image must be a regular file" });
+      });
+    },
+    2000,
+  );
+});
+
+describe("live policy listener withdrawal", () => {
+  test("late-binds a disposable loopback listener and releases it on withdrawal", async () => {
+    let notify:
+      | ((snapshot: import("@dispatch/network-policy").NetworkPolicySnapshot) => void)
+      | undefined;
+    const initial = {
+      allowedHosts: new Set(["localhost", "127.0.0.1"]),
+      bindAddresses: [],
+      tailscaleIps: [],
+    };
+    const ext = createTransportHttpExtension();
+    const host = createFakeHostAPI({
+      httpPort: 34203,
+      networkPolicy: {
+        ...initial,
+        subscribe(listener: typeof notify) {
+          notify = listener;
+          return () => {
+            notify = undefined;
+          };
+        },
+      },
+    });
+    try {
+      await ext.activate(host);
+      expect(ext._testServer).toBeUndefined();
+      notify?.({
+        allowedHosts: new Set(["localhost", "127.0.0.1", "late.tailnet.ts.net"]),
+        bindAddresses: ["127.0.0.1"],
+        tailscaleIps: ["127.0.0.1"],
+      });
+      const response = await fetch("http://127.0.0.1:34203/health", {
+        headers: { Host: "late.tailnet.ts.net", Origin: "http://late.tailnet.ts.net" },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe(
+        "http://late.tailnet.ts.net",
+      );
+      notify?.(initial);
+      expect(ext._testServer).toBeUndefined();
+      await expect(fetch("http://127.0.0.1:34203/health")).rejects.toThrow();
+    } finally {
+      await ext.deactivate?.();
+    }
+    expect(notify).toBeUndefined();
+  });
+});
+
+describe("last-known-good policy through real listeners", () => {
+  test("retains clients across failed probes, recovers, and withdraws on positive logout", async () => {
+    const logger = fakeLogger();
+    let raw = JSON.stringify({
+      Self: {
+        TailscaleIPs: ["127.0.0.1"],
+        DNSName: "late.tailnet.ts.net.",
+        HostName: "verified-os",
+      },
+    });
+    let failed = false;
+    let tick: (() => void) | undefined;
+    const monitor = await createNetworkPolicyMonitor({ DISPATCH_BIND: "tailscale" }, logger, {
+      status: async () => {
+        if (failed) throw new Error("transient timeout");
+        return raw;
+      },
+      resolve: async () => ["127.0.0.1"],
+      schedule(callback) {
+        tick = callback;
+        return () => {
+          tick = undefined;
+        };
+      },
+    });
+    const poll = async () => {
+      const callback = tick;
+      tick = undefined;
+      expect(callback).toBeDefined();
+      callback?.();
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+    };
+    const ext = createTransportHttpExtension();
+    const host = createFakeHostAPI({ httpPort: 34203, networkPolicy: monitor.policy });
+    try {
+      await ext.activate(host);
+      const server = ext._testServer;
+      failed = true;
+      await poll();
+      await poll();
+      expect(ext._testServer).toBe(server);
+      expect(
+        (await fetch("http://127.0.0.1:34203/health", { headers: { Host: "late.tailnet.ts.net" } }))
+          .status,
+      ).toBe(200);
+      failed = false;
+      raw = JSON.stringify({
+        Self: { TailscaleIPs: ["127.0.0.1"], DNSName: "recovered.tailnet.ts.net." },
+      });
+      await poll();
+      expect(ext._testServer).toBe(server);
+      expect(
+        (
+          await fetch("http://127.0.0.1:34203/health", {
+            headers: { Host: "recovered.tailnet.ts.net" },
+          })
+        ).status,
+      ).toBe(200);
+      raw = JSON.stringify({ BackendState: "NeedsLogin", Self: null });
+      await poll();
+      expect(ext._testServer).toBeUndefined();
+      await expect(fetch("http://127.0.0.1:34203/health")).rejects.toThrow();
+    } finally {
+      monitor.stop();
+      await ext.deactivate?.();
+    }
+    expect(tick).toBeUndefined();
   });
 });

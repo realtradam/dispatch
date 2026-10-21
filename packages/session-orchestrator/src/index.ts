@@ -1,4 +1,5 @@
 export { extension, manifest } from "./extension.js";
+export { type ConversationDeletedPayload, conversationDeleted } from "./hooks.js";
 export {
   type CancelQueuedMessageResult,
   type CompactionService,

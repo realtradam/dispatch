@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../contracts/conversation.js";
 import type { AgentEvent } from "../contracts/events.js";
@@ -65,6 +66,83 @@ const ABORTED_RESULT: ToolResult = { content: "Aborted", isError: true };
 // ===========================================================================
 
 describe("executeToolCall", () => {
+  it("never evaluates span body thunks through the fallback tool logger", async () => {
+    let calls = 0;
+    const body = () => {
+      calls++;
+      throw new Error("must not run");
+    };
+    const tool = createFakeTool("test", async (_input, ctx) => {
+      const span = ctx.log.span("parent", {}, body);
+      span.child("child", {}, body).end();
+      span.log.span("nested", {}, body).end();
+      ctx.log.child({ turnId: "t1" }).span("scoped", {}, body).end();
+      span.end();
+      return { content: "ok" };
+    });
+    const result = await executeToolCall(
+      { id: "tc1", name: "test", input: {} },
+      tool,
+      new AbortController().signal,
+      noopEmit,
+      "conv-1",
+      "turn-1",
+    );
+    expect(result).toEqual({ content: "ok" });
+    expect(calls).toBe(0);
+  });
+
+  it.each([
+    "resolve",
+    "reject",
+    "throw",
+    "abort",
+  ])("restores the abort listener baseline after repeated tools that %s", async (outcome) => {
+    const ac = new AbortController();
+    ac.signal.addEventListener("abort", () => {});
+    const baseline = getEventListeners(ac.signal, "abort").length;
+    for (let i = 0; i < 20; i++) {
+      const controller = outcome === "abort" ? new AbortController() : ac;
+      if (controller !== ac) controller.signal.addEventListener("abort", () => {});
+      const tool = createFakeTool("test", () => {
+        if (outcome === "throw") throw new Error("sync");
+        if (outcome === "reject") return Promise.reject(new Error("async"));
+        if (outcome === "abort") return new Promise(() => {});
+        return Promise.resolve({ content: "ok" });
+      });
+      const pending = executeToolCall(
+        { id: `tc-${i}`, name: "test", input: {} },
+        tool,
+        controller.signal,
+        noopEmit,
+        "conv-1",
+        "turn-1",
+      );
+      if (outcome === "abort") controller.abort();
+      await pending;
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(baseline);
+    }
+  });
+
+  it("settles when a tool aborts synchronously before returning a hanging promise", async () => {
+    const ac = new AbortController();
+    const tool = createFakeTool("test", () => {
+      ac.abort();
+      return new Promise(() => {});
+    });
+    expect(
+      await executeToolCall(
+        { id: "tc1", name: "test", input: {} },
+        tool,
+        ac.signal,
+        noopEmit,
+        "conv-1",
+        "turn-1",
+      ),
+    ).toEqual(ABORTED_RESULT);
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+  });
+
   it("returns the tool's result when the tool resolves before abort", async () => {
     const ac = new AbortController();
     const tool = createFakeTool("echo", async (input) => ({

@@ -5,8 +5,10 @@ export interface ReconcileReport {
   readonly repairedToolCallIds: readonly string[];
   /** Number of `error` chunks stripped from assistant messages. */
   readonly strippedErrorChunks: number;
-  /** Number of assistant messages dropped after stripping left them empty. */
+  /** Number of messages dropped after stripping errors or orphan results left them empty. */
   readonly droppedEmptyMessages: number;
+  /** Number of tool-result chunks dropped because no assistant tool-call precedes them. */
+  readonly droppedOrphanToolResults: number;
 }
 
 export interface ReconcileResult {
@@ -41,8 +43,7 @@ export function reconcileWithReport(messages: readonly ChatMessage[]): Reconcile
   // Thinking counts even with empty text: a signature-only or redacted chunk
   // carries opaque provider replay content. Never normalize or merge it.
   // Dropping an empty message unblocks continuation: it serializes to nothing
-  // a provider understands. Safe: it ends with no tool-call, so it is NEVER followed by a
-  // `tool` message — no "tool-without-preceding-assistant-tool_calls" 400.
+  // a provider understands. Phase 3 removes any orphan results that follow it.
   let droppedEmptyMessages = 0;
   const pruned: ChatMessage[] = [];
   for (const msg of stripped) {
@@ -58,9 +59,38 @@ export function reconcileWithReport(messages: readonly ChatMessage[]): Reconcile
     pruned.push(msg);
   }
 
-  // Phase 3: orphaned-tool-call synthesis (unchanged) on what remains.
-  const resolvedIds = new Set<string>();
+  // Phase 3: drop tool results without a preceding assistant call. Do this
+  // before synthesis so a premature result cannot hide a later unfinished call.
+  let droppedOrphanToolResults = 0;
+  const precedingCalls = new Set<string>();
+  const matched: ChatMessage[] = [];
   for (const msg of pruned) {
+    const chunks = msg.chunks.filter((chunk) => {
+      if (chunk.type === "tool-result" && !precedingCalls.has(chunk.toolCallId)) {
+        droppedOrphanToolResults++;
+        return false;
+      }
+      return true;
+    });
+    if (chunks.length !== msg.chunks.length) {
+      if (chunks.length === 0) {
+        droppedEmptyMessages++;
+        continue;
+      }
+      matched.push({ ...msg, chunks });
+    } else {
+      matched.push(msg);
+    }
+    if (msg.role === "assistant") {
+      for (const chunk of chunks) {
+        if (chunk.type === "tool-call") precedingCalls.add(chunk.toolCallId);
+      }
+    }
+  }
+
+  // Phase 4: orphaned-tool-call synthesis (unchanged) on what remains.
+  const resolvedIds = new Set<string>();
+  for (const msg of matched) {
     for (const chunk of msg.chunks) {
       if (chunk.type === "tool-result") {
         resolvedIds.add(chunk.toolCallId);
@@ -69,7 +99,7 @@ export function reconcileWithReport(messages: readonly ChatMessage[]): Reconcile
   }
 
   const orphaned: ToolCallChunk[] = [];
-  for (const msg of pruned) {
+  for (const msg of matched) {
     if (msg.role !== "assistant") continue;
     for (const chunk of msg.chunks) {
       if (chunk.type === "tool-call" && !resolvedIds.has(chunk.toolCallId)) {
@@ -78,7 +108,7 @@ export function reconcileWithReport(messages: readonly ChatMessage[]): Reconcile
     }
   }
 
-  const result: ChatMessage[] = [...pruned];
+  const result: ChatMessage[] = [...matched];
 
   for (const call of orphaned) {
     const base = {
@@ -100,6 +130,7 @@ export function reconcileWithReport(messages: readonly ChatMessage[]): Reconcile
       repairedToolCallIds: orphaned.map((c) => c.toolCallId),
       strippedErrorChunks,
       droppedEmptyMessages,
+      droppedOrphanToolResults,
     },
   };
 }

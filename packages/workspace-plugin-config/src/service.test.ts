@@ -1,5 +1,6 @@
 import type { PluginTier, StorageNamespace } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { materializedMarkerKey, storageKey } from "./pure.js";
 import { createWorkspacePluginConfigService } from "./service.js";
 
@@ -11,6 +12,7 @@ import { createWorkspacePluginConfigService } from "./service.js";
 function createInMemoryStorage(): StorageNamespace & { readonly data: Map<string, string> } {
   const data = new Map<string, string>();
   return {
+    ...storageFromMap(data),
     data,
     async get(key) {
       return data.get(key) ?? null;

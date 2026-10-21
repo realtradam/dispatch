@@ -18,6 +18,7 @@ import type {
   WorkspaceSetMessage,
   WsClientMessage,
 } from "@dispatch/transport-contract";
+import { parseConversationId } from "@dispatch/transport-contract";
 import type { SurfaceCatalog, SurfaceServerMessage } from "@dispatch/ui-contract";
 
 // ── Result types ────────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ export interface SurfaceRouteResult {
 
 /** The effect a validated chat.send should produce. */
 export interface ChatRouteResult {
+  readonly requestId?: string;
   readonly kind: "chat";
   readonly conversationId: string | undefined;
   readonly message: string;
@@ -95,6 +97,8 @@ export interface ChatUnsubscribeRouteResult {
  * (startedTurn:true — the shell auto-subscribes the sender, same as chat.send).
  */
 export interface ChatQueueRouteResult {
+  readonly images?: ChatQueueMessage["images"];
+  readonly computerId?: string;
   readonly kind: "chat-queue";
   readonly conversationId: string;
   readonly text: string;
@@ -212,6 +216,25 @@ export function routeClientMessage(
   connSubs: ReadonlySet<string>,
   msg: WsClientMessage,
 ): RouteResult {
+  if (msg.type !== "workspace.set") {
+    const optional = msg.type === "chat.send" || !msg.type.startsWith("chat.");
+    if (msg.conversationId !== undefined || !optional) {
+      const parsed = parseConversationId(msg.conversationId);
+      if (typeof parsed !== "string") {
+        if (msg.type === "subscribe" || msg.type === "unsubscribe" || msg.type === "invoke") {
+          return {
+            kind: "surface",
+            replies: [{ type: "error", surfaceId: msg.surfaceId, message: parsed.error }],
+          };
+        }
+        return {
+          kind: "chat-error",
+          conversationId: typeof msg.conversationId === "string" ? msg.conversationId : undefined,
+          errorMessage: parsed.error,
+        };
+      }
+    }
+  }
   switch (msg.type) {
     case "subscribe":
       return handleSubscribe(registry, connSubs, msg.surfaceId, msg.conversationId);
@@ -244,6 +267,51 @@ const VALID_REASONING_EFFORT: ReadonlySet<string> = new Set<ReasoningEffort>([
   "max",
 ]);
 
+function parseImages(
+  input: unknown,
+  conversationId: string | undefined,
+  operation: string,
+): readonly { url: string; mimeType?: string }[] | ChatRouteError | undefined {
+  let images: readonly { url: string; mimeType?: string }[] | undefined;
+  if (input !== undefined) {
+    if (!Array.isArray(input)) {
+      return {
+        kind: "chat-error",
+        conversationId,
+        errorMessage: `${operation}: 'images' must be an array`,
+      };
+    }
+    const parsed: { url: string; mimeType?: string }[] = [];
+    for (const entry of input) {
+      if (
+        entry === null ||
+        typeof entry !== "object" ||
+        typeof entry.url !== "string" ||
+        entry.url.length === 0
+      ) {
+        return {
+          kind: "chat-error",
+          conversationId,
+          errorMessage: `${operation}: each image must have a non-empty string 'url'`,
+        };
+      }
+      const p: { url: string; mimeType?: string } = { url: entry.url };
+      if (entry.mimeType !== undefined) {
+        if (typeof entry.mimeType !== "string")
+          return {
+            kind: "chat-error",
+            conversationId,
+            errorMessage: "image mimeType must be a string",
+          };
+        p.mimeType = entry.mimeType;
+      }
+      parsed.push(p);
+    }
+    if (parsed.length > 0) images = parsed;
+  }
+  return images;
+}
+
 function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError {
   if (typeof msg.message !== "string" || msg.message.length === 0) {
     return {
@@ -259,38 +327,18 @@ function handleChatSend(msg: ChatSendMessage): ChatRouteResult | ChatRouteError 
       errorMessage: `chat.send: invalid reasoningEffort "${msg.reasoningEffort}" — must be one of: low, medium, high, xhigh, max`,
     };
   }
-  // Validate images (if present): each must be an object with a non-empty url.
-  let images: readonly { url: string; mimeType?: string }[] | undefined;
-  if (msg.images !== undefined) {
-    if (!Array.isArray(msg.images)) {
-      return {
-        kind: "chat-error",
-        conversationId: msg.conversationId,
-        errorMessage: "chat.send: 'images' must be an array",
-      };
-    }
-    const parsed: { url: string; mimeType?: string }[] = [];
-    for (const entry of msg.images) {
-      if (
-        entry === null ||
-        typeof entry !== "object" ||
-        typeof entry.url !== "string" ||
-        entry.url.length === 0
-      ) {
-        return {
-          kind: "chat-error",
-          conversationId: msg.conversationId,
-          errorMessage: "chat.send: each image must have a non-empty string 'url'",
-        };
-      }
-      const p: { url: string; mimeType?: string } = { url: entry.url };
-      if (entry.mimeType !== undefined) p.mimeType = entry.mimeType;
-      parsed.push(p);
-    }
-    if (parsed.length > 0) images = parsed;
+  if (msg.requestId !== undefined && typeof msg.requestId !== "string") {
+    return {
+      kind: "chat-error",
+      conversationId: msg.conversationId,
+      errorMessage: "chat.send: requestId must be a string",
+    };
   }
+  const images = parseImages(msg.images, msg.conversationId, "chat.send");
+  if (images !== undefined && "kind" in images) return images;
   return {
     kind: "chat",
+    ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
     conversationId: msg.conversationId,
     message: msg.message,
     model: msg.model,
@@ -311,17 +359,26 @@ function handleChatUnsubscribe(msg: ChatUnsubscribeMessage): ChatUnsubscribeRout
 }
 
 /**
- * Validate a chat.queue: `text` must be a non-empty string AFTER TRIM (matches
- * the HTTP `QueueRequest` rule). Invalid → `chat-error` (the shell replies with
+ * Validate queue content: non-empty text or at least one image (images-only text
+ * is the empty string). Invalid → `chat-error` (the shell replies with
  * `chat.error`, same style as a malformed `chat.send`; the orchestrator is never
  * called). Valid → `chat-queue` (the shell calls `orchestrator.enqueue`).
  */
 function handleChatQueue(msg: ChatQueueMessage): ChatQueueRouteResult | ChatRouteError {
-  if (typeof msg.text !== "string" || msg.text.trim().length === 0) {
+  const images = parseImages(msg.images, msg.conversationId, "chat.queue");
+  if (images !== undefined && "kind" in images) return images;
+  if (msg.computerId !== undefined && typeof msg.computerId !== "string") {
     return {
       kind: "chat-error",
       conversationId: msg.conversationId,
-      errorMessage: "chat.queue requires a non-empty string `text`",
+      errorMessage: "chat.queue: 'computerId' must be a string",
+    };
+  }
+  if (typeof msg.text !== "string" || (!msg.text.trim() && !images?.length)) {
+    return {
+      kind: "chat-error",
+      conversationId: msg.conversationId,
+      errorMessage: "chat.queue requires a non-empty string `text` or images",
     };
   }
   return {
@@ -329,25 +386,20 @@ function handleChatQueue(msg: ChatQueueMessage): ChatQueueRouteResult | ChatRout
     conversationId: msg.conversationId,
     text: msg.text,
     ...(msg.workspaceId !== undefined ? { workspaceId: msg.workspaceId } : {}),
+    ...(msg.computerId !== undefined ? { computerId: msg.computerId } : {}),
+    ...(images !== undefined ? { images } : {}),
   };
 }
 
 /**
- * Validate a chat.queue.cancel: both `conversationId` and `messageId` must be
- * non-empty strings. Invalid → `chat-error` (the shell replies with `chat.error`,
+ * Validate a chat.queue.cancel: the router validates `conversationId`;
+ * `messageId` must be a non-empty string. Invalid → `chat-error` (the shell replies with `chat.error`,
  * same style as a malformed `chat.queue`; the orchestrator is never called).
  * Valid → `chat-queue-cancel` (the shell calls `orchestrator.cancelQueuedMessage`).
  */
 function handleChatQueueCancel(
   msg: ChatQueueCancelMessage,
 ): ChatQueueCancelRouteResult | ChatRouteError {
-  if (typeof msg.conversationId !== "string" || msg.conversationId.length === 0) {
-    return {
-      kind: "chat-error",
-      conversationId: msg.conversationId,
-      errorMessage: "chat.queue.cancel requires a non-empty string `conversationId`",
-    };
-  }
   if (typeof msg.messageId !== "string" || msg.messageId.length === 0) {
     return {
       kind: "chat-error",

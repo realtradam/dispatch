@@ -1,6 +1,7 @@
 import type { StorageNamespace } from "@dispatch/kernel";
 import type { SearchBackend } from "@dispatch/search-backend-contract";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../../kernel/src/host/storage.test-support.js";
 import {
   applyConfigUpdate,
   availableBackends,
@@ -29,6 +30,7 @@ const REGISTRY = [
 function fakeStorage(): StorageNamespace & { dump: () => Map<string, string> } {
   const map = new Map<string, string>();
   return {
+    ...storageFromMap(map),
     get: async (key: string) => map.get(key) ?? null,
     set: async (key: string, value: string) => {
       map.set(key, value);

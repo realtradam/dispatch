@@ -123,7 +123,7 @@ export interface AgentManagementDeps {
 
 // ─── Wait outcome ───────────────────────────────────────────────────────────
 
-export type WaitOutcome = "settled" | "timeout" | "aborted";
+export type WaitOutcome = "settled" | "timeout" | "aborted" | { readonly error: string };
 
 // ─── Factory ────────────────────────────────────────────────────────────────
 
@@ -293,7 +293,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
 
   /**
    * Wait for a target conversation's active turn to settle. Race-free: subscribe
-   * BEFORE checking isActive (closes the race where a seal fires between the
+   * BEFORE checking isActive (closes the race where a terminal event fires between the
    * check and the subscribe). Unsubscribes in every path (settled/timeout/abort).
    * Propagates the caller's AbortSignal to waiting only — never stops the target.
    */
@@ -316,11 +316,19 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
         if (signal !== undefined) signal.removeEventListener("abort", onAbort);
         resolve(outcome);
       };
+      let lastError: string | undefined;
       const onEvent = (event: AgentEvent): void => {
-        if (event.type === "turn-sealed") finish("settled");
+        if (event.type === "error") lastError = event.message;
+        if (event.type === "turn-ended") {
+          finish(
+            event.reason === "error" || event.reason === "rejected"
+              ? { error: lastError ?? `child turn ${event.reason}` }
+              : "settled",
+          );
+        }
       };
       unsub = orchestrator.subscribe(conversationId, onEvent);
-      // A seal may have fired synchronously during subscribe (fakes might).
+      // A terminal event may have fired synchronously during subscribe (fakes might).
       if (done) {
         if (unsub !== undefined) unsub();
         return;
@@ -602,6 +610,10 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     };
     const startResult = orchestrator.startTurn(startInput);
     const started = startResult.started;
+    const waiting =
+      input.wait === true
+        ? waitForTurnSettled(orchestrator, conversationId, input.signal, deps.maxWaitMs)
+        : undefined;
     log.info("agent-management.summon", {
       callerId,
       childId: conversationId,
@@ -634,12 +646,8 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     }
 
     // Blocking: wait for the child's first turn to settle.
-    const outcome = await waitForTurnSettled(
-      orchestrator,
-      conversationId,
-      input.signal,
-      deps.maxWaitMs,
-    );
+    const outcome = await waiting;
+    if (typeof outcome === "object") return err("child-turn-failed", outcome.error);
     const finalStatus = await getStatus(conversationId);
     if (outcome === "timeout") {
       return ok({ conversationId, workspaceId, status: finalStatus, started, waitTimeout: true });
@@ -772,6 +780,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
         input.signal,
         deps.maxWaitMs,
       );
+      if (typeof outcome === "object") return err("child-turn-failed", outcome.error);
       const status = await getStatus(conversationId);
       if (outcome === "timeout") {
         const replyResult = await loadReply(conversationId, maxChars);
@@ -831,7 +840,7 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
     // enqueue owns the idle→startTurn vs active→queue decision (no delivery
     // parameter — plan §6.5). The target's persisted workspace/model/computer
     // remain authoritative (no workspaceId override passed).
-    const enqueueResult = orchestrator.enqueue({ conversationId, text: composedText });
+    const enqueueResult = await orchestrator.enqueue({ conversationId, text: composedText });
     log.info("agent-management.send", {
       callerId,
       targetId: conversationId,
@@ -865,17 +874,18 @@ export function createAgentManagementService(deps: AgentManagementDeps): AgentMa
       });
     }
 
+    // Subscribe before any open-signal I/O can let the new turn finish.
+    const waiting =
+      input.wait === true
+        ? waitForTurnSettled(orchestrator, conversationId, input.signal, deps.maxWaitMs)
+        : undefined;
     // Idle target → a new turn started.
     if (input.open === true) await emitOpen(conversationId);
     if (input.wait !== true) {
       return ok({ conversationId, delivered: "started-turn" });
     }
-    const outcome = await waitForTurnSettled(
-      orchestrator,
-      conversationId,
-      input.signal,
-      deps.maxWaitMs,
-    );
+    const outcome = await waiting;
+    if (typeof outcome === "object") return err("child-turn-failed", outcome.error);
     if (outcome === "timeout") {
       return ok({ conversationId, delivered: "started-turn", waitTimeout: true });
     }

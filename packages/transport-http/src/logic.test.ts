@@ -19,6 +19,8 @@ import {
   parseQueueBody,
   parseReasoningEffortBody,
   parseSinceSeq,
+  parseTabGroupBody,
+  parseWarmBody,
   parseWindowParam,
   serializeEventLine,
 } from "./logic.js";
@@ -71,12 +73,29 @@ describe("parseChatBody", () => {
     }
   });
 
-  it("generates conversationId when empty string", () => {
-    const result = parseChatBody({ message: "hello", conversationId: "" }, fakeId);
-    expect(isParseError(result)).toBe(false);
-    if (!isParseError(result)) {
-      expect(result.conversationId).toBe("test-uuid");
-    }
+  it.each([
+    "",
+    null,
+    42,
+    false,
+    {},
+    [],
+    "../tmp",
+    "a/b",
+    "a\\b",
+    "%2f",
+    "a:b",
+    "é",
+    "a".repeat(129),
+  ])("rejects explicit invalid conversationId %j without minting an ID", (conversationId) => {
+    const generateId = () => {
+      throw new Error("must not mint an ID");
+    };
+    expect(isParseError(parseChatBody({ message: "hi", conversationId }, generateId))).toBe(true);
+    expect(isParseError(parseWarmBody({ conversationId }))).toBe(true);
+    expect(isParseError(parseTabGroupBody({ parentId: conversationId }))).toBe(
+      conversationId !== null,
+    );
   });
 
   it("uses provided conversationId", () => {
@@ -831,5 +850,27 @@ describe("matchesImageMagicBytes", () => {
 
   it("rejects an unknown extension", () => {
     expect(matchesImageMagicBytes(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), ".svg")).toBe(false);
+  });
+});
+
+describe("queue image validation", () => {
+  it("accepts images-only input and computerId together with workspaceId", () => {
+    const images = [{ url: "data:image/png;base64,AAAA", mimeType: "image/png" }];
+    expect(parseQueueBody({ text: " ", images, computerId: "remote", workspaceId: "w" })).toEqual({
+      text: "",
+      images,
+      computerId: "remote",
+      workspaceId: "w",
+    });
+  });
+  it.each([
+    { images: "bad" },
+    { images: [null] },
+    { images: [{ url: "" }] },
+    { images: [{ url: "x", mimeType: 3 }] },
+    { computerId: 3 },
+    { images: [] },
+  ])("rejects malformed or empty images-only input: %j", (extra) => {
+    expect(isParseError(parseQueueBody({ text: "", ...extra }))).toBe(true);
   });
 });

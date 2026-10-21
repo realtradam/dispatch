@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { abortableIteration } from "./abortable-iteration.js";
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 /** An async iterator that yields items slowly; supports a never-settles mode. */
 function timedIterator<T>(
   items: readonly T[],
@@ -108,23 +102,151 @@ describe("abortableIteration", () => {
     expect(returnCalls).toBe(1);
   });
 
-  it("does not await a hanging return() before settling", async () => {
+  it("finalizes a generator suspended at yield when the consumer observes Stop", async () => {
     const controller = new AbortController();
-    const iter = abortableIteration(
-      timedIterator(["a", "b"], { hangReturn: true }),
+    let finalized = false;
+    async function* source(): AsyncIterableIterator<string> {
+      try {
+        yield "first";
+        yield "must not be consumed";
+      } finally {
+        finalized = true;
+      }
+    }
+    const iter = abortableIteration(source(), controller.signal);
+    expect(await iter.next()).toEqual({ done: false, value: "first" });
+
+    controller.abort();
+    expect(await iter.next()).toEqual({ done: true, value: undefined });
+    expect(finalized).toBe(true);
+  });
+
+  it.each([
+    "already aborted",
+    "abort gate",
+  ])("calls return exactly once on %s, including repeated next/return calls", async (branch) => {
+    const controller = new AbortController();
+    let nextCalls = 0;
+    let returnCalls = 0;
+    const iter = abortableIteration<string>(
+      {
+        next: () => {
+          nextCalls++;
+          return new Promise(() => {});
+        },
+        return: () => {
+          returnCalls++;
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      },
       controller.signal,
     );
-    const out: string[] = [];
-    // Consume fully, then abort (return() will be invoked and hangs — must not
-    // block settlement).
-    const loopPromise = (async () => {
-      for await (const v of iter) {
-        out.push(String(v));
-        if (out.length === 2) controller.abort();
-      }
-    })();
-    await Promise.race([loopPromise, delay(50).then(() => "timeout")]);
-    expect(out).toEqual(["a", "b"]);
+    if (branch === "already aborted") controller.abort();
+    const pending = iter.next();
+    controller.abort();
+    expect(await pending).toEqual({ done: true, value: undefined });
+    expect(returnCalls).toBe(1);
+    await iter.next();
+    await iter.return?.();
+    await iter.return?.();
+    expect(returnCalls).toBe(1);
+    expect(nextCalls).toBe(branch === "already aborted" ? 0 : 1);
+  });
+
+  it.each([
+    "already aborted",
+    "abort gate",
+  ])("does not await a hanging return on %s", async (branch) => {
+    const controller = new AbortController();
+    let returnCalls = 0;
+    const iter = abortableIteration<string>(
+      {
+        next: () => new Promise(() => {}),
+        return: () => {
+          returnCalls++;
+          return new Promise(() => {});
+        },
+      },
+      controller.signal,
+    );
+    if (branch === "already aborted") controller.abort();
+    const pending = iter.next();
+    controller.abort();
+    // Vitest's timeout fails this test if cleanup blocks settlement.
+    expect(await pending).toEqual({ done: true, value: undefined });
+    expect(await iter.return?.()).toEqual({ done: true, value: undefined });
+    expect(returnCalls).toBe(1);
+  });
+
+  it.each(["throws", "rejects"])("swallows cleanup that %s after abort", async (failure) => {
+    const controller = new AbortController();
+    const iter = abortableIteration<string>(
+      {
+        next: () => new Promise(() => {}),
+        return: () => {
+          const error = new Error("cleanup failed");
+          if (failure === "throws") throw error;
+          return Promise.reject(error);
+        },
+      },
+      controller.signal,
+    );
+    const pending = iter.next();
+    controller.abort();
+    expect(await pending).toEqual({ done: true, value: undefined });
+  });
+
+  it("calls return once when multiple pending next calls lose to the abort gate", async () => {
+    const controller = new AbortController();
+    let returnCalls = 0;
+    const iter = abortableIteration<string>(
+      {
+        next: () => new Promise(() => {}),
+        return: () => {
+          returnCalls++;
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      },
+      controller.signal,
+    );
+    const pending = [iter.next(), iter.next()];
+    controller.abort();
+    expect(await Promise.all(pending)).toEqual([
+      { done: true, value: undefined },
+      { done: true, value: undefined },
+    ]);
+    expect(returnCalls).toBe(1);
+  });
+
+  it("does not call return on natural completion", async () => {
+    let returnCalls = 0;
+    const iter = abortableIteration<string>(
+      {
+        next: () => Promise.resolve({ done: true, value: undefined }),
+        return: () => {
+          returnCalls++;
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      },
+      new AbortController().signal,
+    );
+    expect(await iter.next()).toEqual({ done: true, value: undefined });
+    expect(returnCalls).toBe(0);
+  });
+
+  it.each([
+    "already aborted",
+    "abort gate",
+  ])("supports an iterator without return on %s", async (branch) => {
+    const controller = new AbortController();
+    const iter = abortableIteration<string>(
+      { next: () => new Promise(() => {}) },
+      controller.signal,
+    );
+    if (branch === "already aborted") controller.abort();
+    const pending = iter.next();
+    controller.abort();
+    expect(await pending).toEqual({ done: true, value: undefined });
   });
 
   it("removes its abort listener after abort so no leak remains", async () => {

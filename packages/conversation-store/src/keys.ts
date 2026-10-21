@@ -6,6 +6,10 @@ export function seqKey(conversationId: string): string {
   return `conv:${conversationId}:seq`;
 }
 
+export function msgSeqKey(conversationId: string): string {
+  return `conv:${conversationId}:msg-seq`;
+}
+
 export function chunkKey(conversationId: string, seq: number): string {
   return `conv:${conversationId}:chunk:${String(seq).padStart(SEQ_PAD, "0")}`;
 }

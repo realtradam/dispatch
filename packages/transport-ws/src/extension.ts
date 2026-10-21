@@ -7,8 +7,15 @@
  */
 
 import { tileLayoutChanged } from "@dispatch/home-tile-layout-contract";
-import type { Extension, HostAPI } from "@dispatch/kernel";
+import type { Extension, HostAPI, Logger } from "@dispatch/kernel";
 import { layoutChanged } from "@dispatch/layout-provider-contract";
+import {
+  buildAllowedHosts,
+  checkHost,
+  checkOrigin,
+  type NetworkPolicyConfig,
+  type NetworkPolicySnapshot,
+} from "@dispatch/network-policy";
 import { extensionsChanged } from "@dispatch/plugin-manager";
 import type { SessionOrchestrator } from "@dispatch/session-orchestrator";
 import {
@@ -27,9 +34,11 @@ import {
 } from "@dispatch/workspace-plugin-config";
 import { manifest } from "./manifest.js";
 import { catalogMessageFiltered, routeClientMessage, subKey } from "./router.js";
+import { jsonByteBound, serializeWithinBudget } from "./serialization.js";
 
 /** Active provider subscriptions + chat subscription disposers for a single WS connection. */
 interface ConnectionState {
+  closed?: boolean;
   readonly subs: Set<string>;
   readonly providerDisposers: Map<string, () => void>;
   /** Per-conversation chat subscription disposers (orchestrator.subscribe). */
@@ -44,12 +53,129 @@ interface ConnectionState {
 
 type Ws = Bun.ServerWebSocket<ConnectionState>;
 
+/** Transport-owned reconciliation; timers/binds are injectable outer edges. */
+export function startListeners<T extends { stop(closeActive?: boolean): unknown }>(
+  addresses: readonly string[],
+  tailscaleIps: readonly string[],
+  bind: (address: string) => T,
+  logger: Pick<Logger, "warn">,
+  schedule: (callback: () => void, delayMs: number) => () => void = (callback, delayMs) => {
+    const timer = setInterval(callback, delayMs);
+    return () => clearInterval(timer);
+  },
+) {
+  const active = new Map<string, T>();
+  const retries = new Map<string, () => void>();
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    for (const cancel of retries.values()) cancel();
+    retries.clear();
+    for (const server of active.values()) server.stop(true);
+    active.clear();
+  };
+  const update = (next: Pick<NetworkPolicySnapshot, "bindAddresses" | "tailscaleIps">) => {
+    if (stopped) return;
+    const desired = new Set(next.bindAddresses);
+    // Withdraw listeners and their active clients, not just future accepts.
+    for (const [address, cancel] of retries) {
+      if (!desired.has(address)) {
+        cancel();
+        retries.delete(address);
+      }
+    }
+    for (const [address, server] of active) {
+      if (!desired.has(address)) {
+        server.stop(true);
+        active.delete(address);
+      }
+    }
+    for (const address of desired) {
+      if (active.has(address) || retries.has(address)) continue;
+      try {
+        active.set(address, bind(address));
+      } catch (error) {
+        if (!next.tailscaleIps.includes(address)) throw error;
+        logger.warn("Tailscale bind failed; retrying every 10s", { address });
+        const cancel = schedule(() => {
+          if (stopped || retries.get(address) !== cancel) return;
+          try {
+            active.set(address, bind(address));
+            retries.get(address)?.();
+            retries.delete(address);
+          } catch {
+            // Remains unavailable; keep the same bounded retry timer.
+          }
+        }, 10_000);
+        retries.set(address, cancel);
+      }
+    }
+  };
+  try {
+    update({ bindAddresses: addresses, tailscaleIps });
+  } catch (error) {
+    stop();
+    throw error;
+  }
+  return {
+    get servers() {
+      return [...active.values()];
+    },
+    update,
+    stop,
+  };
+}
+
+/** The HTTP handshake is guarded before any upgrade or connection state allocation. */
+export function guardUpgrade(req: Request, allowed: ReadonlySet<string>): Response | undefined {
+  const host = checkHost(req.headers.get("host") ?? new URL(req.url).host, allowed);
+  if (host !== "ok") return Response.json({ error: host.reason }, { status: host.status });
+  const origin = checkOrigin(req.headers.get("origin"), allowed);
+  if (origin !== "ok") return Response.json({ error: origin.reason }, { status: origin.status });
+  return undefined;
+}
+
 export function createTransportWsExtension(): Extension {
-  let server: ReturnType<typeof Bun.serve<ConnectionState>> | undefined;
+  let listeners:
+    | ReturnType<typeof startListeners<ReturnType<typeof Bun.serve<ConnectionState>>>>
+    | undefined;
   /** Every currently-connected WS client — used for global fan-out broadcasts. */
   const connections = new Set<Ws>();
   /** Disposers for host hook subscriptions (drained on deactivate). */
   const disposers: Array<() => void> = [];
+  let connectionLogger: Logger | undefined;
+  const watchdogs = new Map<
+    Ws,
+    {
+      timer: ReturnType<typeof setInterval>;
+      sentBytes: number;
+    }
+  >();
+
+  function disposeConnection(ws: Ws): void {
+    connections.delete(ws);
+    const watchdog = watchdogs.get(ws);
+    if (watchdog !== undefined) clearInterval(watchdog.timer);
+    watchdogs.delete(ws);
+    const state = ws.data;
+    state.closed = true;
+    const subscriptions = [
+      ...state.chatSubscriptions.values(),
+      ...state.providerDisposers.values(),
+    ];
+    state.chatSubscriptions.clear();
+    state.providerDisposers.clear();
+    state.subs.clear();
+    for (const dispose of subscriptions) {
+      try {
+        dispose();
+      } catch (err) {
+        connectionLogger?.warn("transport-ws: subscription disposal failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
 
   return {
     manifest,
@@ -57,11 +183,76 @@ export function createTransportWsExtension(): Extension {
       const registry: SurfaceRegistry = host.getService(surfaceRegistryHandle);
       const orchestrator: SessionOrchestrator = host.getService(sessionOrchestratorHandle);
       const logger = host.logger;
+      connectionLogger = logger;
       const port = host.config.get<number>("surfaceWsPort") ?? 24205;
 
       function send(ws: Ws, msg: WsServerMessage): void {
+        if (ws.data.closed) return;
         try {
-          ws.send(JSON.stringify(msg));
+          const closeIfBackpressured = () => {
+            const bufferedBytes = ws.getBufferedAmount();
+            if (bufferedBytes <= 8 * 1024 * 1024) return false;
+            logger.warn("transport-ws: closing slow consumer", { bufferedBytes });
+            disposeConnection(ws);
+            ws.close(1013, "Slow consumer; reconnect and resync");
+            return true;
+          };
+          if (closeIfBackpressured()) return;
+          // A single unbounded tool payload must not create an unbounded socket
+          // copy or close/replay loop. Full data stays in HTTP history.
+          // 4 MiB allows routine MiB-scale tool inputs/results while a single
+          // frame still uses at most half the 8 MiB slow-consumer budget.
+          const frameBudget = msg.type === "chat.delta" ? 4 * 1024 * 1024 : 1024 * 1024;
+          const serialized = serializeWithinBudget(msg, frameBudget);
+          if (serialized === undefined) {
+            if (msg.type === "chat.delta") {
+              send(ws, {
+                type: "chat.resync-required",
+                conversationId: msg.event.conversationId,
+                ...("turnId" in msg.event ? { turnId: msg.event.turnId } : {}),
+                reason: "payload-limit",
+              });
+            } else {
+              logger.warn("transport-ws: oversized non-chat message omitted", { type: msg.type });
+              send(ws, {
+                type: "error",
+                message: "WebSocket payload exceeds delivery limit",
+              });
+            }
+            return;
+          }
+          ws.send(serialized);
+          const existingWatchdog = watchdogs.get(ws);
+          if (existingWatchdog) existingWatchdog.sentBytes += Buffer.byteLength(serialized);
+          if (closeIfBackpressured()) return;
+          // Even an idle consumer stuck below 8 MiB must eventually be disposed.
+          // Only lack of progress times out; a slowly draining socket survives.
+          if (ws.getBufferedAmount() > 0 && !watchdogs.has(ws)) {
+            let previous = ws.getBufferedAmount();
+            let lastProgress = Date.now();
+            const watchdog = {
+              sentBytes: 0,
+              timer: setInterval(() => {
+                const bufferedBytes = ws.getBufferedAmount();
+                if (bufferedBytes === 0 || ws.data.closed) {
+                  clearInterval(watchdog.timer);
+                  watchdogs.delete(ws);
+                  return;
+                }
+                // Account for new writes: a stable backlog under continuous
+                // traffic is progress, not a stuck socket.
+                if (bufferedBytes < previous + watchdog.sentBytes) lastProgress = Date.now();
+                previous = bufferedBytes;
+                watchdog.sentBytes = 0;
+                if (Date.now() - lastProgress >= 30_000) {
+                  logger.warn("transport-ws: closing stalled consumer", { bufferedBytes });
+                  disposeConnection(ws);
+                  ws.close(1013, "Stalled consumer; reconnect and resync");
+                }
+              }, 5_000),
+            };
+            watchdogs.set(ws, watchdog);
+          }
         } catch {
           // Connection may have been dropped; swallow.
         }
@@ -122,13 +313,48 @@ export function createTransportWsExtension(): Extension {
        * buffered events to new subscribers (late-join), then streams live.
        */
       function ensureChatSubscribed(ws: Ws, state: ConnectionState, conversationId: string): void {
-        if (state.chatSubscriptions.has(conversationId)) {
+        if (state.closed || state.chatSubscriptions.has(conversationId)) {
           return;
         }
-        const unsubscribe = orchestrator.subscribe(conversationId, (event) => {
-          send(ws, { type: "chat.delta", event });
-        });
-        state.chatSubscriptions.set(conversationId, unsubscribe);
+        // All-or-nothing preflight avoids both partial provisional transcripts
+        // and oversized replay bursts. Allow ordinary multi-MiB turns in full:
+        // at most 4 MiB per replay and 6 MiB shared socket backlog, leaving 2 MiB
+        // headroom below the 8 MiB close bound. No serialized replay queue is
+        // retained; reference snapshots are bounded by actual envelope bytes.
+        if (state.chatSubscriptions.size + state.subs.size >= 256) {
+          disposeConnection(ws);
+          ws.close(1008, "Too many subscriptions");
+          return;
+        }
+        let budget = Math.min(
+          4 * 1024 * 1024,
+          Math.max(0, 6 * 1024 * 1024 - ws.getBufferedAmount()),
+        );
+        const unsubscribe = orchestrator.subscribe(
+          conversationId,
+          (event) => send(ws, { type: "chat.delta", event }),
+          {
+            replay: {
+              maxEvents: Number.MAX_SAFE_INTEGER,
+              accept(event) {
+                const bytes = jsonByteBound({ type: "chat.delta", event }, budget);
+                if (bytes === undefined) return false;
+                budget -= bytes;
+                return true;
+              },
+              onOmitted(turnId) {
+                send(ws, {
+                  type: "chat.resync-required",
+                  conversationId,
+                  turnId,
+                  reason: "replay-limit",
+                });
+              },
+            },
+          },
+        );
+        if (state.closed) unsubscribe();
+        else state.chatSubscriptions.set(conversationId, unsubscribe);
       }
 
       function subscribeToProvider(
@@ -139,7 +365,7 @@ export function createTransportWsExtension(): Extension {
         state: ConnectionState,
       ): void {
         const key = subKey(surfaceId, conversationId);
-        if (!provider.subscribe || state.providerDisposers.has(key)) {
+        if (state.closed || !provider.subscribe || state.providerDisposers.has(key)) {
           return;
         }
         const context: SurfaceContext | undefined =
@@ -174,7 +400,8 @@ export function createTransportWsExtension(): Extension {
             // Provider threw — log but don't kill the connection.
           }
         });
-        state.providerDisposers.set(key, dispose);
+        if (state.closed) dispose();
+        else state.providerDisposers.set(key, dispose);
       }
 
       function unsubscribeFromProvider(state: ConnectionState, key: string): void {
@@ -232,9 +459,16 @@ export function createTransportWsExtension(): Extension {
       disposers.push(
         host.on(
           conversationCompacted,
-          ({ conversationId, newConversationId, messagesSummarized, messagesKept }) => {
+          ({
+            conversationId,
+            newConversationId,
+            messagesSummarized,
+            messagesKept,
+            historyEpoch,
+          }) => {
             broadcast({
               type: "conversation.compacted",
+              historyEpoch,
               conversationId,
               newConversationId,
               messagesSummarized,
@@ -287,9 +521,26 @@ export function createTransportWsExtension(): Extension {
         }),
       );
 
-      server = Bun.serve<ConnectionState>({
+      const policy = host.config.get<NetworkPolicyConfig>("networkPolicy") ?? {
+        allowedHosts: buildAllowedHosts({ env: {} }),
+        bindAddresses: ["127.0.0.1", "::1"],
+        tailscaleIps: [],
+      };
+      // Stable request-policy view: guards/CORS see the latest complete publication.
+      const allowedHosts = new Set(policy.allowedHosts);
+      const options: Bun.ServeOptions<ConnectionState> = {
         port,
         fetch(req, srv) {
+          const denied = guardUpgrade(req, allowedHosts);
+          if (denied) {
+            logger.warn("transport-ws: rejected request", {
+              host: req.headers.get("host"),
+              origin: req.headers.get("origin"),
+              status: denied.status,
+            });
+            return denied;
+          }
+          if (new URL(req.url).pathname === "/health") return Response.json({ ok: true });
           const initial: ConnectionState = {
             subs: new Set(),
             providerDisposers: new Map(),
@@ -309,9 +560,9 @@ export function createTransportWsExtension(): Extension {
             void catalogForConnection(ws.data).then((msg) => send(ws, msg));
           },
 
-          message(ws, message) {
+          async message(ws, message) {
             const state = ws.data;
-            if (!state) return;
+            if (!state || state.closed) return;
 
             let parsed: WsClientMessage;
             try {
@@ -339,6 +590,11 @@ export function createTransportWsExtension(): Extension {
                 if (result.subChange) {
                   const key = subKey(result.subChange.surfaceId, result.subChange.conversationId);
                   if (result.subChange.op === "add") {
+                    if (state.chatSubscriptions.size + state.subs.size >= 256) {
+                      disposeConnection(ws);
+                      ws.close(1008, "Too many subscriptions");
+                      return;
+                    }
                     state.subs.add(key);
                     const provider = registry.getSurface(result.subChange.surfaceId);
                     if (provider) {
@@ -395,6 +651,7 @@ export function createTransportWsExtension(): Extension {
                 const resolvedId = result.conversationId ?? crypto.randomUUID();
                 // Auto-subscribe the sender so it sees the turn's events.
                 ensureChatSubscribed(ws, state, resolvedId);
+                if (state.closed) return;
                 // Start the turn detached from this connection.
                 const startResult = orchestrator.startTurn({
                   conversationId: resolvedId,
@@ -408,7 +665,36 @@ export function createTransportWsExtension(): Extension {
                   ...(result.computerId !== undefined ? { computerId: result.computerId } : {}),
                   ...(result.images !== undefined ? { images: result.images } : {}),
                 });
-                if (!startResult.started) {
+                if (!startResult.started && startResult.reason === "queued-behind-compaction") {
+                  try {
+                    const admission = await startResult.admission;
+                    if (admission.messageId !== undefined) {
+                      logger.info?.("transport-ws: chat.send queued behind compaction", {
+                        conversationId: resolvedId,
+                        messageId: admission.messageId,
+                      });
+                      send(ws, {
+                        type: "chat.queued",
+                        conversationId: resolvedId,
+                        reason: "compaction",
+                        messageId: admission.messageId,
+                        ...(result.requestId !== undefined ? { requestId: result.requestId } : {}),
+                      });
+                    } else if (!admission.startedTurn) {
+                      send(ws, {
+                        type: "chat.error",
+                        conversationId: resolvedId,
+                        message: "input cancelled before queue admission",
+                      });
+                    }
+                  } catch (error) {
+                    send(ws, {
+                      type: "chat.error",
+                      conversationId: resolvedId,
+                      message: error instanceof Error ? error.message : String(error),
+                    });
+                  }
+                } else if (!startResult.started) {
                   send(ws, {
                     type: "chat.error",
                     conversationId: resolvedId,
@@ -445,11 +731,28 @@ export function createTransportWsExtension(): Extension {
                 // turn's events stream to it (same as chat.send); on
                 // startedTurn:false (queued for steering) we emit NOTHING
                 // back and do not auto-subscribe.
-                const enqueueResult = orchestrator.enqueue({
-                  conversationId: result.conversationId,
-                  text: result.text,
-                  ...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
-                });
+                const enqueueResult = await orchestrator
+                  .enqueue({
+                    conversationId: result.conversationId,
+                    text: result.text,
+                    ...(result.images !== undefined ? { images: result.images } : {}),
+                    ...(result.computerId !== undefined ? { computerId: result.computerId } : {}),
+                    ...(result.workspaceId !== undefined
+                      ? { workspaceId: result.workspaceId }
+                      : {}),
+                  })
+                  .catch((error: unknown) => {
+                    logger.warn("transport-ws: queue storage failed", {
+                      conversationId: result.conversationId,
+                    });
+                    send(ws, {
+                      type: "chat.error",
+                      conversationId: result.conversationId,
+                      message: error instanceof Error ? error.message : String(error),
+                    });
+                    return undefined;
+                  });
+                if (enqueueResult === undefined) break;
                 if (enqueueResult.startedTurn) {
                   ensureChatSubscribed(ws, state, result.conversationId);
                 }
@@ -520,23 +823,31 @@ export function createTransportWsExtension(): Extension {
           },
 
           close(ws) {
-            connections.delete(ws);
-            const state = ws.data;
-            if (state) {
-              // Dispose all chat subscriptions (does NOT abort turns).
-              for (const dispose of state.chatSubscriptions.values()) {
-                dispose();
-              }
-              state.chatSubscriptions.clear();
-              // Dispose surface provider subscriptions.
-              for (const dispose of state.providerDisposers.values()) {
-                dispose();
-              }
-            }
+            disposeConnection(ws);
             logger.debug("transport-ws: connection close");
           },
         },
-      });
+      };
+      try {
+        listeners = startListeners(
+          policy.bindAddresses,
+          policy.tailscaleIps,
+          (hostname) => Bun.serve<ConnectionState>({ ...options, hostname }),
+          logger,
+        );
+        const unsubscribe = policy.subscribe?.((next) => {
+          allowedHosts.clear();
+          for (const host of next.allowedHosts) allowedHosts.add(host);
+          listeners?.update(next);
+        });
+        if (unsubscribe) disposers.push(unsubscribe);
+      } catch (error) {
+        listeners?.stop();
+        listeners = undefined;
+        for (const dispose of disposers) dispose();
+        disposers.length = 0;
+        throw error;
+      }
 
       logger.info?.("transport-ws: surface WebSocket listening", { port });
     },
@@ -546,11 +857,9 @@ export function createTransportWsExtension(): Extension {
         dispose();
       }
       disposers.length = 0;
-      connections.clear();
-      if (server) {
-        server.stop();
-        server = undefined;
-      }
+      for (const ws of connections) disposeConnection(ws);
+      listeners?.stop();
+      listeners = undefined;
     },
   };
 }

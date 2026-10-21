@@ -13,6 +13,7 @@ import type {
 } from "@dispatch/kernel";
 import type { ExtensionsChangedMessage, PluginOpResponse } from "@dispatch/transport-contract";
 import { afterEach, describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import type {
   PluginEngine,
   PluginScanResult,
@@ -54,6 +55,7 @@ function fakeStorage(initial: ReadonlyMap<string, string> = new Map()): StorageN
 } {
   const data = new Map(initial);
   return {
+    ...storageFromMap(data),
     data,
     async get(key) {
       return data.get(key) ?? null;

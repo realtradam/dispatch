@@ -59,6 +59,8 @@ function createFakeRemoteBackend(marker: string): ExecBackend {
   return {
     spawn: fail,
     readFile: fail,
+    readFileBytes: fail,
+    writeFileAtomic: fail,
     writeFile: fail,
     stat: fail,
     readdir: fail,

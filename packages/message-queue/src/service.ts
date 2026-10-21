@@ -23,8 +23,12 @@ import {
  * `host.getService(messageQueueHandle)`.
  */
 export interface MessageQueueService {
-  /** Append a message; return the CURRENT queue snapshot (post-append). */
-  enqueue(conversationId: string, text: string): QueuedMessage[];
+  /** Append already-stored image URLs and metadata; return the post-append snapshot. */
+  enqueue(
+    conversationId: string,
+    text: string,
+    opts?: Pick<QueuedMessage, "images" | "computerId">,
+  ): QueuedMessage[];
   /** Current queue snapshot (empty array if none / unknown conversation). */
   getQueue(conversationId: string): QueuedMessage[];
   /**
@@ -74,8 +78,8 @@ export function createMessageQueueService(deps: MessageQueueDeps): MessageQueueS
   const state: MessageQueueState = new Map();
 
   return {
-    enqueue(conversationId, text) {
-      const snapshot = enqueueMessage(state, conversationId, text, deps);
+    enqueue(conversationId, text, opts) {
+      const snapshot = enqueueMessage(state, conversationId, text, deps, opts);
       deps.logger?.debug("message-queue: enqueued", {
         conversationId,
         queueLen: snapshot.length,

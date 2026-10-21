@@ -259,29 +259,36 @@ export function memoryDelta(before: MemorySample, after: MemorySample): MemorySa
   };
 }
 
+/** Maximum retained UTF-8 progress output per tool call (stdout + stderr). */
+export const REPLAY_TOOL_OUTPUT_BYTES = 64 * 1024;
+
+/** A code-point-aligned suffix; never retain a partial UTF-8 character. */
+function outputTail(data: string, budget: number): { data: string; bytes: number } {
+  let start = data.length;
+  let bytes = 0;
+  while (start > 0) {
+    const last = data.charCodeAt(start - 1);
+    const paired =
+      last >= 0xdc00 &&
+      last <= 0xdfff &&
+      start > 1 &&
+      data.charCodeAt(start - 2) >= 0xd800 &&
+      data.charCodeAt(start - 2) <= 0xdbff;
+    const size = paired ? 4 : last < 0x80 ? 1 : last < 0x800 ? 2 : 3;
+    if (bytes + size > budget) break;
+    bytes += size;
+    start -= paired ? 2 : 1;
+  }
+  return { data: start === 0 ? data : data.slice(start), bytes };
+}
+
 /**
- * Compact an in-flight turn's event buffer for a LATE-JOIN replay (a client
- * that subscribes mid-turn: a refresh, reconnect, or second device).
- *
- * The live stream emits one event per provider token chunk, so a long turn's
- * buffer holds thousands of tiny `text-delta` / `reasoning-delta` events. A
- * late-joiner folding them one-by-one does O(events) client work (each one a
- * separate WS frame + reactive cycle) — painfully slow on mobile. The replay
- * is purely historical, so it can be compacted without any latency tradeoff:
- *
- * - Each run of ADJACENT same-type, same-turn deltas is merged into ONE event
- *   whose `delta` is the concatenation. Byte-identical for every consumer that
- *   accumulates deltas by string concatenation (the FE reducer, the CLI).
- * - `tool-output` (incremental stdout/stderr of a running tool) is dropped for
- *   tool calls that already have a `tool-result` in the buffer — the result
- *   carries the full output, so the progress stream is redundant (and large).
- *   Output of a STILL-RUNNING tool is kept so the late-joiner sees progress.
- * - `status` events are free-form transient hints; only the LAST is kept.
- *
- * Every structural event (`turn-start`, `user-message`, `tool-call`,
- * `tool-result`, `usage`, `step-complete`, `steering`, `error`, `done`, …)
- * is kept, in order. Live streaming is NOT affected — only the subscribe-time
- * snapshot. Pure: input array → new array; the input is never mutated.
+ * Pure batch reference for late-join replay. Keep every structural event in
+ * order, only the last status, and no output for calls with a result (even if
+ * output arrives after the result). Running calls retain the trailing 64 KiB
+ * across both streams, at their original positions/with their stream metadata.
+ * Merge same-type/same-turn deltas adjacent AFTER discarded events are removed.
+ * Inputs are never mutated; live delivery is unaffected.
  */
 export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
   const finishedTools = new Set<string>();
@@ -293,8 +300,21 @@ export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
     else if (e.type === "status") lastStatus = i;
   }
 
+  const remaining = new Map<string, number>();
+  const outputs = new Map<number, AgentEvent>();
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e?.type !== "tool-output" || finishedTools.has(e.toolCallId)) continue;
+    const budget = remaining.get(e.toolCallId) ?? REPLAY_TOOL_OUTPUT_BYTES;
+    const tail = outputTail(e.data, budget);
+    // Once a chunk is truncated, earlier chunks cannot fit in the suffix.
+    remaining.set(e.toolCallId, tail.data.length < e.data.length ? 0 : budget - tail.bytes);
+    if (tail.data.length > 0 || e.data.length === 0) {
+      outputs.set(i, tail.data === e.data ? e : { ...e, data: tail.data });
+    }
+  }
+
   const out: AgentEvent[] = [];
-  // Pending merged delta (flushed when a different event interrupts the run).
   let pending: {
     type: "text-delta" | "reasoning-delta";
     base: AgentEvent;
@@ -312,7 +332,8 @@ export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
   };
 
   for (let i = 0; i < events.length; i++) {
-    const e = events[i];
+    const original = events[i];
+    const e = original?.type === "tool-output" ? outputs.get(i) : original;
     if (e === undefined) continue;
     if (e.type === "text-delta" || e.type === "reasoning-delta") {
       if (
@@ -327,11 +348,182 @@ export function compactReplay(events: readonly AgentEvent[]): AgentEvent[] {
       }
       continue;
     }
-    if (e.type === "tool-output" && finishedTools.has(e.toolCallId)) continue;
     if (e.type === "status" && i !== lastStatus) continue;
     flush();
     out.push(e);
   }
   flush();
   return out;
+}
+
+/** Internal retained list; events are replaced, never mutated (snapshots share them). */
+interface ReplayNode {
+  event: AgentEvent;
+  previous: ReplayNode | undefined;
+  next: ReplayNode | undefined;
+  bytes: number;
+}
+
+interface ReplayOutput {
+  readonly nodes: Set<ReplayNode>;
+  /** Nonempty nodes only: empty output boundaries must not slow down trimming. */
+  readonly nonempty: Set<ReplayNode>;
+  bytes: number;
+}
+
+/**
+ * Explicitly owned, I/O-free accumulator. Mutable bookkeeping is private to a turn;
+ * only snapshotReplay's immutable event array may escape to replay listeners.
+ * No raw event history, tombstones, ambient caches, or retained-array copies.
+ */
+export interface ReplayBuffer {
+  first: ReplayNode | undefined;
+  last: ReplayNode | undefined;
+  status: ReplayNode | undefined;
+  readonly outputs: Map<string, ReplayOutput>;
+  readonly finishedTools: Set<string>;
+  size: number;
+}
+
+export function createReplayBuffer(): ReplayBuffer {
+  return {
+    first: undefined,
+    last: undefined,
+    status: undefined,
+    outputs: new Map(),
+    finishedTools: new Set(),
+    size: 0,
+  };
+}
+
+function mergeDeltas(left: ReplayNode | undefined, right: AgentEvent): boolean {
+  const event = left?.event;
+  if (
+    left !== undefined &&
+    (event?.type === "text-delta" || event?.type === "reasoning-delta") &&
+    right.type === event.type &&
+    right.turnId === event.turnId
+  ) {
+    left.event = { ...event, delta: event.delta + right.delta };
+    return true;
+  }
+  return false;
+}
+
+function unlinkReplay(buffer: ReplayBuffer, node: ReplayNode): void {
+  const { previous, next } = node;
+  if (previous === undefined) buffer.first = next;
+  else previous.next = next;
+  if (next === undefined) buffer.last = previous;
+  else next.previous = previous;
+  buffer.size--;
+  node.previous = undefined;
+  node.next = undefined;
+  // Only the two newly adjacent neighbours can merge. Both are deltas, so
+  // removing the right neighbour cannot invalidate a status/output index.
+  if (next !== undefined && mergeDeltas(previous, next.event)) unlinkReplay(buffer, next);
+}
+
+/** Remove just enough leading code points; work is charged to bytes evicted. */
+function trimOutput(node: ReplayNode, excess: number): number {
+  const event = node.event;
+  if (event.type !== "tool-output") throw new Error("invalid replay output index");
+  let offset = 0;
+  let removed = 0;
+  while (removed < excess) {
+    const code = event.data.codePointAt(offset) ?? 0;
+    removed += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    offset += code > 0xffff ? 2 : 1;
+  }
+  node.event = { ...event, data: event.data.slice(offset) };
+  node.bytes -= removed;
+  return removed;
+}
+
+/**
+ * Append to caller-owned state, returning it for foldl(append) equivalence tests.
+ * Deltas/status are O(1) in retained size. Output work is O(incoming bytes +
+ * evicted bytes/nodes); results visit only their own output nodes, each once.
+ * Removing a boundary re-merges adjacent deltas in place, including non-tail runs.
+ */
+export function appendCompacted(buffer: ReplayBuffer, event: AgentEvent): ReplayBuffer {
+  let output: ReplayOutput | undefined;
+  let bytes = 0;
+  if (event.type === "status") {
+    if (buffer.status !== undefined) unlinkReplay(buffer, buffer.status);
+  } else if (event.type === "tool-result") {
+    buffer.finishedTools.add(event.toolCallId);
+    const prior = buffer.outputs.get(event.toolCallId);
+    if (prior !== undefined) {
+      for (const node of prior.nodes) unlinkReplay(buffer, node);
+      buffer.outputs.delete(event.toolCallId);
+    }
+  } else if (event.type === "tool-output") {
+    if (buffer.finishedTools.has(event.toolCallId)) return buffer;
+    const tail = outputTail(event.data, REPLAY_TOOL_OUTPUT_BYTES);
+    // A nonempty event whose final character cannot fit is absent, not a boundary.
+    if (tail.data.length === 0 && event.data.length > 0) return buffer;
+    output = buffer.outputs.get(event.toolCallId);
+    if (output === undefined) {
+      output = { nodes: new Set(), nonempty: new Set(), bytes: 0 };
+      buffer.outputs.set(event.toolCallId, output);
+    }
+    bytes = tail.bytes;
+    const truncated = tail.data.length < event.data.length;
+    if (truncated) event = { ...event, data: tail.data };
+    // An oversized chunk consumes the entire suffix budget, including a gap
+    // at a multibyte boundary: no backfilling earlier chunks into that gap.
+    for (const node of output.nonempty) {
+      if (!truncated && output.bytes + bytes <= REPLAY_TOOL_OUTPUT_BYTES) break;
+      const excess = output.bytes + bytes - REPLAY_TOOL_OUTPUT_BYTES;
+      if (truncated || node.bytes <= excess) {
+        output.bytes -= node.bytes;
+        output.nodes.delete(node);
+        output.nonempty.delete(node);
+        unlinkReplay(buffer, node);
+      } else {
+        output.bytes -= trimOutput(node, excess);
+        break;
+      }
+    }
+  }
+  if (mergeDeltas(buffer.last, event)) return buffer;
+  const node: ReplayNode = { event, bytes, previous: buffer.last, next: undefined };
+  if (buffer.last === undefined) buffer.first = node;
+  else buffer.last.next = node;
+  buffer.last = node;
+  buffer.size++;
+  if (event.type === "status") buffer.status = node;
+  if (output !== undefined) {
+    output.nodes.add(node);
+    if (bytes > 0) output.nonempty.add(node);
+    output.bytes += bytes;
+  }
+  return buffer;
+}
+
+/**
+ * O(R) only at subscribe: freeze the array before invoking any listener. Shared
+ * event objects are stable because append replaces them rather than mutating.
+ * A reentrant append/unlink cannot change this traversal or later replay events.
+ */
+export function snapshotReplay(buffer: ReplayBuffer): readonly AgentEvent[] {
+  const snapshot: AgentEvent[] = [];
+  for (let node = buffer.first; node !== undefined; node = node.next) snapshot.push(node.event);
+  return Object.freeze(snapshot);
+}
+
+/** All-or-nothing replay preflight; never allocate more than maxEvents references. */
+export function boundedSnapshotReplay(
+  buffer: ReplayBuffer,
+  maxEvents: number,
+  accept: (event: AgentEvent) => boolean,
+): readonly AgentEvent[] | undefined {
+  if (buffer.size > maxEvents) return undefined;
+  const snapshot: AgentEvent[] = [];
+  for (let node = buffer.first; node !== undefined; node = node.next) {
+    if (!accept(node.event)) return undefined;
+    snapshot.push(node.event);
+  }
+  return Object.freeze(snapshot);
 }

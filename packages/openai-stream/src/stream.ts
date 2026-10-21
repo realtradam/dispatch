@@ -16,6 +16,7 @@ import {
 } from "./body-budget.js";
 import { convertMessages, type OpenAIMessage } from "./convert-messages.js";
 import { convertTools, type OpenAITool } from "./convert-tools.js";
+import { createSSEParser } from "./parse-sse.js";
 
 export interface StreamConfig {
   readonly baseURL: string;
@@ -399,7 +400,7 @@ async function* readSSEStream(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+  const parser = createSSEParser();
 
   try {
     while (true) {
@@ -444,140 +445,21 @@ async function* readSSEStream(
       buffer = lines.pop() ?? "";
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") return;
-
-        let chunk: Record<string, unknown>;
-        try {
-          chunk = JSON.parse(data);
-        } catch {
-          yield { type: "error", message: `Invalid JSON in SSE data: ${data}` };
-          continue;
-        }
-
-        const choices = chunk.choices as
-          | Array<{
-              delta: Record<string, unknown>;
-              finish_reason?: string | null;
-            }>
-          | undefined;
-
-        if (choices) {
-          for (const choice of choices) {
-            const delta = choice.delta;
-
-            if (typeof delta.content === "string" && delta.content) {
-              yield { type: "text-delta", delta: delta.content };
-            }
-
-            if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
-              yield { type: "reasoning-delta", delta: delta.reasoning_content };
-            }
-
-            const tcs = delta.tool_calls as
-              | Array<{
-                  index: number;
-                  id?: string;
-                  function?: { name?: string; arguments?: string };
-                }>
-              | undefined;
-
-            if (tcs) {
-              for (const tc of tcs) {
-                const existing = toolCalls.get(tc.index);
-                if (existing) {
-                  if (tc.function?.arguments) {
-                    existing.arguments += tc.function.arguments;
-                  }
-                } else {
-                  toolCalls.set(tc.index, {
-                    id: tc.id ?? "",
-                    name: tc.function?.name ?? "",
-                    arguments: tc.function?.arguments ?? "",
-                  });
-                  // Timing-only marker: the model's tool-call output has begun
-                  // streaming (the complete call is emitted at finish).
-                  yield { type: "tool-call-start" };
-                }
-              }
-            }
-
-            if (choice.finish_reason) {
-              const sortedIndices = [...toolCalls.keys()].sort((a, b) => a - b);
-              for (const idx of sortedIndices) {
-                const acc = toolCalls.get(idx);
-                if (!acc) continue;
-                let input: unknown;
-                try {
-                  input = JSON.parse(acc.arguments);
-                } catch {
-                  input = acc.arguments;
-                }
-                yield {
-                  type: "tool-call",
-                  toolCallId: acc.id,
-                  toolName: acc.name,
-                  input,
-                };
-              }
-              yield { type: "finish", reason: choice.finish_reason };
-            }
-          }
-        }
-
-        const usage = chunk.usage as
-          | {
-              prompt_tokens?: number;
-              completion_tokens?: number;
-              cache_read_tokens?: number;
-              cache_write_tokens?: number;
-              prompt_tokens_details?: { cached_tokens?: number };
-              completion_tokens_details?: Record<string, unknown>;
-            }
-          | undefined;
-
-        if (usage) {
-          const flat = usage.cache_read_tokens;
-          const nested = usage.prompt_tokens_details?.cached_tokens;
-          // Prefer flat cache_read_tokens when non-zero (canonical for
-          // Anthropic-style providers). Some providers (LongCat) return
-          // cache_read_tokens:0 alongside the real value in
-          // prompt_tokens_details.cached_tokens; `??` alone would shadow that
-          // real value with 0 (0 is not nullish). Fall back to nested when flat
-          // is 0/absent, then to flat (so an explicit 0 with no nested field is
-          // preserved).
-          const cacheRead = flat || (nested ?? flat);
-          const cacheWrite = usage.cache_write_tokens;
-          const usageObj: {
-            inputTokens: number;
-            outputTokens: number;
-            cacheReadTokens?: number;
-            cacheWriteTokens?: number;
-          } = {
-            inputTokens: usage.prompt_tokens ?? 0,
-            outputTokens: usage.completion_tokens ?? 0,
-          };
-          if (cacheRead !== undefined) {
-            usageObj.cacheReadTokens = cacheRead;
-          }
-          if (cacheWrite !== undefined) {
-            usageObj.cacheWriteTokens = cacheWrite;
-          }
-          onUsage?.(usageObj);
-          yield {
-            type: "usage",
-            usage: {
-              inputTokens: usage.prompt_tokens ?? 0,
-              outputTokens: usage.completion_tokens ?? 0,
-              ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
-              ...(cacheWrite !== undefined ? { cacheWriteTokens: cacheWrite } : {}),
-            },
-          };
-        }
+        if (signal?.aborted) return;
+        yield* parser.push(line);
+        if (parser.done) break;
       }
+      if (parser.done) break;
+    }
+    if (signal?.aborted) return;
+    // Flush both decoder state (possibly split UTF-8) and a final data line
+    // without a newline. DONE ignores any subsequent bytes.
+    buffer += decoder.decode();
+    if (!parser.done && buffer) yield* parser.push(buffer);
+    for (const event of parser.end()) {
+      if (signal?.aborted) return;
+      if (event.type === "usage") onUsage?.(event.usage);
+      yield event;
     }
   } finally {
     reader.releaseLock();

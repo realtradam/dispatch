@@ -1,5 +1,5 @@
 import { resolve as pathResolve } from "node:path";
-import type { ConversationStore } from "@dispatch/conversation-store";
+import { type ConversationStore, createConversationStore } from "@dispatch/conversation-store";
 import type {
   AgentEvent,
   ChatMessage,
@@ -21,8 +21,9 @@ import type {
 } from "@dispatch/kernel";
 import { createLogger, runTurn } from "@dispatch/kernel";
 import { createMessageQueueService } from "@dispatch/message-queue";
-import type { SystemPromptService } from "@dispatch/system-prompt";
+import { createSystemPromptService, type SystemPromptService } from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import {
   type ConversationCompactedPayload,
   type ConversationOpenedPayload,
@@ -67,6 +68,12 @@ function createInMemoryStore(): ConversationStore & {
   // orchestrator's newness detection (meta === null) matches reality.
   const knownConversations = new Set<string>();
   return {
+    async getHistoryEpoch() {
+      return 0;
+    },
+    async runExclusive(_conversationId, fn) {
+      return await fn();
+    },
     data,
     metricsData,
     cwdData,
@@ -2510,7 +2517,7 @@ describe("detached turn hub", () => {
     expect(types[0]).toBe("user-message");
     expect(types[1]).toBe("turn-start");
     expect(types).toContain("text-delta");
-    expect(types[types.length - 1]).toBe("turn-sealed");
+    expect(types[types.length - 1]).toBe("turn-ended");
 
     const textDeltas = events.filter((e) => e.type === "text-delta");
     expect(textDeltas).toHaveLength(2);
@@ -2554,7 +2561,7 @@ describe("detached turn hub", () => {
     const types = eventsA.map((e) => e.type);
     expect(types[0]).toBe("user-message");
     expect(types[1]).toBe("turn-start");
-    expect(types[types.length - 1]).toBe("turn-sealed");
+    expect(types[types.length - 1]).toBe("turn-ended");
   });
 
   it("late-join replay — subscriber added mid-turn receives buffered events then live events, no gap/dup", async () => {
@@ -2624,6 +2631,170 @@ describe("detached turn hub", () => {
     // live events the early subscriber received after the snapshot point.
     expect(earlyEvents.length).toBeGreaterThan(earlySnapshot.length);
     expect(lateEvents.slice(replayLen)).toEqual(earlyEvents.slice(earlySnapshot.length));
+  });
+
+  it("late-join bounds running output, drops completed output, and leaves live delivery verbatim", async () => {
+    let releaseTool = () => {};
+    let releaseFinal = () => {};
+    let outputReady = () => {};
+    let finalReady = () => {};
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const finalGate = new Promise<void>((resolve) => {
+      releaseFinal = resolve;
+    });
+    const outputSeen = new Promise<void>((resolve) => {
+      outputReady = resolve;
+    });
+    const finalSeen = new Promise<void>((resolve) => {
+      finalReady = resolve;
+    });
+    let step = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        return (async function* () {
+          if (step++ === 0) {
+            yield { type: "tool-call", toolCallId: "x", toolName: "echo", input: {} } as const;
+            yield { type: "finish", reason: "tool-calls" } as const;
+          } else {
+            finalReady();
+            await finalGate;
+            yield { type: "text-delta", delta: "done" } as const;
+            yield { type: "finish", reason: "stop" } as const;
+          }
+        })();
+      },
+    };
+    const tool: ToolContract = {
+      name: "echo",
+      description: "progress",
+      parameters: { type: "object" },
+      async execute(_input, ctx) {
+        ctx.onOutput("a".repeat(50_000), "stdout");
+        ctx.onOutput("b".repeat(50_000), "stderr");
+        outputReady();
+        await toolGate;
+        return { content: "complete" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createConversationStore(storageFromMap()),
+      resolveProvider: () => provider,
+      resolveTools: () => [tool],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const live: AgentEvent[] = [];
+    const unsubLive = orchestrator.subscribe("replay-cap", (e) => live.push(e));
+    orchestrator.startTurn({ conversationId: "replay-cap", text: "run" });
+    try {
+      await outputSeen;
+      const running: AgentEvent[] = [];
+      const unsubRunning = orchestrator.subscribe("replay-cap", (e) => running.push(e));
+      unsubRunning();
+      expect(running).toEqual(compactReplay(live));
+      expect(running.filter((e) => e.type === "tool-output").map((e) => e.data.length)).toEqual([
+        15_536, 50_000,
+      ]);
+      expect(live.filter((e) => e.type === "tool-output").map((e) => e.data.length)).toEqual([
+        50_000, 50_000,
+      ]);
+      releaseTool();
+      await finalSeen;
+      const completed: AgentEvent[] = [];
+      const unsubCompleted = orchestrator.subscribe("replay-cap", (e) => completed.push(e));
+      unsubCompleted();
+      expect(completed).toEqual(compactReplay(live));
+      expect(completed.some((e) => e.type === "tool-output")).toBe(false);
+      expect(completed.some((e) => e.type === "tool-result")).toBe(true);
+    } finally {
+      releaseTool();
+      releaseFinal();
+      await waitForEvent(orchestrator, "replay-cap", "turn-ended");
+      unsubLive();
+    }
+  });
+
+  it("subscribe snapshot survives synchronous listener output that evicts pending replay events", async () => {
+    let emitOutput: ((data: string) => void) | undefined;
+    let releaseTool = () => {};
+    let toolReady = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      toolReady = resolve;
+    });
+    let step = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream() {
+        return (async function* () {
+          if (step++ === 0) {
+            yield { type: "tool-call", toolCallId: "x", toolName: "echo", input: {} } as const;
+            yield { type: "finish", reason: "tool-calls" } as const;
+          } else yield { type: "finish", reason: "stop" } as const;
+        })();
+      },
+    };
+    const tool: ToolContract = {
+      name: "echo",
+      description: "progress",
+      parameters: { type: "object" },
+      async execute(_input, ctx) {
+        emitOutput = (data) => ctx.onOutput(data, "stdout");
+        emitOutput("old-a");
+        emitOutput("old-b");
+        toolReady();
+        await gate;
+        return { content: "complete" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createConversationStore(storageFromMap()),
+      resolveProvider: () => provider,
+      resolveTools: () => [tool],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const live: AgentEvent[] = [];
+    const unsubLive = orchestrator.subscribe("reentrant-replay", (event) => live.push(event));
+    let unsubLate = () => {};
+    orchestrator.startTurn({ conversationId: "reentrant-replay", text: "run" });
+    try {
+      await ready;
+      const expected = compactReplay(live);
+      const replay: AgentEvent[] = [];
+      let reentered = false;
+      const replacement = "z".repeat(65536);
+      unsubLate = orchestrator.subscribe("reentrant-replay", (event) => {
+        replay.push(event);
+        if (!reentered) {
+          reentered = true;
+          emitOutput?.(replacement);
+        }
+      });
+      // Reentrant live delivery occurs after the first replay event, not as
+      // part of the captured snapshot. The remaining old output must survive.
+      expect(replay[1]).toMatchObject({ type: "tool-output", data: replacement });
+      expect([replay[0], ...replay.slice(2)]).toEqual(expected);
+      const current: AgentEvent[] = [];
+      orchestrator.subscribe("reentrant-replay", (event) => current.push(event))();
+      expect(current).toEqual(compactReplay(live));
+      expect(
+        current.filter((event) => event.type === "tool-output").map((event) => event.data),
+      ).toEqual([replacement]);
+      expect(
+        expected.filter((event) => event.type === "tool-output").map((event) => event.data),
+      ).toEqual(["old-a", "old-b"]);
+    } finally {
+      releaseTool();
+      await waitForEvent(orchestrator, "reentrant-replay", "turn-ended");
+      unsubLate();
+      unsubLive();
+    }
   });
 
   it("subscriber persists across turns — one subscriber receives events from two sequential turns", async () => {
@@ -2789,7 +2960,7 @@ describe("detached turn hub", () => {
     expect(lateEvents).toHaveLength(0);
   });
 
-  it("handleMessage convenience — drives turn end-to-end via onEvent and resolves on seal", async () => {
+  it("handleMessage convenience — drives turn end-to-end via onEvent and resolves on turn-ended", async () => {
     const store = createInMemoryStore();
     const provider = createFakeProvider([
       [
@@ -2818,7 +2989,7 @@ describe("detached turn hub", () => {
     expect(types[0]).toBe("user-message");
     expect(types[1]).toBe("turn-start");
     expect(types).toContain("text-delta");
-    expect(types[types.length - 1]).toBe("turn-sealed");
+    expect(types[types.length - 1]).toBe("turn-ended");
 
     const stored = store.data.get("conv-hm");
     expect(stored).toHaveLength(2);
@@ -2874,11 +3045,12 @@ describe("detached turn hub", () => {
 
     await secondPromise;
 
-    expect(secondEvents).toHaveLength(1);
+    expect(secondEvents).toHaveLength(2);
     expect(secondEvents[0]?.type).toBe("error");
     expect((secondEvents[0] as AgentEvent & { type: "error" }).message).toBe(
-      "turn already active for this conversation",
+      "failed: turn already active for this conversation",
     );
+    expect(secondEvents[1]).toMatchObject({ type: "turn-ended", reason: "rejected" });
 
     resolveRunTurn?.();
     await firstPromise;
@@ -4582,8 +4754,17 @@ describe("system prompt: compaction flow", () => {
   }
 
   it("Compaction: construct + append — compaction flow calls construct → result appended with COMPACTION_SYSTEM_PROMPT → combined string set as systemPrompt", async () => {
-    const store = createInMemoryStore();
-    seedHistory(store, "conv-compact-sp", 15);
+    const store = createConversationStore(storageFromMap());
+    await store.append(
+      "conv-compact-sp",
+      Array.from({ length: 15 }, (_, i) => ({
+        role: i % 2 === 0 ? "user" : "assistant",
+        chunks: [{ type: "text", text: `message ${i}` }],
+      })),
+    );
+    // Start above epoch zero to catch a hard-coded/default broadcast value.
+    await store.replaceHistory("conv-compact-sp", await store.load("conv-compact-sp"));
+    const compactedEvents: ConversationCompactedPayload[] = [];
 
     const constructCalls: Array<{
       conversationId: string;
@@ -4615,7 +4796,10 @@ describe("system prompt: compaction flow", () => {
             constructCalls.push({ conversationId, cwd, model: context?.model });
             return "RECONSTRUCTED_PROMPT";
           }),
-        emit: () => {},
+        emit: (hook, payload) => {
+          if (hook === conversationCompacted)
+            compactedEvents.push(payload as ConversationCompactedPayload);
+        },
       },
       new Set(),
     );
@@ -4625,6 +4809,9 @@ describe("system prompt: compaction flow", () => {
     });
 
     expect("summary" in result).toBe(true);
+    expect(compactedEvents).toHaveLength(1);
+    expect(compactedEvents[0]?.historyEpoch).toBe(2);
+    expect(await store.getHistoryEpoch("conv-compact-sp")).toBe(2);
     expect(constructCalls).toHaveLength(1);
     expect(constructCalls[0]?.conversationId).toBe("conv-compact-sp");
     expect(constructCalls[0]?.model).toBe("compaction-model");
@@ -5805,5 +5992,384 @@ describe("vision handoff effective image limit (model image cap)", () => {
     });
 
     expect(modelInfoCalls).toBe(0);
+  });
+});
+
+describe("terminal turn-ended", () => {
+  it.each([
+    "sealed",
+    "provider-error",
+    "thrown",
+    "setup",
+    "unknown",
+    "unavailable",
+    "aborted",
+  ])("emits exactly one terminal event after persistence/error for %s", async (path) => {
+    const store = createConversationStore(storageFromMap());
+    const provider: ProviderContract = {
+      id: "terminal-test",
+      async *stream() {
+        if (path === "aborted") {
+          orchestrator.stopTurn("terminal");
+          orchestrator.stopTurn("terminal");
+        }
+        if (path === "provider-error") yield { type: "error", message: "provider failed" };
+        else yield { type: "finish", reason: "stop" };
+      },
+    };
+    const { orchestrator, activeConversations } = createSessionOrchestrator({
+      conversationStore: {
+        ...store,
+        ...(path === "thrown"
+          ? {
+              load: async () => {
+                throw new Error("load failed");
+              },
+            }
+          : {}),
+        ...(path === "setup"
+          ? {
+              getEffectiveCwd: async () => {
+                throw new Error("setup failed");
+              },
+            }
+          : {}),
+      },
+      resolveProvider: () => provider,
+      resolveModel: () => (path === "unknown" ? undefined : { provider, model: "test" }),
+      resolveVisionHandoff: () => ({
+        storeImages: async () => [{ url: "/images/terminal/image.png", mediaType: "image/png" }],
+        prepareForProvider: async (messages) => messages,
+        purgeConversationImages: async () => {},
+      }),
+      resolveModelUsability: async () => {
+        if (path === "unknown" || path === "unavailable") {
+          expect((await store.load("terminal"))[0]?.chunks).toEqual([
+            { type: "text", text: "go" },
+            { type: "image", url: "/images/terminal/image.png" },
+          ]);
+        }
+        return path !== "unavailable";
+      },
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const events: AgentEvent[] = [];
+    await orchestrator.handleMessage({
+      conversationId: "terminal",
+      text: "go",
+      images: [{ url: "data:image/png;base64,AAAA", mediaType: "image/png" }],
+      modelName: "test/model",
+      onEvent: (event) => events.push(event),
+    });
+    const reason =
+      path === "unknown" || path === "unavailable"
+        ? "rejected"
+        : path === "sealed" || path === "aborted"
+          ? path
+          : "error";
+    expect(events.filter((event) => event.type === "turn-ended")).toEqual([
+      { type: "turn-ended", conversationId: "terminal", turnId: events[0]?.turnId, reason },
+    ]);
+    expect(events.at(-1)?.type).toBe("turn-ended");
+    if (reason === "rejected") {
+      expect(await store.load("terminal")).toEqual([
+        {
+          role: "user",
+          chunks: [
+            { type: "text", text: "go" },
+            { type: "image", url: "/images/terminal/image.png" },
+          ],
+        },
+      ]);
+    }
+    expect(events.some((event) => event.type === "error")).toBe(
+      reason === "error" || reason === "rejected",
+    );
+    expect(events.some((event) => event.type === "turn-sealed")).toBe(
+      ["sealed", "aborted", "provider-error"].includes(path),
+    );
+    expect(orchestrator.isActive("terminal")).toBe(false);
+    expect(activeConversations.size).toBe(0);
+  });
+});
+
+// Step 4.5: real store/queue/kernel integration at failure boundaries.
+describe("turn failure durability and queue policy", () => {
+  it.each([
+    "provider-error",
+    "thrown",
+    "rejected",
+  ])("carries queued input after %s", async (path) => {
+    const store = createConversationStore(storageFromMap());
+    const queue = createMessageQueueService({ id: () => "q", now: () => 0, notify: () => {} });
+    let calls = 0;
+    const provider: ProviderContract = {
+      id: "failure",
+      async *stream() {
+        if (path === "provider-error" && calls === 1) {
+          orchestrator.enqueue({ conversationId: "carry", text: "queued" });
+          yield { type: "error", message: "failed" };
+        } else yield { type: "finish", reason: "stop" };
+      },
+    };
+    const { orchestrator, activeConversations } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveQueue: () => queue,
+      resolveProvider: () => {
+        calls++;
+        if (path === "thrown" && calls === 1) {
+          orchestrator.enqueue({ conversationId: "carry", text: "queued" });
+          throw new Error("failed");
+        }
+        return provider;
+      },
+      resolveModel: () => {
+        orchestrator.enqueue({ conversationId: "carry", text: "queued" });
+        return undefined;
+      },
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const ended: AgentEvent[] = [];
+    const completed = new Promise<void>((resolve) =>
+      orchestrator.subscribe("carry", (event) => {
+        if (event.type === "turn-ended") {
+          ended.push(event);
+          if (ended.length === 2) resolve();
+        }
+      }),
+    );
+    orchestrator.startTurn({
+      conversationId: "carry",
+      text: "original",
+      ...(path === "rejected" ? { modelName: "invalid/model" } : {}),
+    });
+    await completed;
+    expect(ended.map((event) => event.type === "turn-ended" && event.reason)).toEqual([
+      path === "rejected" ? "rejected" : "error",
+      "sealed",
+    ]);
+    expect(
+      (await store.load("carry"))
+        .filter((message) => message.role === "user")
+        .map((message) => message.chunks),
+    ).toEqual([[{ type: "text", text: "original" }], [{ type: "text", text: "queued" }]]);
+    expect(queue.getQueue("carry")).toEqual([]);
+    expect(activeConversations.size).toBe(0);
+  });
+
+  it.each([
+    "stop",
+    "close",
+  ])("%s applies its queue policy to existing and abort-window input", async (operation) => {
+    const store = createConversationStore(storageFromMap());
+    const snapshots: number[] = [];
+    const queue = createMessageQueueService({
+      id: () => "q",
+      now: () => 0,
+      notify: () => snapshots.push(queue.getQueue("cancel").length),
+    });
+    let calls = 0;
+    const events: AgentEvent[] = [];
+    const provider: ProviderContract = {
+      id: "cancel",
+      async *stream() {
+        if (++calls === 1) {
+          await orchestrator.enqueue({ conversationId: "cancel", text: "cancel one" });
+          await orchestrator.enqueue({ conversationId: "cancel", text: "cancel two" });
+          if (operation === "close") orchestrator.closeConversation("cancel");
+          else orchestrator.stopTurn("cancel");
+          orchestrator.stopTurn("cancel");
+          const racing = await orchestrator.enqueue({ conversationId: "cancel", text: "racing" });
+          expect(racing.startedTurn).toBe(false);
+          expect(racing.queue.map((message) => message.text)).toEqual(
+            operation === "close" ? [] : ["cancel one", "cancel two", "racing"],
+          );
+        }
+        yield { type: "finish", reason: "stop" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveQueue: () => queue,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    const allEvents: AgentEvent[] = [];
+    const completed = new Promise<void>((resolve) =>
+      orchestrator.subscribe("cancel", (event) => {
+        allEvents.push(event);
+        if (
+          allEvents.filter((item) => item.type === "turn-ended").length ===
+          (operation === "close" ? 1 : 2)
+        )
+          resolve();
+      }),
+    );
+    await orchestrator.handleMessage({
+      conversationId: "cancel",
+      text: "original",
+      onEvent: (event) => events.push(event),
+    });
+    await completed;
+    expect(calls).toBe(operation === "close" ? 1 : 2);
+    expect(
+      allEvents.filter((event) => event.type === "user-message").map((event) => event.text),
+    ).toEqual(
+      operation === "close" ? ["original"] : ["original", "cancel one\n\ncancel two\n\nracing"],
+    );
+    if (operation === "stop") {
+      const terminal = allEvents.findIndex((event) => event.type === "turn-ended");
+      const carried = allEvents.findIndex(
+        (event) => event.type === "user-message" && event.text !== "original",
+      );
+      expect(terminal).toBeLessThan(carried);
+      expect(
+        allEvents.filter((event) => event.type === "turn-ended").map((event) => event.reason),
+      ).toEqual(["aborted", "sealed"]);
+    }
+    expect(events.at(-1)).toMatchObject({ type: "turn-ended", reason: "aborted" });
+    expect(events.some((event) => event.type === "steering")).toBe(false);
+    expect(snapshots).toEqual(operation === "close" ? [1, 2, 0] : [1, 2, 3, 0]);
+    await orchestrator.handleMessage({
+      conversationId: "cancel",
+      text: "explicit next",
+      onEvent: () => {},
+    });
+    expect((await store.load("cancel")).flatMap((message) => message.chunks)).toEqual([
+      { type: "text", text: "original" },
+      ...(operation === "stop"
+        ? [{ type: "text", text: "cancel one\n\ncancel two\n\nracing" }]
+        : []),
+      { type: "text", text: "explicit next" },
+    ]);
+  });
+});
+
+describe("persisted workspace and background failures", () => {
+  it("uses workspace X for initial and carried prompt construction and concurrency admission", async () => {
+    const store = createConversationStore(storageFromMap());
+    const prompt = createSystemPromptService({
+      storage: storageFromMap(),
+      adapters: {
+        spawn: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        fs: { readText: async () => "", exists: async () => false },
+      },
+    });
+    await prompt.setTemplate("[prompt:workspace_id]");
+    const queue = createMessageQueueService({ id: () => "q", now: () => 0, notify: () => {} });
+    const workspaces: string[] = [];
+    const prompts: string[] = [];
+    const provider: ProviderContract = {
+      id: "workspace",
+      async *stream(_messages, _tools, opts) {
+        prompts.push(opts?.systemPrompt ?? "missing");
+        if (prompts.length === 1) {
+          await store.setCwd("workspace", "/changed-cwd");
+          orchestrator.enqueue({ conversationId: "workspace", text: "carried" });
+        }
+        yield { type: "finish", reason: "stop" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveQueue: () => queue,
+      resolveSystemPrompt: () => prompt,
+      resolveConcurrencyLimiter: () => ({
+        acquire: async (_provider, _conversation, workspace) => {
+          workspaces.push(workspace);
+          return () => {};
+        },
+        reportRateLimit: () => {},
+      }),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+    let ends = 0;
+    const completed = new Promise<void>((resolve) =>
+      orchestrator.subscribe("workspace", (event) => {
+        if (event.type === "turn-ended" && ++ends === 2) resolve();
+      }),
+    );
+    orchestrator.startTurn({
+      conversationId: "workspace",
+      text: "first",
+      workspaceId: "X",
+      cwd: "/initial-cwd",
+    });
+    await completed;
+    expect(workspaces).toEqual(["X", "X"]);
+    expect(prompts).toEqual(["X", "X"]);
+    expect((await prompt.getWithMeta("workspace")).cwd).toBe("/changed-cwd");
+  });
+
+  it("logs rejected background work but preserves images on close", async () => {
+    const store = createConversationStore(storageFromMap());
+    const records: LogRecord[] = [];
+    const logger = createLogger(
+      { extensionId: "session-orchestrator" },
+      { emit: (record) => records.push(record) },
+      { now: () => 0, newId: () => "log" },
+    );
+    const fail = async (): Promise<never> => {
+      throw new Error("background failure");
+    };
+    let closing = false;
+    let purges = 0;
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: {
+        ...store,
+        setConversationStatus: fail,
+        getWorkspaceId: async (id) => (closing ? fail() : store.getWorkspaceId(id)),
+      },
+      resolveProvider: () => createFakeProvider([[{ type: "finish", reason: "stop" }]]),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      logger,
+      resolveCompaction: () => ({ compact: fail }),
+      resolveVisionHandoff: () => ({
+        storeImages: async (_id, images) => images,
+        prepareForProvider: async (messages) => messages,
+        purgeConversationImages: async () => {
+          purges++;
+        },
+      }),
+    });
+    await orchestrator.handleMessage({
+      conversationId: "background",
+      text: "go",
+      onEvent: () => {},
+    });
+    // Flush nested best-effort branches, including the post-terminal settled hook.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    closing = true;
+    orchestrator.closeConversation("background");
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(purges).toBe(0);
+    for (const operation of [
+      "set active status",
+      "set idle status",
+      "set closed status",
+      "closed workspace",
+      "auto-compaction",
+    ]) {
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          kind: "log",
+          level: "debug",
+          conversationId: "background",
+          msg: `orchestrator: ${operation} failed`,
+          attributes: { error: "background failure" },
+        }),
+      );
+    }
   });
 });

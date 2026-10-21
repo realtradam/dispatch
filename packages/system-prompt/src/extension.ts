@@ -10,6 +10,7 @@
  * files / run commands on the REMOTE machine (via SSH), so the system prompt
  * reflects the remote OS/hostname/cwd — not the local host's.
  */
+import { conversationDeleted } from "@dispatch/conversation-store";
 import { type ExecBackend, execBackendHandle } from "@dispatch/exec-backend";
 import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import type { GitSpawnResult, ResolverAdapters } from "./resolver.js";
@@ -27,7 +28,7 @@ export const manifest: Manifest = {
   // exec-backend provides the resolver used to obtain a remote ExecBackend
   // when computerId is set. The lookup is lazy (at construct time, not
   // activation), but declaring the dep keeps the DAG honest.
-  dependsOn: ["exec-backend"],
+  dependsOn: ["exec-backend", "conversation-store"],
   capabilities: { fs: true, spawn: true },
   contributes: { services: ["system-prompt"] },
 };
@@ -120,7 +121,7 @@ function buildRemoteAdapters(backend: ExecBackend, cwd: string): ResolverAdapter
   };
 }
 
-export function activate(host: HostAPI): void {
+export function activate(host: HostAPI, disposers: (() => void)[] = []): void {
   const storage = host.storage("system-prompt");
 
   /**
@@ -148,11 +149,21 @@ export function activate(host: HostAPI): void {
     adapters: localAdapters,
     resolveRemoteAdapters,
   });
-  host.provideService(systemPromptHandle, service);
+  disposers.push(host.provideService(systemPromptHandle, service));
+  disposers.push(
+    host.on(conversationDeleted, ({ conversationId }) => service.delete(conversationId)),
+  );
   host.logger.info("system-prompt: activated");
 }
 
-export const extension: Extension = {
-  manifest,
-  activate,
-};
+export function createSystemPromptExtension(): Extension {
+  const disposers: (() => void)[] = [];
+  return {
+    manifest,
+    activate: (host) => activate(host, disposers),
+    deactivate: () => {
+      for (const dispose of disposers.splice(0)) dispose();
+    },
+  };
+}
+export const extension = createSystemPromptExtension();

@@ -14,6 +14,7 @@ import {
   providerResponseHeaders,
 } from "@dispatch/kernel";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { extension as accountUsageExt } from "./extension.js";
 import { accountUsageServiceHandle } from "./service.js";
 
@@ -25,6 +26,7 @@ function hostDeps() {
     logger,
     config: { get: () => undefined, getAll: () => ({}) },
     storageFactory: () => ({
+      ...storageFromMap(new Map<string, string>()),
       get: async () => null,
       set: async () => {},
       delete: async () => {},

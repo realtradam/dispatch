@@ -11,13 +11,24 @@
  * SFTP fs ops, all over the real ssh2-under-Bun edge.
  */
 
-import { access, mkdir, mkdtemp, readFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "@dispatch/kernel";
 import { Client } from "ssh2";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createSshExecBackend } from "./backend.js";
+import { createSshExecBackend, shellQuote } from "./backend.js";
 import { resolveComputer } from "./config.js";
 import { createSshConnectionPool } from "./pool.js";
 
@@ -30,7 +41,7 @@ const testEnv = HOST === undefined ? null : { host: HOST, port: PORT, user: USER
 // Build a real config env fixture pointing at the test sshd.
 function configText(): string {
   if (testEnv === null) return "";
-  return `Host testremote\n  HostName ${testEnv.host}\n  Port ${testEnv.port}\n  User ${testEnv.user}\n`;
+  return `Host testremote\n  HostName ${testEnv.host}\n  Port ${testEnv.port}\n  User ${testEnv.user}\n${process.env.SSH_TEST_KEY ? `  IdentityFile ${process.env.SSH_TEST_KEY}\n` : ""}`;
 }
 
 const sshDir = join(homedir(), ".ssh");
@@ -100,19 +111,18 @@ describe.skipIf(testEnv === null)("SshExecBackend against a real sshd", () => {
   });
 
   afterEach(async () => {
-    await pool.closeAll();
-    // best-effort cleanup of the remote temp dir.
-    const backend = createSshExecBackend("testremote", async (a) => pool.acquire(a));
     try {
+      const backend = createSshExecBackend("testremote", async (a) => pool.acquire(a));
       await backend.spawn({
-        command: `rm -rf ${tmpRemoteDir}`,
+        command: `rm -rf -- ${shellQuote(tmpRemoteDir)}`,
         cwd: "/",
         signal: new AbortController().signal,
         timeout: 5000,
         onOutput: () => undefined,
       });
-    } catch {
-      // ignore
+    } finally {
+      await pool.closeAll();
+      await rm(tmpRemoteDir, { recursive: true, force: true });
     }
   });
 
@@ -120,7 +130,7 @@ describe.skipIf(testEnv === null)("SshExecBackend against a real sshd", () => {
     const backend = createSshExecBackend("testremote", async (a) => pool.acquire(a));
     let stdout = "";
     const res = await backend.spawn({
-      command: "echo integration_ok; exit 7",
+      command: `printf '%s\\n' ${shellQuote("integration_ok; ' $HOME")}; exit 7`,
       cwd: tmpRemoteDir,
       signal: new AbortController().signal,
       timeout: 10000,
@@ -128,7 +138,7 @@ describe.skipIf(testEnv === null)("SshExecBackend against a real sshd", () => {
         if (stream === "stdout") stdout += data;
       },
     });
-    expect(stdout.trim()).toBe("integration_ok");
+    expect(stdout.trim()).toBe("integration_ok; ' $HOME");
     expect(res.exitCode).toBe(7);
     expect(res.timedOut).toBe(false);
     expect(res.aborted).toBe(false);
@@ -140,6 +150,27 @@ describe.skipIf(testEnv === null)("SshExecBackend against a real sshd", () => {
     await backend.writeFile(path, "hello-sftp");
     const content = await backend.readFile(path);
     expect(content).toBe("hello-sftp");
+  });
+
+  it("reads raw bytes and atomically replaces a symlink target with its mode intact", async () => {
+    const backend = createSshExecBackend("testremote", async (a) => pool.acquire(a));
+    const path = join(tmpRemoteDir, "atomic");
+    const link = join(tmpRemoteDir, "link");
+    const bytes = Buffer.from([0xef, 0xbb, 0xbf, 0xff]);
+    await writeFile(path, bytes);
+    await chmod(path, 0o751);
+    await symlink(path, link);
+    const before = await stat(path);
+    expect(await backend.readFileBytes(link)).toEqual(bytes);
+    const content = "new😀\r\n".repeat(10_000);
+    await backend.writeFileAtomic(link, content);
+    expect(await readFile(link, "utf8")).toBe(content);
+    expect((await stat(path)).mode & 0o7777).toBe(0o751);
+    expect((await stat(path)).ino).not.toBe(before.ino);
+    await backend.writeFileAtomic(link, "");
+    expect(await readFile(link, "utf8")).toBe("");
+    expect((await stat(path)).mode & 0o7777).toBe(0o751);
+    expect((await readdir(tmpRemoteDir)).sort()).toEqual(["atomic", "link"]);
   });
 
   it("stat reports isFile/isDirectory correctly", async () => {
@@ -180,5 +211,62 @@ describe.skipIf(testEnv === null)("SshExecBackend against a real sshd", () => {
     await backend.writeFile(path, "x");
     expect(await backend.exists(path)).toBe(true);
     expect(await backend.exists(join(tmpRemoteDir, "missing.txt").replace(/\\/g, "/"))).toBe(false);
+  });
+  it.each(["abort", "timeout"])("%s kills the remote sleep and its process group", async (mode) => {
+    const backend = createSshExecBackend("testremote", async (a) => pool.acquire(a));
+    const controller = new AbortController();
+    const marker = `review-6-2-${tmpRemoteDir.split("/").at(-1)}`;
+    let stdout = "";
+    try {
+      const result = await backend.spawn({
+        command: `sleep 600 & printf 'ready:%s\\n' "$!"; wait # ${marker}`,
+        cwd: tmpRemoteDir,
+        signal: controller.signal,
+        timeout: mode === "timeout" ? 700 : 10_000,
+        onOutput: (data, kind) => {
+          if (kind === "stdout") {
+            stdout += data;
+            if (mode === "abort" && stdout.includes("ready")) controller.abort();
+          }
+        },
+      });
+      expect(stdout).toMatch(/^ready:\d+\n$/);
+      const childPid = Number(stdout.trim().slice(6));
+      expect(result).toEqual({
+        exitCode: null,
+        timedOut: mode === "timeout",
+        aborted: mode === "abort",
+      });
+      const probe = await backend.spawn({
+        // Bracket trick: the probe must not match its own command line.
+        command: `pgrep -f ${shellQuote(`[r]${marker.slice(1)}`)}`,
+        cwd: "/",
+        signal: new AbortController().signal,
+        timeout: 5000,
+        onOutput: () => undefined,
+      });
+      expect(probe.exitCode).toBe(1);
+      let childState = "";
+      await backend.spawn({
+        command: `ps -o stat= -p ${childPid}`,
+        cwd: "/",
+        signal: new AbortController().signal,
+        timeout: 5000,
+        onOutput: (data) => {
+          childState += data;
+        },
+      });
+      // A dead child may briefly remain a zombie until the host init reaps it.
+      expect(childState.trim() === "" || childState.trim().startsWith("Z")).toBe(true);
+    } finally {
+      const childPid = /^ready:(\d+)\n/.exec(stdout)?.[1];
+      await backend.spawn({
+        command: `${childPid ? `kill -KILL ${childPid} 2>/dev/null; ` : ""}pkill -KILL -f ${shellQuote(`[r]${marker.slice(1)}`)} || true`,
+        cwd: "/",
+        signal: new AbortController().signal,
+        timeout: 5000,
+        onOutput: () => undefined,
+      });
+    }
   });
 });

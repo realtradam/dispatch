@@ -1,3 +1,4 @@
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 /**
  * Kit unit tests (plan 02 verification gate) — seed/materialize idempotence,
  * validation rejection, event-after-write exactly once, DELETE→re-seed
@@ -28,6 +29,7 @@ import {
 function memoryStorage(): StorageNamespace & { readonly store: Map<string, string> } {
   const store = new Map<string, string>();
   return {
+    ...storageFromMap(store),
     store,
     get: async (key) => store.get(key) ?? null,
     set: async (key, value) => {
@@ -319,6 +321,15 @@ describe("createLayoutRouteHandlers — 404/400/200 matrix", () => {
 
   it("a provider whose storage throws → 500 (never a crash)", async () => {
     const explosive: StorageNamespace = {
+      entries: async () => {
+        throw new Error("disk gone");
+      },
+      count: async () => {
+        throw new Error("disk gone");
+      },
+      transaction: async () => {
+        throw new Error("disk gone");
+      },
       get: async () => {
         throw new Error("disk gone");
       },

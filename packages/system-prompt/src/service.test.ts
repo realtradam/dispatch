@@ -1,5 +1,6 @@
 import type { StorageNamespace } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import type { GitSpawnResult, ResolverAdapters, ResolverFs } from "./resolver.js";
 import { createSystemPromptService, DEFAULT_TEMPLATE } from "./service.js";
 
@@ -7,6 +8,7 @@ import { createSystemPromptService, DEFAULT_TEMPLATE } from "./service.js";
 function memoryStorage(): StorageNamespace {
   const store = new Map<string, string>();
   return {
+    ...storageFromMap(store),
     get: async (key: string) => store.get(key) ?? null,
     set: async (key: string, value: string) => {
       store.set(key, value);
@@ -331,4 +333,39 @@ describe("system-prompt service", () => {
     });
     expect(await service.resolveText("", "/work")).toBe("");
   });
+});
+
+it("deletion invalidates in-flight resolution without deleting another prompt or the template", async () => {
+  const storage = memoryStorage();
+  let release = () => {};
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered = () => {};
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const service = createSystemPromptService({
+    storage,
+    adapters: adapters(new Map()),
+    resolveRemoteAdapters: async () => {
+      entered();
+      await pending;
+      return adapters(new Map());
+    },
+  });
+  await service.setTemplate("fixture [prompt:cwd]");
+  await service.construct("keep", "/keep");
+  const constructing = service.construct("deleted", "/deleted", { computerId: "fixture" });
+  await started;
+  await service.delete("deleted");
+  release();
+  await constructing;
+  expect(await service.getWithMeta("deleted")).toEqual({
+    prompt: null,
+    cwd: null,
+    computerId: null,
+  });
+  expect(await service.get("keep")).toBe("fixture /keep");
+  expect(await service.getTemplate()).toBe("fixture [prompt:cwd]");
 });

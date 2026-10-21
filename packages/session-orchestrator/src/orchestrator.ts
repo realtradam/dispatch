@@ -2,48 +2,86 @@ import type { ConversationStore } from "@dispatch/conversation-store";
 import type {
   AgentEvent,
   ChatMessage,
-  CompactionResult,
-  ConversationStatus,
   ConversationToolPolicy,
   EventHookDescriptor,
   ImageInput,
   Logger,
   ModelInfo,
   ProviderContract,
-  ProviderEvent,
-  ProviderStreamOptions,
   ReasoningEffort,
   RetryStrategy,
   RunTurnInput,
   RunTurnResult,
   ToolContract,
   ToolDispatchPolicy,
-  UsageEvent,
+  TurnEndedEvent,
 } from "@dispatch/kernel";
-import {
-  abortableIteration,
-  defineEventHook,
-  defineService,
-  type ServiceHandle,
-} from "@dispatch/kernel";
+import { defineService, type ServiceHandle } from "@dispatch/kernel";
 import type { MessageQueueService, QueuedMessage } from "@dispatch/message-queue";
 import type { ConcurrencyLimiter } from "@dispatch/provider-concurrency";
 import { wrapProviderWithConcurrency } from "@dispatch/provider-concurrency";
 import type { SystemPromptService } from "@dispatch/system-prompt";
+import { assembleTurnRequest, TurnRequestRejected } from "./assemble.js";
+import {
+  type CompactionService,
+  DEFAULT_COMPACT_PERCENT,
+  DEFAULT_KEEP_LAST_N,
+  performCompaction,
+} from "./compaction.js";
+import {
+  conversationClosed,
+  conversationStatusChanged,
+  turnSettled,
+  turnStarted,
+} from "./hooks.js";
 import { createMetricsAccumulator } from "./metrics.js";
 import {
+  appendCompacted,
+  boundedSnapshotReplay,
   buildUserMessage,
-  compactReplay,
+  createReplayBuffer,
   defaultDispatchPolicy,
   delayFor,
   generateTurnId,
   type MemorySample,
   memoryDelta,
   memorySampleAttributes,
+  type ReplayBuffer,
   resolveModelName,
   resolveReasoningEffort,
+  snapshotReplay,
 } from "./pure.js";
-import { applyToolPolicy, type ToolAssembly } from "./tools-filter.js";
+import type { ToolAssembly } from "./tools-filter.js";
+
+export {
+  type CompactionService,
+  compactionHandle,
+  createCompactionService,
+} from "./compaction.js";
+export {
+  type ConversationClosedPayload,
+  type ConversationCompactedPayload,
+  type ConversationOpenedPayload,
+  type ConversationStatusChangedPayload,
+  type ConversationTabGroupChangedPayload,
+  conversationClosed,
+  conversationCompacted,
+  conversationOpened,
+  conversationStatusChanged,
+  conversationTabGroupChanged,
+  type TurnLifecyclePayload,
+  turnSettled,
+  turnStarted,
+  type WarmCompletedPayload,
+  warmCompleted,
+} from "./hooks.js";
+export {
+  cacheWarmHandle,
+  createWarmService,
+  type WarmResult,
+  type WarmService,
+  type WarmServiceDeps,
+} from "./warm.js";
 
 // --- Vision handoff (lazy, optional) ---
 
@@ -185,7 +223,13 @@ export interface StartTurnInput {
 
 export type StartTurnResult =
   | { readonly started: true; readonly turnId: string }
-  | { readonly started: false; readonly reason: "already-active" };
+  | { readonly started: false; readonly reason: "already-active" }
+  | {
+      readonly started: false;
+      readonly reason: "queued-behind-compaction";
+      /** Resolves after storage/insertion; rejects on admission failure. */
+      readonly admission: Promise<EnqueueResult>;
+    };
 
 /** Input to `SessionOrchestrator.enqueue` — the single entry transports call. */
 export interface EnqueueInput {
@@ -193,16 +237,15 @@ export interface EnqueueInput {
   readonly text: string;
   /**
    * Images attached (the steering / opening message analog of
-   * `StartTurnInput.images`). Threaded to `startTurn` when the conversation is
-   * idle (the message starts a turn). Additive optional.
+   * `StartTurnInput.images`). Stored before insertion, then delivered as steering
+   * or carried into the opening message of a new turn.
    */
   readonly images?: readonly ImageInput[];
   /** Workspace to stamp on a new conversation. Defaults to `"default"`. */
   readonly workspaceId?: string;
   /**
-   * Per-turn computer override (SSH alias), threaded to `startTurn` when the
-   * conversation is idle (the message starts a turn). Additive optional —
-   * mirrors `workspaceId` on this type (enqueue does not carry `cwd`).
+   * Computer override (SSH alias). Last explicit queued override wins on carry;
+   * steering persists it for the next turn, never switches live tool context.
    */
   readonly computerId?: string;
 }
@@ -216,6 +259,8 @@ export interface EnqueueInput {
  * is dropped, see `enqueue` docs).
  */
 export interface EnqueueResult {
+  /** Present on actual insertion, including compaction-deferred admission. */
+  readonly messageId?: string;
   readonly startedTurn: boolean;
   readonly queue: readonly QueuedMessage[];
 }
@@ -236,186 +281,40 @@ export interface CancelQueuedMessageResult {
 
 export type TurnEventListener = (event: AgentEvent) => void;
 
+interface InputWaiter {
+  readonly input: StartTurnInput;
+  messageId?: string;
+  started(turnId: string): void;
+  terminal(reason: "dropped" | "superseded" | "failed", message: string): void;
+}
+
 interface ActiveTurn {
-  buffer: AgentEvent[];
+  buffer: ReplayBuffer;
   turnId: string;
-  /** Aborts this turn's kernel runTurn (closeConversation). */
+  /** Close cancels carry; Stop only interrupts the current turn. */
+  cancelQueuedInput: boolean;
+  /** Aborts this turn's kernel runTurn (Stop or Close). */
   controller: AbortController;
 }
 
-// --- Lifecycle event hooks ---
-
-/** Context carried on turn-lifecycle events, enough to replicate the turn's request prefix. */
-export interface TurnLifecyclePayload {
-  readonly conversationId: string;
-  readonly cwd?: string;
-  /** The computer this turn executes on (SSH alias), mirroring `cwd`. */
-  readonly computerId?: string;
-  readonly modelName?: string;
-}
-
-/** Fired when a turn STARTS driving a conversation (consumers cancel warming timers). */
-export const turnStarted: EventHookDescriptor<TurnLifecyclePayload> =
-  defineEventHook<TurnLifecyclePayload>("session-orchestrator/turn-started");
-
-/** Fired when a turn SETTLES (sealed) for a conversation (consumers arm warming timers). */
-export const turnSettled: EventHookDescriptor<TurnLifecyclePayload> =
-  defineEventHook<TurnLifecyclePayload>("session-orchestrator/turn-settled");
-
-/** Payload for the conversationClosed bus event. */
-export interface ConversationClosedPayload {
-  readonly conversationId: string;
-}
-
-/**
- * Fired when a client EXPLICITLY closes a conversation (tab close — NOT a mere
- * disconnect). Consumers stop per-conversation background work (e.g. cache-warming
- * disables its schedule). Emitted by `SessionOrchestrator.closeConversation`.
- */
-export const conversationClosed: EventHookDescriptor<ConversationClosedPayload> =
-  defineEventHook<ConversationClosedPayload>("session-orchestrator/conversation-closed");
-
-/** Payload for the conversationOpened bus event. */
-export interface ConversationOpenedPayload {
-  readonly conversationId: string;
-  /**
-   * The conversation's actual persisted workspace id (resolved from the
-   * store, not the per-turn start option), so a frontend can open/focus the
-   * tab in the correct workspace. Falls back to `"default"`.
-   */
-  readonly workspaceId: string;
-  /**
-   * The conversation's persisted per-conversation model (`<credential>/<model>`),
-   * when one is set — so a frontend can stamp the newly-opened tab with the
-   * conversation's ACTUAL model instead of the currently-selected global model
-   * (fix-toolcall-duplicate-keys plan Part 4). Absent = default provider model.
-   */
-  readonly model?: string;
-  /** Effective visual group parent; absent = ungrouped. */
-  readonly tabGroupParentId?: string;
-}
-
-/**
- * Fired when a client requests to "open" a conversation (e.g. the CLI `--open`
- * flag). Transport-ws subscribes and broadcasts a `conversation.open` WS
- * message to all connected frontend clients. The frontend decides whether to
- * open/focus a tab — the backend just signals.
- */
-export const conversationOpened: EventHookDescriptor<ConversationOpenedPayload> =
-  defineEventHook<ConversationOpenedPayload>("session-orchestrator/conversation-opened");
-
-/** Purely visual grouping metadata; never changes lineage or manageability. */
-export interface ConversationTabGroupChangedPayload {
-  readonly conversationId: string;
-  readonly workspaceId: string;
-  readonly tabGroupParentId: string | null;
-}
-
-export const conversationTabGroupChanged: EventHookDescriptor<ConversationTabGroupChangedPayload> =
-  defineEventHook<ConversationTabGroupChangedPayload>(
-    "session-orchestrator/conversation-tab-group-changed",
-  );
-
-/** Payload for the conversationStatusChanged bus event. */
-export interface ConversationStatusChangedPayload {
-  readonly conversationId: string;
-  readonly status: ConversationStatus;
-  /**
-   * The conversation's actual persisted workspace id (resolved from the
-   * store, not the per-turn start option), so a frontend can sync the tab
-   * in the correct workspace. Falls back to `"default"`.
-   */
-  readonly workspaceId: string;
-}
-
-/**
- * Fired when a conversation's lifecycle status changes (active/idle/closed).
- * Transport-ws subscribes and broadcasts a `conversation.statusChanged` WS
- * message to all connected frontend clients so tabs sync across devices.
- */
-export const conversationStatusChanged: EventHookDescriptor<ConversationStatusChangedPayload> =
-  defineEventHook<ConversationStatusChangedPayload>(
-    "session-orchestrator/conversation-status-changed",
-  );
-
-/** Payload for the conversationCompacted bus event. */
-export interface ConversationCompactedPayload {
-  readonly conversationId: string;
-  readonly newConversationId: string;
-  readonly messagesSummarized: number;
-  readonly messagesKept: number;
-}
-
-/**
- * Fired when a conversation's history has been compacted (old messages
- * summarized, recent messages retained). Transport-ws subscribes and
- * broadcasts a `conversation.compacted` WS message so the FE reloads history.
- */
-export const conversationCompacted: EventHookDescriptor<ConversationCompactedPayload> =
-  defineEventHook<ConversationCompactedPayload>("session-orchestrator/conversation-compacted");
-
-/** Payload for the warmCompleted bus event. */
-export interface WarmCompletedPayload {
-  readonly conversationId: string;
-  readonly usage: WarmResult;
-}
-
-/** Fired when a warm probe succeeds (both automatic and manual paths). */
-export const warmCompleted: EventHookDescriptor<WarmCompletedPayload> =
-  defineEventHook<WarmCompletedPayload>("session-orchestrator/warm-completed");
-
-// --- Warm service ---
-
-export interface WarmResult {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly cacheReadTokens: number;
-  readonly cacheWriteTokens: number;
-}
-
-export interface WarmService {
-  readonly warm: (
-    conversationId: string,
-    opts?: { readonly cwd?: string; readonly modelName?: string },
-  ) => Promise<WarmResult | { readonly error: string }>;
-}
-
-export const cacheWarmHandle: ServiceHandle<WarmService> = defineService<WarmService>(
-  "session-orchestrator/warm",
-);
-
-// --- Compaction service ---
-
-export interface CompactionService {
-  /**
-   * Compact a conversation: summarize old messages and replace history with
-   * the summary + the most recent `keepLastN` messages. Returns the result
-   * or an error object. No-ops if the conversation is too short (≤ keepLastN
-   * messages). When `auto` is true, checks the compact-threshold setting and
-   * only compacts if the last turn's input tokens exceeded it.
-   */
-  readonly compact: (
-    conversationId: string,
-    opts?: { readonly keepLastN?: number; readonly modelName?: string; readonly auto?: boolean },
-  ) => Promise<CompactionResult | { readonly error: string }>;
-}
-
-export const compactionHandle: ServiceHandle<CompactionService> = defineService<CompactionService>(
-  "session-orchestrator/compaction",
-);
-
 export interface SessionOrchestrator {
+  /**
+   * During compaction returns queued-behind-compaction plus admission (storage /
+   * insertion); otherwise reserves a waiting turn if no queue is available.
+   * already-active is rejection only, never accepted input.
+   */
   startTurn(input: StartTurnInput): StartTurnResult;
   /**
    * The single entry transports call to deliver a user message. Owns the
-   * idle→startTurn vs active→queue decision (no separate `isActive` race —
+   * idle→startTurn vs active/compacting→queue decision (no separate `isActive` race —
    * `startTurn`'s single-flight guard is authoritative). When the conversation
    * is idle, starts a turn (the message is the opening prompt). When active,
    * enqueues onto the steering queue (if the message-queue extension is
    * loaded); with no queue extension loaded the message is dropped and the
-   * returned snapshot is empty (degraded — feature off).
+   * returned snapshot is empty (degraded — feature off). Await the result: image
+   * storage precedes insertion, failures reject, and Close cancels pending insertion.
    */
-  enqueue(input: EnqueueInput): EnqueueResult;
+  enqueue(input: EnqueueInput): Promise<EnqueueResult>;
   /**
    * Cancel (remove) a SINGLE queued message by id so it never runs. The single
    * entry transports call to cancel a queued steering message. Resolves the
@@ -428,7 +327,25 @@ export interface SessionOrchestrator {
     readonly conversationId: string;
     readonly messageId: string;
   }): CancelQueuedMessageResult;
-  subscribe(conversationId: string, listener: TurnEventListener): () => void;
+  /**
+   * Subscribe to live events, after an immutable synchronous replay. The optional
+   * replay policy preflights a bounded snapshot BEFORE delivery. If any event is
+   * rejected or maxEvents is exceeded, no partial replay is delivered; onOmitted
+   * runs instead, then live delivery continues unmodified. accept must be pure
+   * (apart from caller-owned budget accounting), not emit events or perform I/O.
+   * Default callers retain full replay semantics.
+   */
+  subscribe(
+    conversationId: string,
+    listener: TurnEventListener,
+    options?: {
+      readonly replay: {
+        readonly maxEvents: number;
+        readonly accept: (event: AgentEvent) => boolean;
+        readonly onOmitted: (turnId: string) => void;
+      };
+    },
+  ): () => void;
   isActive(conversationId: string): boolean;
   /**
    * The number of conversations currently driving a turn (in the
@@ -442,7 +359,8 @@ export interface SessionOrchestrator {
    * socket disconnect, which never touches the turn): aborts any in-flight turn
    * (the kernel finishes with `finishReason: "aborted"`, partial messages are
    * persisted and the turn seals normally) and emits the `conversationClosed`
-   * hook so per-conversation background work (cache-warming) stops.
+   * hook so per-conversation background work (cache-warming) stops. Cancels
+   * queued and storage-pending input; the closed turn never carries or restarts.
    * Idempotent — closing an idle/unknown conversation just emits the hook.
    */
   closeConversation(conversationId: string): { readonly abortedTurn: boolean };
@@ -451,7 +369,10 @@ export interface SessionOrchestrator {
    * the turn's AbortController — the kernel finishes with
    * `finishReason: "aborted"`, partial messages are persisted, and the turn
    * seals normally (status transitions active → idle via the normal settle
-   * path). Idempotent — stopping an idle/unknown conversation is a no-op.
+   * path). Queued and storage-pending input is preserved, including input
+   * arriving during abort cleanup, and carried into a new turn after the
+   * aborted terminal. Steering stays suppressed in the aborted turn.
+   * Stopping an idle/unknown conversation never drops waiting input.
    */
   stopTurn(conversationId: string): { readonly abortedTurn: boolean };
   /**
@@ -462,9 +383,16 @@ export interface SessionOrchestrator {
    * active conversations and applies the same per-conversation stop as
    * `stopTurn` — the kernel finishes each with `finishReason: "aborted"`,
    * partial messages persist, turns seal normally. Returns how many
-   * conversations had an in-flight turn aborted.
+   * conversations had an in-flight turn aborted. Queued input carries even
+   * during forced unload, just as it does for an individual Stop.
    */
   stopAll(): { readonly stopped: number };
+  /**
+   * Streams ONLY this input's turn through turn-ended. Deferred inputs cancelled
+   * by Close/item cancel, consumed into a combined/steering turn, or failing
+   * admission/start instead receive request-local error + turn-ended(rejected).
+   * Those request-local terminals are not broadcast as actual turn history.
+   */
   handleMessage(input: {
     conversationId: string;
     text: string;
@@ -587,15 +515,12 @@ export interface SessionOrchestratorDeps {
   readonly emit?: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
 }
 
-/** Deps for the warm service — emit is REQUIRED so warmCompleted is never silently dropped. */
-export type WarmServiceDeps = SessionOrchestratorDeps & {
-  readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
-};
-
 export interface SessionOrchestratorBundle {
   readonly orchestrator: SessionOrchestrator;
   /** The shared active-conversations set, for use by createWarmService. */
   readonly activeConversations: ReadonlySet<string>;
+  /** Shared manual/post-seal compaction completion barriers. */
+  readonly compacting: Map<string, Promise<void>>;
 }
 
 /**
@@ -632,16 +557,81 @@ export function createSessionOrchestrator(
   deps: SessionOrchestratorDeps,
 ): SessionOrchestratorBundle {
   const activeConversations = new Set<string>();
+  const compacting = new Map<string, Promise<void>>();
+  const compactionQueueWaiters = new Map<string, { barrier: Promise<void> }>();
+  const inputWaiters = new Map<string, Set<InputWaiter>>();
+
+  function finishInputs(
+    conversationId: string,
+    reason: "dropped" | "superseded" | "failed",
+    message: string,
+    ids?: ReadonlySet<string>,
+  ): void {
+    for (const waiter of [...(inputWaiters.get(conversationId) ?? [])]) {
+      if (ids === undefined || (waiter.messageId !== undefined && ids.has(waiter.messageId))) {
+        waiter.terminal(reason, message);
+      }
+    }
+  }
+
+  function startQueued(input: StartTurnInput, messages: readonly QueuedMessage[]): boolean {
+    const ids = new Set(messages.map((message) => message.id));
+    const owner =
+      messages.length === 1
+        ? [...(inputWaiters.get(input.conversationId) ?? [])].find(
+            (waiter) => waiter.messageId === messages[0]?.id,
+          )
+        : undefined;
+    finishInputs(
+      input.conversationId,
+      "superseded",
+      "input consumed into a combined turn",
+      new Set([...ids].filter((id) => id !== owner?.messageId)),
+    );
+    const result = startInput(
+      owner === undefined ? input : { ...owner.input, ...queuedInput(messages) },
+      owner,
+    );
+    if (!result.started) {
+      finishInputs(input.conversationId, "failed", "queued turn could not start", ids);
+    }
+    return result.started;
+  }
   const subscribers = new Map<string, Set<TurnEventListener>>();
   const activeTurns = new Map<string, ActiveTurn>();
+  // Serialize image storage/insertion per conversation; only Close invalidates work.
+  const pendingEnqueues = new Map<string, { cancelled: boolean; tail?: Promise<EnqueueResult> }>();
   // One stateless retry strategy shared by every turn (delayFor is pure; sleep
   // is a stateless setTimeout closure). Wired into each RunTurnInput.retry.
   const retryStrategy = createRetryStrategy();
 
+  function logFailure(conversationId: string, operation: string, turnId?: string) {
+    return (err: unknown): void => {
+      deps.logger
+        ?.child({ conversationId, ...(turnId !== undefined ? { turnId } : {}) })
+        .debug(`orchestrator: ${operation} failed`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+    };
+  }
+
+  function publishStatus(
+    conversationId: string,
+    status: "active" | "idle" | "closed" | "queued",
+    turnId?: string,
+  ): void {
+    void deps.conversationStore
+      .getWorkspaceId(conversationId)
+      .then((workspaceId) => {
+        deps.emit?.(conversationStatusChanged, { conversationId, status, workspaceId });
+      })
+      .catch(logFailure(conversationId, `${status} workspace`, turnId));
+  }
+
   function emitToHub(conversationId: string, event: AgentEvent): void {
     const turn = activeTurns.get(conversationId);
     if (turn !== undefined) {
-      turn.buffer.push(event);
+      appendCompacted(turn.buffer, event);
     }
     const listeners = subscribers.get(conversationId);
     if (listeners !== undefined) {
@@ -651,8 +641,18 @@ export function createSessionOrchestrator(
     }
   }
 
+  function queuedInput(messages: readonly QueuedMessage[]) {
+    const computerId = messages.findLast((message) => message.computerId !== undefined)?.computerId;
+    return {
+      text: messages.map((message) => message.text).join("\n\n"),
+      images: messages.flatMap((message) => message.images ?? []),
+      // One turn has one computer. The last explicit queued override wins.
+      ...(computerId !== undefined ? { computerId } : {}),
+    };
+  }
+
   /**
-   * Post-seal carry: if a steering queue is available and non-empty, drain it,
+   * Post-turn carry: if a steering queue is available and non-empty, drain it,
    * combine, and start a NEW detached turn whose opening `user-message` carries
    * the combined text (no `steering` event — that's only for mid-turn drain).
    * Returns true iff a new turn was started. Called from `runTurnDetached`'s
@@ -665,31 +665,44 @@ export function createSessionOrchestrator(
     if (queue === undefined) return false;
     if (queue.getQueue(conversationId).length === 0) return false;
     const drained = queue.drain(conversationId);
-    const combined = drained.map((q) => q.text).join("\n\n");
-    const result = orchestrator.startTurn({ conversationId, text: combined });
-    return result.started;
+    return startQueued({ conversationId, ...queuedInput(drained) }, drained);
   }
 
   function runTurnDetached(
-    conversationId: string,
-    text: string,
-    modelName: string | undefined,
-    cwd: string | undefined,
-    computerId: string | undefined,
-    reasoningEffortOverride: ReasoningEffort | undefined,
-    workspaceId: string,
-    systemPromptOverride: string | undefined,
-    images: readonly ImageInput[] | undefined,
-    title: string | undefined,
-    parentConversationId: string | undefined,
-    toolPolicy: ConversationToolPolicy | undefined,
+    {
+      conversationId,
+      text,
+      modelName,
+      cwd,
+      computerId,
+      reasoningEffort: reasoningEffortOverride,
+      workspaceId: requestedWorkspaceId,
+      systemPrompt: systemPromptOverride,
+      images,
+      title,
+      parentConversationId,
+      toolPolicy,
+    }: StartTurnInput,
+    waiter?: InputWaiter,
   ): void {
+    const workspaceId = requestedWorkspaceId ?? "default";
     const turnId = generateTurnId();
     const promptStartedAt = deps.now?.() ?? Date.now();
     const controller = new AbortController();
-    activeTurns.set(conversationId, { buffer: [], turnId, controller });
-    activeConversations.add(conversationId);
+    const turn: ActiveTurn = {
+      buffer: createReplayBuffer(),
+      turnId,
+      controller,
+      cancelQueuedInput: false,
+    };
+    activeTurns.set(conversationId, turn);
+    const pendingCompaction = compacting.get(conversationId);
+    // A waiting turn owns the single-flight slot, but must not invalidate the
+    // compactor's generating-state recheck until the barrier has completed.
+    if (pendingCompaction === undefined) activeConversations.add(conversationId);
 
+    // Bind the caller before the first synchronous event (no replay/microtask dependency).
+    waiter?.started(turnId);
     emitToHub(conversationId, { type: "user-message", conversationId, turnId, text });
 
     // For a NEW conversation the workspace MUST be assigned (persisted)
@@ -724,6 +737,10 @@ export function createSessionOrchestrator(
     // a different value and never invents one (only persists what the caller
     // explicitly passed). Legacy/ordinary conversations omit both → no-op.
     const workspaceSetupPromise = (async (): Promise<boolean> => {
+      if (pendingCompaction !== undefined) {
+        await pendingCompaction;
+        activeConversations.add(conversationId);
+      }
       const meta = await deps.conversationStore.getConversationMeta(conversationId);
       if (meta === null) {
         await deps.conversationStore.ensureWorkspace(workspaceId);
@@ -795,12 +812,20 @@ export function createSessionOrchestrator(
         .then((c) => c ?? undefined),
     );
 
-    const storedEffortPromise = deps.conversationStore.getReasoningEffort(conversationId);
+    const storedEffortPromise =
+      pendingCompaction === undefined
+        ? deps.conversationStore.getReasoningEffort(conversationId)
+        : workspaceSetupPromise.then(() =>
+            deps.conversationStore.getReasoningEffort(conversationId),
+          );
     // Resolve the persisted model (if any) in parallel with the other
     // per-conversation reads. The effective model name is
     // per-turn override → persisted → (undefined → default provider), the
     // same resolution chain as `resolveReasoningEffort`.
-    const storedModelPromise = deps.conversationStore.getModel(conversationId);
+    const storedModelPromise =
+      pendingCompaction === undefined
+        ? deps.conversationStore.getModel(conversationId)
+        : workspaceSetupPromise.then(() => deps.conversationStore.getModel(conversationId));
 
     const payloadPromise = Promise.all([
       effectiveCwdPromise,
@@ -817,22 +842,25 @@ export function createSessionOrchestrator(
       };
     });
 
-    payloadPromise.then((payload) => {
+    // Observe setup failures in lifecycle branches; the turn catch reports them.
+    const lifecyclePayloadPromise = payloadPromise.catch((err) => {
+      logFailure(conversationId, "lifecycle payload", turnId)(err);
+      return undefined;
+    });
+    void (async () => {
+      const payload = await lifecyclePayloadPromise;
+      if (payload === undefined) return;
       deps.emit?.(turnStarted, payload);
       // Resolve the persisted workspace id (not the per-turn start option)
       // before emitting so the broadcast carries the correct workspace.
-      void deps.conversationStore.getWorkspaceId(conversationId).then((workspaceId) => {
-        deps.emit?.(conversationStatusChanged, {
-          conversationId,
-          status: "active",
-          workspaceId,
-        });
-      });
-      void deps.conversationStore.setConversationStatus(conversationId, "active");
-    });
+      publishStatus(conversationId, "active", turnId);
+      void deps.conversationStore
+        .setConversationStatus(conversationId, "active")
+        .catch(logFailure(conversationId, "set active status", turnId));
+    })().catch(logFailure(conversationId, "turn started hook", turnId));
 
     void (async () => {
-      let sealed = false;
+      let endReason: TurnEndedEvent["reason"] = "error";
       // Per-turn metrics accumulator. Hoisted out of the try so a turn that
       // THROWS (e.g. a store failure mid-turn) still persists the metrics it
       // accumulated — every turn that produced steps gets a metrics row, so
@@ -887,217 +915,44 @@ export function createSessionOrchestrator(
             : images;
 
         const userMsg = buildUserMessage(text, storedImages);
+        // Make input durable before model validation or any provider/prompt work.
+        await deps.conversationStore.append(conversationId, [userMsg], { turnId });
 
-        // Workspace assignment for new conversations happens BEFORE
-        // effective-cwd resolution (see workspaceSetupPromise above) so
-        // getEffectiveCwd resolves against the intended workspace, not
-        // the stale "default". The history-load + append flow below is
-        // otherwise unchanged.
-
-        let provider: ProviderContract;
-        let modelOverride: string | undefined;
-
-        // Per-workspace model-unavailable rule (§8, plan 06 §6.5): a model
-        // that is KNOWN but whose provider is not usable in this
-        // conversation's workspace (disabled there, or globally unloaded)
-        // is an IMMEDIATE, EXPLICIT error surfaced in the conversation —
-        // NEVER a silent fallback to another model. The check runs before
-        // resolveModel so a globally-unloaded provider surfaces as
-        // "unavailable" rather than the (misleading) "unknown model".
-        if (
-          effectiveModelName !== undefined &&
-          turnWorkspaceId !== undefined &&
-          deps.resolveModelUsability !== undefined
-        ) {
-          const usable = await deps.resolveModelUsability(effectiveModelName, turnWorkspaceId);
-          if (!usable) {
-            emitToHub(conversationId, {
-              type: "error",
-              conversationId,
-              turnId,
-              message: `model ${effectiveModelName} unavailable — pick another`,
-            });
-            return;
-          }
-        }
-
-        if (effectiveModelName !== undefined && deps.resolveModel !== undefined) {
-          const resolved = deps.resolveModel(effectiveModelName);
-          if (resolved === undefined) {
-            emitToHub(conversationId, {
-              type: "error",
-              conversationId,
-              turnId,
-              message: `unknown model: ${effectiveModelName}`,
-            });
-            return;
-          }
-          provider = resolved.provider;
-          modelOverride = resolved.model;
-          // Persist the resolved model so it sticks for future turns
-          // and browser sessions (per-conversation model persistence).
-          // Only stamped when a model was actually used — NOT on the
-          // default-provider fallthrough (nothing to persist). Idempotent
-          // when the value is unchanged (re-stamps the same persisted
-          // model). The early `return` above means an unknown model is
-          // never persisted.
-          await deps.conversationStore.setModel(conversationId, effectiveModelName);
-        } else {
-          provider = deps.resolveProvider();
-        }
-
-        // Wrap the resolved provider with concurrency limiting when the
-        // provider-concurrency extension is loaded. The slot is acquired
-        // before the stream starts (before the HTTP request) and released
-        // when the stream completes (after all tokens are generated). The
-        // promptStartedAt (turn start time) is used for oldest-agent-first
-        // scheduling when multiple agents are queued.
-        //
-        // Status lifecycle with concurrency: "active" is emitted early (in
-        // payloadPromise.then, before this code runs). If acquire() blocks,
-        // onQueued emits "queued" (broadcast-only — persisted status stays
-        // "active"). When the slot is granted, onAcquired emits "active"
-        // again, transitioning "queued" → "active" so the FE switches from
-        // the loading ring back to dots. A request that gets a slot
-        // immediately never emits "queued" — onAcquired fires right after
-        // the early "active", which is a harmless no-op re-broadcast.
+        const turnLogger = deps.logger?.child({ conversationId, turnId });
+        const request = await assembleTurnRequest(deps, {
+          conversationId,
+          signal: controller.signal,
+          messages: [...history, userMsg],
+          isNewConversation,
+          context: {
+            effectiveCwd,
+            effectiveComputerId,
+            effectiveModelName,
+            resolvedEffort,
+            turnWorkspaceId,
+          },
+          ...(systemPromptOverride !== undefined ? { systemPrompt: systemPromptOverride } : {}),
+          ...(turnLogger !== undefined ? { logger: turnLogger } : {}),
+        });
+        let { provider } = request;
+        const { providerOpts, providerMessages } = request;
         const limiter = deps.resolveConcurrencyLimiter?.();
         if (limiter !== undefined) {
-          const emitStatus = (status: "queued" | "active"): void => {
-            void deps.conversationStore.getWorkspaceId(conversationId).then((workspaceId) => {
-              deps.emit?.(conversationStatusChanged, {
-                conversationId,
-                status,
-                workspaceId,
-              });
-            });
-          };
           provider = wrapProviderWithConcurrency(
             provider,
             limiter,
             conversationId,
-            workspaceId,
+            turnWorkspaceId,
             promptStartedAt,
-            () => emitStatus("queued"),
-            () => emitStatus("active"),
+            () => publishStatus(conversationId, "queued", turnId),
+            () => publishStatus(conversationId, "active", turnId),
           );
         }
 
-        const baseTools = deps.resolveTools();
-        const filtered = await deps.applyToolsFilter({
-          tools: baseTools,
-          conversationId,
-          ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-          ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
-          // Thread the resolved model name into the assembly so model-aware
-          // filters (e.g. vision-handoff hiding consult_vision from
-          // vision-capable models) see which model is being used this turn.
-          // Omitted (undefined) on the default-provider fallthrough — model-
-          // aware filters treat absence as "unknown metadata".
-          ...(effectiveModelName !== undefined ? { modelName: effectiveModelName } : {}),
-          // Thread the conversation's persisted workspace into the assembly
-          // so workspace-aware filters (the MCP injection short-circuit) and
-          // the workspace tool gate below see the enforcement context (§6.3).
-          ...(turnWorkspaceId !== undefined ? { workspaceId: turnWorkspaceId } : {}),
-          // Thread the turn's abort signal into the filter chain so a filter
-          // awaiting slow I/O (the MCP tools filter connecting to MCP servers)
-          // can be interrupted by POST /conversations/:id/stop instead of
-          // blocking the turn until its own timeout fires.
-          signal: controller.signal,
-        });
-        // Per-workspace tool gate (plan 06 §6.3) — runs AFTER the entire
-        // toolsFilter chain (so no injection filter can re-add a dropped
-        // tool) and BEFORE applyToolPolicy (the conversation policy below
-        // stays the final word). Absent dep → no workspace gating (degrade
-        // open; the extension wires the ledger + workspace-plugin-config
-        // services reactively).
-        const gated =
-          deps.applyWorkspaceGate !== undefined
-            ? await deps.applyWorkspaceGate(filtered)
-            : filtered;
-        // Apply the persisted conversation tool policy LAST — after the entire
-        // toolsFilter chain AND the workspace tool gate — so NO extension
-        // filter can re-add a tool into a restricted conversation (plan §10.2),
-        // and no workspace-gated tool can sneak back via the policy either
-        // (the policy narrows the GATED set). A `mode: "none"` conversation
-        // (e.g. a vision consultation) receives an empty tool set on every
-        // turn; legacy/ordinary conversations without a persisted policy resolve
-        // to `{ mode: "all" }` (passthrough — byte-identical to today). The
-        // policy is read from the store each turn, so it survives follow-up
-        // turns and a backend restart (durable). This MUST run after
-        // applyToolsFilter, never as a filter IN the chain — otherwise a later
-        // filter could re-introduce a restricted tool.
-        const persistedPolicy = await deps.conversationStore.getToolPolicy(conversationId);
-        const policy = persistedPolicy ?? ({ mode: "all" } as const);
-        const assembled = applyToolPolicy(gated, policy);
         const dispatch = deps.resolveDispatch?.() ?? defaultDispatchPolicy();
-        const turnLogger = deps.logger?.child({ conversationId, turnId });
         const emitAndAccumulate = (event: AgentEvent): void => {
           metrics.ingest(event);
           emitToHub(conversationId, event);
-        };
-
-        // Resolve the system prompt for this turn (cache-safe). On the
-        // FIRST turn of a new conversation, construct it once (resolves all
-        // template variables + persists the result). On subsequent turns,
-        // reuse the persisted prompt via `getWithMeta` — but ONLY when the
-        // stored cwd matches the current effective cwd. If the cwd changed
-        // since the prompt was constructed (or no prompt was ever stored),
-        // reconstruct against the new cwd so the prompt is never stale.
-        // This preserves the cache-safe design (construct once per cwd,
-        // reuse on subsequent turns with the same cwd) while fixing the bug
-        // where a cwd change left the prompt stale. When the system-prompt
-        // service isn't loaded, no system prompt is sent (current behavior
-        // preserved).
-        //
-        // EXPLICIT OVERRIDE: when `systemPromptOverride` is provided (a
-        // string, incl. empty), it is sent to the provider AS-IS and the
-        // system-prompt service is bypassed entirely (no construct/reuse).
-        // This lets a caller that owns its own prompt (e.g. the heartbeat
-        // extension) drive a turn without the templated workspace prompt.
-        let systemPrompt: string | undefined;
-        if (systemPromptOverride !== undefined) {
-          systemPrompt = systemPromptOverride;
-        } else {
-          const systemPromptService = deps.resolveSystemPrompt?.();
-          if (systemPromptService !== undefined) {
-            if (isNewConversation) {
-              systemPrompt = await systemPromptService.construct(
-                conversationId,
-                effectiveCwd ?? process.cwd(),
-                {
-                  ...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
-                  ...(workspaceId !== undefined ? { workspaceId } : {}),
-                  ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
-                },
-              );
-            } else {
-              const meta = await systemPromptService.getWithMeta(conversationId);
-              const currentCwd = effectiveCwd ?? process.cwd();
-              const currentComputerId = effectiveComputerId ?? null;
-              // Invalidate when cwd OR computerId changed (switching computers
-              // must rebuild the prompt against the remote OS/hostname).
-              if (
-                meta.prompt !== null &&
-                meta.cwd === currentCwd &&
-                meta.computerId === currentComputerId
-              ) {
-                systemPrompt = meta.prompt;
-              } else {
-                systemPrompt = await systemPromptService.construct(conversationId, currentCwd, {
-                  ...(effectiveModelName !== undefined ? { model: effectiveModelName } : {}),
-                  ...(workspaceId !== undefined ? { workspaceId } : {}),
-                  ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
-                });
-              }
-            }
-          }
-        }
-
-        const providerOpts: ProviderStreamOptions = {
-          reasoningEffort: resolvedEffort,
-          ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-          ...(systemPrompt !== undefined ? { systemPrompt } : {}),
         };
 
         // Resolve the steering queue once for this turn. When present, wire
@@ -1112,13 +967,29 @@ export function createSessionOrchestrator(
           queue === undefined
             ? undefined
             : async (): Promise<readonly ChatMessage[]> => {
+                if (controller.signal.aborted) return [];
                 const queued = queue.drain(conversationId);
                 if (queued.length === 0) return [];
+                finishInputs(
+                  conversationId,
+                  "superseded",
+                  "input consumed as steering into another turn",
+                  new Set(queued.map((message) => message.id)),
+                );
                 const steerText = queued.map((q) => q.text).join("\n\n");
+                const combined = queuedInput(queued);
                 const steeringMessage: ChatMessage = {
                   role: "user",
-                  chunks: [{ type: "text", text: steerText }],
+                  chunks: queued.some((message) => message.images?.length)
+                    ? queued.flatMap(
+                        (message) => buildUserMessage(message.text, message.images).chunks,
+                      )
+                    : buildUserMessage(steerText).chunks,
                 };
+                // Steering does not switch an in-flight tool context; persist for the next turn.
+                if (combined.computerId !== undefined) {
+                  await deps.conversationStore.setComputerId(conversationId, combined.computerId);
+                }
                 // Persist the injected steering message to the store as part
                 // of the SAME critical section as the injection, so it is
                 // never lost. Without this, the message would live only in
@@ -1136,63 +1007,21 @@ export function createSessionOrchestrator(
                   conversationId,
                   turnId,
                   text: steerText,
+                  ...(combined.images.length ? { images: combined.images } : {}),
                 });
-                return [steeringMessage];
+                const vision = deps.resolveVisionHandoff?.();
+                return vision === undefined
+                  ? [steeringMessage]
+                  : vision.prepareForProvider([steeringMessage], effectiveModelName, {
+                      conversationId,
+                      signal: controller.signal,
+                    });
               };
-
-        // Vision handoff: transform the message list for the provider. When the
-        // active model is vision-capable, images pass through natively (no-op).
-        // When it is NOT vision-capable, image chunks are transcribed to text
-        // descriptions via a vision-capable model — so a text-only model can
-        // still reason about images. The PERSISTED user message keeps the
-        // original image chunks (appended below); only the provider's view is
-        // transcribed. When the vision-handoff service isn't loaded, images pass
-        // through unchanged (correct for vision models; text-only models would
-        // then receive image content their API may reject — degrades off cleanly
-        // for text-only turns with no images).
-        const visionHandoff = deps.resolveVisionHandoff?.();
-        let providerMessages: readonly ChatMessage[] = [...history, userMsg];
-        if (visionHandoff !== undefined) {
-          const visionSettings = await deps.conversationStore.getVisionSettings();
-          // A per-model image-count cap (e.g. umans' known 8) can be LOWER
-          // than the GLOBAL vision compaction limit. Clamp here so at turn
-          // start the oldest images beyond the model's cap are TRANSCRIBED
-          // (information preserved) instead of reaching the provider and
-          // being placeholder-evicted by the adapter's last-resort wire cap.
-          // `imageLimit <= 0` means "disabled" in the vision settings (no
-          // global limit), so a reported model cap still applies. Only looked
-          // up when the turn actually carries images — a text-only turn must
-          // not pay an extra upstream model-list call.
-          const hasImages = providerMessages.some((message) =>
-            message.chunks.some((chunk) => chunk.type === "image"),
-          );
-          const modelMaxImages =
-            hasImages && effectiveModelName !== undefined && deps.resolveModelInfo !== undefined
-              ? (await deps.resolveModelInfo(effectiveModelName))?.maxImages
-              : undefined;
-          const imageLimit =
-            modelMaxImages === undefined
-              ? visionSettings.imageLimit
-              : visionSettings.imageLimit > 0
-                ? Math.min(visionSettings.imageLimit, modelMaxImages)
-                : modelMaxImages;
-          providerMessages = await visionHandoff.prepareForProvider(
-            providerMessages,
-            effectiveModelName,
-            {
-              conversationId,
-              imageLimit,
-              compactionModel: visionSettings.compactionModel,
-              signal: controller.signal,
-              ...(turnLogger !== undefined ? { logger: turnLogger } : {}),
-            },
-          );
-        }
 
         const opts: RunTurnInput = {
           provider,
           messages: providerMessages,
-          tools: assembled.tools,
+          tools: request.tools,
           dispatch,
           emit: emitAndAccumulate,
           conversationId,
@@ -1293,11 +1122,6 @@ export function createSessionOrchestrator(
           },
         };
 
-        // Persist the user message at turn start so it has a seq
-        // number before the first step generates. This enables the
-        // FE to syncTail during generation (CR-6).
-        await deps.conversationStore.append(conversationId, [userMsg], { turnId });
-
         // Per-turn memory telemetry: capture a sample immediately BEFORE the
         // stream starts. Paired with the post-stream sample below, this
         // measures the streaming path's memory footprint per turn (the prime
@@ -1322,6 +1146,13 @@ export function createSessionOrchestrator(
             stepsPersisted = true;
           },
         });
+
+        endReason =
+          result.finishReason === "error"
+            ? "error"
+            : result.finishReason === "aborted"
+              ? "aborted"
+              : "sealed";
 
         // Per-turn memory telemetry: capture a sample immediately AFTER the
         // stream completes and log the per-turn delta vs `memBefore`. A
@@ -1351,8 +1182,8 @@ export function createSessionOrchestrator(
         await deps.conversationStore.appendMetrics(conversationId, turnMetrics);
 
         emitToHub(conversationId, { type: "turn-sealed", conversationId, turnId });
-        sealed = true;
       } catch (err) {
+        endReason = err instanceof TurnRequestRejected ? "rejected" : "error";
         // Persist whatever metrics the failed turn accumulated (steps that
         // ran before the failure), so its row exists like any other turn's.
         // Best-effort: a store that is failing may fail again — never mask
@@ -1365,10 +1196,7 @@ export function createSessionOrchestrator(
             // Swallow — the turn's own error is what gets reported.
           }
         }
-        // A deliberate stop aborts the turn. The kernel already sealed a single
-        // `done("aborted")` event (its terminal). Do NOT emit an additional
-        // `error` — the client would see both an error and the aborted done
-        // event. Skipping here leaves `done("aborted")` as the sole terminal.
+        // Deliberate Stop is not an error; finally reports the terminal abort.
         if (!controller.signal.aborted) {
           const message = err instanceof Error ? err.message : String(err);
           emitToHub(conversationId, {
@@ -1380,6 +1208,12 @@ export function createSessionOrchestrator(
         }
       } finally {
         activeTurns.delete(conversationId);
+        emitToHub(conversationId, {
+          type: "turn-ended",
+          conversationId,
+          turnId,
+          reason: controller.signal.aborted ? "aborted" : endReason,
+        });
         // Abort-specific observability: log the deliberate cancellation with its
         // latency from turn start to the abort, tagged by conversation + turn.
         if (controller.signal.aborted) {
@@ -1391,29 +1225,28 @@ export function createSessionOrchestrator(
             ...(abortLatencyMs !== undefined ? { abortLatencyMs } : {}),
           });
         }
-        // Post-seal carry: if the turn sealed with a non-empty steering queue
+        // Post-turn carry: if the turn ended with a non-empty steering queue
         // (no tool call fired → drainSteering never drained it), start a NEW
         // detached turn whose opening user-message carries the combined text.
         // The new turn re-adds to activeTurns + activeConversations, so skip
         // the activeConversations.delete when carried. May chain (user keeps
         // steering) — each carried turn's own finally re-checks the queue.
-        const carried = sealed && tryCarryQueue(conversationId);
+        // Stop interrupts work, not intent. Close alone suppresses the carry.
+        const carried = !turn.cancelQueuedInput && tryCarryQueue(conversationId);
         if (!carried) {
           activeConversations.delete(conversationId);
         }
-        void payloadPromise.then((payload) => {
+        void (async () => {
+          const payload = await lifecyclePayloadPromise;
+          if (payload === undefined) return;
           deps.emit?.(turnSettled, payload);
           if (!carried) {
             // Resolve the persisted workspace id before emitting so the
             // broadcast carries the correct workspace.
-            void deps.conversationStore.getWorkspaceId(conversationId).then((workspaceId) => {
-              deps.emit?.(conversationStatusChanged, {
-                conversationId,
-                status: "idle",
-                workspaceId,
-              });
-            });
-            void deps.conversationStore.setConversationStatus(conversationId, "idle");
+            publishStatus(conversationId, "idle", turnId);
+            void deps.conversationStore
+              .setConversationStatus(conversationId, "idle")
+              .catch(logFailure(conversationId, "set idle status", turnId));
             // Fire-and-forget auto-compaction: check threshold and
             // compact if exceeded. Non-blocking — the next turn
             // starts fresh either way.
@@ -1424,69 +1257,152 @@ export function createSessionOrchestrator(
                   auto: true,
                   ...(payload.modelName !== undefined ? { modelName: payload.modelName } : {}),
                 })
-                .catch(() => {});
+                .catch(logFailure(conversationId, "auto-compaction", turnId));
             }
           }
-        });
+        })().catch(logFailure(conversationId, "turn settled hook", turnId));
       }
-    })();
+    })().catch(logFailure(conversationId, "detached turn", turnId));
+  }
+
+  function startInput(input: StartTurnInput, waiter?: InputWaiter): StartTurnResult {
+    const { conversationId } = input;
+    if (activeTurns.has(conversationId)) return { started: false, reason: "already-active" };
+    if (compacting.has(conversationId) && deps.resolveQueue?.() !== undefined) {
+      return {
+        started: false,
+        reason: "queued-behind-compaction",
+        admission: enqueueInput(input, waiter),
+      };
+    }
+    runTurnDetached(input, waiter);
+    return { started: true, turnId: activeTurns.get(conversationId)?.turnId ?? "" };
+  }
+
+  function enqueueInput(input: EnqueueInput, waiter?: InputWaiter): Promise<EnqueueResult> {
+    const { conversationId } = input;
+    let pending = pendingEnqueues.get(conversationId);
+    if (pending === undefined || pending.cancelled) {
+      pending = { cancelled: false };
+      pendingEnqueues.set(conversationId, pending);
+    }
+    const state = pending;
+    const deliver = async (): Promise<EnqueueResult> => {
+      const dropped: EnqueueResult = { startedTurn: false, queue: [] };
+      if (state.cancelled || activeTurns.get(conversationId)?.cancelQueuedInput) {
+        waiter?.terminal("dropped", "input cancelled by Close");
+        return dropped;
+      }
+      const vision = deps.resolveVisionHandoff?.();
+      const images =
+        input.images?.length && vision !== undefined
+          ? await vision.storeImages(conversationId, input.images)
+          : input.images;
+      // Storage can outlive Close or the original turn. Stop preserves this work.
+      if (state.cancelled || activeTurns.get(conversationId)?.cancelQueuedInput) {
+        waiter?.terminal("dropped", "input cancelled by Close");
+        return dropped;
+      }
+      const stored = { ...input, ...(images !== undefined ? { images } : {}) };
+      const queue = deps.resolveQueue?.();
+      const barrier = compacting.get(conversationId);
+      if (barrier === undefined || queue === undefined) {
+        if (startInput(stored, waiter).started) return { startedTurn: true, queue: [] };
+      }
+      if (queue === undefined) {
+        waiter?.terminal("dropped", "message queue unavailable");
+        return dropped;
+      }
+      const snapshot = queue.enqueue(conversationId, input.text, stored);
+      const messageId = snapshot.at(-1)?.id;
+      if (waiter !== undefined && messageId !== undefined) waiter.messageId = messageId;
+      // Queue notifications may synchronously cancel/close/reenter during insertion.
+      if (
+        messageId !== undefined &&
+        !queue.getQueue(conversationId).some((m) => m.id === messageId)
+      ) {
+        waiter?.terminal(
+          state.cancelled ? "dropped" : "superseded",
+          "input removed during insertion",
+        );
+      }
+      if (
+        barrier !== undefined &&
+        compactionQueueWaiters.get(conversationId)?.barrier !== barrier
+      ) {
+        // Unique registration identity: Close + re-enqueue on the SAME barrier
+        // must not let the old continuation claim the new request/options.
+        const registration = { barrier };
+        compactionQueueWaiters.set(conversationId, registration);
+        const failDeferred = (error: unknown) => {
+          if (compactionQueueWaiters.get(conversationId) !== registration) return;
+          compactionQueueWaiters.delete(conversationId);
+          finishInputs(conversationId, "failed", "compaction barrier/start failed");
+          try {
+            queue.drain(conversationId);
+          } catch (drainError) {
+            logFailure(conversationId, "failed compaction queue drain")(drainError);
+          }
+          logFailure(conversationId, "compaction queue carry")(error);
+        };
+        void barrier.then(() => {
+          if (compactionQueueWaiters.get(conversationId) !== registration) return;
+          try {
+            if (activeTurns.has(conversationId)) return; // steering/carry owns delivery now
+            if (!queue.getQueue(conversationId).length) {
+              finishInputs(conversationId, "dropped", "deferred queue is empty");
+              return;
+            }
+            const { images: _images, computerId: _computerId, ...options } = stored;
+            const drained = queue.drain(conversationId);
+            // A queue-surface observer can synchronously Close while drain publishes.
+            if (compactionQueueWaiters.get(conversationId) !== registration) return;
+            startQueued({ ...options, ...queuedInput(drained) }, drained);
+          } catch (error) {
+            failDeferred(error);
+          } finally {
+            if (compactionQueueWaiters.get(conversationId) === registration) {
+              compactionQueueWaiters.delete(conversationId);
+            }
+          }
+        }, failDeferred);
+      }
+      return {
+        startedTurn: false,
+        queue: snapshot,
+        ...(messageId !== undefined ? { messageId } : {}),
+      };
+    };
+    const previous = state.tail;
+    let complete!: (value: EnqueueResult | PromiseLike<EnqueueResult>) => void;
+    let fail!: (error: unknown) => void;
+    const result = new Promise<EnqueueResult>((resolve, reject) => {
+      complete = resolve;
+      fail = reject;
+    });
+    state.tail = result;
+    void (previous === undefined ? deliver() : previous.then(deliver, deliver)).then(
+      complete,
+      fail,
+    );
+    const cleanup = () => {
+      if (pendingEnqueues.get(conversationId) === state && state.tail === result) {
+        pendingEnqueues.delete(conversationId);
+      }
+    };
+    void result.then(cleanup, cleanup);
+    return result;
   }
 
   const orchestrator: SessionOrchestrator = {
-    startTurn({
-      conversationId,
-      text,
-      modelName,
-      cwd,
-      computerId,
-      reasoningEffort,
-      workspaceId,
-      systemPrompt,
-      images,
-      title,
-      parentConversationId,
-      toolPolicy,
-    }) {
-      if (activeTurns.has(conversationId)) {
-        return { started: false, reason: "already-active" };
+    startTurn(input) {
+      const result = startInput(input);
+      if (!result.started && result.reason === "queued-behind-compaction") {
+        void result.admission.catch(logFailure(input.conversationId, "compaction enqueue"));
       }
-      runTurnDetached(
-        conversationId,
-        text,
-        modelName,
-        cwd,
-        computerId,
-        reasoningEffort,
-        workspaceId ?? "default",
-        systemPrompt,
-        images,
-        title,
-        parentConversationId,
-        toolPolicy,
-      );
-      const turn = activeTurns.get(conversationId);
-      const turnId = turn !== undefined ? turn.turnId : "";
-      return { started: true, turnId };
+      return result;
     },
-
-    enqueue({ conversationId, text, workspaceId, computerId, images }) {
-      const result = orchestrator.startTurn({
-        conversationId,
-        text,
-        ...(workspaceId !== undefined ? { workspaceId } : {}),
-        ...(computerId !== undefined ? { computerId } : {}),
-        ...(images !== undefined ? { images } : {}),
-      });
-      if (result.started) {
-        return { startedTurn: true, queue: [] };
-      }
-      // Already active → enqueue onto the steering queue. When the
-      // message-queue extension isn't loaded this degrades: the message is
-      // dropped and the snapshot is empty (feature off).
-      const queue = deps.resolveQueue?.();
-      const snapshot = queue !== undefined ? queue.enqueue(conversationId, text) : [];
-      return { startedTurn: false, queue: snapshot };
-    },
+    enqueue: enqueueInput,
 
     cancelQueuedMessage({ conversationId, messageId }) {
       // When the message-queue extension isn't loaded this degrades: nothing to
@@ -1498,10 +1414,12 @@ export function createSessionOrchestrator(
       const beforeLen = queue.getQueue(conversationId).length;
       const snapshot = queue.cancel(conversationId, messageId);
       const cancelled = snapshot.length < beforeLen;
+      if (cancelled)
+        finishInputs(conversationId, "dropped", "queued input cancelled", new Set([messageId]));
       return { cancelled, queue: snapshot };
     },
 
-    subscribe(conversationId, listener) {
+    subscribe(conversationId, listener, options) {
       let listeners = subscribers.get(conversationId);
       if (listeners === undefined) {
         listeners = new Set();
@@ -1509,14 +1427,14 @@ export function createSessionOrchestrator(
       }
       const turn = activeTurns.get(conversationId);
       if (turn !== undefined) {
-        // Late-join: replay a COMPACTED snapshot (merged delta runs, no stale
-        // tool-output) — O(structure) frames instead of O(tokens). See
-        // `compactReplay`. Live events after this point stream verbatim.
-        const snapshot = compactReplay(turn.buffer);
+        // Already compacted on arrival. The immutable snapshot stays stable
+        // even if a listener synchronously causes another event to be emitted.
+        const snapshot = options
+          ? boundedSnapshotReplay(turn.buffer, options.replay.maxEvents, options.replay.accept)
+          : snapshotReplay(turn.buffer);
         listeners.add(listener);
-        for (const event of snapshot) {
-          listener(event);
-        }
+        if (snapshot === undefined) options?.replay.onOmitted(turn.turnId);
+        else for (const event of snapshot) listener(event);
       } else {
         listeners.add(listener);
       }
@@ -1540,27 +1458,24 @@ export function createSessionOrchestrator(
     },
 
     closeConversation(conversationId) {
+      // Mark cancellation BEFORE abort callbacks or queue surface notifications can reenter.
+      const pending = pendingEnqueues.get(conversationId);
+      if (pending !== undefined) pending.cancelled = true;
+      compactionQueueWaiters.delete(conversationId);
       const turn = activeTurns.get(conversationId);
-      const abortedTurn = turn !== undefined;
-      if (turn !== undefined) {
-        turn.controller.abort();
-      }
+      if (turn !== undefined) turn.cancelQueuedInput = true;
+      const { abortedTurn } = orchestrator.stopTurn(conversationId);
+      finishInputs(conversationId, "dropped", "input cancelled by Close");
+      deps.resolveQueue?.()?.drain(conversationId);
       deps.emit?.(conversationClosed, { conversationId });
       // Resolve the persisted workspace id before emitting so the
       // broadcast carries the correct workspace. The hook is
       // fire-and-forget; closeConversation stays synchronous (returns
       // immediately) while the status-changed emit resolves async.
-      void deps.conversationStore.getWorkspaceId(conversationId).then((workspaceId) => {
-        deps.emit?.(conversationStatusChanged, {
-          conversationId,
-          status: "closed",
-          workspaceId,
-        });
-      });
-      void deps.conversationStore.setConversationStatus(conversationId, "closed");
-      // Purge tmp images for this conversation (best-effort, fire-and-forget).
-      const vh = deps.resolveVisionHandoff?.();
-      if (vh !== undefined) void vh.purgeConversationImages(conversationId);
+      publishStatus(conversationId, "closed");
+      void deps.conversationStore
+        .setConversationStatus(conversationId, "closed")
+        .catch(logFailure(conversationId, "set closed status"));
       return { abortedTurn };
     },
 
@@ -1568,6 +1483,7 @@ export function createSessionOrchestrator(
       const turn = activeTurns.get(conversationId);
       const abortedTurn = turn !== undefined;
       if (turn !== undefined) {
+        // Keep queued and storage-pending input for the post-terminal carry.
         turn.controller.abort();
       }
       return { abortedTurn };
@@ -1575,7 +1491,7 @@ export function createSessionOrchestrator(
 
     stopAll() {
       let stopped = 0;
-      for (const conversationId of [...activeConversations]) {
+      for (const conversationId of [...activeTurns.keys()]) {
         if (orchestrator.stopTurn(conversationId).abortedTurn) stopped++;
       }
       return { stopped };
@@ -1610,170 +1526,81 @@ export function createSessionOrchestrator(
         ...(parentConversationId !== undefined ? { parentConversationId } : {}),
         ...(toolPolicy !== undefined ? { toolPolicy } : {}),
       };
-      const result = orchestrator.startTurn(turnInput);
-      if (!result.started) {
-        const errorTurnId = generateTurnId();
-        onEvent({
-          type: "error",
-          conversationId,
-          turnId: errorTurnId,
-          message: "turn already active for this conversation",
-        });
-        return;
-      }
-
       await new Promise<void>((resolve) => {
-        const unsubscribe = orchestrator.subscribe(conversationId, (event) => {
-          onEvent(event);
-          if (event.type === "turn-sealed" || event.type === "error") {
-            unsubscribe();
-            resolve();
+        let ownTurnId: string | undefined;
+        let settled = false;
+        let unsubscribe: (() => void) | undefined;
+        const remove = () => {
+          inputWaiters.get(conversationId)?.delete(waiter);
+          if (inputWaiters.get(conversationId)?.size === 0) inputWaiters.delete(conversationId);
+        };
+        const finish = () => {
+          settled = true;
+          remove();
+          unsubscribe?.();
+          resolve();
+        };
+        const waiter: InputWaiter = {
+          input: turnInput,
+          started(turnId) {
+            if (settled) return;
+            ownTurnId = turnId;
+            remove(); // turn-ended now owns completion, not Close/cancel
+          },
+          terminal(reason, message) {
+            if (settled) return;
+            const turnId = generateTurnId();
+            try {
+              onEvent({ type: "error", conversationId, turnId, message: `${reason}: ${message}` });
+              onEvent({ type: "turn-ended", conversationId, turnId, reason: "rejected" });
+            } finally {
+              finish();
+            }
+          },
+        };
+        let waiters = inputWaiters.get(conversationId);
+        if (waiters === undefined) {
+          waiters = new Set();
+          inputWaiters.set(conversationId, waiters);
+        }
+        waiters.add(waiter);
+        // Subscribe BEFORE start/enqueue, and filter by the bound turn id. Replayed
+        // or unrelated turns cannot become this request's response.
+        unsubscribe = orchestrator.subscribe(conversationId, (event) => {
+          if (
+            settled ||
+            ownTurnId === undefined ||
+            !("turnId" in event) ||
+            event.turnId !== ownTurnId
+          )
+            return;
+          try {
+            onEvent(event);
+          } finally {
+            if (event.type === "turn-ended") finish();
           }
         });
+        if (settled) unsubscribe();
+        try {
+          const result = startInput(turnInput, waiter);
+          if (!result.started) {
+            if (result.reason === "already-active") {
+              waiter.terminal("failed", "turn already active for this conversation");
+            } else {
+              void result.admission.catch((error) =>
+                waiter.terminal("failed", error instanceof Error ? error.message : String(error)),
+              );
+            }
+          }
+        } catch (error) {
+          waiter.terminal("failed", error instanceof Error ? error.message : String(error));
+        }
       });
     },
   };
 
-  return { orchestrator, activeConversations };
+  return { orchestrator, activeConversations, compacting };
 }
-
-export function createWarmService(
-  deps: WarmServiceDeps,
-  activeConversations: ReadonlySet<string>,
-): WarmService {
-  return {
-    async warm(conversationId, opts) {
-      if (activeConversations.has(conversationId)) {
-        return { error: "conversation is generating" };
-      }
-
-      const history = await deps.conversationStore.load(conversationId);
-      if (history.length === 0) {
-        return { error: "no history" };
-      }
-
-      let provider: ProviderContract;
-      let modelOverride: string | undefined;
-
-      // Resolve the model the SAME way the real turn does: per-turn override
-      // → persisted per-conversation model → default provider. A mismatch here
-      // silently busts the prompt cache (the model block of the prompt prefix
-      // diverges from the real turn's). Warm is a probe — it does NOT persist
-      // (no setModel), it only reads so it sends the same model the next real
-      // turn will. See notes/observability-design.md §3.1.
-      const storedModel = await deps.conversationStore.getModel(conversationId);
-      const effectiveModelName = resolveModelName(opts?.modelName, storedModel);
-
-      if (effectiveModelName !== undefined && deps.resolveModel !== undefined) {
-        const resolved = deps.resolveModel(effectiveModelName);
-        if (resolved === undefined) {
-          return { error: `unknown model: ${effectiveModelName}` };
-        }
-        provider = resolved.provider;
-        modelOverride = resolved.model;
-      } else {
-        provider = deps.resolveProvider();
-      }
-
-      // Per-workspace model-unavailable rule (§8) — the warm probe warms the
-      // SAME model the next real turn would use; when that model is not
-      // usable in this conversation's workspace the real turn will error
-      // immediately, so warming it would be a wasted provider round-trip.
-      const warmWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
-      if (
-        effectiveModelName !== undefined &&
-        deps.resolveModelUsability !== undefined &&
-        !(await deps.resolveModelUsability(effectiveModelName, warmWorkspaceId))
-      ) {
-        return { error: `model ${effectiveModelName} unavailable — pick another` };
-      }
-
-      // Wrap with concurrency limiting (same as the main turn path).
-      const warmLimiter = deps.resolveConcurrencyLimiter?.();
-      if (warmLimiter !== undefined) {
-        provider = wrapProviderWithConcurrency(
-          provider,
-          warmLimiter,
-          conversationId,
-          warmWorkspaceId,
-          deps.now?.() ?? Date.now(),
-        );
-      }
-
-      const baseTools = deps.resolveTools();
-      // Resolve cwd the SAME way handleMessage does — pass opts.cwd as the overrideCwd
-      // The tools filter is cwd-sensitive (e.g. skill discovery rewrites the
-      // `load_skill` description per-cwd). If the warm assembles tools under a
-      // different cwd than the real turn, the tools block — the FIRST bytes of
-      // the prompt-cache prefix — diverges and the cache misses entirely (0%).
-      // A manual reheat sends no cwd, so without this fallback it would warm the
-      // wrong prefix. See notes/observability-design.md §3.1.
-      const cwd =
-        (await deps.conversationStore.getEffectiveCwd(conversationId, opts?.cwd)) ?? undefined;
-      const filtered = await deps.applyToolsFilter({
-        tools: baseTools,
-        conversationId,
-        ...(cwd !== undefined ? { cwd } : {}),
-        // Same workspace context as the real turn's assembly, so
-        // workspace-aware filters (the MCP injection short-circuit) behave
-        // identically during a warm (§6.3).
-        ...(warmWorkspaceId !== undefined ? { workspaceId: warmWorkspaceId } : {}),
-      });
-      // Same per-workspace tool gate as the real turn — a warm prefix that
-      // includes workspace-gated tools the real turn drops would cache-miss
-      // on the next real turn (coherence, §6.3).
-      const assembled =
-        deps.applyWorkspaceGate !== undefined ? await deps.applyWorkspaceGate(filtered) : filtered;
-
-      // Resolve reasoning effort the SAME way the real turn does (stored → "high";
-      // no per-turn override on warm). A mismatch here silently busts the prompt cache.
-      const storedEffort = await deps.conversationStore.getReasoningEffort(conversationId);
-      const resolvedEffort = resolveReasoningEffort(undefined, storedEffort);
-
-      const probeMsg: ChatMessage = {
-        role: "user",
-        chunks: [{ type: "text", text: "reply with just a ." }],
-      };
-      const messages = [...history, probeMsg];
-
-      // Capture the warm send as a `provider.request` span, flagged `warm: true`
-      // so it can be diffed against the corresponding real turn's request (the
-      // prompt-cache 0%-hit debugging workflow — see notes/observability-design.md
-      // §3.1). Without this the warm body is invisible and the cache bust is
-      // undebuggable. The child-bound `warm` attribute flows into the span the
-      // provider opens (kernel logger merges child attrs into span attributes).
-      const warmLogger = deps.logger?.child({ conversationId, attrs: { warm: true } });
-      const providerOpts: ProviderStreamOptions = {
-        maxTokens: 1,
-        reasoningEffort: resolvedEffort,
-        ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-        ...(warmLogger !== undefined ? { logger: warmLogger } : {}),
-      };
-
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let cacheReadTokens = 0;
-      let cacheWriteTokens = 0;
-
-      for await (const event of provider.stream(messages, assembled.tools, providerOpts)) {
-        if ((event as ProviderEvent).type === "usage") {
-          const usageEvent = event as UsageEvent;
-          inputTokens = usageEvent.usage.inputTokens;
-          outputTokens = usageEvent.usage.outputTokens;
-          cacheReadTokens = usageEvent.usage.cacheReadTokens ?? 0;
-          cacheWriteTokens = usageEvent.usage.cacheWriteTokens ?? 0;
-        }
-      }
-
-      const result: WarmResult = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
-      deps.emit(warmCompleted, { conversationId, usage: result });
-      return result;
-    },
-  };
-}
-
-const DEFAULT_KEEP_LAST_N = 10;
-const DEFAULT_COMPACT_PERCENT = 85;
 
 /**
  * No-op emit used as a fallback when the orchestrator is constructed without an
@@ -1784,350 +1611,3 @@ const DEFAULT_COMPACT_PERCENT = 85;
  */
 const noopEmit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void =
   () => {};
-
-const COMPACTION_SYSTEM_PROMPT =
-  "You are a conversation summarizer. Summarize the following conversation concord concisely but comprehensively. " +
-  "Focus on key decisions, context, file paths, and any unresolved questions. " +
-  "The summary must preserve enough detail for the conversation to continue with full context.";
-
-function formatMessagesForSummary(messages: readonly ChatMessage[]): string {
-  return messages
-    .map((msg) => {
-      const text = msg.chunks
-        .map((c) => {
-          if (c.type === "text") return c.text;
-          if (c.type === "tool-call") return `[tool: ${c.toolName}]`;
-          if (c.type === "tool-result") return `[tool result: ${c.content.slice(0, 200)}]`;
-          return "";
-        })
-        .join("");
-      return `${msg.role}: ${text}`;
-    })
-    .join("\n\n");
-}
-
-/**
- * Deps for {@link performCompaction} — the subset of `SessionOrchestratorDeps`
- * needed to summarize old history, fork it to an archive, and replace it with
- * a summary + recent messages. Structural so both the compaction SERVICE
- * (`compact`, manual + post-seal auto) and the IN-FLIGHT compaction path (the
- * turn loop's `onStepBoundary`) can call the same shared core without duplicating
- * the summarization/fork/replace/emit logic. The active-conversation guard and
- * the threshold check are the CALLERS' policy (they differ between the two
- * paths) and are NOT performed here.
- */
-interface PerformCompactionDeps {
-  readonly conversationStore: ConversationStore;
-  readonly resolveProvider: () => ProviderContract;
-  readonly resolveModel?: (
-    modelName: string,
-  ) => { provider: ProviderContract; model: string } | undefined;
-  readonly resolveSystemPrompt?: () => SystemPromptService | undefined;
-  readonly resolveConcurrencyLimiter?: () => ConcurrencyLimiter | undefined;
-  readonly logger?: Logger;
-  readonly now?: () => number;
-  readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
-  /**
-   * Optional cancellation signal for the in-flight path. When provided, an
-   * abort prevents compaction from starting new work (provider stream,
-   * fork/replace), and causes the provider consumption to be raced against the
-   * signal. Manual / post-seal / background callers omit it — cancellation is
-   * only supplied by the active-turn caller.
-   */
-  readonly signal?: AbortSignal;
-}
-
-/** Result of a successful {@link performCompaction}. */
-interface PerformCompactionResult {
-  readonly summary: string;
-  readonly newConversationId: string;
-  readonly messagesSummarized: number;
-  readonly messagesKept: number;
-  /**
-   * The system-role summary message that heads the compacted history
-   * (`[summaryMessage, ...recentKept]`). Returned so the in-flight caller can
-   * build the kernel's replacement history with the SAME summary object.
-   */
-  readonly summaryMessage: ChatMessage;
-  /**
-   * The full compacted history `[summaryMessage, ...recentKept]` exactly as
-   * written to the store. The in-flight caller returns this to the kernel so
-   * the kernel's working history and the store stay byte-aligned (the same
-   * `recentKept` slice — taken from the caller-supplied live `messages` — is
-   * used for BOTH the store write and this return value).
-   */
-  readonly compactedMessages: readonly ChatMessage[];
-}
-
-/**
- * The shared compaction core: summarize the oldest `history.length -
- * keepLastN` messages via a provider stream, fork the full pre-compaction
- * history to an archive (non-destructive), and replace the live history with
- * `[summaryMessage, ...recentKept]`. Emits `conversationCompacted`. Returns the
- * result (incl. the `summaryMessage` + the `compactedMessages`) or an error.
- *
- * History source: when `opts.messages` is provided (the in-flight path), it is
- * used as the authoritative history — this is the kernel's LIVE messages array,
- * which includes mid-turn steering messages (and the vision-transformed
- * provider view) that a store reload could miss (the steering persist may not
- * have completed, or — before this fix — was never done at all). Using the live
- * array keeps the store write and the kernel's replacement aligned (same
- * `recentKept` slice), avoiding the DB↔LLM structural divergence where
- * independent slices dropped different messages. When `opts.messages` is
- * omitted (the post-seal/manual `compact()` path — the turn has ended, so the
- * store is stable), the history is loaded from the store.
- *
- * Performs NO active-conversation guard and NO threshold check — those are the
- * callers' policy. No-ops (returns an error) when the conversation is too
- * short to compact (≤ keepLastN messages) or the summary is empty.
- */
-async function performCompaction(
-  deps: PerformCompactionDeps,
-  conversationId: string,
-  opts: {
-    readonly keepLastN?: number;
-    readonly modelName?: string;
-    /** The kernel's live messages array (in-flight path). Omit to load the store (post-seal/manual). */
-    readonly messages?: readonly ChatMessage[];
-  },
-): Promise<PerformCompactionResult | { readonly error: string }> {
-  const { signal } = deps;
-  // Use the caller-supplied live messages (in-flight) or load the store
-  // (post-seal/manual — the store is stable once the turn has ended).
-  const history = opts.messages ?? (await deps.conversationStore.load(conversationId));
-  const keepLastN = opts?.keepLastN ?? DEFAULT_KEEP_LAST_N;
-
-  if (history.length <= keepLastN) {
-    return { error: "conversation too short to compact" };
-  }
-
-  // Abort before any summarization work: don't start a provider call or WOTE
-  // fork/replace after cancellation.
-  if (signal?.aborted) {
-    return { error: "aborted" };
-  }
-
-  // Split: old messages to summarize + recent messages to keep.
-  const toSummarize = history.slice(0, history.length - keepLastN);
-  const toKeep = history.slice(history.length - keepLastN);
-
-  // Resolve provider
-  let provider: ProviderContract;
-  let modelOverride: string | undefined;
-  if (opts?.modelName !== undefined && deps.resolveModel !== undefined) {
-    const resolved = deps.resolveModel(opts.modelName);
-    if (resolved === undefined) return { error: `unknown model: ${opts.modelName}` };
-    provider = resolved.provider;
-    modelOverride = resolved.model;
-  } else {
-    provider = deps.resolveProvider();
-  }
-
-  // Wrap with concurrency limiting (same as the main turn path).
-  const compactionLimiter = deps.resolveConcurrencyLimiter?.();
-  if (compactionLimiter !== undefined) {
-    const compactionWorkspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
-    provider = wrapProviderWithConcurrency(
-      provider,
-      compactionLimiter,
-      conversationId,
-      compactionWorkspaceId,
-      deps.now?.() ?? Date.now(),
-    );
-  }
-
-  // Build the summarization request: system prompt + conversation text + instruction
-  const conversationText = formatMessagesForSummary(toSummarize);
-  const summaryRequest: ChatMessage = {
-    role: "user",
-    chunks: [
-      {
-        type: "text",
-        text: `Please summarize the following conversation:\n\n${conversationText}`,
-      },
-    ],
-  };
-
-  const providerOpts: ProviderStreamOptions = {
-    maxTokens: 2000,
-    ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-    ...(deps.logger !== undefined
-      ? { logger: deps.logger.child({ conversationId, attrs: { compaction: true } }) }
-      : {}),
-  };
-
-  // Reconstruct the system prompt on compaction (fresh variable
-  // resolution — files/cwd/time may have changed since construction).
-  // The construct call also persists the result for future turns. When
-  // the system-prompt service is unavailable, fall back to the
-  // compaction-only system prompt (current behavior, no regression).
-  const systemPromptService = deps.resolveSystemPrompt?.();
-  let compactionSystemPrompt: string;
-  if (systemPromptService !== undefined) {
-    const cwd = (await deps.conversationStore.getEffectiveCwd(conversationId)) ?? process.cwd();
-    const workspaceId = await deps.conversationStore.getWorkspaceId(conversationId);
-    const computerId = await deps.conversationStore.getEffectiveComputer(conversationId);
-    const constructed = await systemPromptService.construct(conversationId, cwd, {
-      ...(opts?.modelName !== undefined ? { model: opts.modelName } : {}),
-      workspaceId,
-      ...(computerId !== null ? { computerId } : {}),
-    });
-    compactionSystemPrompt = `${constructed}\n\n${COMPACTION_SYSTEM_PROMPT}`;
-  } else {
-    compactionSystemPrompt = COMPACTION_SYSTEM_PROMPT;
-  }
-
-  // Call the provider and accumulate the summary. Thread the signal into the
-  // ProviderStreamOptions (so the concurrency wrapper's acquire is cancellable)
-  // AND race the iterator consumption against it (defensive barrier).
-  const compactionOpts: ProviderStreamOptions = {
-    ...providerOpts,
-    systemPrompt: compactionSystemPrompt,
-    ...(signal !== undefined ? { signal } : {}),
-  };
-  let summary = "";
-  if (signal !== undefined) {
-    const stream = provider.stream([summaryRequest], [], compactionOpts);
-    const iterator = stream[Symbol.asyncIterator]();
-    for await (const event of abortableIteration(iterator, signal)) {
-      if ((event as ProviderEvent).type === "text-delta") {
-        summary += (event as { delta: string }).delta;
-      } else if ((event as ProviderEvent).type === "error") {
-        // A deliberate abort is cancellation, not a provider error.
-        if (signal.aborted) return { error: "aborted" };
-        return { error: (event as { message: string }).message };
-      }
-    }
-  } else {
-    for await (const event of provider.stream([summaryRequest], [], compactionOpts)) {
-      if ((event as ProviderEvent).type === "text-delta") {
-        summary += (event as { delta: string }).delta;
-      } else if ((event as ProviderEvent).type === "error") {
-        return { error: (event as { message: string }).message };
-      }
-    }
-  }
-
-  // Abort after summarization but before fork/replace: do not fork or replace
-  // history (the archive would be orphaned and the live history untouched,
-  // which is safe, but skipping is cleaner — nothing was modified yet). Checked
-  // BEFORE the empty-summary check so a deliberate abort is never misreported
-  // as "model produced empty summary" (which can happen when the abort fires
-  // before any summary text is streamed).
-  if (signal?.aborted) {
-    return { error: "aborted" };
-  }
-
-  if (summary.trim().length === 0) {
-    return { error: "model produced empty summary" };
-  }
-
-  // Non-destructive: fork the full pre-compaction history to a new
-  // archive conversation. The original conversation keeps its ID
-  // (so messaging between agents still works) and gets the compacted
-  // content. The archive inherits the original's compactedFrom,
-  // creating a chain: A → Y → X → ...
-  const archiveId = crypto.randomUUID();
-  await deps.conversationStore.forkHistory(conversationId, archiveId);
-
-  // Commit boundary: if the signal fires after forkHistory starts, let the
-  // fork settle (it writes to a NEW archive ID, not the live conversation —
-  // harmless if orphaned), then skip replaceHistory/setCompactedFrom. The
-  // archive is orphaned but the LIVE history is untouched, which is safe.
-  if (signal?.aborted) {
-    return { error: "aborted" };
-  }
-
-  // Replace history: [system: summary] + the recent kept messages. `toKeep`
-  // is sliced from the caller-supplied live `messages` (in-flight) — the SAME
-  // slice returned below as `compactedMessages` — so the store and the kernel's
-  // working history stay byte-aligned (same messages kept/dropped).
-  const summaryMessage: ChatMessage = {
-    role: "system",
-    chunks: [
-      {
-        type: "text",
-        text: `The following is a summary of the previous conversation:\n\n${summary}`,
-      },
-    ],
-  };
-
-  const compactedMessages: readonly ChatMessage[] = [summaryMessage, ...toKeep];
-  await deps.conversationStore.replaceHistory(conversationId, compactedMessages);
-  await deps.conversationStore.setCompactedFrom(conversationId, archiveId);
-
-  deps.emit(conversationCompacted, {
-    conversationId,
-    newConversationId: archiveId,
-    messagesSummarized: toSummarize.length,
-    messagesKept: toKeep.length,
-  });
-
-  return {
-    summary,
-    newConversationId: archiveId,
-    messagesSummarized: toSummarize.length,
-    messagesKept: toKeep.length,
-    summaryMessage,
-    compactedMessages,
-  };
-}
-
-export function createCompactionService(
-  deps: SessionOrchestratorDeps & {
-    readonly emit: <TPayload>(hook: EventHookDescriptor<TPayload>, payload: TPayload) => void;
-  },
-  activeConversations: ReadonlySet<string>,
-): CompactionService {
-  return {
-    async compact(conversationId, opts) {
-      if (activeConversations.has(conversationId)) {
-        return { error: "conversation is generating" };
-      }
-
-      // Auto mode: check if contextSize exceeds percent of contextWindow.
-      // The threshold check is the caller's policy (uses persisted turn
-      // metrics) and is NOT performed by the shared `performCompaction` core.
-      if (opts?.auto === true) {
-        const stored = await deps.conversationStore.getCompactPercent(conversationId);
-        const percent = stored ?? DEFAULT_COMPACT_PERCENT;
-        if (percent <= 0) return { error: "auto-compact disabled" };
-        const metrics = await deps.conversationStore.loadMetrics(conversationId);
-        const lastTurn = metrics[metrics.length - 1];
-        if (lastTurn === undefined) return { error: "no metrics" };
-        const contextSize = lastTurn.contextSize;
-        if (contextSize === undefined) return { error: "no context size" };
-
-        // Resolve the model's context window.
-        const modelName = opts.modelName;
-        if (modelName === undefined || deps.resolveModelInfo === undefined) {
-          return { error: "cannot resolve model info" };
-        }
-        const info = await deps.resolveModelInfo(modelName);
-        if (info?.contextWindow === undefined) {
-          return { error: "model context window unknown" };
-        }
-        const threshold = Math.floor(info.contextWindow * (percent / 100));
-        if (contextSize < threshold) return { error: "threshold not exceeded" };
-      }
-
-      // Shared summarize + fork + replace + emit core (no active guard, no
-      // threshold — those are this caller's policy above). The length check
-      // ("conversation too short to compact") lives inside the core.
-      const outcome = await performCompaction(deps, conversationId, {
-        ...(opts?.keepLastN !== undefined ? { keepLastN: opts.keepLastN } : {}),
-        ...(opts?.modelName !== undefined ? { modelName: opts.modelName } : {}),
-      });
-      if ("error" in outcome) return { error: outcome.error };
-
-      const { summary, newConversationId, messagesSummarized, messagesKept } = outcome;
-      const result: CompactionResult = {
-        summary,
-        newConversationId,
-        messagesSummarized,
-        messagesKept,
-      };
-      return result;
-    },
-  };
-}

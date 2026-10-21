@@ -116,11 +116,11 @@ function createNoticeDelivery(host: HostAPI): NoticeDelivery {
         return false;
       }
     },
-    enqueue: ({ conversationId, text }) => {
+    enqueue: async ({ conversationId, text }) => {
       try {
         const service = orchestrator();
         if (service === undefined) return { startedTurn: false, messageId: undefined };
-        const result = service.enqueue({ conversationId, text });
+        const result = await service.enqueue({ conversationId, text });
         if (result.startedTurn) return { startedTurn: true, messageId: undefined };
         // The message-queue appends, so our notice is the last snapshot entry.
         const queued = result.queue[result.queue.length - 1];

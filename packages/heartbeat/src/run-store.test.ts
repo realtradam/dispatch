@@ -1,11 +1,13 @@
 import type { StorageNamespace } from "@dispatch/kernel";
 import type { HeartbeatRun } from "@dispatch/transport-contract";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createHeartbeatRunStore } from "./run-store.js";
 
 function createMemoryStorage(): StorageNamespace {
   const data = new Map<string, string>();
   return {
+    ...storageFromMap(data),
     get: async (key) => data.get(key) ?? null,
     set: async (key, value) => {
       data.set(key, value);

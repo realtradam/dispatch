@@ -1,11 +1,13 @@
 import type { StorageNamespace } from "@dispatch/kernel";
 import { describe, expect, expectTypeOf, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createNamedAgentsService, type NamedAgentsDeps } from "./registry.js";
 
 /** In-memory StorageNamespace fake — the injected storage edge, not a mock. */
 function memoryStorage(): StorageNamespace {
   const store = new Map<string, string>();
   return {
+    ...storageFromMap(store),
     get: async (key) => store.get(key) ?? null,
     set: async (key, value) => {
       store.set(key, value);

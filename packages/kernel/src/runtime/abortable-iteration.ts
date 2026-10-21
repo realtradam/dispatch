@@ -36,6 +36,8 @@ export function abortableIteration<T>(
   iterator: AsyncIterator<T>,
   signal: AbortSignal,
 ): AsyncIterableIterator<T> {
+  // Identity distinguishes an abort-gate win from natural upstream completion.
+  const abortedResult: IteratorResult<T> = { done: true, value: undefined };
   let returned = false;
   let gate: Promise<IteratorResult<T>> | undefined;
   let removeListener: (() => void) | undefined;
@@ -48,7 +50,7 @@ export function abortableIteration<T>(
   const ensureGate = (): Promise<IteratorResult<T>> => {
     if (gate) return gate;
     gate = new Promise<IteratorResult<T>>((resolve) => {
-      const onAbort = (): void => resolve({ done: true, value: undefined });
+      const onAbort = (): void => resolve(abortedResult);
       if (signal.aborted) {
         onAbort();
         return;
@@ -60,6 +62,8 @@ export function abortableIteration<T>(
   };
 
   const invokeReturn = (): Promise<IteratorResult<T>> => {
+    if (returned) return Promise.resolve({ done: true, value: undefined });
+    returned = true;
     const returnFn = iterator.return;
     if (!returnFn) return Promise.resolve({ done: true, value: undefined });
     try {
@@ -82,13 +86,14 @@ export function abortableIteration<T>(
         // gate was opened) is detached.
         removeListener?.();
         removeListener = undefined;
-        return Promise.resolve({ done: true, value: undefined });
+        return invokeReturn();
       }
       const nextPromise = iterator.next();
       // Swallow late rejections from the abandoned `next()`: it may reject after
       // the race already resolved as done via abort.
       void nextPromise.catch(() => {});
       return Promise.race([nextPromise, ensureGate()]).then((result) => {
+        if (result === abortedResult) void invokeReturn();
         // On natural or abort-driven completion, detach the gate listener so a
         // completed (non-aborted) iteration leaves nothing behind. `for await`
         // does NOT call return() on normal completion, so this is the single
@@ -101,8 +106,6 @@ export function abortableIteration<T>(
       });
     },
     return: () => {
-      if (returned) return Promise.resolve({ done: true, value: undefined });
-      returned = true;
       // Detach the abort gate listener so a completed (non-aborted) iteration
       // leaves nothing behind.
       removeListener?.();

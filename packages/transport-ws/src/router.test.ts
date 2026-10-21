@@ -316,6 +316,29 @@ describe("routeClientMessage", () => {
   });
 
   describe("chat.send", () => {
+    it("forwards optional request correlation and rejects a non-string token", () => {
+      const registry = fakeRegistry([]);
+      expect(
+        routeClientMessage(registry, new Set(), {
+          type: "chat.send",
+          conversationId: "c",
+          message: "mine",
+          requestId: "request-1",
+        }),
+      ).toMatchObject({ kind: "chat", requestId: "request-1" });
+      expect(
+        routeClientMessage(registry, new Set(), {
+          type: "chat.send",
+          conversationId: "c",
+          message: "mine",
+          requestId: 42,
+        } as unknown as WsClientMessage),
+      ).toMatchObject({
+        kind: "chat-error",
+        errorMessage: "chat.send: requestId must be a string",
+      });
+    });
+
     it("classifies a chat.send message", () => {
       const registry = fakeRegistry([]);
       const connSubs = new Set<string>();
@@ -817,5 +840,125 @@ describe("filterCatalogForWorkspace + catalogMessageFiltered", () => {
     const msg = catalogMessageFiltered(registry, new Set(["mcp"]));
     const mcpEntry = msg.catalog.find((e) => e.id === "mcp-surf");
     expect(mcpEntry?.pluginId).toBe("mcp");
+  });
+});
+
+describe("conversation ID boundary validation", () => {
+  const chatTypes = [
+    "chat.send",
+    "chat.subscribe",
+    "chat.unsubscribe",
+    "chat.queue",
+    "chat.queue.cancel",
+  ];
+  const surfaceTypes = ["subscribe", "unsubscribe", "invoke"];
+  it.each([...chatTypes, ...surfaceTypes])("rejects invalid IDs on %s without effects", (type) => {
+    let specCalls = 0;
+    const registry = fakeRegistry([
+      fakeProvider({
+        id: "a",
+        onGetSpec: () => {
+          specCalls++;
+        },
+      }),
+    ]);
+    for (const conversationId of [
+      null,
+      42,
+      false,
+      {},
+      [],
+      "",
+      "../tmp",
+      "a/b",
+      "a\\b",
+      "%2f",
+      "a:b",
+      "é",
+      "a".repeat(129),
+    ]) {
+      const msg = {
+        type,
+        conversationId,
+        message: "hi",
+        text: "hi",
+        messageId: "m1",
+        surfaceId: "a",
+        actionId: "go",
+      } as unknown as WsClientMessage;
+      const result = routeClientMessage(registry, new Set(), msg);
+      if (chatTypes.includes(type)) {
+        expect(result).toMatchObject({
+          kind: "chat-error",
+          errorMessage: expect.stringContaining("conversationId"),
+        });
+      } else {
+        expect(result).toEqual({
+          kind: "surface",
+          replies: [
+            { type: "error", surfaceId: "a", message: expect.stringContaining("conversationId") },
+          ],
+        });
+      }
+    }
+    expect(specCalls).toBe(0);
+  });
+
+  it.each(chatTypes.slice(1))("requires an ID on %s", (type) => {
+    const msg = { type, text: "hi", messageId: "m1" } as unknown as WsClientMessage;
+    expect(routeClientMessage(fakeRegistry([]), new Set(), msg).kind).toBe("chat-error");
+  });
+
+  it.each([...chatTypes, ...surfaceTypes])("accepts valid IDs on %s", (type) => {
+    for (const conversationId of [
+      "550e8400-e29b-41d4-a716-446655440000",
+      "mcp-test-001",
+      "A_0-z",
+      "a".repeat(128),
+    ]) {
+      const msg = {
+        type,
+        conversationId,
+        message: "hi",
+        text: "hi",
+        messageId: "m1",
+        surfaceId: "a",
+        actionId: "go",
+      } as WsClientMessage;
+      const result = routeClientMessage(fakeRegistry([fakeProvider("a")]), new Set(), msg);
+      expect(result.kind).not.toBe("chat-error");
+      if (result.kind === "surface")
+        expect(result.replies.every((reply) => reply.type !== "error")).toBe(true);
+    }
+  });
+});
+
+describe("chat.queue images", () => {
+  it("routes images-only input with computerId", () => {
+    const input = {
+      type: "chat.queue" as const,
+      conversationId: "c",
+      text: "",
+      images: [{ url: "data:image/png;base64,AAAA", mimeType: "image/png" }],
+      computerId: "remote",
+    };
+    expect(routeClientMessage(fakeRegistry([]), new Set(), input)).toEqual({
+      kind: "chat-queue",
+      conversationId: "c",
+      text: "",
+      images: input.images,
+      computerId: "remote",
+    });
+  });
+  it.each([
+    { images: "bad" },
+    { images: [null] },
+    { images: [{ url: "" }] },
+    { images: [{ url: "x", mimeType: 3 }] },
+    { computerId: 3 },
+    { images: [] },
+  ])("rejects malformed or empty images-only input: %j", (extra) => {
+    const input = { type: "chat.queue", conversationId: "c", text: "", ...extra };
+    expect(routeClientMessage(fakeRegistry([]), new Set(), input as never).kind).toBe("chat-error");
   });
 });

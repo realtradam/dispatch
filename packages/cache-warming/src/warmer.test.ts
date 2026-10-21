@@ -1,12 +1,39 @@
-import type { Logger, Span, StorageNamespace } from "@dispatch/kernel";
-import type { WarmResult } from "@dispatch/session-orchestrator";
-import { describe, expect, it } from "vitest";
+import {
+  createBus,
+  createHost,
+  type Logger,
+  type Span,
+  type StorageNamespace,
+} from "@dispatch/kernel";
+import {
+  cacheWarmHandle,
+  conversationDeleted,
+  type WarmResult,
+  type WarmService,
+  warmCompleted,
+} from "@dispatch/session-orchestrator";
+import {
+  createSurfaceRegistry,
+  createSurfaceRegistryExtension,
+  surfaceRegistryHandle,
+} from "@dispatch/surface-registry";
+import { describe, expect, it, vi } from "vitest";
+import {
+  conversationStoreHandle,
+  conversationDeleted as storeDeleted,
+  extension as storeExtension,
+} from "../../conversation-store/dist/index.js";
+import { createExecBackendExtension } from "../../exec-backend/src/index.js";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
+import { extension as promptExtension } from "../../system-prompt/src/index.js";
+import { activate, createCacheWarmingExtension } from "./extension.js";
 import { MIN_INTERVAL_MS } from "./pure.js";
 import { createCacheWarmer, type TimerDeps } from "./warmer.js";
 
 function memStorage(): StorageNamespace {
   const map = new Map<string, string>();
   return {
+    ...storageFromMap(map),
     get: async (k) => map.get(k) ?? null,
     set: async (k, v) => {
       map.set(k, v);
@@ -43,22 +70,23 @@ function makeLogger(): Logger {
   };
 }
 
-function fakeTimers(): TimerDeps & { flush: () => void } {
+function fakeTimers(): TimerDeps & { flush: () => void; delays: () => number[] } {
   let nextId = 1;
-  const pending = new Map<number, () => void>();
+  const pending = new Map<number, { fn: () => void; ms: number }>();
   return {
-    setTimer(fn, _ms) {
+    setTimer(fn, ms) {
       const id = nextId++;
-      pending.set(id, fn);
+      pending.set(id, { fn, ms });
       return id;
     },
     clearTimer(id) {
       pending.delete(id);
     },
+    delays: () => [...pending.values()].map(({ ms }) => ms),
     flush() {
       const fns = [...pending.values()];
       pending.clear();
-      for (const fn of fns) fn();
+      for (const { fn } of fns) fn();
     },
   };
 }
@@ -72,7 +100,7 @@ const WARM_RESULT: WarmResult = {
 
 function makeDeps(
   overrides: Partial<{
-    warm: (conversationId: string) => Promise<WarmResult>;
+    warm: WarmService["warm"];
     onSurfaceChange: () => void;
     now: () => number;
   }> = {},
@@ -560,4 +588,323 @@ describe("CacheWarmer", () => {
     const state = warmer.getState("conv-1");
     expect(state.lastExpectedPct).toBe(90);
   });
+
+  it.each([
+    {
+      name: "synchronous throw",
+      warm: () => {
+        throw new Error("warm unavailable");
+      },
+    },
+    {
+      name: "rejected Error",
+      warm: async () => {
+        throw new Error("warm unavailable");
+      },
+    },
+    {
+      name: "rejected string",
+      warm: async () => {
+        throw "warm unavailable";
+      },
+    },
+  ])("catches $name, logs and re-arms without unhandled rejection", async ({ warm }) => {
+    const deps = makeDeps({ warm });
+    const logs: unknown[] = [];
+    deps.logger.error = (_message, attrs) => {
+      logs.push(attrs);
+    };
+    const warmer = createCacheWarmer(deps);
+    const observed: unknown[] = [];
+    deps.onSurfaceChange = () => {
+      observed.push(warmer.getState("conv-1"));
+    };
+    await warmer.setEnabled("conv-1", true);
+    observed.length = 0;
+    deps.timers.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(deps.timers.delays()).toEqual([480_000]);
+    expect(warmer.getState("conv-1")).toMatchObject({
+      lastError: "warm unavailable",
+      nextWarmAt: 481_000,
+      lastWarmAt: null,
+    });
+    expect(logs).toEqual([
+      expect.objectContaining({ conversationId: "conv-1", error: "warm unavailable" }),
+    ]);
+    expect(observed).toEqual([
+      expect.objectContaining({ lastError: "warm unavailable", nextWarmAt: 481_000 }),
+    ]);
+    warmer.dispose();
+  });
+
+  it("backs off error results at 2× then 4× (capped), resets after success, and isolates conversations", async () => {
+    const deps = makeDeps({ warm: async () => ({ error: "provider unavailable" }) });
+    const logs: unknown[] = [];
+    deps.logger.error = (_message, attrs) => {
+      logs.push(attrs);
+    };
+    const warmer = createCacheWarmer(deps);
+    await warmer.setIntervalMs("conv-1", 10_000);
+    await warmer.setEnabled("conv-1", true);
+    for (const delay of [20_000, 40_000, 40_000]) {
+      deps.timers.flush();
+      await Promise.resolve();
+      expect(deps.timers.delays()).toEqual([delay]);
+      expect(warmer.getState("conv-1").lastError).toBe("provider unavailable");
+    }
+    expect(logs).toHaveLength(3);
+    expect(logs[0]).toMatchObject({ conversationId: "conv-1", error: "provider unavailable" });
+    await warmer.setIntervalMs("conv-1", 5_000);
+    expect(deps.timers.delays()).toEqual([20_000]);
+    await warmer.setIntervalMs("conv-1", 10_000);
+    await warmer.setEnabled("conv-2", true);
+    expect(deps.timers.delays()).toEqual([40_000, 240_000]);
+    await warmer.setEnabled("conv-2", false);
+    deps.warm = async () => {
+      warmer.onWarmCompleted({ conversationId: "conv-1", usage: WARM_RESULT });
+      return WARM_RESULT;
+    };
+    deps.timers.flush();
+    await Promise.resolve();
+    expect(deps.timers.delays()).toEqual([10_000]);
+    expect(warmer.getState("conv-1")).toMatchObject({ lastError: null, lastPct: 80 });
+    deps.warm = async () => ({ error: "failed again" });
+    deps.timers.flush();
+    await Promise.resolve();
+    expect(deps.timers.delays()).toEqual([20_000]);
+    warmer.dispose();
+  });
+
+  it.each([
+    "active",
+    "disabled",
+    "closed",
+    "rescheduled",
+    "disposed",
+  ])("does not re-arm a stale warm failure after %s", async (action) => {
+    let fail: (value: { error: string }) => void = () => {};
+    const deps = makeDeps({
+      warm: () =>
+        new Promise((resolve) => {
+          fail = resolve;
+        }),
+    });
+    const warmer = createCacheWarmer(deps);
+    await warmer.setEnabled("conv-1", true);
+    deps.timers.flush();
+    if (action === "active" || action === "rescheduled") warmer.onTurnStarted("conv-1");
+    if (action === "disabled") await warmer.setEnabled("conv-1", false);
+    if (action === "closed") await warmer.onConversationClosed("conv-1");
+    if (action === "rescheduled") warmer.onTurnSettled("conv-1", {});
+    if (action === "disposed") warmer.dispose();
+    const before = warmer.getState("conv-1");
+    fail({ error: "late failure" });
+    await Promise.resolve();
+    expect(warmer.getState("conv-1")).toEqual(before);
+    expect(deps.timers.delays()).toEqual(action === "rescheduled" ? [240_000] : []);
+    warmer.dispose();
+  });
+
+  it("pushes the last warm error through the registered surface and clears it after success", async () => {
+    vi.useFakeTimers();
+    const logger = makeLogger();
+    const bus = createBus(logger);
+    const registry = createSurfaceRegistry();
+    const host = createHost([], {
+      logger,
+      bus,
+      storageFactory: () => memStorage(),
+      config: { get: () => undefined, getAll: () => ({}) },
+      secrets: { get: async () => null, set: async () => {}, delete: async () => {} },
+      permissions: { check: async () => ({ allowed: true }) },
+      scheduler: { register: () => {}, unregister: () => {} },
+      events: { emit: () => {} },
+      logSink: { emit: () => {} },
+      logDeps: { now: () => Date.now(), newId: () => "test" },
+    });
+    const api = host.getHostAPI();
+    const removeWarm = api.provideService(cacheWarmHandle, {
+      warm: async () => ({ error: "surface failure" }),
+    });
+    const removeRegistry = api.provideService(surfaceRegistryHandle, registry);
+    try {
+      activate(api);
+      const surface = registry.getSurface("cache-warming");
+      if (surface === undefined) throw new Error("surface not registered");
+      const context = { conversationId: "conv-1" };
+      const observed: unknown[] = [];
+      const unsubscribe = surface.subscribe?.(() => {
+        observed.push(surface.getSpec(context));
+      });
+      await surface.invoke("cache-warming/toggle", undefined, context);
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect(observed.at(-1)).toMatchObject({
+        fields: expect.arrayContaining([
+          { kind: "stat", label: "Last Error", value: "surface failure" },
+        ]),
+      });
+      expect(vi.getTimerCount()).toBe(1);
+      api.emit(warmCompleted, { conversationId: "conv-1", usage: WARM_RESULT });
+      expect((await surface.getSpec(context)).fields).toContainEqual({
+        kind: "stat",
+        label: "Last Error",
+        value: "—",
+      });
+      await surface.invoke("cache-warming/toggle", undefined, context);
+      expect(vi.getTimerCount()).toBe(0);
+      unsubscribe?.();
+    } finally {
+      removeWarm();
+      removeRegistry();
+      await host.deactivate();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("real store deletion cleans prompt/warming rows and schedules; subscriptions dispose on unload", async () => {
+  vi.useFakeTimers();
+  const namespaces = new Map<string, Map<string, string>>();
+  const host = createHost(
+    [
+      storeExtension,
+      promptExtension,
+      createCacheWarmingExtension(),
+      createExecBackendExtension(),
+      createSurfaceRegistryExtension(),
+      {
+        manifest: {
+          id: "session-orchestrator",
+          name: "warm boundary",
+          version: "0.0.0",
+          apiVersion: "^0.1.0",
+          tier: "core",
+          trust: "bundled",
+        },
+        activate: (api) => {
+          api.provideService(cacheWarmHandle, { warm: async () => WARM_RESULT });
+        },
+      },
+    ],
+    {
+      logger: makeLogger(),
+      bus: createBus(makeLogger()),
+      storageFactory: (name) => {
+        let data = namespaces.get(name);
+        if (!data) {
+          data = new Map();
+          namespaces.set(name, data);
+        }
+        return storageFromMap(data);
+      },
+      config: { get: () => undefined, getAll: () => ({}) },
+      secrets: { get: async () => null, set: async () => {}, delete: async () => {} },
+      permissions: { check: async () => ({ allowed: true }) },
+      scheduler: { register: () => {}, unregister: () => {} },
+      events: { emit: () => {} },
+      logSink: { emit: () => {} },
+      logDeps: { now: () => 0, newId: () => "test" },
+    },
+  );
+  const api = host.getHostAPI();
+  try {
+    await host.activate();
+    const registry = api.getService(surfaceRegistryHandle);
+    expect(conversationDeleted).toBe(storeDeleted);
+    const store = api.getService(conversationStoreHandle);
+    const promptRows = namespaces.get("system-prompt");
+    if (!promptRows) throw new Error("prompt not loaded");
+    promptRows.set("template", "keep global template");
+    for (const id of ["deleted", "keep"]) {
+      await store.setConversationTitle(id, id);
+      for (const prefix of ["resolved:", "resolved-cwd:", "resolved-computer:"])
+        promptRows.set(prefix + id, id);
+      await registry
+        .getSurface("cache-warming")
+        ?.invoke("cache-warming/toggle", undefined, { conversationId: id });
+    }
+    expect(vi.getTimerCount()).toBe(2);
+    await store.deleteConversation("deleted");
+    await vi.advanceTimersByTimeAsync(0);
+    expect([...promptRows.keys()]).toEqual([
+      "template",
+      "resolved:keep",
+      "resolved-cwd:keep",
+      "resolved-computer:keep",
+    ]);
+    expect(namespaces.get("cache-warming")?.size).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+    await store.deleteConversation("deleted");
+    for (const id of ["system-prompt", "cache-warming"]) {
+      const unloaded = await host.unloadExtension(id);
+      expect(unloaded).toMatchObject({ ok: true });
+      expect(unloaded.dangling ?? []).toEqual([]);
+    }
+    expect(vi.getTimerCount()).toBe(0);
+    expect(registry.getSurface("cache-warming")).toBeUndefined();
+    await store.deleteConversation("keep");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(promptRows.get("resolved:keep")).toBe("keep");
+    expect(namespaces.get("cache-warming")?.size).toBe(1);
+  } finally {
+    await host.deactivate();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
+it("deletion invalidates late warm success/failure and forgets settings/context", async () => {
+  let fail = (_result: { error: string }) => {};
+  const deps = makeDeps({
+    warm: () =>
+      new Promise((resolve) => {
+        fail = resolve;
+      }),
+  });
+  const warmer = createCacheWarmer(deps);
+  await warmer.setEnabled("deleted", true);
+  warmer.onTurnSettled("deleted", { cwd: "/fixture" });
+  deps.timers.flush();
+  await warmer.onConversationDeleted("deleted");
+  fail({ error: "late failure" });
+  await Promise.resolve();
+  warmer.onWarmCompleted({ conversationId: "deleted", usage: WARM_RESULT });
+  warmer.onTurnSettled("deleted", { cwd: "/stale" });
+  await warmer.onConversationClosed("deleted");
+  await warmer.setEnabled("deleted", true);
+  await warmer.setIntervalMs("deleted", 60_000);
+  expect(await deps.storage.keys()).toEqual([]);
+  expect(warmer.getContext("deleted")).toEqual({});
+  expect(warmer.getState("deleted")).toMatchObject({
+    enabled: false,
+    lastError: null,
+    lastWarmAt: null,
+  });
+  expect(deps.timers.delays()).toEqual([]);
+  warmer.dispose();
+});
+
+it.each([
+  "enable",
+  "interval",
+])("a pending %s settings read cannot recreate deleted rows", async (action) => {
+  const deps = makeDeps();
+  let release = (_value: string | null) => {};
+  const reading = new Promise<string | null>((resolve) => {
+    release = resolve;
+  });
+  const warmer = createCacheWarmer({ ...deps, storage: { ...deps.storage, get: () => reading } });
+  const update =
+    action === "enable"
+      ? warmer.setEnabled("deleted", true)
+      : warmer.setIntervalMs("deleted", 60_000);
+  await warmer.onConversationDeleted("deleted");
+  release(null);
+  await update;
+  expect(await deps.storage.keys()).toEqual([]);
+  expect(warmer.getState("deleted").enabled).toBe(false);
+  expect(deps.timers.delays()).toEqual([]);
+  warmer.dispose();
 });

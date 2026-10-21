@@ -62,45 +62,42 @@ export function computeReplacement(
   newString: string,
   replaceAll: boolean,
 ): ReplacementSuccess | ReplacementError {
-  if (oldString === newString) {
-    return { kind: "identical" };
-  }
+  if (oldString === newString) return { kind: "identical" };
+  if (oldString === "") return { kind: "notFound" };
 
-  if (oldString === "") {
-    return { kind: "notFound" };
+  // Exact matches take precedence, even if another EOL spelling also occurs.
+  let matches = [...content.matchAll(new RegExp(escapeRegExp(oldString), "g"))];
+  if (matches.length === 0 && oldString.includes("\n")) {
+    // Only relax line endings, never other whitespace. Keep original offsets and
+    // matched bytes so mixed-EOL regions need no whole-file normalization.
+    const pattern = oldString.split(/\r?\n/).map(escapeRegExp).join("\r?\n");
+    matches = [...content.matchAll(new RegExp(pattern, "g"))];
   }
+  if (matches.length === 0) return { kind: "notFound" };
+  if (!replaceAll && matches.length > 1) return { kind: "notUnique", count: matches.length };
 
-  if (!content.includes(oldString)) {
-    return { kind: "notFound" };
+  const parts: string[] = [];
+  let offset = 0;
+  for (const match of matches) {
+    // Prefer the first EOL INSIDE the match. For single-line edits use the
+    // terminating EOL, then the preceding EOL (last line), then LF (no EOL).
+    const eol =
+      /\r?\n/.exec(match[0])?.[0] ??
+      /\r?\n/.exec(content.slice(match.index + match[0].length))?.[0] ??
+      (content.lastIndexOf("\n", match.index - 1) > 0 &&
+      content[content.lastIndexOf("\n", match.index - 1) - 1] === "\r"
+        ? "\r\n"
+        : "\n");
+    parts.push(content.slice(offset, match.index), newString.replace(/\r?\n/g, eol));
+    offset = match.index + match[0].length;
   }
+  parts.push(content.slice(offset));
+  const result = parts.join("");
+  return result === content ? { kind: "identical" } : { content: result, count: matches.length };
+}
 
-  if (replaceAll) {
-    const parts = content.split(oldString);
-    const count = parts.length - 1;
-    return { content: parts.join(newString), count };
-  }
-
-  // Single replacement — check uniqueness.
-  const firstIndex = content.indexOf(oldString);
-  const secondIndex = content.indexOf(oldString, firstIndex + oldString.length);
-  if (secondIndex !== -1) {
-    // Count total occurrences.
-    let count = 0;
-    let idx = 0;
-    while (true) {
-      idx = content.indexOf(oldString, idx);
-      if (idx === -1) break;
-      count++;
-      idx += oldString.length;
-    }
-    return { kind: "notUnique", count };
-  }
-
-  return {
-    content:
-      content.slice(0, firstIndex) + newString + content.slice(firstIndex + oldString.length),
-    count: 1,
-  };
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // --- Diagnostics hook ---
@@ -197,9 +194,9 @@ export function createEditFileTool(deps: {
       const backend: ExecBackend = deps.resolveBackend(ctx.computerId);
 
       // Read the file.
-      let content: string;
+      let bytes: Uint8Array;
       try {
-        content = await backend.readFile(resolvedPath);
+        bytes = await backend.readFileBytes(resolvedPath);
       } catch (err: unknown) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code === "ENOENT") {
@@ -209,6 +206,14 @@ export function createEditFileTool(deps: {
           content: `Error reading file: ${err instanceof Error ? err.message : String(err)}`,
           isError: true,
         };
+      }
+
+      let content: string;
+      try {
+        // ignoreBOM keeps U+FEFF in the text, so re-encoding preserves the BOM.
+        content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+      } catch {
+        return { content: "Error: File is not valid UTF-8; no changes made.", isError: true };
       }
 
       // Pure replacement decision.
@@ -236,7 +241,7 @@ export function createEditFileTool(deps: {
 
       // Write the modified content back.
       try {
-        await backend.writeFile(resolvedPath, result.content);
+        await backend.writeFileAtomic(resolvedPath, result.content);
       } catch (err: unknown) {
         return {
           content: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,

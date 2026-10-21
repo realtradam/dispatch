@@ -221,3 +221,19 @@ describe("buildQueueSpec", () => {
     expect(payload.messages).toEqual([]);
   });
 });
+
+it("retains image/computer metadata and publishes image counts including zero", () => {
+  const state: MessageQueueState = new Map();
+  const deps = makeDeps();
+  const images = [{ url: "/images/c/a.png", mimeType: "image/png" }];
+  enqueue(state, "c", "", deps, { images, computerId: "remote" });
+  enqueue(state, "c", "text", deps);
+  const messages = getQueue(state, "c");
+  expect(messages[0]).toMatchObject({ images, computerId: "remote" });
+  expect(buildQueueSpec(messages).fields[0]).toMatchObject({
+    payload: {
+      messages: [{ imageCount: 1 }, { imageCount: 0 }],
+    },
+  });
+  expect(drain(state, "c")).toEqual(messages);
+});

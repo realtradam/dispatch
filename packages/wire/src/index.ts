@@ -169,17 +169,16 @@ export interface ChatMessage {
 
 /**
  * A persisted chunk plus its sync metadata. The append-only conversation log
- * stamps every chunk with a **1-based**, monotonic, gap-free, per-conversation
+ * stamps every chunk with a positive, monotonic, per-conversation
  * `seq` (the sync cursor, assigned in append order) and records the `role` of
  * the message it belongs to. This makes a flat seq-ordered stream both
  * incrementally syncable ("give me chunks after seq N") and regroupable into
  * messages by the client.
  *
- * The 1-based start is a CONTRACTUAL GUARANTEE (not an implementation detail):
- * a conversation's first chunk is always `seq === 1` and numbering never skips,
- * so a client holding only a windowed suffix of the log can derive "older
- * chunks exist server-side" purely from `oldestLoaded.seq > 1` — no separate
- * has-older flag is needed (or provided). `chunk` is the content unit — `Chunk` carries no storage/sync cursor
+ * Seq is never reused within a conversation, including after compaction replaces
+ * its history. The retained log need not start at 1 or be gap-free; a client
+ * cannot infer that older chunks exist solely from `oldestLoaded.seq > 1`.
+ * `chunk` is the content unit — `Chunk` carries no storage/sync cursor
  * (`seq` lives here on the envelope, not on the chunk, since it is assigned by
  * the store and the provider has no use for it). A chunk MAY still carry
  * generation provenance assigned at production time (e.g. a tool chunk's
@@ -305,6 +304,11 @@ export interface QueuedMessage {
   readonly text: string;
   /** When the message was enqueued (epoch-ms). */
   readonly queuedAt: number;
+  /** Compact stored image URLs (never inline base64 when vision storage is available). */
+  readonly images?: readonly ImageInput[];
+  readonly computerId?: string;
+  /** Included in queue surface snapshots, including zero for text-only items. */
+  readonly imageCount?: number;
 }
 
 /**
@@ -341,6 +345,7 @@ export type AgentEvent =
   | TurnProviderRetryEvent
   | TurnDoneEvent
   | TurnSealedEvent
+  | TurnEndedEvent
   | TurnSteeringEvent;
 
 /** Status change for a conversation (e.g. idle → running). */
@@ -574,6 +579,18 @@ export interface TurnSealedEvent {
 }
 
 /**
+ * Exactly one terminal event per orchestrated turn, after any seal/error.
+ * `error` events can be non-terminal; consumers waiting for completion use this.
+ * Rejected turns never reached generation (for example an unknown model).
+ */
+export interface TurnEndedEvent {
+  readonly type: "turn-ended";
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly reason: "sealed" | "error" | "aborted" | "rejected";
+}
+
+/**
  * A steering message was injected into an in-flight turn at the tool-result
  * boundary (the model sees it alongside the tool results and may adjust
  * course). Drawn from the conversation's message queue (which the drain
@@ -591,6 +608,8 @@ export interface TurnSealedEvent {
  * event per drain; the combined text of all drained messages.
  */
 export interface TurnSteeringEvent {
+  /** Compact image references for live rendering; persisted chunks retain queue order. */
+  readonly images?: readonly ImageInput[];
   readonly type: "steering";
   readonly conversationId: string;
   readonly turnId: string;

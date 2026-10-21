@@ -195,6 +195,7 @@ interface StepResult {
    */
   readonly imageMessages: ChatMessage[];
   readonly usage: Usage;
+  readonly reportedUsage: boolean;
   readonly finishReason: string;
 }
 
@@ -359,6 +360,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
   const seenToolCallIds = new Set<string>();
   const toolDispatchTimes = new Map<string, number>();
   let stepUsage = zeroUsage();
+  let reportedUsage = false;
   let finishReason = "stop";
 
   // Open a step span as a child of the turn span; capture the verbatim
@@ -367,14 +369,13 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
   let stepSpan: Span | undefined;
   try {
     stepSpan = ctx.turnSpan !== undefined ? ctx.turnSpan.child("step") : ctx.logger.span("step");
-    const promptBody = JSON.stringify({ messages: ctx.messages, tools: ctx.tools });
     const promptSpan = stepSpan.child(
       "prompt",
       {
         messageCount: ctx.messages.length,
         toolCount: ctx.tools.length,
       },
-      promptBody,
+      () => JSON.stringify({ messages: ctx.messages, tools: ctx.tools }),
     );
     promptSpan.end();
   } catch {
@@ -477,6 +478,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
           toolDispatchTimes,
         );
         if (event.type === "usage") {
+          reportedUsage = true;
           stepUsage = addUsage(stepUsage, event.usage);
         }
         if (event.type === "finish") {
@@ -696,6 +698,7 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
     toolMessages,
     imageMessages,
     usage: stepUsage,
+    reportedUsage,
     finishReason,
   };
 }
@@ -771,7 +774,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       });
 
       totalUsage = addUsage(totalUsage, stepResult.usage);
-      lastStepUsage = stepResult.usage;
+      if (stepResult.reportedUsage) lastStepUsage = stepResult.usage;
 
       // When the signal is aborted mid-step, the tool results are
       // placeholders ({ content: "Aborted", isError: true }). If these
@@ -933,7 +936,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     totalUsage.cacheReadTokens !== undefined ||
     totalUsage.cacheWriteTokens !== undefined;
   const contextSize =
-    hasUsage && lastStepUsage !== undefined
+    lastStepUsage !== undefined
       ? lastStepUsage.inputTokens + lastStepUsage.outputTokens
       : undefined;
   input.emit(

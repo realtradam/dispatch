@@ -1,5 +1,9 @@
-import type { AgentEvent } from "@dispatch/kernel";
+import { type AgentEvent, runTurn } from "@dispatch/kernel";
+import { createSessionOrchestrator } from "@dispatch/session-orchestrator";
 import { describe, expect, it } from "vitest";
+import { createConversationStore } from "../../conversation-store/src/index.js";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
+import { createMessageQueueService } from "../../message-queue/src/index.js";
 import {
   type CheckOutcome,
   type CheckRunner,
@@ -854,4 +858,138 @@ describe("DiagnosticsCheckQueue — skipped checks must not corrupt the baseline
     await tick();
     expect(fake.enqueued).toHaveLength(1);
   });
+});
+
+describe("async notice delivery", () => {
+  it.each([
+    "close",
+    "stop",
+    "dispose",
+  ] as const)("%s removes a queued notice even when its id arrives late", async (operation) => {
+    const fake = makeDelivery();
+    fake.setActive("c1", true);
+    let resolve!: (value: NoticeEnqueueResult) => void;
+    const pending = new Promise<NoticeEnqueueResult>((done) => {
+      resolve = done;
+    });
+    const queue = new DiagnosticsCheckQueue({
+      check: async () => outcome([err("new")]),
+      delivery: { ...fake.delivery, enqueue: () => pending },
+    });
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, cwd: CWD });
+    await tick();
+    if (operation === "close") queue.purgeConversation("c1");
+    else if (operation === "dispose") queue.dispose();
+    else fake.emit("c1", { type: "done", conversationId: "c1", turnId: "t", reason: "aborted" });
+    resolve({ startedTurn: false, messageId: "late-id" });
+    await tick();
+    expect(fake.cancelled.map((entry) => entry.messageId)).toContain("late-id");
+    queue.dispose();
+  });
+
+  it("contains rejected enqueue promises and serializes notices until pending ids are known", async () => {
+    const fake = makeDelivery();
+    fake.setActive("c1", true);
+    let reject!: (error: Error) => void;
+    const pending = new Promise<NoticeEnqueueResult>((_done, fail) => {
+      reject = fail;
+    });
+    let calls = 0;
+    const warnings: string[] = [];
+    const queue = new DiagnosticsCheckQueue({
+      check: async ({ filePath }) => outcome([err(filePath)]),
+      delivery: {
+        ...fake.delivery,
+        enqueue: (input) =>
+          ++calls === 1 ? pending : Promise.resolve(fake.delivery.enqueue(input)),
+      },
+      logger: { warn: (message) => warnings.push(message) },
+    });
+    queue.queueCheck({ conversationId: "c1", filePath: FILE, cwd: CWD });
+    await tick();
+    queue.queueCheck({ conversationId: "c1", filePath: "/proj/b.ts", cwd: CWD });
+    await tick();
+    expect(calls).toBe(1);
+    reject(new Error("storage failed"));
+    await queue.listResults("c1");
+    expect(calls).toBe(2);
+    expect(warnings).toContain("LSP notice enqueue failed");
+    queue.purgeConversation("c1");
+    expect(fake.cancelled).toHaveLength(1);
+  });
+});
+
+it.each([
+  false,
+  true,
+])("Stop with an LSP notice carries only user input (user queued: %s)", async (withUser) => {
+  let nextId = 0;
+  const messages = createMessageQueueService({
+    id: () => String(++nextId),
+    now: () => 0,
+    notify: () => {},
+  });
+  let enter = () => {};
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  let calls = 0;
+  const store = createConversationStore(storageFromMap());
+  const { orchestrator } = createSessionOrchestrator({
+    conversationStore: store,
+    resolveProvider: () => ({
+      id: "notice-stop",
+      async *stream() {
+        if (++calls === 1) {
+          yield { type: "text-delta", delta: "partial" };
+          enter();
+          await new Promise<void>(() => {});
+        }
+        yield { type: "finish", reason: "stop" };
+      },
+    }),
+    resolveQueue: () => messages,
+    resolveTools: () => [],
+    applyToolsFilter: async (assembly) => assembly,
+    runTurn,
+  });
+  const checks = new DiagnosticsCheckQueue({
+    check: async () => outcome([err("new issue")]),
+    delivery: {
+      isActive: (id) => orchestrator.isActive(id),
+      enqueue: async (input) => {
+        const result = await orchestrator.enqueue(input);
+        return { startedTurn: result.startedTurn, messageId: result.queue.at(-1)?.id };
+      },
+      cancel: (input) => orchestrator.cancelQueuedMessage(input).cancelled,
+      subscribe: (id, listener) => orchestrator.subscribe(id, listener),
+    },
+  });
+  const events: AgentEvent[] = [];
+  const completed = new Promise<void>((resolve) =>
+    orchestrator.subscribe("c", (event) => {
+      events.push(event);
+      if (events.filter((event) => event.type === "turn-ended").length === (withUser ? 2 : 1))
+        resolve();
+    }),
+  );
+  orchestrator.startTurn({ conversationId: "c", text: "opening" });
+  await entered;
+  checks.queueCheck({ conversationId: "c", filePath: "/proj/a.ts", cwd: CWD });
+  await checks.listResults("c");
+  expect(messages.getQueue("c")).toHaveLength(1);
+  if (withUser) await orchestrator.enqueue({ conversationId: "c", text: "user queued" });
+  orchestrator.stopTurn("c");
+  await completed;
+  expect(calls).toBe(withUser ? 2 : 1);
+  expect(
+    events.filter((event) => event.type === "user-message").map((event) => event.text),
+  ).toEqual(withUser ? ["opening", "user queued"] : ["opening"]);
+  expect(
+    events.filter((event) => event.type === "turn-ended").map((event) => event.reason),
+  ).toEqual(withUser ? ["aborted", "sealed"] : ["aborted"]);
+  expect(events.some((event) => event.type === "steering")).toBe(false);
+  expect(messages.getQueue("c")).toEqual([]);
+  expect(orchestrator.isActive("c")).toBe(false);
+  checks.dispose();
 });

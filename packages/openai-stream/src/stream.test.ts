@@ -2,6 +2,7 @@ import type { ChatMessage, Logger, ProviderEvent, Span } from "@dispatch/kernel"
 import type { HttpExchangeFixture } from "@dispatch/trace-replay";
 import { loadFixture, recordFetch, replayFetch, serializeFixture } from "@dispatch/trace-replay";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseSSELines } from "./parse-sse.js";
 import { type StreamConfig, streamChat } from "./stream.js";
 
 async function collectEvents(iter: AsyncIterable<ProviderEvent>): Promise<ProviderEvent[]> {
@@ -955,6 +956,31 @@ describe("streamChat — cancellation via signal", () => {
     expect(readerCancelled).toBe(true);
   });
 
+  it("does not finalize buffered usage or report premature EOF on deliberate abort", async () => {
+    const ac = new AbortController();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"usage":{"prompt_tokens":10}}\ndata: {"choices":[{"delta":{"content":"hi"}}]}\n',
+          ),
+        );
+      },
+    });
+    const events: ProviderEvent[] = [];
+    for await (const event of streamChat(
+      { ...makeConfig(), fetchFn: async () => new Response(body) },
+      makeMessages(),
+      [],
+      { signal: ac.signal },
+    )) {
+      events.push(event);
+      ac.abort();
+    }
+    expect(events).toEqual([{ type: "text-delta", delta: "hi" }]);
+    expect(body.locked).toBe(false);
+  });
+
   it("yields a non-retryable nothing (no error) on abort during the SSE read", async () => {
     const ac = new AbortController();
     const config = makeConfig();
@@ -1224,5 +1250,96 @@ describe("streamChat — provider image-count cap", () => {
     expect(span.attrs["request.image_count_max"]).toBe(4);
     expect(span.attrs["request.images_evicted"]).toBe(10);
     expect(span.attrs["request.body_budget_max_bytes"]).toBe(maxBodyBytes);
+  });
+});
+
+describe("SSE stream and line parser regressions", () => {
+  const finish = 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}';
+  const text = 'data: {"choices":[{"delta":{"content":"hé🙂"}}]}';
+  const tool =
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{}"}}]}}]}';
+  const premature: ProviderEvent = {
+    type: "error",
+    message: "stream ended prematurely",
+    retryable: true,
+  };
+
+  async function streamed(raw: string | Uint8Array, logger?: Logger) {
+    const bytes = typeof raw === "string" ? new TextEncoder().encode(raw) : raw;
+    // Every byte is its own chunk, including split UTF-8 and CRLF boundaries.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+        controller.close();
+      },
+    });
+    return collectEvents(
+      streamChat({ ...makeConfig(), fetchFn: async () => new Response(body) }, makeMessages(), [], {
+        logger,
+      }),
+    );
+  }
+
+  it.each([
+    ["empty EOF", [], [premature]],
+    ["text without terminal marker", [text], [{ type: "text-delta", delta: "hé🙂" }, premature]],
+    ["cut tool delta", [tool], [{ type: "tool-call-start" }, premature]],
+    ["pending tool at DONE", [tool, "data: [DONE]"], [{ type: "tool-call-start" }, premature]],
+    ["finish without DONE", [finish], [{ type: "finish", reason: "stop" }]],
+    ["DONE without finish", [text, "data: [DONE]", text], [{ type: "text-delta", delta: "hé🙂" }]],
+    [
+      "completed tools are cleared",
+      [tool, finish, finish],
+      [
+        { type: "tool-call-start" },
+        { type: "tool-call", toolCallId: "c1", toolName: "read_file", input: {} },
+        { type: "finish", reason: "stop" },
+        { type: "finish", reason: "stop" },
+      ],
+    ],
+  ] as const)("shares semantics for %s", async (_name, lines, expected) => {
+    expect(parseSSELines(lines)).toEqual(expected);
+    expect(await streamed(lines.join("\r\n"))).toEqual(expected);
+  });
+
+  it.each([false, true])("emits last cumulative usage once, DONE=%s", async (done) => {
+    const lines = [
+      'data: {"usage":{"prompt_tokens":10,"completion_tokens":1}}',
+      finish,
+      'data: {"usage":{"prompt_tokens":20,"completion_tokens":2,"cache_read_tokens":9}}',
+      'data: {"usage":{"prompt_tokens":30,"completion_tokens":3,"cache_read_tokens":0,"prompt_tokens_details":{"cached_tokens":25},"cache_write_tokens":4}}',
+      ...(done ? ["data: [DONE]"] : []),
+    ];
+    const expected = [
+      { type: "finish", reason: "stop" },
+      {
+        type: "usage",
+        usage: { inputTokens: 30, outputTokens: 3, cacheReadTokens: 25, cacheWriteTokens: 4 },
+      },
+    ];
+    const { logger, spans } = createFakeLogger();
+    expect(parseSSELines(lines)).toEqual(expected);
+    expect(await streamed(lines.join("\n"), logger)).toEqual(expected);
+    expect(spans[0]?.endOutcome?.attrs?.["usage.inputTokens"]).toBe(30);
+    expect(spans[0]?.endOutcome?.attrs?.["usage.cacheReadTokens"]).toBe(25);
+  });
+
+  it("flushes the decoder's incomplete UTF-8 bytes at EOF", async () => {
+    const bytes = new TextEncoder().encode(`${finish}\ndata: {"choices":[],"extra":"`);
+    const raw = new Uint8Array([...bytes, 0xe2, 0x82]);
+    expect(await streamed(raw)).toEqual([
+      { type: "finish", reason: "stop" },
+      { type: "error", message: 'Invalid JSON in SSE data: {"choices":[],"extra":"�' },
+    ]);
+  });
+
+  it("retains explicit zero usage at premature EOF", async () => {
+    const lines = [
+      'data: {"usage":{"prompt_tokens":99,"completion_tokens":9}}',
+      'data: {"usage":{"prompt_tokens":0,"completion_tokens":0}}',
+    ];
+    const expected = [{ type: "usage", usage: { inputTokens: 0, outputTokens: 0 } }, premature];
+    expect(parseSSELines(lines)).toEqual(expected);
+    expect(await streamed(lines.join("\n"))).toEqual(expected);
   });
 });

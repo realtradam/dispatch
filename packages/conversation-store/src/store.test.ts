@@ -9,6 +9,7 @@ import type {
 } from "@dispatch/kernel";
 import type { NamedAgentSelectionSnapshot } from "@dispatch/wire";
 import { beforeEach, describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import {
   CONVERSATION_INDEX_KEY,
   chunkKey,
@@ -92,6 +93,7 @@ function createCapturingLogger(): { logger: Logger; events: SpanEvent[] } {
 function createMemoryStorage(): StorageNamespace {
   const data = new Map<string, string>();
   return {
+    ...storageFromMap(data),
     get: async (key) => data.get(key) ?? null,
     set: async (key, value) => {
       data.set(key, value);
@@ -245,7 +247,7 @@ describe("ConversationStore", () => {
     expect(await createConversationStore(storage).load("conv1")).toEqual(replaced);
     expect((await store.loadSince("conv1")).slice(1)).toEqual(
       messages[1]?.chunks.map((chunk, index) => ({
-        seq: index + 2,
+        seq: index + 6,
         role: "assistant",
         chunk,
         turnId: "turn-1",
@@ -2401,9 +2403,9 @@ describe("ConversationStore — chunk turnId provenance", () => {
     ]);
     const rows = await store.loadSince("c", 0);
     expect(rows.map((r) => [r.seq, r.turnId])).toEqual([
-      [1, undefined],
-      [2, "t2"],
-      [3, "t2"],
+      [5, undefined],
+      [6, "t2"],
+      [7, "t2"],
     ]);
     expect((await store.load("c")).map((m) => m.role)).toEqual(["system", "user", "assistant"]);
   });

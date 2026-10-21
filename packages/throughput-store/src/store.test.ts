@@ -1,11 +1,13 @@
 import type { StorageNamespace } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { dayKeyOf } from "./period.js";
 import { createThroughputStore, ThroughputQueryError } from "./store.js";
 
 function memStorage(): StorageNamespace {
   const map = new Map<string, string>();
   return {
+    ...storageFromMap(map),
     get: async (k) => map.get(k) ?? null,
     set: async (k, v) => {
       map.set(k, v);

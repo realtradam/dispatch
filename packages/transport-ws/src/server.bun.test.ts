@@ -6,10 +6,12 @@ import {
   type ErrorAttributes,
   type HostAPI,
   type Logger,
+  runTurn,
 } from "@dispatch/kernel";
 import {
   conversationOpened,
   conversationTabGroupChanged,
+  createSessionOrchestrator,
   type SessionOrchestrator,
   sessionOrchestratorHandle,
   type TurnEventListener,
@@ -22,6 +24,9 @@ import {
 } from "@dispatch/surface-registry";
 import type { ConversationStatus, WsServerMessage } from "@dispatch/transport-contract";
 import type { SurfaceCatalogEntry, SurfaceClientMessage, SurfaceSpec } from "@dispatch/ui-contract";
+import { createConversationStore } from "../../conversation-store/src/index.js";
+import { createNetworkPolicyMonitor } from "../../host-bin/src/network.js";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createTransportWsExtension } from "./extension.js";
 import { catalogMessage, routeClientMessage, subKey } from "./router.js";
 
@@ -158,7 +163,7 @@ function fakeOrchestrator(opts?: FakeOrchestratorOpts): SessionOrchestrator & {
       }
       return { started: true, turnId: "fake-turn-id" };
     },
-    enqueue(input) {
+    async enqueue(input) {
       enqueueCalls.push({
         conversationId: input.conversationId,
         text: input.text,
@@ -228,7 +233,7 @@ function fakeOrchestratorWithBroadcast(): SessionOrchestrator & {
     startTurn(_input) {
       return { started: true, turnId: "fake-turn-id" };
     },
-    enqueue(input) {
+    async enqueue(input) {
       enqueueCalls.push({
         conversationId: input.conversationId,
         text: input.text,
@@ -308,7 +313,7 @@ function startServer(
         ws.send(JSON.stringify(catalogMessage(registry)));
       },
 
-      message(ws, raw) {
+      async message(ws, raw) {
         const state = ws.data;
         if (!state) return;
 
@@ -405,7 +410,7 @@ function startServer(
             // Mirror extension.ts: fire-and-forget. On startedTurn:true
             // auto-subscribe the sender (deltas stream); on false emit
             // nothing back.
-            const enqueueResult = orchestrator.enqueue({
+            const enqueueResult = await orchestrator.enqueue({
               conversationId: result.conversationId,
               text: result.text,
               ...(result.workspaceId !== undefined ? { workspaceId: result.workspaceId } : {}),
@@ -1378,5 +1383,302 @@ describe("visual grouping hooks through the real WS extension", () => {
       for (const ws of clients) ws.close();
       await extension.deactivate?.();
     }
+  });
+});
+
+describe("real multi-listener lifecycle", () => {
+  test("binds both loopbacks on ephemeral ports and releases both", async () => {
+    const { startListeners } = await import("./extension.js");
+    const listeners = startListeners(
+      ["127.0.0.1", "::1"],
+      [],
+      (hostname) => Bun.serve({ hostname, port: 0, fetch: () => Response.json({ ok: true }) }),
+      fakeLogger(),
+    );
+    const urls = listeners.servers.map((server) => server.url.toString());
+    try {
+      for (const url of urls) expect((await fetch(url)).status).toBe(200);
+    } finally {
+      listeners.stop();
+    }
+    for (const url of urls) await expect(fetch(url)).rejects.toThrow();
+  });
+});
+
+describe("bounded late-join replay through the real extension", () => {
+  test("oversized replay reaches live updates on one socket", async () => {
+    const release = Promise.withResolvers<void>();
+    const ready = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    const payload = "x".repeat(9 * 1024 * 1024);
+    let step = 0;
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createConversationStore(storageFromMap()),
+      resolveProvider: () => ({
+        id: "fixture",
+        async *stream() {
+          if (step++ === 0) {
+            yield { type: "tool-call", toolCallId: "x", toolName: "echo", input: { payload } };
+            yield { type: "finish", reason: "tool-calls" };
+          } else {
+            ready.resolve();
+            await release.promise;
+            yield { type: "text-delta", delta: "live-after-replay" };
+            yield { type: "finish", reason: "stop" };
+          }
+        },
+      }),
+      resolveTools: () => [
+        {
+          name: "echo",
+          description: "fixture",
+          parameters: { type: "object" },
+          concurrencySafe: true,
+          execute: async () => ({ content: payload }),
+        },
+      ],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    const dispose = orchestrator.subscribe("bounded", (event) => {
+      if (event.type === "turn-ended") ended.resolve();
+    });
+    const bus = createBus(fakeLogger());
+    bus.provideService(sessionOrchestratorHandle, orchestrator);
+    bus.provideService(surfaceRegistryHandle, fakeRegistry([fakeProvider("demo")]));
+    const extension = createTransportWsExtension();
+    const host = {
+      logger: fakeLogger(),
+      getService: bus.getService,
+      tryGetService: bus.tryGetService,
+      on: bus.on,
+      getExtensions: () => [],
+      config: {
+        get: (key: string) =>
+          key === "surfaceWsPort"
+            ? 34205
+            : key === "networkPolicy"
+              ? {
+                  allowedHosts: new Set(["localhost", "127.0.0.1"]),
+                  bindAddresses: ["127.0.0.1"],
+                  tailscaleIps: [],
+                }
+              : undefined,
+      },
+    } as unknown as HostAPI;
+    let ws: WebSocket | undefined;
+    let closes = 0;
+    try {
+      await extension.activate(host);
+      orchestrator.startTurn({ conversationId: "bounded", text: "run" });
+      await ready.promise;
+      ws = new WebSocket("ws://127.0.0.1:34205");
+      ws.addEventListener("close", () => closes++);
+      await waitForMessage(ws);
+      const notice = waitForMessage(ws);
+      ws.send(JSON.stringify({ type: "chat.subscribe", conversationId: "bounded" }));
+      expect(await notice).toMatchObject({ type: "chat.resync-required", reason: "replay-limit" });
+      const surface = waitForMessage(ws);
+      ws.send(JSON.stringify({ type: "subscribe", surfaceId: "demo" }));
+      expect(await surface).toMatchObject({ type: "surface" });
+      const live = waitForMessage(ws);
+      release.resolve();
+      expect(await live).toMatchObject({
+        type: "chat.delta",
+        event: { type: "text-delta", delta: "live-after-replay" },
+      });
+      await ended.promise;
+      expect(closes).toBe(0);
+    } finally {
+      release.resolve();
+      if (orchestrator.isActive("bounded")) await ended.promise;
+      ws?.close();
+      dispose();
+      await extension.deactivate?.();
+    }
+  });
+});
+
+describe("live policy listener withdrawal", () => {
+  test("late-binds loopback, admits new names, and disconnects clients on withdrawal", async () => {
+    const bus = createBus(fakeLogger());
+    const store = createConversationStore(storageFromMap());
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => {
+        throw new Error("unused provider");
+      },
+      resolveTools: () => [],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    bus.provideService(sessionOrchestratorHandle, orchestrator);
+    bus.provideService(surfaceRegistryHandle, fakeRegistry([]));
+    let notify:
+      | ((snapshot: import("@dispatch/network-policy").NetworkPolicySnapshot) => void)
+      | undefined;
+    const initial = {
+      allowedHosts: new Set(["localhost", "127.0.0.1"]),
+      bindAddresses: [],
+      tailscaleIps: [],
+    };
+    const host = {
+      logger: fakeLogger(),
+      getService: bus.getService,
+      tryGetService: bus.tryGetService,
+      on: bus.on,
+      getExtensions: () => [],
+      config: {
+        get: (key: string) =>
+          key === "networkPolicy"
+            ? {
+                ...initial,
+                subscribe(listener: typeof notify) {
+                  notify = listener;
+                  return () => {
+                    notify = undefined;
+                  };
+                },
+              }
+            : key === "surfaceWsPort"
+              ? 34205
+              : undefined,
+      },
+    } as unknown as HostAPI;
+    const ext = createTransportWsExtension();
+    let ws: WebSocket | undefined;
+    try {
+      await ext.activate(host);
+      notify?.({
+        allowedHosts: new Set(["localhost", "127.0.0.1", "late.tailnet.ts.net"]),
+        bindAddresses: ["127.0.0.1"],
+        tailscaleIps: ["127.0.0.1"],
+      });
+      expect(
+        (
+          await fetch("http://127.0.0.1:34205/health", {
+            headers: {
+              Host: "late.tailnet.ts.net",
+              Origin: "http://late.tailnet.ts.net",
+            },
+          })
+        ).status,
+      ).toBe(200);
+      ws = new WebSocket("ws://127.0.0.1:34205");
+      await waitForMessage(ws);
+      const closed = new Promise<void>((resolve) =>
+        ws?.addEventListener("close", () => resolve(), { once: true }),
+      );
+      notify?.(initial);
+      await closed;
+      await expect(fetch("http://127.0.0.1:34205/health")).rejects.toThrow();
+    } finally {
+      ws?.close();
+      await ext.deactivate?.();
+    }
+    expect(notify).toBeUndefined();
+  });
+});
+
+describe("last-known-good policy through real listeners", () => {
+  test("retains clients across failed probes, recovers, and withdraws on positive logout", async () => {
+    const logger = fakeLogger();
+    let raw = JSON.stringify({
+      Self: {
+        TailscaleIPs: ["127.0.0.1"],
+        DNSName: "late.tailnet.ts.net.",
+        HostName: "verified-os",
+      },
+    });
+    let failed = false;
+    let tick: (() => void) | undefined;
+    const monitor = await createNetworkPolicyMonitor({ DISPATCH_BIND: "tailscale" }, logger, {
+      status: async () => {
+        if (failed) throw new Error("transient timeout");
+        return raw;
+      },
+      resolve: async () => ["127.0.0.1"],
+      schedule(callback) {
+        tick = callback;
+        return () => {
+          tick = undefined;
+        };
+      },
+    });
+    const poll = async () => {
+      const callback = tick;
+      tick = undefined;
+      expect(callback).toBeDefined();
+      callback?.();
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+    };
+    const bus = createBus(logger);
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createConversationStore(storageFromMap()),
+      resolveProvider: () => {
+        throw new Error("unused provider");
+      },
+      resolveTools: () => [],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    bus.provideService(sessionOrchestratorHandle, orchestrator);
+    bus.provideService(surfaceRegistryHandle, fakeRegistry([fakeProvider("demo")]));
+    const ext = createTransportWsExtension();
+    let ws: WebSocket | undefined;
+    try {
+      await ext.activate({
+        logger,
+        getService: bus.getService,
+        tryGetService: bus.tryGetService,
+        on: bus.on,
+        getExtensions: () => [],
+        config: {
+          get: (key: string) =>
+            key === "networkPolicy" ? monitor.policy : key === "surfaceWsPort" ? 34205 : undefined,
+        },
+      } as unknown as HostAPI);
+      ws = new WebSocket("ws://127.0.0.1:34205");
+      await waitForMessage(ws);
+      let closes = 0;
+      ws.addEventListener("close", () => closes++);
+      failed = true;
+      for (let i = 0; i < 3; i++) {
+        await poll();
+        const received = waitForMessage(ws);
+        ws.send(JSON.stringify({ type: "subscribe", surfaceId: "demo" }));
+        expect(await received).toMatchObject({ type: "surface" });
+      }
+      expect(closes).toBe(0);
+      failed = false;
+      raw = JSON.stringify({
+        Self: { TailscaleIPs: ["127.0.0.1"], DNSName: "recovered.tailnet.ts.net." },
+      });
+      await poll();
+      expect(
+        (
+          await fetch("http://127.0.0.1:34205/health", {
+            headers: { Host: "recovered.tailnet.ts.net" },
+          })
+        ).status,
+      ).toBe(200);
+      const received = waitForMessage(ws);
+      ws.send(JSON.stringify({ type: "subscribe", surfaceId: "demo" }));
+      expect(await received).toMatchObject({ type: "surface" });
+      expect(closes).toBe(0);
+      const closed = new Promise<void>((resolve) =>
+        ws?.addEventListener("close", () => resolve(), { once: true }),
+      );
+      raw = JSON.stringify({ BackendState: "NeedsLogin", Self: null });
+      await poll();
+      await closed;
+      expect(closes).toBe(1);
+      await expect(fetch("http://127.0.0.1:34205/health")).rejects.toThrow();
+    } finally {
+      monitor.stop();
+      ws?.close();
+      await ext.deactivate?.();
+    }
+    expect(tick).toBeUndefined();
   });
 });

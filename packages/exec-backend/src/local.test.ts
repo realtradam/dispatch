@@ -1,4 +1,15 @@
-import { writeFile as fsWriteFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  writeFile as fsWriteFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -37,6 +48,45 @@ describe("LocalExecBackend", () => {
       expect(result.timedOut).toBe(false);
       expect(result.aborted).toBe(false);
       expect(output).toContain("hi");
+    });
+
+    it("decodes split UTF-8 on stdout and stderr", async () => {
+      const output = { stdout: "", stderr: "" };
+      const script = `const b = Buffer.from("😀é");
+        for (const s of [process.stdout, process.stderr]) {
+          s.write(b.subarray(0, 2));
+          setTimeout(() => s.write(b.subarray(2)), 50);
+        }`;
+      const result = await backend.spawn({
+        command: `${process.execPath} -e '${script}'`,
+        cwd: tmpDir,
+        signal: AbortSignal.timeout(5000),
+        timeout: 5000,
+        onOutput: (data, stream) => {
+          output[stream] += data;
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(output).toEqual({ stdout: "😀é", stderr: "😀é" });
+    });
+
+    it.each([
+      { command: "echo hi", missing: true, note: "spawn failed:" },
+      { command: "kill -KILL $$", missing: false, note: "[killed by SIGKILL]" },
+    ])("returns failure with diagnostic $note", async ({ command, missing, note }) => {
+      let output = "";
+      const result = await backend.spawn({
+        command,
+        cwd: missing ? join(tmpDir, "missing") : tmpDir,
+        signal: AbortSignal.timeout(5000),
+        timeout: 5000,
+        onOutput: (data) => {
+          output += data;
+        },
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain(note);
+      if (missing) expect(output).toContain("ENOENT");
     });
 
     it("returns a non-zero exit code for a failing command", async () => {
@@ -98,6 +148,40 @@ describe("LocalExecBackend", () => {
       // Should resolve shortly after the 300ms timeout, well under 30s.
       expect(elapsed).toBeLessThan(10_000);
     });
+  });
+
+  it("reads raw invalid bytes losslessly", async () => {
+    const path = join(tmpDir, "bytes");
+    const bytes = Buffer.from([0xef, 0xbb, 0xbf, 0xff, 0xc3]);
+    await fsWriteFile(path, bytes);
+    expect(await backend.readFileBytes(path)).toEqual(bytes);
+  });
+
+  it("atomically replaces a symlink target, preserving mode and the symlink", async () => {
+    const target = join(tmpDir, "target");
+    const link = join(tmpDir, "link");
+    await fsWriteFile(target, "old");
+    await chmod(target, 0o751);
+    await symlink(target, link);
+    const held = await open(target, "r");
+    try {
+      await backend.writeFileAtomic(link, "new");
+      expect(await held.readFile("utf8")).toBe("old");
+      expect(await backend.readFile(link)).toBe("new");
+      expect((await stat(target)).mode & 0o7777).toBe(0o751);
+      expect((await lstat(link)).isSymbolicLink()).toBe(true);
+      expect((await readdir(tmpDir)).sort()).toEqual(["link", "target"]);
+    } finally {
+      await held.close();
+    }
+  });
+
+  it("refuses missing and non-regular destinations without temporary files", async () => {
+    await expect(backend.writeFileAtomic(join(tmpDir, "missing"), "new")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(backend.writeFileAtomic(tmpDir, "new")).rejects.toThrow("regular file");
+    expect(await readdir(tmpDir)).toEqual([]);
   });
 
   describe("stat", () => {

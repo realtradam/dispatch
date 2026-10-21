@@ -160,6 +160,26 @@ export interface Manifest {
 
 // --- Storage interface ---
 
+/** Range bounds are exclusive full keys, independent of traversal direction. */
+export interface StorageEntriesOptions {
+  readonly reverse?: boolean;
+  /** Nonnegative safe integer; omitted means unlimited, zero returns no rows. */
+  readonly limit?: number;
+  readonly startAfter?: string;
+  readonly endBefore?: string;
+}
+
+/** Synchronous, namespace-scoped operations; only use during the callback. */
+export interface SyncStorageTx {
+  readonly get: (key: string) => string | null;
+  readonly set: (key: string, value: string) => void;
+  readonly delete: (key: string) => void;
+  readonly entries: (
+    prefix: string,
+    opts?: StorageEntriesOptions,
+  ) => ReadonlyArray<readonly [key: string, value: string]>;
+}
+
 /**
  * Namespaced storage interface exposed through the Host API.
  * The concrete backend (SQLite) is a core extension; the kernel defines
@@ -171,6 +191,20 @@ export interface StorageNamespace {
   readonly delete: (key: string) => Promise<void>;
   readonly has: (key: string) => Promise<boolean>;
   readonly keys: (prefix?: string) => Promise<readonly string[]>;
+  /** Literal, case-sensitive prefix; binary key order (descending if reverse).
+   * Bounds intersect the prefix range; limit applies after bounds and ordering.
+   * Empty prefix selects all keys. Invalid limits reject with RangeError.
+   */
+  readonly entries: (
+    prefix: string,
+    opts?: StorageEntriesOptions,
+  ) => Promise<ReadonlyArray<readonly [key: string, value: string]>>;
+  readonly count: (prefix: string) => Promise<number>;
+  /** Atomically commit the synchronous callback's writes, or roll back on throw.
+   * Promise/thenable results are rejected and rolled back. Do not perform async
+   * work, use the namespace's async methods, or retain tx past the callback.
+   */
+  readonly transaction: <T>(fn: (tx: SyncStorageTx) => T) => Promise<T>;
 }
 
 // --- Permission ---

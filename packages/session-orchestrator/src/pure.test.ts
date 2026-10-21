@@ -1,8 +1,11 @@
-import type { ProviderContract } from "@dispatch/kernel";
+import type { AgentEvent, ProviderContract } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
+  appendCompacted,
+  boundedSnapshotReplay,
   buildUserMessage,
   compactReplay,
+  createReplayBuffer,
   cumulativeSleepMs,
   DISPATCH_TOOL_MAX_CONCURRENT_ENV,
   defaultDispatchPolicy,
@@ -11,12 +14,14 @@ import {
   type MemorySample,
   memoryDelta,
   memorySampleAttributes,
+  REPLAY_TOOL_OUTPUT_BYTES,
   RETRY_BUDGET_MS,
   RETRY_SCHEDULE_MS,
   RETRY_TAIL_MS,
   resolveDispatchPolicy,
   resolveReasoningEffort,
   selectFirstProvider,
+  snapshotReplay,
 } from "./pure.js";
 
 describe("buildUserMessage", () => {
@@ -407,10 +412,298 @@ describe("compactReplay", () => {
     expect(out[1]).toBe(one);
   });
 
+  const status = (value: string) => ({ type: "status", conversationId: C, status: value }) as const;
+  const foldBuffer = (events: readonly AgentEvent[]) =>
+    events.reduce(appendCompacted, createReplayBuffer());
+  const fold = (events: readonly AgentEvent[]) => snapshotReplay(foldBuffer(events));
+
+  it("merges runs exposed by status replacement and non-tail output removal", () => {
+    const events = [
+      text("a"),
+      status("old"),
+      text("b"),
+      output("x", "log"),
+      text("c"),
+      call("other"),
+      result("x"),
+      status("new"),
+    ];
+    expect(fold(events)).toEqual([text("abc"), call("other"), result("x"), status("new")]);
+    expect(fold([result("x"), output("x", "late"), reason("a"), reason("b")])).toEqual([
+      result("x"),
+      reason("ab"),
+    ]);
+  });
+
+  it("preserves empty running output as a replay boundary until its result arrives", () => {
+    const events = [text("a"), output("x", ""), text("b")];
+    expect(compactReplay(events)).toEqual(events);
+    expect(fold(events)).toEqual(events);
+    expect(snapshotReplay(appendCompacted(foldBuffer(events), result("x")))).toEqual([
+      text("ab"),
+      result("x"),
+    ]);
+  });
+
+  it("retains a per-call trailing 64 KiB across interleaved streams at original positions", () => {
+    const cap = REPLAY_TOOL_OUTPUT_BYTES;
+    const err = { ...output("a", "e".repeat(20_000)), stream: "stderr" } as const;
+    const events = [
+      output("a", `old${"a".repeat(40_000)}`),
+      call("b"),
+      output("b", "b".repeat(cap + 5)),
+      err,
+      text("barrier"),
+      output("a", "z".repeat(20_000)),
+    ];
+    const expected = [
+      output("a", "a".repeat(cap - 40_000)),
+      call("b"),
+      output("b", "b".repeat(cap)),
+      err,
+      text("barrier"),
+      output("a", "z".repeat(20_000)),
+    ];
+    expect(compactReplay(events)).toEqual(expected);
+    expect(fold(events)).toEqual(expected);
+    expect(snapshotReplay(appendCompacted(foldBuffer(events), result("a")))).toEqual([
+      call("b"),
+      output("b", "b".repeat(cap)),
+      text("barrier"),
+      result("a"),
+    ]);
+  });
+
+  it("caps UTF-8 bytes without splitting code points or backfilling older output", () => {
+    const data = `${"😀".repeat(20_000)}é`;
+    const events = [output("x", "old"), output("x", data), output("x", "z")];
+    const expected = [output("x", `${"😀".repeat(16_383)}é`), output("x", "z")];
+    expect(compactReplay(events)).toEqual(expected);
+    expect(fold(events)).toEqual(expected);
+    const bytes = fold(events).reduce(
+      (sum, e) => sum + (e.type === "tool-output" ? new TextEncoder().encode(e.data).length : 0),
+      0,
+    );
+    expect(bytes).toBeLessThanOrEqual(REPLAY_TOOL_OUTPUT_BYTES);
+  });
+
+  it("matches capped batch replay through repeated overflow, then drops all completed output", () => {
+    const all: AgentEvent[] = [call("x")];
+    let buffer = foldBuffer(all);
+    for (let i = 0; i < 100; i++) {
+      const event = output("x", `${i}:${"é😀x".repeat(300)}`);
+      all.push(event);
+      buffer = appendCompacted(buffer, event);
+      expect(snapshotReplay(buffer)).toEqual(compactReplay(all));
+      const retained = snapshotReplay(buffer).filter((e) => e.type === "tool-output");
+      expect(
+        retained.reduce((sum, e) => sum + new TextEncoder().encode(e.data).length, 0),
+      ).toBeLessThanOrEqual(REPLAY_TOOL_OUTPUT_BYTES);
+    }
+    expect(snapshotReplay(appendCompacted(buffer, result("x")))).toEqual([call("x"), result("x")]);
+  });
+
+  it("leaves frozen inputs and earlier replay snapshots unchanged", () => {
+    const first = Object.freeze([Object.freeze(text("a")), Object.freeze(output("x", "log"))]);
+    const before = structuredClone(first);
+    const buffer = foldBuffer(first);
+    const earlier = snapshotReplay(buffer);
+    appendCompacted(buffer, Object.freeze(result("x")));
+    const second = snapshotReplay(buffer);
+    const snapshot = structuredClone(second);
+    appendCompacted(buffer, text("later"));
+    expect(earlier).toEqual(before);
+    expect(Object.isFrozen(earlier)).toBe(true);
+    expect(first).toEqual(before);
+    expect(second).toEqual(snapshot);
+    expect(second).toEqual([text("a"), result("x")]);
+  });
+
+  it("keeps snapshots stable through tail replacement, non-tail merges and output eviction", () => {
+    const events = [text("a"), status("old"), text("b"), output("x", "old"), text("c")];
+    const buffer = foldBuffer(events);
+    const snapshot = snapshotReplay(buffer);
+    const before = structuredClone(snapshot);
+    appendCompacted(buffer, text("tail"));
+    appendCompacted(buffer, output("x", "z".repeat(REPLAY_TOOL_OUTPUT_BYTES)));
+    appendCompacted(buffer, result("x"));
+    appendCompacted(buffer, status("new"));
+    expect(snapshot).toEqual(before);
+    expect(snapshotReplay(buffer)).toEqual([text("abctail"), result("x"), status("new")]);
+  });
+
+  it("matches batch prefixes under Unicode overflow, empty boundaries and many interleaved calls", () => {
+    let seed = 72;
+    const buffer = createReplayBuffer();
+    const all: AgentEvent[] = [];
+    for (let i = 0; i < 250; i++) {
+      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+      const id = String(seed % 7);
+      const event =
+        i % 19 === 0
+          ? result(id)
+          : i % 5 === 0
+            ? status(String(i))
+            : i % 3 === 0
+              ? text(String(i))
+              : output(id, ["", "😀éx".repeat(7000), "é".repeat(33000), "z"][seed % 4] ?? "");
+      all.push(event);
+      appendCompacted(buffer, Object.freeze(event));
+      expect(snapshotReplay(buffer), `overflow prefix ${i}`).toEqual(compactReplay(all));
+    }
+  });
+
+  it("indexes nonempty output separately while preserving empty boundaries until completion", () => {
+    const buffer = createReplayBuffer();
+    for (let i = 0; i < 10_000; i++) {
+      appendCompacted(buffer, text("a"));
+      appendCompacted(buffer, output("x", ""));
+    }
+    const cap = "z".repeat(REPLAY_TOOL_OUTPUT_BYTES);
+    appendCompacted(buffer, output("x", cap));
+    for (let i = 0; i < 1000; i++) appendCompacted(buffer, output("x", "z"));
+    expect(buffer.outputs.get("x")?.nodes.size).toBe(11_001);
+    expect(buffer.outputs.get("x")?.nonempty.size).toBe(1001);
+    expect(buffer.outputs.get("x")?.bytes).toBe(REPLAY_TOOL_OUTPUT_BYTES);
+    expect(
+      snapshotReplay(buffer).filter((event) => event.type === "tool-output" && !event.data),
+    ).toHaveLength(10_000);
+    appendCompacted(buffer, result("x"));
+    expect(buffer.outputs.size).toBe(0);
+    expect(snapshotReplay(buffer)).toEqual([text("a".repeat(10_000)), result("x")]);
+  });
+
+  it("updates indexed boundaries without replacing unrelated retained nodes", () => {
+    const buffer = createReplayBuffer();
+    for (let i = 0; i < 5000; i++) appendCompacted(buffer, call(String(i)));
+    const first = buffer.first;
+    const outputs = buffer.outputs;
+    for (let i = 0; i < 1000; i++) {
+      appendCompacted(buffer, text("a"));
+      appendCompacted(buffer, status(String(i)));
+      appendCompacted(buffer, output("live", "x".repeat(1024)));
+      appendCompacted(buffer, output(String(i), "progress"));
+      appendCompacted(buffer, result(String(i)));
+      expect(buffer.first).toBe(first);
+      expect(buffer.outputs).toBe(outputs);
+    }
+    expect(buffer.outputs.size).toBe(1);
+    expect(buffer.outputs.get("live")?.bytes).toBe(REPLAY_TOOL_OUTPUT_BYTES);
+    expect(buffer.outputs.get("live")?.nodes.size).toBe(64);
+  });
+
+  it("matches batch replay for every prefix of seeded random event sequences", () => {
+    // Deterministic property test; no dependency or ambient randomness.
+    for (let seed = 1; seed <= 50; seed++) {
+      let state = seed;
+      const next = (n: number) => {
+        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+        return (state >>> 8) % n;
+      };
+      const all: AgentEvent[] = [];
+      let buffer = createReplayBuffer();
+      for (let i = 0; i < 100; i++) {
+        const id = `call-${next(4)}`;
+        const delta = ["", "a", "é", "😀"][next(4)] ?? "";
+        const variants: AgentEvent[] = [
+          text(delta, `turn-${next(2)}`),
+          reason(delta),
+          status(String(i)),
+          call(id),
+          result(id),
+          { ...output(id, delta.repeat(next(5))), stream: next(2) ? "stdout" : "stderr" },
+          {
+            type: "step-complete",
+            conversationId: C,
+            turnId: T,
+            stepId: `${T}#${i}`,
+            ttftMs: 1,
+            decodeMs: 2,
+            genTotalMs: 3,
+          },
+          { type: "steering", conversationId: C, turnId: T, text: delta, messageIds: [] },
+          { type: "turn-ended", conversationId: C, turnId: T, reason: "sealed" },
+          start,
+        ];
+        const event = variants[next(variants.length)];
+        if (event === undefined) throw new Error("missing generated event");
+        all.push(event);
+        buffer = appendCompacted(buffer, event);
+        expect(snapshotReplay(buffer), `seed ${seed}, prefix ${i + 1}`).toEqual(compactReplay(all));
+      }
+    }
+  });
+
+  it("100k deltas retain O(structure) events, not token history", () => {
+    let buffer = createReplayBuffer();
+    let peakLength = 0;
+    for (let i = 0; i < 100_000; i++) {
+      if (i % 10_000 === 0) buffer = appendCompacted(buffer, call(String(i)));
+      buffer = appendCompacted(buffer, i < 50_000 ? reason("r") : text("t"));
+      peakLength = Math.max(peakLength, buffer.size);
+    }
+    expect(peakLength).toBe(20);
+    expect(snapshotReplay(buffer)).toHaveLength(20); // Ten structural barriers + ten delta runs.
+    expect(
+      snapshotReplay(buffer)
+        .filter((e) => e.type === "text-delta" || e.type === "reasoning-delta")
+        .reduce((sum, e) => sum + e.delta.length, 0),
+    ).toBe(100_000);
+  });
+
   it("collapses a long token stream to a single event", () => {
     const many = Array.from({ length: 5000 }, (_, i) => text(String(i % 10)));
     const out = compactReplay(many);
     expect(out).toHaveLength(1);
     expect((out[0] as { delta: string }).delta).toBe(many.map((e) => e.delta).join(""));
+  });
+});
+
+describe("bounded replay snapshot", () => {
+  it("rejects by count without visiting nodes or allocating a full snapshot", () => {
+    const buffer = createReplayBuffer();
+    for (let i = 0; i < 5000; i++)
+      appendCompacted(buffer, {
+        type: "tool-result",
+        conversationId: "c",
+        turnId: "t",
+        toolCallId: String(i),
+        toolName: "echo",
+        content: "ok",
+        isError: false,
+      });
+    let visits = 0;
+    expect(
+      boundedSnapshotReplay(buffer, 256, () => {
+        visits++;
+        return true;
+      }),
+    ).toBeUndefined();
+    expect(visits).toBe(0);
+    expect(buffer.size).toBe(5000);
+  });
+
+  it("is all-or-nothing and preserves full replay/default snapshots and reentrant stability", () => {
+    const buffer = createReplayBuffer();
+    appendCompacted(buffer, { type: "text-delta", conversationId: "c", turnId: "t", delta: "old" });
+    appendCompacted(buffer, {
+      type: "tool-result",
+      conversationId: "c",
+      turnId: "t",
+      toolCallId: "x",
+      toolName: "echo",
+      content: "large",
+      isError: false,
+    });
+    const original = snapshotReplay(buffer);
+    expect(
+      boundedSnapshotReplay(buffer, 256, (event) => event.type !== "tool-result"),
+    ).toBeUndefined();
+    const snapshot = boundedSnapshotReplay(buffer, 256, () => true);
+    expect(snapshot).toEqual(original);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    appendCompacted(buffer, { type: "text-delta", conversationId: "c", turnId: "t", delta: "new" });
+    expect(snapshot).toEqual(original);
+    expect(snapshotReplay(buffer)).toHaveLength(3);
   });
 });

@@ -124,6 +124,7 @@
         "@dispatch/mcp": "workspace:*",
         "@dispatch/message-queue": "workspace:*",
         "@dispatch/named-agents": "workspace:*",
+        "@dispatch/network-policy": "workspace:*",
         "@dispatch/plugin-manager": "workspace:*",
         "@dispatch/provider-baseten": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
@@ -248,6 +249,10 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/wire": "workspace:*",
       },
+    },
+    "packages/network-policy": {
+      "name": "@dispatch/network-policy",
+      "version": "0.0.0",
     },
     "packages/observability-collector": {
       "name": "@dispatch/observability-collector",
@@ -441,6 +446,7 @@
       "name": "@dispatch/system-prompt",
       "version": "0.0.0",
       "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
         "@dispatch/exec-backend": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
@@ -552,6 +558,7 @@
         "@dispatch/lsp": "workspace:*",
         "@dispatch/mcp": "workspace:*",
         "@dispatch/named-agents": "workspace:*",
+        "@dispatch/network-policy": "workspace:*",
         "@dispatch/plugin-manager": "workspace:*",
         "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
@@ -571,6 +578,7 @@
         "@dispatch/home-tile-layout-contract": "workspace:*",
         "@dispatch/kernel": "workspace:*",
         "@dispatch/layout-provider-contract": "workspace:*",
+        "@dispatch/network-policy": "workspace:*",
         "@dispatch/plugin-manager": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
         "@dispatch/surface-registry": "workspace:*",
@@ -671,6 +679,8 @@
     "@dispatch/message-queue": ["@dispatch/message-queue@workspace:packages/message-queue"],
 
     "@dispatch/named-agents": ["@dispatch/named-agents@workspace:packages/named-agents"],
+
+    "@dispatch/network-policy": ["@dispatch/network-policy@workspace:packages/network-policy"],
 
     "@dispatch/observability-collector": ["@dispatch/observability-collector@workspace:packages/observability-collector"],
 

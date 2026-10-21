@@ -1,7 +1,7 @@
-import type { ProviderContract, ProviderEvent } from "@dispatch/kernel";
+import { abortableIteration, type ProviderContract, type ProviderEvent } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import type { ConcurrencyLimiter } from "./concurrency-manager.js";
-import { ConcurrencyAcquireAbortedError } from "./concurrency-manager.js";
+import { ConcurrencyAcquireAbortedError, createConcurrencyManager } from "./concurrency-manager.js";
 import { wrapProviderWithConcurrency } from "./provider-wrapper.js";
 
 /** Build a fake provider that yields a sequence of events. */
@@ -55,6 +55,44 @@ function recordingLimiter(): ConcurrencyLimiter & {
 }
 
 describe("wrapProviderWithConcurrency", () => {
+  it("releases a real limiter slot after Stop while suspended at yield", async () => {
+    const limiter = createConcurrencyManager({
+      now: Date.now,
+      slotTimeoutMs: 300_000,
+      watchdogIntervalMs: 60_000,
+      defaultPauseMs: 1_000,
+      releaseCooldownMs: 0,
+    });
+    const controller = new AbortController();
+    const provider = fakeProvider([
+      { type: "text-delta", delta: "first" },
+      { type: "text-delta", delta: "must not be consumed" },
+    ]);
+    limiter.setLimit(provider.id, 1);
+    const wrapped = wrapProviderWithConcurrency(provider, limiter, "conv1", "default", 0);
+    const iter = abortableIteration(
+      wrapped.stream([], [], { signal: controller.signal })[Symbol.asyncIterator](),
+      controller.signal,
+    );
+    try {
+      expect(await iter.next()).toEqual({
+        done: false,
+        value: { type: "text-delta", delta: "first" },
+      });
+      expect(limiter.getStatus(provider.id)?.inFlight).toBe(1);
+
+      controller.abort();
+      expect(await iter.next()).toEqual({ done: true, value: undefined });
+      // Drain generator-finalization microtasks without waiting for the watchdog.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(limiter.getStatus(provider.id)?.inFlight).toBe(0);
+      expect(limiter.getStatus(provider.id)?.queued).toBe(0);
+    } finally {
+      await iter.return?.();
+      limiter.destroy();
+    }
+  });
+
   it("acquires a slot before streaming and releases after the stream completes", async () => {
     const provider = fakeProvider([
       { type: "text-delta", delta: "hello" },

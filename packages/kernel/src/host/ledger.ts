@@ -75,16 +75,33 @@ export class ExtensionLedger {
     return entry;
   }
 
+  /** Claim before mutating a registry, so rejected names never enter the caller's sweep. */
+  private trackUnique(
+    extensionId: string,
+    key: "tools" | "providers" | "auth",
+    kind: "tool" | "provider" | "auth",
+    id: string,
+  ): void {
+    for (const entry of this.entries.values()) {
+      if (!entry[key].includes(id)) continue;
+      if (entry.extensionId !== extensionId) {
+        throw new Error(`${kind} ${id} already registered by ${entry.extensionId}`);
+      }
+      return; // Same-owner replacement keeps a single cleanup entry.
+    }
+    this.entryFor(extensionId)[key].push(id);
+  }
+
   trackTool(extensionId: string, name: string): void {
-    this.entryFor(extensionId).tools.push(name);
+    this.trackUnique(extensionId, "tools", "tool", name);
   }
 
   trackProvider(extensionId: string, id: string): void {
-    this.entryFor(extensionId).providers.push(id);
+    this.trackUnique(extensionId, "providers", "provider", id);
   }
 
   trackAuth(extensionId: string, id: string): void {
-    this.entryFor(extensionId).auth.push(id);
+    this.trackUnique(extensionId, "auth", "auth", id);
   }
 
   trackJob(extensionId: string, jobId: string): void {

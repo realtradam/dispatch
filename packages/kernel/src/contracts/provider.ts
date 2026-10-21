@@ -77,7 +77,10 @@ export interface ToolCallStartEvent {
   readonly type: "tool-call-start";
 }
 
-/** Token usage report, typically emitted at step end. */
+/**
+ * Token usage is per-step, emitted once at step end when available. Report
+ * final/last-seen totals, not cumulative snapshots or incremental deltas.
+ */
 export interface UsageEvent {
   readonly type: "usage";
   readonly usage: Usage;

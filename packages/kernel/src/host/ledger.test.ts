@@ -46,6 +46,24 @@ describe("ExtensionLedger", () => {
       expect(ledger.getEntry("a")?.tools).toEqual(["t1", "t2"]);
     });
 
+    it.each([
+      "trackTool",
+      "trackProvider",
+      "trackAuth",
+    ] as const)("%s rejects another owner without recording it and deduplicates the same owner", (track) => {
+      const ledger = new ExtensionLedger();
+      ledger[track]("first", "shared");
+      const before = ledger.getEntry("first");
+      ledger[track]("first", "shared");
+      expect(before?.tools.length ?? 0).toBe(track === "trackTool" ? 1 : 0);
+      expect(before?.providers.length ?? 0).toBe(track === "trackProvider" ? 1 : 0);
+      expect(before?.auth.length ?? 0).toBe(track === "trackAuth" ? 1 : 0);
+      expect(() => ledger[track]("second", "shared")).toThrow("already registered by first");
+      expect(ledger.has("second")).toBe(false);
+      ledger.remove("first");
+      expect(() => ledger[track]("second", "shared")).not.toThrow();
+    });
+
     it("returns undefined for an unknown extension", () => {
       const ledger = new ExtensionLedger();
       expect(ledger.has("ghost")).toBe(false);

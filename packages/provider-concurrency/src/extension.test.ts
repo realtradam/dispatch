@@ -1,5 +1,6 @@
 import type { Logger, StorageNamespace } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { migrateObsoleteProviderKeys } from "./extension.js";
 
 function createMemoryStorage(): StorageNamespace & {
@@ -7,6 +8,7 @@ function createMemoryStorage(): StorageNamespace & {
 } {
   const data = new Map<string, string>();
   return {
+    ...storageFromMap(data),
     dump: () => Object.fromEntries(data),
     get: async (key) => data.get(key) ?? null,
     set: async (key, value) => {

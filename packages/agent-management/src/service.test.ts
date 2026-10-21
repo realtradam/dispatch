@@ -1,3 +1,4 @@
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 /**
  * Service-level tests for the agent-management imperative shell (plan §14
  * backend). These exercise `listModels` + `summon` against the REAL
@@ -29,7 +30,11 @@ import { describe, expect, it, vi } from "vitest";
 // Public barrel: allows isolated tests before orchestrator-owned workspace relinking.
 import { createMessageQueueService } from "../../message-queue/src/index.js";
 import { type AgentManagementDeps, createAgentManagementService } from "./service.js";
-import { createCancelAgentMessageTool, createSendAgentMessageTool } from "./tools/index.js";
+import {
+  createCancelAgentMessageTool,
+  createSendAgentMessageTool,
+  createSummonAgentTool,
+} from "./tools/index.js";
 
 // ─── in-memory StorageNamespace (the outermost edge) ────────────────────────
 
@@ -38,6 +43,7 @@ function makeStorage(): StorageNamespace & {
 } {
   const map = new Map<string, string>();
   return {
+    ...storageFromMap(map),
     async get(key) {
       return map.get(key) ?? null;
     },
@@ -95,7 +101,7 @@ function makeFakeOrchestrator(): SessionOrchestrator & {
       startTurnCalls.push(input);
       return { started: true as const, turnId: "turn-1" };
     },
-    enqueue: vi.fn(() => ({ startedTurn: true, queue: [] })),
+    enqueue: vi.fn(async () => ({ startedTurn: true, queue: [] })),
     cancelQueuedMessage: vi.fn(() => ({ cancelled: false, queue: [] })),
     subscribe: vi.fn(() => () => {}),
     isActive: vi.fn(() => false),
@@ -1110,5 +1116,71 @@ describe("global messaging resolution edge cases", () => {
     } finally {
       await f.finish();
     }
+  });
+});
+
+describe("terminal child turn waits", () => {
+  it.each([
+    "unknown",
+    "provider-error",
+    "send",
+  ])("returns child-turn-failed without a wait timeout: %s", async (path) => {
+    const { service: namedAgents } = await makeNamedAgents([
+      { id: "test", name: "Rejected child", model: "test/missing" },
+    ]);
+    const { deps } = makeDeps({ namedAgents, credentialStore: makeFakeCredentialStore([]) });
+    const store = deps.conversationStore;
+    const provider: ProviderContract = {
+      id: "test",
+      async *stream() {
+        yield { type: "error", message: "provider failed" };
+      },
+    };
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveModel: () => (path === "provider-error" ? { provider, model: "test" } : undefined),
+      resolveTools: () => [],
+      applyToolsFilter: async (assembly) => assembly,
+      runTurn,
+    });
+    const svc = createAgentManagementService({
+      ...deps,
+      resolveOrchestrator: () => orchestrator,
+      maxWaitMs: 120_000,
+    });
+    const error = {
+      code: "child-turn-failed",
+      message: path === "provider-error" ? "provider failed" : "unknown model: test/missing",
+    };
+    if (path === "send") {
+      await store.setConversationTitle("child", "child");
+      await store.setModel("child", "test/missing");
+      expect(
+        await svc.send({
+          callerConversationId: "caller",
+          conversationId: "child",
+          message: "go",
+          wait: true,
+        }),
+      ).toEqual({ ok: false, error });
+    } else {
+      const tool = createSummonAgentTool(svc);
+      const result = await tool.execute(
+        { agent: "Rejected child", task: "go", wait: true },
+        {
+          conversationId: "caller",
+          toolCallId: "summon",
+          signal: new AbortController().signal,
+          onOutput: () => {},
+          log: deps.logger,
+        },
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(error.code);
+      expect(result.content).toContain(error.message);
+      expect(result.content).not.toContain("timeout");
+    }
+    expect(orchestrator.getActiveConversationCount()).toBe(0);
   });
 });

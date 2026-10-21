@@ -2,6 +2,7 @@ import type { Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import {
   cacheWarmHandle,
   conversationClosed,
+  conversationDeleted,
   turnSettled,
   turnStarted,
   warmCompleted,
@@ -32,7 +33,7 @@ export const manifest: Manifest = {
   },
 };
 
-export function activate(host: HostAPI): void {
+export function activate(host: HostAPI, disposers: (() => void)[] = []): void {
   const warmService = host.getService(cacheWarmHandle);
   const registry = host.getService(surfaceRegistryHandle);
   const storage = host.storage("cache-warming");
@@ -49,7 +50,13 @@ export function activate(host: HostAPI): void {
     timers: {
       setTimer(fn, ms) {
         const id = nextTimerId++;
-        timeoutMap.set(id, setTimeout(fn, ms));
+        timeoutMap.set(
+          id,
+          setTimeout(() => {
+            timeoutMap.delete(id);
+            fn();
+          }, ms),
+        );
         return id;
       },
       clearTimer(id) {
@@ -68,26 +75,42 @@ export function activate(host: HostAPI): void {
     },
   });
 
-  host.on(turnStarted, (payload) => {
-    warmer.onTurnStarted(payload.conversationId);
-  });
+  disposers.push(() => warmer.dispose());
 
-  host.on(turnSettled, (payload) => {
-    warmer.onTurnSettled(payload.conversationId, {
-      ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
-      ...(payload.modelName !== undefined ? { modelName: payload.modelName } : {}),
-    });
-  });
+  disposers.push(
+    host.on(turnStarted, (payload) => {
+      warmer.onTurnStarted(payload.conversationId);
+    }),
+  );
 
-  host.on(warmCompleted, (payload) => {
-    warmer.onWarmCompleted(payload);
-  });
+  disposers.push(
+    host.on(turnSettled, (payload) => {
+      warmer.onTurnSettled(payload.conversationId, {
+        ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
+        ...(payload.modelName !== undefined ? { modelName: payload.modelName } : {}),
+      });
+    }),
+  );
 
-  host.on(conversationClosed, (payload) => {
-    // Sync part (cancel + disable) runs before the first await inside;
-    // only the settings persist is deferred.
-    void warmer.onConversationClosed(payload.conversationId);
-  });
+  disposers.push(
+    host.on(warmCompleted, (payload) => {
+      warmer.onWarmCompleted(payload);
+    }),
+  );
+
+  disposers.push(
+    host.on(conversationClosed, (payload) => {
+      // Sync part (cancel + disable) runs before the first await inside;
+      // only the settings persist is deferred.
+      return warmer.onConversationClosed(payload.conversationId);
+    }),
+  );
+
+  disposers.push(
+    host.on(conversationDeleted, ({ conversationId }) =>
+      warmer.onConversationDeleted(conversationId),
+    ),
+  );
 
   function getSpec(context?: SurfaceContext): SurfaceSpec {
     const convId = context?.conversationId;
@@ -95,7 +118,7 @@ export function activate(host: HostAPI): void {
       return buildDefaultSpec();
     }
     const state = warmer.getState(convId);
-    return buildConversationSpec(
+    const spec = buildConversationSpec(
       state.enabled,
       state.intervalMs,
       state.lastPct,
@@ -103,6 +126,13 @@ export function activate(host: HostAPI): void {
       state.nextWarmAt,
       state.lastWarmAt,
     );
+    return {
+      ...spec,
+      fields: [
+        ...spec.fields,
+        { kind: "stat", label: "Last Error", value: state.lastError ?? "—" },
+      ],
+    };
   }
 
   async function invoke(
@@ -144,12 +174,19 @@ export function activate(host: HostAPI): void {
     },
   };
 
-  registry.register(provider);
+  disposers.push(registry.register(provider));
 
   host.logger.info("cache-warming: registered");
 }
 
-export const extension: Extension = {
-  manifest,
-  activate,
-};
+export function createCacheWarmingExtension(): Extension {
+  const disposers: (() => void)[] = [];
+  return {
+    manifest,
+    activate: (host) => activate(host, disposers),
+    deactivate: () => {
+      for (const dispose of disposers.splice(0)) dispose();
+    },
+  };
+}
+export const extension = createCacheWarmingExtension();

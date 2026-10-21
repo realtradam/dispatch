@@ -38,6 +38,12 @@ function createInMemoryStore(): ConversationStore & {
   const parentData = new Map<string, string>();
   const toolPolicyData = new Map<string, ConversationToolPolicy>();
   return {
+    async getHistoryEpoch() {
+      return 0;
+    },
+    async runExclusive(_conversationId, fn) {
+      return await fn();
+    },
     data,
     metricsData,
     cwdData,
@@ -532,7 +538,7 @@ describe("enqueue", () => {
       resolveQueue: () => queue,
     });
 
-    const result = orchestrator.enqueue({ conversationId: "conv-idle", text: "hello" });
+    const result = await orchestrator.enqueue({ conversationId: "conv-idle", text: "hello" });
     expect(result.startedTurn).toBe(true);
     expect(result.queue).toHaveLength(0);
 
@@ -579,7 +585,7 @@ describe("enqueue", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
 
     // Enqueue while active.
-    const result = orchestrator.enqueue({ conversationId: "conv-active", text: "second" });
+    const result = await orchestrator.enqueue({ conversationId: "conv-active", text: "second" });
     expect(result.startedTurn).toBe(false);
     expect(result.queue).toHaveLength(1);
     expect(result.queue[0]?.text).toBe("second");
@@ -628,7 +634,7 @@ describe("enqueue", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
 
     // Enqueue while active, but no queue ext → message dropped, empty snapshot.
-    const result = orchestrator.enqueue({ conversationId: "conv-degraded", text: "second" });
+    const result = await orchestrator.enqueue({ conversationId: "conv-degraded", text: "second" });
     expect(result.startedTurn).toBe(false);
     expect(result.queue).toHaveLength(0);
 

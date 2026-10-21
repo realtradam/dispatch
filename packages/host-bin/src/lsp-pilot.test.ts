@@ -1,3 +1,4 @@
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 /**
  * The plan-08 `lsp` MECHANISM PILOT (§12) — end-to-end proof that a real,
  * bundled STANDARD plugin flows through the new system:
@@ -56,6 +57,7 @@ function makeDeps(): HostDeps {
       }
       const s = store;
       return {
+        ...storageFromMap(s),
         get: async (key: string) => s.get(key) ?? null,
         set: async (key: string, value: string) => {
           s.set(key, value);

@@ -1,5 +1,6 @@
 import type { Logger, StorageNamespace } from "@dispatch/kernel";
 import { beforeEach, describe, expect, it } from "vitest";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import {
   hashImageUrl,
   imageTranscriptionKey,
@@ -22,7 +23,23 @@ function createMemoryStorage(): {
   const data = new Map<string, string>();
   const gets: string[] = [];
   const sets: string[] = [];
+  const reference = storageFromMap(data);
   const storage: StorageNamespace = {
+    ...reference,
+    transaction: (fn) =>
+      reference.transaction((tx) =>
+        fn({
+          ...tx,
+          get: (key) => {
+            gets.push(key);
+            return tx.get(key);
+          },
+          set: (key, value) => {
+            sets.push(key);
+            tx.set(key, value);
+          },
+        }),
+      ),
     get: async (key) => {
       gets.push(key);
       return data.get(key) ?? null;

@@ -430,3 +430,58 @@ describe("transport-contract types compile and are exported", () => {
     expect(modelResp.namedAgent?.namedAgentId).toBe("na-1");
   });
 });
+
+it("queue HTTP/WS inputs and snapshots carry additive image/computer metadata", () => {
+  const request: import("./index.js").QueueRequest = {
+    text: "",
+    images: [{ url: "data:image/png;base64,AAAA", mimeType: "image/png" }],
+    computerId: "remote",
+  };
+  const ws: import("./index.js").ChatQueueMessage = {
+    type: "chat.queue",
+    conversationId: "c",
+    ...request,
+  };
+  const response: import("./index.js").QueuedMessage = {
+    id: "q",
+    text: request.text,
+    queuedAt: 0,
+    images: request.images ?? [],
+    computerId: request.computerId ?? "remote",
+    imageCount: 1,
+  };
+  expect(ws.images).toEqual(response.images);
+  expect(ws.computerId).toBe(response.computerId);
+});
+
+it("types additive queued acknowledgement and optional send correlation", () => {
+  const send: import("./index.js").ChatSendMessage = {
+    type: "chat.send",
+    message: "mine",
+    requestId: "request-1",
+  };
+  const ack: import("./index.js").WsServerMessage = {
+    type: "chat.queued",
+    conversationId: "c",
+    reason: "compaction",
+    messageId: "item-1",
+    requestId: send.requestId ?? "",
+  };
+  expect(ack.type).toBe("chat.queued");
+});
+
+it("accepts additive resync notices with and without a turn identity", () => {
+  const replay: import("./index.js").WsServerMessage = {
+    type: "chat.resync-required",
+    conversationId: "c",
+    turnId: "t",
+    reason: "replay-limit",
+  };
+  const live: import("./index.js").WsServerMessage = {
+    type: "chat.resync-required",
+    conversationId: "c",
+    reason: "payload-limit",
+  };
+  expect(replay.type).toBe("chat.resync-required");
+  expect(live.type).toBe("chat.resync-required");
+});

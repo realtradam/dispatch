@@ -1165,3 +1165,68 @@ describe("VisionHandoffService non-vision branch (lazy registry)", () => {
     if ("error" in result) expect(result.error).toContain("no longer available");
   });
 });
+
+it("text-only preparation retains a cached description after image expiry without reading bytes", async () => {
+  const url = "/images/expired/gone.png";
+  const { deps, cache, resolveImageUrl, deleteTmpImage } = makeImageDeps({
+    [url]: "surviving description",
+  });
+  resolveImageUrl.mockRejectedValue(new Error("ENOENT"));
+  const svc = createVisionHandoffService(deps);
+  const result = await svc.prepareForProvider(imagesMessage([url]), "umans/umans-glm-5.2", {
+    conversationId: "expired",
+  });
+  expect(flatText(result)).toContain("[Compacted image]: surviving description");
+  expect(cache.get(url)).toBe("surviving description");
+  expect(resolveImageUrl).not.toHaveBeenCalled();
+  expect(deleteTmpImage).not.toHaveBeenCalled();
+});
+
+it.each([
+  "success",
+  "failure",
+  "absent",
+])("purge clears only its registry on %s, logging disk failures", async (outcome) => {
+  const warnings: unknown[] = [];
+  const deps = makeDeps({
+    ...(outcome === "absent"
+      ? {}
+      : {
+          deleteConversationImages: async () => {
+            if (outcome === "failure") throw new Error("disk unavailable");
+          },
+        }),
+  });
+  const { createLogger } = await import("@dispatch/kernel");
+  const svc = createVisionHandoffService({
+    ...deps,
+    logger: createLogger(
+      {},
+      {
+        emit: (record) => {
+          warnings.push(record);
+        },
+      },
+      { now: () => 0, newId: () => "test" },
+    ),
+  });
+  for (const conversationId of ["deleted", "keep"]) {
+    await svc.prepareForProvider(
+      [{ role: "user", chunks: [{ type: "image", url: "data:image/png;base64,aA==" }] }],
+      "umans/umans-glm-5.2",
+      { conversationId },
+    );
+    expect(svc.getRegisteredImage(conversationId, 1)).toBeDefined();
+  }
+  await svc.purgeConversationImages("deleted");
+  await svc.purgeConversationImages("deleted");
+  expect(svc.getRegisteredImage("deleted", 1)).toBeUndefined();
+  expect(svc.getRegisteredImage("keep", 1)).toBeDefined();
+  const failures = warnings.filter((r) => (r as { level?: string }).level === "warn");
+  expect(failures).toHaveLength(outcome === "failure" ? 2 : 0);
+  if (outcome === "failure")
+    expect(failures[0]).toMatchObject({
+      msg: "vision-handoff: failed to purge conversation images",
+      attributes: { conversationId: "deleted", error: "disk unavailable" },
+    });
+});

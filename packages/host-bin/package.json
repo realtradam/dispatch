@@ -14,6 +14,7 @@
     "@dispatch/home-tile-layout": "workspace:*",
     "@dispatch/journal-sink": "workspace:*",
     "@dispatch/kernel": "workspace:*",
+    "@dispatch/network-policy": "workspace:*",
     "@dispatch/layout-chat": "workspace:*",
     "@dispatch/layout-diagnostic": "workspace:*",
     "@dispatch/layout-provider-registry": "workspace:*",

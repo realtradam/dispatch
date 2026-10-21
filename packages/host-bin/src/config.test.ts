@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { OPENCODE_CREDENTIALS_CONFIG_KEY } from "@dispatch/provider-openai-compat";
 import { describe, expect, it } from "vitest";
 import { configMapToAccess, envToConfigMap } from "./config.js";
@@ -95,12 +96,13 @@ describe("envToConfigMap", () => {
     expect(result).toEqual({
       "provider.openai.model": "gpt-5-codex",
       "codex.credentialKey": "codex-oauth",
+      "vision.imageDir": resolve(".dispatch-data/images"),
     });
   });
 
-  it("returns empty map when no relevant env vars are set", () => {
+  it("defaults images to the development data directory", () => {
     const result = envToConfigMap({ HOME: "/home/user", PATH: "/usr/bin" });
-    expect(result).toEqual({});
+    expect(result).toEqual({ "vision.imageDir": resolve(".dispatch-data/images") });
   });
 
   it("maps SURFACE_WS_PORT to surfaceWsPort", () => {
@@ -145,4 +147,26 @@ describe("configMapToAccess", () => {
     const access = configMapToAccess(map);
     expect(access.getAll()).toEqual(map);
   });
+});
+
+it("derives durable images beside the DB, with explicit overrides and zero retention", () => {
+  expect(envToConfigMap({ DISPATCH_DB: "/tmp/custom/db.sqlite" })["vision.imageDir"]).toBe(
+    "/tmp/custom/images",
+  );
+  expect(
+    envToConfigMap({ DISPATCH_IMAGE_DIR: "/tmp/override", DISPATCH_IMAGE_RETENTION_DAYS: "0" }),
+  ).toMatchObject({ "vision.imageDir": "/tmp/override", "vision.imageRetentionDays": 0 });
+  for (const value of ["", "-1", "NaN", "Infinity"])
+    expect(() => envToConfigMap({ DISPATCH_IMAGE_RETENTION_DAYS: value })).toThrow(
+      "DISPATCH_IMAGE_RETENTION_DAYS",
+    );
+});
+
+it("resolves relative image overrides and DB paths once at boot", () => {
+  expect(envToConfigMap({ DISPATCH_IMAGE_DIR: "relative-images" })["vision.imageDir"]).toBe(
+    resolve("relative-images"),
+  );
+  expect(envToConfigMap({ DISPATCH_DB: "relative-data/dispatch.db" })["vision.imageDir"]).toBe(
+    resolve("relative-data/images"),
+  );
 });

@@ -1,4 +1,9 @@
-import type { Extension, HostAPI, Manifest, ServiceHandle } from "@dispatch/kernel";
+import type { Extension, HostAPI, Logger, Manifest, ServiceHandle } from "@dispatch/kernel";
+import {
+  buildAllowedHosts,
+  type NetworkPolicyConfig,
+  type NetworkPolicySnapshot,
+} from "@dispatch/network-policy";
 import { createApp } from "./app.js";
 import {
   accountUsageServiceHandle,
@@ -115,16 +120,89 @@ export const manifest: Manifest = {
  * inline at each use below.
  */
 
+/** Transport-owned reconciliation; timers/binds are injectable outer edges. */
+export function startListeners<T extends { stop(closeActive?: boolean): unknown }>(
+  addresses: readonly string[],
+  tailscaleIps: readonly string[],
+  bind: (address: string) => T,
+  logger: Pick<Logger, "warn">,
+  schedule: (callback: () => void, delayMs: number) => () => void = (callback, delayMs) => {
+    const timer = setInterval(callback, delayMs);
+    return () => clearInterval(timer);
+  },
+) {
+  const active = new Map<string, T>();
+  const retries = new Map<string, () => void>();
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    for (const cancel of retries.values()) cancel();
+    retries.clear();
+    for (const server of active.values()) server.stop(true);
+    active.clear();
+  };
+  const update = (next: Pick<NetworkPolicySnapshot, "bindAddresses" | "tailscaleIps">) => {
+    if (stopped) return;
+    const desired = new Set(next.bindAddresses);
+    // Withdraw listeners and their active clients, not just future accepts.
+    for (const [address, cancel] of retries) {
+      if (!desired.has(address)) {
+        cancel();
+        retries.delete(address);
+      }
+    }
+    for (const [address, server] of active) {
+      if (!desired.has(address)) {
+        server.stop(true);
+        active.delete(address);
+      }
+    }
+    for (const address of desired) {
+      if (active.has(address) || retries.has(address)) continue;
+      try {
+        active.set(address, bind(address));
+      } catch (error) {
+        if (!next.tailscaleIps.includes(address)) throw error;
+        logger.warn("Tailscale bind failed; retrying every 10s", { address });
+        const cancel = schedule(() => {
+          if (stopped || retries.get(address) !== cancel) return;
+          try {
+            active.set(address, bind(address));
+            retries.get(address)?.();
+            retries.delete(address);
+          } catch {
+            // Remains unavailable; keep the same bounded retry timer.
+          }
+        }, 10_000);
+        retries.set(address, cancel);
+      }
+    }
+  };
+  try {
+    update({ bindAddresses: addresses, tailscaleIps });
+  } catch (error) {
+    stop();
+    throw error;
+  }
+  return {
+    get servers() {
+      return [...active.values()];
+    },
+    update,
+    stop,
+  };
+}
+
 export function createTransportHttpExtension(): Extension & {
   readonly _testServer: ReturnType<typeof Bun.serve> | undefined;
 } {
-  let server: ReturnType<typeof Bun.serve> | undefined;
+  let listeners: ReturnType<typeof startListeners<ReturnType<typeof Bun.serve>>> | undefined;
   /** Availability-subscription disposers (disposed on deactivate). */
   let availabilityDisposers: Array<() => void> = [];
 
   return {
     get _testServer() {
-      return server;
+      return listeners?.servers[0];
     },
     manifest,
     async activate(host: HostAPI) {
@@ -194,11 +272,22 @@ export function createTransportHttpExtension(): Extension & {
       ];
 
       const logger = host.logger;
+      const policy = host.config.get<NetworkPolicyConfig>("networkPolicy") ?? {
+        allowedHosts: buildAllowedHosts({ env: {} }),
+        bindAddresses: ["127.0.0.1", "::1"],
+        tailscaleIps: [],
+      };
+      // Stable request-policy view: guards/CORS see the latest complete publication.
+      const allowedHosts = new Set(policy.allowedHosts);
+
+      const imageDir = host.config.get<string>("vision.imageDir");
 
       // The optional services are passed as LIVE GETTERS: each request
       // re-reads the slot's current value (undefined → the route's degrade
       // path), so the app never holds a stale service reference.
       const app = createApp({
+        allowedHosts,
+        ...(imageDir !== undefined ? { imageDir } : {}),
         conversationStore,
         orchestrator,
         credentialStore,
@@ -260,11 +349,26 @@ export function createTransportHttpExtension(): Extension & {
 
       const port = host.config.get<number>("httpPort") ?? 24203;
 
-      server = Bun.serve({
-        port,
-        fetch: app.fetch,
-        idleTimeout: 0,
-      });
+      try {
+        listeners = startListeners(
+          policy.bindAddresses,
+          policy.tailscaleIps,
+          (hostname) => Bun.serve({ hostname, port, fetch: app.fetch, idleTimeout: 0 }),
+          logger,
+        );
+        const unsubscribe = policy.subscribe?.((next) => {
+          allowedHosts.clear();
+          for (const host of next.allowedHosts) allowedHosts.add(host);
+          listeners?.update(next);
+        });
+        if (unsubscribe) availabilityDisposers.push(unsubscribe);
+      } catch (error) {
+        listeners?.stop();
+        listeners = undefined;
+        for (const dispose of availabilityDisposers) dispose();
+        availabilityDisposers = [];
+        throw error;
+      }
 
       logger.info("transport-http: listening", { port });
     },
@@ -275,10 +379,8 @@ export function createTransportHttpExtension(): Extension & {
       // idempotent; the host force-cleans any we somehow missed).
       for (const dispose of availabilityDisposers) dispose();
       availabilityDisposers = [];
-      if (server) {
-        server.stop();
-        server = undefined;
-      }
+      listeners?.stop();
+      listeners = undefined;
     },
   };
 }

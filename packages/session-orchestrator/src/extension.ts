@@ -82,7 +82,7 @@ export function activate(host: HostAPI): void {
   // (env changes require a restart, like the other env-based config).
   const dispatchPolicy = createDispatchPolicy(process.env, host.logger);
 
-  const { orchestrator, activeConversations } = createSessionOrchestrator({
+  const { orchestrator, activeConversations, compacting } = createSessionOrchestrator({
     conversationStore,
     resolveProvider: () => selectFirstProvider(host.getProviders()),
     resolveTools: () => [...host.getTools().values()],
@@ -260,6 +260,7 @@ export function activate(host: HostAPI): void {
       emit: (hook, payload) => host.emit(hook, payload),
     },
     activeConversations,
+    compacting,
   );
 
   host.provideService(compactionHandle, compactionService);

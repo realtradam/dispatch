@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCredentialStore } from "@dispatch/credential-store";
@@ -29,8 +29,10 @@ import type {
   WorkspaceResponse,
 } from "@dispatch/transport-contract";
 import type { Computer, ComputerEntry, Workspace } from "@dispatch/wire";
-import { describe, expect, it } from "vitest";
-import { createApp } from "./app.js";
+import { describe, expect, it, vi } from "vitest";
+import { envToConfigMap } from "../../host-bin/src/config.js";
+import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
+import { createApp, retainThroughputEvent } from "./app.js";
 import { extractLastAssistantText } from "./logic.js";
 import type {
   ComputerService,
@@ -48,6 +50,7 @@ import { conversationOpened } from "./seam.js";
 function createMemStorage(): StorageNamespace {
   const map = new Map<string, string>();
   return {
+    ...storageFromMap(map),
     get: async (k) => map.get(k) ?? null,
     set: async (k, v) => {
       map.set(k, v);
@@ -123,6 +126,12 @@ function createFakeConversationStore(
     lastActivityAt: 0,
   };
   return {
+    async getHistoryEpoch() {
+      return 0;
+    },
+    async runExclusive(_conversationId, fn) {
+      return await fn();
+    },
     async append() {},
     async load() {
       return [];
@@ -291,7 +300,7 @@ function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
     isActive() {
       return false;
     },
-    enqueue() {
+    async enqueue() {
       return { startedTurn: false, queue: [] };
     },
     cancelQueuedMessage() {
@@ -330,7 +339,7 @@ function createCapturingOrchestrator(): SessionOrchestrator & {
     isActive() {
       return false;
     },
-    enqueue() {
+    async enqueue() {
       return { startedTurn: false, queue: [] };
     },
     cancelQueuedMessage() {
@@ -359,7 +368,7 @@ function createThrowingOrchestrator(error: Error): SessionOrchestrator {
     isActive() {
       return false;
     },
-    enqueue() {
+    async enqueue() {
       return { startedTurn: false, queue: [] };
     },
     cancelQueuedMessage() {
@@ -621,26 +630,76 @@ describe("GET /health", () => {
   });
 });
 
+describe("GET /images filesystem containment", () => {
+  it.each([
+    true,
+    false,
+  ])("serves durable images with override=%s and returns 404 for expiry", async (override) => {
+    const dir = await mkdtemp(join(tmpdir(), "dispatch-http-images-"));
+    const previous = process.env.DISPATCH_IMAGE_DIR;
+    const previousDb = process.env.DISPATCH_DB;
+    const env = {
+      DISPATCH_DB: join(dir, "dispatch.db"),
+      ...(override ? { DISPATCH_IMAGE_DIR: join(dir, "override-images") } : {}),
+    };
+    const imageDir = envToConfigMap(env)["vision.imageDir"] as string;
+    const imageRoot = join(dir, override ? "override-images" : "images");
+    // Ambient environment deliberately disagrees with boot configuration.
+    process.env.DISPATCH_IMAGE_DIR = join(dir, "decoy");
+    process.env.DISPATCH_DB = join(dir, "decoy-db", "dispatch.db");
+    try {
+      await mkdir(join(imageRoot, "mcp-test-001"), { recursive: true });
+      await writeFile(join(imageRoot, "mcp-test-001", "image.png"), "image bytes");
+      const app = createApp({
+        conversationStore: createFakeConversationStore(),
+        orchestrator: createFakeOrchestrator([]),
+        credentialStore: createFakeCredentialStore([]),
+        logger: noopLogger,
+        imageDir,
+      });
+      const response = await app.request("/images/mcp-test-001/image.png");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("image/png");
+      expect(await response.text()).toBe("image bytes");
+      expect((await app.request("/images/mcp-test-001/missing.png")).status).toBe(404);
+    } finally {
+      if (previous === undefined) delete process.env.DISPATCH_IMAGE_DIR;
+      else process.env.DISPATCH_IMAGE_DIR = previous;
+      if (previousDb === undefined) delete process.env.DISPATCH_DB;
+      else process.env.DISPATCH_DB = previousDb;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 404 when no image root is injected", async () => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    expect((await app.request("/images/conv/image.png")).status).toBe(404);
+  });
+
+  it.each([
+    "/images/..%2foutside/sentinel.png",
+    "/images/%2foutside/sentinel.png",
+    "/images/%252e%252e%252foutside/sentinel.png",
+    "/images/conv/..%2foutside%2fsentinel.png",
+    "/images/conv/%2foutside%2fsentinel.png",
+  ])("rejects unsafe path %s", async (url) => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    expect((await app.request(url)).status).toBe(400);
+  });
+});
+
 describe("GET /local-image", () => {
   const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
-  const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]);
-  const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x10, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
-  const gifBytes = new TextEncoder().encode("GIF89a");
-  const bmpBytes = new TextEncoder().encode("BM6\0\0\0");
-
-  const formats: readonly {
-    readonly ext: string;
-    readonly mime: string;
-    readonly bytes: Uint8Array;
-  }[] = [
-    { ext: ".png", mime: "image/png", bytes: pngBytes },
-    { ext: ".jpg", mime: "image/jpeg", bytes: jpegBytes },
-    { ext: ".jpeg", mime: "image/jpeg", bytes: jpegBytes },
-    { ext: ".webp", mime: "image/webp", bytes: webpBytes },
-    { ext: ".gif", mime: "image/gif", bytes: gifBytes },
-    { ext: ".bmp", mime: "image/bmp", bytes: bmpBytes },
-  ];
-
   function createTestApp() {
     return createApp({
       conversationStore: createFakeConversationStore(),
@@ -659,19 +718,22 @@ describe("GET /local-image", () => {
     }
   }
 
-  it("serves a real image file of each whitelisted format with its MIME type", async () => {
+  it("returns 400 for a directory named x.png", async () => {
     await withTempDir(async (dir) => {
-      const app = createTestApp();
-      for (const format of formats) {
-        const file = join(dir, `pic${format.ext}`);
-        await writeFile(file, format.bytes);
-        const res = await app.request(`/local-image?path=${encodeURIComponent(file)}`);
-        expect(res.status, format.ext).toBe(200);
-        expect(res.headers.get("content-type")).toBe(format.mime);
-        expect(res.headers.get("cache-control")).toBe("no-cache");
-        expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-        expect(new Uint8Array(await res.arrayBuffer())).toEqual(format.bytes);
-      }
+      const file = join(dir, "x.png");
+      await mkdir(file);
+      const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+      expect(res.status).toBe(400);
+    });
+  });
+
+  it("returns 413 for a file larger than 25 MiB", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "large.png");
+      await writeFile(file, pngBytes);
+      await truncate(file, 25 * 1024 * 1024 + 1);
+      const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(file)}`);
+      expect(res.status).toBe(413);
     });
   });
 
@@ -720,18 +782,17 @@ describe("GET /local-image", () => {
       expect(await res.json()).toEqual({ error: "Image not found" });
     });
   });
-
-  it("expands a leading ~ to the home directory", async () => {
+  it("expands a leading ~ before validating the file header", async () => {
     await withTempDir(async (dir) => {
       const previousHome = process.env.HOME;
       process.env.HOME = dir;
       try {
-        await writeFile(join(dir, "home-pic.png"), pngBytes);
+        await writeFile(join(dir, "home-pic.png"), "not a PNG");
         const res = await createTestApp().request(
           `/local-image?path=${encodeURIComponent("~/home-pic.png")}`,
         );
-        expect(res.status).toBe(200);
-        expect(res.headers.get("content-type")).toBe("image/png");
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "File content does not match the image format" });
       } finally {
         if (previousHome === undefined) {
           delete process.env.HOME;
@@ -1356,7 +1417,7 @@ describe("GET /conversations/:id", () => {
         chunk: { type: "thinking", text: "" },
       },
     ];
-    expect(body).toEqual({ chunks: expected.slice(offset), latestSeq: 5 });
+    expect(body).toEqual({ chunks: expected.slice(offset), latestSeq: 5, historyEpoch: 0 });
     for (const row of body.chunks) {
       if (row.chunk.type === "thinking") {
         expect(row.chunk).not.toHaveProperty("signature");
@@ -1508,6 +1569,12 @@ describe("GET /conversations/:id", () => {
         readonly window: { readonly beforeSeq?: number; readonly limit?: number } | undefined;
       }[] = [];
       const store: ConversationStore = {
+        async runExclusive(_id, fn) {
+          return await fn();
+        },
+        async getHistoryEpoch() {
+          return 0;
+        },
         async append() {},
         async load() {
           return [];
@@ -1629,6 +1696,12 @@ describe("GET /conversations/:id", () => {
     // forwarded as undefined — preserving the existing two-arg call shape.
     const argCounts: number[] = [];
     const store: ConversationStore = {
+      async runExclusive(_id, fn) {
+        return await fn();
+      },
+      async getHistoryEpoch() {
+        return 0;
+      },
       async append() {},
       async load() {
         return [];
@@ -2036,38 +2109,43 @@ describe("CORS", () => {
     });
   }
 
-  it("POST /chat response carries Access-Control-Allow-Origin: *", async () => {
+  it("POST /chat response carries reflected Access-Control-Allow-Origin", async () => {
     const app = createTestApp();
     const res = await app.request("/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:24204" },
       body: JSON.stringify({ message: "hi", conversationId: "conv1" }),
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:24204");
   });
 
   it("GET /models response carries the CORS headers", async () => {
     const app = createTestApp();
-    const res = await app.request("/models");
+    const res = await app.request("/models", { headers: { Origin: "http://localhost:24204" } });
     expect(res.status).toBe(200);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:24204");
     expect(res.headers.get("Access-Control-Expose-Headers")).toBeDefined();
   });
 
   it("GET /conversations/:id response carries the CORS headers", async () => {
     const app = createTestApp();
-    const res = await app.request("/conversations/conv1");
+    const res = await app.request("/conversations/conv1", {
+      headers: { Origin: "http://localhost:24204" },
+    });
     expect(res.status).toBe(200);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:24204");
     expect(res.headers.get("Access-Control-Expose-Headers")).toBeDefined();
   });
 
   it("OPTIONS preflight for /chat returns 204 with Allow-Methods + Allow-Headers", async () => {
     const app = createTestApp();
-    const res = await app.request("/chat", { method: "OPTIONS" });
+    const res = await app.request("/chat", {
+      method: "OPTIONS",
+      headers: { Origin: "http://localhost:24204" },
+    });
     expect(res.status).toBe(204);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:24204");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("GET");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("OPTIONS");
@@ -2099,6 +2177,52 @@ describe("throughput recording + GET /metrics/throughput", () => {
       body: JSON.stringify(body),
     });
   }
+
+  it("retains only metric events across a large stream, with every event still on the wire", async () => {
+    const base = { conversationId: "c1", turnId: "t1" };
+    const events: AgentEvent[] = Array.from({ length: 10_000 }, (_, i) => ({
+      ...base,
+      type: "text-delta",
+      delta: `token${i}`,
+    }));
+    events.push(
+      { ...base, type: "tool-output", toolCallId: "call", output: "large output" },
+      { ...base, type: "usage", usage: { inputTokens: 1, outputTokens: 999 } },
+      { ...base, type: "step-complete", stepId: "t1#0" as StepId, genTotalMs: 1000 },
+      { ...base, type: "step-complete", stepId: "t1#1" as StepId, genTotalMs: 2000 },
+      { ...base, type: "done", reason: "stop", usage: { inputTokens: 2, outputTokens: 300 } },
+      { ...base, type: "turn-ended", reason: "sealed" },
+    );
+    const retained: Parameters<typeof retainThroughputEvent>[0] = [];
+    for (const event of events) retainThroughputEvent(retained, event);
+    expect(retained.map((event) => event.type)).toEqual([
+      "usage",
+      "step-complete",
+      "step-complete",
+      "done",
+    ]);
+    const store = createThroughputStore({ storage: createMemStorage() });
+    const app = appWith(store, events);
+    const response = await postChat(app, {
+      conversationId: "c1",
+      message: "go",
+      model: "test/model",
+    });
+    expect(
+      (await response.text())
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual(events);
+    const report = (await (
+      await app.request(`/metrics/throughput?period=day&date=${day}`)
+    ).json()) as ThroughputResponse;
+    expect(report.models[0]).toMatchObject({
+      totalOutputTokens: 300,
+      totalGenMs: 3000,
+      tokensPerSecond: 100,
+    });
+  });
 
   it("records a per-model sample from a turn and aggregates it (token-weighted tok/s)", async () => {
     const store = createThroughputStore({ storage: createMemStorage() });
@@ -2230,7 +2354,7 @@ describe("POST /conversations/:id/queue", () => {
     ];
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         return { startedTurn: false, queue };
       },
     };
@@ -2258,7 +2382,7 @@ describe("POST /conversations/:id/queue", () => {
     let enqueueCalled = false;
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         enqueueCalled = true;
         return { startedTurn: false, queue: [] };
       },
@@ -2286,7 +2410,7 @@ describe("POST /conversations/:id/queue", () => {
     let enqueueCalled = false;
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         enqueueCalled = true;
         return { startedTurn: false, queue: [] };
       },
@@ -2313,7 +2437,7 @@ describe("POST /conversations/:id/queue", () => {
   it("enqueue returns startedTurn:true (was idle) → response echoes it", async () => {
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         return { startedTurn: true, queue: [] };
       },
     };
@@ -2344,7 +2468,7 @@ describe("POST /conversations/:id/queue", () => {
     ];
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         return { startedTurn: false, queue };
       },
     };
@@ -2368,11 +2492,32 @@ describe("POST /conversations/:id/queue", () => {
     expect(body.queue).toEqual(queue);
   });
 
-  it("forwards the path conversationId and trimmed text to enqueue", async () => {
+  it("returns a JSON error when awaited enqueue storage rejects", async () => {
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: {
+        ...createFakeOrchestrator([]),
+        async enqueue() {
+          throw new Error("disk full");
+        },
+      },
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+    const res = await app.request("/conversations/c/queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "", images: [{ url: "data:image/png;base64,AAAA" }] }),
+    });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Failed to enqueue message" });
+  });
+
+  it("awaits enqueue and forwards images/computerId with the path id and trimmed text", async () => {
     const calls: { conversationId: string; text: string }[] = [];
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue(input) {
+      async enqueue(input) {
         calls.push(input);
         return { startedTurn: false, queue: [] };
       },
@@ -2387,13 +2532,22 @@ describe("POST /conversations/:id/queue", () => {
     const res = await app.request("/conversations/conv-1/queue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "  hello world  " }),
+      body: JSON.stringify({
+        text: "  hello world  ",
+        images: [{ url: "data:image/png;base64,AAAA" }],
+        computerId: "remote",
+      }),
     });
 
     expect(res.status).toBe(200);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.conversationId).toBe("conv-1");
-    expect(calls[0]?.text).toBe("hello world");
+    expect(calls[0]).toEqual({
+      conversationId: "conv-1",
+      text: "hello world",
+      images: [{ url: "data:image/png;base64,AAAA" }],
+      computerId: "remote",
+    });
   });
 
   it("returns 400 for invalid JSON body", async () => {
@@ -2438,7 +2592,7 @@ describe("POST /conversations/:id/queue", () => {
     const logger = createFakeLogger();
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
-      enqueue() {
+      async enqueue() {
         return { startedTurn: true, queue: [] };
       },
     };
@@ -3888,7 +4042,12 @@ describe("GET /conversations/:id/last", () => {
     const orchestrator: SessionOrchestrator = {
       ...createFakeOrchestrator([]),
       subscribe(conversationId, listener) {
-        const event = { type: "turn-sealed" as const, conversationId, turnId };
+        const event = {
+          type: "turn-ended" as const,
+          conversationId,
+          turnId,
+          reason: "sealed" as const,
+        };
         setTimeout(() => listener(event), 0);
         return () => {};
       },
@@ -5333,5 +5492,183 @@ describe("PUT /workspaces/:id/heartbeat", () => {
     });
     expect(res.status).toBe(200);
     expect(hb.captured[0]?.update.inactiveOnly).toBeUndefined();
+  });
+});
+
+describe("conversation ID boundary validation", () => {
+  const routes = [
+    ["GET", ""],
+    ["GET", "/metrics"],
+    ["GET", "/status"],
+    ["POST", "/close"],
+    ["POST", "/stop"],
+    ["POST", "/queue"],
+    ["DELETE", "/queue/message-1"],
+    ["GET", "/cwd"],
+    ["PUT", "/cwd"],
+    ["DELETE", "/cwd"],
+    ["GET", "/computer"],
+    ["PUT", "/computer"],
+    ["DELETE", "/computer"],
+    ["GET", "/reasoning-effort"],
+    ["PUT", "/reasoning-effort"],
+    ["GET", "/model"],
+    ["PUT", "/model"],
+    ["GET", "/lsp"],
+    ["GET", "/mcp"],
+    ["GET", "/last"],
+    ["POST", "/open"],
+    ["PUT", "/tab-group"],
+    ["PUT", "/title"],
+    ["POST", "/compact"],
+    ["GET", "/compact-percent"],
+    ["PUT", "/compact-percent"],
+  ];
+  const badIds = [
+    "..%2F..%2Ftmp",
+    "a%5Cb",
+    "a%3Ab",
+    "a%25b",
+    "%252F",
+    "%00",
+    "%20",
+    "%C3%A9",
+    "a".repeat(129),
+  ];
+  const setup = () => {
+    const orchestrator = createFakeOrchestrator([]);
+    const close = vi.spyOn(orchestrator, "closeConversation");
+    const store = createFakeConversationStore();
+    const load = vi.spyOn(store, "loadSince");
+    const app = createApp({
+      orchestrator,
+      conversationStore: store,
+      logger: createFakeLogger(),
+      warmService: createFakeWarmService({ error: "not used" }),
+    });
+    return { app, close, load };
+  };
+
+  it.each(routes)("rejects invalid IDs before %s /conversations/:id%s", async (method, suffix) => {
+    const { app, close, load } = setup();
+    for (const id of badIds) {
+      const res = await app.request(`/conversations/${id}${suffix}`, { method });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: expect.stringContaining("conversationId") });
+    }
+    expect(close).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "550e8400-e29b-41d4-a716-446655440000",
+    "mcp-test-001",
+    "A_0-z",
+    "a".repeat(128),
+  ])("allows valid conversation ID %s", async (id) => {
+    const { app, close, load } = setup();
+    expect((await app.request(`/conversations/${id}`)).status).toBe(200);
+    expect(load).toHaveBeenCalledWith(id, 0);
+    expect((await app.request(`/conversations/${id}/close`, { method: "POST" })).status).toBe(200);
+    expect(close).toHaveBeenCalledWith(id);
+  });
+
+  it("rejects traversal and malformed image IDs before filesystem access", async () => {
+    const { app } = setup();
+    const paths = [
+      "/images/..%2F..%2Fetc/passwd",
+      ...badIds.map((id) => `/images/${id}/ok.png`),
+      ...[
+        "..%2Fsecret.png",
+        "a%5Cb.png",
+        "a.txt",
+        "a.svg",
+        "a.PNG",
+        "a.png%00",
+        `${"a".repeat(129)}.png`,
+      ].map((id) => `/images/valid/${id}`),
+    ];
+    for (const path of paths) expect((await app.request(path)).status).toBe(400);
+  });
+
+  it("rejects invalid tab-group parent IDs before store access", async () => {
+    const store = createFakeConversationStore();
+    const readMeta = vi.spyOn(store, "getConversationMeta");
+    const app = createApp({
+      orchestrator: createFakeOrchestrator([]),
+      conversationStore: store,
+      logger: createFakeLogger(),
+    });
+    for (const parentId of ["../tmp", "a/b", "a".repeat(129), 42]) {
+      const res = await app.request("/conversations/valid/tab-group", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parentId }),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(readMeta).not.toHaveBeenCalled();
+  });
+
+  it.each(["/chat", "/chat/warm"])("rejects invalid body IDs at %s", async (path) => {
+    const { app } = setup();
+    for (const conversationId of [null, 42, false, {}, [], "", "../tmp", "a".repeat(129)]) {
+      const res = await app.request(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId, message: "hi" }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: expect.stringContaining("conversationId") });
+    }
+  });
+});
+
+describe("network guard before all routes", () => {
+  const app = () =>
+    createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator: createFakeOrchestrator([]),
+      credentialStore: createFakeCredentialStore([]),
+      allowedHosts: new Set(["localhost", "PII_REDACTED_DEVICE_01"]),
+    });
+  it.each([
+    "/health",
+    "/chat",
+    "/not-a-route",
+    "/images/conv/img.png",
+  ])("rejects Host before %s", async (path) => {
+    const res = await app().fetch(
+      new Request(`http://localhost${path}`, { headers: { Host: "evil.com" } }),
+    );
+    expect(res.status).toBe(421);
+    expect(await res.json()).toEqual({ error: expect.any(String) });
+  });
+  it.each(["https://evil.com", "null", "file://localhost"])("rejects Origin %s", async (origin) => {
+    const res = await app().request("/health", { headers: { Origin: origin } });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+  it("reflects allowed Origin and handles preflight; missing Origin is allowed", async () => {
+    for (const method of ["GET", "OPTIONS"]) {
+      const res = await app().request("/health", {
+        method,
+        headers: { Origin: "http://PII_REDACTED_DEVICE_01:24204" },
+      });
+      expect(res.status).toBe(method === "GET" ? 200 : 204);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://PII_REDACTED_DEVICE_01:24204");
+      expect(res.headers.get("Vary")).toContain("Origin");
+    }
+    const res = await app().request("/health");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(
+      (
+        await app().request("/health", {
+          method: "OPTIONS",
+          headers: { Origin: "https://evil.com" },
+        })
+      ).status,
+    ).toBe(403);
   });
 });

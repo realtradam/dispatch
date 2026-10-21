@@ -209,7 +209,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
     if (isApiVersionCompatible(m.apiVersion, KERNEL_API_VERSION)) {
       compatible.push(ext);
     } else {
-      disabled.push({
+      recordDisabled({
         manifest: m,
         reason: `apiVersion "${m.apiVersion}" is incompatible with kernel API ${KERNEL_API_VERSION}`,
       });
@@ -235,18 +235,18 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
     return {
       defineTool(tool: ToolContract) {
         if (closed) throw new Error("Registration not available after activation");
-        tools.set(tool.name, tool);
         ledger.trackTool(extensionId, tool.name);
+        tools.set(tool.name, tool);
       },
       defineProvider(provider: ProviderContract) {
         if (closed) throw new Error("Registration not available after activation");
-        providers.set(provider.id, provider);
         ledger.trackProvider(extensionId, provider.id);
+        providers.set(provider.id, provider);
       },
       defineAuth(auth: AuthContract) {
         if (closed) throw new Error("Registration not available after activation");
-        authProviders.set(auth.id, auth);
         ledger.trackAuth(extensionId, auth.id);
+        authProviders.set(auth.id, auth);
       },
       on<TPayload>(hook: EventHookDescriptor<TPayload>, handler: EventHandler<TPayload>) {
         const dispose = deps.bus.on(hook, handler);
@@ -367,6 +367,13 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
     return dangling;
   }
 
+  /** Keep the latest failure for each extension id, preserving list order. */
+  function recordDisabled(entry: DisabledExtension): void {
+    const idx = disabled.findIndex((d) => d.manifest.id === entry.manifest.id);
+    if (idx === -1) disabled.push(entry);
+    else disabled[idx] = entry;
+  }
+
   /** A successful load supersedes any stale disabled-with-reason entry. */
   function clearDisabledFor(id: string): void {
     const idx = disabled.findIndex((d) => d.manifest.id === id);
@@ -421,7 +428,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
         manifest: m,
         reason: `apiVersion "${m.apiVersion}" is incompatible with kernel API ${KERNEL_API_VERSION}`,
       };
-      disabled.push(entry);
+      recordDisabled(entry);
       deps.logger.warn(`Extension "${m.id}" disabled: apiVersion incompatible`);
       return { ok: false, reason: entry.reason, disabled: entry };
     }
@@ -435,7 +442,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
     if (unmet !== undefined && unmet.missing.length > 0) {
       const reason = formatUnmetDeps(m.id, unmet.missing);
       const entry: DisabledExtension = { manifest: m, reason };
-      disabled.push(entry);
+      recordDisabled(entry);
       deps.logger.warn(`Extension "${m.id}" disabled: ${reason}`);
       return { ok: false, reason, disabled: entry };
     }
@@ -443,7 +450,7 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
     if (!result.ok) {
       const reason = `Activation failed: ${errText(result.error)}`;
       const entry: DisabledExtension = { manifest: m, reason };
-      disabled.push(entry);
+      recordDisabled(entry);
       deps.logger.error(`Extension "${m.id}" failed to activate`, { err: result.error });
       return { ok: false, reason, disabled: entry };
     }
@@ -545,15 +552,26 @@ export function createHost(extensions: readonly Extension[], deps: HostDeps): Ho
   return {
     async activate() {
       for (const ext of compatible) {
+        const missing = (ext.manifest.dependsOn ?? []).filter(
+          (id) => !activated.some((e) => e.manifest.id === id),
+        );
+        if (missing.length > 0) {
+          const reason = formatUnmetDeps(ext.manifest.id, missing);
+          recordDisabled({ manifest: ext.manifest, reason });
+          deps.logger.warn(`Extension "${ext.manifest.id}" disabled: ${reason}`);
+          continue;
+        }
         const result = await activateOne(ext);
         if (!result.ok) {
-          disabled.push({
+          recordDisabled({
             manifest: ext.manifest,
             reason: `Activation failed: ${errText(result.error)}`,
           });
           deps.logger.error(`Extension "${ext.manifest.id}" failed to activate`, {
             err: result.error,
           });
+        } else {
+          clearDisabledFor(ext.manifest.id);
         }
       }
     },
