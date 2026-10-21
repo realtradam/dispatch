@@ -28,7 +28,7 @@ import {
 } from "@dispatch/workspace-plugin-config";
 import { manifest } from "./manifest.js";
 import { catalogMessageFiltered, routeClientMessage, subKey } from "./router.js";
-import { jsonByteBound } from "./serialization.js";
+import { jsonByteBound, serializeWithinBudget } from "./serialization.js";
 
 /** Active provider subscriptions + chat subscription disposers for a single WS connection. */
 interface ConnectionState {
@@ -161,8 +161,11 @@ export function createTransportWsExtension(): Extension {
           if (closeIfBackpressured()) return;
           // A single unbounded tool payload must not create an unbounded socket
           // copy or close/replay loop. Full data stays in HTTP history.
-          const frameBudget = msg.type === "chat.delta" ? 256 * 1024 : 1024 * 1024;
-          if (jsonByteBound(msg, frameBudget) === undefined) {
+          // 4 MiB allows routine MiB-scale tool inputs/results while a single
+          // frame still uses at most half the 8 MiB slow-consumer budget.
+          const frameBudget = msg.type === "chat.delta" ? 4 * 1024 * 1024 : 1024 * 1024;
+          const serialized = serializeWithinBudget(msg, frameBudget);
+          if (serialized === undefined) {
             if (msg.type === "chat.delta") {
               send(ws, {
                 type: "chat.resync-required",
@@ -179,7 +182,6 @@ export function createTransportWsExtension(): Extension {
             }
             return;
           }
-          const serialized = JSON.stringify(msg);
           ws.send(serialized);
           const existingWatchdog = watchdogs.get(ws);
           if (existingWatchdog) existingWatchdog.sentBytes += Buffer.byteLength(serialized);
@@ -276,22 +278,25 @@ export function createTransportWsExtension(): Extension {
           return;
         }
         // All-or-nothing preflight avoids both partial provisional transcripts
-        // and synchronous replay bursts. Across ANY number of subscriptions,
-        // replay can fill at most 1 MiB of socket backlog. No per-client replay
-        // queue or serialized snapshot is retained. Other surfaces/live streams
-        // get the remaining slow-consumer headroom.
+        // and oversized replay bursts. Allow ordinary multi-MiB turns in full:
+        // at most 4 MiB per replay and 6 MiB shared socket backlog, leaving 2 MiB
+        // headroom below the 8 MiB close bound. No serialized replay queue is
+        // retained; reference snapshots are bounded by actual envelope bytes.
         if (state.chatSubscriptions.size + state.subs.size >= 256) {
           disposeConnection(ws);
           ws.close(1008, "Too many subscriptions");
           return;
         }
-        let budget = Math.min(256 * 1024, Math.max(0, 1024 * 1024 - ws.getBufferedAmount()));
+        let budget = Math.min(
+          4 * 1024 * 1024,
+          Math.max(0, 6 * 1024 * 1024 - ws.getBufferedAmount()),
+        );
         const unsubscribe = orchestrator.subscribe(
           conversationId,
           (event) => send(ws, { type: "chat.delta", event }),
           {
             replay: {
-              maxEvents: 256,
+              maxEvents: Number.MAX_SAFE_INTEGER,
               accept(event) {
                 const bytes = jsonByteBound({ type: "chat.delta", event }, budget);
                 if (bytes === undefined) return false;

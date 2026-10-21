@@ -19,7 +19,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function fixture(large = true, many = false, liveLarge = false) {
+async function fixture(
+  large = true,
+  many = false,
+  liveLarge = false,
+  options: { calls?: number; inputBytes?: number; livePayloadBytes?: number } = {},
+) {
   const logger = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Logger;
   const bus = createBus(logger);
   const registry = createSurfaceRegistry();
@@ -38,7 +43,12 @@ async function fixture(large = true, many = false, liveLarge = false) {
   const ready = gate();
   const release = gate();
   const store = createConversationStore(storageFromMap());
-  const payload = large ? "x".repeat(9 * 1024 * 1024) : "small";
+  const payload =
+    options.livePayloadBytes !== undefined
+      ? "x".repeat(options.livePayloadBytes)
+      : large
+        ? "x".repeat(9 * 1024 * 1024)
+        : "small";
   let step = 0;
   const { orchestrator } = createSessionOrchestrator({
     conversationStore: store,
@@ -46,13 +56,13 @@ async function fixture(large = true, many = false, liveLarge = false) {
       id: "fixture",
       async *stream() {
         if (step++ === 0) {
-          if (many) {
-            for (let i = 0; i < 5000; i++)
+          if (many || options.calls !== undefined) {
+            for (let i = 0; i < (options.calls ?? 5000); i++)
               yield {
                 type: "tool-call",
                 toolCallId: `many-${i}`,
                 toolName: "echo",
-                input: { payload: "x".repeat(2048) },
+                input: { payload: "x".repeat(options.inputBytes ?? 2048) },
               };
           }
           yield { type: "tool-call", toolCallId: "call", toolName: "echo", input: { payload } };
@@ -88,10 +98,10 @@ async function fixture(large = true, many = false, liveLarge = false) {
     };
   };
   bus.provideService(sessionOrchestratorHandle, orchestrator);
-  let options: Bun.ServeOptions<unknown> | undefined;
+  let serveOptions: Bun.ServeOptions<unknown> | undefined;
   vi.stubGlobal("Bun", {
     serve: (opts: Bun.ServeOptions<unknown>) => {
-      options = opts;
+      serveOptions = opts;
       return { stop() {} };
     },
   });
@@ -113,7 +123,7 @@ async function fixture(large = true, many = false, liveLarge = false) {
           : undefined,
     },
   } as unknown as HostAPI);
-  const handlers = options?.websocket;
+  const handlers = serveOptions?.websocket;
   if (!handlers) throw new Error("missing handlers");
   let buffered = 0;
   let peak = 0;
@@ -141,6 +151,8 @@ async function fixture(large = true, many = false, liveLarge = false) {
     events.push(event);
     if (event.type === "turn-ended") ended.resolve();
   });
+  if (options.livePayloadBytes !== undefined)
+    await message({ type: "chat.subscribe", conversationId: "c" });
   orchestrator.startTurn({ conversationId: "c", text: "run" });
   await ready.promise;
   return {
@@ -328,15 +340,15 @@ it("oversized live events also request resync rather than forcing a replay/recon
 it("repeated normal subscribes cannot use replay to exceed the shared socket headroom", async () => {
   const f = await fixture(false);
   try {
-    // Use a modest text replay whose conservative bound fits the individual
-    // budget; changing only event identity creates independently buffered turns.
-    const opening = "x".repeat(20_000);
+    // Each replay fits on its own; the aggregate crosses the shared 6 MiB
+    // watermark and must use notices instead of growing to the 8 MiB close.
+    const opening = "x".repeat(100_000);
     for (let i = 0; i < 80; i++) {
       const id = `repeat-${i}`;
       f.orchestrator.startTurn({ conversationId: id, text: opening });
       await f.message({ type: "chat.subscribe", conversationId: id });
     }
-    expect(f.peak()).toBeLessThanOrEqual(1024 * 1024);
+    expect(f.peak()).toBeLessThanOrEqual(6 * 1024 * 1024 + 80 * 256);
     expect(f.sent.some((message) => message.includes("replay-limit"))).toBe(true);
     expect(f.close).not.toHaveBeenCalled();
     f.release();
@@ -464,6 +476,94 @@ it("oversized surface payloads cannot allocate unbounded frames or disconnect ot
     expect(f.sent.map((message) => JSON.parse(message).type)).toContain("update");
     expect(f.close).not.toHaveBeenCalled();
     expect(f.peak()).toBeLessThan(1024 * 1024);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("an ordinary 2–3 MiB turn with hundreds of structural events replays completely", async () => {
+  const f = await fixture(false, false, false, { calls: 300, inputBytes: 8192 });
+  try {
+    const expected = compactReplay(f.events);
+    const wireBytes = expected.reduce(
+      (sum, event) => sum + Buffer.byteLength(JSON.stringify({ type: "chat.delta", event })),
+      0,
+    );
+    expect(expected.length).toBeGreaterThan(600);
+    expect(wireBytes).toBeGreaterThan(2 * 1024 * 1024);
+    expect(wireBytes).toBeLessThan(3 * 1024 * 1024);
+    await f.message({ type: "chat.subscribe", conversationId: "c" });
+    const packets = f.sent.map((message) => JSON.parse(message));
+    expect(
+      packets.filter((message) => message.type === "chat.delta").map((message) => message.event),
+    ).toEqual(expected);
+    expect(packets.some((message) => message.type === "chat.resync-required")).toBe(false);
+    f.release();
+    await f.ended;
+    expect(f.close).not.toHaveBeenCalled();
+    console.info(
+      JSON.stringify({
+        fixture: "BE-4 ordinary replay",
+        wireBytes,
+        replayEvents: expected.length,
+        peakBufferedBytes: f.peak(),
+        closes: f.close.mock.calls.length,
+      }),
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("caught-up subscribers stream a 1 MiB tool input and result live without resync", async () => {
+  const f = await fixture(false, false, false, { livePayloadBytes: 1024 * 1024 });
+  try {
+    const packets = f.sent.map((message) => JSON.parse(message));
+    const live = packets
+      .filter((message) => message.type === "chat.delta")
+      .map((message) => message.event);
+    expect(live.find((event) => event.type === "tool-call")).toMatchObject({
+      input: { payload: "x".repeat(1024 * 1024) },
+    });
+    expect(live.find((event) => event.type === "tool-result")).toMatchObject({
+      content: "x".repeat(1024 * 1024),
+    });
+    expect(packets.some((message) => message.type === "chat.resync-required")).toBe(false);
+    f.release();
+    await f.ended;
+    expect(f.close).not.toHaveBeenCalled();
+    console.info(
+      JSON.stringify({
+        fixture: "BE-4 ordinary live tool",
+        toolResultBytes: Buffer.byteLength(
+          JSON.stringify(packets.find((message) => message.event?.type === "tool-result")),
+        ),
+        peakBufferedBytes: f.peak(),
+        closes: f.close.mock.calls.length,
+      }),
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("replay uses the remaining shared backlog budget and omits oversized totals atomically", async () => {
+  const f = await fixture(false, false, false, { calls: 300, inputBytes: 8192 });
+  try {
+    f.setBuffered(4 * 1024 * 1024);
+    await f.message({ type: "chat.subscribe", conversationId: "c" });
+    const packets = f.sent.map((message) => JSON.parse(message));
+    expect(packets.filter((message) => message.type === "chat.delta")).toEqual([]);
+    expect(packets).toContainEqual({
+      type: "chat.resync-required",
+      conversationId: "c",
+      turnId: expect.any(String),
+      reason: "replay-limit",
+    });
+    expect(f.close).not.toHaveBeenCalled();
+    f.release();
+    await f.ended;
+    expect(f.close).not.toHaveBeenCalled();
   } finally {
     await f.cleanup();
   }
