@@ -144,6 +144,24 @@ sudo bin/sync-env --coralbricks-key "$CORAL_API_KEY"   # add / replace (never ec
 sudo bin/sync-env --coralbricks-key ""                 # remove / disable
 ```
 
+### Conversation list index and rollback
+
+The conversation-store validates its derived `meta:*` listing rows against canonical
+metadata/model/lineage/tab-group values at every activation, before resetting stale active
+statuses. It repairs only changed/missing rows and removes rows whose canonical values were
+deleted; a clean index causes no writes. Existing databases need no manual marker reset.
+Rolling back to an older writer and later returning to this build is supported for listing
+repair, provided the older writer is stopped before activation. Keep the usual database backup
+before deployment; this is not a guarantee of compatibility for unrelated schema changes.
+
+**Residual policy:** do not run mixed old/new writers against the same database. Direct-storage
+or older-library writes made after activation are not live-coherent with listings: stop those
+writers and reactivate this build to repair them. Canonical `conv-index` membership remains
+authoritative; repair does not invent membership for orphan canonical rows, reconstruct a
+corrupt canonical index, or restore deleted canonical data. Standalone library consumers must
+await `initializeConversationListIndex(storage)` before exposing lists after external writes;
+list reads themselves retain only the cheap lazy bootstrap/version check.
+
 ---
 
 ## HTTP API

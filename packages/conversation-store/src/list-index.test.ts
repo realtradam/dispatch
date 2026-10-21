@@ -1,8 +1,10 @@
 import type { ChatMessage, StorageNamespace } from "@dispatch/kernel";
+import { createBus, createHost, createLogger } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
+import { extension } from "./extension.js";
 import { initializeConversationListIndex } from "./list-index.js";
-import { createConversationStore } from "./store.js";
+import { conversationStoreHandle, createConversationStore } from "./store.js";
 
 const message: ChatMessage[] = [{ role: "user", chunks: [{ type: "text", text: "hello" }] }];
 const meta = (title: string) =>
@@ -205,16 +207,227 @@ describe("conversation listing index", () => {
     await initializeConversationListIndex(f.storage);
     const readOnly: StorageNamespace = {
       ...f.storage,
+      set: async () => {
+        throw new Error("unexpected write");
+      },
+      delete: async () => {
+        throw new Error("unexpected delete");
+      },
       transaction: () => {
         throw new Error("unexpected transaction");
       },
     };
+    await initializeConversationListIndex(readOnly);
     const reopened = createConversationStore(readOnly);
     expect(await reopened.listConversations()).toEqual(await f.store.listConversations());
     await reopened.listChildren("root");
     await reopened.listWorkspaces();
     expect(f.data).toEqual(before);
     expect(f.scans()).toBe(1);
+  });
+
+  it("repairs older-writer drift on the next activation, not just a changed row count", async () => {
+    const f = fixture(
+      new Map([
+        ["conv-index", '["a","deleted","missing-meta"]'],
+        ["conv:a:meta", meta("A")],
+        ["conv:a:model", "old-model"],
+        ["conv:a:parent", "old-root"],
+        ["conv:a:tab-group-parent", "old-group"],
+        ["conv:deleted:meta", meta("Deleted")],
+        ["conv:missing-meta:parent", "old-root"],
+      ]),
+    );
+    await initializeConversationListIndex(f.storage);
+    // Simulate a rolled-back binary: canonical rows/index only, marker untouched.
+    f.data.set(
+      "conv:a:meta",
+      JSON.stringify({
+        createdAt: 1,
+        lastActivityAt: 99,
+        title: "Renamed",
+        status: "active",
+        workspaceId: "work",
+      }),
+    );
+    f.data.set("conv:a:model", "new-model");
+    f.data.set("conv:a:parent", "new-root");
+    f.data.set("conv:a:tab-group-parent", "");
+    f.data.set("conv:new:meta", meta("New"));
+    f.data.set("conv:missing-meta:parent", "new-root");
+    f.data.delete("conv:deleted:meta");
+    f.data.set("conv-index", '["a","new","missing-meta"]');
+    await initializeConversationListIndex(f.storage);
+    const reopened = createConversationStore(f.storage);
+    expect(await reopened.listConversations()).toEqual([
+      await reopened.getConversationMeta("a"),
+      await reopened.getConversationMeta("new"),
+    ]);
+    expect((await reopened.listConversations({ status: ["active"] }))[0]).toMatchObject({
+      id: "a",
+      title: "Renamed",
+      lastActivityAt: 99,
+      model: "new-model",
+      parentConversationId: "new-root",
+    });
+    expect((await reopened.listConversations())[0]).not.toHaveProperty("tabGroupParentId");
+    expect(await reopened.listChildren("old-root")).toEqual([]);
+    expect(await reopened.listChildren("new-root")).toEqual(["a", "missing-meta"]);
+    expect(f.data.has("meta:deleted")).toBe(false);
+    expect(await reopened.listWorkspaces()).toMatchObject([
+      { id: "default", conversationCount: 1 },
+    ]);
+    // Deleting scalars must restore the canonical absent-value defaults too.
+    f.data.delete("conv:a:model");
+    f.data.delete("conv:a:parent");
+    f.data.delete("conv:a:tab-group-parent");
+    await initializeConversationListIndex(f.storage);
+    expect((await reopened.listConversations())[0]).toEqual(
+      await reopened.getConversationMeta("a"),
+    );
+    expect((await reopened.listConversations())[0]).not.toHaveProperty("model");
+  });
+
+  it("repairs same-count drift, corrupt projections and meta-only deletions atomically", async () => {
+    const f = fixture(
+      new Map([
+        ["conv-index", '["a","b"]'],
+        ["conv:a:meta", meta("A")],
+        ["conv:b:meta", meta("B")],
+      ]),
+    );
+    await initializeConversationListIndex(f.storage);
+    f.data.set("conv:a:meta", meta("Changed"));
+    f.data.set("meta:b", "invalid projection");
+    const before = new Map(f.data);
+    f.fail("meta:b");
+    await expect(initializeConversationListIndex(f.storage)).rejects.toThrow(
+      "injected projection failure",
+    );
+    expect(f.data).toEqual(before);
+    f.fail();
+    await initializeConversationListIndex(f.storage);
+    expect((await f.store.listConversations()).map((row) => row.title)).toEqual(["Changed", "B"]);
+    // Even a legacy deletion that leaves a dangling conv-index id cannot retain stale meta.
+    f.data.delete("conv:a:meta");
+    await initializeConversationListIndex(f.storage);
+    expect((await f.store.listConversations()).map((row) => row.id)).toEqual(["b"]);
+    expect(f.data.has("meta:a")).toBe(false);
+  });
+
+  it.each([
+    ["meta", meta("Changed")],
+    ["model", "model"],
+    ["parent", "root"],
+    ["tab-group-parent", "group"],
+    ["tab-group-parent", ""],
+  ])("detects isolated same-count %s drift (%s) and repairs only changed rows", async (field, value) => {
+    const f = fixture(
+      new Map([
+        ["conv-index", '["a","unchanged"]'],
+        ["conv:a:meta", meta("A")],
+        ["conv:unchanged:meta", meta("Unchanged")],
+        ["conv:a:parent", "original"],
+      ]),
+    );
+    await initializeConversationListIndex(f.storage);
+    f.data.set(`conv:a:${field}`, value);
+    f.fail("meta:unchanged");
+    await initializeConversationListIndex(f.storage);
+    expect((await f.store.listConversations()).find((row) => row.id === "a")).toEqual(
+      await f.store.getConversationMeta("a"),
+    );
+    expect(f.scans()).toBe(1);
+  });
+
+  it("discovers an isolated older-writer creation from conv-index and removes an isolated deletion", async () => {
+    const f = fixture(
+      new Map([
+        ["conv-index", '["a"]'],
+        ["conv:a:meta", meta("A")],
+      ]),
+    );
+    await initializeConversationListIndex(f.storage);
+    f.data.set("conv:b:meta", meta("B"));
+    f.data.set("conv-index", '["a","b"]');
+    await initializeConversationListIndex(f.storage);
+    expect((await f.store.listConversations()).map((row) => row.id)).toEqual(["a", "b"]);
+    f.data.delete("conv:b:meta");
+    f.data.set("conv-index", '["a"]');
+    await initializeConversationListIndex(f.storage);
+    expect((await f.store.listConversations()).map((row) => row.id)).toEqual(["a"]);
+    expect(f.data.has("meta:b")).toBe(false);
+    expect(f.scans()).toBe(1);
+  });
+
+  it("rechecks canonical rows inside repair instead of committing a stale snapshot", async () => {
+    const f = fixture(
+      new Map([
+        ["conv-index", '["a"]'],
+        ["conv:a:meta", meta("A")],
+      ]),
+    );
+    await initializeConversationListIndex(f.storage);
+    f.data.set("conv:a:meta", meta("Older writer"));
+    const concurrent: StorageNamespace = {
+      ...f.storage,
+      transaction: (fn) => {
+        f.data.set("conv:a:meta", meta("Latest writer"));
+        return f.storage.transaction(fn);
+      },
+    };
+    await initializeConversationListIndex(concurrent);
+    expect((await f.store.listConversations())[0]?.title).toBe("Latest writer");
+  });
+
+  it("validates before the real extension boot status sweep and service publication", async () => {
+    const f = fixture(
+      new Map([
+        ["conv-index", '["a"]'],
+        ["conv:a:meta", meta("A")],
+      ]),
+    );
+    await initializeConversationListIndex(f.storage);
+    f.data.set(
+      "conv:a:meta",
+      JSON.stringify({
+        createdAt: 1,
+        lastActivityAt: 200,
+        title: "Resumed",
+        status: "active",
+      }),
+    );
+    f.data.set("conv:new:meta", meta("New"));
+    f.data.set("conv-index", '["a","new"]');
+    const logSink = { emit: () => {} };
+    const logDeps = { now: () => 0, newId: () => "test" };
+    const logger = createLogger({ extensionId: "test" }, logSink, logDeps);
+    const host = createHost([extension], {
+      logger,
+      logSink,
+      logDeps,
+      bus: createBus(logger),
+      storageFactory: () => f.storage,
+      config: { get: () => undefined, getAll: () => ({}) },
+      secrets: { get: async () => null, set: async () => {}, delete: async () => {} },
+      permissions: { check: async () => ({ allowed: true }) },
+      scheduler: { register: () => {}, unregister: () => {} },
+      events: { emit: () => {} },
+    });
+    await host.activate();
+    try {
+      expect(host.getDisabled()).toEqual([]);
+      const store = host.getHostAPI().getService(conversationStoreHandle);
+      expect(
+        (await store.listConversations()).map(({ id, status, title }) => ({ id, status, title })),
+      ).toEqual([
+        { id: "a", status: "idle", title: "Resumed" },
+        { id: "new", status: "idle", title: "New" },
+      ]);
+      expect((await store.listConversations())[0]).toEqual(await store.getConversationMeta("a"));
+    } finally {
+      await host.deactivate();
+    }
   });
 
   it.each([
