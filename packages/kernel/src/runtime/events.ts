@@ -14,6 +14,10 @@ export function reasoningDeltaEvent(
   return { type: "reasoning-delta", conversationId, turnId, delta };
 }
 
+export function reasoningEndEvent(conversationId: string, turnId: string): AgentEvent {
+  return { type: "reasoning-end", conversationId, turnId };
+}
+
 export function toolCallEvent(
   conversationId: string,
   turnId: string,

@@ -327,6 +327,7 @@ describe("compactReplay", () => {
     ({ type: "text-delta", conversationId: C, turnId, delta }) as const;
   const reason = (delta: string) =>
     ({ type: "reasoning-delta", conversationId: C, turnId: T, delta }) as const;
+  const reasonEnd = { type: "reasoning-end", conversationId: C, turnId: T } as const;
   const call = (toolCallId: string) =>
     ({
       type: "tool-call",
@@ -378,6 +379,19 @@ describe("compactReplay", () => {
   it("does not merge across an interrupting structural event", () => {
     const out = compactReplay([text("a"), call("x"), text("b"), text("c")]);
     expect(out).toEqual([text("a"), call("x"), text("bc")]);
+  });
+
+  it("keeps reasoning blocks split at every reasoning-end boundary", () => {
+    const events = [reason("a"), reasonEnd, reason("b"), reasonEnd];
+    expect(compactReplay(events)).toEqual(events);
+    expect(fold(events)).toEqual(events);
+    expect(foldBuffer(events).size).toBe(4);
+  });
+
+  it("still merges legacy reasoning deltas with no reasoning-end", () => {
+    const events = [reason("a"), reason("b")];
+    expect(compactReplay(events)).toEqual([reason("ab")]);
+    expect(fold(events)).toEqual([reason("ab")]);
   });
 
   it("does not merge deltas of different turns", () => {

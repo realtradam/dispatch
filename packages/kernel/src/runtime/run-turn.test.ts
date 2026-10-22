@@ -281,6 +281,7 @@ describe("runTurn", () => {
         ],
       },
     ])("$name", async ({ script, chunks }) => {
+      const { events, emit } = createCollectingEmit();
       const result = await runTurn({
         provider: createFakeProvider([script]),
         messages: [userMessage],
@@ -288,9 +289,27 @@ describe("runTurn", () => {
         dispatch: { maxConcurrent: 1, eager: false },
         conversationId: "conv-1",
         turnId: "turn-1",
-        emit: () => {},
+        emit,
       });
       expect(result.messages).toEqual([{ role: "assistant", chunks }]);
+
+      // Every provider reasoning event has exactly one outward counterpart: deltas stay
+      // deltas, and every block boundary is a content-free `reasoning-end`.
+      const expectedReasoning = script
+        .filter((e) => e.type === "reasoning-delta" || e.type === "reasoning-end")
+        .map((e) => e.type);
+      const reasoningEvents = events.filter(
+        (e) => e.type === "reasoning-delta" || e.type === "reasoning-end",
+      );
+      expect(reasoningEvents.map((e) => e.type)).toEqual(expectedReasoning);
+      for (const event of reasoningEvents) {
+        if (event.type === "reasoning-end") {
+          expect(Object.keys(event).sort()).toEqual(["conversationId", "turnId", "type"]);
+        }
+      }
+      // Opaque payloads never leave the server, whichever script we ran.
+      expect(JSON.stringify(events)).not.toContain("sig");
+      expect(JSON.stringify(events)).not.toContain("opaque-data");
     });
 
     it("retains signed history and chunk order through persistence callbacks and subsequent steps", async () => {
@@ -337,7 +356,7 @@ describe("runTurn", () => {
       expect(result.messages[2]?.chunks).toEqual([{ type: "thinking", text: "next step" }]);
     });
 
-    it("reasoning ends emit no live event or opaque payload and never mark TTFT", async () => {
+    it("reasoning ends emit payload-free live events and never mark TTFT", async () => {
       const { logger, sink } = createTestLogger();
       const { events, emit } = createCollectingEmit();
       await runTurn({
@@ -357,7 +376,14 @@ describe("runTurn", () => {
         logger,
         now: () => 100,
       });
-      expect(events.map((event) => event.type)).toEqual(["turn-start", "step-complete", "done"]);
+      expect(events.map((event) => event.type)).toEqual([
+        "turn-start",
+        "reasoning-end",
+        "reasoning-end",
+        "reasoning-end",
+        "step-complete",
+        "done",
+      ]);
       expect(JSON.stringify(events)).not.toContain("secret");
       const step = events.find((event) => event.type === "step-complete");
       expect(step).toEqual({

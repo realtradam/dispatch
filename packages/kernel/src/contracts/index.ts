@@ -46,6 +46,7 @@ export type {
   TurnInputEvent,
   TurnProviderRetryEvent,
   TurnReasoningDeltaEvent,
+  TurnReasoningEndEvent,
   TurnSealedEvent,
   TurnStartEvent,
   TurnSteeringEvent,

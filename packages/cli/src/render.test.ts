@@ -42,6 +42,16 @@ describe("renderEvent", () => {
     expect(renderEvent(e, optsReasoning)).toEqual({ stdout: "thinking..." });
   });
 
+  it("hides reasoning-end by default", () => {
+    const e: AgentEvent = { type: "reasoning-end", conversationId: "c", turnId: "t" };
+    expect(renderEvent(e, opts)).toBeUndefined();
+  });
+
+  it("separates consecutive reasoning blocks when showReasoning is true", () => {
+    const e: AgentEvent = { type: "reasoning-end", conversationId: "c", turnId: "t" };
+    expect(renderEvent(e, optsReasoning)).toEqual({ stdout: "\n" });
+  });
+
   it("renders tool-call with name and JSON input", () => {
     const e: AgentEvent = {
       type: "tool-call",

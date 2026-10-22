@@ -22,6 +22,8 @@ export function renderEvent(e: AgentEvent, opts: RenderOpts): RenderOutput | und
       return { stdout: e.delta };
     case "reasoning-delta":
       return opts.showReasoning ? { stdout: e.delta } : undefined;
+    case "reasoning-end":
+      return opts.showReasoning ? { stdout: "\n" } : undefined;
     case "tool-call":
       return { stdout: `\n[tool] ${e.toolName} ${JSON.stringify(e.input)}\n` };
     case "tool-output":
