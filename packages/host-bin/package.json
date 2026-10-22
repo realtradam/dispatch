@@ -30,6 +30,7 @@
     "@dispatch/provider-longcat": "workspace:*",
     "@dispatch/provider-openai-compat": "workspace:*",
     "@dispatch/provider-openrouter": "workspace:*",
+    "@dispatch/provider-systalyze": "workspace:*",
     "@dispatch/provider-umans": "workspace:*",
     "@dispatch/session-orchestrator": "workspace:*",
     "@dispatch/skills": "workspace:*",

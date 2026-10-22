@@ -40,6 +40,7 @@ import { extension as providerHyperExt } from "@dispatch/provider-hyper";
 import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as providerOpenRouterExt } from "@dispatch/provider-openrouter";
+import { extension as providerSystalyzeExt } from "@dispatch/provider-systalyze";
 import { extension as providerUmansExt } from "@dispatch/provider-umans";
 import { extension as sessionOrchestratorExt } from "@dispatch/session-orchestrator";
 import { extension as skillsExt } from "@dispatch/skills";
@@ -108,6 +109,7 @@ export function createBundledExtensions(creds: {
     providerOpenRouterExt,
     providerBasetenExt,
     providerCoralbricksExt,
+    providerSystalyzeExt,
     // Always loaded — with no numbered credentials configured it
     // self-degrades (registers nothing; OpenCode unavailable).
     providerOpenaiCompatExt,

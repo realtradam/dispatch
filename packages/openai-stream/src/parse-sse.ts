@@ -8,7 +8,9 @@ interface ToolCallAccumulator {
 
 interface SSEChunkDelta {
   content?: string;
-  reasoning_content?: string;
+  reasoning_content?: string | null;
+  /** Alias some OpenAI-compatible providers use instead of `reasoning_content`. */
+  reasoning?: string | null;
   tool_calls?: Array<{
     index: number;
     id?: string;
@@ -111,8 +113,13 @@ function parseLines(lines: readonly string[], state: ParserState): ProviderEvent
           events.push({ type: "text-delta", delta: delta.content });
         }
 
-        if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
-          events.push({ type: "reasoning-delta", delta: delta.reasoning_content });
+        // `reasoning` is a fallback alias for `reasoning_content` used by some
+        // OpenAI-compatible providers; it only applies when the standard field
+        // is absent (not merely empty) so a provider sending both keeps the
+        // standard field authoritative.
+        const reasoning = delta.reasoning_content ?? delta.reasoning;
+        if (typeof reasoning === "string" && reasoning) {
+          events.push({ type: "reasoning-delta", delta: reasoning });
         }
 
         if (delta.tool_calls) {
