@@ -112,6 +112,41 @@ describe("parseSSELines", () => {
     ]);
   });
 
+  it("parses reasoning deltas from the `reasoning` alias when reasoning_content is absent", () => {
+    // Some OpenAI-compatible providers stream thinking as a plain
+    // `delta.reasoning` string (it can also arrive as null on terminal
+    // chunks) instead of the standard `reasoning_content`.
+    const lines = [
+      'data: {"id":"chatcmpl-9","choices":[{"delta":{"role":"assistant","content":"","reasoning":"Let me"},"index":0}]}',
+      'data: {"id":"chatcmpl-9","choices":[{"delta":{"role":"assistant","content":"","reasoning":" think..."},"index":0}]}',
+      'data: {"id":"chatcmpl-9","choices":[{"delta":{"role":"assistant","content":"Here is my answer."},"index":0}]}',
+      'data: {"id":"chatcmpl-9","choices":[{"delta":{"role":"assistant","content":"","reasoning":null},"finish_reason":"stop","index":0}]}',
+      "data: [DONE]",
+    ];
+
+    const events = parseSSELines(lines);
+    expect(events).toEqual([
+      { type: "reasoning-delta", delta: "Let me" },
+      { type: "reasoning-delta", delta: " think..." },
+      { type: "text-delta", delta: "Here is my answer." },
+      { type: "finish", reason: "stop" },
+    ]);
+  });
+
+  it("keeps reasoning_content authoritative when both reasoning fields are present", () => {
+    const lines = [
+      'data: {"id":"chatcmpl-10","choices":[{"delta":{"reasoning_content":"standard","reasoning":"alias"},"index":0}]}',
+      'data: {"id":"chatcmpl-10","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+      "data: [DONE]",
+    ];
+
+    const events = parseSSELines(lines);
+    expect(events).toEqual([
+      { type: "reasoning-delta", delta: "standard" },
+      { type: "finish", reason: "stop" },
+    ]);
+  });
+
   it("handles invalid JSON gracefully", () => {
     const lines = [
       "data: {invalid json}",

@@ -80,6 +80,9 @@
       "path": "./packages/provider-coralbricks"
     },
     {
+      "path": "./packages/provider-systalyze"
+    },
+    {
       "path": "./packages/provider-openrouter"
     },
     {

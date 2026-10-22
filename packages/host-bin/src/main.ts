@@ -220,6 +220,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     credentials.push({ name: "coralbricks", providerId: "coralbricks" });
     logger.info(`Registered credential "coralbricks" → coralbricks provider`);
   }
+  if (process.env.SYSTALYZE_API_KEY || process.env.STLZ_API_KEY) {
+    credentials.push({ name: "systalyze", providerId: "systalyze" });
+    logger.info(`Registered credential "systalyze" → systalyze provider`);
+  }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),
   );
