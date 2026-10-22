@@ -5,6 +5,7 @@ export {
   errorEvent,
   providerRetryEvent,
   reasoningDeltaEvent,
+  reasoningEndEvent,
   textDeltaEvent,
   toolCallEvent,
   toolOutputEvent,

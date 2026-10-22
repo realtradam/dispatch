@@ -336,6 +336,7 @@ export type AgentEvent =
   | TurnInputEvent
   | TurnTextDeltaEvent
   | TurnReasoningDeltaEvent
+  | TurnReasoningEndEvent
   | TurnToolCallEvent
   | TurnToolResultEvent
   | TurnToolOutputEvent
@@ -395,6 +396,21 @@ export interface TurnReasoningDeltaEvent {
   readonly conversationId: string;
   readonly turnId: string;
   readonly delta: string;
+}
+
+/**
+ * End of one reasoning / thinking block. Emitted once per block by providers with
+ * block-structured reasoning (e.g. Anthropic, whose consecutive thinking blocks — each
+ * separately signed — persist as separate thinking chunks). Lets a live consumer split
+ * thinking exactly as history does: the open thinking chunk closes; if none is open (a
+ * redacted/empty block with no deltas) an EMPTY thinking chunk is implied. Carries no
+ * content: the opaque replay payloads (signature / redacted data) never leave the
+ * server. Providers without block structure never emit it (deltas merge as before).
+ */
+export interface TurnReasoningEndEvent {
+  readonly type: "reasoning-end";
+  readonly conversationId: string;
+  readonly turnId: string;
 }
 
 /** The model has requested a tool to be run. */

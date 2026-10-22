@@ -45,7 +45,8 @@ export interface ReasoningDeltaEvent {
  * End of one reasoning block, carrying opaque payloads for verbatim replay.
  * Optional: providers without signed reasoning never need to emit this event.
  * Closes the current reasoning chunk even when neither payload is present.
- * Produces no outward event and is not a first-token marker.
+ * Produces a payload-free outward `reasoning-end` event (block boundary); never a
+ * first-token marker.
  */
 export interface ReasoningEndEvent {
   readonly type: "reasoning-end";

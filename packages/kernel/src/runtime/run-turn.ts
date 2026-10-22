@@ -21,6 +21,7 @@ import {
   errorEvent,
   providerRetryEvent,
   reasoningDeltaEvent,
+  reasoningEndEvent,
   stepCompleteEvent,
   textDeltaEvent,
   toolCallEvent,
@@ -265,8 +266,11 @@ function processEvent(
       ctx.emit(reasoningDeltaEvent(ctx.conversationId, ctx.turnId, event.delta));
       break;
     case "reasoning-end":
-      // Replay-only content: no live event and no first-token marker.
+      // Payload-free block boundary: closes the persisted thinking chunk and emits an
+      // outward (content-free) boundary event so live consumers split thinking as
+      // history does. Never a first-token marker.
       closeThinkingBlock(chunks, closedThinking, event);
+      ctx.emit(reasoningEndEvent(ctx.conversationId, ctx.turnId));
       break;
     case "tool-call": {
       // Dedupe by toolCallId within the step: a provider can emit the SAME

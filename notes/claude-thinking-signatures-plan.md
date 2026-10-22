@@ -61,6 +61,9 @@ Add it to the `ProviderEvent` union and re-export from the kernel index as other
   `signature`/`redactedData` and close it; otherwise (e.g. redacted block with no deltas) push a new
   `{ type: "thinking", text: "", signature?, redactedData? }` chunk. Emit NO outward AgentEvent
   (signatures never go to the frontend live stream). Not a first-token marker.
+  > **Superseded (2026-10-22):** the kernel now emits a payload-free outward `reasoning-end`
+  > event per block so live and persisted thinking split identically. Signatures/redacted data
+  > still never leave the server. See `notes/reasoning-end-live-event-plan.md`.
 - Consecutive thinking blocks must stay separate chunks (don't coalesce across a `reasoning-end`).
 - `stripToolCallChunks` (aborted step): also strip `signature`/`redactedData` from thinking chunks
   in that message (a signed block whose tool_use was removed is a modified turn — degrade to
