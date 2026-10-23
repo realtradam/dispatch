@@ -8,6 +8,7 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../network-policy" },
+    { "path": "../provider-inco" },
     {
       "path": "../account-usage"
     },

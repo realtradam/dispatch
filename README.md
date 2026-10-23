@@ -44,6 +44,11 @@ bun install
    # Optional — LongCat AI provider (https://longcat.chat)
    LONGCAT_API_KEY=sk-...                          # if set, the "longcat" provider is registered
 
+   # Optional — Inco provider (https://platform.inco.ai/docs)
+   INCO_API_KEY=...                               # injected env or /etc/dispatch/env only
+   INCO_BASE_URL=https://api.inco.ai/v1            # optional override
+   INCO_MODEL=glm-5.3-flash:fast                   # default; fast variant
+
    # Optional — Hyper provider (https://hyper.charm.land)
    HYPER_API_KEY=sk-hyper-...                      # if set, the "hyper" provider is registered
    # HYPER_BASE_URL=https://hyper.charm.land/v1     # optional override (default shown)
@@ -143,6 +148,42 @@ The CoralBricks key (`CORAL_API_KEY` -> the `coralbricks` provider + credential)
 sudo bin/sync-env --coralbricks-key "$CORAL_API_KEY"   # add / replace (never echoes the value)
 sudo bin/sync-env --coralbricks-key ""                 # remove / disable
 ```
+
+### Inco provider setup
+
+Inco's [official API reference](https://platform.inco.ai/docs) documents
+`https://api.inco.ai/v1`, Bearer authentication, streaming Chat Completions and an
+authenticated `GET /models` catalog. Set `INCO_API_KEY` to register provider and
+credential **`inco`**. Optional `INCO_BASE_URL` and `INCO_MODEL` override the defaults
+above. The default is the fast variant **`glm-5.3-flash:fast`**.
+
+The catalog preserves standard and `:fast` models as separate selectable model
+names (for example `inco/glm-5.3-flash` and `inco/glm-5.3-flash:fast`). Fast is
+higher-priced serving of the same model; selecting a standard model explicitly
+still uses standard serving. Inco's catalog supplies context windows and image
+input capability; video input is not supported by Dispatch's current message ABI.
+No undocumented account/concurrency usage endpoint is polled.
+
+For secure persistent setup, review and run the helper **without a sudo prefix**:
+
+```sh
+bin/set-inco-key                        # hidden prompt, no key in command arguments
+# Or consume a private, user-owned token file (no trailing newline):
+bin/set-inco-key --key-file "$HOME/.local/state/dispatch/inco-provider-key" --consume-key-file
+```
+
+The helper invokes sudo internally only where root-owned `/etc/dispatch/env`
+requires it. First `sudo -v` authenticates using the terminal; only the updater runs
+as root, receiving the key on stdin to atomically update the fixed env path. It
+preserves unrelated settings and existing owner/group, caps permissions at 0640
+(new files are 0600), and rejects unsafe paths/files. The optional consumption
+flag unlinks the source only after successful persistence (not secure erasure).
+It does not build/install binaries
+or restart services. Existing running processes will not acquire the new key.
+Build/install the updated backend using your normal deployment process, then
+restart only when approved. Enable **provider-inco** in the target workspace's
+plugin settings before using its models. This change does not modify frontend code;
+the frontend consumes the backend's existing model catalog contract.
 
 ### Conversation list index and rollback
 
@@ -333,6 +374,7 @@ topologically at activation). Every extension also depends implicitly on the ker
 | **lsp** | Language Server Protocol client (hand-rolled JSON-RPC over stdio) — lazy-spawn, per-cwd config, diagnostics, `lsp` tool. | — |
 | **provider-umans** | Umans OpenAI-compatible provider (`api.code.umans.ai`); self-contained (reads `UMANS_API_KEY` from env). | — |
 | **provider-longcat** | LongCat OpenAI-compatible provider (`api.longcat.chat`, model `LongCat-2.0`, text-only); self-contained (reads `LONGCAT_API_KEY` from env). | — |
+| **provider-inco** | Inco OpenAI-compatible provider (`https://api.inco.ai/v1`, live authenticated catalog including distinct `:fast` variants); provider + credential `inco`, enabled by `INCO_API_KEY`. Default `glm-5.3-flash:fast`, overrides `INCO_BASE_URL` / `INCO_MODEL`; image support from catalog modalities; no `getUsage`. | — |
 | **provider-hyper** | Hyper OpenAI-compatible provider (`https://hyper.charm.land/v1`, models from live `GET /models`); self-contained (reads `HYPER_API_KEY` from env). Omits `getUsage` — Hyper documents `/v1/credits`, not the `concurrent_sessions` shape. | — |
 | **provider-baseten** | Baseten Model APIs OpenAI-compatible provider (`https://inference.baseten.co/v1`, default model `deepseek-ai/DeepSeek-V4.1-Flash-Fast`, override via `BASETEN_MODEL` / `provider.baseten.model`); self-contained (reads `BASETEN_API_KEY` from env). Authenticates with `Authorization: Api-Key <key>` (via `openai-stream`'s `authScheme`), omits `getUsage`. | — |
 | **provider-coralbricks** | CoralBricks OpenAI-compatible provider (`https://inference.coralbricks.ai/v1`, models from live `GET /models`, default model `deepseek-v4.1-flash-fast`, override via `CORAL_MODEL` / `provider.coralbricks.model`); self-contained (reads `CORAL_API_KEY` from env). Maps the reasoning-effort ladder onto CoralBricks' `low`/`high`/`max` values and omits `getUsage`. | — |

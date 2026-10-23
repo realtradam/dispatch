@@ -30,6 +30,7 @@ import { createBundledExtensions } from "./bundled.js";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
 import { configMapToAccess, envToConfigMap } from "./config.js";
+import { createIncoCredentials } from "./credentials.js";
 import { loadExternalExtensions } from "./load-external.js";
 import { startMemoryTelemetry } from "./mem-telemetry.js";
 import { createNetworkPolicyMonitor } from "./network.js";
@@ -43,18 +44,11 @@ import {
   toScannedEntries,
 } from "./plugin-discovery.js";
 import { reconcilePlugins, resolvePluginsDir } from "./plugin-reconcile.js";
+import { createEnvSecrets } from "./secrets.js";
 import { createShutdownController, EXIT_CODES } from "./shutdown-controller.js";
 
 export function createEmptySecrets(): SecretsAccess {
-  return {
-    get: async () => null,
-    set: async () => {
-      throw new Error("secrets store not configured");
-    },
-    delete: async () => {
-      throw new Error("secrets store not configured");
-    },
-  };
+  return createEnvSecrets({});
 }
 
 function createAllowAllPermissions(): PermissionGate {
@@ -131,7 +125,7 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     logger,
     config,
     storageFactory,
-    secrets: createEmptySecrets(),
+    secrets: createEnvSecrets(process.env),
     permissions: createAllowAllPermissions(),
     scheduler: createNoopScheduler(),
     bus: createBus(logger),
@@ -223,6 +217,10 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
   if (process.env.SYSTALYZE_API_KEY || process.env.STLZ_API_KEY) {
     credentials.push({ name: "systalyze", providerId: "systalyze" });
     logger.info(`Registered credential "systalyze" → systalyze provider`);
+  }
+  for (const credential of createIncoCredentials(process.env)) {
+    credentials.push(credential);
+    logger.info(`Registered credential "inco" → inco provider`);
   }
   const hasAnthropic = externalExtensions.some((e) =>
     e.manifest.contributes?.providers?.includes("anthropic"),

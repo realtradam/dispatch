@@ -170,3 +170,19 @@ it("resolves relative image overrides and DB paths once at boot", () => {
     resolve("relative-data/images"),
   );
 });
+
+it("exposes Inco config settings and aliases without exposing the key", () => {
+  const access = configMapToAccess(
+    envToConfigMap({
+      INCO_BASE_URL: "https://inco.example/v1",
+      INCO_MODEL: "glm-5.3-flash:fast",
+      INCO_API_KEY: "fixture-key",
+    }),
+  );
+  expect(access.get("provider.inco.baseURL")).toBe("https://inco.example/v1");
+  expect(access.get("INCO_BASE_URL")).toBe("https://inco.example/v1");
+  expect(access.get("provider.inco.model")).toBe("glm-5.3-flash:fast");
+  expect(access.get("INCO_MODEL")).toBe("glm-5.3-flash:fast");
+  expect(access.get("INCO_API_KEY")).toBeUndefined();
+  expect(envToConfigMap({})["provider.inco.model"]).toBeUndefined();
+});

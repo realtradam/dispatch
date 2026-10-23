@@ -37,6 +37,7 @@ import { extension as providerBasetenExt } from "@dispatch/provider-baseten";
 import { extension as providerConcurrencyExt } from "@dispatch/provider-concurrency";
 import { extension as providerCoralbricksExt } from "@dispatch/provider-coralbricks";
 import { extension as providerHyperExt } from "@dispatch/provider-hyper";
+import { createIncoExtension, type IncoExtensionOptions } from "@dispatch/provider-inco";
 import { extension as providerLongcatExt } from "@dispatch/provider-longcat";
 import { extension as providerOpenaiCompatExt } from "@dispatch/provider-openai-compat";
 import { extension as providerOpenRouterExt } from "@dispatch/provider-openrouter";
@@ -75,6 +76,8 @@ const loadedExtensionsSurface = createLoadedExtensionsExtension();
  */
 export function createBundledExtensions(creds: {
   credentials: readonly Credential[];
+  /** Optional outer network edge for the Inco provider. */
+  inco?: IncoExtensionOptions;
 }): Extension[] {
   return [
     // Tier grouping below is documentation, not semantics: the host resolves
@@ -113,6 +116,7 @@ export function createBundledExtensions(creds: {
     // Always loaded — with no numbered credentials configured it
     // self-degrades (registers nothing; OpenCode unavailable).
     providerOpenaiCompatExt,
+    createIncoExtension(creds.inco),
     // --- standard ---
     namedAgentsExt,
     accountUsageExt,

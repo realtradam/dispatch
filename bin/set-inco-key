@@ -1,0 +1,339 @@
+#!/bin/bash
+# Never let inherited tracing print credential-handling commands.
+set +x +v
+set -euo pipefail
+exec /usr/bin/python3 -I - "$@" <<'PY'
+import argparse
+import contextlib
+import getpass
+import os
+import re
+import resource
+import stat
+import subprocess
+import sys
+import warnings
+
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+MAX_KEY = 4096
+SAFE_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+
+# This code is passed as nonsecret program text, never with a credential in argv.
+# Production has NO destination argument. Fixture mode categorically refuses root.
+UPDATER = r'''
+import fcntl
+import os
+import re
+import resource
+import secrets
+import stat
+import sys
+
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+MAX_ENV = 16 * 1024 * 1024
+
+
+def fingerprint(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def parent_directory(path, fixture):
+    parts = path.split("/")
+    if not path.startswith("/") or any(p in (".", "..") for p in parts):
+        raise ValueError()
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for index, part in enumerate(parts[1:-1]):
+            if not part:
+                raise ValueError()
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if fixture or index != 1 or part != "dispatch":
+                    raise
+                os.mkdir(part, 0o700, dir_fd=fd)
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            info = os.fstat(child)
+            trusted = (0, os.getuid()) if fixture else (0,)
+            sticky_tmp = fixture and info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+            if info.st_uid not in trusted or (info.st_mode & 0o022 and not sticky_tmp):
+                os.close(child)
+                raise ValueError()
+            os.close(fd)
+            fd = child
+        info = os.fstat(fd)
+        if fixture and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+            raise ValueError()
+        return fd, parts[-1]
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def records(data):
+    # EnvironmentFile is NOT shell syntax. Quotes only start a quoted value
+    # immediately after '=' and optional whitespace. Preserve complete multiline
+    # values/continuations so apparent assignments inside them are never edited.
+    offset = 0
+    while offset < len(data):
+        end = data.find(b"\n", offset)
+        end = len(data) if end < 0 else end + 1
+        first = data[offset:end]
+        match = re.match(rb"[ \t\r]*([A-Za-z_][A-Za-z0-9_]*)[ \t\r]*=", first)
+        if match is None:
+            yield None, first
+            offset = end
+            continue
+        pos = offset + match.end()
+        while pos < len(data) and data[pos] in b" \t\r":
+            pos += 1
+        quote = data[pos] if pos < len(data) and data[pos] in (34, 39) else None
+        if quote is not None:
+            pos += 1
+        while pos < len(data):
+            char = data[pos]
+            if quote is not None:
+                if char == quote:
+                    quote = None
+                elif quote == 34 and char == 92:
+                    pos += 1
+            elif char == 92:
+                pos += 1
+            elif char == 10:
+                pos += 1
+                break
+            pos += 1
+        if quote is not None:
+            raise ValueError()  # Refuse an ambiguous/unterminated existing value.
+        yield match.group(1), data[offset:pos]
+        offset = pos
+
+
+def update():
+    fixture = len(sys.argv) == 3 and sys.argv[1] == "--fixture"
+    if fixture:
+        if os.geteuid() == 0 or os.getuid() != os.geteuid():
+            raise ValueError()
+        path = sys.argv[2]
+    else:
+        if len(sys.argv) != 1 or os.geteuid() != 0:
+            raise ValueError()
+        path = "/etc/dispatch/env"
+    key = sys.stdin.buffer.read(4097)
+    if re.fullmatch(rb"[A-Za-z0-9._~+/=-]{1,4096}", key) is None:
+        raise ValueError()
+    directory, name = parent_directory(path, fixture)
+    temporary = None
+    try:
+        # Directory locking serializes cooperating helpers without a lock file.
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        original = None
+        metadata = (os.getuid() if fixture else 0, os.getgid() if fixture else 0, 0o600)
+        data = b""
+        try:
+            source = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except FileNotFoundError:
+            source = None
+        if source is not None:
+            try:
+                info = os.fstat(source)
+                owner = os.getuid() if fixture else 0
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_nlink != 1:
+                    raise ValueError()
+                original = fingerprint(info)
+                # Preserve intentional service-group read access (0640), but
+                # never retain group-write/execute, other access or special bits.
+                metadata = (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode) & 0o640)
+                with os.fdopen(os.dup(source), "rb") as stream:
+                    data = stream.read(MAX_ENV + 1)
+                if len(data) > MAX_ENV or b"\x00" in data or fingerprint(os.fstat(source)) != original:
+                    raise ValueError()
+            finally:
+                os.close(source)
+        replacement = b"INCO_API_KEY=" + key + b"\n"
+        output = []
+        inserted = False
+        for variable, record in records(data):
+            if variable == b"INCO_API_KEY":
+                if not inserted:
+                    output.append(replacement)
+                    inserted = True
+            else:
+                output.append(record)
+        if not inserted:
+            if output and re.search(rb"(?<!\\)(?:\\\\)*\\\n$", output[-1]):
+                raise ValueError()  # Do not append into an unfinished continuation.
+            if output and not output[-1].endswith(b"\n"):
+                # An EOF backslash would swallow the appended assignment.
+                if output[-1].endswith(b"\\"):
+                    raise ValueError()
+                output.append(b"\n")
+            output.append(replacement)
+        temporary = ".env.inco-" + secrets.token_hex(16)
+        dest = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                       0o600, dir_fd=directory)
+        with os.fdopen(dest, "wb") as stream:
+            os.fchown(stream.fileno(), metadata[0], metadata[1])
+            os.fchmod(stream.fileno(), metadata[2])
+            stream.write(b"".join(output))
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            current = None
+        if (current is None) != (original is None):
+            raise ValueError()
+        if current is not None and fingerprint(current) != original:
+            raise ValueError()
+        os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        temporary = None
+        os.fsync(directory)
+    finally:
+        if temporary is not None:
+            os.unlink(temporary, dir_fd=directory)
+        os.close(directory)
+
+
+try:
+    update()
+except BaseException:
+    # Never stringify an exception: it could contain credential/config bytes.
+    print("Credential update failed; no source-file consumption was authorized.", file=sys.stderr)
+    sys.exit(1)
+'''
+
+
+class SetupError(Exception):
+    pass
+
+
+def parser():
+    result = argparse.ArgumentParser(
+        prog="bin/set-inco-key",
+        description="Securely add/replace INCO_API_KEY in /etc/dispatch/env. No service restart.",
+        epilog="Run as your normal user, NOT with sudo. Requires /usr/bin/python3 and, in production, /usr/bin/sudo.",
+    )
+    result.add_argument("--key-file", metavar="PATH", help=(
+        "read one raw ASCII token (1-4096 bytes; letters, digits, . _ ~ + / = - only); "
+        "NO trailing newline. File must be user-owned, regular, private (0600/0400), "
+        "single-link and reached without symlinks. Otherwise prompt with terminal echo disabled."
+    ))
+    result.add_argument("--consume-key-file", action="store_true", help=(
+        "unlink --key-file ONLY after the update and directory fsync succeed and the source "
+        "still matches the opened file. Default: retain it. Failure retains it; cleanup failure "
+        "after persistence is reported separately. Unlinking is NOT secure erasure."
+    ))
+    result.add_argument("--test-env-file", metavar="PATH", help=(
+        "NON-ROOT fixture mode: no sudo, no /etc access. Update only this absolute fixture "
+        "path in an existing user-owned 0700 directory with no symlink components. "
+        "Uses the same updater and consumption rules as production."
+    ))
+    return result
+
+
+def fingerprint(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def open_key(path, stack):
+    # Keep the containing directory open for race-resistant post-commit unlink.
+    path = os.path.abspath(path)
+    parts = path.split("/")
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    stack.callback(os.close, directory)
+    for part in parts[1:-1]:
+        child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+        stack.callback(os.close, child)
+        info = os.fstat(child)
+        sticky_tmp = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+        if info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022 and not sticky_tmp):
+            raise SetupError("Unsafe key-file directory; use private user-local staging.")
+        directory = child
+    name = parts[-1]
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    stack.callback(os.close, fd)
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or info.st_mode & 0o177):
+        raise SetupError("Key file must be user-owned, regular, single-link, and mode 0600/0400.")
+    before = fingerprint(info)
+    with os.fdopen(os.dup(fd), "rb") as stream:
+        key = stream.read(MAX_KEY + 1)
+    if fingerprint(os.fstat(fd)) != before:
+        raise SetupError("Key file changed while being read; no update attempted.")
+    return key, (directory, name, before)
+
+
+def main():
+    # argparse errors must not echo an accidentally supplied key or unknown argv.
+    options_parser = parser()
+    try:
+        with contextlib.redirect_stderr(open(os.devnull, "w")):
+            options = options_parser.parse_args()
+    except SystemExit as error:
+        if error.code:
+            raise SetupError("Invalid arguments. Use --help; credentials are never accepted as arguments.")
+        return
+    if os.geteuid() == 0 or os.getuid() != os.geteuid():
+        raise SetupError("Run as your normal user, not root or sudo (including fixture mode).")
+    if options.consume_key_file and not options.key_file:
+        raise SetupError("--consume-key-file requires --key-file.")
+    if options.test_env_file and not os.path.isabs(options.test_env_file):
+        raise SetupError("Fixture path must be absolute.")
+    with contextlib.ExitStack() as stack:
+        source = None
+        if options.key_file:
+            try:
+                key, source = open_key(options.key_file, stack)
+            except (OSError, ValueError):
+                raise SetupError("Cannot safely read key file; check existence, permissions and symlinks.") from None
+        else:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", getpass.GetPassWarning)
+                    key = getpass.getpass("INCO_API_KEY (hidden): ").encode("ascii")
+            except (OSError, EOFError, UnicodeError, getpass.GetPassWarning):
+                raise SetupError("Hidden terminal input unavailable; use --key-file.") from None
+        if re.fullmatch(rb"[A-Za-z0-9._~+/=-]{1,4096}", key) is None:
+            raise SetupError("Invalid key: supply one nonempty ASCII token; no whitespace, newline or special syntax.")
+        if options.test_env_file:
+            command = ["/usr/bin/python3", "-I", "-c", UPDATER, "--fixture", options.test_env_file]
+        else:
+            # sudo -v uses its controlling terminal, never the key stream. -n on
+            # the updater prevents a password prompt from consuming key stdin.
+            auth = subprocess.run(["/usr/bin/sudo", "-v"], stdin=subprocess.DEVNULL, env=SAFE_ENV)
+            if auth.returncode:
+                raise SetupError("Sudo authentication failed; key file retained.")
+            command = ["/usr/bin/sudo", "-n", "--", "/usr/bin/python3", "-I", "-c", UPDATER]
+        completed = subprocess.run(command, input=key, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, env=SAFE_ENV)
+        if completed.returncode:
+            raise SetupError("Update failed (unsafe path, file, configuration, permissions or I/O); key file retained.")
+        if options.consume_key_file:
+            directory, name, before = source
+            try:
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if fingerprint(current) != before:
+                    raise OSError()
+                os.unlink(name, dir_fd=directory)
+                os.fsync(directory)
+            except OSError:
+                raise SetupError("Key saved, but source cleanup failed or changed; check the source file. No restart performed.") from None
+        print("INCO_API_KEY saved (existing owner/group preserved; mode capped at 0640, new file 0600). " + (
+            "Source file unlinked. " if options.consume_key_file else "Source file not consumed. "
+        ) + "No service restart performed.")
+
+
+try:
+    main()
+except SetupError as error:
+    print(str(error), file=sys.stderr)
+    sys.exit(1)
+except KeyboardInterrupt:
+    print("Canceled; no source-file consumption authorized before successful persistence.", file=sys.stderr)
+    sys.exit(130)
+except Exception:
+    print("Setup failed; sensitive details suppressed. Check local prerequisites and permissions.", file=sys.stderr)
+    sys.exit(1)
+PY
