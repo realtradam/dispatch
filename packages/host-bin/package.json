@@ -27,6 +27,7 @@
     "@dispatch/provider-concurrency": "workspace:*",
     "@dispatch/provider-coralbricks": "workspace:*",
     "@dispatch/provider-hyper": "workspace:*",
+    "@dispatch/provider-inco": "workspace:*",
     "@dispatch/provider-longcat": "workspace:*",
     "@dispatch/provider-openai-compat": "workspace:*",
     "@dispatch/provider-openrouter": "workspace:*",

@@ -23,3 +23,16 @@ it("the real unconfigured host secrets reject mutations without booting", () => 
   );
   expect(output.trim()).toBe("verified");
 });
+
+it("exposes only the allowlisted Inco environment key and rejects all mutations", async () => {
+  const { createEnvSecrets } = await import("./secrets.js");
+  const secrets = createEnvSecrets({ INCO_API_KEY: "fixture-key", OTHER_SECRET: "hidden" });
+  expect(await secrets.get("INCO_API_KEY")).toBe("fixture-key");
+  expect(await secrets.get("OTHER_SECRET")).toBeNull();
+  expect(await createEnvSecrets({}).get("INCO_API_KEY")).toBeNull();
+  expect(await createEnvSecrets({ INCO_API_KEY: "  " }).get("INCO_API_KEY")).toBeNull();
+  await expect(secrets.set("INCO_API_KEY", "replacement")).rejects.toThrow(
+    "secrets store not configured",
+  );
+  await expect(secrets.delete("INCO_API_KEY")).rejects.toThrow("secrets store not configured");
+});

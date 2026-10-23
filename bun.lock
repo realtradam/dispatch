@@ -130,6 +130,7 @@
         "@dispatch/provider-concurrency": "workspace:*",
         "@dispatch/provider-coralbricks": "workspace:*",
         "@dispatch/provider-hyper": "workspace:*",
+        "@dispatch/provider-inco": "workspace:*",
         "@dispatch/provider-longcat": "workspace:*",
         "@dispatch/provider-openai-compat": "workspace:*",
         "@dispatch/provider-openrouter": "workspace:*",
@@ -343,6 +344,17 @@
       "dependencies": {
         "@dispatch/kernel": "workspace:*",
         "@dispatch/openai-stream": "workspace:*",
+      },
+    },
+    "packages/provider-inco": {
+      "name": "@dispatch/provider-inco",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/openai-stream": "workspace:*",
+      },
+      "devDependencies": {
+        "@dispatch/plugin-verify": "workspace:*",
       },
     },
     "packages/provider-longcat": {
@@ -708,6 +720,8 @@
     "@dispatch/provider-coralbricks": ["@dispatch/provider-coralbricks@workspace:packages/provider-coralbricks"],
 
     "@dispatch/provider-hyper": ["@dispatch/provider-hyper@workspace:packages/provider-hyper"],
+
+    "@dispatch/provider-inco": ["@dispatch/provider-inco@workspace:packages/provider-inco"],
 
     "@dispatch/provider-longcat": ["@dispatch/provider-longcat@workspace:packages/provider-longcat"],
 

@@ -1,10 +1,18 @@
+import { credentialStoreHandle } from "@dispatch/credential-store";
 import {
   assertNoCoreToStandardDeps,
+  createBus,
+  createHost,
+  createLogger,
   findCoreToStandardDeps,
+  type HostDeps,
   resolveActivationOrder,
 } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { createBundledExtensions } from "./bundled.js";
+import { configMapToAccess, envToConfigMap } from "./config.js";
+import { createIncoCredentials } from "./credentials.js";
+import { createEnvSecrets } from "./secrets.js";
 
 /** The bundled set with an empty credential list (assembly detail of boot). */
 function bundled() {
@@ -57,6 +65,7 @@ describe("bundled extension set (de-curated, plan 02)", () => {
     expect(tierById.get("provider-coralbricks")).toBe("providers");
     expect(tierById.get("provider-systalyze")).toBe("providers");
     expect(tierById.get("provider-openai-compat")).toBe("providers");
+    expect(tierById.get("provider-inco")).toBe("providers");
   });
 
   // Plan-08 pilot (§12): lsp is BACK in the bundled set as a standard plugin,
@@ -88,4 +97,68 @@ describe("bundled extension set (de-curated, plan 02)", () => {
       expect(tierById.get(dep)).toBe("core");
     }
   });
+});
+
+// Exercise the real bundled factories, host, provider and credential store.
+// Only the outer HTTP edge is faked; no database/server or real keys are used.
+describe("bundled Inco host integration", () => {
+  for (const key of [undefined, "", "  ", "fixture-inco-key"]) {
+    it(`is ${key?.trim() ? "selectable with a key" : "inert without a nonempty key"}`, async () => {
+      const env = key === undefined ? {} : { INCO_API_KEY: key };
+      const credentials = createIncoCredentials(env);
+      const requests: string[] = [];
+      const extensions = createBundledExtensions({
+        credentials,
+        inco: {
+          fetchFn: async (url) => {
+            requests.push(String(url));
+            return Response.json({ data: [{ id: "glm-5.3-flash" }, { id: "glm-5.3-flash:fast" }] });
+          },
+        },
+      }).filter((e) => ["provider-inco", "credential-store"].includes(e.manifest.id));
+      const logSink = { emit: () => {} };
+      const logDeps = { now: () => 0, newId: () => "inco-host-test" };
+      const logger = createLogger({ extensionId: "inco-host-test" }, logSink, logDeps);
+      const deps: HostDeps = {
+        logger,
+        logSink,
+        logDeps,
+        config: configMapToAccess(
+          envToConfigMap({ ...env, INCO_BASE_URL: "https://inco.example/v1" }),
+        ),
+        secrets: createEnvSecrets(env),
+        storageFactory: () => {
+          throw new Error("unexpected storage use");
+        },
+        permissions: { check: async () => ({ allowed: true }) },
+        scheduler: { register: () => {}, unregister: () => {} },
+        bus: createBus(logger),
+        events: { emit: () => {} },
+      };
+      const host = createHost(extensions, deps);
+      try {
+        await host.activate();
+        expect(host.getDisabled()).toEqual([]);
+        const store = host.getHostAPI().getService(credentialStoreHandle);
+        if (key?.trim()) {
+          expect(host.getProvider("inco")?.id).toBe("inco");
+          expect(store.resolve("inco/glm-5.3-flash:fast")).toEqual({
+            providerId: "inco",
+            model: "glm-5.3-flash:fast",
+          });
+          const catalog = await store.listCatalog();
+          expect(catalog).toContain("inco/glm-5.3-flash");
+          expect(catalog).toContain("inco/glm-5.3-flash:fast");
+          expect(requests).toEqual(["https://inco.example/v1/models"]);
+        } else {
+          expect(host.getProvider("inco")).toBeUndefined();
+          expect(credentials).toEqual([]);
+          expect(await store.listCatalog()).toEqual([]);
+          expect(requests).toEqual([]);
+        }
+      } finally {
+        await host.deactivate();
+      }
+    });
+  }
 });

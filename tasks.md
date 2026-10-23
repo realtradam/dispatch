@@ -123,3 +123,34 @@ read policy, with three additional regression cases. Root list-scope/feature
 descriptions aligned; pre-existing Named Agent skill wording not changed by this
 narrowly scoped messaging patch. All checks and backend compilation rerun green
 after the follow-up.
+
+## feature/inco-provider — Inco model backend
+
+- [x] Read repository guidance, install dependencies in isolated worktree.
+- [x] Verify official https://platform.inco.ai/docs and public/authenticated catalog at https://api.inco.ai/v1/models (HTTP 200); user references `glm-5.3-flash:fast`.
+- [x] Add providers-tier `provider-inco`, credential identity `inco`, live catalog, safe reasoning mapping and boundary tests.
+- [x] Bundle provider and add secure user-run `/etc/dispatch/env` setup helper (no shared restart).
+- [x] Independently verify full checks, live streaming and tool round trip; clean temporary credential.
+- [x] Commit feature branch only; no merge/push (commit recorded in git history).
+
+Ownership wave 1: provider-inco package owner and disjoint bin/set-inco-key setup owner.
+Orchestrator owns docs/root build wiring; host-bin owner runs after provider public surface settles.
+No main checkout edits, service restarts, sudo execution, or secret logging permitted.
+
+Final verification: `bun install` completed before building/testing and after workspace
+wiring; `bun run typecheck` exit 0; `bun run test` 4209 passed / 10 skipped;
+`bun run test:bun` 188 passed; `bun run check` clean (744 files); `git diff --check`
+clean. Secure setup helper: bash syntax clean and 14 fixture assertions passed,
+without sudo or real credential access. Provider tests include verifyPlugin lifecycle.
+Live public/authenticated catalog HTTP 200 (11 models), direct official SSE HTTP
+200, and actual new provider + kernel runTurn streaming/tool-call/result round trip
+passed using `glm-5.3-flash:fast`; usage/reasoning observed. No real vision upload
+or frontend dropdown interaction tested; backend catalog standard/fast identities
+and image metadata verified. No shared service restarted or runtime env modified.
+Temporary credential removed only after required live probes; private mode0600
+user-local staging retained for operator setup. Activation: run bin/set-inco-key
+with its private file + --consume-key-file, deploy updated build, obtain approval
+before restart, enable provider-inco in target workspace. User asked to stop
+subagents; final verification and completion performed directly, no new agents.
+
+Standalone backend compile (`bun build packages/host-bin/src/main.ts --compile --outfile dist/dispatch-server`) passed; binary remains worktree-local, not installed or run.

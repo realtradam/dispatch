@@ -38,6 +38,19 @@ export function envToConfigMap(
     map[OPENCODE_CREDENTIALS_CONFIG_KEY] = opencode.credentials;
   }
 
+  // Expose both the canonical provider settings and the environment aliases
+  // through host.config; API keys remain exclusively in host.secrets.
+  for (const [alias, key] of [
+    ["INCO_BASE_URL", "provider.inco.baseURL"],
+    ["INCO_MODEL", "provider.inco.model"],
+  ] as const) {
+    const value = env[alias];
+    if (value !== undefined) {
+      map[key] = value;
+      map[alias] = value;
+    }
+  }
+
   const anthropicModel = env.DISPATCH_ANTHROPIC_MODEL;
   if (anthropicModel !== undefined) {
     map["provider.anthropic.model"] = anthropicModel;
