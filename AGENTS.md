@@ -72,6 +72,14 @@ an error result). Status is derived/boot-swept, never trusted from disk.
 - `bun run test` — vitest
 - `bun run check` — biome (lint + format)
 
+## After merging into dev
+Always run `bun install` in the **dev checkout itself**, then `bun run typecheck`,
+before reporting a merge ready for build/install. Worktree dependency links are
+not shared: a merge adding workspace packages can leave dev unable to resolve
+`@dispatch/*` even when the feature worktree passed. If build/install reports
+missing workspace modules (possibly followed by implicit-`any` errors), refresh
+with `bun install` and rerun typecheck before changing source or clearing caches.
+
 ## Reports
 When you finish a task, write a markdown report to `reports/<your-unit>.md`
 (gitignored): what you built, the public surface, test/typecheck output, and any
