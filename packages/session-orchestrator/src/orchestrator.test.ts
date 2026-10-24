@@ -3203,6 +3203,20 @@ describe("user-message event", () => {
 });
 
 describe("closeConversation (CR-4c)", () => {
+  function waitForEvent(
+    orchestrator: ReturnType<typeof createSessionOrchestrator>["orchestrator"],
+    conversationId: string,
+    type: AgentEvent["type"],
+  ): Promise<AgentEvent> {
+    return new Promise((resolve) => {
+      const unsubscribe = orchestrator.subscribe(conversationId, (event) => {
+        if (event.type !== type) return;
+        unsubscribe();
+        resolve(event);
+      });
+    });
+  }
+
   it("aborts an in-flight turn: done.reason 'aborted', partial messages persisted, turn seals", async () => {
     const store = createInMemoryStore();
     let releaseStream: (() => void) | undefined;
@@ -3266,6 +3280,151 @@ describe("closeConversation (CR-4c)", () => {
     const persisted = store.data.get("conv-close") ?? [];
     expect(persisted.length).toBeGreaterThanOrEqual(1);
     expect(persisted[0]?.role).toBe("user");
+  });
+
+  it.each([
+    "close",
+    "stop",
+  ] as const)("%s during an active turn preserves its intended status through finalization", async (action) => {
+    const store = createConversationStore(storageFromMap());
+    let releaseStream = () => {};
+    const barrier = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    const provider: ProviderContract = {
+      id: "blocked",
+      stream() {
+        return (async function* () {
+          yield { type: "text-delta", delta: "partial" } as ProviderEvent;
+          await barrier;
+          yield { type: "finish", reason: "stop" } as ProviderEvent;
+        })();
+      },
+    };
+    const statuses: string[] = [];
+    let settled = 0;
+    let compactions = 0;
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      emit: (hook, payload) => {
+        if (hook.id === "session-orchestrator/conversation-status-changed") {
+          statuses.push((payload as ConversationStatusChangedPayload).status);
+        }
+        if (hook.id === "session-orchestrator/turn-settled") settled++;
+      },
+      resolveCompaction: () => ({
+        async compact() {
+          compactions++;
+          return { compacted: false, reason: "below-threshold" };
+        },
+        isCompacting: () => false,
+      }),
+    });
+    const firstDelta = waitForEvent(orchestrator, "close-status", "text-delta");
+    const ended = waitForEvent(orchestrator, "close-status", "turn-ended");
+    orchestrator.startTurn({ conversationId: "close-status", text: "hello" });
+    await firstDelta;
+    expect(await store.getConversationStatus("close-status")).toBe("active");
+    if (action === "close") orchestrator.closeConversation("close-status");
+    else orchestrator.stopTurn("close-status");
+    releaseStream();
+    await ended;
+    await new Promise((resolve) => setImmediate(resolve));
+    const expected = action === "close" ? "closed" : "idle";
+    expect(await store.getConversationStatus("close-status")).toBe(expected);
+    expect(statuses).toEqual(["active", expected]);
+    expect(settled).toBe(1);
+    expect(compactions).toBe(action === "close" ? 0 : 1);
+    expect(orchestrator.isActive("close-status")).toBe(false);
+    expect((await store.load("close-status")).length).toBeGreaterThanOrEqual(1);
+
+    // Close is not a permanent tombstone: an explicit new turn reopens it.
+    const reopened = waitForEvent(orchestrator, "close-status", "turn-ended");
+    expect(orchestrator.startTurn({ conversationId: "close-status", text: "reopen" }).started).toBe(
+      true,
+    );
+    await reopened;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await store.getConversationStatus("close-status")).toBe("idle");
+    expect(statuses.slice(-2)).toEqual(["active", "idle"]);
+  });
+
+  it.each([
+    "terminal-event",
+    "settled-hook",
+  ] as const)("Close from the %s still wins after the single-flight slot is released", async (timing) => {
+    const store = createConversationStore(storageFromMap());
+    const statuses: string[] = [];
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => createFakeProvider([[{ type: "finish", reason: "stop" }]]),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      emit: (hook, payload) => {
+        if (hook.id === "session-orchestrator/conversation-status-changed") {
+          statuses.push((payload as ConversationStatusChangedPayload).status);
+        }
+        if (timing === "settled-hook" && hook.id === "session-orchestrator/turn-settled") {
+          expect(orchestrator.isActive("late-close")).toBe(false);
+          orchestrator.closeConversation("late-close");
+        }
+      },
+    });
+    orchestrator.subscribe("late-close", (event) => {
+      if (timing === "terminal-event" && event.type === "turn-ended") {
+        expect(orchestrator.isActive("late-close")).toBe(false);
+        orchestrator.closeConversation("late-close");
+      }
+    });
+    await orchestrator.handleMessage({
+      conversationId: "late-close",
+      text: "hello",
+      onEvent: () => {},
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await store.getConversationStatus("late-close")).toBe("closed");
+    expect(statuses).toEqual(["active", "closed"]);
+  });
+
+  it("Close during deferred setup never publishes active or idle afterward", async () => {
+    const realStore = createConversationStore(storageFromMap());
+    let releaseSetup = () => {};
+    const setup = new Promise<void>((resolve) => {
+      releaseSetup = resolve;
+    });
+    const store: ConversationStore = {
+      ...realStore,
+      async getEffectiveCwd(conversationId, cwd) {
+        await setup;
+        return realStore.getEffectiveCwd(conversationId, cwd);
+      },
+    };
+    const statuses: string[] = [];
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => createFakeProvider([]),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+      emit: (hook, payload) => {
+        if (hook.id === "session-orchestrator/conversation-status-changed") {
+          statuses.push((payload as ConversationStatusChangedPayload).status);
+        }
+      },
+    });
+    const ended = waitForEvent(orchestrator, "close-setup", "turn-ended");
+    orchestrator.startTurn({ conversationId: "close-setup", text: "hello" });
+    orchestrator.closeConversation("close-setup");
+    releaseSetup();
+    await ended;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await realStore.getConversationStatus("close-setup")).toBe("closed");
+    expect(statuses).toEqual(["closed"]);
   });
 
   it("is idempotent on an idle/unknown conversation: abortedTurn false, hook still emitted", async () => {
