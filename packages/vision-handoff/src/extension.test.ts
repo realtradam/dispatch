@@ -147,7 +147,7 @@ it("migrates exclusively/idempotently with original ages, sweeps old images, and
     const files = createImageFileStore(root);
     await files.migrate(legacy, now, 7);
     await files.migrate(legacy, now, 7);
-    expect(await readdir(join(root, "conv"))).toEqual(["existing.png", "recent.png"]);
+    expect((await readdir(join(root, "conv"))).sort()).toEqual(["existing.png", "recent.png"]);
     expect(await readFile(join(root, "conv", "existing.png"), "utf8")).toBe("keep destination");
     expect((await stat(join(root, "conv", "recent.png"))).mtimeMs).toBeCloseTo(now - day, 0);
     expect(await files.sweep(now + 8 * day, 0)).toEqual({ deleted: 0, bytesFreed: 0 });

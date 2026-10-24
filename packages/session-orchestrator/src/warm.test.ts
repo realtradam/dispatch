@@ -7,7 +7,7 @@ import {
   type ToolContract,
 } from "@dispatch/kernel";
 import { createConcurrencyManager } from "@dispatch/provider-concurrency";
-import { createSystemPromptService } from "@dispatch/system-prompt";
+import { appendTextFileGuidance, createSystemPromptService } from "@dispatch/system-prompt";
 import { describe, expect, it, vi } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createSessionOrchestrator, type SessionOrchestratorDeps } from "./orchestrator.js";
@@ -188,7 +188,7 @@ describe("shared warm/real request assembly", () => {
     expect(requests[0]?.opts?.systemPrompt).toBe(
       state === "fresh"
         ? cachedPrompt
-        : "cwd=/workspace workspace=X model=credential/model id=test",
+        : appendTextFileGuidance("cwd=/workspace workspace=X model=credential/model id=test"),
     );
     expect(await prompt.get("test")).toBe(requests[1]?.opts?.systemPrompt);
     expect(requests[0]?.messages.at(-1)?.chunks).toEqual([

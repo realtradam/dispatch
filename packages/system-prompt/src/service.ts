@@ -6,6 +6,7 @@
  * adapters. The real Bun-backed adapters are wired in `extension.ts`.
  */
 import type { StorageNamespace } from "@dispatch/kernel";
+import { appendTextFileGuidance } from "./guidance.js";
 import { extractVariables, parseTemplate } from "./parser.js";
 import type { ResolverAdapters, ResolverContext } from "./resolver.js";
 import { resolveVariables } from "./resolver.js";
@@ -109,12 +110,16 @@ export function createSystemPromptService(deps: SystemPromptServiceDeps): System
         let template = await deps.storage.get(TEMPLATE_KEY);
         if (template === null) template = DEFAULT_TEMPLATE;
 
-        const result = await resolveTemplate(deps, template, cwd, {
+        const resolvedTemplate = await resolveTemplate(deps, template, cwd, {
           conversationId,
           ...(context?.model !== undefined ? { model: context.model } : {}),
           ...(context?.workspaceId !== undefined ? { workspaceId: context.workspaceId } : {}),
           ...(context?.computerId !== undefined ? { computerId: context.computerId } : {}),
         });
+        // App guidance is mandatory even with an existing custom/empty template.
+        // Append only at construction: stored templates and already-resolved
+        // prompts stay untouched, and arbitrary resolveText callers are unaffected.
+        const result = appendTextFileGuidance(resolvedTemplate);
 
         await deps.storage.transaction((tx) => {
           if (constructions.get(conversationId) !== lease) return;

@@ -10,16 +10,19 @@ import { defineService, type ServiceHandle } from "@dispatch/kernel";
 /**
  * The system-prompt service.
  *
- * `construct` resolves the template once (first turn / compaction) and persists
- * the result; `get` reads the persisted result on subsequent turns (cache-safe —
- * no per-turn reconstruction).
+ * `construct` resolves the template once (first turn / compaction), appends
+ * mandatory application guidance, and persists the result. `get` reads the
+ * persisted result unchanged on subsequent turns (cache-safe — no per-turn
+ * reconstruction or retroactive guidance injection).
  */
 export interface SystemPromptService {
   /**
    * Resolve the template against the current environment and persist the
-   * result under `resolved:<conversationId>`. Returns the resolved string.
-   * When no template is stored, the built-in default template is used. An
-   * empty template yields an empty string.
+   * result plus mandatory application guidance under `resolved:<conversationId>`.
+   * Returns that complete string. When no template is stored, the built-in
+   * default template is used. An empty template yields guidance only. The stored
+   * template is never rewritten. Reconstructing replaces the conversation's
+   * resolved prompt; existing persisted prompts stay unchanged until then.
    *
    * When `context.computerId` is set, the resolver uses remote-backed adapters
    * (reading the remote's `/etc/os-release`, `hostname`, `uname`, `git` via
@@ -41,7 +44,8 @@ export interface SystemPromptService {
    * caller that owns its own prompt — e.g. the heartbeat extension — gets
    * `[type:name]` placeholders substituted identically to the global
    * template). Pure resolution: nothing is persisted (the result is the
-   * caller's to use). An empty template yields an empty string.
+   * caller's to use). An empty template yields an empty string. Unlike
+   * `construct`, this does NOT append mandatory application guidance.
    *
    * Like `construct`, when `context.computerId` is set the resolver uses
    * remote-backed adapters (reading the remote's OS/hostname/git via SSH).
@@ -75,7 +79,7 @@ export interface SystemPromptService {
   /** Read the global template (or `DEFAULT_TEMPLATE` when none is stored). */
   getTemplate(): Promise<string>;
 
-  /** Set (upsert) the global template. An empty string means "no system prompt". */
+  /** Set the global template verbatim. Empty omits user content, not app guidance. */
   setTemplate(template: string): Promise<void>;
 }
 

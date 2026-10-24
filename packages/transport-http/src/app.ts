@@ -23,6 +23,7 @@ import { mount as mountPlugins } from "./routes/plugins.js";
 import { mount as mountSearch } from "./routes/search.js";
 import { mount as mountSettings } from "./routes/settings.js";
 import { mount as mountStatic } from "./routes/static.js";
+import { mount as mountTextFiles } from "./routes/text-files.js";
 import { mount as mountThroughput } from "./routes/throughput.js";
 import { mount as mountUsage } from "./routes/usage.js";
 import { mount as mountWorkspacePlugins } from "./routes/workspace-plugins.js";
@@ -62,6 +63,15 @@ export function createApp(opts: CreateServerOptions): Hono {
 
   const routes: RouteOptions = { config: opts, log, generateId, now };
 
+  // Outermost so even Host/Origin and conversation-ID rejection responses are
+  // non-cacheable. No file content is ever served through the SPA fallback.
+  app.use("/conversations/:id/*", async (c, next) => {
+    if (c.req.path.endsWith("/text-file") || c.req.path.endsWith("/text-file-context")) {
+      c.header("Cache-Control", "no-store");
+    }
+    await next();
+  });
+
   const allowed = opts.allowedHosts ?? buildAllowedHosts({ env: {} });
   app.use("*", async (c, next) => {
     const host = checkHost(c.req.header("host") ?? new URL(c.req.url).host, allowed);
@@ -92,6 +102,7 @@ export function createApp(opts: CreateServerOptions): Hono {
   app.get("/health", (c) => c.json({ ok: true }));
 
   mountImages(app, routes);
+  mountTextFiles(app, routes);
   mountConversationHistory(app, routes);
   mountModels(app, routes);
   mountUsage(app, routes);

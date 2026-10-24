@@ -177,3 +177,82 @@ before restart, enable provider-inco in target workspace. User asked to stop
 subagents; final verification and completion performed directly, no new agents.
 
 Standalone backend compile (`bun build packages/host-bin/src/main.ts --compile --outfile dist/dispatch-server`) passed; binary remains worktree-local, not installed or run.
+
+## feature/text-file-embeds — inline saved text documents
+
+- [x] Read project guidance and install dependencies in both isolated feature worktrees.
+- [x] Update feature brief for rendered head/tail preview in expandable tool-call-like block.
+- [x] Implement bounded conversation-context HTTP text reads (transport-http owner).
+- [x] Implement custom-template-compatible initial guidance (system-prompt owner).
+- [x] Implement frontend parsing, effect lifecycle, sanitized previews, expand/refresh/retry.
+- [x] Independently verify checks/builds and integrated file-display scenario.
+- [x] Record lifecycle, initial-context delivery, limitations; commit both feature branches only.
+
+Parallel ownership: transport-http, system-prompt, and sole frontend repo owner are disjoint.
+Orchestrator owns backend transport-contract task assignment, root build/config/docs,
+frontend feature plan, independent verification, and final commits. No main-checkout edits,
+merge, push, shared service restart, or deployment. Extend existing transport/system-prompt
+extensions; no new extension/tier or glossary concept. Chosen syntax is standalone
+`[Plan](text-file:notes/plan.md)`; full details locked with boundary owners before integration.
+
+Seam locked: `GET /conversations/:id/text-file-context` returns authoritative effective
+cwd/computer without LSP/file work; `GET /conversations/:id/text-file` uses literal
+`path` query plus optional expectedCwd/expectedComputerId guards (empty=null).
+Success `{path,text,format,bytes,maxBytes}`; 256KiB strict UTF-8, no truncation,
+regular local files, no-store. Remote reads422; stale guards409; unknown/missing404;
+invalid/nontext/nonregular400; oversized413. No process cwd fallback. Both routes
+retain existing Host/Origin trusted-network policy; no new bearer/session auth claim.
+Final symlinks rejected, ancestor symlinks permitted (no filesystem sandbox claimed).
+System-prompt owner appends mandatory guidance during construct only; session-orchestrator
+owner verifies actual provider delivery including custom and already-resolved prompts.
+Transport-contract owner publishes additive public types; frontend remains sole repo owner.
+Task setup cleared invalid inherited computer aliases on newly created task conversations
+only; no shared workspace defaults, deployed service, or unrelated conversations changed.
+
+User requested NO SUBAGENTS during implementation. All delegated generations were
+stopped; the lead took over sole ownership of all remaining code/tests/docs and
+verification. No further delegation. Completed direct fixes: isolate Svelte
+subscription dependencies from parent prop updates (prevents per-token refetch and
+expansion reset), align frontend path controls/length policy, format/lint, add
+cross-repo real-network UI integration probe and additional context/parser tests.
+
+Baseline-only temporary archive (git archive HEAD, no main-checkout changes)
+reproduced frontend's 26 existing test failures in tile-layout-store/WorkspacesHome:
+localStorage undefined in this Node/jsdom environment. Feature tests are green.
+Standard bin/build --no-frontend followed the pre-existing sibling claude symlink
+and failed resolving @dispatch/kernel in that external checkout. No tracked
+external/main files changed; do not install/change that checkout. Direct compile of
+worktree host-bin + CLI passed, external Claude bundling not verified here.
+
+Final verification: backend typecheck exit0; Vitest4277 passed/10 skipped; Bun190
+passed/0failed; Biome754 files clean; standalone server+CLI compile passed. Frontend
+typecheck0errors/0warnings; Biome308 clean; build passes (existing advisories);
+2586 tests pass twice with NODE_OPTIONS=--no-experimental-webstorage; Markdown236
+pass; opt-in real ephemeral Bun HTTP + Svelte probe2pass including preview/expand,
+refresh/remount/deletion/retry and remote refusal. Standard frontend Node26 run has
+26 baseline Web Storage failures, reproduced on untouched HEAD archive. Standard
+backend build wrapper external-Claude missing dependency caveat recorded above.
+Full report in notes/text-file-embeds-implementation.md in both repositories. No
+probe process leaks, merge, push, deployment or shared restart. Feature commits
+recorded in each repository history; user graphical desktop/mobile check remains.
+
+
+## feature/text-file-embeds — Bun-native verification correction
+
+- [x] Honor user instruction: no subagents; direct verification/fixes only.
+- [x] Explicitly run Vitest under Bun, not its Node shebang, in both test scripts.
+- [x] Fix listener test Bun-global assumptions, filesystem-order assertion and
+      HOME-caching fixture without weakening tests or increasing timeouts.
+- [x] Fix slow frontend cyclic tool-input serialization with regression coverage.
+- [x] Run full frontend suite repeatedly (2587 passed/2 opt-in skipped), backend
+      suite twice (4278 passed/9 SSH skips), native Bun suite190 passed.
+- [x] Run real HTTP+Svelte probe2 passed under Bun using native signal environment.
+- [x] Run Bun typechecks/lint/builds: FE0errors/0warnings,309 files clean,build
+      passes; backend typecheck passes,754 files clean,server+CLI compile pass.
+- [x] Update reports/handoff and commit feature-worktree follow-up only.
+
+All final commands ran with NODE_OPTIONS unset; it is not required. Earlier
+Node-backed results are historical and superseded by the Bun-native follow-up
+in notes/text-file-embeds-implementation.md. No feature tests were skipped to
+obtain green. External-Claude build-wrapper issue and manual visual validation
+remain documented. No main-checkout edits, install, service restart, merge/push.

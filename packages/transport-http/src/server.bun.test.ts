@@ -44,6 +44,7 @@ import {
   systemPromptHandle,
   throughputStoreHandle,
 } from "./seam.js";
+import { createTextFileFixture } from "./text-file-fixture.js";
 
 /** An in-memory StorageNamespace (the kernel-test shape) for the kit. */
 function memoryNamespace(): StorageNamespace {
@@ -1013,5 +1014,73 @@ describe("last-known-good policy through real listeners", () => {
       await ext.deactivate?.();
     }
     expect(tick).toBeUndefined();
+  });
+});
+
+describe("live text-file Bun HTTP boundary", () => {
+  test("preflights and rereads a saved plan over ephemeral loopback HTTP with literal encoding and no history injection", async () => {
+    const fixture = await createTextFileFixture();
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: fixture.app.fetch });
+    try {
+      const contextResponse = await fetch(
+        new URL("/conversations/local/text-file-context", server.url),
+      );
+      expect(contextResponse.headers.get("cache-control")).toBe("no-store");
+      const context = await contextResponse.json();
+      expect(context).toEqual({ conversationId: "local", cwd: fixture.root, computerId: null });
+      const query = new URLSearchParams({
+        path: fixture.path,
+        expectedCwd: context.cwd,
+        expectedComputerId: "",
+      });
+      const url = new URL(`/conversations/local/text-file?${query}`, server.url);
+      const response = await fetch(url, { headers: { Origin: "http://localhost:5173" } });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(await response.json()).toEqual({
+        path: fixture.path,
+        text: fixture.text,
+        format: "markdown",
+        bytes: Buffer.byteLength(fixture.text),
+        maxBytes: 262144,
+      });
+      await writeFile(fixture.path, "# Changed plan\n");
+      expect(await (await fetch(url)).json()).toMatchObject({ text: "# Changed plan\n" });
+      await rm(fixture.path);
+      expect((await fetch(url)).status).toBe(404);
+      expect(await fixture.store.load("local")).toEqual([]);
+    } finally {
+      server.stop(true);
+      await fixture.dispose();
+    }
+  });
+
+  test("preserves Host/Origin trust checks and refuses remote local-path fallback and stale guards over real HTTP", async () => {
+    const fixture = await createTextFileFixture();
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: fixture.app.fetch });
+    try {
+      const url = new URL(
+        `/conversations/remote/text-file?${new URLSearchParams({ path: fixture.path, expectedCwd: fixture.root, expectedComputerId: "remote-test" })}`,
+        server.url,
+      );
+      const remote = await fetch(url);
+      expect(remote.status).toBe(422);
+      expect(remote.headers.get("cache-control")).toBe("no-store");
+      expect(await remote.json()).toEqual({
+        error: "Text-file embeds do not support remote computers",
+      });
+      url.searchParams.set("expectedComputerId", "");
+      expect((await fetch(url)).status).toBe(409);
+      const rejectedHost = await fetch(url, { headers: { Host: "attacker.example" } });
+      expect(rejectedHost.status).toBe(421);
+      expect(rejectedHost.headers.get("cache-control")).toBe("no-store");
+      const rejectedOrigin = await fetch(url, { headers: { Origin: "https://attacker.example" } });
+      expect(rejectedOrigin.status).toBe(403);
+      expect(rejectedOrigin.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      server.stop(true);
+      await fixture.dispose();
+    }
   });
 });

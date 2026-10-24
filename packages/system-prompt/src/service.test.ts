@@ -1,6 +1,7 @@
 import type { StorageNamespace } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
+import { appendTextFileGuidance, TEXT_FILE_EMBED_GUIDANCE } from "./guidance.js";
 import type { GitSpawnResult, ResolverAdapters, ResolverFs } from "./resolver.js";
 import { createSystemPromptService, DEFAULT_TEMPLATE } from "./service.js";
 
@@ -111,10 +112,10 @@ describe("system-prompt service", () => {
     });
 
     const result = await service.construct("conv-4", "/work");
-    expect(result).toBe("cwd=/work os=linux");
+    expect(result).toBe(`cwd=/work os=linux\n\n${TEXT_FILE_EMBED_GUIDANCE}`);
   });
 
-  it("empty stored template → empty string", async () => {
+  it("empty stored template → mandatory guidance only", async () => {
     const storage = memoryStorage();
     await storage.set("template", "");
     const service = createSystemPromptService({
@@ -123,8 +124,9 @@ describe("system-prompt service", () => {
     });
 
     const result = await service.construct("conv-5", "/proj");
-    expect(result).toBe("");
-    expect(await service.get("conv-5")).toBe("");
+    expect(result).toBe(TEXT_FILE_EMBED_GUIDANCE);
+    expect(await service.get("conv-5")).toBe(result);
+    expect(await service.getTemplate()).toBe("");
   });
 
   it("construct is independent per conversation", async () => {
@@ -138,10 +140,120 @@ describe("system-prompt service", () => {
     const a = await service.construct("conv-a", "/dir-a");
     const b = await service.construct("conv-b", "/dir-b");
 
-    expect(a).toBe("/dir-a");
-    expect(b).toBe("/dir-b");
-    expect(await service.get("conv-a")).toBe("/dir-a");
-    expect(await service.get("conv-b")).toBe("/dir-b");
+    expect(a).toBe(appendTextFileGuidance("/dir-a"));
+    expect(b).toBe(appendTextFileGuidance("/dir-b"));
+    expect(await service.get("conv-a")).toBe(a);
+    expect(await service.get("conv-b")).toBe(b);
+  });
+
+  it("default construct/get delivers literal text-file syntax and limits, not just template text", async () => {
+    const storage = memoryStorage();
+    const service = createSystemPromptService({ storage, adapters: adapters(new Map()) });
+    const result = await service.construct("default-guidance", "/proj");
+
+    expect(result.endsWith(TEXT_FILE_EMBED_GUIDANCE)).toBe(true);
+    for (const instruction of [
+      "[Plan](text-file:notes/plan.md)",
+      "[Research](<text-file:notes/research%20report.md>)",
+      "standalone-paragraph Markdown link",
+      "BEFORE emitting its reference",
+      "short\nexplanatory summary",
+      "NOT image syntax",
+      "POSIX absolute path",
+      "conversation's working directory",
+      "Markdown escapes",
+      "decoded ONCE",
+      "%25",
+      "%23 or %3F",
+      "file:// URLs, HTTP/network URLs",
+      "~ expansion, backslashes, or control characters",
+      "endpoint explicitly rejects conversations with a remote computer",
+      "256 KiB",
+      "valid UTF-8",
+      "no\nbinary files",
+      "first and last six source\nlines",
+      "Expand shows the full document",
+      "Nested text-file embeds are disabled",
+      "document body is NEVER added to\nmodel history",
+      "not a substitute for reading a file",
+      "CURRENT disk content on mount or refresh, not a\nsnapshot",
+      "file may change or disappear",
+    ])
+      expect(result).toContain(instruction);
+    expect(await service.get("default-guidance")).toBe(result);
+    expect(await service.getWithMeta("default-guidance")).toEqual({
+      prompt: result,
+      cwd: "/proj",
+      computerId: null,
+    });
+    expect(await service.getTemplate()).toBe(DEFAULT_TEMPLATE);
+    expect(await storage.get("template")).toBeNull();
+  });
+
+  it("custom construct/get appends guidance after resolution without rewriting template bytes", async () => {
+    const storage = memoryStorage();
+    const service = createSystemPromptService({ storage, adapters: adapters(new Map()) });
+    const custom =
+      "  User rules\r\n[if prompt:model]Model=[prompt:model][endif]\nCwd=[prompt:cwd]\n";
+    await service.setTemplate(custom);
+
+    const result = await service.construct("custom-guidance", "/custom", { model: "fixture" });
+    expect(result).toBe(
+      `  User rules\r\nModel=fixture\nCwd=/custom\n\n\n${TEXT_FILE_EMBED_GUIDANCE}`,
+    );
+    expect(await service.get("custom-guidance")).toBe(result);
+    expect(await service.getTemplate()).toBe(custom);
+    expect(await storage.get("template")).toBe(custom);
+  });
+
+  it("keeps pre-existing resolved prompts byte-identical across service restarts until reconstruction", async () => {
+    const storage = memoryStorage();
+    const service = createSystemPromptService({ storage, adapters: adapters(new Map()) });
+    const custom = "New template [prompt:cwd]";
+    await service.setTemplate(custom);
+    for (const [id, oldPrompt] of [
+      ["old", "Existing frozen prompt\r\n"],
+      ["old-empty", ""],
+    ]) {
+      if (id === undefined || oldPrompt === undefined) throw new Error("Missing fixture");
+      await storage.set(`resolved:${id}`, oldPrompt);
+      await storage.set(`resolved-cwd:${id}`, "/old");
+      await storage.set(`resolved-computer:${id}`, "old-computer");
+      const restarted = createSystemPromptService({ storage, adapters: adapters(new Map()) });
+      expect(await restarted.get(id)).toBe(oldPrompt);
+      expect(await restarted.getWithMeta(id)).toEqual({
+        prompt: oldPrompt,
+        cwd: "/old",
+        computerId: "old-computer",
+      });
+      expect(await storage.get(`resolved:${id}`)).toBe(oldPrompt);
+
+      const rebuilt = await restarted.construct(id, "/new");
+      expect(rebuilt).toBe(`New template /new\n\n${TEXT_FILE_EMBED_GUIDANCE}`);
+      expect(await restarted.getWithMeta(id)).toEqual({
+        prompt: rebuilt,
+        cwd: "/new",
+        computerId: null,
+      });
+    }
+    expect(await service.getTemplate()).toBe(custom);
+  });
+
+  it("repeated construction is byte-stable with one guidance suffix, including a copied resolved template", async () => {
+    const storage = memoryStorage();
+    const service = createSystemPromptService({ storage, adapters: adapters(new Map()) });
+    await service.setTemplate("Custom [prompt:cwd]");
+    const first = await service.construct("repeat", "/proj");
+    const second = await service.construct("repeat", "/proj");
+    expect(second).toBe(first);
+    expect(second.split("## Text-file embeds in chat")).toHaveLength(2);
+    expect(await service.get("repeat")).toBe(first);
+
+    await service.setTemplate(first);
+    const copied = await service.construct("copied", "/proj");
+    expect(copied).toBe(first);
+    expect(await service.get("copied")).toBe(first);
+    expect(await service.getTemplate()).toBe(first);
   });
 
   it("DEFAULT_TEMPLATE contains the expected structure", () => {
@@ -210,7 +322,7 @@ describe("system-prompt service", () => {
     expect(await storage.get("resolved-cwd:conv-twice")).toBe("/first");
 
     const second = await service.construct("conv-twice", "/second");
-    expect(second).toBe("/second");
+    expect(second).toBe(appendTextFileGuidance("/second"));
     expect(await storage.get("resolved-cwd:conv-twice")).toBe("/second");
     expect(await storage.get("resolved-cwd:conv-twice")).not.toBe("/first");
   });
@@ -251,9 +363,8 @@ describe("system-prompt service", () => {
     expect(result).toBe("os=linux cwd=/work ws=ws-1 conv=c1 model=gpt-4");
   });
 
-  it("resolveText uses the SAME resolution as construct (same resolver + variables)", async () => {
-    // A template resolved via resolveText must equal the same template
-    // resolved via construct (both go through the shared resolveTemplate).
+  it("resolveText uses the same variable resolution without construct-only app guidance", async () => {
+    // Both paths resolve the same variables; only construct adds app guidance.
     const storage = memoryStorage();
     const template = "os=[system:os] cwd=[prompt:cwd] date=[system:date]";
     await storage.set("template", template);
@@ -264,7 +375,8 @@ describe("system-prompt service", () => {
 
     const viaConstruct = await service.construct("conv-rt", "/work");
     const viaResolveText = await service.resolveText(template, "/work");
-    expect(viaResolveText).toBe(viaConstruct);
+    expect(viaResolveText).toBe("os=linux cwd=/work date=2024-06-15");
+    expect(viaConstruct).toBe(`${viaResolveText}\n\n${TEXT_FILE_EMBED_GUIDANCE}`);
   });
 
   it("resolveText does NOT persist (unlike construct)", async () => {
@@ -366,6 +478,6 @@ it("deletion invalidates in-flight resolution without deleting another prompt or
     cwd: null,
     computerId: null,
   });
-  expect(await service.get("keep")).toBe("fixture /keep");
+  expect(await service.get("keep")).toBe(appendTextFileGuidance("fixture /keep"));
   expect(await service.getTemplate()).toBe("fixture [prompt:cwd]");
 });

@@ -1,4 +1,5 @@
 import type { ChatMessage, Logger, ProviderStreamOptions, ReasoningEffort } from "@dispatch/kernel";
+import { appendTextFileGuidance } from "@dispatch/system-prompt";
 import type { SessionOrchestratorDeps } from "./orchestrator.js";
 import { resolveModelName, resolveReasoningEffort } from "./pure.js";
 import { applyToolPolicy } from "./tools-filter.js";
@@ -128,14 +129,18 @@ export async function assembleTurnRequest(deps: SessionOrchestratorDeps, input: 
           workspaceId: turnWorkspaceId,
           ...(effectiveComputerId !== undefined ? { computerId: effectiveComputerId } : {}),
         };
+        // Warm must reproduce construct's complete initial context without
+        // persisting it; generic resolveText intentionally omits app guidance.
         systemPrompt = input.readOnly
-          ? await systemPromptService.resolveText(
-              await systemPromptService.getTemplate(),
-              currentCwd,
-              {
-                ...promptContext,
-                conversationId,
-              },
+          ? appendTextFileGuidance(
+              await systemPromptService.resolveText(
+                await systemPromptService.getTemplate(),
+                currentCwd,
+                {
+                  ...promptContext,
+                  conversationId,
+                },
+              ),
             )
           : await systemPromptService.construct(conversationId, currentCwd, promptContext);
       }

@@ -8,8 +8,8 @@
   "scripts": {
     "check": "biome check .",
     "check:fix": "biome check --write .",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "bun --bun node_modules/vitest/vitest.mjs run",
+    "test:watch": "bun --bun node_modules/vitest/vitest.mjs",
     "typecheck": "tsc -b --pretty",
     "test:bun": "bun test packages/storage-sqlite/src packages/trace-store/src packages/observability-collector/src packages/transport-ws/src/server.bun.test.ts packages/transport-http/src/server.bun.test.ts packages/host-bin/src/bundled.bun.test.ts packages/host-bin/src/plugin-discovery.bun.test.ts",
     "test:all": "bun run test && bun run test:bun",

@@ -1,5 +1,6 @@
 export { getVariableCatalog } from "./catalog.js";
 export { extension, manifest } from "./extension.js";
+export { appendTextFileGuidance } from "./guidance.js";
 export { extractVariables, parseTemplate } from "./parser.js";
 export type {
   GitSpawn,

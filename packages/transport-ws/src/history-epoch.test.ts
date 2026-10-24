@@ -8,7 +8,10 @@ import { surfaceRegistryHandle } from "@dispatch/surface-registry";
 import { afterEach, expect, it, vi } from "vitest";
 import { createTransportWsExtension } from "./extension.js";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 it("forwards the compaction hook epoch to every connection without starting a server", async () => {
   const logger = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Logger;
@@ -20,12 +23,13 @@ it("forwards the compaction hook epoch to every connection without starting a se
   });
   bus.provideService(sessionOrchestratorHandle, {} as SessionOrchestrator);
   let options: Bun.ServeOptions<unknown> | undefined;
-  vi.stubGlobal("Bun", {
-    serve: (opts: Bun.ServeOptions<unknown>) => {
-      options = opts;
-      return { stop() {} };
-    },
-  });
+  const serve = (opts: Bun.ServeOptions<unknown>) => {
+    options = opts;
+    return { stop() {} };
+  };
+  // Bun is non-configurable under Bun itself; fake only the listener edge.
+  if (typeof Bun === "undefined") vi.stubGlobal("Bun", { serve });
+  else vi.spyOn(Bun, "serve").mockImplementation(serve as typeof Bun.serve);
   const extension = createTransportWsExtension();
   const host = {
     logger,

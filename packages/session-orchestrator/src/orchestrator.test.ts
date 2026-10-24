@@ -21,7 +21,11 @@ import type {
 } from "@dispatch/kernel";
 import { createLogger, runTurn } from "@dispatch/kernel";
 import { createMessageQueueService } from "@dispatch/message-queue";
-import { createSystemPromptService, type SystemPromptService } from "@dispatch/system-prompt";
+import {
+  appendTextFileGuidance,
+  createSystemPromptService,
+  type SystemPromptService,
+} from "@dispatch/system-prompt";
 import { describe, expect, it } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import {
@@ -6465,7 +6469,7 @@ describe("persisted workspace and background failures", () => {
     });
     await completed;
     expect(workspaces).toEqual(["X", "X"]);
-    expect(prompts).toEqual(["X", "X"]);
+    expect(prompts).toEqual([appendTextFileGuidance("X"), appendTextFileGuidance("X")]);
     expect((await prompt.getWithMeta("workspace")).cwd).toBe("/changed-cwd");
   });
 
