@@ -19,7 +19,7 @@ describe("WS upgrade guard", () => {
     ["evil.com", undefined, 421],
     ["localhost", "https://evil.com", 403],
     ["localhost", "null", 403],
-    ["localhost", "http://PII_REDACTED_DEVICE_01:24204", undefined],
+    ["localhost", "http://workstation:24204", undefined],
     ["localhost", undefined, undefined],
   ] as const)("guards %s / %s", (host, origin, status) => {
     const headers = new Headers({ Host: host });
@@ -27,7 +27,7 @@ describe("WS upgrade guard", () => {
     expect(
       guardUpgrade(
         new Request("http://localhost/", { headers }),
-        new Set(["localhost", "PII_REDACTED_DEVICE_01"]),
+        new Set(["localhost", "workstation"]),
       )?.status,
     ).toBe(status);
   });
@@ -41,8 +41,8 @@ describe("WS listener lifecycle", () => {
     const stop = vi.fn();
     let attempts = 0;
     const listeners = startListeners(
-      ["PII_REDACTED_DEV_IPV4_01"],
-      ["PII_REDACTED_DEV_IPV4_01"],
+      ["192.0.2.10"],
+      ["192.0.2.10"],
       () => {
         if (++attempts === 1) throw new Error("not assigned");
         return { stop };
@@ -62,7 +62,7 @@ describe("WS listener lifecycle", () => {
     const bind = vi.fn(() => {
       throw new Error("unavailable");
     });
-    const listeners = startListeners(["PII_REDACTED_DEV_IPV4_01"], ["PII_REDACTED_DEV_IPV4_01"], bind, {
+    const listeners = startListeners(["192.0.2.10"], ["192.0.2.10"], bind, {
       warn: vi.fn(),
     });
     listeners.stop();

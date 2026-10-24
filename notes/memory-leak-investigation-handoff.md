@@ -31,7 +31,7 @@ more AI "agents" through turns (each turn = a step loop of model calls +
 tool dispatch), plus a separate frontend that consumes the backend's typed
 contracts over HTTP + WebSocket.
 
-**Repo layout** — all under `/home/PII_REDACTED_USER_01/projects/dispatch/`:
+**Repo layout** — all under `/path/to/dispatch/`:
 
 | Path | What | Git remote | Branch |
 |---|---|---|---|
@@ -104,7 +104,7 @@ sudo systemctl restart dispatch
 > `dispatch-server`; the systemd unit is `dispatch.service`. This mismatch
 > tripped up the first investigation — don't repeat it.
 
-The backend checkout at `/home/PII_REDACTED_USER_01/projects/dispatch/backend/` is on `dev`
+The backend checkout at `/path/to/dispatch/backend/` is on `dev`
 and contains the source. The running binary is compiled, so **editing source
 does nothing until you rebuild + install + restart** (§6).
 
@@ -233,7 +233,7 @@ policy). The sequence, roughly:
 
 > ⚠️ **Warning:** deploying restarts the production server. The live server is
 > actively serving agent conversations. Coordinate with the user (ceb2 /
-> PII_REDACTED_USER_01) before restarting — don't just yank it. Also note the running server
+> the operator) before restarting — don't just yank it. Also note the running server
 > at time of writing is PID 28956 (started Jun 28 08:51).
 
 ---
@@ -301,7 +301,7 @@ curl http://localhost:24991/health                        # → {"ok":true}
 ss -tlnp | rg dispatch                                    # ports 24991 + 24990
 
 # --- source (the leak path) ---
-cd /home/PII_REDACTED_USER_01/projects/dispatch/backend
+cd /path/to/dispatch/backend
 git log --oneline -n 8                                    # see the undeployed commits
 rg -n 'runTurnDetached|provider\.stream|for await' packages/session-orchestrator/src/orchestrator.ts
 

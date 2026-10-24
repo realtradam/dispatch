@@ -2,7 +2,7 @@
  * tool-web-search extension — registers the `web_search` tool backed by a
  * self-hosted Firecrawl instance on activation.
  *
- * The base URL comes from `FIRECRAWL_BASE_URL` (env) with a Tailscale default.
+ * The base URL comes from `FIRECRAWL_BASE_URL` (env) with a loopback default.
  * Effects (`globalThis.fetch`) come from the ambient edge here, in the shell —
  * never in the pure core. Logging is left to the host via `host.logger`/`ctx.log`
  * (no `console.*`, no hand-rolled logger).

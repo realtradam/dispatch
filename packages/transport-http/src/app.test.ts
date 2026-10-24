@@ -5622,7 +5622,7 @@ describe("network guard before all routes", () => {
       conversationStore: createFakeConversationStore(),
       orchestrator: createFakeOrchestrator([]),
       credentialStore: createFakeCredentialStore([]),
-      allowedHosts: new Set(["localhost", "PII_REDACTED_DEVICE_01"]),
+      allowedHosts: new Set(["localhost", "workstation"]),
     });
   it.each([
     "/health",
@@ -5645,10 +5645,10 @@ describe("network guard before all routes", () => {
     for (const method of ["GET", "OPTIONS"]) {
       const res = await app().request("/health", {
         method,
-        headers: { Origin: "http://PII_REDACTED_DEVICE_01:24204" },
+        headers: { Origin: "http://workstation:24204" },
       });
       expect(res.status).toBe(method === "GET" ? 200 : 204);
-      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://PII_REDACTED_DEVICE_01:24204");
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://workstation:24204");
       expect(res.headers.get("Vary")).toContain("Origin");
     }
     const res = await app().request("/health");

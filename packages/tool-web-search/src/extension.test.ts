@@ -128,7 +128,7 @@ describe("tool-web-search activation", () => {
     if (!tool) throw new Error("no tool registered");
     await tool.execute({ query: "hello" }, stubCtx());
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls[0]?.url).toContain("PII_REDACTED_SERVICE_IPV4_01:31329/v1/search");
+    expect(calls[0]?.url).toContain("127.0.0.1:31329/v1/search");
   });
 });
 

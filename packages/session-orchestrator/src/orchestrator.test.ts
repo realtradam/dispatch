@@ -2079,7 +2079,7 @@ describe("warm service", () => {
     // A manual reheat sends no cwd, so the warm must fall back to the stored cwd.
     const store = createInMemoryStore();
     await store.append("conv-warm-cwd", [{ role: "user", chunks: [{ type: "text", text: "hi" }] }]);
-    await store.setCwd("conv-warm-cwd", "/home/PII_REDACTED_USER_01/projects/roblox");
+    await store.setCwd("conv-warm-cwd", "/workspace/example-project");
 
     let assemblyCwd: string | undefined = "UNSET";
     const provider: ProviderContract = {
@@ -2110,7 +2110,7 @@ describe("warm service", () => {
 
     // No cwd in opts (the reheat case) → must use the stored cwd.
     await warmService.warm("conv-warm-cwd");
-    expect(assemblyCwd).toBe("/home/PII_REDACTED_USER_01/projects/roblox");
+    expect(assemblyCwd).toBe("/workspace/example-project");
   });
 
   it("warm refuses while the conversation is generating", async () => {

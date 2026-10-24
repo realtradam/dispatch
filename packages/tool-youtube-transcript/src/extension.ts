@@ -2,7 +2,7 @@
  * tool-youtube-transcript extension — registers the `youtube_transcript` tool
  * backed by a self-hosted transcriber service on activation.
  *
- * The base URL comes from `YOUTUBE_TRANSCRIBER_URL` (env) with a Tailscale
+ * The base URL comes from `YOUTUBE_TRANSCRIBER_URL` (env) with a loopback
  * default. Effects (`globalThis.fetch`) come from the ambient edge here, in
  * the shell — never in the pure core. Logging is left to the host via
  * `host.logger`/`ctx.log` (no `console.*`, no hand-rolled logger).

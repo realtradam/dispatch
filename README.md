@@ -98,9 +98,9 @@ bun install
 systemd service.
 
 ```sh
-sudo bin/install              # build + install + enable + start
-sudo bin/install --no-build   # install only (skip the build step)
-sudo bin/install --uninstall  # stop + disable + remove files (keeps config + data)
+bin/install              # build + install + enable + start
+bin/install --no-build   # install only (skip the build step)
+bin/install --uninstall  # stop + disable + remove files (keeps config + data)
 ```
 
 **What it installs:**
@@ -446,3 +446,37 @@ dispatch/                  workspace root (shared bin/ scripts)
 - **Turn continuity design:** `notes/turn-continuity-design.md`
 - **CLI design:** `notes/cli-design.md`
 - **Frontend design:** `notes/frontend-design.md`
+
+### Local scraper / transcript endpoints
+
+`web_search` uses `FIRECRAWL_BASE_URL` (default `http://127.0.0.1:31329/v1`),
+and `youtube_transcript` uses `YOUTUBE_TRANSCRIBER_URL` (default
+`http://127.0.0.1:41090`). For remote services, put your actual URLs in
+`/etc/dispatch/env` (shared by systemd and `bin/up`), or a gitignored `.env`
+when running Bun directly. Never commit private network addresses.
+`bin/install` retains the existing env file; `bin/sync-env` leaves these
+assignments untouched, and `bin/setup-env` preserves them on refresh. Custom
+network overrides (`DISPATCH_BIND`, `DISPATCH_TAILSCALE_NAME`, and
+`DISPATCH_ALLOWED_HOSTS`) also survive a setup refresh. Hostnames normally
+come from automatic Tailscale discovery, not a machine-specific default.
+
+**Upgrading an installation that relied on the old built-in remote URLs:**
+before installing the new binary, create a private, owner-only file OUTSIDE
+Git with your previous endpoints:
+
+```dotenv
+FIRECRAWL_BASE_URL=http://scraper.example:31329/v1
+YOUTUBE_TRANSCRIBER_URL=http://transcriber.example:41090
+```
+
+Review and run `bin/migrate-service-endpoints /secure/local/service-endpoints.env`
+as your normal user (no `sudo` prefix). The script uses `sudo` only to read and
+update the root-owned `/etc/dispatch/env`, retaining existing nonempty overrides,
+API keys, ports, and the file's group. It makes a root-only recovery copy at
+`/etc/dispatch/env.before-service-endpoints`, atomically installs the updated
+config with mode 640, and is safe to rerun. Input is parsed as data, never
+executed; endpoint values are never printed. It does NOT restart the service.
+After migration, update/install normally and restart existing dev launchers.
+For any custom launcher sourcing this shared env, use `set -a` around `source`
+(or explicitly export the two variables) so child processes inherit the URLs.
+Do not add `export` syntax to the systemd EnvironmentFile itself.

@@ -1,9 +1,9 @@
 # Wave 6 note — root workspace AGENTS.md change (out-of-repo, documented here)
 
 > **Status:** Requested change to an out-of-repo file. Not edited by Wave 6.
-> **Target file:** `/home/PII_REDACTED_USER_01/projects/dispatch/AGENTS.md` (the orchestrator /
+> **Target file:** `/path/to/dispatch/AGENTS.md` (the orchestrator /
 > workspace-root AGENTS.md at the top of the `dispatch` workspace, OUTSIDE this
-> backend worktree—`/home/PII_REDACTED_USER_01/projects/dispatch/worktrees/agent-management-tools-plan/backend`).
+> backend worktree—`/path/to/dispatch/worktrees/agent-management-tools-plan/backend`).
 > **Reason not edited directly:** per the Wave 6 task, only edit the root AGENTS.md
 > if it is within the backend repository. `git ls-files --error-unmatch`
 > confirms it is not; this note records the change so the owner of that file can

@@ -27,8 +27,8 @@ describe("HTTP listener lifecycle", () => {
     const stop = vi.fn();
     let attempts = 0;
     const listeners = startListeners(
-      ["PII_REDACTED_DEV_IPV4_01"],
-      ["PII_REDACTED_DEV_IPV4_01"],
+      ["192.0.2.10"],
+      ["192.0.2.10"],
       () => {
         if (++attempts === 1) throw new Error("not assigned");
         return { stop };
@@ -48,7 +48,7 @@ describe("HTTP listener lifecycle", () => {
     const bind = vi.fn(() => {
       throw new Error("unavailable");
     });
-    const listeners = startListeners(["PII_REDACTED_DEV_IPV4_01"], ["PII_REDACTED_DEV_IPV4_01"], bind, {
+    const listeners = startListeners(["192.0.2.10"], ["192.0.2.10"], bind, {
       warn: vi.fn(),
     });
     listeners.stop();

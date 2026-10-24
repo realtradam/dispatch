@@ -7,9 +7,9 @@ describe("boot network edge", () => {
     const status = vi.fn(async () =>
       JSON.stringify({
         Self: {
-          DNSName: "PII_REDACTED_TAILSCALE_HOST_01.",
+          DNSName: "workstation.example.",
           HostName: "laptop",
-          TailscaleIPs: ["PII_REDACTED_DEV_IPV4_01"],
+          TailscaleIPs: ["192.0.2.10"],
         },
       }),
     );
@@ -18,13 +18,13 @@ describe("boot network edge", () => {
       { warn: vi.fn() },
       {
         status,
-        resolve: async () => ["PII_REDACTED_DEV_IPV4_01"],
+        resolve: async () => ["192.0.2.10"],
       },
     );
     expect(status).toHaveBeenCalledTimes(1);
-    expect(policy.allowedHosts.has("PII_REDACTED_DEVICE_01")).toBe(true);
+    expect(policy.allowedHosts.has("workstation")).toBe(true);
     expect(policy.allowedHosts.has("laptop")).toBe(true);
-    expect(policy.bindAddresses).toEqual(["127.0.0.1", "::1", "PII_REDACTED_DEV_IPV4_01"]);
+    expect(policy.bindAddresses).toEqual(["127.0.0.1", "::1", "192.0.2.10"]);
   });
   it("fails closed on missing Tailscale and warns without falling back to wildcard", async () => {
     const warn = vi.fn();
@@ -48,7 +48,7 @@ describe("boot network edge", () => {
       { warn: vi.fn() },
       {
         status: async () =>
-          JSON.stringify({ Self: { HostName: "laptop", TailscaleIPs: ["PII_REDACTED_DEV_IPV4_01"] } }),
+          JSON.stringify({ Self: { HostName: "laptop", TailscaleIPs: ["192.0.2.10"] } }),
         resolve: async () => ["192.168.1.2"],
       },
     );
@@ -57,9 +57,9 @@ describe("boot network edge", () => {
 });
 
 describe("live network policy", () => {
-  const statusFor = (ips: string[], name = "PII_REDACTED_DEVICE_01") =>
+  const statusFor = (ips: string[], name = "workstation") =>
     JSON.stringify({
-      Self: { TailscaleIPs: ips, DNSName: `${name}.tailnet.ts.net.`, HostName: "verified-os" },
+      Self: { TailscaleIPs: ips, DNSName: `${name}.tailnet.example.`, HostName: "verified-os" },
     });
   function clock() {
     let callback: (() => void) | undefined;
@@ -120,8 +120,8 @@ describe("live network policy", () => {
     for (const host of [
       "100.64.0.1:34203",
       "[fd7a:115c:a1e0::1]:34205",
-      "PII_REDACTED_DEVICE_01",
-      "PII_REDACTED_DEVICE_01.tailnet.ts.net",
+      "workstation",
+      "workstation.tailnet.example",
       "verified-os",
       "explicit",
     ]) {
@@ -139,16 +139,16 @@ describe("live network policy", () => {
     for (const host of [
       "100.64.0.1",
       "[fd7a:115c:a1e0::1]",
-      "PII_REDACTED_DEVICE_01.tailnet.ts.net",
+      "workstation.tailnet.example",
       "verified-os",
     ])
       expect(checkHost(host, policy.allowedHosts)).toMatchObject({ status: 421 });
-    expect(checkHost("new-name.tailnet.ts.net", policy.allowedHosts)).toBe("ok");
+    expect(checkHost("new-name.tailnet.example", policy.allowedHosts)).toBe("ok");
     fail = true;
     await timer.tick();
     expect(policy.bindAddresses).toEqual(["127.0.0.1", "::1", "100.64.0.2"]);
     expect(checkHost("100.64.0.2", policy.allowedHosts)).toBe("ok");
-    expect(checkOrigin("http://new-name.tailnet.ts.net", policy.allowedHosts)).toBe("ok");
+    expect(checkOrigin("http://new-name.tailnet.example", policy.allowedHosts)).toBe("ok");
     fail = false;
     raw = JSON.stringify({ Self: { TailscaleIPs: [] } });
     await timer.tick();
@@ -251,7 +251,7 @@ describe("live network policy", () => {
     await timer.tick();
     expect(monitor.policy.bindAddresses).toEqual(["127.0.0.1", "::1"]);
     expect(checkHost("100.64.0.1", monitor.policy.allowedHosts)).toMatchObject({ status: 421 });
-    expect(checkHost("PII_REDACTED_DEVICE_01.tailnet.ts.net", monitor.policy.allowedHosts)).toMatchObject({
+    expect(checkHost("workstation.tailnet.example", monitor.policy.allowedHosts)).toMatchObject({
       status: 421,
     });
     expect(checkHost("explicit-name", monitor.policy.allowedHosts)).toBe("ok");

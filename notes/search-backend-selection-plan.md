@@ -12,7 +12,7 @@ backend selected" must be a first-class state.
   (`packages/tool-web-search/src/extension.ts`): manifest `tier: "standard"`,
   `trust: "bundled"`, `activation: "eager"`, `capabilities: { network: true }`.
 - The backing client is hard-wired at activation: `createFirecrawlClient({ baseUrl })`
-  with `FIRECRAWL_BASE_URL` env → Tailscale default (`http://PII_REDACTED_SERVICE_IPV4_01:31329/v1`).
+  with `FIRECRAWL_BASE_URL` env → loopback default (`http://127.0.0.1:31329/v1`).
   No selection mechanism of any kind exists today.
 - `createWebSearchTool({ client })` takes the client as an injected dep (`tool.ts`) —
   the tool's `runMode` dispatch (search/scrape/crawl/map) only speaks the

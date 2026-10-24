@@ -14,7 +14,7 @@ import type { CrawlPage, ScrapeResult } from "./format.js";
 
 export type FetchLike = typeof globalThis.fetch;
 
-export const DEFAULT_BASE_URL = "http://PII_REDACTED_SERVICE_IPV4_01:31329/v1";
+export const DEFAULT_BASE_URL = "http://127.0.0.1:31329/v1";
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const CRAWL_POLL_MS = 2_000;
 export const CRAWL_MAX_WAIT_MS = 5 * 60 * 1_000;

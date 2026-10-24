@@ -10,7 +10,7 @@
 > **The user owns boundary (§5.2) + vocabulary (§5.6) calls.**
 > **Driver:** a minimal chat frontend, **Svelte 5 + DaisyUI**, in a **SEPARATE repo** (`../`),
 > built with the SAME discipline as the backend. Old FE at
-> `/home/PII_REDACTED_USER_01/projects/dispatch/dispatch-source` is REFERENCE-ONLY (UX/tech, NOT structure).
+> `/path/to/dispatch/dispatch-source` is REFERENCE-ONLY (UX/tech, NOT structure).
 > Port reserved: `FRONTEND_PORT=24204` (.env).
 
 ---
@@ -444,7 +444,7 @@ slice); DaisyUI styling (F4 follow-up). The slice-1 input decisions were:
 ---
 
 ## 11. References (do NOT copy blindly — keep our methodology)
-- Old Dispatch FE: `/home/PII_REDACTED_USER_01/projects/dispatch/dispatch-source` (Svelte + DaisyUI) — UX/tech
+- Old Dispatch FE: `/path/to/dispatch/dispatch-source` (Svelte + DaisyUI) — UX/tech
   reference only, NOT structure (esp. the "views" sidebar UX the user wants to revisit, §9).
 - Backend seam: `packages/transport-contract/src/index.ts` (`ChatRequest`/`ModelsResponse` +
   re-exported `AgentEvent`), `packages/kernel/src/contracts/events.ts` (`AgentEvent`),

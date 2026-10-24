@@ -1,7 +1,7 @@
 # Production Crash Investigation — Findings
 
 > **Definitive post-investigation record.** Supersedes `notes/memory-leak-investigation-handoff.md`
-> (which contained three material errors — see §3). Authored by opencode (umans-glm-5.2) on
+> (which contained three material errors — see §3). Recorded on
 > 2026-06-28, incorporating an independent Gemini review (`crash-review-report.md`) whose pivotal
 > finding (the SSH pool) overturned an earlier wrong conclusion.
 

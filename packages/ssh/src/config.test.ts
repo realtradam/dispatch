@@ -167,11 +167,11 @@ describe("knownHostToken", () => {
 
 const KNOWN_HOSTS_FIXTURE = [
   "# comment line",
-  "PII_REDACTED_DEVICE_01 ssh-ed25519 AAAA1",
-  "PII_REDACTED_DEVICE_02 ssh-ed25519 AAAA2",
-  "PII_REDACTED_DEVICE_02 ssh-rsa AAAA3",
-  "PII_REDACTED_DEVICE_02 ecdsa-sha2-nistp256 AAAA4",
-  "[PII_REDACTED_DEVICE_02]:2222 ssh-ed25519 AAAA5",
+  "workstation ssh-ed25519 AAAA1",
+  "server-z.example ssh-ed25519 AAAA2",
+  "server-z.example ssh-rsa AAAA3",
+  "server-z.example ecdsa-sha2-nistp256 AAAA4",
+  "[server-z.example]:2222 ssh-ed25519 AAAA5",
   "github.com ssh-ed25519 AAAA6",
   "|1|+W4/jC7U8rJwiEC2m0KvG2A7uAA=|rWwV8p5J1FfR3k= ssh-ed25519 AAAA7",
   "localhost ssh-ed25519 AAAA8",
@@ -181,14 +181,14 @@ const KNOWN_HOSTS_FIXTURE = [
 describe("parseKnownHosts", () => {
   it("extracts hostnames with default port 22 from bare entries", () => {
     const entries = parseKnownHosts(KNOWN_HOSTS_FIXTURE);
-    const arch = entries.find((e) => e.hostname === "PII_REDACTED_DEVICE_01");
-    expect(arch).toEqual({ hostname: "PII_REDACTED_DEVICE_01", port: 22 });
+    const arch = entries.find((e) => e.hostname === "workstation");
+    expect(arch).toEqual({ hostname: "workstation", port: 22 });
   });
 
   it("extracts hostname + port from [host]:port notation", () => {
     const entries = parseKnownHosts(KNOWN_HOSTS_FIXTURE);
-    // PII_REDACTED_DEVICE_02 has entries on port 22 (first) and port 2222 — first wins.
-    const xen = entries.find((e) => e.hostname === "PII_REDACTED_DEVICE_02");
+    // server-z.example has entries on port 22 (first) and port 2222 — first wins.
+    const xen = entries.find((e) => e.hostname === "server-z.example");
     expect(xen?.port).toBe(22);
     // localhost appears as port 22 (first) and [localhost]:2222 — first wins.
     const local = entries.find((e) => e.hostname === "localhost");
@@ -197,10 +197,10 @@ describe("parseKnownHosts", () => {
 
   it("deduplicates by hostname (first port wins)", () => {
     const entries = parseKnownHosts(KNOWN_HOSTS_FIXTURE);
-    const xenCount = entries.filter((e) => e.hostname === "PII_REDACTED_DEVICE_02").length;
+    const xenCount = entries.filter((e) => e.hostname === "server-z.example").length;
     expect(xenCount).toBe(1);
     // Multiple key types (ed25519, rsa, ecdsa) for the same host:port = 1 entry.
-    expect(entries).toHaveLength(4); // PII_REDACTED_DEVICE_01, PII_REDACTED_DEVICE_02, github.com, localhost
+    expect(entries).toHaveLength(4); // workstation, server-z.example, github.com, localhost
   });
 
   it("skips hashed entries (|1|...)", () => {
@@ -236,18 +236,18 @@ describe("resolveComputers with known_hosts discovery", () => {
   it("discovers computers from known_hosts when no ~/.ssh/config exists", () => {
     const computers = resolveComputers(env({ knownHostsText: KNOWN_HOSTS_FIXTURE }));
     const aliases = computers.map((c) => c.alias);
-    expect(aliases).toContain("PII_REDACTED_DEVICE_01");
-    expect(aliases).toContain("PII_REDACTED_DEVICE_02");
+    expect(aliases).toContain("workstation");
+    expect(aliases).toContain("server-z.example");
     expect(aliases).toContain("github.com");
     expect(aliases).toContain("localhost");
   });
 
   it("defaulted params for known_hosts-discovered computers", () => {
     const computers = resolveComputers(env({ knownHostsText: KNOWN_HOSTS_FIXTURE }));
-    const arch = computers.find((c) => c.alias === "PII_REDACTED_DEVICE_01");
+    const arch = computers.find((c) => c.alias === "workstation");
     expect(arch).toEqual({
-      alias: "PII_REDACTED_DEVICE_01",
-      hostName: "PII_REDACTED_DEVICE_01",
+      alias: "workstation",
+      hostName: "workstation",
       port: 22,
       user: "fallback-user",
       identityFile: null,
@@ -257,7 +257,7 @@ describe("resolveComputers with known_hosts discovery", () => {
 
   it("config entries take precedence over known_hosts (no duplication)", () => {
     const cfg = `
-Host PII_REDACTED_DEVICE_01
+Host workstation
   HostName 192.168.1.100
   User root
   Port 2222
@@ -265,7 +265,7 @@ Host PII_REDACTED_DEVICE_01
     const computers = resolveComputers(
       env({ configText: cfg, knownHostsText: KNOWN_HOSTS_FIXTURE }),
     );
-    const arch = computers.filter((c) => c.alias === "PII_REDACTED_DEVICE_01");
+    const arch = computers.filter((c) => c.alias === "workstation");
     expect(arch).toHaveLength(1);
     // Config params win, not the known_hosts defaults.
     expect(arch[0]?.hostName).toBe("192.168.1.100");
@@ -283,7 +283,13 @@ Host server-a
     );
     const aliases = computers.map((c) => c.alias);
     // config entry + known_hosts entries, all unique, sorted.
-    expect(aliases).toEqual(["PII_REDACTED_DEVICE_01", "github.com", "localhost", "server-a", "PII_REDACTED_DEVICE_02"]);
+    expect(aliases).toEqual([
+      "github.com",
+      "localhost",
+      "server-a",
+      "server-z.example",
+      "workstation",
+    ]);
   });
 });
 
@@ -298,7 +304,7 @@ describe("resolveComputers with rejectPatterns", () => {
       }),
     );
     expect(computers.find((c) => c.alias === "github.com")).toBeUndefined();
-    expect(computers.find((c) => c.alias === "PII_REDACTED_DEVICE_01")).toBeDefined();
+    expect(computers.find((c) => c.alias === "workstation")).toBeDefined();
   });
 
   it("filters out glob patterns (* matches any sequence)", () => {
@@ -309,7 +315,7 @@ describe("resolveComputers with rejectPatterns", () => {
       }),
     );
     expect(computers.find((c) => c.alias === "github.com")).toBeUndefined();
-    expect(computers.find((c) => c.alias === "PII_REDACTED_DEVICE_01")).toBeDefined();
+    expect(computers.find((c) => c.alias === "workstation")).toBeDefined();
   });
 
   it("filters multiple patterns", () => {
@@ -320,7 +326,7 @@ describe("resolveComputers with rejectPatterns", () => {
       }),
     );
     const aliases = computers.map((c) => c.alias);
-    expect(aliases).toEqual(["PII_REDACTED_DEVICE_01", "PII_REDACTED_DEVICE_02"]);
+    expect(aliases).toEqual(["server-z.example", "workstation"]);
   });
 
   it("does NOT filter resolveComputer (single alias lookup ignores reject list)", () => {
@@ -351,10 +357,10 @@ describe("resolveComputers with rejectPatterns", () => {
 
 describe("resolveComputer with known_hosts fallback", () => {
   it("resolves a host from known_hosts when not in config", () => {
-    const c = resolveComputer("PII_REDACTED_DEVICE_01", env({ knownHostsText: KNOWN_HOSTS_FIXTURE }));
+    const c = resolveComputer("workstation", env({ knownHostsText: KNOWN_HOSTS_FIXTURE }));
     expect(c).toEqual({
-      alias: "PII_REDACTED_DEVICE_01",
-      hostName: "PII_REDACTED_DEVICE_01",
+      alias: "workstation",
+      hostName: "workstation",
       port: 22,
       user: "fallback-user",
       identityFile: null,
@@ -369,12 +375,12 @@ describe("resolveComputer with known_hosts fallback", () => {
 
   it("config takes precedence over known_hosts for resolveComputer", () => {
     const cfg = `
-Host PII_REDACTED_DEVICE_01
+Host workstation
   HostName 192.168.1.100
   User root
 `;
     const c = resolveComputer(
-      "PII_REDACTED_DEVICE_01",
+      "workstation",
       env({ configText: cfg, knownHostsText: KNOWN_HOSTS_FIXTURE }),
     );
     expect(c?.hostName).toBe("192.168.1.100");
@@ -387,7 +393,7 @@ Host PII_REDACTED_DEVICE_01
 describe("isRejected", () => {
   it("matches exact hostname", () => {
     expect(isRejected("github.com", ["github.com"])).toBe(true);
-    expect(isRejected("PII_REDACTED_DEVICE_01", ["github.com"])).toBe(false);
+    expect(isRejected("workstation", ["github.com"])).toBe(false);
   });
 
   it("matches * glob (any sequence)", () => {

@@ -20,7 +20,7 @@
 
 **Symptom:** The system context builder does not load referenced files that live
 in the conversation's working directory. Concrete reproduction: the orchestrator
-is in a workspace pointing at `/home/PII_REDACTED_USER_01/projects/dispatch` and the
+is in a workspace pointing at `/path/to/dispatch` and the
 conversation's working directory (cwd) is `arch-rewrite`, which contains an
 `AGENTS.md` file at its root — yet that file was NOT loaded into the system
 context. The context builder appears to miss files it should be discovering and

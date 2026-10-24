@@ -13,19 +13,19 @@ import {
 const tailscaleStatusJson = JSON.stringify({
   Self: {
     HostName: "laptop",
-    DNSName: "PII_REDACTED_TAILSCALE_HOST_01.",
-    TailscaleIPs: ["PII_REDACTED_DEV_IPV4_01", "PII_REDACTED_DEV_IPV6_01"],
+    DNSName: "workstation.example.",
+    TailscaleIPs: ["192.0.2.10", "2001:db8::10"],
   },
 });
 const allowed = buildAllowedHosts({ tailscaleStatusJson, env: {} });
 
 describe("host and Origin policy", () => {
   it.each([
-    ["PII_REDACTED_DEVICE_01", "PII_REDACTED_DEVICE_01"],
-    ["PII_REDACTED_DEVICE_01", "PII_REDACTED_DEVICE_01"],
-    ["PII_REDACTED_TAILSCALE_HOST_01.", "PII_REDACTED_TAILSCALE_HOST_01"],
-    ["PII_REDACTED_DEV_IPV4_01:24203", "PII_REDACTED_DEV_IPV4_01"],
-    ["[PII_REDACTED_DEV_IPV6_01]:24205", "PII_REDACTED_DEV_IPV6_01"],
+    ["workstation", "workstation"],
+    ["WORKSTATION", "workstation"],
+    ["workstation.example.", "workstation.example"],
+    ["192.0.2.10:24203", "192.0.2.10"],
+    ["[2001:db8::10]:24205", "2001:db8::10"],
     ["localhost:24204", "localhost"],
     ["[::1]", "::1"],
     ["127.0.0.1", "127.0.0.1"],
@@ -43,8 +43,8 @@ describe("host and Origin policy", () => {
 
   it.each([
     "evil.com",
-    "PII_REDACTED_DEVICE_01.evil.com",
-    "PII_REDACTED_DEV_IPV4_01.nip.io",
+    "workstation.evil.com",
+    "192.0.2.10.nip.io",
     "laptop",
     "localhost@evil.com",
     "evil.com@localhost",
@@ -114,10 +114,10 @@ describe("allowed host construction", () => {
       ...buildAllowedHosts({
         env: {
           DISPATCH_ALLOWED_HOSTS: " EXTRA.example.:8080, [::1], , https://evil.com",
-          DISPATCH_TAILSCALE_NAME: "PII_REDACTED_DEVICE_01",
+          DISPATCH_TAILSCALE_NAME: "WORKSTATION",
         },
       }),
-    ]).toEqual(["localhost", "127.0.0.1", "::1", "extra.example", "PII_REDACTED_DEVICE_01"]);
+    ]).toEqual(["localhost", "127.0.0.1", "::1", "extra.example", "workstation"]);
   });
 
   it("ignores malformed fields without discarding valid Tailscale IPs", () => {
@@ -127,16 +127,16 @@ describe("allowed host construction", () => {
         tailscaleStatusJson: JSON.stringify({
           Self: {
             DNSName: 42,
-            TailscaleIPs: [null, "evil.com", "0.0.0.0", "PII_REDACTED_DEV_IPV4_01"],
+            TailscaleIPs: [null, "evil.com", "0.0.0.0", "192.0.2.10"],
           },
         }),
       }),
-    ]).toEqual(["localhost", "127.0.0.1", "::1", "0.0.0.0", "PII_REDACTED_DEV_IPV4_01"]);
+    ]).toEqual(["localhost", "127.0.0.1", "::1", "0.0.0.0", "192.0.2.10"]);
   });
 });
 
 describe("bind token resolution", () => {
-  const tailscaleIps = ["PII_REDACTED_DEV_IPV4_01", "PII_REDACTED_DEV_IPV6_01"];
+  const tailscaleIps = ["192.0.2.10", "2001:db8::10"];
   it("defaults to loopback and Tailscale and deduplicates in order", async () => {
     const expected = ["127.0.0.1", "::1", ...tailscaleIps];
     expect(await resolveBindTokens(undefined, { tailscaleIps })).toEqual({
@@ -160,21 +160,21 @@ describe("bind token resolution", () => {
 
   it("uses only the injected DNS resolver and validates its answers", async () => {
     const calls: string[] = [];
-    const result = await resolveBindTokens("PII_REDACTED_DEVICE_01.,loopback", {
+    const result = await resolveBindTokens("WORKSTATION.,loopback", {
       tailscaleIps,
       resolveHostname: async (name) => {
         calls.push(name);
         return [tailscaleIps[0] ?? "", "not-an-ip", "127.0.0.1"];
       },
     });
-    expect(calls).toEqual(["PII_REDACTED_DEVICE_01"]);
+    expect(calls).toEqual(["workstation"]);
     expect(result.addresses).toEqual([tailscaleIps[0], "127.0.0.1", "::1"]);
     expect(result.warnings).toHaveLength(1);
   });
 
   it("reports unavailable Tailscale, missing DNS, failed DNS and empty results", async () => {
     expect((await resolveBindTokens(undefined, { tailscaleIps: [] })).warnings).toHaveLength(1);
-    expect((await resolveBindTokens("PII_REDACTED_DEVICE_01", { tailscaleIps: [] })).warnings).toHaveLength(1);
+    expect((await resolveBindTokens("workstation", { tailscaleIps: [] })).warnings).toHaveLength(1);
     for (const resolveHostname of [
       () => {
         throw new Error("offline");
@@ -182,7 +182,7 @@ describe("bind token resolution", () => {
       () => [],
     ]) {
       expect(
-        await resolveBindTokens("PII_REDACTED_DEVICE_01", { tailscaleIps: [], resolveHostname }),
+        await resolveBindTokens("workstation", { tailscaleIps: [], resolveHostname }),
       ).toMatchObject({ addresses: [], warnings: [expect.any(String)] });
     }
     expect((await resolveBindTokens("localhost:80", { tailscaleIps: [] })).warnings).toHaveLength(

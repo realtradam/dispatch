@@ -135,7 +135,7 @@ mkdir -p /var/lib/dispatch /var/log/dispatch
 chown -R "$REAL_USER:$REAL_GROUP" /var/lib/dispatch /var/log/dispatch
 
 # PATH that includes user-installed tools
-DISPATCH_PATH="/home/PII_REDACTED_USER_01/.local/bin:/home/PII_REDACTED_USER_01/.local/share/mise/shims:/home/PII_REDACTED_USER_01/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/bin"
+DISPATCH_PATH="$REAL_HOME/.local/bin:$REAL_HOME/.local/share/mise/shims:$REAL_HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/bin"
 
 # --- Merge existing numbered OpenCode keys on a REFRESH (issue: never silently
 # --- delete numbered keys). Read the current env file's OPENCODE_API_KEY_<n>
@@ -177,6 +177,20 @@ for NUM in "${OPENCODE_NUMBERS[@]}"; do
 	fi
 done
 
+# Keep local service endpoints and network policy across a setup refresh. Never
+# source this file as root: copy assignments as data, including explicit blanks.
+# Endpoints belong here (not in the binary/repo), shared by systemd and bin/up.
+LOCAL_SERVICE_CONFIG=""
+if [ -f "$ENV_FILE" ]; then
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		case "$line" in
+			FIRECRAWL_BASE_URL=*|YOUTUBE_TRANSCRIBER_URL=*|DISPATCH_BIND=*|DISPATCH_TAILSCALE_NAME=*|DISPATCH_ALLOWED_HOSTS=*)
+				LOCAL_SERVICE_CONFIG+="$line"$'\n'
+				;;
+		esac
+	done < "$ENV_FILE"
+fi
+
 # Write the system env file
 tee "$ENV_FILE" > /dev/null << EOF
 # /etc/dispatch/env — Dispatch server configuration (systemd EnvironmentFile)
@@ -209,13 +223,15 @@ ${LONGCAT_KEY:+LONGCAT_API_KEY=$LONGCAT_KEY}
 # ─── Hyper provider (optional, set key to enable) ────────────────────────────
 ${HYPER_KEY:+HYPER_API_KEY=$HYPER_KEY}
 
+# ─── Local service endpoints + network overrides (preserved on refresh) ──────
+${LOCAL_SERVICE_CONFIG}
 # ─── Data paths ──────────────────────────────────────────────────────────────
 DISPATCH_DB=/var/lib/dispatch/dispatch.db
 DISPATCH_TRACE_DB=/var/lib/dispatch/traces.db
 DISPATCH_JOURNAL=/var/log/dispatch/app.ndjson
 EOF
 
-# Set permissions: root:PII_REDACTED_USER_01 640 (PII_REDACTED_USER_01 can read for dev via bin/up)
+# Set permissions: root + the service user's group (readable by bin/up)
 chown root:"$REAL_GROUP" "$ENV_FILE"
 chmod 640 "$ENV_FILE"
 
@@ -229,4 +245,4 @@ if [ "${#OPENCODE_MAP[@]}" -gt 0 ]; then
 fi
 echo "  Ports: HTTP=24991 WS=24990"
 echo "  Data:  /var/lib/dispatch/ + /var/log/dispatch/"
-echo "  Perms: 640 root:$REAL_GROUP (PII_REDACTED_USER_01 can read for dev)"
+echo "  Perms: 640 root:$REAL_GROUP (service user can read for dev)"

@@ -16,7 +16,7 @@
 
 1. **My reproduction shows the resolver is not buggy.** A standalone script using
    the exact same `resolvePath(cwd, "AGENTS.md")` + `Bun.file(...).exists()/.text()`
-   logic successfully reads `/home/PII_REDACTED_USER_01/projects/dispatch/arch-rewrite/AGENTS.md`
+   logic successfully reads `/path/to/dispatch/arch-rewrite/AGENTS.md`
    when `cwd` is that directory. So the file-reading path in system-prompt works.
 2. **The failure mode is stale cached system prompt after a cwd change.** The system-
    prompt service constructs once on the first turn of a new conversation and

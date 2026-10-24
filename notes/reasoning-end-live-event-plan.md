@@ -47,7 +47,7 @@ So after this change, for every persisted thinking chunk there is exactly one li
 event in between). Providers that never emit `reasoning-end` (OpenAI-compat, etc.) behave
 exactly as before: no outward `reasoning-end`, deltas merge as today.
 
-## 3. Backend changes (`/home/PII_REDACTED_USER_01/projects/dispatch/worktrees/fix-ongoing-chat-tool-calls/backend`)
+## 3. Backend changes (`/path/to/dispatch/worktrees/fix-ongoing-chat-tool-calls/backend`)
 
 ### 3.1 `packages/wire/src/index.ts`
 - Add to the `AgentEvent` union, right after `TurnReasoningDeltaEvent`:
@@ -132,7 +132,7 @@ exactly as before: no outward `reasoning-end`, deltas merge as today.
 
 ### 3.8 Backend verification
 ```
-cd /home/PII_REDACTED_USER_01/projects/dispatch/worktrees/fix-ongoing-chat-tool-calls/backend
+cd /path/to/dispatch/worktrees/fix-ongoing-chat-tool-calls/backend
 bun install
 bun run typecheck   # must be clean; ALSO builds packages/*/dist which the frontend consumes
 bun run test        # all green; note the count
@@ -140,7 +140,7 @@ bun run check       # biome clean
 ```
 Commit: `feat(wire,kernel): emit a payload-free reasoning-end live event per thinking block`.
 
-## 4. Frontend changes (`/home/PII_REDACTED_USER_01/projects/dispatch/worktrees/fix-ongoing-chat-tool-calls/frontend`)
+## 4. Frontend changes (`/path/to/dispatch/worktrees/fix-ongoing-chat-tool-calls/frontend`)
 
 Read `frontend/AGENTS.md` first (pure core / thin Svelte / tests alongside).
 
@@ -229,7 +229,7 @@ In `src/core/metrics/cache-timer.test.ts` (if a reasoning-delta case exists ther
 
 ### 4.7 Frontend verification
 ```
-cd /home/PII_REDACTED_USER_01/projects/dispatch/worktrees/fix-ongoing-chat-tool-calls/frontend
+cd /path/to/dispatch/worktrees/fix-ongoing-chat-tool-calls/frontend
 bun run typecheck   # svelte-check: 0 errors
 bun run test        # all green; note the count
 bun run check       # biome clean

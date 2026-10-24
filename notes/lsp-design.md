@@ -11,7 +11,7 @@ is trivial to set up for any project, exposed to the agent as a tool and to the
 frontend as status. Hard requirements:
 
 - **MUST work for this repo** (`arch-rewrite`, TypeScript) — zero/low config.
-- **MUST work for the Roblox project** (`/home/PII_REDACTED_USER_01/projects/roblox`, Luau via
+- **MUST work for the Roblox project** (`/path/to/roblox`, Luau via
   `luau-lsp`), including the bug opencode got wrong (§2).
 - Frontend endpoint: is the LSP connected, and which servers are loaded **per tab**
   (per conversation).
@@ -29,7 +29,7 @@ watcher registration and never runs a real filesystem watcher. So when `luau-lsp
 registers a watch for `sourcemap.json` / `**/*.luau`, opencode silently drops it.
 Disk changes never reach the server → stale sourcemap → `TypeError: Unknown
 require` for any file created mid-session. (Confirmed against
-`/home/PII_REDACTED_USER_01/projects/roblox/LUA_TOOLING.md:61-66`.)
+`/path/to/roblox/LUA_TOOLING.md:61-66`.)
 
 **Our fix (spec-compliant, general — fixes sourcemap-style staleness for ANY
 server):**

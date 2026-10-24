@@ -14,7 +14,7 @@ import type { TranscriptResponse } from "./format.js";
 
 export type FetchLike = typeof globalThis.fetch;
 
-export const DEFAULT_BASE_URL = "http://PII_REDACTED_SERVICE_IPV4_01:41090";
+export const DEFAULT_BASE_URL = "http://127.0.0.1:41090";
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 export interface TranscriptClient {

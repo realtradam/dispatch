@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Preserve formerly built-in service endpoints in local configuration BEFORE
+# installing the privacy-cleaned binary. No private values belong in this script.
+#
+# Usage: bin/migrate-service-endpoints /secure/local/service-endpoints.env
+# Input must contain exactly FIRECRAWL_BASE_URL and YOUTUBE_TRANSCRIBER_URL,
+# with plain http(s) URLs (no quotes, credentials, shell syntax or whitespace).
+# Run as yourself, NOT with sudo. Only the individual filesystem operations
+# on /etc require sudo. This script never restarts a service or runs config.
+set -euo pipefail
+
+ENV_FILE=/etc/dispatch/env
+if [[ $# -ne 1 || ! -f "$1" ]]; then
+	echo "Usage: bin/migrate-service-endpoints /secure/local/service-endpoints.env" >&2
+	exit 1
+fi
+INPUT=$1
+
+URL_PATTERN='^https?://([a-zA-Z0-9.-]+|\[[a-fA-F0-9:]+\])(:[0-9]+)?(/[a-zA-Z0-9._~/-]*)?$'
+declare -A ENDPOINTS=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+	[[ -z "$line" || "$line" == \#* ]] && continue
+	key=${line%%=*}
+	value=${line#*=}
+	case "$key" in
+		FIRECRAWL_BASE_URL|YOUTUBE_TRANSCRIBER_URL) ;;
+		*) echo "migration: unexpected input key (values not echoed)" >&2; exit 1 ;;
+	esac
+	# The limited alphabet is safe for BOTH shell sourcing and systemd's
+	# EnvironmentFile parser. No eval/source, URL credentials, or shell metacharacters.
+	if [[ ! "$value" =~ $URL_PATTERN || -n "${ENDPOINTS[$key]+x}" ]]; then
+		echo "migration: invalid or repeated endpoint assignment" >&2
+		exit 1
+	fi
+	ENDPOINTS[$key]=$value
+done < "$INPUT"
+if [[ ${#ENDPOINTS[@]} -ne 2 ]]; then
+	echo "migration: both service endpoints are required" >&2
+	exit 1
+fi
+
+umask 077
+STAGING=$(mktemp -d)
+ROOT_TEMP=""
+cleanup() {
+	rm -rf -- "$STAGING"
+	if [[ -n "$ROOT_TEMP" ]]; then sudo rm -f -- "$ROOT_TEMP"; fi
+}
+trap cleanup EXIT
+
+# Refuse symlinks; read as data without executing any shell from the config.
+if sudo test -L "$ENV_FILE" || ! sudo test -f "$ENV_FILE"; then
+	echo "migration: expected a regular /etc/dispatch/env; run setup-env first" >&2
+	exit 1
+fi
+sudo cat -- "$ENV_FILE" > "$STAGING/original"
+cp -- "$STAGING/original" "$STAGING/updated"
+for key in FIRECRAWL_BASE_URL YOUTUBE_TRANSCRIBER_URL; do
+	# Existing nonempty overrides win. Blank/unset overrides acquire the
+	# former default. Remove blank duplicates when adding the assignment.
+	if awk -v key="$key" 'index($0,key "=")==1 && substr($0,length(key)+2) ~ /[^[:space:]]/ {found=1} END {exit !found}' "$STAGING/updated"; then
+		continue
+	fi
+	awk -v key="$key" 'index($0,key "=")!=1' "$STAGING/updated" > "$STAGING/next"
+	mv -- "$STAGING/next" "$STAGING/updated"
+	printf '\n%s=%s\n' "$key" "${ENDPOINTS[$key]}" >> "$STAGING/updated"
+done
+if cmp -s "$STAGING/original" "$STAGING/updated"; then
+	echo "migration: service endpoints already configured; nothing changed"
+	exit 0
+fi
+
+# Keep a private, one-time recovery copy; never overwrite an existing backup.
+BACKUP="${ENV_FILE}.before-service-endpoints"
+if sudo test -L "$BACKUP"; then
+	echo "migration: refusing a symlink backup" >&2
+	exit 1
+fi
+if ! sudo test -e "$BACKUP"; then
+	sudo install -m600 -o root -g root -- "$STAGING/original" "$BACKUP"
+fi
+GROUP=$(sudo stat -c '%g' "$ENV_FILE")
+ROOT_TEMP=$(sudo mktemp "${ENV_FILE}.migrate.XXXXXX")
+sudo install -m640 -o root -g "$GROUP" -- "$STAGING/updated" "$ROOT_TEMP"
+# Refuse to overwrite concurrent key/config edits made while preparing the file.
+sudo cat -- "$ENV_FILE" > "$STAGING/current"
+if ! cmp -s "$STAGING/original" "$STAGING/current"; then
+	echo "migration: config changed concurrently; retry (no changes installed)" >&2
+	exit 1
+fi
+sudo mv -- "$ROOT_TEMP" "$ENV_FILE"
+ROOT_TEMP=""
+echo "migration: endpoints saved to /etc/dispatch/env (values not echoed)"
+echo "migration: no restart performed; now update/install, then restart dev launchers"

@@ -98,7 +98,7 @@ describe("tool-youtube-transcript activation", () => {
     if (!tool) throw new Error("no tool registered");
     await tool.execute({ url: "https://youtu.be/vid1" }, stubCtx());
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls[0]?.url).toContain("PII_REDACTED_SERVICE_IPV4_01:41090/api/transcript?url=");
+    expect(calls[0]?.url).toContain("127.0.0.1:41090/api/transcript?url=");
   });
 });
 

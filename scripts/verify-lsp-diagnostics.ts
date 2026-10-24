@@ -24,8 +24,8 @@
  *
  * Env overrides:
  *   LSP_VERIFY_SERVER      "typescript" (default) | "biome"
- *   TS_LSP_BIN             path to typescript-language-server (default:
- *                          /home/PII_REDACTED_USER_01/.local/bin/typescript-language-server)
+ *   TS_LSP_BIN             path to typescript-language-server (default, on PATH:
+ *                          typescript-language-server)
  *   BIOME_BIN              path to the biome binary (default:
  *                          <repo>/node_modules/.bin/biome)
  *   LSP_VERIFY_RUNS        fresh-server runs (default 3)
@@ -40,7 +40,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LanguageServerClient, type SpawnedProcess } from "../packages/lsp/src/client.js";
 
-const TS_BIN = process.env.TS_LSP_BIN ?? "/home/PII_REDACTED_USER_01/.local/bin/typescript-language-server";
+const TS_BIN = process.env.TS_LSP_BIN ?? "typescript-language-server";
 const BIOME_BIN = process.env.BIOME_BIN ?? join(import.meta.dir, "..", "node_modules/.bin/biome");
 const SERVER = process.env.LSP_VERIFY_SERVER ?? "typescript";
 const RUNS = Number(process.env.LSP_VERIFY_RUNS ?? 3);
