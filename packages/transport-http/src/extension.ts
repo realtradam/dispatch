@@ -43,7 +43,7 @@ export const manifest: Manifest = {
   // getService. An absent Standard plugin degrades its routes to 503/empty;
   // a mid-session load starts serving them with no restart (plan 03).
   dependsOn: ["conversation-store", "credential-store", "session-orchestrator"],
-  capabilities: { network: true },
+  capabilities: { network: true, fs: true },
   contributes: {
     routes: [
       "/chat",
@@ -73,6 +73,8 @@ export const manifest: Manifest = {
       "/conversations/:id/stop",
       "/conversations/:id/title",
       "/conversations/:id/tab-group",
+      "/conversations/:id/text-file",
+      "/conversations/:id/text-file-context",
       "/health",
       "/home/tile-layout/:mode",
       "/models",
