@@ -13,7 +13,10 @@ import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
 import { createMessageQueueService } from "../../message-queue/src/index.js";
 import { createTransportWsExtension } from "./extension.js";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 it("WS queue awaits storage, forwards images/computerId, subscribes on start and reports rejection", async () => {
   const logger = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Logger;
@@ -39,12 +42,13 @@ it("WS queue awaits storage, forwards images/computerId, subscribes on start and
   } as unknown as SessionOrchestrator);
   let options: Bun.ServeOptions<unknown> | undefined;
   const stop = vi.fn();
-  vi.stubGlobal("Bun", {
-    serve: (opts: Bun.ServeOptions<unknown>) => {
-      options = opts;
-      return { stop };
-    },
-  });
+  const serve = (opts: Bun.ServeOptions<unknown>) => {
+    options = opts;
+    return { stop };
+  };
+  // Bun is non-configurable under Bun itself; fake only the listener edge.
+  if (typeof Bun === "undefined") vi.stubGlobal("Bun", { serve });
+  else vi.spyOn(Bun, "serve").mockImplementation(serve as typeof Bun.serve);
   const extension = createTransportWsExtension();
   const host = {
     logger,
@@ -137,12 +141,13 @@ it("WS chat.send acknowledges actual compaction admission, never false already-g
   compacting.set("c", barrier.promise);
   bus.provideService(sessionOrchestratorHandle, orchestrator);
   let options: Bun.ServeOptions<unknown> | undefined;
-  vi.stubGlobal("Bun", {
-    serve: (opts: Bun.ServeOptions<unknown>) => {
-      options = opts;
-      return { stop() {} };
-    },
-  });
+  const serve = (opts: Bun.ServeOptions<unknown>) => {
+    options = opts;
+    return { stop() {} };
+  };
+  // Bun is non-configurable under Bun itself; fake only the listener edge.
+  if (typeof Bun === "undefined") vi.stubGlobal("Bun", { serve });
+  else vi.spyOn(Bun, "serve").mockImplementation(serve as typeof Bun.serve);
   const extension = createTransportWsExtension();
   const host = {
     logger,
@@ -254,12 +259,13 @@ it.each([
   });
   bus.provideService(sessionOrchestratorHandle, orchestrator);
   let options: Bun.ServeOptions<unknown> | undefined;
-  vi.stubGlobal("Bun", {
-    serve: (opts: Bun.ServeOptions<unknown>) => {
-      options = opts;
-      return { stop() {} };
-    },
-  });
+  const serve = (opts: Bun.ServeOptions<unknown>) => {
+    options = opts;
+    return { stop() {} };
+  };
+  // Bun is non-configurable under Bun itself; fake only the listener edge.
+  if (typeof Bun === "undefined") vi.stubGlobal("Bun", { serve });
+  else vi.spyOn(Bun, "serve").mockImplementation(serve as typeof Bun.serve);
   const extension = createTransportWsExtension();
   const host = {
     logger,

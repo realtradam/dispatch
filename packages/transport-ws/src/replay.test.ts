@@ -16,6 +16,7 @@ function gate() {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -99,12 +100,13 @@ async function fixture(
   };
   bus.provideService(sessionOrchestratorHandle, orchestrator);
   let serveOptions: Bun.ServeOptions<unknown> | undefined;
-  vi.stubGlobal("Bun", {
-    serve: (opts: Bun.ServeOptions<unknown>) => {
-      serveOptions = opts;
-      return { stop() {} };
-    },
-  });
+  const serve = (opts: Bun.ServeOptions<unknown>) => {
+    serveOptions = opts;
+    return { stop() {} };
+  };
+  // Bun is non-configurable under Bun itself; fake only the listener edge.
+  if (typeof Bun === "undefined") vi.stubGlobal("Bun", { serve });
+  else vi.spyOn(Bun, "serve").mockImplementation(serve as typeof Bun.serve);
   const extension = createTransportWsExtension();
   await extension.activate({
     logger,

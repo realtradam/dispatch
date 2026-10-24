@@ -7,7 +7,10 @@ import { createSurfaceRegistry, surfaceRegistryHandle } from "@dispatch/surface-
 import { afterEach, expect, it, vi } from "vitest";
 import { createTransportWsExtension } from "./extension.js";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 async function fixture(throwOnDispose = false) {
   const warn = vi.fn();
@@ -40,12 +43,13 @@ async function fixture(throwOnDispose = false) {
   } as unknown as SessionOrchestrator);
   let options: Bun.ServeOptions<unknown> | undefined;
   const stop = vi.fn();
-  vi.stubGlobal("Bun", {
-    serve: (opts: Bun.ServeOptions<unknown>) => {
-      options = opts;
-      return { stop };
-    },
-  });
+  const serve = (opts: Bun.ServeOptions<unknown>) => {
+    options = opts;
+    return { stop };
+  };
+  // Bun is non-configurable under Bun itself; fake only the listener edge.
+  if (typeof Bun === "undefined") vi.stubGlobal("Bun", { serve });
+  else vi.spyOn(Bun, "serve").mockImplementation(serve as typeof Bun.serve);
   const extension = createTransportWsExtension();
   await extension.activate({
     logger,

@@ -194,14 +194,15 @@ it("refreshes listeners and Host/Origin guards together and unsubscribes on unlo
   };
   const options: Array<Bun.ServeOptions<unknown>> = [];
   const stops: Array<ReturnType<typeof vi.fn>> = [];
-  vi.stubGlobal("Bun", {
-    serve: (opts: Bun.ServeOptions<unknown>) => {
-      options.push(opts);
-      const stop = vi.fn();
-      stops.push(stop);
-      return { stop };
-    },
-  });
+  const serve = (opts: Bun.ServeOptions<unknown>) => {
+    options.push(opts);
+    const stop = vi.fn();
+    stops.push(stop);
+    return { stop };
+  };
+  // Bun is non-configurable under Bun itself; fake only the listener edge.
+  if (typeof Bun === "undefined") vi.stubGlobal("Bun", { serve });
+  else vi.spyOn(Bun, "serve").mockImplementation(serve as typeof Bun.serve);
   const extension = createTransportHttpExtension();
   try {
     await extension.activate({
@@ -272,6 +273,7 @@ it("refreshes listeners and Host/Origin guards together and unsubscribes on unlo
     expect(stops[0]).toHaveBeenCalledWith(true);
   } finally {
     await extension.deactivate?.();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   }
 });

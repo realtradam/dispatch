@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { createCredentialStore } from "@dispatch/credential-store";
 import { DEFAULT_HEARTBEAT_CONFIG } from "@dispatch/heartbeat";
 import type {
@@ -784,22 +784,14 @@ describe("GET /local-image", () => {
   });
   it("expands a leading ~ before validating the file header", async () => {
     await withTempDir(async (dir) => {
-      const previousHome = process.env.HOME;
-      process.env.HOME = dir;
-      try {
-        await writeFile(join(dir, "home-pic.png"), "not a PNG");
-        const res = await createTestApp().request(
-          `/local-image?path=${encodeURIComponent("~/home-pic.png")}`,
-        );
-        expect(res.status).toBe(400);
-        expect(await res.json()).toEqual({ error: "File content does not match the image format" });
-      } finally {
-        if (previousHome === undefined) {
-          delete process.env.HOME;
-        } else {
-          process.env.HOME = previousHome;
-        }
-      }
+      const file = join(dir, "home-pic.png");
+      await writeFile(file, "not a PNG");
+      // Resolve from the real OS home without mutating HOME (Bun caches it),
+      // writing into the real home, or mocking an ESM namespace binding.
+      const path = `~/${relative(homedir(), file)}`;
+      const res = await createTestApp().request(`/local-image?path=${encodeURIComponent(path)}`);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "File content does not match the image format" });
     });
   });
 });

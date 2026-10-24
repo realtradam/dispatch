@@ -175,7 +175,7 @@ their existing **AS-IS bypass** contract; they do not receive appended guidance.
 The initial instructions in already-running/persisted conversations are not
 retroactively changed, and this task did not redeploy/restart the shared service.
 
-## Verification
+## Initial verification (superseded by Bun-native follow-up below)
 
 `bun install` completed inside both feature worktrees before build/testing; frontend
 was refreshed after backend declarations were built. All work is on
@@ -234,3 +234,61 @@ commits, visually confirm block styling/responsiveness on desktop/mobile, expand
 and collapse a longer Markdown plan, and click a remote-image consent button.
 No screenshots, graphical-browser layout check, AI-provider-generated live reply,
 remote file support, watchers, snapshots or editor/attachment redesign are claimed.
+
+## Bun-native verification follow-up — 2026-10-24
+
+This is the **authoritative final verification**, superseding the initial
+Node-backed Vitest results above. `bun run` previously respected Vitest's
+`#!/usr/bin/env node` launcher. Both repositories now explicitly execute
+`bun --bun node_modules/vitest/vitest.mjs` in `test` and `test:watch`, so ordinary
+`bun run test` uses Bun itself, including its workers. No `NODE_OPTIONS` is needed;
+all following runs explicitly unset it. Runtime: **Bun 1.4.3**.
+
+Bun-native runs exposed existing test assumptions which have been corrected, not
+skipped and not hidden with larger timeouts:
+
+- HTTP/WS listener tests now spy on **Bun.serve only** and restore it afterward,
+  instead of redefining the non-configurable global `Bun` object. The fallback
+  global stub remains only for non-Bun supplemental runners.
+- The image migration test sorts a directory listing before comparing its
+  contents; native filesystem enumeration order is not a contract.
+- The local-image home-expansion test uses a path relative to the actual OS home
+  into its temporary fixture; it no longer assumes mutating HOME changes Bun's
+  cached homedir result. No real home-directory file is created.
+- The frontend cyclic tool-input fallback was genuinely slow under Bun's pretty
+  JSON serializer. A local ancestor-stack replacer detects cycles before native
+  recursion, preserving the existing fallback text. Added a regression case for
+  nested cycles and **shared non-cyclic references** so valid JSON isn't rejected.
+  The original timeout-prone test now completes promptly; no timeout was raised.
+- The opt-in live UI/network test no longer depends on Node-only
+  `transferableAbortController`. Its scoped jsdom environment retains the
+  runtime's matching native AbortController/AbortSignal pair, so actual Bun fetch
+  and cancellation are exercised. The production adapter remains unchanged.
+
+Final commands/results:
+
+| Worktree | Command | Result |
+| --- | --- | --- |
+| frontend | `bun run test` | **2587 passed / 2 opt-in skipped**, repeated green (130 passed files / one skipped) |
+| frontend | `bun run test:text-file-live` | **2 passed**, real Svelte + ephemeral Bun HTTP + temp disk files |
+| frontend | `bun --bun run typecheck` | **0 errors / 0 warnings** |
+| frontend | `bun --bun run check` | **309 files clean**, no warnings/infos |
+| frontend | `bun --bun run build` | **passed**, existing initial-value/large-chunk advisories remain |
+| backend | `bun run test` | **4278 passed / 9 skipped**, twice (221 passed files / one skipped) |
+| backend | `bun run test:bun` | **190 passed / 0 failed** |
+| backend | `bun --bun run typecheck` | **passed** |
+| backend | `bun --bun run check` | **754 files clean**, no warnings/infos |
+| backend | `bun build ... --compile` (server and CLI) | **both passed**, ignored worktree-local binaries |
+
+The nine backend skips are the existing SSH integration suite; an additional
+Bun-only test previously skipped under Node now runs, hence 4278 rather than
+4277 passing. The frontend count increases by one for the new shared-reference
+regression test. The two frontend live tests are intentionally opt-in but were
+run separately and passed. No tests were excluded to obtain green results.
+
+Dependencies were refreshed using `bun install` inside both feature worktrees.
+The external-Claude standard-build wrapper limitation described above remains;
+no external/main checkout edits, installs, service restarts, merge or push were
+performed in this verification follow-up. No subagents were used. Native probe
+processes and temporary fixture files were cleaned up. Browser visual validation
+remains manual as documented above.

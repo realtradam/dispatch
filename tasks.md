@@ -235,3 +235,24 @@ backend build wrapper external-Claude missing dependency caveat recorded above.
 Full report in notes/text-file-embeds-implementation.md in both repositories. No
 probe process leaks, merge, push, deployment or shared restart. Feature commits
 recorded in each repository history; user graphical desktop/mobile check remains.
+
+
+## feature/text-file-embeds — Bun-native verification correction
+
+- [x] Honor user instruction: no subagents; direct verification/fixes only.
+- [x] Explicitly run Vitest under Bun, not its Node shebang, in both test scripts.
+- [x] Fix listener test Bun-global assumptions, filesystem-order assertion and
+      HOME-caching fixture without weakening tests or increasing timeouts.
+- [x] Fix slow frontend cyclic tool-input serialization with regression coverage.
+- [x] Run full frontend suite repeatedly (2587 passed/2 opt-in skipped), backend
+      suite twice (4278 passed/9 SSH skips), native Bun suite190 passed.
+- [x] Run real HTTP+Svelte probe2 passed under Bun using native signal environment.
+- [x] Run Bun typechecks/lint/builds: FE0errors/0warnings,309 files clean,build
+      passes; backend typecheck passes,754 files clean,server+CLI compile pass.
+- [x] Update reports/handoff and commit feature-worktree follow-up only.
+
+All final commands ran with NODE_OPTIONS unset; it is not required. Earlier
+Node-backed results are historical and superseded by the Bun-native follow-up
+in notes/text-file-embeds-implementation.md. No feature tests were skipped to
+obtain green. External-Claude build-wrapper issue and manual visual validation
+remain documented. No main-checkout edits, install, service restart, merge/push.
