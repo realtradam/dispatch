@@ -2,6 +2,29 @@
 
 > Owned by the orchestrator. Status is NOT in ORCHESTRATOR.md — it lives here.
 
+## feature/close-tab-cascade-subagents — explicit Close survives turn finalization
+
+- COMPLETE in this isolated feature worktree, based on backend `dev` at `4bf4dd9`.
+- `session-orchestrator` retains bounded per-turn lifecycle identity through async
+  settlement. Close cancels pending active/queued/idle publication and skips idle
+  persistence + auto-compaction; Stop still settles idle and a later explicit turn reopens.
+- Five regression cases use the real conversation store over in-memory storage:
+  active Close / Stop, close during deferred setup, close on terminal event, and
+  close in settled hook. The two primary Close cases failed before the fix.
+- Verification: `bun run typecheck` clean; `bun run test` **4,214 passed / 10 skipped**;
+  `bun run check` clean; `bun run test:bun` **188 passed** on final combined run
+  (two earlier combined runs crashed inside Bun 1.3.14; all seven groups also pass
+  independently). Session-orchestrator suite: **320 passed**.
+- LIVE: private source instance `24303`/`24305`, fresh SQLite/trace/journal/image/plugin
+  paths under `/tmp/close-tab-isolated`. Direct HTTP close returns `abortedTurn: true`,
+  stream seals aborted, and conversation stays absent from active/idle list. Real FE
+  browser cascade aborts active child, closes parent + all descendants, survives reload;
+  parent-only/cancel/Escape/backdrop/remote close + desktop/mobile checks pass.
+- Standard FE live integration probe **22/22** against this private instance.
+- Public contracts unchanged. Companion frontend consumes unchanged `file:` deps.
+- Main checkouts and user's running backend untouched; no merge back or push.
+  See `notes/close-tab-cascade-subagents.md` and `reports/close-tab-cascade-subagents.md`.
+
 ## feature/named-agents — Named Agents (backend)
 
 Implemented the backend scope of `notes/named-agents-plan.md`.

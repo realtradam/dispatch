@@ -604,6 +604,9 @@ export function createSessionOrchestrator(
   }
   const subscribers = new Map<string, Set<TurnEventListener>>();
   const activeTurns = new Map<string, ActiveTurn>();
+  // Lifecycle hooks outlive the single-flight slot. Keep their turn identity
+  // until settlement finishes so Close also cancels deferred status effects.
+  const lifecycleTurns = new Map<string, ActiveTurn>();
   // Serialize image storage/insertion per conversation; only Close invalidates work.
   const pendingEnqueues = new Map<string, { cancelled: boolean; tail?: Promise<EnqueueResult> }>();
   // One stateless retry strategy shared by every turn (delayFor is pure; sleep
@@ -624,10 +627,12 @@ export function createSessionOrchestrator(
     conversationId: string,
     status: "active" | "idle" | "closed" | "queued",
     turnId?: string,
-  ): void {
-    void deps.conversationStore
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
+    return deps.conversationStore
       .getWorkspaceId(conversationId)
       .then((workspaceId) => {
+        if (!isCurrent()) return;
         deps.emit?.(conversationStatusChanged, { conversationId, status, workspaceId });
       })
       .catch(logFailure(conversationId, `${status} workspace`, turnId));
@@ -703,6 +708,9 @@ export function createSessionOrchestrator(
       cancelQueuedInput: false,
     };
     activeTurns.set(conversationId, turn);
+    lifecycleTurns.set(conversationId, turn);
+    const canPublishStatus = () =>
+      lifecycleTurns.get(conversationId) === turn && !turn.cancelQueuedInput;
     const pendingCompaction = compacting.get(conversationId);
     // A waiting turn owns the single-flight slot, but must not invalidate the
     // compactor's generating-state recheck until the barrier has completed.
@@ -860,7 +868,8 @@ export function createSessionOrchestrator(
       deps.emit?.(turnStarted, payload);
       // Resolve the persisted workspace id (not the per-turn start option)
       // before emitting so the broadcast carries the correct workspace.
-      publishStatus(conversationId, "active", turnId);
+      if (!canPublishStatus()) return;
+      publishStatus(conversationId, "active", turnId, canPublishStatus);
       void deps.conversationStore
         .setConversationStatus(conversationId, "active")
         .catch(logFailure(conversationId, "set active status", turnId));
@@ -953,8 +962,8 @@ export function createSessionOrchestrator(
             conversationId,
             turnWorkspaceId,
             promptStartedAt,
-            () => publishStatus(conversationId, "queued", turnId),
-            () => publishStatus(conversationId, "active", turnId),
+            () => publishStatus(conversationId, "queued", turnId, canPublishStatus),
+            () => publishStatus(conversationId, "active", turnId, canPublishStatus),
           );
         }
 
@@ -1255,13 +1264,17 @@ export function createSessionOrchestrator(
           const payload = await lifecyclePayloadPromise;
           if (payload === undefined) return;
           deps.emit?.(turnSettled, payload);
-          if (!carried) {
+          // Close owns the final status, unlike Stop. Never resurrect a
+          // closed conversation (or overwrite a newer turn) during settlement.
+          if (!carried && canPublishStatus()) {
             // Resolve the persisted workspace id before emitting so the
             // broadcast carries the correct workspace.
-            publishStatus(conversationId, "idle", turnId);
-            void deps.conversationStore
+            const statusPublished = publishStatus(conversationId, "idle", turnId, canPublishStatus);
+            await deps.conversationStore
               .setConversationStatus(conversationId, "idle")
               .catch(logFailure(conversationId, "set idle status", turnId));
+            await statusPublished;
+            if (!canPublishStatus()) return;
             // Fire-and-forget auto-compaction: check threshold and
             // compact if exceeded. Non-blocking — the next turn
             // starts fresh either way.
@@ -1275,7 +1288,11 @@ export function createSessionOrchestrator(
                 .catch(logFailure(conversationId, "auto-compaction", turnId));
             }
           }
-        })().catch(logFailure(conversationId, "turn settled hook", turnId));
+        })()
+          .catch(logFailure(conversationId, "turn settled hook", turnId))
+          .finally(() => {
+            if (lifecycleTurns.get(conversationId) === turn) lifecycleTurns.delete(conversationId);
+          });
       }
     })().catch(logFailure(conversationId, "detached turn", turnId));
   }
@@ -1477,7 +1494,7 @@ export function createSessionOrchestrator(
       const pending = pendingEnqueues.get(conversationId);
       if (pending !== undefined) pending.cancelled = true;
       compactionQueueWaiters.delete(conversationId);
-      const turn = activeTurns.get(conversationId);
+      const turn = activeTurns.get(conversationId) ?? lifecycleTurns.get(conversationId);
       if (turn !== undefined) turn.cancelQueuedInput = true;
       const { abortedTurn } = orchestrator.stopTurn(conversationId);
       finishInputs(conversationId, "dropped", "input cancelled by Close");
