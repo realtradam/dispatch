@@ -5624,6 +5624,68 @@ describe("in-flight compaction", () => {
     ).toBe(false);
   });
 
+  it("warns once per turn when the model's context window is unknown", async () => {
+    const store = createInMemoryStore();
+    seedHistory(store, "conv-no-window", 15); // > keepLastN(10) → would be compactable
+
+    // Two tool steps → two step boundaries. The model reports no context
+    // window, so auto-compaction cannot run: exactly ONE warning per turn.
+    const { provider } = createScriptedCapturingProvider([
+      [
+        { type: "tool-call", toolCallId: "tc1", toolName: "echo", input: {} },
+        { type: "usage", usage: { inputTokens: 900, outputTokens: 10 } },
+        { type: "finish", reason: "tool-calls" },
+      ],
+      [
+        { type: "tool-call", toolCallId: "tc2", toolName: "echo", input: {} },
+        { type: "usage", usage: { inputTokens: 900, outputTokens: 10 } },
+        { type: "finish", reason: "tool-calls" },
+      ],
+      [
+        { type: "text-delta", delta: "done" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+
+    const records: LogRecord[] = [];
+    const logDeps: LogDeps = { now: () => 2000, newId: () => `id-${records.length}` };
+    const sink: LogSink = { emit: (r) => records.push(r) };
+    const logger = createLogger({ extensionId: "session-orchestrator" }, sink, logDeps);
+
+    const compactedEvents: ConversationCompactedPayload[] = [];
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [echoTool()],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveModel: () => ({ provider, model: "model" }),
+      resolveModelInfo: async () => ({ id: "test/model" }),
+      runTurn,
+      logger,
+      emit: (hook, payload) => {
+        if (hook === conversationCompacted) {
+          compactedEvents.push(payload as ConversationCompactedPayload);
+        }
+      },
+    });
+
+    await orchestrator.handleMessage({
+      conversationId: "conv-no-window",
+      text: "hi",
+      onEvent: () => {},
+      modelName: "test/model",
+    });
+
+    const warnings = records.filter(
+      (r) => r.kind === "log" && r.msg === "compaction:in-flight:no-context-window",
+    );
+    expect(warnings).toHaveLength(1);
+    expect(compactedEvents).toHaveLength(0);
+    // The history is not compacted: it still starts with the oldest seed message.
+    const stored = store.data.get("conv-no-window") ?? [];
+    expect(stored[0]?.chunks[0]).toMatchObject({ type: "text", text: "seed message 0" });
+  });
+
   it("an abort BETWEEN forkHistory and replaceHistory orphans the archive but leaves the LIVE history unchanged, with no next provider step", async () => {
     const store = createInMemoryStore();
     seedHistory(store, "conv-boundary", 15); // > keepLastN(10) → compactable

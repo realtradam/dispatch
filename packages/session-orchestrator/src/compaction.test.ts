@@ -9,7 +9,12 @@ import {
 import { createMessageQueueService } from "@dispatch/message-queue";
 import { describe, expect, it } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
-import { chooseKeepStart, createCompactionService, performCompaction } from "./compaction.js";
+import {
+  chooseKeepStart,
+  createCompactionService,
+  performCompaction,
+  SUMMARY_MAX_OUTPUT_TOKENS,
+} from "./compaction.js";
 import { createSessionOrchestrator } from "./orchestrator.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
@@ -121,8 +126,33 @@ describe("performCompaction safe boundary", () => {
       text: "Please summarize the following conversation:\n\nuser: old context",
     });
     expect(options?.systemPrompt).toContain("conversation concisely but comprehensively");
+    expect(options?.maxTokens).toBe(8192);
+    expect(options?.systemPrompt).toContain("under 1500 words");
     // The summary request identifies the conversation it compacts to the provider.
     expect(options?.conversationId).toBe("c");
+  });
+
+  it("compacts successfully when the summary provider reports a length stop", async () => {
+    const store = createConversationStore(storageFromMap());
+    const history = [old, done];
+    await store.append("c", history);
+    const provider: ProviderContract = {
+      id: "summary",
+      async *stream() {
+        yield { type: "text-delta", delta: "summary" };
+        yield { type: "finish", reason: "length" };
+      },
+    };
+    const outcome = await performCompaction(
+      { conversationStore: store, resolveProvider: () => provider, emit: () => {} },
+      "c",
+      { keepLastN: 1, messages: history },
+    );
+    if ("error" in outcome) throw new Error(outcome.error);
+    expect(outcome.summary).toBe("summary");
+    expect(outcome.compactedMessages[0]?.role).toBe("system");
+    expect(outcome.compactedMessages.slice(1)).toEqual(history.slice(1));
+    expect(await store.load("c")).toEqual(outcome.compactedMessages);
   });
 
   it("continues an in-flight turn with an assistant call group, never an orphan tool tail", async () => {
@@ -232,7 +262,7 @@ function compactionFixture(withQueue = false, fail = false) {
   const provider: ProviderContract = {
     id: "gated",
     async *stream(_messages, _tools, opts) {
-      if (opts?.maxTokens === 2000) {
+      if (opts?.maxTokens === SUMMARY_MAX_OUTPUT_TOKENS) {
         entered.resolve();
         await release.promise;
         if (fail) throw new Error("summary failed");

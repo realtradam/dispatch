@@ -42,6 +42,8 @@ export const compactionHandle: ServiceHandle<CompactionService> = defineService<
 
 export const DEFAULT_KEEP_LAST_N = 10;
 export const DEFAULT_COMPACT_PERCENT = 85;
+/** Output cap of the summary request. 2000 cut summaries off mid-sentence. */
+export const SUMMARY_MAX_OUTPUT_TOKENS = 8192;
 
 /**
  * Keep at least the requested tail without splitting a tool-call/result group.
@@ -66,7 +68,8 @@ export function chooseKeepStart(history: readonly ChatMessage[], keepLastN: numb
 const COMPACTION_SYSTEM_PROMPT =
   "You are a conversation summarizer. Summarize the following conversation concisely but comprehensively. " +
   "Focus on key decisions, context, file paths, and any unresolved questions. " +
-  "The summary must preserve enough detail for the conversation to continue with full context.";
+  "The summary must preserve enough detail for the conversation to continue with full context." +
+  " Keep the summary under 1500 words.";
 
 function formatMessagesForSummary(messages: readonly ChatMessage[]): string {
   return messages
@@ -241,7 +244,7 @@ export async function performCompaction(
 
   const providerOpts: ProviderStreamOptions = {
     conversationId,
-    maxTokens: 2000,
+    maxTokens: SUMMARY_MAX_OUTPUT_TOKENS,
     ...(modelOverride !== undefined ? { model: modelOverride } : {}),
     ...(deps.logger !== undefined
       ? { logger: deps.logger.child({ conversationId, attrs: { compaction: true } }) }
@@ -278,6 +281,7 @@ export async function performCompaction(
     ...(signal !== undefined ? { signal } : {}),
   };
   let summary = "";
+  let summaryTruncated = false;
   if (signal !== undefined) {
     const stream = provider.stream([summaryRequest], [], compactionOpts);
     const iterator = stream[Symbol.asyncIterator]();
@@ -288,6 +292,11 @@ export async function performCompaction(
         // A deliberate abort is cancellation, not a provider error.
         if (signal.aborted) return { error: "aborted" };
         return { error: (event as { message: string }).message };
+      } else if (
+        (event as ProviderEvent).type === "finish" &&
+        (event as { reason?: string }).reason === "length"
+      ) {
+        summaryTruncated = true;
       }
     }
   } else {
@@ -296,6 +305,11 @@ export async function performCompaction(
         summary += (event as { delta: string }).delta;
       } else if ((event as ProviderEvent).type === "error") {
         return { error: (event as { message: string }).message };
+      } else if (
+        (event as ProviderEvent).type === "finish" &&
+        (event as { reason?: string }).reason === "length"
+      ) {
+        summaryTruncated = true;
       }
     }
   }
@@ -312,6 +326,10 @@ export async function performCompaction(
 
   if (summary.trim().length === 0) {
     return { error: "model produced empty summary" };
+  }
+
+  if (summaryTruncated) {
+    deps.logger?.warn("compaction:summary-truncated", { conversationId });
   }
 
   const commit = async (): Promise<PerformCompactionResult | { readonly error: string }> => {

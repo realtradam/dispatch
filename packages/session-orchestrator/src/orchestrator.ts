@@ -1036,6 +1036,8 @@ export function createSessionOrchestrator(
                     });
               };
 
+        let warnedNoContextWindow = false;
+
         const opts: RunTurnInput = {
           provider,
           messages: providerMessages,
@@ -1081,7 +1083,19 @@ export function createSessionOrchestrator(
             // Abort may have fired during the compact-percent read.
             if (controller.signal.aborted) return;
             const info = await deps.resolveModelInfo(effectiveModelName);
-            if (info?.contextWindow === undefined) return;
+            if (info?.contextWindow === undefined) {
+              // Auto-compaction cannot run without the model's context window. Say so
+              // once per turn instead of silently never compacting.
+              if (!warnedNoContextWindow) {
+                warnedNoContextWindow = true;
+                turnLogger?.warn("compaction:in-flight:no-context-window", {
+                  conversationId,
+                  turnId,
+                  model: effectiveModelName,
+                });
+              }
+              return;
+            }
             const threshold = Math.floor(info.contextWindow * (percent / 100));
             if (contextSize < threshold) return; // threshold not exceeded
             // Abort may have fired during the model-info read.

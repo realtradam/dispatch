@@ -27,10 +27,10 @@ export const CLAUDE_OAUTH_BASE = `${CLAUDE_API_ROOT}/api/oauth`;
 
 /** Reverse-engineered beta list OMP sends to `/api/oauth/usage` (version-locked; expected to rot). */
 export const CLAUDE_USAGE_BETAS =
-  "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11";
+  "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11";
 
 /** Claude Code CLI version the user-agent claims (overridable via ANTHROPIC_CLI_VERSION at the edge). */
-export const CLAUDE_CLI_VERSION = "2.1.283";
+export const CLAUDE_CLI_VERSION = "2.1.321";
 
 /** Is this API-key-shaped string actually an OAuth access token? */
 export function isClaudeOAuthToken(value: string): boolean {
