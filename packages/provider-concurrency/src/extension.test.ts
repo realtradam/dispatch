@@ -45,48 +45,68 @@ const noopLogger: Logger = {
   },
 };
 
-describe("migrateObsoleteProviderKeys (openai-compat → opencode-1)", () => {
-  it("migrates the bare limit key to the numbered identity and deletes the obsolete key", async () => {
+describe("migrateObsoleteProviderKeys (opencode-1 / openai-compat → opencode)", () => {
+  it("migrates the bare limit key to the unnumbered identity and deletes the obsolete key", async () => {
     const storage = createMemoryStorage();
     await storage.set("openai-compat", "4");
 
     await migrateObsoleteProviderKeys(storage, noopLogger);
 
-    expect(storage.dump()).toEqual({ "opencode-1": "4" });
+    expect(storage.dump()).toEqual({ opencode: "4" });
+  });
+
+  it("migrates the numbered primary identity opencode-1", async () => {
+    const storage = createMemoryStorage();
+    await storage.set("opencode-1", "6");
+
+    await migrateObsoleteProviderKeys(storage, noopLogger);
+
+    expect(storage.dump()).toEqual({ opencode: "6" });
   });
 
   it("migrates cooldown + auto-reduce keys too", async () => {
     const storage = createMemoryStorage();
     await storage.set("cooldown:openai-compat", "500");
-    await storage.set("auto-reduce:openai-compat", "8");
+    await storage.set("auto-reduce:opencode-1", "8");
 
     await migrateObsoleteProviderKeys(storage, noopLogger);
 
     expect(storage.dump()).toEqual({
-      "cooldown:opencode-1": "500",
-      "auto-reduce:opencode-1": "8",
+      "cooldown:opencode": "500",
+      "auto-reduce:opencode": "8",
     });
   });
 
-  it("does NOT overwrite an existing numbered target (drops the obsolete key instead)", async () => {
+  it("prefers the newest obsolete id when several exist (opencode-1 over openai-compat)", async () => {
     const storage = createMemoryStorage();
     await storage.set("openai-compat", "4");
-    await storage.set("opencode-1", "12");
+    await storage.set("opencode-1", "9");
 
     await migrateObsoleteProviderKeys(storage, noopLogger);
 
-    // The legitimate numbered setting wins; the obsolete key is cleaned up.
-    expect(storage.dump()).toEqual({ "opencode-1": "12" });
+    expect(storage.dump()).toEqual({ opencode: "9" });
+  });
+
+  it("does NOT overwrite an existing target (drops the obsolete keys instead)", async () => {
+    const storage = createMemoryStorage();
+    await storage.set("openai-compat", "4");
+    await storage.set("opencode-1", "9");
+    await storage.set("opencode", "12");
+
+    await migrateObsoleteProviderKeys(storage, noopLogger);
+
+    // The legitimate current setting wins; the obsolete keys are cleaned up.
+    expect(storage.dump()).toEqual({ opencode: "12" });
   });
 
   it("is idempotent", async () => {
     const storage = createMemoryStorage();
-    await storage.set("openai-compat", "4");
+    await storage.set("opencode-1", "4");
 
     await migrateObsoleteProviderKeys(storage, noopLogger);
     await migrateObsoleteProviderKeys(storage, noopLogger);
 
-    expect(storage.dump()).toEqual({ "opencode-1": "4" });
+    expect(storage.dump()).toEqual({ opencode: "4" });
   });
 
   it("leaves unrelated provider keys untouched", async () => {

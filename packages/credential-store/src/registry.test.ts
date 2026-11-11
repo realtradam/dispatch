@@ -14,7 +14,7 @@ function fakeProvider(
 }
 
 describe("createCredentialStore", () => {
-  // Numbered OpenCode scheme: a credential + provider per number.
+  // Two credentials, each bound to its OWN provider (per-credential isolation).
   const credentials = [
     { name: "opencode-1", providerId: "opencode-1" },
     { name: "opencode-2", providerId: "opencode-2" },
@@ -27,7 +27,7 @@ describe("createCredentialStore", () => {
   });
 
   describe("resolve", () => {
-    it("resolves a numbered model name to its matching numbered provider", () => {
+    it("resolves a model name to its credential's provider", () => {
       providers.set("opencode-1", fakeProvider("opencode-1"));
       const result = store.resolve("opencode-1/deepseek-v4-flash");
       expect(result).toEqual({ providerId: "opencode-1", model: "deepseek-v4-flash" });
@@ -41,7 +41,7 @@ describe("createCredentialStore", () => {
       expect(r2?.providerId).toBe("opencode-2");
     });
 
-    it("does NOT resolve the obsolete opencode/<model> namespace (no opencode credential)", () => {
+    it("does NOT resolve a model whose credential name is not registered", () => {
       const result = store.resolve("opencode/deepseek-v4-flash");
       expect(result).toBeUndefined();
     });

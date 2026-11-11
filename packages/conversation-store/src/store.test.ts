@@ -1359,31 +1359,42 @@ describe("ConversationStore model", () => {
     expect(await store2.getModel("conv1")).toBe("umans/umans-glm-5.2");
   });
 
-  it("migrateLegacyOpenCodeModels rewrites opencode/<model> → opencode-1/<model>", async () => {
+  it("migrateLegacyOpenCodeModels rewrites opencode-<n>/<model> → opencode/<model>", async () => {
     const store = createConversationStore(storage);
-    await store.setModel("conv1", "opencode/deepseek-v4-flash");
-    await store.setModel("conv2", "opencode/nested/model");
-    // A numbered value (or any non-legacy value) must be untouched.
-    await store.setModel("conv3", "opencode-1/deepseek-v4-flash");
-    await store.setModel("conv4", "umans/umans-glm-5.2");
+    await store.setModel("conv1", "opencode-1/deepseek-v4-flash");
+    await store.setModel("conv2", "opencode-2/nested/model");
+    await store.setModel("conv3", "opencode-10/glm-5.2");
+    // An unnumbered value (or any non-legacy value) must be untouched.
+    await store.setModel("conv4", "opencode/deepseek-v4-flash");
+    await store.setModel("conv5", "umans/umans-glm-5.2");
+    // Not a canonical numbered OpenCode prefix / no model → untouched.
+    await store.setModel("conv6", "opencode-01/model");
+    await store.setModel("conv7", "opencode-x/model");
+    await store.setModel("conv8", "opencode-1/");
+    await store.setModel("conv9", "opencode-1");
 
     const migrated = await store.migrateLegacyOpenCodeModels();
-    expect(migrated).toBe(2);
-    expect(await store.getModel("conv1")).toBe("opencode-1/deepseek-v4-flash");
-    expect(await store.getModel("conv2")).toBe("opencode-1/nested/model");
-    expect(await store.getModel("conv3")).toBe("opencode-1/deepseek-v4-flash");
-    expect(await store.getModel("conv4")).toBe("umans/umans-glm-5.2");
+    expect(migrated).toBe(3);
+    expect(await store.getModel("conv1")).toBe("opencode/deepseek-v4-flash");
+    expect(await store.getModel("conv2")).toBe("opencode/nested/model");
+    expect(await store.getModel("conv3")).toBe("opencode/glm-5.2");
+    expect(await store.getModel("conv4")).toBe("opencode/deepseek-v4-flash");
+    expect(await store.getModel("conv5")).toBe("umans/umans-glm-5.2");
+    expect(await store.getModel("conv6")).toBe("opencode-01/model");
+    expect(await store.getModel("conv7")).toBe("opencode-x/model");
+    expect(await store.getModel("conv8")).toBe("opencode-1/");
+    expect(await store.getModel("conv9")).toBe("opencode-1");
   });
 
   it("migrateLegacyOpenCodeModels is idempotent (no legacy values left to rewrite)", async () => {
     const store = createConversationStore(storage);
-    await store.setModel("conv1", "opencode/gpt");
+    await store.setModel("conv1", "opencode-1/gpt");
     await store.migrateLegacyOpenCodeModels();
-    expect(await store.getModel("conv1")).toBe("opencode-1/gpt");
+    expect(await store.getModel("conv1")).toBe("opencode/gpt");
 
     // Second run is a no-op.
     expect(await store.migrateLegacyOpenCodeModels()).toBe(0);
-    expect(await store.getModel("conv1")).toBe("opencode-1/gpt");
+    expect(await store.getModel("conv1")).toBe("opencode/gpt");
   });
 
   it("migrateLegacyOpenCodeModels returns 0 when nothing old exists", async () => {

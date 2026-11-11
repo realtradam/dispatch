@@ -11,15 +11,18 @@ export {
   parseModelList,
   parseSSELines,
 } from "@dispatch/openai-stream";
-export { activate, extension, manifest, OPENCODE_CREDENTIALS_CONFIG_KEY } from "./extension.js";
+export { activate, extension, manifest, OPENCODE_CREDENTIAL_CONFIG_KEY } from "./extension.js";
 export {
   DEFAULT_OPENCODE_BASE_URL,
   DEFAULT_OPENCODE_MODEL,
   formatOpenCodeEnvDiagnostics,
-  hasNumberedOpenCodeCredentials,
-  OPENCODE_API_KEY_PREFIX,
+  hasOpenCodeCredential,
+  isFatalOpenCodeEnvDiagnostic,
+  LEGACY_NUMBERED_OPENCODE_API_KEY_PREFIX,
+  OPENCODE_API_KEY_VAR,
+  OPENCODE_PROVIDER_ID,
+  type OpenCodeCredential,
   type OpenCodeEnvDiagnostic,
-  type OpenCodeNumberedCredential,
-  type ParseNumberedOpenCodeEnvResult,
-  parseNumberedOpenCodeEnv,
+  type ParseOpenCodeEnvResult,
+  parseOpenCodeEnv,
 } from "./opencode-config.js";

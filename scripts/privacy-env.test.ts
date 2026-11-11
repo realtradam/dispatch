@@ -67,12 +67,12 @@ const endpoints =
 describe("private service endpoint upgrade lifecycle", () => {
   it("migrates blanks/missing assignments, preserves keys/ports, and is idempotent", () => {
     const original =
-      "HOME=/home/operator\nOPENCODE_API_KEY_3=fake-key\nBACKEND_PORT=4567\nFIRECRAWL_BASE_URL=";
+      "HOME=/home/operator\nOPENCODE_API_KEY=fake-key\nBACKEND_PORT=4567\nFIRECRAWL_BASE_URL=";
     const f = fixture(original);
     const result = f.run("migrate-service-endpoints", [f.input()]);
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).not.toContain("scraper.example");
-    expect(f.read()).toContain("OPENCODE_API_KEY_3=fake-key\nBACKEND_PORT=4567");
+    expect(f.read()).toContain("OPENCODE_API_KEY=fake-key\nBACKEND_PORT=4567");
     expect(f.read()).toContain(endpoints.trim().split("\n")[0]);
     expect(f.read()).toContain("YOUTUBE_TRANSCRIBER_URL=http://[2001:db8::10]:41090");
     const migrated = f.read();
@@ -126,14 +126,14 @@ describe("private service endpoint upgrade lifecycle", () => {
 
   it("keeps migrated endpoints/network policy through setup refresh and key sync", () => {
     const f = fixture(
-      "HOME=/home/operator\nOPENCODE_API_KEY_3=fake-key\n" +
+      "HOME=/home/operator\nOPENCODE_API_KEY=fake-key\n" +
         "DISPATCH_BIND=loopback,tailscale\nDISPATCH_TAILSCALE_NAME=custom.example\n" +
         "DISPATCH_ALLOWED_HOSTS=extra.example\n",
     );
     expect(f.run("migrate-service-endpoints", [f.input()]).status).toBe(0);
     const setup = f.run("setup-env");
     expect(setup.status, setup.stderr).toBe(0);
-    expect(f.read()).toContain("OPENCODE_API_KEY_3=fake-key");
+    expect(f.read()).toContain("OPENCODE_API_KEY=fake-key\n");
     expect(f.read()).toContain(
       "PATH=/home/operator/.local/bin:/home/operator/.local/share/mise/shims:/home/operator/.bun/bin:",
     );
@@ -146,5 +146,101 @@ describe("private service endpoint upgrade lifecycle", () => {
     expect(f.read()).toContain("HYPER_API_KEY=fake-hyper-key");
     for (const line of endpoints.trim().split("\n")) expect(f.read()).toContain(line);
     expect(f.read()).toContain("DISPATCH_TAILSCALE_NAME=custom.example");
+  });
+});
+
+describe("OpenCode key lifecycle (one unnumbered OPENCODE_API_KEY)", () => {
+  const stale =
+    "HOME=/home/operator\nUMANS_API_KEY=fake-umans\n" +
+    "# Numbered OpenCode credential\nOPENCODE_API_KEY_1=fake-old-1\n" +
+    "# Numbered OpenCode credential\nOPENCODE_API_KEY_2=fake-old-2\n" +
+    "HYPER_API_KEY=fake-hyper\n";
+
+  it("sync-env sets the single key, drops obsolete numbered lines, and never echoes it", () => {
+    const f = fixture(stale);
+    const sync = f.run("sync-env", ["--opencode-key", "fake_oc_sk_NEW"]);
+    expect(sync.status, sync.stderr).toBe(0);
+    const env = f.read();
+    expect(env).toContain("OPENCODE_API_KEY=fake_oc_sk_NEW\n");
+    expect(env).not.toMatch(/OPENCODE_API_KEY_\d/);
+    expect(env).not.toContain("Numbered OpenCode credential");
+    // Other keys are untouched; the base URL + default model are filled in.
+    expect(env).toContain("UMANS_API_KEY=fake-umans\n");
+    expect(env).toContain("HYPER_API_KEY=fake-hyper\n");
+    expect(env).toContain("DISPATCH_BASE_URL=https://opencode.ai/zen/go/v1\n");
+    expect(env).toContain("DISPATCH_MODEL=deepseek-v4.1-flash\n");
+    expect(sync.stdout + sync.stderr).not.toContain("fake_oc_sk_NEW");
+    expect(sync.stderr).toContain("OPENCODE_API_KEY configured");
+
+    // Replacing is in place (never a second line) and idempotent.
+    expect(f.run("sync-env", ["--opencode-key=fake_oc_sk_NEWER"]).status).toBe(0);
+    expect(f.read().match(/^OPENCODE_API_KEY=/gm)).toHaveLength(1);
+    expect(f.read()).toContain("OPENCODE_API_KEY=fake_oc_sk_NEWER\n");
+  });
+
+  it("sync-env keeps an operator's DISPATCH_MODEL / DISPATCH_BASE_URL", () => {
+    const f = fixture("DISPATCH_BASE_URL=https://custom.example/v1\nDISPATCH_MODEL=my-model\n");
+    expect(f.run("sync-env", ["--opencode-key", "fake_oc_sk"]).status).toBe(0);
+    expect(f.read()).toContain("DISPATCH_BASE_URL=https://custom.example/v1\n");
+    expect(f.read()).toContain("DISPATCH_MODEL=my-model\n");
+    expect(f.read().match(/^DISPATCH_MODEL=/gm)).toHaveLength(1);
+  });
+
+  it("sync-env leaves OpenCode lines alone when no OpenCode key is given", () => {
+    const f = fixture(`${stale}OPENCODE_API_KEY=fake-current\n`);
+    const sync = f.run("sync-env", ["--hyper-key", "fake-hyper-2"]);
+    expect(sync.status, sync.stderr).toBe(0);
+    expect(f.read()).toContain("OPENCODE_API_KEY=fake-current\n");
+    expect(f.read()).toContain("OPENCODE_API_KEY_1=fake-old-1\n");
+    // …but it points out the obsolete lines.
+    expect(sync.stderr).toContain("obsolete numbered OPENCODE_API_KEY_<n>");
+  });
+
+  it("sync-env removes the key on an explicit empty value", () => {
+    const f = fixture(`${stale}OPENCODE_API_KEY=fake-current\n`);
+    expect(f.run("sync-env", ["--opencode-key", ""]).status).toBe(0);
+    expect(f.read()).not.toMatch(/^OPENCODE_API_KEY/m);
+    expect(f.read()).toContain("UMANS_API_KEY=fake-umans\n");
+  });
+
+  it.each([
+    ["the old <number>=<key> form", "1=fake-key"],
+    ["a sed-special ampersand", "fake&key"],
+    ["a sed-special backslash", "fake\\key"],
+    ["a pipe", "fake|key"],
+    ["whitespace", "fake key"],
+    ["a newline", "fake\nINJECTED=1"],
+  ])("sync-env and setup-env refuse a key with %s before changing config", (_name, key) => {
+    const f = fixture(stale);
+    for (const script of ["sync-env", "setup-env"]) {
+      const result = f.run(script, ["--opencode-key", key]);
+      expect(result.status, script).not.toBe(0);
+      expect(result.stderr, script).toContain("OpenCode key");
+      expect(f.read(), script).toBe(stale);
+    }
+  });
+
+  it("setup-env carries the single key through a refresh and drops numbered ones", () => {
+    const f = fixture(`${stale}OPENCODE_API_KEY=fake-current\n`);
+    const setup = f.run("setup-env");
+    expect(setup.status, setup.stderr).toBe(0);
+    expect(f.read()).toContain("OPENCODE_API_KEY=fake-current\n");
+    expect(f.read()).toContain("DISPATCH_BASE_URL=https://opencode.ai/zen/go/v1\n");
+    expect(f.read()).not.toMatch(/OPENCODE_API_KEY_\d/);
+    expect(setup.stdout + setup.stderr).not.toContain("fake-current");
+
+    // An explicit value replaces it; an explicit empty value removes it.
+    expect(f.run("setup-env", ["--opencode-key", "fake-replaced"]).status).toBe(0);
+    expect(f.read()).toContain("OPENCODE_API_KEY=fake-replaced\n");
+    expect(f.read().match(/^OPENCODE_API_KEY=/gm)).toHaveLength(1);
+    expect(f.run("setup-env", ["--opencode-key", ""]).status).toBe(0);
+    expect(f.read()).not.toMatch(/^OPENCODE_API_KEY/m);
+    expect(f.read()).not.toMatch(/^DISPATCH_MODEL=/m);
+  });
+
+  it("setup-env writes no OpenCode key when only obsolete numbered ones exist", () => {
+    const f = fixture(stale);
+    expect(f.run("setup-env").status).toBe(0);
+    expect(f.read()).not.toMatch(/^OPENCODE_API_KEY/m);
   });
 });

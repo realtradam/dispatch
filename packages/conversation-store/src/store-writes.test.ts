@@ -255,7 +255,7 @@ describe("serialized transactional writes", () => {
   >)("%s respects conversation exclusion", async (_name, mutate) => {
     const { store, data } = fixture();
     await store.setWorkspaceId("c", "w");
-    data.set("conv:c:model", "opencode/legacy");
+    data.set("conv:c:model", "opencode-1/legacy");
     data.set("conv:c:image-transcriptions", JSON.stringify({ url: "legacy" }));
     const entered = gate();
     const release = gate();

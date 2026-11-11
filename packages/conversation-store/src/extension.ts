@@ -29,15 +29,15 @@ export const extension: Extension = {
       (payload) => host.emit(conversationDeleted, payload),
     );
 
-    // One-time persisted-state migration: rewrite obsolete `opencode/<model>`
-    // per-conversation model values to the numbered `opencode-1/<model>`
-    // namespace. Idempotent (only touches `opencode/`-prefixed values), so a
-    // re-run is a no-op. Runtime code understands ONLY numbered names; no alias
-    // is retained.
+    // One-time persisted-state migration: rewrite obsolete numbered
+    // `opencode-<n>/<model>` per-conversation model values to the single
+    // `opencode/<model>` namespace. Idempotent (only touches numbered-prefixed
+    // values), so a re-run is a no-op. Runtime code understands ONLY the
+    // unnumbered name; no alias is retained.
     const migrated = await store.migrateLegacyOpenCodeModels();
     if (migrated > 0) {
       host.logger.info(
-        `conversation-store: migrated ${migrated} legacy "opencode/" model selection(s) → "opencode-1/"`,
+        `conversation-store: migrated ${migrated} legacy "opencode-<n>/" model selection(s) → "opencode/"`,
       );
     }
 

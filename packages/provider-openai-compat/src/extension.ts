@@ -1,6 +1,6 @@
 import type { ApiKeyCredentials, Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { createOpenAICompatProvider } from "@dispatch/openai-stream";
-import type { OpenCodeNumberedCredential } from "./opencode-config.js";
+import { OPENCODE_PROVIDER_ID, type OpenCodeCredential } from "./opencode-config.js";
 
 export const manifest: Manifest = {
   id: "provider-openai-compat",
@@ -11,53 +11,41 @@ export const manifest: Manifest = {
   trust: "bundled",
   activation: "eager",
   capabilities: { network: true },
-  contributes: { providers: ["opencode"] },
+  contributes: { providers: [OPENCODE_PROVIDER_ID] },
 };
 
 /**
- * Configuration key under which host-bin exposes the parsed numbered OpenCode
- * credentials to this extension. The value is an array of
- * {@link OpenCodeNumberedCredential} sorted numerically ascending, each with
- * its OWN apiKey/baseURL/model. Absent/empty → no OpenCode providers register
- * (OpenCode simply unavailable).
+ * Configuration key under which host-bin exposes the parsed OpenCode
+ * credential to this extension. The value is a single
+ * {@link OpenCodeCredential} (apiKey/baseURL/model). Absent → no OpenCode
+ * provider registers (OpenCode simply unavailable).
  */
-export const OPENCODE_CREDENTIALS_CONFIG_KEY = "opencode.credentials";
+export const OPENCODE_CREDENTIAL_CONFIG_KEY = "opencode.credential";
 
 export async function activate(host: HostAPI): Promise<void> {
-  const creds = host.config.get<OpenCodeNumberedCredential[] | undefined>(
-    OPENCODE_CREDENTIALS_CONFIG_KEY,
-  );
+  const entry = host.config.get<OpenCodeCredential | undefined>(OPENCODE_CREDENTIAL_CONFIG_KEY);
 
-  if (creds === undefined || creds.length === 0) {
+  if (entry === undefined) {
     host.logger.info(
-      "provider-openai-compat: no numbered OpenCode credentials configured. OpenCode provider not registered.",
+      "provider-openai-compat: no OpenCode credential configured. OpenCode provider not registered.",
     );
     return;
   }
 
-  let registered = 0;
-  for (const entry of creds) {
-    const id = `opencode-${entry.number}`;
-    const credentials: ApiKeyCredentials = {
-      type: "api-key",
-      apiKey: entry.apiKey,
-      baseURL: entry.baseURL,
-    };
-    const provider = createOpenAICompatProvider({
-      credentials,
-      model: entry.model,
-      id,
-    });
-    host.defineProvider(provider);
-    registered++;
-    // Log only the NUMBER + model — never the secret key.
-    host.logger.info(
-      `provider-openai-compat: registered numbered OpenCode provider "${id}" (model=${entry.model})`,
-    );
-  }
-
+  const credentials: ApiKeyCredentials = {
+    type: "api-key",
+    apiKey: entry.apiKey,
+    baseURL: entry.baseURL,
+  };
+  const provider = createOpenAICompatProvider({
+    credentials,
+    model: entry.model,
+    id: OPENCODE_PROVIDER_ID,
+  });
+  host.defineProvider(provider);
+  // Log only the provider id + model — never the secret key.
   host.logger.info(
-    `provider-openai-compat: registered ${registered} numbered OpenCode provider(s)`,
+    `provider-openai-compat: registered OpenCode provider "${OPENCODE_PROVIDER_ID}" (model=${entry.model})`,
   );
 }
 

@@ -12,7 +12,7 @@ export interface ResolvedModel {
 
 /** A fully-qualified `<credentialName>/<model>` entry plus its metadata. */
 export interface CatalogEntry {
-  /** Fully-qualified model name, e.g. `opencode-1/deepseek-v4-flash`. */
+  /** Fully-qualified model name, e.g. `opencode/deepseek-v4.1-flash`. */
   readonly name: string;
   /** The provider's {@link ModelInfo}. */
   readonly info: ModelInfo;

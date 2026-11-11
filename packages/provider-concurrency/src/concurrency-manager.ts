@@ -110,7 +110,7 @@ export interface ConcurrencyLimiter {
    * created. This lets the caller emit a "queued" status signal. If the slot
    * is granted immediately, `onQueued` is NOT called.
    *
-   * @param providerId   The provider to limit (e.g. "umans", "opencode-1").
+   * @param providerId   The provider to limit (e.g. "umans", "opencode").
    * @param conversationId The agent requesting the slot.
    * @param workspaceId   The workspace the agent belongs to (for starred
    *                      priority scheduling). Defaults to `"default"`.

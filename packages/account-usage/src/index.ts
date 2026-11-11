@@ -21,23 +21,19 @@ export {
   claudeRetryDelayMs,
   createClaudeFetcher,
   createCodexFetcher,
-  createHyperFetcher,
+  createOpenCodeFetcher,
   type FetcherDeps,
   type FetchFn,
-  type HyperFetcherDeps,
+  type OpenCodeFetcherDeps,
   type UsageFetcher,
   type UsageFetchResult,
 } from "./fetchers.js";
 export {
-  applySettingsPatch,
-  buildDailyCredits,
-  type DailyCreditsSettings,
-  HYPER_DEFAULT_DAILY_ALLOWANCE,
-  isRefill,
-  nextDailyReset,
-  parseDailyCreditsSettings,
-  parseHyperCredits,
-} from "./hyper.js";
+  monthlyWindowMs,
+  OPENCODE_DEFAULT_BASE_URL,
+  parseOpenCodeErrorCode,
+  parseOpenCodeUsagePayload,
+} from "./opencode.js";
 export {
   type AccountUsageService,
   type AccountUsageServiceDeps,
@@ -52,6 +48,5 @@ export {
   PROVIDER_ORDER,
   providerForResponse,
   SUCCESS_TTL_MS,
-  type UpdateSettingsResult,
 } from "./service.js";
 export type { ProviderUsage } from "./shared.js";

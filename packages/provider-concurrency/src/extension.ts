@@ -204,44 +204,53 @@ async function loadCooldowns(
 }
 
 /**
- * The obsolete provider id used by the pre-numbered OpenCode deployment. Its
+ * The obsolete provider ids OpenCode was registered under before it became the
+ * single unnumbered `opencode` provider, NEWEST FIRST: the numbered scheme's
+ * primary identity `opencode-1`, then the original `openai-compat`. Their
  * persisted concurrency settings (limit / cooldown / auto-reduce) are migrated
- * ONCE to the numbered identity `opencode-1`, then runtime code only understands
- * the numbered namespace. No alias or fallback is retained.
+ * ONCE to `opencode`, then runtime code only understands the unnumbered id. No
+ * alias or fallback is retained.
  */
-const OBSOLETE_OPENAI_COMPAT_PROVIDER = "openai-compat";
-const NUMBERED_OPENCODE_1_PROVIDER = "opencode-1";
+const OBSOLETE_OPENCODE_PROVIDERS = ["opencode-1", "openai-compat"] as const;
+const OPENCODE_PROVIDER = "opencode";
 
 /**
- * Idempotent one-time migration of obsolete `openai-compat` concurrency
- * persistence to the numbered `opencode-1` identity.
+ * Idempotent one-time migration of obsolete OpenCode concurrency persistence
+ * to the unnumbered `opencode` identity.
  *
- * Keys affected (under the bare-`<providerId>`, `cooldown:<providerId>`, and
+ * For each obsolete id `<old>` in {@link OBSOLETE_OPENCODE_PROVIDERS} (under
+ * the bare-`<providerId>`, `cooldown:<providerId>`, and
  * `auto-reduce:<providerId>` scheme):
- *   - `openai-compat`            → `opencode-1`
- *   - `cooldown:openai-compat`   → `cooldown:opencode-1`
- *   - `auto-reduce:openai-compat` → `auto-reduce:opencode-1`
+ *   - `<old>`             → `opencode`
+ *   - `cooldown:<old>`    → `cooldown:opencode`
+ *   - `auto-reduce:<old>` → `auto-reduce:opencode`
  *
- * It only copies when the TARGET `opencode-1` key is absent (so it never
- * overwrites a legitimate numbered setting), then deletes the obsolete source
- * key — making the migration idempotent and leaving NO obsolete keys behind.
+ * It only copies when the TARGET `opencode` key is absent (so it never
+ * overwrites a legitimate current setting — and the newest obsolete id wins
+ * when several exist), then deletes the obsolete source key — making the
+ * migration idempotent and leaving NO obsolete keys behind. Settings of other
+ * numbered ids (`opencode-2`, …) are left untouched: they belonged to distinct
+ * credentials and there is no principled way to fold them into one.
  * No secrets are involved (these values are concurrency settings, not keys).
  */
 export async function migrateObsoleteProviderKeys(
   storage: StorageNamespace,
   logger: Logger,
 ): Promise<void> {
-  const migrations: { readonly from: string; readonly to: string }[] = [
-    { from: OBSOLETE_OPENAI_COMPAT_PROVIDER, to: NUMBERED_OPENCODE_1_PROVIDER },
-    {
-      from: `${COOLDOWN_KEY_PREFIX}${OBSOLETE_OPENAI_COMPAT_PROVIDER}`,
-      to: `${COOLDOWN_KEY_PREFIX}${NUMBERED_OPENCODE_1_PROVIDER}`,
-    },
-    {
-      from: `${AUTOREDUCE_KEY_PREFIX}${OBSOLETE_OPENAI_COMPAT_PROVIDER}`,
-      to: `${AUTOREDUCE_KEY_PREFIX}${NUMBERED_OPENCODE_1_PROVIDER}`,
-    },
-  ];
+  const migrations: { readonly from: string; readonly to: string }[] = [];
+  for (const obsolete of OBSOLETE_OPENCODE_PROVIDERS) {
+    migrations.push(
+      { from: obsolete, to: OPENCODE_PROVIDER },
+      {
+        from: `${COOLDOWN_KEY_PREFIX}${obsolete}`,
+        to: `${COOLDOWN_KEY_PREFIX}${OPENCODE_PROVIDER}`,
+      },
+      {
+        from: `${AUTOREDUCE_KEY_PREFIX}${obsolete}`,
+        to: `${AUTOREDUCE_KEY_PREFIX}${OPENCODE_PROVIDER}`,
+      },
+    );
+  }
 
   let migrated = 0;
   for (const { from, to } of migrations) {
@@ -249,12 +258,10 @@ export async function migrateObsoleteProviderKeys(
     if (raw === null) continue; // nothing to migrate for this key
     const targetExists = await storage.has(to);
     if (targetExists) {
-      // The numbered setting already exists — drop the obsolete key rather than
+      // The current setting already exists — drop the obsolete key rather than
       // risk overwriting. Deliberate: no alias retained.
       await storage.delete(from);
-      logger.info(
-        `provider-concurrency: dropped obsolete "${from}" (numbered "${to}" already set)`,
-      );
+      logger.info(`provider-concurrency: dropped obsolete "${from}" ("${to}" already set)`);
       migrated++;
       continue;
     }
@@ -264,7 +271,7 @@ export async function migrateObsoleteProviderKeys(
     migrated++;
   }
   if (migrated > 0) {
-    logger.info(`provider-concurrency: migrated ${migrated} obsolete openai-compat key(s)`);
+    logger.info(`provider-concurrency: migrated ${migrated} obsolete OpenCode key(s)`);
   }
 }
 
@@ -347,9 +354,9 @@ export async function activate(host: HostAPI): Promise<void> {
 
   const inner = createConcurrencyManager(managerOpts);
 
-  // Migrate obsolete `openai-compat` persisted concurrency settings to the
-  // numbered `opencode-1` identity BEFORE loading, so the restored state lands
-  // under the correct numbered provider key.
+  // Migrate obsolete (`opencode-1` / `openai-compat`) persisted concurrency
+  // settings to the unnumbered `opencode` identity BEFORE loading, so the
+  // restored state lands under the correct provider key.
   await migrateObsoleteProviderKeys(storage, logger);
 
   // Restore persisted limits + auto-reduce notices + cooldowns before registering

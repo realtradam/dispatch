@@ -200,7 +200,7 @@ export interface ModelInfo {
  * concrete LLM API is behind it.
  */
 export interface ProviderContract {
-  /** Unique identifier for this provider (e.g. "anthropic", "opencode-1"). */
+  /** Unique identifier for this provider (e.g. "anthropic", "opencode"). */
   readonly id: string;
 
   /**

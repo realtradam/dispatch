@@ -165,13 +165,14 @@ export interface ConversationStore {
   readonly setModel: (conversationId: string, model: string) => Promise<void>;
   /**
    * Idempotent one-time migration: rewrite any persisted `conv:<id>:model`
-   * value that uses the OBSOLETE `opencode/<model>` namespace to the numbered
-   * `opencode-1/<model>` namespace. Only exact `opencode/`-prefixed values are
-   * touched (nothing else), so a re-run is a no-op. Runtime code understands
-   * ONLY the numbered namespace — no alias or fallback is retained. Returns the
-   * number of persisted values rewritten. Pure mapping + storage I/O; never
-   * logs the models as secrets (model names are not secrets, but the rewrite is
-   * scoped strictly to the legacy prefix).
+   * value that uses an OBSOLETE numbered `opencode-<n>/<model>` namespace to
+   * the single `opencode/<model>` namespace (OpenCode is one unnumbered
+   * provider now). Only values with a canonical numbered prefix and a
+   * non-empty model are touched (nothing else), so a re-run is a no-op.
+   * Runtime code understands ONLY the unnumbered namespace — no alias or
+   * fallback is retained. Returns the number of persisted values rewritten.
+   * Pure mapping + storage I/O; never logs the models as secrets (model names
+   * are not secrets, but the rewrite is scoped strictly to the legacy prefix).
    */
   readonly migrateLegacyOpenCodeModels: () => Promise<number>;
   /**
@@ -571,6 +572,13 @@ interface WorkspaceRow {
 
 /** Maximum title length (in characters) before truncation with an ellipsis. */
 const TITLE_MAX = 80;
+
+/**
+ * A persisted model value in an OBSOLETE numbered OpenCode namespace:
+ * `opencode-<n>/<model>` with a canonical positive-integer `<n>` and a
+ * non-empty `<model>` (capture group 1). See `migrateLegacyOpenCodeModels`.
+ */
+const LEGACY_NUMBERED_OPENCODE_MODEL = /^opencode-[1-9][0-9]*\/(.+)$/s;
 
 /**
  * Derive a human-readable title from a batch of messages: the text of the
@@ -1262,8 +1270,9 @@ export function createConversationStore(
         const id = key.slice(5, -suffix.length);
         migrated += await write(id, (tx) => {
           const raw = tx.get(key);
-          if (raw === null || !raw.startsWith("opencode/") || raw.length === 9) return 0;
-          tx.set(key, `opencode-1/${raw.slice(9)}`);
+          const legacy = raw === null ? null : LEGACY_NUMBERED_OPENCODE_MODEL.exec(raw);
+          if (legacy === null) return 0;
+          tx.set(key, `opencode/${legacy[1]}`);
           refreshListingRow(tx, id);
           return 1;
         });

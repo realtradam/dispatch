@@ -113,7 +113,7 @@ export function createBundledExtensions(creds: {
     providerBasetenExt,
     providerCoralbricksExt,
     providerSystalyzeExt,
-    // Always loaded — with no numbered credentials configured it
+    // Always loaded — with no OPENCODE_API_KEY configured it
     // self-degrades (registers nothing; OpenCode unavailable).
     providerOpenaiCompatExt,
     createIncoExtension(creds.inco),

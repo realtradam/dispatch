@@ -131,7 +131,7 @@ describe("conversation listing index", () => {
     await f.store.ensureWorkspace("work");
     await f.store.append("a", message);
     await f.store.setWorkspaceId("a", "work");
-    await f.store.setModel("a", "opencode/model");
+    await f.store.setModel("a", "opencode-1/model");
     await f.store.migrateLegacyOpenCodeModels();
     await f.store.setParentConversationId("a", "root");
     await f.store.setTabGroupParentId("a", null);
@@ -145,7 +145,7 @@ describe("conversation listing index", () => {
     );
     const listed = (await f.store.listConversations()).find((m) => m.id === "a");
     expect(listed).toEqual(await f.store.getConversationMeta("a"));
-    expect(listed).toMatchObject({ model: "opencode-1/model", parentConversationId: "root" });
+    expect(listed).toMatchObject({ model: "opencode/model", parentConversationId: "root" });
     expect(listed).not.toHaveProperty("tabGroupParentId");
     await f.store.setModel("a", "");
     await f.store.setTabGroupParentId("a", "group");

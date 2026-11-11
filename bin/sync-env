@@ -3,24 +3,26 @@
 #
 # Keys are NEVER stored in this file or in the repo. They are passed as
 # arguments (or prompted interactively) and written directly to /etc/dispatch/env.
-# Secret values are never echoed — not even their prefixes (only the provider /
-# credential NUMBER is reported).
+# Secret values are never echoed — not even their prefixes (only the provider
+# is reported).
 #
 # Usage:
-#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..." --hyper-key "sk-hyper-..." --openrouter-key "sk-or-v1-..." --baseten-key "..." --coralbricks-key "cb_..." --systalyze-key "stlzi_..." --opencode-key "1=sk-..."
-#   sudo bin/sync-env                          # prompts for keys interactively
+#   sudo bin/sync-env --umans-key "sk-..." --longcat-key "ak-..." --hyper-key "sk-hyper-..." --openrouter-key "sk-or-v1-..." --baseten-key "..." --coralbricks-key "cb_..." --systalyze-key "stlzi_..." --opencode-key "oc_sk_..."
+#   sudo bin/sync-env                          # prompts for keys interactively (incl. OPENCODE_API_KEY)
 #   sudo bin/sync-env --umans-key ""           # removes the umans key (writes UMANS_API_KEY=)
 #   sudo bin/sync-env --hyper-key ""           # removes the hyper key (disables the provider)
 #   sudo bin/sync-env --openrouter-key ""      # removes the openrouter key (disables the provider)
 #   sudo bin/sync-env --baseten-key ""         # removes the baseten key (disables the provider)
 #   sudo bin/sync-env --coralbricks-key ""     # removes the coralbricks key (disables the provider)
 #   sudo bin/sync-env --systalyze-key ""       # removes the systalyze key (disables the provider)
-#   sudo bin/sync-env --opencode-key "1="      # removes numbered OpenCode key #1
+#   sudo bin/sync-env --opencode-key ""        # removes the opencode key (disables the provider)
 #
-# Numbered OpenCode keys: `--opencode-key <number>=<key>`. An empty value
-# removes that number. Numbers are stable identities; gaps are preserved. A
-# repeated number is canonicalized last-wins. Values with newlines/CR/'='/pipe
-# are rejected so they can never corrupt the env file or the sed edit.
+# OpenCode key: ONE unnumbered key, `--opencode-key <key>` → OPENCODE_API_KEY
+# (provider + models are named `opencode/<model>`). Setting or removing it also
+# deletes any obsolete numbered OPENCODE_API_KEY_<n> lines — the server ignores
+# those. A key containing whitespace, '=', '|', '&' or a backslash is rejected
+# so it can never corrupt the env file or the sed edit (this also catches the
+# old `<number>=<key>` form).
 
 set -euo pipefail
 
@@ -73,26 +75,22 @@ CORALBRICKS_KEY_SET=0
 # as --hyper-key: explicitly empty means REMOVE the key.
 SYSTALYZE_KEY=""
 SYSTALYZE_KEY_SET=0
-# Maps a canonical OpenCode number → value. Empty value means "removal".
-declare -A OPENCODE_MAP=()
-add_opencode() {
-	local pair="$1"
-	local NUM VAL
-	if [[ "$pair" != *=* ]]; then
-		echo "sync-env: --opencode-key expects '<number>=<key>' (got '${pair}' with no '=' separator)" >&2
+# Whether --opencode-key was explicitly supplied on this run. Same semantics
+# as --hyper-key: explicitly empty means REMOVE the key.
+OPENCODE_KEY=""
+OPENCODE_KEY_SET=0
+# Refuse an OpenCode key that could corrupt the env file or the sed edit below.
+# A real key (`oc_sk_…` / `sk-…`) never contains any of these characters.
+check_opencode_key() {
+	local val="$1"
+	if [[ "$val" == *=* ]]; then
+		echo "sync-env: the OpenCode key contains '=' — refusing. OpenCode takes ONE unnumbered key now: pass the key itself, not '<number>=<key>'." >&2
 		exit 1
 	fi
-	NUM="${pair%%=*}"
-	VAL="${pair#*=}"
-	if [[ ! "$NUM" =~ ^[1-9][0-9]*$ ]]; then
-		echo "sync-env: invalid OpenCode number '${NUM}' (must be a canonical positive integer [1-9][0-9]*, no leading zero)" >&2
+	if [[ "$val" =~ [[:space:]] || "$val" == *'|'* || "$val" == *'&'* || "$val" == *'\'* ]]; then
+		echo "sync-env: the OpenCode key contains unsafe characters (whitespace/pipe/ampersand/backslash) — refusing (was it double-pasted?)" >&2
 		exit 1
 	fi
-	if [[ "$VAL" == *$'\n'* || "$VAL" == *$'\r'* || "$VAL" == *=* || "$VAL" == *'|'* ]]; then
-		echo "sync-env: OpenCode key for number ${NUM} contains unsafe characters (newline/CR/'='/pipe) — refusing" >&2
-		exit 1
-	fi
-	OPENCODE_MAP["$NUM"]="$VAL"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -164,16 +162,18 @@ while [[ $# -gt 0 ]]; do
 			shift
 			;;
 		--opencode-key)
-			add_opencode "$2"
+			OPENCODE_KEY="$2"
+			OPENCODE_KEY_SET=1
 			shift 2
 			;;
 		--opencode-key=*)
-			add_opencode "${1#--opencode-key=}"
+			OPENCODE_KEY="${1#--opencode-key=}"
+			OPENCODE_KEY_SET=1
 			shift
 			;;
 		*)
 			echo "sync-env: unknown argument: $1" >&2
-			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--hyper-key \"sk-hyper-...\"] [--openrouter-key \"sk-or-v1-...\"] [--baseten-key \"...\"] [--coralbricks-key \"cb_...\"] [--systalyze-key \"stlzi_...\"] [--opencode-key \"1=sk-...\"]" >&2
+			echo "Usage: sudo bin/sync-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--hyper-key \"sk-hyper-...\"] [--openrouter-key \"sk-or-v1-...\"] [--baseten-key \"...\"] [--coralbricks-key \"cb_...\"] [--systalyze-key \"stlzi_...\"] [--opencode-key \"oc_sk_...\"]" >&2
 			exit 1
 			;;
 	esac
@@ -233,6 +233,19 @@ if [ -z "$SYSTALYZE_KEY" ] && [ -t 0 ]; then
 		SYSTALYZE_KEY_SET=1
 	fi
 fi
+
+if [ -z "$OPENCODE_KEY" ] && [ -t 0 ]; then
+	# Hidden input (`read -s`): the pasted key is never echoed to the terminal.
+	echo -n "Enter OPENCODE_API_KEY — paste it, input is hidden (or press Enter to skip): " >&2
+	IFS= read -rs OPENCODE_KEY
+	echo >&2
+	# An interactive empty value means "skip" (leave any existing key as-is) —
+	# only an explicit `--opencode-key ""` argument removes the key.
+	if [ -n "$OPENCODE_KEY" ]; then
+		OPENCODE_KEY_SET=1
+	fi
+fi
+check_opencode_key "$OPENCODE_KEY"
 
 # --- Update PATH ---
 if grep -q "^PATH=" "$ENV_FILE"; then
@@ -346,36 +359,45 @@ if [ "$SYSTALYZE_KEY_SET" -eq 1 ]; then
 	fi
 fi
 
-# --- Update numbered OpenCode keys (OPENCODE_API_KEY_<n>). Last-wins +
-# --- deterministic: iterate the map in numeric order. Empty value → remove.
-for NUM in $(printf '%s\n' "${!OPENCODE_MAP[@]}" | sort -n); do
-	VAL="${OPENCODE_MAP[$NUM]}"
-	VAR="OPENCODE_API_KEY_${NUM}"
-	if [ -n "$VAL" ]; then
-		if grep -q "^$VAR=" "$ENV_FILE"; then
-			sed -i "s|^$VAR=.*|$VAR=$VAL|" "$ENV_FILE"
-		else
-			echo "$VAR=$VAL" >> "$ENV_FILE"
-		fi
-		echo "  $VAR configured (value not echoed)" >&2
-	else
-		# Empty value → remove the numbered key.
-		sed -i "/^$VAR=/d" "$ENV_FILE"
-		echo "  removed $VAR" >&2
+# --- Update OPENCODE_API_KEY (the single unnumbered OpenCode key). Same
+# --- semantics as HYPER_API_KEY: omitted → leave as-is; non-empty →
+# --- update/append; explicitly empty → remove. Either explicit operation also
+# --- deletes the obsolete numbered OPENCODE_API_KEY_<n> lines (and the marker
+# --- comment the old apply script wrote above each): the server ignores them.
+if [ "$OPENCODE_KEY_SET" -eq 1 ]; then
+	if grep -q "^OPENCODE_API_KEY_[^=]*=" "$ENV_FILE"; then
+		sed -i -e "/^OPENCODE_API_KEY_[^=]*=/d" -e "/^# Numbered OpenCode credential$/d" "$ENV_FILE"
+		echo "  removed obsolete numbered OPENCODE_API_KEY_<n> line(s)" >&2
 	fi
-done
+	if [ -n "$OPENCODE_KEY" ]; then
+		if grep -q "^OPENCODE_API_KEY=" "$ENV_FILE"; then
+			sed -i "s|^OPENCODE_API_KEY=.*|OPENCODE_API_KEY=$OPENCODE_KEY|" "$ENV_FILE"
+		else
+			echo "OPENCODE_API_KEY=$OPENCODE_KEY" >> "$ENV_FILE"
+		fi
+		echo "  OPENCODE_API_KEY configured (value not echoed)" >&2
+		# An OLDER dispatch-server (numbered-key era) refuses to boot when it
+		# sees the unnumbered variable — make the ordering hazard visible.
+		echo "  NOTE: OPENCODE_API_KEY needs a build with single-key OpenCode support; an older dispatch-server refuses to boot on it — run bin/build && bin/install before the service next restarts." >&2
+	else
+		sed -i "/^OPENCODE_API_KEY=/d" "$ENV_FILE"
+		echo "  removed OPENCODE_API_KEY" >&2
+	fi
+elif grep -q "^OPENCODE_API_KEY_[^=]*=" "$ENV_FILE"; then
+	echo "  note: obsolete numbered OPENCODE_API_KEY_<n> line(s) present — the server ignores them; set the single key with --opencode-key" >&2
+fi
 
-# If any numbered OpenCode keys remain, make sure the shared defaults are present.
-if grep -q "^OPENCODE_API_KEY_" "$ENV_FILE"; then
+# If an OpenCode key is configured, make sure its base URL + default model are present.
+if grep -q "^OPENCODE_API_KEY=." "$ENV_FILE"; then
 	if ! grep -q "^DISPATCH_BASE_URL=" "$ENV_FILE"; then
 		echo "DISPATCH_BASE_URL=https://opencode.ai/zen/go/v1" >> "$ENV_FILE"
 	fi
 	if ! grep -q "^DISPATCH_MODEL=" "$ENV_FILE"; then
-		echo "DISPATCH_MODEL=deepseek-v4-flash" >> "$ENV_FILE"
+		echo "DISPATCH_MODEL=deepseek-v4.1-flash" >> "$ENV_FILE"
 	fi
 fi
 
-# --- Delete the old OpenCode key (obsolete — no longer supported) ---
+# --- Delete the original single-key variable (obsolete — the server refuses to boot on it) ---
 sed -i "/^DISPATCH_API_KEY=/d" "$ENV_FILE"
 # Delete the backup key line
 sed -i "/^DISPATCH_API_KEY_OPENCODE2=/d" "$ENV_FILE"

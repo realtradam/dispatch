@@ -3,9 +3,10 @@
  * Every effect (fetch, credential resolution, sleep, clock) is injected so
  * the retry/fallback logic is testable against a fake outermost edge.
  *
- * Credentials come from the kernel auth registry (`claude-oauth` /
- * `codex-oauth`), which already refreshes OAuth tokens nearing expiry. Tokens
- * are only ever placed in request headers — never logged, never returned.
+ * Claude/Codex credentials come from the kernel auth registry (`claude-oauth` /
+ * `codex-oauth`), which already refreshes OAuth tokens nearing expiry; OpenCode
+ * uses its API key. Tokens/keys are only ever placed in request headers —
+ * never logged, never returned.
  */
 import type { Credentials, Logger } from "@dispatch/kernel";
 import {
@@ -23,7 +24,11 @@ import {
   normalizeCodexAccountBase,
   parseCodexUsagePayload,
 } from "./codex.js";
-import { HYPER_DEFAULT_BASE_URL, parseHyperCredits } from "./hyper.js";
+import {
+  OPENCODE_DEFAULT_BASE_URL,
+  parseOpenCodeErrorCode,
+  parseOpenCodeUsagePayload,
+} from "./opencode.js";
 import { isRecord, type ProviderUsage } from "./shared.js";
 
 /** Outcome of one usage fetch. `identity` lets the cache isolate accounts even on failure. */
@@ -266,52 +271,64 @@ export function createCodexFetcher(deps: FetcherDeps): UsageFetcher {
   };
 }
 
-export interface HyperFetcherDeps {
+export interface OpenCodeFetcherDeps {
   readonly fetchFn: FetchFn;
-  /** The Hyper API key + base URL (from `HYPER_API_KEY` / `HYPER_BASE_URL`), or null. */
+  /** The OpenCode API key + base URL (from `OPENCODE_API_KEY` / `DISPATCH_BASE_URL`), or null. */
   readonly resolveConfig: () => { readonly apiKey: string; readonly baseURL?: string } | null;
   readonly logger: Logger;
   readonly timeoutMs?: number;
 }
 
 /**
- * Hyper `GET <base>/credits` → `{ balance }`. The daily allowance + reset
- * time are applied by the service from user settings.
+ * OpenCode Go `GET <base>/usage` → the 5-hour / weekly / monthly allowance
+ * windows (see `opencode.ts`). API-key auth: the same key the provider streams
+ * with. The key is only ever placed in the request header.
  */
-export function createHyperFetcher(deps: HyperFetcherDeps): UsageFetcher {
+export function createOpenCodeFetcher(deps: OpenCodeFetcherDeps): UsageFetcher {
   return async () => {
     const cfg = deps.resolveConfig();
-    if (!cfg) return { ok: false, kind: "not-configured", error: "No HYPER_API_KEY configured" };
-    const base = (cfg.baseURL?.trim() || HYPER_DEFAULT_BASE_URL).replace(/\/+$/, "");
+    if (!cfg) {
+      return { ok: false, kind: "not-configured", error: "No OPENCODE_API_KEY configured" };
+    }
+    const base = (cfg.baseURL?.trim() || OPENCODE_DEFAULT_BASE_URL).replace(/\/+$/, "");
     let payload: unknown;
     try {
-      const res = await deps.fetchFn(`${base}/credits`, {
+      const res = await deps.fetchFn(`${base}/usage`, {
         headers: { authorization: `Bearer ${cfg.apiKey}`, accept: "application/json" },
         signal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       });
       if (!res.ok) {
-        deps.logger.warn("account-usage: hyper credits fetch failed", { status: res.status });
-        return { ok: false, kind: "error", error: `HTTP ${res.status}` };
+        // The error body's short machine code (e.g. `api_key_expired`) says
+        // WHY — surface it; never the free-form message.
+        const code = parseOpenCodeErrorCode(await res.json().catch(() => null));
+        deps.logger.warn("account-usage: opencode usage fetch failed", {
+          status: res.status,
+          ...(code !== null ? { code } : {}),
+        });
+        if (res.status === 403) {
+          // Go refuses a workspace without a Go subscription, and a restricted
+          // key without usage access — a retry cannot fix either.
+          return {
+            ok: false,
+            kind: "unsupported",
+            error:
+              "OpenCode refused the usage request (HTTP 403): this key's workspace has no Go subscription, or the key cannot read usage",
+          };
+        }
+        return {
+          ok: false,
+          kind: "error",
+          error: code !== null ? `HTTP ${res.status} (${code})` : `HTTP ${res.status}`,
+        };
       }
       payload = await res.json();
     } catch (err) {
       const error = errMessage(err);
-      deps.logger.warn("account-usage: hyper credits fetch error", { error });
+      deps.logger.warn("account-usage: opencode usage fetch error", { error });
       return { ok: false, kind: "error", error };
     }
-    const balance = parseHyperCredits(payload);
-    if (balance === null) return { ok: false, kind: "error", error: "response missing balance" };
-    return {
-      ok: true,
-      usage: {
-        account: { accountId: null, email: null, planType: null },
-        limits: [],
-        limitReached: null,
-        canServe: balance > 0,
-        creditOverage: false,
-        credits: null,
-        dailyBalance: balance,
-      },
-    };
+    const usage = parseOpenCodeUsagePayload(payload);
+    if (!usage) return { ok: false, kind: "error", error: "response missing usage data" };
+    return { ok: true, usage };
   };
 }

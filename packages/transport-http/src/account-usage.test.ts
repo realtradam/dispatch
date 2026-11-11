@@ -37,16 +37,15 @@ function app(withService: boolean) {
         kind: "not-configured",
         error: "No Codex OAuth credentials",
       }),
-      hyper: async () => ({
+      opencode: async () => ({
         ok: true,
         usage: {
           account: { accountId: null, email: null, planType: null },
           limits: [],
-          limitReached: null,
+          limitReached: false,
           canServe: true,
           creditOverage: false,
           credits: null,
-          dailyBalance: 100,
         },
       }),
     },
@@ -63,7 +62,7 @@ function app(withService: boolean) {
 }
 
 describe("GET /usage", () => {
-  it("returns both providers in fixed order with no secrets", async () => {
+  it("returns every provider in fixed order with no secrets", async () => {
     const res = await app(true).request("/usage");
     expect(res.status).toBe(200);
     const text = await res.text();
@@ -72,7 +71,7 @@ describe("GET /usage", () => {
     expect(body.providers.map((p) => [p.provider, p.state])).toEqual([
       ["claude", "fresh"],
       ["codex", "not-configured"],
-      ["hyper", "fresh"],
+      ["opencode", "fresh"],
     ]);
     expect(Object.keys(body.providers[0] ?? {}).sort()).toEqual(
       [
@@ -80,7 +79,6 @@ describe("GET /usage", () => {
         "canServe",
         "creditOverage",
         "credits",
-        "dailyCredits",
         "error",
         "fetchedAt",
         "label",
@@ -98,35 +96,21 @@ describe("GET /usage", () => {
   it("serves a single provider and 404s unknown ones", async () => {
     const a = app(true);
     expect((await a.request("/usage/codex")).status).toBe(200);
+    const opencode = await a.request("/usage/opencode");
+    expect(opencode.status).toBe(200);
+    expect(((await opencode.json()) as AccountUsageReport).label).toBe("OpenCode");
     expect((await a.request("/usage/gemini")).status).toBe(404);
+    // Hyper is no longer a reported account.
+    expect((await a.request("/usage/hyper")).status).toBe(404);
   });
 
-  it("PUT /usage/hyper/settings validates and applies the allowance + reset anchor", async () => {
-    const a = app(true);
-    const put = (path: string, body: unknown) =>
-      a.request(path, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    expect((await put("/usage/hyper/settings", { dailyAllowance: -1 })).status).toBe(400);
-    expect((await put("/usage/claude/settings", { dailyAllowance: 5 })).status).toBe(404);
-    const res = await put("/usage/hyper/settings", { dailyAllowance: 200, resetAnchor: 500 });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as AccountUsageReport;
-    expect(body.dailyCredits).toEqual({
-      balance: 100,
-      allowance: 200,
-      resetAnchor: 500,
-      resetSource: "manual",
+  it("no longer exposes per-provider usage settings", async () => {
+    const res = await app(true).request("/usage/opencode/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dailyAllowance: 200 }),
     });
-    expect(body.limits[0]).toMatchObject({
-      id: "hyper:daily",
-      unit: "credits",
-      used: 100,
-      limit: 200,
-      resetsAt: 500 + 86_400_000,
-    });
+    expect(res.status).toBe(404);
   });
 
   it("503s when the service is absent", async () => {

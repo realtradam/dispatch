@@ -66,19 +66,19 @@ function usage(accountId: string | null, used = 10): ProviderUsage {
 }
 
 function harness(
-  script: Partial<Record<"claude" | "codex" | "hyper", () => Promise<UsageFetchResult>>>,
+  script: Partial<Record<"claude" | "codex" | "opencode", () => Promise<UsageFetchResult>>>,
 ) {
   let now = 1_000_000;
-  const calls = { claude: 0, codex: 0, hyper: 0 };
+  const calls = { claude: 0, codex: 0, opencode: 0 };
   const mk =
-    (p: "claude" | "codex" | "hyper"): UsageFetcher =>
+    (p: "claude" | "codex" | "opencode"): UsageFetcher =>
     () => {
       calls[p]++;
       const f = script[p];
       return f ? f() : Promise.resolve({ ok: false, kind: "not-configured", error: "none" });
     };
   const svc = createAccountUsageService({
-    fetchers: { claude: mk("claude"), codex: mk("codex"), hyper: mk("hyper") },
+    fetchers: { claude: mk("claude"), codex: mk("codex"), opencode: mk("opencode") },
     now: () => now,
     random: () => 0.5, // jitter = exactly base
     logger: noopLogger,
@@ -190,7 +190,7 @@ describe("account usage service", () => {
     expect(all.providers.map((p) => [p.provider, p.state])).toEqual([
       ["claude", "unsupported"],
       ["codex", "not-configured"],
-      ["hyper", "not-configured"],
+      ["opencode", "not-configured"],
     ]);
   });
 
@@ -375,7 +375,7 @@ describe("codex fetcher", () => {
       fetchers: {
         claude: async () => ({ ok: false, kind: "not-configured", error: "" }),
         codex: fetcher,
-        hyper: async () => ({ ok: false, kind: "not-configured", error: "" }),
+        opencode: async () => ({ ok: false, kind: "not-configured", error: "" }),
       },
       now: () => now,
       random: () => 0.5,

@@ -31,10 +31,9 @@ bun install
 1. **Create a `.env`** in the repo root (gitignored; see `.env.example`):
 
    ```sh
-   OPENCODE_API_KEY_1=sk-...                       # OpenCode #1 (the secret; the legacy DISPATCH_API_KEY path is removed)
-   OPENCODE_API_KEY_2=sk-...                       # optional: OpenCode #2 (distinct provider + key)
-   DISPATCH_BASE_URL=https://opencode.ai/zen/go/v1 # shared default base URL for every numbered OpenCode credential
-   DISPATCH_MODEL=deepseek-v4-flash                # shared default model when a request omits one
+   OPENCODE_API_KEY=oc_sk_...                      # OpenCode (the secret; ONE unnumbered key → provider + credential "opencode")
+   DISPATCH_BASE_URL=https://opencode.ai/zen/go/v1 # the OpenCode credential's base URL
+   DISPATCH_MODEL=deepseek-v4.1-flash              # its default model when a request omits one
    BACKEND_PORT=24203                              # HTTP server port (dev default)
    SURFACE_WS_PORT=24205                           # surface WebSocket port (dev default)
 
@@ -135,6 +134,19 @@ sudo bin/sync-env --hyper-key "$HYPER_API_KEY"   # add / replace (never echoes t
 sudo bin/sync-env --hyper-key ""                 # remove / disable
 ```
 
+The OpenCode key (`OPENCODE_API_KEY` -> the `opencode` provider + credential, and the OpenCode
+card of the usage sidebar) is ONE unnumbered key, managed the same way — or run `sudo bin/sync-env`
+with no arguments and paste it at the (hidden) `OPENCODE_API_KEY` prompt:
+
+```sh
+sudo bin/sync-env --opencode-key "$OPENCODE_API_KEY"   # add / replace (never echoes the value)
+sudo bin/sync-env --opencode-key ""                    # remove / disable
+```
+
+Setting it also deletes any obsolete numbered `OPENCODE_API_KEY_<n>` lines (the server ignores
+those with a warning). A `dispatch-server` built before the single-key change refuses to boot on
+the unnumbered variable, so install the current build before the service next restarts.
+
 The Baseten key (`BASETEN_API_KEY` -> the `baseten` provider + credential) works the same way:
 
 ```sh
@@ -210,7 +222,7 @@ list reads themselves retain only the cheap lazy bootstrap/version check.
 | Method & path | Body / params | Returns |
 |---|---|---|
 | `GET /health` | — | `{ "ok": true }` |
-| `GET /models` | — | `{ "models": ["opencode-1/<model>", "opencode-2/<model>", "hyper/<model>", ...] }` — the catalog |
+| `GET /models` | — | `{ "models": ["opencode/<model>", "umans/<model>", "hyper/<model>", ...] }` — the catalog |
 | `POST /chat` | `{ conversationId?, message, model?, cwd?, reasoningEffort? }` | NDJSON stream of `AgentEvent`s; resolved id in the `X-Conversation-Id` header |
 | `POST /chat/warm` | `{ conversationId, model?, cwd? }` | Cache-warming result (tokens + cache %) |
 | `GET /conversations` | `?q=<prefix>&status=<active|idle|closed>&workspaceId=<id>` | Conversation list |
@@ -271,7 +283,7 @@ Effort levels: low, medium, high (default), xhigh, max
 ```
 
 - **`<modelName>`** is a **model name** in `<credentialName>/<model>` form — exactly a line from
-  `dispatch models` (e.g. `opencode-1/deepseek-v4-flash`).
+  `dispatch models` (e.g. `opencode/deepseek-v4.1-flash`).
 - **`send <id> --text "..."`** sends a message to an existing conversation (`--queue` for
   non-blocking enqueue, `--open` to signal the frontend to open a tab).
 - **`read <id>`** blocks until the turn settles, then prints the last assistant message.
@@ -288,13 +300,13 @@ Effort levels: low, medium, high (default), xhigh, max
 bun run dispatch -- models
 
 # a quick chat
-bun run dispatch -- opencode-1/deepseek-v4-flash --text "Say hello in 3 words."
+bun run dispatch -- opencode/deepseek-v4.1-flash --text "Say hello in 3 words."
 
 # let the model read a file in a given directory (uses the read_file tool, contained to --cwd)
-bun run dispatch -- opencode-1/deepseek-v4-flash --cwd ./src --text "Read main.ts and summarize it."
+bun run dispatch -- opencode/deepseek-v4.1-flash --cwd ./src --text "Read main.ts and summarize it."
 
 # continue a conversation (id is printed after each turn)
-bun run dispatch -- opencode-1/deepseek-v4-flash --conversation <id> --text "and in French?"
+bun run dispatch -- opencode/deepseek-v4.1-flash --conversation <id> --text "and in French?"
 
 # list conversations, read the last reply, send a queued message
 bun run dispatch -- list
@@ -347,9 +359,9 @@ topologically at activation). Every extension also depends implicitly on the ker
 | Package | Description | Depends on |
 |---|---|---|
 | **storage-sqlite** | Concrete `bun:sqlite` backend behind the kernel's storage interface (a host bootstrap dependency; its `activate` is an intentional no-op). | — |
-| **provider-openai-compat** | Registers a numbered `opencode-<n>` provider per `OPENCODE_API_KEY_<n>` (streaming chat + `listModels` + `getUsage`); the OpenCode Go path. The obsolete `auth-apikey` package that resolved `DISPATCH_API_KEY` is removed entirely. | — |
+| **provider-openai-compat** | Registers the single `opencode` provider from the unnumbered `OPENCODE_API_KEY` (streaming chat + `listModels` + `getUsage`); the OpenCode Go path. Obsolete numbered `OPENCODE_API_KEY_<n>` variables are ignored with a warning; the obsolete `auth-apikey` package that resolved `DISPATCH_API_KEY` is removed entirely. | — |
 | **credential-store** | Owns named **credentials** and the **model catalog** — resolves a `<credential>/<model>` model name to a provider + model and aggregates `GET /models`. | — |
-| **provider-openai-compat** | Registers a numbered `opencode-<n>` provider per `OPENCODE_API_KEY_<n>` (streaming chat + `listModels` + `getUsage`); the OpenCode Go path. | — |
+| **provider-openai-compat** | Registers the single `opencode` provider from the unnumbered `OPENCODE_API_KEY` (streaming chat + `listModels` + `getUsage`); the OpenCode Go path. | — |
 | **conversation-store** | Append-only persistence of the turn/chunk log, with a pure `reconcile` that repairs any interrupted turn on load. | — |
 | **session-orchestrator** | Drives one turn end-to-end: load history → resolve provider/model/tools → call `runTurn` → persist. | conversation-store, credential-store |
 | **named-agents** | Owns the user-curated **Named Agent** registry (a friendly name → provider/model preset), persisted in SQLite-backed storage. Exposes a typed `NamedAgentsService` for `list_agent_models`/`summon_agent` and the `/named-agents` HTTP CRUD routes — never touches the provider catalog. | — |

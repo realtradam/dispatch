@@ -66,7 +66,7 @@ they justify every rule below.
 ## 2. Summoning agents via the `dispatch` CLI
 
 The **`dispatch` CLI** is the summon mechanism; **`umans/umans-glm-5.2`** is the BUILDING
-agent (capable coder; browse alternatives with `dispatch models`). `$DISPATCH_MODEL` (`opencode-1/deepseek-v4-flash`) is the *app's own
+agent (capable coder; browse alternatives with `dispatch models`). `$DISPATCH_MODEL` (`opencode/deepseek-v4.1-flash`) is the *app's own
 runtime testbench*, never a builder. (The legacy `opencode run` and Task-tool paths are retired;
 `notes/opencode-agents.md` is historical.)
 
@@ -272,7 +272,7 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
 - **Live API errors:** an HTTP 429 `GoUsageLimitError` is an UPSTREAM rate limit,
   not a bug — and now that building agents are dispatched THROUGH the server's provider (not a
   host model), a mid-build 429 is just as likely as a runtime one. The provider key has a monthly
-  cap; swap the numbered `OPENCODE_API_KEY_<n>` in `.env` (backup keys noted there) and retry.
+  cap; swap the `OPENCODE_API_KEY` in `.env` and retry.
 
 ---
 
@@ -371,7 +371,7 @@ live runs (§8 bracket trick), since a leak silently poisons the next run's coun
 
   prompts/   (gitignored — orchestrator→agent TASK blocks)
   reports/   (gitignored — agent→orchestrator reports)
-  .env       (gitignored — OPENCODE_API_KEY_<n>, DISPATCH_BASE_URL, DISPATCH_MODEL, BACKEND_PORT)
+  .env       (gitignored — OPENCODE_API_KEY, DISPATCH_BASE_URL, DISPATCH_MODEL, BACKEND_PORT)
 
   packages/
     kernel/            contracts (ABI), bus, runtime (runTurn), host
@@ -412,7 +412,7 @@ is up, probe THAT for read-only checks (GETs, validation 400s) instead of bootin
 instance — or ask the user. Boot a private instance only when the probe must WRITE.
 
 **Boot + smoke test (private instance):** `.env` is auto-loaded by Bun and already carries
-`OPENCODE_API_KEY_<n>` — do NOT re-export it (an empty/botched export OVERRIDES `.env` and the
+`OPENCODE_API_KEY` — do NOT re-export it (an empty/botched export OVERRIDES `.env` and the
 provider silently fails to register: "No providers registered"). `.env` also pins
 `BACKEND_PORT`, which beats `PORT` — so set `BACKEND_PORT` explicitly, and ISOLATE the data
 paths or you'll share SQLite files + spawn a duplicate collector against the dev stack:

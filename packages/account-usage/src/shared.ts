@@ -27,8 +27,6 @@ export interface ProviderUsage {
   readonly canServe: boolean | null;
   readonly creditOverage: boolean;
   readonly credits: AccountUsageCredits | null;
-  /** Raw daily credit balance (Hyper); the limit row is derived at build time from settings. */
-  readonly dailyBalance?: number;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

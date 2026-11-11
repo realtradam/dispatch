@@ -2,8 +2,9 @@ import { dirname, resolve } from "node:path";
 import type { ConfigAccess } from "@dispatch/kernel";
 import {
   formatOpenCodeEnvDiagnostics,
-  OPENCODE_CREDENTIALS_CONFIG_KEY,
-  parseNumberedOpenCodeEnv,
+  isFatalOpenCodeEnvDiagnostic,
+  OPENCODE_CREDENTIAL_CONFIG_KEY,
+  parseOpenCodeEnv,
 } from "@dispatch/provider-openai-compat";
 
 export function envToConfigMap(
@@ -11,31 +12,21 @@ export function envToConfigMap(
 ): Record<string, unknown> {
   const map: Record<string, unknown> = {};
 
-  // Numbered OpenCode credentials. DISPATCH_BASE_URL / DISPATCH_MODEL (if
-  // present) are used as SHARED defaults for every numbered credential; the API
-  // keys come exclusively from OPENCODE_API_KEY_<n>. There is NO legacy
-  // DISPATCH_API_KEY path, and no silent-ignore of malformed/obsolete numbered
-  // variables: ANY validation diagnostic ABORTS config assembly with a
-  // secret-free fatal error so the process cannot boot with a partial or
-  // invalid credential set.
-  const baseURL = env.DISPATCH_BASE_URL;
-  const model = env.DISPATCH_MODEL;
-  const opencode = parseNumberedOpenCodeEnv(
-    env,
-    baseURL !== undefined || model !== undefined
-      ? {
-          ...(baseURL !== undefined ? { baseURL } : {}),
-          ...(model !== undefined ? { model } : {}),
-        }
-      : {},
-  );
-  if (opencode.diagnostics.length > 0) {
-    const detail =
-      formatOpenCodeEnvDiagnostics(opencode.diagnostics) ?? "invalid OpenCode environment";
+  // The OpenCode credential. DISPATCH_BASE_URL / DISPATCH_MODEL (if present)
+  // are its base URL / default model; the API key comes exclusively from the
+  // single unnumbered OPENCODE_API_KEY. There is NO legacy DISPATCH_API_KEY
+  // path: that FATAL diagnostic ABORTS config assembly with a secret-free
+  // error so the process cannot boot on an obsolete credential. Obsolete
+  // numbered OPENCODE_API_KEY_<n> variables are only a WARNING (ignored, never
+  // a fallback) — main.ts logs them; a stale key must not stop the boot.
+  const opencode = parseOpenCodeEnv(env, openCodeEnvDefaults(env));
+  const fatal = opencode.diagnostics.filter(isFatalOpenCodeEnvDiagnostic);
+  if (fatal.length > 0) {
+    const detail = formatOpenCodeEnvDiagnostics(fatal) ?? "invalid OpenCode environment";
     throw new Error(`OpenCode configuration is invalid and will not be booted: ${detail}`);
   }
-  if (opencode.credentials.length > 0) {
-    map[OPENCODE_CREDENTIALS_CONFIG_KEY] = opencode.credentials;
+  if (opencode.credential !== null) {
+    map[OPENCODE_CREDENTIAL_CONFIG_KEY] = opencode.credential;
   }
 
   // Expose both the canonical provider settings and the environment aliases
@@ -119,5 +110,21 @@ export function configMapToAccess(map: Readonly<Record<string, unknown>>): Confi
     getAll(): Readonly<Record<string, unknown>> {
       return map;
     },
+  };
+}
+
+/**
+ * The base-URL / default-model overrides for the OpenCode credential, read
+ * from DISPATCH_BASE_URL / DISPATCH_MODEL (each optional).
+ */
+export function openCodeEnvDefaults(env: Readonly<Record<string, string | undefined>>): {
+  readonly baseURL?: string;
+  readonly model?: string;
+} {
+  const baseURL = env.DISPATCH_BASE_URL;
+  const model = env.DISPATCH_MODEL;
+  return {
+    ...(baseURL !== undefined ? { baseURL } : {}),
+    ...(model !== undefined ? { model } : {}),
   };
 }

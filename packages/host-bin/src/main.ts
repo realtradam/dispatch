@@ -18,7 +18,12 @@ import {
   type StorageNamespace,
 } from "@dispatch/kernel";
 import { pluginEngineHandle } from "@dispatch/plugin-manager";
-import { parseNumberedOpenCodeEnv } from "@dispatch/provider-openai-compat";
+import {
+  formatOpenCodeEnvDiagnostics,
+  isFatalOpenCodeEnvDiagnostic,
+  OPENCODE_PROVIDER_ID,
+  parseOpenCodeEnv,
+} from "@dispatch/provider-openai-compat";
 import {
   type MemorySample,
   memorySampleAttributes,
@@ -29,7 +34,7 @@ import { createSqliteStorage } from "@dispatch/storage-sqlite";
 import { createBundledExtensions } from "./bundled.js";
 import type { ChildHandle } from "./collector-supervisor.js";
 import { createCollectorSupervisor } from "./collector-supervisor.js";
-import { configMapToAccess, envToConfigMap } from "./config.js";
+import { configMapToAccess, envToConfigMap, openCodeEnvDefaults } from "./config.js";
 import { createIncoCredentials } from "./credentials.js";
 import { loadExternalExtensions } from "./load-external.js";
 import { startMemoryTelemetry } from "./mem-telemetry.js";
@@ -147,44 +152,36 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     ...runtimeExtensions.filter((e) => !seen.has(e.manifest.id)),
   ];
 
-  // Assemble the credential list. Numbered OpenCode credentials each register a
-  // DISTINCT credential (and provider) named `opencode-<N>` → providerId
-  // `opencode-<N>`. The old single `opencode` credential and the legacy
-  // DISPATCH_API_KEY openai-compat path are gone entirely. A `claude` credential
-  // is added when an external Anthropic provider is loaded, and a `codex`
-  // credential when an external OpenAI (Codex subscription) provider is loaded.
+  // Assemble the credential list. OpenCode registers ONE credential (and
+  // provider) named `opencode`, so its models are `opencode/<model>`. The
+  // former numbered `opencode-<N>` credentials and the legacy DISPATCH_API_KEY
+  // openai-compat path are gone entirely. A `claude` credential is added when
+  // an external Anthropic provider is loaded, and a `codex` credential when an
+  // external OpenAI (Codex subscription) provider is loaded.
   const credentials: { name: string; providerId: string }[] = [];
 
-  // Parse numbered OpenCode credentials from the environment (never log values).
+  // Parse the OpenCode credential from the environment (never log values).
   // NOTE: `envToConfigMap` above already ABORTED boot with a secret-free fatal
-  // error if any numbered/legacy/obsolete OpenCode variable is invalid — so the
-  // environment reached here is guaranteed clean (diagnostics empty). This
-  // block only assembles credential names from the validated set.
-  const numberedOpenCode = parseNumberedOpenCodeEnv(
-    process.env as Readonly<Record<string, string | undefined>>,
-    {
-      ...(process.env.DISPATCH_BASE_URL !== undefined
-        ? { baseURL: process.env.DISPATCH_BASE_URL }
-        : {}),
-      ...(process.env.DISPATCH_MODEL !== undefined ? { model: process.env.DISPATCH_MODEL } : {}),
-    },
-  );
-  // Defensive invariant: config assembly above refused to boot on diagnostics,
-  // so we must never silently boot with a partial/invalid set here.
-  if (numberedOpenCode.diagnostics.length > 0) {
+  // error on a FATAL diagnostic (legacy DISPATCH_API_KEY) — so only warnings
+  // (obsolete numbered OPENCODE_API_KEY_<n>, which are ignored) can reach here.
+  const processEnv = process.env as Readonly<Record<string, string | undefined>>;
+  const openCodeEnv = parseOpenCodeEnv(processEnv, openCodeEnvDefaults(processEnv));
+  // Defensive invariant: config assembly above refused to boot on a fatal
+  // diagnostic, so we must never silently boot with one here.
+  if (openCodeEnv.diagnostics.some(isFatalOpenCodeEnvDiagnostic)) {
     throw new Error(
       "BUG: invalid OpenCode environment reached credential assembly despite config validation",
     );
   }
-  for (const entry of numberedOpenCode.credentials) {
-    const name = `opencode-${entry.number}`;
-    credentials.push({ name, providerId: name });
-    logger.info(`Registered numbered credential "${name}" → opencode provider #${entry.number}`);
+  const openCodeWarnings = formatOpenCodeEnvDiagnostics(openCodeEnv.diagnostics);
+  if (openCodeWarnings !== null) {
+    logger.warn(`OpenCode provider: ${openCodeWarnings}`);
   }
-  if (numberedOpenCode.credentials.length === 0) {
-    logger.info(
-      "OpenCode provider: no numbered OPENCODE_API_KEY_<n> configured — OpenCode unavailable",
-    );
+  if (openCodeEnv.credential !== null) {
+    credentials.push({ name: OPENCODE_PROVIDER_ID, providerId: OPENCODE_PROVIDER_ID });
+    logger.info(`Registered credential "${OPENCODE_PROVIDER_ID}" → opencode provider`);
+  } else {
+    logger.info("OpenCode provider: no OPENCODE_API_KEY configured — OpenCode unavailable");
   }
 
   // The umans credential is always listed (it's the model-catalog index); the

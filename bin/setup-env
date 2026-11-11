@@ -4,22 +4,21 @@
 #
 # Keys are NEVER read from .env or stored in the repo. They are passed as
 # arguments or prompted interactively and written directly to /etc/dispatch/env.
-# Secret values are never echoed — not even their prefixes (only the provider /
-# credential NUMBER is reported).
+# Secret values are never echoed — not even their prefixes (only the provider
+# is reported).
 #
 # Usage:
 #   sudo bin/setup-env --umans-key "sk-..." --longcat-key "ak-..." \
-#     --hyper-key "sk-hyper-..." --opencode-key "1=sk-..." --opencode-key "3=sk-..."
+#     --hyper-key "sk-hyper-..." --opencode-key "oc_sk_..."
 #   sudo bin/setup-env                          # prompts for keys interactively
 #
-# Numbered OpenCode keys: pass `--opencode-key <number>=<key>` per numbered
-# credential (numbers are stable identities; gaps allowed). On a REFRESH the
-# existing numbered keys are PRESERVED unless you explicitly re-pass a number
-# (to replace its key) or pass an empty value for a number (to remove it):
-#   --opencode-key "1=sk-new"        # replace #1 with a new key
-#   --opencode-key "3="              # remove #3 (explicit removal)
-# Untouched numbered keys survive a refresh — a refresh NEVER silently deletes
-# numbered keys on its own.
+# OpenCode key: ONE unnumbered key, `--opencode-key <key>` → OPENCODE_API_KEY.
+# On a REFRESH the existing OPENCODE_API_KEY is PRESERVED unless you explicitly
+# re-pass it (to replace the key) or pass an empty value (to remove it):
+#   --opencode-key "oc_sk_new"       # replace the key
+#   --opencode-key ""                # remove it (explicit removal)
+# Obsolete numbered OPENCODE_API_KEY_<n> lines are NOT carried over — the server
+# ignores them.
 
 set -euo pipefail
 
@@ -38,31 +37,22 @@ mkdir -p /etc/dispatch /var/lib/dispatch /var/log/dispatch
 UMANS_KEY=""
 LONGCAT_KEY=""
 HYPER_KEY=""
-# Maps a canonical OpenCode number → value. Empty value means "removal".
-declare -A OPENCODE_MAP=()
-# A helper that validates + records one <number>=<key> argument. Last-wins for
-# a repeated number (deterministic canonicalization of duplicates).
-add_opencode() {
-	local pair="$1"
-	local NUM VAL
-	if [[ "$pair" != *=* ]]; then
-		# Missing '=' separator — e.g. a bare number or key was passed.
-		echo "setup-env: --opencode-key expects '<number>=<key>' (got '${pair}' with no '=' separator)" >&2
+# Whether --opencode-key was explicitly supplied on this run (or entered at the
+# prompt). Supplied + empty means REMOVE; not supplied means keep the existing key.
+OPENCODE_KEY=""
+OPENCODE_KEY_SET=0
+# Refuse an OpenCode key that could corrupt the env file. A real key
+# (`oc_sk_…` / `sk-…`) never contains any of these characters.
+check_opencode_key() {
+	local val="$1"
+	if [[ "$val" == *=* ]]; then
+		echo "setup-env: the OpenCode key contains '=' — refusing. OpenCode takes ONE unnumbered key now: pass the key itself, not '<number>=<key>'." >&2
 		exit 1
 	fi
-	NUM="${pair%%=*}"
-	VAL="${pair#*=}"
-	if [[ ! "$NUM" =~ ^[1-9][0-9]*$ ]]; then
-		echo "setup-env: invalid OpenCode number '${NUM}' (must be a canonical positive integer [1-9][0-9]*, no leading zero)" >&2
+	if [[ "$val" =~ [[:space:]] || "$val" == *'|'* || "$val" == *'&'* || "$val" == *'\'* ]]; then
+		echo "setup-env: the OpenCode key contains unsafe characters (whitespace/pipe/ampersand/backslash) — refusing (was it double-pasted?)" >&2
 		exit 1
 	fi
-	# Reject values that would corrupt the env file or downstream sed/awk
-	# processing. A team key never contains these.
-	if [[ "$VAL" == *$'\n'* || "$VAL" == *$'\r'* || "$VAL" == *=* || "$VAL" == *'|'* ]]; then
-		echo "setup-env: OpenCode key for number ${NUM} contains unsafe characters (newline/CR/'='/pipe) — refusing" >&2
-		exit 1
-	fi
-	OPENCODE_MAP["$NUM"]="$VAL"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -92,16 +82,18 @@ while [[ $# -gt 0 ]]; do
 			shift
 			;;
 		--opencode-key)
-			add_opencode "$2"
+			OPENCODE_KEY="$2"
+			OPENCODE_KEY_SET=1
 			shift 2
 			;;
 		--opencode-key=*)
-			add_opencode "${1#--opencode-key=}"
+			OPENCODE_KEY="${1#--opencode-key=}"
+			OPENCODE_KEY_SET=1
 			shift
 			;;
 		*)
 			echo "setup-env: unknown argument: $1" >&2
-			echo "Usage: sudo bin/setup-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--hyper-key \"sk-hyper-...\"] [--opencode-key \"1=sk-...\"]" >&2
+			echo "Usage: sudo bin/setup-env [--umans-key \"sk-...\"] [--longcat-key \"ak-...\"] [--hyper-key \"sk-hyper-...\"] [--opencode-key \"oc_sk_...\"]" >&2
 			exit 1
 			;;
 	esac
@@ -120,6 +112,16 @@ if [ -z "$HYPER_KEY" ] && [ -t 0 ]; then
 	echo -n "Enter HYPER_API_KEY (or press Enter to skip): "
 	read -r HYPER_KEY
 fi
+if [ -z "$OPENCODE_KEY" ] && [ -t 0 ]; then
+	# Hidden input (`read -s`): the pasted key is never echoed to the terminal.
+	echo -n "Enter OPENCODE_API_KEY — paste it, input is hidden (or press Enter to keep the current one): "
+	IFS= read -rs OPENCODE_KEY
+	echo
+	if [ -n "$OPENCODE_KEY" ]; then
+		OPENCODE_KEY_SET=1
+	fi
+fi
+check_opencode_key "$OPENCODE_KEY"
 
 # Resolve the real user's home dir (the service runs as this user — see bin/install)
 REAL_USER="${SUDO_USER:-$USER}"
@@ -137,45 +139,18 @@ chown -R "$REAL_USER:$REAL_GROUP" /var/lib/dispatch /var/log/dispatch
 # PATH that includes user-installed tools
 DISPATCH_PATH="$REAL_HOME/.local/bin:$REAL_HOME/.local/share/mise/shims:$REAL_HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/bin"
 
-# --- Merge existing numbered OpenCode keys on a REFRESH (issue: never silently
-# --- delete numbered keys). Read the current env file's OPENCODE_API_KEY_<n>
-# --- lines and carry forward any number NOT explicitly provided on this run.
-# --- A number passed with an empty value is an explicit removal. A number
-# --- passed with a value is an explicit replacement. Everything else survives.
-if [ -f "$ENV_FILE" ]; then
-	while IFS= read -r line; do
-		[[ "$line" == OPENCODE_API_KEY_* ]] || continue
-		line="${line%%$'\r'*}" # strip any CR to keep numbers clean (env files are LF)
-		key="${line%%=*}"
-		val="${line#*=}"
-		num="${key#OPENCODE_API_KEY_}"
-		# Only carry forward CANONICAL numbered keys (ignore obsolete/malformed
-		# lines — boot would reject them anyway).
-		if [[ "$num" =~ ^[1-9][0-9]*$ ]]; then
-			if [[ -z "${OPENCODE_MAP[$num]+x}" ]]; then
-				OPENCODE_MAP["$num"]="$val"
-			fi
-		fi
+# --- Keep the existing OpenCode key on a REFRESH (never silently delete it).
+# --- Read the current env file's OPENCODE_API_KEY line as data and carry it
+# --- forward unless a key was explicitly provided on this run (a value
+# --- replaces it; an empty value removes it). Obsolete numbered
+# --- OPENCODE_API_KEY_<n> lines are deliberately NOT carried forward.
+if [ "$OPENCODE_KEY_SET" -eq 0 ] && [ -f "$ENV_FILE" ]; then
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		[[ "$line" == OPENCODE_API_KEY=* ]] || continue
+		line="${line%%$'\r'*}" # strip any CR (env files are LF)
+		OPENCODE_KEY="${line#OPENCODE_API_KEY=}"
 	done < "$ENV_FILE"
 fi
-
-# Sorted numeric list of every carry forward / provided key (stable output).
-mapfile -t OPENCODE_NUMBERS < <(
-	for n in "${!OPENCODE_MAP[@]}"; do
-		printf '%s\n' "$n"
-	done | sort -n
-)
-
-# Build the numbered OpenCode lines (each on its own numbered var). A key with
-# an EMPTY value means it was explicitly removed → emit nothing for it.
-OPENCODE_LINES=""
-for NUM in "${OPENCODE_NUMBERS[@]}"; do
-	VAL="${OPENCODE_MAP[$NUM]}"
-	if [ -n "$VAL" ]; then
-		OPENCODE_LINES="${OPENCODE_LINES}OPENCODE_API_KEY_${NUM}=${VAL}
-"
-	fi
-done
 
 # Keep local service endpoints and network policy across a setup refresh. Never
 # source this file as root: copy assignments as data, including explicit blanks.
@@ -196,7 +171,7 @@ tee "$ENV_FILE" > /dev/null << EOF
 # /etc/dispatch/env — Dispatch server configuration (systemd EnvironmentFile)
 # Generated by bin/setup-env
 # Edit manually, then: systemctl restart dispatch
-# Keys are managed via: sudo bin/sync-env --umans-key "sk-..." [--longcat-key "ak-..."] [--opencode-key "1=sk-..."]
+# Keys are managed via: sudo bin/sync-env --umans-key "sk-..." [--longcat-key "ak-..."] [--opencode-key "oc_sk_..."]
 
 # ─── User environment (service runs as $REAL_USER, homedir is correct) ───────
 HOME=$REAL_HOME
@@ -209,10 +184,10 @@ SURFACE_WS_PORT=24990
 # ─── Frontend ────────────────────────────────────────────────────────────────
 DISPATCH_WEB_DIR=/usr/share/dispatch/web
 
-# ─── Numbered OpenCode provider ───────────────────────────────────────────────
-${OPENCODE_LINES}${OPENCODE_LINES:+# (each number registers opencode-<n> provider + credential)}
-${OPENCODE_LINES:+DISPATCH_BASE_URL=https://opencode.ai/zen/go/v1}
-${OPENCODE_LINES:+DISPATCH_MODEL=deepseek-v4-flash}
+# ─── OpenCode provider (one key; models are opencode/<model>) ─────────────────
+${OPENCODE_KEY:+OPENCODE_API_KEY=$OPENCODE_KEY}
+${OPENCODE_KEY:+DISPATCH_BASE_URL=https://opencode.ai/zen/go/v1}
+${OPENCODE_KEY:+DISPATCH_MODEL=deepseek-v4.1-flash}
 
 # ─── Umans provider ──────────────────────────────────────────────────────────
 ${UMANS_KEY:+UMANS_API_KEY=$UMANS_KEY}
@@ -240,9 +215,7 @@ echo "  HOME=$REAL_HOME (skills: $REAL_HOME/.skills/)"
 ${UMANS_KEY:+echo "  UMANS_API_KEY configured (value not echoed)"}
 ${LONGCAT_KEY:+echo "  LONGCAT_API_KEY configured (value not echoed)"}
 ${HYPER_KEY:+echo "  HYPER_API_KEY configured (value not echoed)"}
-if [ "${#OPENCODE_MAP[@]}" -gt 0 ]; then
-	echo "  OpenCode numbered keys: ${OPENCODE_NUMBERS[*]} (values not echoed)"
-fi
+${OPENCODE_KEY:+echo "  OPENCODE_API_KEY configured (value not echoed)"}
 echo "  Ports: HTTP=24991 WS=24990"
 echo "  Data:  /var/lib/dispatch/ + /var/log/dispatch/"
 echo "  Perms: 640 root:$REAL_GROUP (service user can read for dev)"

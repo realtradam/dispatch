@@ -1,40 +1,34 @@
 import { resolve } from "node:path";
-import { OPENCODE_CREDENTIALS_CONFIG_KEY } from "@dispatch/provider-openai-compat";
+import { OPENCODE_CREDENTIAL_CONFIG_KEY } from "@dispatch/provider-openai-compat";
 import { describe, expect, it } from "vitest";
-import { configMapToAccess, envToConfigMap } from "./config.js";
+import { configMapToAccess, envToConfigMap, openCodeEnvDefaults } from "./config.js";
 
 describe("envToConfigMap", () => {
-  it("maps numbered OPENCODE_API_KEY_<n> into opencode.credentials sorted numerically", () => {
-    const result = envToConfigMap({
-      OPENCODE_API_KEY_2: "sk-2",
-      OPENCODE_API_KEY_10: "sk-10",
-      OPENCODE_API_KEY_1: "sk-1",
-    });
-    const creds = result[OPENCODE_CREDENTIALS_CONFIG_KEY] as Array<{
-      number: number;
-      apiKey: string;
-    }>;
-    expect(creds.map((c) => c.number)).toEqual([1, 2, 10]);
-    expect(creds.map((c) => c.apiKey)).toEqual(["sk-1", "sk-2", "sk-10"]);
+  it("maps the single unnumbered OPENCODE_API_KEY into opencode.credential", () => {
+    const result = envToConfigMap({ OPENCODE_API_KEY: "sk-one" });
+    const cred = result[OPENCODE_CREDENTIAL_CONFIG_KEY] as { apiKey: string };
+    expect(cred.apiKey).toBe("sk-one");
   });
 
-  it("uses DISPATCH_BASE_URL / DISPATCH_MODEL as shared defaults for numbered creds", () => {
+  it("uses DISPATCH_BASE_URL / DISPATCH_MODEL as the credential's base URL / model", () => {
     const result = envToConfigMap({
       DISPATCH_BASE_URL: "https://custom.example/v1",
       DISPATCH_MODEL: "my-model",
-      OPENCODE_API_KEY_1: "sk-1",
+      OPENCODE_API_KEY: "sk-one",
     });
-    const creds = result[OPENCODE_CREDENTIALS_CONFIG_KEY] as Array<{
-      baseURL: string;
-      model: string;
-    }>;
-    expect(creds[0]?.baseURL).toBe("https://custom.example/v1");
-    expect(creds[0]?.model).toBe("my-model");
+    expect(result[OPENCODE_CREDENTIAL_CONFIG_KEY]).toEqual({
+      apiKey: "sk-one",
+      baseURL: "https://custom.example/v1",
+      model: "my-model",
+    });
   });
 
-  it("does NOT set opencode.credentials when no numbered keys are present", () => {
+  it("does NOT set opencode.credential when no key is present", () => {
     const result = envToConfigMap({ HOME: "/root" });
-    expect(result[OPENCODE_CREDENTIALS_CONFIG_KEY]).toBeUndefined();
+    expect(result[OPENCODE_CREDENTIAL_CONFIG_KEY]).toBeUndefined();
+    expect(
+      envToConfigMap({ OPENCODE_API_KEY: "" })[OPENCODE_CREDENTIAL_CONFIG_KEY],
+    ).toBeUndefined();
   });
 
   it("fails deterministically on the legacy DISPATCH_API_KEY (never silently ignored)", () => {
@@ -47,35 +41,27 @@ describe("envToConfigMap", () => {
     ).toThrow(/DISPATCH_API_KEY/);
   });
 
-  it("fails deterministically on an unnumbered OPENCODE_API_KEY", () => {
-    expect(() => envToConfigMap({ OPENCODE_API_KEY: "sk-unnumbered" })).toThrow(/OPENCODE_API_KEY/);
-  });
+  it("still boots with obsolete numbered OPENCODE_API_KEY_<n> present (ignored, never a fallback)", () => {
+    // A stale numbered key must not stop the boot — and must not configure OpenCode.
+    const stale = envToConfigMap({ OPENCODE_API_KEY_1: "sk-stale", OPENCODE_API_KEY_2: "sk-2" });
+    expect(stale[OPENCODE_CREDENTIAL_CONFIG_KEY]).toBeUndefined();
 
-  it("fails deterministically on a malformed numbered suffix", () => {
-    expect(() => envToConfigMap({ OPENCODE_API_KEY_foo: "sk", OPENCODE_API_KEY_01: "sk" })).toThrow(
-      /OPENCODE_API_KEY_foo/,
-    );
+    const both = envToConfigMap({ OPENCODE_API_KEY: "sk-current", OPENCODE_API_KEY_1: "sk-stale" });
+    expect((both[OPENCODE_CREDENTIAL_CONFIG_KEY] as { apiKey: string }).apiKey).toBe("sk-current");
   });
 
   it("aborts config assembly with a secret-free error (no secret leaked in message)", () => {
     let message = "";
     try {
-      envToConfigMap({ DISPATCH_API_KEY: "top-secret-legacy-value" });
+      envToConfigMap({
+        DISPATCH_API_KEY: "top-secret-legacy-value",
+        OPENCODE_API_KEY: "top-secret-current-value",
+      });
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
     }
     expect(message).toMatch(/DISPATCH_API_KEY/);
-    expect(message).not.toContain("top-secret-legacy-value");
-  });
-
-  it("fails deterministically on empty or duplicate numbered keys", () => {
-    expect(() =>
-      envToConfigMap({
-        OPENCODE_API_KEY_1: "",
-        OPENCODE_API_KEY_2: "shared",
-        OPENCODE_API_KEY_3: "shared",
-      }),
-    ).toThrow(/OPENCODE_API_KEY/);
+    expect(message).not.toContain("top-secret");
   });
 
   it("maps DISPATCH_OPENAI_MODEL to provider.openai.model", () => {
@@ -128,8 +114,8 @@ describe("envToConfigMap", () => {
 
 describe("configMapToAccess", () => {
   it("returns value for existing key", () => {
-    const access = configMapToAccess({ "opencode.credentials": [{ number: 1 }] });
-    expect(access.get("opencode.credentials")).toEqual([{ number: 1 }]);
+    const access = configMapToAccess({ "opencode.credential": { model: "m" } });
+    expect(access.get("opencode.credential")).toEqual({ model: "m" });
   });
 
   it("returns undefined for missing key", () => {
@@ -185,4 +171,17 @@ it("exposes Inco config settings and aliases without exposing the key", () => {
   expect(access.get("INCO_MODEL")).toBe("glm-5.3-flash:fast");
   expect(access.get("INCO_API_KEY")).toBeUndefined();
   expect(envToConfigMap({})["provider.inco.model"]).toBeUndefined();
+});
+
+describe("openCodeEnvDefaults", () => {
+  it("returns only the overrides that are set", () => {
+    expect(openCodeEnvDefaults({})).toEqual({});
+    expect(openCodeEnvDefaults({ DISPATCH_MODEL: "m" })).toEqual({ model: "m" });
+    expect(openCodeEnvDefaults({ DISPATCH_BASE_URL: "https://x/v1", DISPATCH_MODEL: "m" })).toEqual(
+      {
+        baseURL: "https://x/v1",
+        model: "m",
+      },
+    );
+  });
 });
