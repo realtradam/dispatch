@@ -64,6 +64,15 @@ export interface StreamConfig {
    * Baseten's `Api-Key`) override it. Generic — the library names no feature.
    */
   readonly authScheme?: string;
+  /**
+   * Optional hook a provider extension uses to add provider-specific REQUEST
+   * HEADERS to the chat-completions call (e.g. a per-conversation session id
+   * some gateways require). Receives the ProviderStreamOptions; returns the
+   * extra headers. They can never replace `Content-Type` or `Authorization`
+   * (those are applied last). Generic — the library names no feature.
+   * Default (absent): no extra headers.
+   */
+  readonly requestHeaders?: (opts: ProviderStreamOptions) => Readonly<Record<string, string>>;
 }
 
 /**
@@ -241,6 +250,9 @@ export async function* streamChat(
     response = await effectiveFetch(url, {
       method: "POST",
       headers: {
+        // Provider-specific extras first: they can never override the two
+        // load-bearing headers below.
+        ...config.requestHeaders?.(opts ?? {}),
         "Content-Type": "application/json",
         Authorization: `${authScheme} ${config.apiKey}`,
       },

@@ -121,6 +121,8 @@ describe("performCompaction safe boundary", () => {
       text: "Please summarize the following conversation:\n\nuser: old context",
     });
     expect(options?.systemPrompt).toContain("conversation concisely but comprehensively");
+    // The summary request identifies the conversation it compacts to the provider.
+    expect(options?.conversationId).toBe("c");
   });
 
   it("continues an in-flight turn with an assistant call group, never an orphan tool tail", async () => {

@@ -26,3 +26,8 @@ export {
   type ParseOpenCodeEnvResult,
   parseOpenCodeEnv,
 } from "./opencode-config.js";
+export {
+  buildOpenCodeRequestHeaders,
+  OPENCODE_SESSION_HEADER,
+  OPENCODE_USER_AGENT,
+} from "./opencode-headers.js";

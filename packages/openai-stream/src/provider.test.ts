@@ -249,3 +249,57 @@ describe("authScheme", () => {
     ]);
   });
 });
+
+describe("requestHeaders", () => {
+  function capturingProvider(
+    requestHeaders?: (opts: ProviderStreamOptions) => Readonly<Record<string, string>>,
+  ) {
+    const seen: Array<Record<string, string>> = [];
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push({ ...(init?.headers as Record<string, string>) });
+      return okSseResponse();
+    }) as unknown as FetchLike;
+    const provider = createOpenAICompatProvider({
+      credentials: makeCreds(),
+      model: "test-model",
+      id: "with-headers",
+      fetchFn,
+      ...(requestHeaders !== undefined ? { requestHeaders } : {}),
+    });
+    return { provider, seen };
+  }
+
+  it("adds the hook's headers to the chat-completions request, built from the stream options", async () => {
+    const { provider, seen } = capturingProvider((opts) => ({
+      "x-session": opts.conversationId ?? "none",
+    }));
+    await collectEvents(provider.stream(makeMessages(), [], { conversationId: "conv-1" }));
+    await collectEvents(provider.stream(makeMessages(), []));
+    expect(seen.map((h) => h["x-session"])).toEqual(["conv-1", "none"]);
+    expect(seen[0]?.["Content-Type"]).toBe("application/json");
+    expect(seen[0]?.Authorization).toBe("Bearer sk-test-1234567890abcdef");
+  });
+
+  it("can never replace Content-Type or Authorization", async () => {
+    const { provider, seen } = capturingProvider(() => ({
+      "Content-Type": "text/plain",
+      Authorization: "Bearer hijacked",
+      "x-extra": "1",
+    }));
+    await collectEvents(provider.stream(makeMessages(), []));
+    expect(seen[0]).toEqual({
+      "Content-Type": "application/json",
+      Authorization: "Bearer sk-test-1234567890abcdef",
+      "x-extra": "1",
+    });
+  });
+
+  it("sends only the two standard headers when no hook is given", async () => {
+    const { provider, seen } = capturingProvider();
+    await collectEvents(provider.stream(makeMessages(), []));
+    expect(seen[0]).toEqual({
+      "Content-Type": "application/json",
+      Authorization: "Bearer sk-test-1234567890abcdef",
+    });
+  });
+});

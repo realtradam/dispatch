@@ -74,6 +74,12 @@ export interface CreateOpenAICompatProviderOpts {
    * Baseten's `Api-Key`) override it. Generic — the library names no feature.
    */
   readonly authScheme?: string;
+  /**
+   * Optional hook to add provider-specific request headers to every
+   * chat-completions call (see `StreamConfig.requestHeaders`). They can never
+   * replace `Content-Type` or `Authorization`. Default (absent): none.
+   */
+  readonly requestHeaders?: (opts: ProviderStreamOptions) => Readonly<Record<string, string>>;
 }
 
 export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts): ProviderContract {
@@ -84,6 +90,7 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
   const authScheme = opts.authScheme;
   const authOpt = authScheme !== undefined ? { authScheme } : {};
   const maxImages = opts.maxImages;
+  const requestHeaders = opts.requestHeaders;
 
   const streamConfig = {
     baseURL,
@@ -92,6 +99,7 @@ export function createOpenAICompatProvider(opts: CreateOpenAICompatProviderOpts)
     ...(fetchFn !== undefined ? { fetchFn } : {}),
     ...(transformBody !== undefined ? { transformBody } : {}),
     ...(maxImages !== undefined ? { maxImages } : {}),
+    ...(requestHeaders !== undefined ? { requestHeaders } : {}),
     ...authOpt,
   };
 

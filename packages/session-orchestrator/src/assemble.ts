@@ -148,6 +148,9 @@ export async function assembleTurnRequest(deps: SessionOrchestratorDeps, input: 
   }
 
   const providerOpts: ProviderStreamOptions = {
+    // Lets a provider key upstream routing / prompt-cache affinity on the
+    // conversation (some upstreams REQUIRE a per-conversation session id).
+    conversationId,
     reasoningEffort: resolvedEffort,
     ...(modelOverride !== undefined ? { model: modelOverride } : {}),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),

@@ -145,6 +145,14 @@ export interface ProviderStreamOptions {
    * compile (the provider falls back to no capture).
    */
   readonly logger?: Logger;
+  /**
+   * Stable identifier of the conversation this request belongs to, when the
+   * caller has one. Opaque — never parsed. A provider whose upstream keys
+   * routing or prompt-cache affinity on a per-conversation session (a session
+   * header, a cache key) sends it there; every other provider ignores it.
+   * Absent for requests made outside a conversation.
+   */
+  readonly conversationId?: string;
 }
 
 /**

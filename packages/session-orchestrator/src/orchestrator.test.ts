@@ -515,7 +515,11 @@ describe("handleMessage model resolution", () => {
 
     expect(captured).toHaveLength(1);
     expect(captured[0]?.provider).toBe(resolvedProvider);
-    expect(captured[0]?.providerOpts).toEqual({ reasoningEffort: "high", model: "gpt-4" });
+    expect(captured[0]?.providerOpts).toEqual({
+      conversationId: "conv-model",
+      reasoningEffort: "high",
+      model: "gpt-4",
+    });
     expect(captured[0]?.cwd).toBe("/work/dir");
   });
 
@@ -576,7 +580,10 @@ describe("handleMessage model resolution", () => {
 
     expect(captured).toHaveLength(1);
     expect(captured[0]?.provider).toBe(fallbackProvider);
-    expect(captured[0]?.providerOpts).toEqual({ reasoningEffort: "high" });
+    expect(captured[0]?.providerOpts).toEqual({
+      conversationId: "conv-fallback",
+      reasoningEffort: "high",
+    });
   });
 
   it("cwd is forwarded to RunTurnInput.cwd and absent when not provided", async () => {
@@ -3777,6 +3784,10 @@ describe("reasoning effort resolution", () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]?.providerOpts?.reasoningEffort).toBe("medium");
     expect(warmOpts?.reasoningEffort).toBe(captured[0]?.providerOpts?.reasoningEffort);
+    // The warm request and the real turn identify the SAME conversation to the
+    // provider (a per-conversation session keeps their prompt cache shared).
+    expect(warmOpts?.conversationId).toBe("conv-warm-effort");
+    expect(captured[0]?.providerOpts?.conversationId).toBe("conv-warm-effort");
   });
 });
 

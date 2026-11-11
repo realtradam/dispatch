@@ -240,6 +240,7 @@ export async function performCompaction(
   };
 
   const providerOpts: ProviderStreamOptions = {
+    conversationId,
     maxTokens: 2000,
     ...(modelOverride !== undefined ? { model: modelOverride } : {}),
     ...(deps.logger !== undefined

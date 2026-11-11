@@ -1,6 +1,7 @@
 import type { ApiKeyCredentials, Extension, HostAPI, Manifest } from "@dispatch/kernel";
 import { createOpenAICompatProvider } from "@dispatch/openai-stream";
 import { OPENCODE_PROVIDER_ID, type OpenCodeCredential } from "./opencode-config.js";
+import { buildOpenCodeRequestHeaders } from "./opencode-headers.js";
 
 export const manifest: Manifest = {
   id: "provider-openai-compat",
@@ -37,10 +38,15 @@ export async function activate(host: HostAPI): Promise<void> {
     apiKey: entry.apiKey,
     baseURL: entry.baseURL,
   };
+  // OpenCode Go rejects inference requests without a session id. Each request
+  // uses its conversation id; this per-activation id covers the rest (requests
+  // made outside a conversation), so the header is never missing.
+  const fallbackSessionId = crypto.randomUUID();
   const provider = createOpenAICompatProvider({
     credentials,
     model: entry.model,
     id: OPENCODE_PROVIDER_ID,
+    requestHeaders: (opts) => buildOpenCodeRequestHeaders(opts.conversationId, fallbackSessionId),
   });
   host.defineProvider(provider);
   // Log only the provider id + model — never the secret key.
