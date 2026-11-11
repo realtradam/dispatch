@@ -1,13 +1,29 @@
 import type { OpenAIContentPart, OpenAIMessage, OpenAITextPart } from "./convert-messages.js";
 
 /**
- * Default ceiling for a single provider request body: 9.5 MiB. The charm
- * gateway (hyper.charm.land) hard-rejects bodies larger than 10 MiB
- * (10,485,760 bytes) with HTTP 400 "invalid request body"; 9.5 MiB leaves
- * headroom for JSON escaping and HTTP/header overhead while staying safely
- * under the cap.
+ * Default ceiling for a single provider request body: 9.5 MB. Operators change
+ * it with the `DISPATCH_MAX_REQUEST_BODY_MB` environment variable (see
+ * {@link resolveMaxBodyBytes}); a provider may also pin its own `maxBodyBytes`.
  */
 export const DEFAULT_MAX_BODY_BYTES = 9_500_000;
+
+/** Environment variable that overrides the default request-body ceiling, in MB. */
+export const MAX_BODY_MB_ENV = "DISPATCH_MAX_REQUEST_BODY_MB";
+
+/**
+ * The request-body ceiling in bytes for a raw `DISPATCH_MAX_REQUEST_BODY_MB`
+ * value (1 MB = 1,000,000 bytes; decimals allowed, e.g. `"9.5"`).
+ * - unset / blank / not a number / negative → {@link DEFAULT_MAX_BODY_BYTES}
+ * - `0` → no limit (`Infinity`): images are never dropped for size
+ * Pure: string in, number out.
+ */
+export function resolveMaxBodyBytes(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_MAX_BODY_BYTES;
+  const mb = Number(raw);
+  if (!Number.isFinite(mb) || mb < 0) return DEFAULT_MAX_BODY_BYTES;
+  if (mb === 0) return Number.POSITIVE_INFINITY;
+  return Math.floor(mb * 1_000_000);
+}
 
 /** UTF-8 byte length of a string — the default injected measurement. */
 export function byteLengthUtf8(value: string): number {

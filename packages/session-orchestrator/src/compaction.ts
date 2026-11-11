@@ -46,6 +46,12 @@ export const DEFAULT_COMPACT_PERCENT = 85;
 export const SUMMARY_MAX_OUTPUT_TOKENS = 8192;
 
 /**
+ * Output cap of the single retry made when a summary request used its whole
+ * budget (on reasoning) without writing any text.
+ */
+export const SUMMARY_RETRY_MAX_OUTPUT_TOKENS = 32768;
+
+/**
  * Keep at least the requested tail without splitting a tool-call/result group.
  * Synthetic image user messages have no distinct marker: recognize them by an
  * image chunk immediately after tool results. Return null if nothing can be summarized.
@@ -245,6 +251,9 @@ export async function performCompaction(
   const providerOpts: ProviderStreamOptions = {
     conversationId,
     maxTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+    // A summary needs little deliberation. Reasoning tokens count against the
+    // output cap, so an unbounded effort can leave no room for the summary.
+    reasoningEffort: "low",
     ...(modelOverride !== undefined ? { model: modelOverride } : {}),
     ...(deps.logger !== undefined
       ? { logger: deps.logger.child({ conversationId, attrs: { compaction: true } }) }
@@ -280,55 +289,66 @@ export async function performCompaction(
     systemPrompt: compactionSystemPrompt,
     ...(signal !== undefined ? { signal } : {}),
   };
-  let summary = "";
-  let summaryTruncated = false;
-  if (signal !== undefined) {
-    const stream = provider.stream([summaryRequest], [], compactionOpts);
-    const iterator = stream[Symbol.asyncIterator]();
-    for await (const event of abortableIteration(iterator, signal)) {
-      if ((event as ProviderEvent).type === "text-delta") {
-        summary += (event as { delta: string }).delta;
-      } else if ((event as ProviderEvent).type === "error") {
+  /** One summary request: its text and whether it stopped at the output cap, or an error. */
+  const runSummary = async (
+    maxTokens: number,
+  ): Promise<
+    { readonly text: string; readonly truncated: boolean } | { readonly error: string }
+  > => {
+    let text = "";
+    let truncated = false;
+    const stream = provider.stream([summaryRequest], [], { ...compactionOpts, maxTokens });
+    // With a signal, race the consumption against it (defensive barrier).
+    const events: AsyncIterable<ProviderEvent> =
+      signal !== undefined ? abortableIteration(stream[Symbol.asyncIterator](), signal) : stream;
+    for await (const event of events) {
+      if (event.type === "text-delta") {
+        text += event.delta;
+      } else if (event.type === "error") {
         // A deliberate abort is cancellation, not a provider error.
-        if (signal.aborted) return { error: "aborted" };
-        return { error: (event as { message: string }).message };
-      } else if (
-        (event as ProviderEvent).type === "finish" &&
-        (event as { reason?: string }).reason === "length"
-      ) {
-        summaryTruncated = true;
+        if (signal?.aborted) return { error: "aborted" };
+        return { error: event.message };
+      } else if (event.type === "finish" && event.reason === "length") {
+        truncated = true;
       }
     }
-  } else {
-    for await (const event of provider.stream([summaryRequest], [], compactionOpts)) {
-      if ((event as ProviderEvent).type === "text-delta") {
-        summary += (event as { delta: string }).delta;
-      } else if ((event as ProviderEvent).type === "error") {
-        return { error: (event as { message: string }).message };
-      } else if (
-        (event as ProviderEvent).type === "finish" &&
-        (event as { reason?: string }).reason === "length"
-      ) {
-        summaryTruncated = true;
-      }
-    }
-  }
+    return { text, truncated };
+  };
 
-  // Abort after summarization but before fork/replace: do not fork or replace
-  // history (the archive would be orphaned and the live history untouched,
-  // which is safe, but skipping is cleaner — nothing was modified yet). Checked
-  // BEFORE the empty-summary check so a deliberate abort is never misreported
-  // as "model produced empty summary" (which can happen when the abort fires
-  // before any summary text is streamed).
+  let attempt = await runSummary(SUMMARY_MAX_OUTPUT_TOKENS);
+  // The model used its whole budget and wrote nothing (all of it went to
+  // reasoning): give it ONE larger budget before giving up.
+  if (
+    !("error" in attempt) &&
+    attempt.truncated &&
+    attempt.text.trim().length === 0 &&
+    !signal?.aborted
+  ) {
+    deps.logger?.warn("compaction:summary-retry", {
+      conversationId,
+      maxTokens: SUMMARY_RETRY_MAX_OUTPUT_TOKENS,
+    });
+    attempt = await runSummary(SUMMARY_RETRY_MAX_OUTPUT_TOKENS);
+  }
+  if ("error" in attempt) return { error: attempt.error };
+
+  // Abort after summarization but before fork/replace: nothing was modified
+  // yet. Checked BEFORE the empty-summary check so a deliberate abort is never
+  // misreported as an empty summary.
   if (signal?.aborted) {
     return { error: "aborted" };
   }
 
+  const summary = attempt.text;
   if (summary.trim().length === 0) {
-    return { error: "model produced empty summary" };
+    return {
+      error: attempt.truncated
+        ? "summary model used its whole output budget without writing a summary"
+        : "model produced empty summary",
+    };
   }
 
-  if (summaryTruncated) {
+  if (attempt.truncated) {
     deps.logger?.warn("compaction:summary-truncated", { conversationId });
   }
 
@@ -409,6 +429,17 @@ export function createCompactionService(
         return { error: "conversation is generating" };
       }
 
+      // A request that names no model summarizes with the conversation's OWN
+      // model. Falling back to "the first registered provider" sent a Claude
+      // conversation's summary to an unrelated reasoning model that wrote nothing.
+      const storedModel =
+        opts?.modelName === undefined
+          ? await deps.conversationStore.getModel(conversationId)
+          : null;
+      const modelName =
+        opts?.modelName ??
+        (storedModel !== null && storedModel.length > 0 ? storedModel : undefined);
+
       // Auto mode: check if contextSize exceeds percent of contextWindow.
       // The threshold check is the caller's policy (uses persisted turn
       // metrics) and is NOT performed by the shared `performCompaction` core.
@@ -423,7 +454,6 @@ export function createCompactionService(
         if (contextSize === undefined) return { error: "no context size" };
 
         // Resolve the model's context window.
-        const modelName = opts.modelName;
         if (modelName === undefined || deps.resolveModelInfo === undefined) {
           return { error: "cannot resolve model info" };
         }
@@ -441,7 +471,7 @@ export function createCompactionService(
       const outcome = await performCompaction(deps, conversationId, {
         isActive: () => activeConversations.has(conversationId),
         ...(opts?.keepLastN !== undefined ? { keepLastN: opts.keepLastN } : {}),
-        ...(opts?.modelName !== undefined ? { modelName: opts.modelName } : {}),
+        ...(modelName !== undefined ? { modelName } : {}),
       });
       if ("error" in outcome) return { error: outcome.error };
 

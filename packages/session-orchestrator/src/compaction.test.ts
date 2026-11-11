@@ -14,6 +14,7 @@ import {
   createCompactionService,
   performCompaction,
   SUMMARY_MAX_OUTPUT_TOKENS,
+  SUMMARY_RETRY_MAX_OUTPUT_TOKENS,
 } from "./compaction.js";
 import { createSessionOrchestrator } from "./orchestrator.js";
 import type { ToolAssembly } from "./tools-filter.js";
@@ -127,6 +128,7 @@ describe("performCompaction safe boundary", () => {
     });
     expect(options?.systemPrompt).toContain("conversation concisely but comprehensively");
     expect(options?.maxTokens).toBe(8192);
+    expect(options?.reasoningEffort).toBe("low");
     expect(options?.systemPrompt).toContain("under 1500 words");
     // The summary request identifies the conversation it compacts to the provider.
     expect(options?.conversationId).toBe("c");
@@ -473,5 +475,225 @@ describe("manual/post-seal compaction exclusion", () => {
       text("assistant", "new answer"),
     ]);
     expect(f.compacting.size).toBe(0);
+  });
+});
+
+describe("performCompaction summary retry", () => {
+  /** A provider that yields each scripted event list in call order. */
+  function scriptedProvider(scripts: readonly (readonly ProviderEvent[])[]): {
+    provider: ProviderContract;
+    calls: (ProviderStreamOptions | undefined)[];
+  } {
+    const calls: (ProviderStreamOptions | undefined)[] = [];
+    const provider: ProviderContract = {
+      id: "scripted",
+      async *stream(_messages, _tools, opts) {
+        const events = scripts[calls.length] ?? [];
+        calls.push(opts);
+        yield* events;
+      },
+    };
+    return { provider, calls };
+  }
+
+  it("retries once with a larger budget when the first attempt is truncated and empty", async () => {
+    const store = createConversationStore(storageFromMap());
+    const history = [old, done];
+    await store.append("c", history);
+    const { provider, calls } = scriptedProvider([
+      [{ type: "finish", reason: "length" }],
+      [
+        { type: "text-delta", delta: "summary" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+
+    const outcome = await performCompaction(
+      { conversationStore: store, resolveProvider: () => provider, emit: () => {} },
+      "c",
+      { keepLastN: 1, messages: history },
+    );
+
+    if ("error" in outcome) throw new Error(outcome.error);
+    expect(outcome.summary).toBe("summary");
+    expect(calls).toHaveLength(2);
+    expect(calls.map((opts) => opts?.maxTokens)).toEqual([
+      SUMMARY_MAX_OUTPUT_TOKENS,
+      SUMMARY_RETRY_MAX_OUTPUT_TOKENS,
+    ]);
+  });
+
+  it("reports the truncated-and-empty error after exactly two attempts, leaving history unchanged", async () => {
+    const store = createConversationStore(storageFromMap());
+    const history = [old, done];
+    await store.append("c", history);
+    const { provider, calls } = scriptedProvider([
+      [{ type: "finish", reason: "length" }],
+      [{ type: "finish", reason: "length" }],
+    ]);
+
+    const outcome = await performCompaction(
+      { conversationStore: store, resolveProvider: () => provider, emit: () => {} },
+      "c",
+      { keepLastN: 1, messages: history },
+    );
+
+    expect(outcome).toEqual({
+      error: "summary model used its whole output budget without writing a summary",
+    });
+    expect(calls).toHaveLength(2);
+    expect(await store.load("c")).toEqual(history);
+    expect(await store.getHistoryEpoch("c")).toBe(0);
+  });
+
+  it("does not retry when the model stops without writing any text", async () => {
+    const store = createConversationStore(storageFromMap());
+    const history = [old, done];
+    await store.append("c", history);
+    const { provider, calls } = scriptedProvider([[{ type: "finish", reason: "stop" }]]);
+
+    const outcome = await performCompaction(
+      { conversationStore: store, resolveProvider: () => provider, emit: () => {} },
+      "c",
+      { keepLastN: 1, messages: history },
+    );
+
+    expect(outcome).toEqual({ error: "model produced empty summary" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("succeeds with one call when the model writes text and then stops at the output cap", async () => {
+    const store = createConversationStore(storageFromMap());
+    const history = [old, done];
+    await store.append("c", history);
+    const { provider, calls } = scriptedProvider([
+      [
+        { type: "text-delta", delta: "summary" },
+        { type: "finish", reason: "length" },
+      ],
+    ]);
+
+    const outcome = await performCompaction(
+      { conversationStore: store, resolveProvider: () => provider, emit: () => {} },
+      "c",
+      { keepLastN: 1, messages: history },
+    );
+
+    if ("error" in outcome) throw new Error(outcome.error);
+    expect(outcome.summary).toBe("summary");
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("createCompactionService default model", () => {
+  /** deps for the compaction service with scripted provider resolution. */
+  function serviceFor(
+    store: ReturnType<typeof createConversationStore>,
+    resolved: {
+      readonly resolveProvider: () => ProviderContract;
+      readonly resolveModel?: (
+        modelName: string,
+      ) => { provider: ProviderContract; model: string } | undefined;
+    },
+  ) {
+    return createCompactionService(
+      {
+        conversationStore: store,
+        resolveProvider: resolved.resolveProvider,
+        resolveTools: () => [],
+        applyToolsFilter: async (assembly) => assembly,
+        ...(resolved.resolveModel !== undefined ? { resolveModel: resolved.resolveModel } : {}),
+        runTurn,
+        emit: () => {},
+      },
+      new Set(),
+    );
+  }
+
+  function summaryProvider(
+    id: string,
+    calls: (ProviderStreamOptions | undefined)[],
+  ): ProviderContract {
+    return {
+      id,
+      async *stream(_messages, _tools, opts) {
+        calls.push(opts);
+        yield { type: "text-delta", delta: "summary" };
+        yield { type: "finish", reason: "stop" };
+      },
+    };
+  }
+
+  it("summarizes with the conversation's stored model when the request names none", async () => {
+    const store = createConversationStore(storageFromMap());
+    await store.append("c", [old, done]);
+    await store.setModel("c", "cred/model-x");
+    const pCalls: (ProviderStreamOptions | undefined)[] = [];
+    const p = summaryProvider("p", pCalls);
+    const qCalls: (ProviderStreamOptions | undefined)[] = [];
+    const q = summaryProvider("q", qCalls);
+
+    const service = serviceFor(store, {
+      resolveProvider: () => q,
+      resolveModel: (modelName) =>
+        modelName === "cred/model-x" ? { provider: p, model: "model-x" } : undefined,
+    });
+    const outcome = await service.compact("c", { keepLastN: 1 });
+
+    if ("error" in outcome) throw new Error(outcome.error);
+    expect(outcome.summary).toBe("summary");
+    expect(qCalls).toHaveLength(0);
+    expect(pCalls).toHaveLength(1);
+    expect(pCalls[0]?.model).toBe("model-x");
+  });
+
+  it("uses an explicitly requested model over the stored one", async () => {
+    const store = createConversationStore(storageFromMap());
+    await store.append("c", [old, done]);
+    await store.setModel("c", "cred/model-x");
+    const pCalls: (ProviderStreamOptions | undefined)[] = [];
+    const p = summaryProvider("p", pCalls);
+    const rCalls: (ProviderStreamOptions | undefined)[] = [];
+    const r = summaryProvider("r", rCalls);
+
+    const service = serviceFor(store, {
+      resolveProvider: () => {
+        throw new Error("must not use the fallback provider");
+      },
+      resolveModel: (modelName) => {
+        if (modelName === "cred/model-x") return { provider: p, model: "model-x" };
+        if (modelName === "cred/other") return { provider: r, model: "other" };
+        return undefined;
+      },
+    });
+    const outcome = await service.compact("c", { keepLastN: 1, modelName: "cred/other" });
+
+    if ("error" in outcome) throw new Error(outcome.error);
+    expect(outcome.summary).toBe("summary");
+    expect(pCalls).toHaveLength(0);
+    expect(rCalls).toHaveLength(1);
+    expect(rCalls[0]?.model).toBe("other");
+  });
+
+  it("falls back to resolveProvider's provider when the conversation has no stored model", async () => {
+    const store = createConversationStore(storageFromMap());
+    await store.append("c", [old, done]);
+    const pCalls: (ProviderStreamOptions | undefined)[] = [];
+    const p = summaryProvider("p", pCalls);
+    const qCalls: (ProviderStreamOptions | undefined)[] = [];
+    const q = summaryProvider("q", qCalls);
+
+    const service = serviceFor(store, {
+      resolveProvider: () => q,
+      resolveModel: (modelName) =>
+        modelName === "cred/model-x" ? { provider: p, model: "model-x" } : undefined,
+    });
+    const outcome = await service.compact("c", { keepLastN: 1 });
+
+    if ("error" in outcome) throw new Error(outcome.error);
+    expect(outcome.summary).toBe("summary");
+    expect(pCalls).toHaveLength(0);
+    expect(qCalls).toHaveLength(1);
+    expect(qCalls[0]?.model).toBeUndefined();
   });
 });

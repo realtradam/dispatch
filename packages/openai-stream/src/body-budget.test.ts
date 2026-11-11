@@ -5,6 +5,8 @@ import {
   DEFAULT_MAX_BODY_BYTES,
   enforceBodyBudget,
   enforceImageCount,
+  MAX_BODY_MB_ENV,
+  resolveMaxBodyBytes,
 } from "./body-budget.js";
 import type {
   OpenAIContentPart,
@@ -424,5 +426,25 @@ describe("enforceImageCount", () => {
     expect(report.imagesEvicted).toBe(1);
     const after = byteLengthUtf8(JSON.stringify(body));
     expect(report.bytesFreed).toBe(before - after);
+  });
+});
+
+describe("resolveMaxBodyBytes", () => {
+  it("names the environment variable", () => {
+    expect(MAX_BODY_MB_ENV).toBe("DISPATCH_MAX_REQUEST_BODY_MB");
+  });
+
+  it.each([undefined, "", "  ", "abc", "-1", "NaN"])("falls back to the default for %p", (raw) => {
+    expect(resolveMaxBodyBytes(raw)).toBe(9_500_000);
+  });
+
+  it("converts megabytes to bytes, decimals included", () => {
+    expect(resolveMaxBodyBytes("9.5")).toBe(9_500_000);
+    expect(resolveMaxBodyBytes("20")).toBe(20_000_000);
+    expect(resolveMaxBodyBytes("0.5")).toBe(500_000);
+  });
+
+  it("treats 0 as no limit", () => {
+    expect(resolveMaxBodyBytes("0")).toBe(Number.POSITIVE_INFINITY);
   });
 });

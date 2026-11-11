@@ -10,9 +10,10 @@ import {
   type BodyEvictionReport,
   byteLengthUtf8,
   countImageParts,
-  DEFAULT_MAX_BODY_BYTES,
   enforceBodyBudget,
   enforceImageCount,
+  MAX_BODY_MB_ENV,
+  resolveMaxBodyBytes,
 } from "./body-budget.js";
 import { convertMessages, type OpenAIMessage } from "./convert-messages.js";
 import { convertTools, type OpenAITool } from "./convert-tools.js";
@@ -41,11 +42,12 @@ export interface StreamConfig {
     opts: ProviderStreamOptions,
   ) => Record<string, unknown>;
   /**
-   * Maximum request-body size in UTF-8 bytes (default:
-   * `DEFAULT_MAX_BODY_BYTES`, 9.5 MiB). When the serialized body exceeds this,
-   * `streamChat` evicts the OLDEST inline image parts first (each replaced IN
-   * PLACE by a placeholder text part) so the request stays under the
-   * provider's body-size cap instead of being rejected with HTTP 400.
+   * Maximum request-body size in UTF-8 bytes (default: the
+   * `DISPATCH_MAX_REQUEST_BODY_MB` environment variable, else 9.5 MB). When the
+   * serialized body exceeds this, `streamChat` evicts the OLDEST inline image
+   * parts first (each replaced IN PLACE by a placeholder text part) so the
+   * request stays under the configured cap instead of being rejected with
+   * HTTP 400.
    */
   readonly maxBodyBytes?: number;
   /**
@@ -150,10 +152,13 @@ export async function* streamChat(
   // Provider body-size budget: inline images (`data:` URLs) dominate body
   // size. When the serialized body exceeds the budget, evict the oldest image
   // parts first (each replaced IN PLACE by a placeholder text part) so the
-  // request stays under the provider's cap (charm gateway: 10 MiB) instead of
-  // being rejected with HTTP 400 "invalid request body". Runs AFTER the count
-  // cap (count eviction also frees bytes).
-  const maxBodyBytes = config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  // request stays under the configured cap (default 9.5 MB;
+  // DISPATCH_MAX_REQUEST_BODY_MB) instead of being rejected with HTTP 400
+  // "invalid request body". Runs AFTER the count cap (count eviction also
+  // frees bytes).
+  const maxBodyBytes =
+    config.maxBodyBytes ??
+    resolveMaxBodyBytes(typeof process !== "undefined" ? process.env[MAX_BODY_MB_ENV] : undefined);
   const bodyBytesBefore = byteLengthUtf8(bodyString);
   let budgetEviction: BodyEvictionReport | null = null;
   if (bodyBytesBefore > maxBodyBytes) {

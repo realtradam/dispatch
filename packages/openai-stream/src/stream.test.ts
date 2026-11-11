@@ -2,6 +2,7 @@ import type { ChatMessage, Logger, ProviderEvent, Span } from "@dispatch/kernel"
 import type { HttpExchangeFixture } from "@dispatch/trace-replay";
 import { loadFixture, recordFetch, replayFetch, serializeFixture } from "@dispatch/trace-replay";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_BODY_MB_ENV } from "./body-budget.js";
 import { parseSSELines } from "./parse-sse.js";
 import { type StreamConfig, streamChat } from "./stream.js";
 
@@ -1341,5 +1342,79 @@ describe("SSE stream and line parser regressions", () => {
     const expected = [{ type: "usage", usage: { inputTokens: 0, outputTokens: 0 } }, premature];
     expect(parseSSELines(lines)).toEqual(expected);
     expect(await streamed(lines.join("\n"))).toEqual(expected);
+  });
+});
+
+describe("streamChat — request-body limit from the environment", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function imageUserMessage(url: string): ChatMessage {
+    return { role: "user", chunks: [{ type: "image", url }] };
+  }
+
+  function okResponse(): Response {
+    return new Response(
+      sseBody(
+        'data: {"id":"cmpl-e1","choices":[{"delta":{"content":"ok"},"index":0}]}',
+        'data: {"id":"cmpl-e1","choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+        "data: [DONE]",
+      ),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+  }
+
+  function captureFetch(): { sent: () => string | undefined } {
+    let sentBody: string | undefined;
+    mockFetch((_url, init) => {
+      sentBody = typeof init?.body === "string" ? init.body : undefined;
+      return okResponse();
+    });
+    return { sent: () => sentBody };
+  }
+
+  it("sends every image when the environment variable disables the limit", async () => {
+    vi.stubEnv(MAX_BODY_MB_ENV, "0");
+    const { sent } = captureFetch();
+    // Larger than the 9.5 MB default budget: the default would evict it.
+    const bigImage = `data:image/png;base64,${"A".repeat(9_600_000)}`;
+
+    await collectEvents(streamChat(makeConfig(), [imageUserMessage(bigImage)], []));
+
+    const raw = sent();
+    assertDefined(raw);
+    const body = JSON.parse(raw) as { messages: Array<{ content: unknown }> };
+    expect(JSON.stringify(body)).toContain('"image_url"');
+    expect(JSON.stringify(body)).not.toContain("[image omitted");
+  });
+
+  it("evicts an image when the environment variable sets a tiny limit", async () => {
+    vi.stubEnv(MAX_BODY_MB_ENV, "0.001");
+    const { sent } = captureFetch();
+    const image = `data:image/png;base64,${"A".repeat(8_000)}`;
+
+    await collectEvents(streamChat(makeConfig(), [imageUserMessage(image)], []));
+
+    const raw = sent();
+    assertDefined(raw);
+    const body = JSON.parse(raw) as { messages: Array<{ content: unknown }> };
+    expect(JSON.stringify(body)).not.toContain('"image_url"');
+    expect(JSON.stringify(body)).toContain("[image omitted: image/png, ");
+  });
+
+  it("lets an explicit config.maxBodyBytes win over the environment variable", async () => {
+    vi.stubEnv(MAX_BODY_MB_ENV, "0");
+    const { sent } = captureFetch();
+    const image = `data:image/png;base64,${"A".repeat(8_000)}`;
+    const config: StreamConfig = { ...makeConfig(), maxBodyBytes: 4096 };
+
+    await collectEvents(streamChat(config, [imageUserMessage(image)], []));
+
+    const raw = sent();
+    assertDefined(raw);
+    const body = JSON.parse(raw) as { messages: Array<{ content: unknown }> };
+    expect(JSON.stringify(body)).not.toContain('"image_url"');
+    expect(JSON.stringify(body)).toContain("[image omitted: image/png, ");
   });
 });
