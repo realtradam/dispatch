@@ -466,6 +466,14 @@ and `youtube_transcript` uses `YOUTUBE_TRANSCRIBER_URL` (default
 `http://127.0.0.1:41090`). For remote services, put your actual URLs in
 `/etc/dispatch/env` (shared by systemd and `bin/up`), or a gitignored `.env`
 when running Bun directly. Never commit private network addresses.
+
+`web_search`'s search mode uses a selectable search backend — Claude (native
+web search, the default), Codex (native web search), or Firecrawl — chosen in
+Settings. Scrape and crawl always use the self-hosted Firecrawl instance. The
+Claude and Codex backends accept optional model overrides via
+`DISPATCH_SEARCH_CLAUDE_MODEL` (default: newest Haiku) and
+`DISPATCH_SEARCH_CODEX_MODEL` (default: the Codex default model).
+
 `bin/install` retains the existing env file; `bin/sync-env` leaves these
 assignments untouched, and `bin/setup-env` preserves them on refresh. Custom
 network overrides (`DISPATCH_BIND`, `DISPATCH_TAILSCALE_NAME`, and

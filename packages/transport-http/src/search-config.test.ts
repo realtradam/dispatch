@@ -36,18 +36,18 @@ const noopLogger = {
 };
 
 const OK_AVAILABLE = [
+  { id: "claude", label: "Claude (native web search)", configured: true },
+  { id: "codex", label: "Codex (native web search)", configured: true },
   { id: "firecrawl", label: "Firecrawl (self-hosted)", configured: true },
-  { id: "umans", label: "Umans (Exa)", configured: true },
 ];
 
 function createFakeSearchConfigService(backend = "firecrawl"): SearchConfigService {
   return {
     getConfig: async () => ({ backend, available: OK_AVAILABLE }),
     updateConfig: async (update: UpdateSearchConfigRequest) => {
-      if (update.backend === "umans") return { ok: true, config: { backend: "umans" } };
+      if (update.backend === "codex") return { ok: true, config: { backend: "codex" } };
       if (update.backend === "none") return { ok: true, config: { backend: "none" } };
-      if (update.backend === "native") return { ok: false, error: "unknown-backend" as const };
-      return { ok: false, error: "not-configured" as const };
+      return { ok: false, error: "unknown-backend" as const };
     },
     availableBackends: () => OK_AVAILABLE,
     resolveBackend: async () => null,
@@ -77,11 +77,11 @@ describe("GET /search/config", () => {
   });
 
   it("delegates to the service (selection + availability)", async () => {
-    const app = createAppWith(createFakeSearchConfigService("umans"));
+    const app = createAppWith(createFakeSearchConfigService("codex"));
     const res = await app.request("/search/config");
     expect(res.status).toBe(200);
     const body = (await res.json()) as SearchBackendConfigResponse;
-    expect(body.backend).toBe("umans");
+    expect(body.backend).toBe("codex");
     expect(body.available).toEqual(OK_AVAILABLE);
   });
 });
@@ -92,11 +92,11 @@ describe("PUT /search/config", () => {
     const res = await app.request("/search/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ backend: "umans" }),
+      body: JSON.stringify({ backend: "codex" }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as SearchBackendConfigResponse;
-    expect(body.backend).toBe("umans");
+    expect(body.backend).toBe("codex");
     expect(body.available).toEqual(OK_AVAILABLE);
   });
 
@@ -124,18 +124,6 @@ describe("PUT /search/config", () => {
     expect(body.error).toContain("native");
   });
 
-  it("maps an unconfigured backend to 400", async () => {
-    const app = createAppWith(createFakeSearchConfigService());
-    const res = await app.request("/search/config", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ backend: "unavailable-id" }),
-    });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toContain("not configured");
-  });
-
   it("rejects a non-string / missing backend with 400 (service untouched)", async () => {
     const service = createFakeSearchConfigService();
     const spy = vi.spyOn(service, "updateConfig");
@@ -154,7 +142,7 @@ describe("PUT /search/config", () => {
     const res = await app.request("/search/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ backend: "umans" }),
+      body: JSON.stringify({ backend: "codex" }),
     });
     expect(res.status).toBe(503);
   });

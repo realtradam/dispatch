@@ -74,6 +74,16 @@ describe("envToConfigMap", () => {
     expect(result["codex.credentialKey"]).toBe("codex-oauth");
   });
 
+  it("maps DISPATCH_SEARCH_CLAUDE_MODEL to search.claude.model", () => {
+    const result = envToConfigMap({ DISPATCH_SEARCH_CLAUDE_MODEL: "claude-haiku-5-5" });
+    expect(result["search.claude.model"]).toBe("claude-haiku-5-5");
+  });
+
+  it("maps DISPATCH_SEARCH_CODEX_MODEL to search.codex.model", () => {
+    const result = envToConfigMap({ DISPATCH_SEARCH_CODEX_MODEL: "codex-mini-latest" });
+    expect(result["search.codex.model"]).toBe("codex-mini-latest");
+  });
+
   it("maps the external OpenAI/Codex pair together", () => {
     const result = envToConfigMap({
       DISPATCH_OPENAI_MODEL: "gpt-5-codex",

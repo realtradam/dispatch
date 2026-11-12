@@ -1,6 +1,6 @@
 import type { ToolExecuteContext } from "@dispatch/kernel";
 import { createLogger } from "@dispatch/kernel";
-import type { SearchBackend, SearchHit } from "@dispatch/search-backend-contract";
+import type { SearchBackend, SearchHit, SearchResponse } from "@dispatch/search-backend-contract";
 import { describe, expect, it } from "vitest";
 import type { FirecrawlClient } from "./client.js";
 import { createWebSearchTool } from "./tool.js";
@@ -18,7 +18,10 @@ function stubCtx(): ToolExecuteContext {
   };
 }
 
-function fakeBackend(id: string, hits: SearchHit[]): { backend: SearchBackend; queries: string[] } {
+function fakeBackend(
+  id: string,
+  response: SearchResponse,
+): { backend: SearchBackend; queries: string[] } {
   const queries: string[] = [];
   return {
     queries,
@@ -27,7 +30,7 @@ function fakeBackend(id: string, hits: SearchHit[]): { backend: SearchBackend; q
       label: id,
       search: async (params) => {
         queries.push(params.query);
-        return hits;
+        return response;
       },
     },
   };
@@ -60,9 +63,12 @@ function fakeFirecrawlClient(): {
 
 const HITS: SearchHit[] = [{ title: "T", url: "http://a", description: "d" }];
 
+const SEARCH_DISABLED_REFUSAL =
+  "Error: search is disabled — no search backend is selected or the selected backend is unavailable. Scrape and crawl modes remain available.";
+
 describe("createWebSearchTool — search-backend resolution", () => {
   it("search mode routes to the resolved backend and formats its hits", async () => {
-    const { backend, queries } = fakeBackend("umans", HITS);
+    const { backend, queries } = fakeBackend("codex", { hits: HITS });
     const { client, methods } = fakeFirecrawlClient();
     const tool = createWebSearchTool({
       client,
@@ -75,6 +81,23 @@ describe("createWebSearchTool — search-backend resolution", () => {
     expect(methods).toEqual([]); // Firecrawl untouched for search
   });
 
+  it("passes a backend answer + hits through the formatter", async () => {
+    const { backend } = fakeBackend("claude", {
+      answer: "Synthesized answer.",
+      hits: HITS,
+    });
+    const { client } = fakeFirecrawlClient();
+    const tool = createWebSearchTool({
+      client,
+      resolveSearchBackend: () => Promise.resolve(backend),
+    });
+    const result = await tool.execute({ query: "hello" }, stubCtx());
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("Synthesized answer.");
+    expect(result.content).toContain("## Sources");
+    expect(result.content).toContain("### T");
+  });
+
   it("search mode passes lang/country/scrape options through to the backend", async () => {
     const seen: unknown[] = [];
     const backend: SearchBackend = {
@@ -82,7 +105,7 @@ describe("createWebSearchTool — search-backend resolution", () => {
       label: "x",
       search: async (params) => {
         seen.push(params);
-        return [];
+        return { hits: [] };
       },
     };
     const { client } = fakeFirecrawlClient();
@@ -103,13 +126,12 @@ describe("createWebSearchTool — search-backend resolution", () => {
     });
   });
 
-  it("null resolution ('none') → clean isError refusal mentioning scrape/crawl", async () => {
+  it("null resolution ('none') → the exact search-disabled refusal", async () => {
     const { client, methods } = fakeFirecrawlClient();
     const tool = createWebSearchTool({ client, resolveSearchBackend: () => Promise.resolve(null) });
     const result = await tool.execute({ query: "hello" }, stubCtx());
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("search is disabled");
-    expect(result.content).toContain("Scrape and crawl");
+    expect(result.content).toBe(SEARCH_DISABLED_REFUSAL);
     expect(methods).toEqual([]);
   });
 
@@ -118,7 +140,7 @@ describe("createWebSearchTool — search-backend resolution", () => {
     const tool = createWebSearchTool({ client });
     const result = await tool.execute({ query: "hello" }, stubCtx());
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("search is disabled");
+    expect(result.content).toBe(SEARCH_DISABLED_REFUSAL);
   });
 
   it("a backend failure surfaces as an isError result, never a throw", async () => {
@@ -138,7 +160,7 @@ describe("createWebSearchTool — search-backend resolution", () => {
   });
 
   it("scrape and crawl ALWAYS route to the Firecrawl client, regardless of the selection", async () => {
-    const { backend } = fakeBackend("umans", HITS);
+    const { backend } = fakeBackend("codex", { hits: HITS });
     const { client, methods } = fakeFirecrawlClient();
     const tool = createWebSearchTool({
       client,
@@ -167,5 +189,24 @@ describe("createWebSearchTool — search-backend resolution", () => {
     const result = await tool.execute({ url: "http://x", mode: "map" }, stubCtx());
     expect(result.isError).toBe(true);
     expect(result.content).toContain("Invalid mode");
+  });
+});
+
+describe("createWebSearchTool — description + schema", () => {
+  it("uses the exact tool description", () => {
+    const { client } = fakeFirecrawlClient();
+    const tool = createWebSearchTool({ client });
+    expect(tool.description).toBe(
+      "Access the web. 'search' runs a web search through the configured search backend and returns a synthesized answer and/or a list of sources (search may be disabled by configuration). 'scrape' fetches one page and 'crawl' recursively fetches a site, both through a self-hosted Firecrawl instance (always available).",
+    );
+  });
+
+  it("appends the unsupported-by-backend note to scrape, lang and country", () => {
+    const { client } = fakeFirecrawlClient();
+    const tool = createWebSearchTool({ client });
+    const props = tool.parameters.properties;
+    expect(props?.scrape?.description).toMatch(/Not every search backend supports this\.$/);
+    expect(props?.lang?.description).toMatch(/Not every search backend supports this\.$/);
+    expect(props?.country?.description).toMatch(/Not every search backend supports this\.$/);
   });
 });
