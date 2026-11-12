@@ -60,7 +60,7 @@ async function runMode(
       if (backend === null) {
         return "Error: search is disabled — no search backend is selected. Scrape and crawl modes remain available.";
       }
-      const hits = await backend.search(
+      const response = await backend.search(
         {
           query: validated.query,
           limit: validated.limit,
@@ -72,7 +72,7 @@ async function runMode(
         },
         signal,
       );
-      return formatSearchResults(hits);
+      return formatSearchResults(response.hits);
     }
     case "scrape": {
       const result = await client.scrape(

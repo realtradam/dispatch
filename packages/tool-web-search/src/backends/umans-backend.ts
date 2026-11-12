@@ -20,7 +20,12 @@
  * `isError` results, never a crash.
  */
 
-import type { SearchBackend, SearchHit, SearchParams } from "@dispatch/search-backend-contract";
+import type {
+  SearchBackend,
+  SearchHit,
+  SearchParams,
+  SearchResponse,
+} from "@dispatch/search-backend-contract";
 
 export const UMANS_BACKEND_ID = "umans";
 export const UMANS_BACKEND_LABEL = "Umans (Exa)";
@@ -173,7 +178,7 @@ export function createUmansSearchBackend(deps: UmansBackendDeps): SearchBackend 
   return {
     id: UMANS_BACKEND_ID,
     label: UMANS_BACKEND_LABEL,
-    async search(params: SearchParams, signal: AbortSignal): Promise<readonly SearchHit[]> {
+    async search(params: SearchParams, signal: AbortSignal): Promise<SearchResponse> {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       const combined = AbortSignal.any([signal, controller.signal]);
@@ -215,7 +220,7 @@ export function createUmansSearchBackend(deps: UmansBackendDeps): SearchBackend 
         } catch {
           throw new Error("Failed to parse Umans search relay response as JSON");
         }
-        return parseUmansContentBlocks(json.content);
+        return { hits: parseUmansContentBlocks(json.content) };
       } finally {
         clearTimeout(timeout);
       }

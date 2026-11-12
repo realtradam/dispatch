@@ -1,9 +1,5 @@
 import type { StorageNamespace } from "@dispatch/kernel";
-import {
-  DEFAULT_SEARCH_BACKEND,
-  SEARCH_BACKEND_NONE,
-  type SearchBackend,
-} from "@dispatch/search-backend-contract";
+import { SEARCH_BACKEND_NONE, type SearchBackend } from "@dispatch/search-backend-contract";
 import type {
   SearchBackendAvailability,
   SearchBackendConfigResponse,
@@ -21,7 +17,7 @@ export interface SearchConfig {
 }
 
 /** The zero-migration default: today's Firecrawl-backed behavior. */
-export const DEFAULT_SEARCH_CONFIG: SearchConfig = { backend: DEFAULT_SEARCH_BACKEND };
+export const DEFAULT_SEARCH_CONFIG: SearchConfig = { backend: "firecrawl" };
 
 /** Storage key for the (single, global) search config document. */
 export const SEARCH_CONFIG_KEY = "config:global";
