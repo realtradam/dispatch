@@ -51,6 +51,7 @@
     "@dispatch/transport-http": "workspace:*",
     "@dispatch/transport-ws": "workspace:*",
     "@dispatch/vision-handoff": "workspace:*",
+    "@dispatch/window-keeper": "workspace:*",
     "@dispatch/workspace-plugin-config": "workspace:*"
   }
 }

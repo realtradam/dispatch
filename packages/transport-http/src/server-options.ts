@@ -19,6 +19,7 @@ import type {
   SystemPromptService,
   ThroughputStore,
   WarmService,
+  WindowKeeperService,
   WorkspacePluginConfigService,
 } from "./seam.js";
 
@@ -149,6 +150,13 @@ export interface CreateServerOptions {
    * slot). When absent, `GET /usage*` degrades to 503.
    */
   readonly accountUsageService?: AccountUsageService | undefined;
+  /**
+   * Optional + reactive — the per-provider usage-window keeper toggles
+   * (provided by the `window-keeper` extension; read per request via a
+   * registry slot). When absent (extension not loaded / unloaded mid-session),
+   * the `/window-keeper` routes degrade to 503.
+   */
+  readonly windowKeeperService?: WindowKeeperService | undefined;
   /**
    * Live tier lookup over the host's loaded manifests (wired by the
    * extension from `host.getExtensions()`). Used by `GET /models?workspaceId=`

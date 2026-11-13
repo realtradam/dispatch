@@ -22,6 +22,7 @@
     { "path": "../system-prompt" },
     { "path": "../throughput-store" },
     { "path": "../transport-contract" },
+    { "path": "../window-keeper" },
     { "path": "../workspace-plugin-config" }
   ]
 }

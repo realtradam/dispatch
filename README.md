@@ -382,6 +382,7 @@ topologically at activation). Every extension also depends implicitly on the ker
 | **skills** | `load_skill` tool + per-turn tools filter that rewrites the skill list per cwd. | session-orchestrator |
 | **system-prompt** | Template-based system prompt builder with variable placeholders (`[type:name]`) and conditionals. | — |
 | **cache-warming** | Per-conversation prompt-cache warming timers + manual trigger (`POST /chat/warm`) + a surface. | session-orchestrator, surface-registry |
+| **window-keeper** | Keeps a usage window running for Claude (5-hour) and Codex (primary window): starts a new one within about two minutes of the previous one ending, with one minimal request. On by default; one toggle per provider in Settings (`GET/PUT /window-keeper`). | — |
 | **message-queue** | Per-conversation steering queue + surface; enqueue when idle starts a new turn. | surface-registry |
 | **lsp** | Language Server Protocol client (hand-rolled JSON-RPC over stdio) — lazy-spawn, per-cwd config, diagnostics, `lsp` tool. | — |
 | **provider-umans** | Umans OpenAI-compatible provider (`api.code.umans.ai`); self-contained (reads `UMANS_API_KEY` from env). | — |

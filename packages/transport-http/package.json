@@ -26,6 +26,7 @@
     "@dispatch/tool-web-search": "workspace:*",
     "@dispatch/transport-contract": "workspace:*",
     "@dispatch/wire": "workspace:*",
+    "@dispatch/window-keeper": "workspace:*",
     "@dispatch/workspace-plugin-config": "workspace:*",
     "hono": "^4.0.0"
   }

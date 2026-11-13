@@ -291,6 +291,21 @@ export function looksLikeClaudeUsagePayload(raw: unknown): boolean {
 }
 
 /**
+ * True when a usage payload explicitly DECLARES that no 5-hour window is
+ * running: it carries its own `five_hour` property whose value is exactly
+ * `null`, a `limits` array, and no `session` entry in that array. This is an
+ * idle account (distinct from an unknown/absent bucket).
+ */
+export function claudeDeclaresFiveHourInactive(raw: Record<string, unknown>): boolean {
+  return (
+    Object.hasOwn(raw, "five_hour") &&
+    raw.five_hour === null &&
+    Array.isArray(raw.limits) &&
+    !raw.limits.some((entry) => isRecord(entry) && entry.kind === "session")
+  );
+}
+
+/**
  * Normalize one `/api/oauth/usage` payload. Supports both the legacy buckets
  * and the generic `limits[]` (`session`, `weekly_all`, `weekly_scoped`).
  * Returns null when the body is not an object.
@@ -301,7 +316,10 @@ export function parseClaudeUsagePayload(
 ): ProviderUsage | null {
   if (!isRecord(raw)) return null;
   const generic = parseGenericLimits(raw.limits);
-  const fiveHour = parseBucket(raw.five_hour) ?? generic.find((g) => g.kind === "session")?.bucket;
+  const fiveHour =
+    parseBucket(raw.five_hour) ??
+    generic.find((g) => g.kind === "session")?.bucket ??
+    (claudeDeclaresFiveHourInactive(raw) ? { utilization: 0 } : undefined);
   const sevenDay =
     parseBucket(raw.seven_day) ?? generic.find((g) => g.kind === "weekly_all")?.bucket;
 

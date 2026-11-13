@@ -88,6 +88,9 @@
       "path": "../vision-handoff"
     },
     {
+      "path": "../window-keeper"
+    },
+    {
       "path": "../workspace-plugin-config"
     }
   ]

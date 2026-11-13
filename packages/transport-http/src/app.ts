@@ -26,6 +26,7 @@ import { mount as mountStatic } from "./routes/static.js";
 import { mount as mountTextFiles } from "./routes/text-files.js";
 import { mount as mountThroughput } from "./routes/throughput.js";
 import { mount as mountUsage } from "./routes/usage.js";
+import { mount as mountWindowKeeper } from "./routes/window-keeper.js";
 import { mount as mountWorkspacePlugins } from "./routes/workspace-plugins.js";
 import { mount as mountWorkspaces } from "./routes/workspaces.js";
 import type { CreateServerOptions } from "./server-options.js";
@@ -122,6 +123,7 @@ export function createApp(opts: CreateServerOptions): Hono {
   mountHomeTileLayout(app, routes);
   mountHeartbeat(app, routes);
   mountSearch(app, routes);
+  mountWindowKeeper(app, routes);
   mountPlugins(app, routes);
   mountSettings(app, routes);
   mountStatic(app, routes);

@@ -903,3 +903,26 @@ export interface SearchBackendConfigResponse {
 export interface UpdateSearchConfigRequest {
   readonly backend: string;
 }
+
+// ─── Window keeper ───────────────────────────────────────────────────────────
+
+/** Providers the window keeper can keep a usage window running for. */
+export type WindowKeeperProviderId = "claude" | "codex";
+
+/** One provider's toggle as the Settings pane renders it. */
+export interface WindowKeeperProviderSetting {
+  readonly id: WindowKeeperProviderId;
+  readonly label: string;
+  readonly enabled: boolean;
+}
+
+/** Response of `GET /window-keeper` and `PUT /window-keeper`. Fixed order: claude, codex. */
+export interface WindowKeeperConfigResponse {
+  readonly providers: readonly WindowKeeperProviderSetting[];
+}
+
+/** Body of `PUT /window-keeper`. */
+export interface UpdateWindowKeeperRequest {
+  readonly provider: WindowKeeperProviderId;
+  readonly enabled: boolean;
+}

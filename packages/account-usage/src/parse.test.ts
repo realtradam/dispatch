@@ -80,6 +80,54 @@ describe("claude usage payload", () => {
     expect(parseClaudeUsagePayload("nope")).toBeNull();
   });
 
+  it("declared-inactive payload yields an idle 5h row with no reset", () => {
+    const u = parseClaudeUsagePayload({ five_hour: null, limits: [] });
+    expect(u?.limits.map((l) => l.id)).toEqual(["claude:5h"]);
+    expect(u?.limits[0]).toMatchObject({
+      id: "claude:5h",
+      used: 0,
+      usedFraction: 0,
+      remaining: 100,
+      resetsAt: null,
+      status: "ok",
+    });
+  });
+
+  it("five_hour missing yields no 5h row", () => {
+    const u = parseClaudeUsagePayload({ seven_day: { utilization: 5 } });
+    expect(u?.limits.some((l) => l.id === "claude:5h")).toBe(false);
+  });
+
+  it("five_hour null with limits absent yields no 5h row", () => {
+    const u = parseClaudeUsagePayload({ five_hour: null });
+    expect(u?.limits.some((l) => l.id === "claude:5h")).toBe(false);
+  });
+
+  it("five_hour null with a session entry reads the row from that entry", () => {
+    const u = parseClaudeUsagePayload({
+      five_hour: null,
+      limits: [{ kind: "session", percent: 10, resets_at: "2026-10-14T20:00:00Z" }],
+    });
+    expect(u?.limits[0]).toMatchObject({
+      id: "claude:5h",
+      used: 10,
+      resetsAt: Date.parse("2026-10-14T20:00:00Z"),
+    });
+  });
+
+  it("a populated five_hour is unchanged by the inactive fallback", () => {
+    const u = parseClaudeUsagePayload({
+      five_hour: { utilization: 42, resets_at: "2026-10-14T20:00:00Z" },
+      limits: [],
+    });
+    expect(u?.limits[0]).toMatchObject({
+      id: "claude:5h",
+      used: 42,
+      usedFraction: 0.42,
+      resetsAt: Date.parse("2026-10-14T20:00:00Z"),
+    });
+  });
+
   it("parses spend extra usage; unlimited cap is limit:null not $0", () => {
     const capped = parseClaudeUsagePayload({
       spend: {

@@ -1701,6 +1701,19 @@ export type {
   UpdateSearchConfigRequest,
 } from "@dispatch/wire";
 
+// ─── Window keeper ───────────────────────────────────────────────────────────
+
+/**
+ * Re-exported wire types for the usage-window keeper toggles
+ * (`GET/PUT /window-keeper`). The web frontend consumes these directly.
+ */
+export type {
+  UpdateWindowKeeperRequest,
+  WindowKeeperConfigResponse,
+  WindowKeeperProviderId,
+  WindowKeeperProviderSetting,
+} from "@dispatch/wire";
+
 // ─── Provider concurrency limits ──────────────────────────────────────────────
 
 /**

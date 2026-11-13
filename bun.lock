@@ -154,6 +154,7 @@
         "@dispatch/transport-http": "workspace:*",
         "@dispatch/transport-ws": "workspace:*",
         "@dispatch/vision-handoff": "workspace:*",
+        "@dispatch/window-keeper": "workspace:*",
         "@dispatch/workspace-plugin-config": "workspace:*",
       },
     },
@@ -556,7 +557,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.26.0",
+      "version": "0.27.0",
       "dependencies": {
         "@dispatch/layout-contract": "workspace:*",
         "@dispatch/tile-layout-contract": "workspace:*",
@@ -587,6 +588,7 @@
         "@dispatch/throughput-store": "workspace:*",
         "@dispatch/tool-web-search": "workspace:*",
         "@dispatch/transport-contract": "workspace:*",
+        "@dispatch/window-keeper": "workspace:*",
         "@dispatch/wire": "workspace:*",
         "@dispatch/workspace-plugin-config": "workspace:*",
         "hono": "^4.0.0",
@@ -623,6 +625,15 @@
         "@dispatch/kernel": "workspace:*",
         "@dispatch/openai-stream": "workspace:*",
         "@dispatch/session-orchestrator": "workspace:*",
+      },
+    },
+    "packages/window-keeper": {
+      "name": "@dispatch/window-keeper",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/account-usage": "workspace:*",
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/transport-contract": "workspace:*",
       },
     },
     "packages/wire": {
@@ -780,6 +791,8 @@
     "@dispatch/ui-contract": ["@dispatch/ui-contract@workspace:packages/ui-contract"],
 
     "@dispatch/vision-handoff": ["@dispatch/vision-handoff@workspace:packages/vision-handoff"],
+
+    "@dispatch/window-keeper": ["@dispatch/window-keeper@workspace:packages/window-keeper"],
 
     "@dispatch/wire": ["@dispatch/wire@workspace:packages/wire"],
 

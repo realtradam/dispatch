@@ -25,6 +25,7 @@ import {
   sessionOrchestratorHandle,
   systemPromptHandle,
   throughputStoreHandle,
+  windowKeeperServiceHandle,
   workspacePluginConfigHandle,
 } from "./seam.js";
 
@@ -232,6 +233,7 @@ export function createTransportHttpExtension(): Extension & {
         mcp: { current: host.tryGetService(mcpServiceHandle) },
         heartbeat: { current: host.tryGetService(heartbeatServiceHandle) },
         searchConfig: { current: host.tryGetService(searchConfigServiceHandle) },
+        windowKeeper: { current: host.tryGetService(windowKeeperServiceHandle) },
         computer: { current: host.tryGetService(computerServiceHandle) },
         concurrency: { current: host.tryGetService(concurrencyServiceHandle) },
         namedAgent: { current: host.tryGetService(namedAgentServiceHandle) },
@@ -262,6 +264,7 @@ export function createTransportHttpExtension(): Extension & {
         watch(mcpServiceHandle, slots.mcp),
         watch(heartbeatServiceHandle, slots.heartbeat),
         watch(searchConfigServiceHandle, slots.searchConfig),
+        watch(windowKeeperServiceHandle, slots.windowKeeper),
         watch(computerServiceHandle, slots.computer),
         watch(concurrencyServiceHandle, slots.concurrency),
         watch(namedAgentServiceHandle, slots.namedAgent),
@@ -315,6 +318,9 @@ export function createTransportHttpExtension(): Extension & {
         },
         get searchConfigService() {
           return slots.searchConfig.current;
+        },
+        get windowKeeperService() {
+          return slots.windowKeeper.current;
         },
         get computerService() {
           return slots.computer.current;

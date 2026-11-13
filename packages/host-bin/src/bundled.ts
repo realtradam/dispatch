@@ -61,6 +61,7 @@ import { extension as toolYoutubeTranscriptExt } from "@dispatch/tool-youtube-tr
 import { createTransportHttpExtension } from "@dispatch/transport-http";
 import { createTransportWsExtension } from "@dispatch/transport-ws";
 import { extension as visionHandoffExt } from "@dispatch/vision-handoff";
+import { extension as windowKeeperExt } from "@dispatch/window-keeper";
 import { extension as workspacePluginConfigExt } from "@dispatch/workspace-plugin-config";
 
 // Factory extensions are constructed once at module load (pure configuration
@@ -120,6 +121,7 @@ export function createBundledExtensions(creds: {
     // --- standard ---
     namedAgentsExt,
     accountUsageExt,
+    windowKeeperExt,
     heartbeatExt,
     sshExt,
     mcpExt,

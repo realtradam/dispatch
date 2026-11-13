@@ -40,6 +40,8 @@ export type { ThroughputStore } from "@dispatch/throughput-store";
 export { ThroughputQueryError, throughputStoreHandle } from "@dispatch/throughput-store";
 export type { SearchConfigService } from "@dispatch/tool-web-search";
 export { searchConfigServiceHandle } from "@dispatch/tool-web-search";
+export type { WindowKeeperService } from "@dispatch/window-keeper";
+export { windowKeeperServiceHandle } from "@dispatch/window-keeper";
 export type { WorkspacePluginConfigService } from "@dispatch/workspace-plugin-config";
 export {
   usablePluginsInWorkspace,

@@ -137,6 +137,9 @@
       "path": "./packages/tool-youtube-transcript"
     },
     {
+      "path": "./packages/window-keeper"
+    },
+    {
       "path": "./packages/skills"
     },
     {
