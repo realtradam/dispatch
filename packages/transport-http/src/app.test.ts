@@ -312,6 +312,9 @@ function createFakeOrchestrator(events: AgentEvent[]): SessionOrchestrator {
     stopTurn() {
       return { abortedTurn: false };
     },
+    flushQueued() {
+      return { outcome: "idle", interruptedCalls: 0 };
+    },
     async handleMessage(input) {
       for (const event of events) {
         input.onEvent(event);
@@ -2336,6 +2339,34 @@ describe("POST /conversations/:id/close", () => {
     const res = await app.request("/conversations/conv-idle/close", { method: "POST" });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ conversationId: "conv-idle", abortedTurn: false });
+  });
+});
+
+describe("POST /conversations/:id/flush", () => {
+  it("flushes via the orchestrator and returns FlushResponse", async () => {
+    const flushCalls: string[] = [];
+    const orchestrator: SessionOrchestrator = {
+      ...createFakeOrchestrator([]),
+      flushQueued(conversationId) {
+        flushCalls.push(conversationId);
+        return { outcome: "tools-interrupted", interruptedCalls: 2 };
+      },
+    };
+    const app = createApp({
+      conversationStore: createFakeConversationStore(),
+      orchestrator,
+      credentialStore: createFakeCredentialStore([]),
+      logger: noopLogger,
+    });
+
+    const res = await app.request("/conversations/conv-flush/flush", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      conversationId: "conv-flush",
+      outcome: "tools-interrupted",
+      interruptedCalls: 2,
+    });
+    expect(flushCalls).toEqual(["conv-flush"]);
   });
 });
 

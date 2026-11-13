@@ -51,6 +51,7 @@ import {
   resolveReasoningEffort,
   snapshotReplay,
 } from "./pure.js";
+import { createToolInterrupter, type ToolInterrupter } from "./tool-interrupt.js";
 import type { ToolAssembly } from "./tools-filter.js";
 
 export {
@@ -284,6 +285,16 @@ export interface CancelQueuedMessageResult {
   readonly queue: readonly QueuedMessage[];
 }
 
+/**
+ * Result of a Flush (`flushQueued`): distinguish interrupting running tool
+ * calls (the turn continues) from falling back to Stop (the turn aborts).
+ */
+export interface FlushQueuedResult {
+  readonly outcome: "tools-interrupted" | "turn-aborted" | "idle";
+  /** Running calls interrupted (0 unless outcome is "tools-interrupted"). */
+  readonly interruptedCalls: number;
+}
+
 export type TurnEventListener = (event: AgentEvent) => void;
 
 interface InputWaiter {
@@ -300,6 +311,8 @@ interface ActiveTurn {
   cancelQueuedInput: boolean;
   /** Aborts this turn's kernel runTurn (Stop or Close). */
   controller: AbortController;
+  /** Interrupts this turn's running tool calls (Flush) without ending the turn. */
+  interrupter: ToolInterrupter;
 }
 
 export interface SessionOrchestrator {
@@ -380,6 +393,14 @@ export interface SessionOrchestrator {
    * Stopping an idle/unknown conversation never drops waiting input.
    */
   stopTurn(conversationId: string): { readonly abortedTurn: boolean };
+  /**
+   * Flush: deliver queued input NOW. With a tool call running, interrupts the
+   * running call(s) without ending the turn — each gets an "interrupted"
+   * result and the queued input is attached as steering at the tool-result
+   * boundary. With no tool call running, behaves exactly like `stopTurn`
+   * (abort; queued input carries into a new turn). Idle → no-op.
+   */
+  flushQueued(conversationId: string): FlushQueuedResult;
   /**
    * Stop ALL in-flight generations globally — the §8 forced-unload semantic:
    * unloading a plugin that is in use requires the swap to land immediately,
@@ -706,6 +727,7 @@ export function createSessionOrchestrator(
       turnId,
       controller,
       cancelQueuedInput: false,
+      interrupter: createToolInterrupter({ now: deps.now ?? Date.now }),
     };
     activeTurns.set(conversationId, turn);
     lifecycleTurns.set(conversationId, turn);
@@ -1041,7 +1063,7 @@ export function createSessionOrchestrator(
         const opts: RunTurnInput = {
           provider,
           messages: providerMessages,
-          tools: request.tools,
+          tools: turn.interrupter.wrap(request.tools),
           dispatch,
           emit: emitAndAccumulate,
           conversationId,
@@ -1174,6 +1196,7 @@ export function createSessionOrchestrator(
           // generation, so the FE can GET /conversations/:id?sinceSeq=N
           // mid-turn and pick up committed chunks (CR-6).
           onStepComplete: async (stepMessages) => {
+            turn.interrupter.reset();
             await deps.conversationStore.append(conversationId, stepMessages, { turnId });
             stepsPersisted = true;
           },
@@ -1533,6 +1556,17 @@ export function createSessionOrchestrator(
         turn.controller.abort();
       }
       return { abortedTurn };
+    },
+
+    flushQueued(conversationId) {
+      const turn = activeTurns.get(conversationId);
+      if (turn === undefined) return { outcome: "idle", interruptedCalls: 0 };
+      if (turn.controller.signal.aborted || turn.interrupter.runningCount() === 0) {
+        orchestrator.stopTurn(conversationId);
+        return { outcome: "turn-aborted", interruptedCalls: 0 };
+      }
+      const interruptedCalls = turn.interrupter.interrupt();
+      return { outcome: "tools-interrupted", interruptedCalls };
     },
 
     stopAll() {
