@@ -669,6 +669,13 @@ export interface QueueCancelResponse {
   readonly queue: readonly QueuedMessage[];
 }
 
+/** Response of `POST /conversations/:id/flush`. */
+export interface FlushResponse {
+  readonly conversationId: string;
+  readonly outcome: "tools-interrupted" | "turn-aborted" | "idle";
+  readonly interruptedCalls: number;
+}
+
 // ─── Per-conversation LSP status ──────────────────────────────────────────────
 
 /** The connection state of a single language server for a workspace. */

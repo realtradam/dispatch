@@ -6609,3 +6609,245 @@ describe("persisted workspace and background failures", () => {
     }
   });
 });
+
+// ── Flush: interrupt running tool calls and steer the queued input in-turn ──
+
+describe("flushQueued", () => {
+  function gate(): { readonly opened: Promise<void>; readonly open: () => void } {
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { opened, open };
+  }
+
+  function waitForSealedCount(
+    orchestrator: ReturnType<typeof createSessionOrchestrator>["orchestrator"],
+    conversationId: string,
+    count: number,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      let seen = 0;
+      const unsub = orchestrator.subscribe(conversationId, (event) => {
+        if (event.type !== "turn-sealed") return;
+        seen++;
+        if (seen >= count) {
+          unsub();
+          resolve();
+        }
+      });
+    });
+  }
+
+  it("interrupts a running call, steers the queued message in the same turn, and runs later tools normally", async () => {
+    const conversationId = "conv-flush-tools";
+    const store = createInMemoryStore();
+    const queue = createMessageQueueService({ id: () => "q", now: () => 0, notify: () => {} });
+
+    const slowStarted = gate();
+    let slowSignal: AbortSignal | undefined;
+    const slowTool: ToolContract = {
+      name: "slow",
+      description: "slow tool",
+      parameters: { type: "object" },
+      execute: (_args, ctx) => {
+        slowSignal = ctx.signal;
+        slowStarted.open();
+        return new Promise<never>(() => {});
+      },
+    };
+    let quickRan = false;
+    const quickTool: ToolContract = {
+      name: "quick",
+      description: "quick tool",
+      parameters: { type: "object" },
+      execute: async () => {
+        quickRan = true;
+        return { content: "quick ok" };
+      },
+    };
+
+    const script: ProviderEvent[][] = [
+      [
+        { type: "tool-call", toolCallId: "tc1", toolName: "slow", input: {} },
+        { type: "finish", reason: "tool-calls" },
+      ],
+      [
+        { type: "tool-call", toolCallId: "tc2", toolName: "quick", input: {} },
+        { type: "finish", reason: "tool-calls" },
+      ],
+      [
+        { type: "text-delta", delta: "done" },
+        { type: "finish", reason: "stop" },
+      ],
+    ];
+    const capturedMessages: ChatMessage[][] = [];
+    let callIndex = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream(messages) {
+        capturedMessages.push([...messages]);
+        const events = script[callIndex] ?? [];
+        callIndex++;
+        return (async function* () {
+          for (const event of events) yield event;
+        })();
+      },
+    };
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [slowTool, quickTool],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveQueue: () => queue,
+      runTurn,
+    });
+
+    const events: AgentEvent[] = [];
+    const unsub = orchestrator.subscribe(conversationId, (event) => events.push(event));
+    const sealed = waitForSealedCount(orchestrator, conversationId, 1);
+
+    orchestrator.startTurn({ conversationId, text: "start" });
+    await slowStarted.opened;
+    await orchestrator.enqueue({ conversationId, text: "flush please" });
+
+    const result = orchestrator.flushQueued(conversationId);
+    expect(result).toEqual({ outcome: "tools-interrupted", interruptedCalls: 1 });
+
+    await sealed;
+    unsub();
+
+    // The running call was aborted and its step was NOT treated as aborted.
+    expect(slowSignal?.aborted).toBe(true);
+    const ended = events.find((event) => event.type === "turn-ended");
+    expect(ended).toMatchObject({ reason: "sealed" });
+
+    // The queued message was attached as steering at the tool-result boundary.
+    const steering = events.find((event) => event.type === "steering");
+    expect(steering).toMatchObject({ text: "flush please" });
+
+    // The following step ran its tool normally (the step-interrupted mark cleared).
+    expect(quickRan).toBe(true);
+
+    // Persisted history: assistant tool call → interrupted result → steering user msg.
+    const stored = store.data.get(conversationId) ?? [];
+    const callIdx = stored.findIndex(
+      (message) =>
+        message.role === "assistant" &&
+        message.chunks.some((chunk) => chunk.type === "tool-call" && chunk.toolName === "slow"),
+    );
+    expect(callIdx).toBeGreaterThanOrEqual(0);
+
+    const resultMessage = stored[callIdx + 1];
+    expect(resultMessage?.role).toBe("tool");
+    const resultContent =
+      (resultMessage?.chunks[0] as { content?: string } | undefined)?.content ?? "";
+    expect(resultContent.startsWith("Interrupted by the user after")).toBe(true);
+
+    const steeringMessage = stored[callIdx + 2];
+    expect(steeringMessage?.role).toBe("user");
+    expect(steeringMessage?.chunks[0]).toEqual({ type: "text", text: "flush please" });
+
+    // The provider's next request saw exactly those messages in that order.
+    expect(capturedMessages[1]).toEqual(stored.slice(0, callIdx + 3));
+
+    // The quick tool's own result was persisted too.
+    expect(
+      stored.some(
+        (message) =>
+          message.role === "tool" &&
+          message.chunks.some(
+            (chunk) => chunk.type === "tool-result" && chunk.content === "quick ok",
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to stopTurn when no tool call is running and carries the queued input into a new turn", async () => {
+    const conversationId = "conv-flush-stop";
+    const store = createInMemoryStore();
+    const queue = createMessageQueueService({ id: () => "q", now: () => 0, notify: () => {} });
+
+    const firstStreamStarted = gate();
+    const capturedMessages: ChatMessage[][] = [];
+    let callIndex = 0;
+    const provider: ProviderContract = {
+      id: "fake",
+      stream(messages, _tools, opts) {
+        capturedMessages.push([...messages]);
+        const index = callIndex++;
+        return (async function* () {
+          if (index === 0) {
+            firstStreamStarted.open();
+            await new Promise<void>((resolve) => {
+              const signal = opts?.signal;
+              if (signal?.aborted) {
+                resolve();
+                return;
+              }
+              signal?.addEventListener("abort", () => resolve(), { once: true });
+            });
+            yield { type: "finish", reason: "stop" } as ProviderEvent;
+            return;
+          }
+          yield { type: "text-delta", delta: "carried reply" } as ProviderEvent;
+          yield { type: "finish", reason: "stop" } as ProviderEvent;
+        })();
+      },
+    };
+
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: store,
+      resolveProvider: () => provider,
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      resolveQueue: () => queue,
+      runTurn,
+    });
+
+    const events: AgentEvent[] = [];
+    const unsub = orchestrator.subscribe(conversationId, (event) => events.push(event));
+    const sealedTwice = waitForSealedCount(orchestrator, conversationId, 2);
+
+    orchestrator.startTurn({ conversationId, text: "hi" });
+    await firstStreamStarted.opened;
+    await orchestrator.enqueue({ conversationId, text: "queued text" });
+
+    const result = orchestrator.flushQueued(conversationId);
+    expect(result).toEqual({ outcome: "turn-aborted", interruptedCalls: 0 });
+
+    await sealedTwice;
+    unsub();
+
+    // The first turn ended aborted, exactly like Stop.
+    const ended = events.find((event) => event.type === "turn-ended");
+    expect(ended).toMatchObject({ reason: "aborted" });
+
+    // The queued input carried into a NEW turn (its opening user message).
+    const queuedUserMessage = events.find(
+      (event) => event.type === "user-message" && event.text === "queued text",
+    );
+    expect(queuedUserMessage).toBeDefined();
+    expect(capturedMessages[1]?.at(-1)?.chunks[0]).toEqual({
+      type: "text",
+      text: "queued text",
+    });
+    expect(queue.getQueue(conversationId)).toEqual([]);
+  });
+
+  it("is idle when there is no active turn", () => {
+    const { orchestrator } = createSessionOrchestrator({
+      conversationStore: createInMemoryStore(),
+      resolveProvider: () => ({ id: "fake", stream: async function* () {} }),
+      resolveTools: () => [],
+      applyToolsFilter: identityApplyToolsFilter,
+      runTurn,
+    });
+
+    expect(orchestrator.flushQueued("conv-idle")).toEqual({
+      outcome: "idle",
+      interruptedCalls: 0,
+    });
+  });
+});

@@ -21,6 +21,7 @@ export {
   createWarmService,
   type EnqueueInput,
   type EnqueueResult,
+  type FlushQueuedResult,
   type SessionOrchestrator,
   type SessionOrchestratorBundle,
   type SessionOrchestratorDeps,
@@ -57,4 +58,11 @@ export {
   resolveReasoningEffort,
   selectFirstProvider,
 } from "./pure.js";
+export {
+  createToolInterrupter,
+  formatElapsed,
+  INTERRUPTED_NOT_STARTED_MESSAGE,
+  interruptedMessage,
+  type ToolInterrupter,
+} from "./tool-interrupt.js";
 export { gateToolsForWorkspace, type ToolAssembly, toolsFilter } from "./tools-filter.js";

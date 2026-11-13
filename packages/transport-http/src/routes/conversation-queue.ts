@@ -1,5 +1,6 @@
 import type {
   CloseConversationResponse,
+  FlushResponse,
   QueueCancelResponse,
   QueueResponse,
 } from "@dispatch/transport-contract";
@@ -22,6 +23,14 @@ export function mount(app: Hono, options: RouteOptions): void {
     const { abortedTurn } = opts.orchestrator.stopTurn(conversationId);
     log.info("conversations: stop", { conversationId, abortedTurn });
     return c.json({ conversationId, abortedTurn }, 200);
+  });
+
+  app.post("/conversations/:id/flush", (c) => {
+    const conversationId = c.req.param("id");
+    const { outcome, interruptedCalls } = opts.orchestrator.flushQueued(conversationId);
+    log.info("conversations: flush", { conversationId, outcome, interruptedCalls });
+    const body: FlushResponse = { conversationId, outcome, interruptedCalls };
+    return c.json(body, 200);
   });
 
   app.post("/conversations/:id/queue", async (c) => {

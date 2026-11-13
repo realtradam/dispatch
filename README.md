@@ -240,6 +240,7 @@ list reads themselves retain only the cheap lazy bootstrap/version check.
 | `GET /conversations/:id/lsp` | — | LSP server status for the conversation's cwd |
 | `POST /conversations/:id/queue` | `{ message }` | Enqueue a steering message |
 | `POST /conversations/:id/stop` | — | Stop generation (aborts in-flight turn) |
+| `POST /conversations/:id/flush` | — | Deliver queued input now: interrupts running tool calls (the turn continues and the queued message is attached as steering); with no tool running, same as stop |
 | `POST /conversations/:id/close` | — | Close conversation (aborts turn, marks closed) |
 | `POST /conversations/:id/open` | — | Signal frontend to open a tab |
 | `PUT /conversations/:id/title` | `{ title }` | Set conversation title |
