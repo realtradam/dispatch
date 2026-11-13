@@ -53,16 +53,12 @@ export function mount(app: Hono, options: RouteOptions): void {
     try {
       const result = await opts.searchConfigService.updateConfig({ backend });
       if (!result.ok) {
-        const message =
-          result.error === "not-configured"
-            ? `Search backend "${backend}" is not configured`
-            : `Unknown search backend "${backend}"`;
         log.warn("search-config: update rejected", { backend, reason: result.error });
-        return c.json({ error: message }, 400);
+        return c.json({ error: `Unknown search backend "${backend}"` }, 400);
       }
-      log.info("search-config: updated", { backend: result.config.backend });
+      log.info("search-config: updated", { backend: result.config.backend ?? backend });
       const body: SearchBackendConfigResponse = {
-        backend: result.config.backend,
+        backend: result.config.backend ?? backend,
         available: opts.searchConfigService.availableBackends(),
       };
       return c.json(body, 200);

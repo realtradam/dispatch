@@ -64,6 +64,18 @@ export function envToConfigMap(
     map["codex.credentialKey"] = codexCredentialKey;
   }
 
+  // Optional model overrides for the external claude/codex extensions' native
+  // web-search backends — mirrors the provider model pairs above.
+  const searchClaudeModel = env.DISPATCH_SEARCH_CLAUDE_MODEL;
+  if (searchClaudeModel !== undefined) {
+    map["search.claude.model"] = searchClaudeModel;
+  }
+
+  const searchCodexModel = env.DISPATCH_SEARCH_CODEX_MODEL;
+  if (searchCodexModel !== undefined) {
+    map["search.codex.model"] = searchCodexModel;
+  }
+
   const httpPort = env.BACKEND_PORT ?? env.PORT;
   if (httpPort !== undefined) {
     const n = Number(httpPort);

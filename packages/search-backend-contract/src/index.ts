@@ -7,9 +7,10 @@
  * of the selection — they always route to the self-hosted Firecrawl client —
  * so a backend only ever speaks search.
  *
- * Types-only package (mirrors `wire`): zero runtime, zero `@dispatch/*`
- * dependencies, so every consumer (tool, extension, future backends) can
- * depend on it without pulling the kernel.
+ * This package also carries the registry handle ({@link searchBackendRegistryHandle})
+ * every backend registers into. It is therefore no longer zero-dependency: it
+ * depends on `@dispatch/kernel` for `defineService`/`ServiceHandle` (precedent:
+ * `@dispatch/layout-provider-contract`).
  */
 
 /** One search hit — shared by every backend and the tool's formatter. */
@@ -36,18 +37,26 @@ export interface SearchParams {
   };
 }
 
+/** What one search call returns. */
+export interface SearchResponse {
+  readonly hits: readonly SearchHit[];
+  /**
+   * A synthesized prose answer. Set only by LLM-backed backends (claude,
+   * codex); index-style backends (firecrawl) leave it absent.
+   */
+  readonly answer?: string;
+}
+
 /**
  * A selectable search backend for the `web_search` tool's search mode.
  * `id` is the persisted config value; `label` is the human-facing dropdown
- * entry. `search` resolves a query to hits — implementations own their own
- * I/O (fetch) and must honor the caller's abort signal.
+ * entry. `search` resolves a query to a {@link SearchResponse} — implementations
+ * own their own I/O (fetch) and must honor the caller's abort signal.
  */
 export interface SearchBackend {
-  /** The stable config id: `"firecrawl"` | `"umans"` | future backends. */
   readonly id: string;
-  /** The human-facing label (the Settings dropdown entry). */
   readonly label: string;
-  search(params: SearchParams, signal: AbortSignal): Promise<readonly SearchHit[]>;
+  search(params: SearchParams, signal: AbortSignal): Promise<SearchResponse>;
 }
 
 /**
@@ -56,5 +65,10 @@ export interface SearchBackend {
  */
 export const SEARCH_BACKEND_NONE = "none";
 
-/** The default backend id (today's behavior — the zero-migration default). */
-export const DEFAULT_SEARCH_BACKEND = "firecrawl";
+/**
+ * Preference order used while NO backend has been explicitly selected: the
+ * first id in this list that is registered is the active backend.
+ */
+export const DEFAULT_SEARCH_BACKEND_ORDER: readonly string[] = ["claude", "codex", "firecrawl"];
+
+export { type SearchBackendRegistry, searchBackendRegistryHandle } from "./handle.js";

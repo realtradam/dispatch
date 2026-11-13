@@ -6,7 +6,7 @@
  * zero mocks.
  */
 
-import type { SearchHit } from "@dispatch/search-backend-contract";
+import type { SearchHit, SearchResponse } from "@dispatch/search-backend-contract";
 
 export type { SearchHit };
 
@@ -40,26 +40,45 @@ export function truncateOutput(output: string, cap: number): string {
   return `${truncated}\n\n[Output truncated: exceeded ${cap} characters]`;
 }
 
+/** Format one hit: `### title\nurl`, then description / markdown when non-empty. */
+function formatSearchHit(hit: SearchHit): string {
+  let section = `### ${hit.title ?? "(no title)"}\n${hit.url ?? ""}`;
+  if (typeof hit.description === "string" && hit.description.length > 0) {
+    section += `\n\n${hit.description}`;
+  }
+  if (hit.markdown !== undefined && hit.markdown.length > 0) {
+    section += `\n\n${hit.markdown}`;
+  }
+  return section;
+}
+
 /**
- * Format search hits as `### title\nurl\n\ndescription` (+ optional markdown),
- * joined by `---` separators. Empty → `"No results found."`.
+ * Format a search response. Hits are `### title\nurl` sections (plus a
+ * non-empty description / markdown) joined by `---`. A synthesized answer is
+ * prepended, followed by a `## Sources` section when there are hits.
+ *
+ * - no answer, no hits → `"No results found."`
+ * - no answer, hits → the joined hits
+ * - answer, no hits → the trimmed answer
+ * - answer and hits → `answer\n\n---\n\n## Sources\n\n` + joined hits
+ *
+ * An answer that is empty after trimming counts as no answer.
  */
-export function formatSearchResults(data: readonly SearchHit[] | null | undefined): string {
-  if (!data || data.length === 0) {
+export function formatSearchResults(response: SearchResponse | null | undefined): string {
+  const hits = response?.hits ?? [];
+  const answer = response?.answer?.trim() ?? "";
+  const hasAnswer = answer.length > 0;
+  if (!hasAnswer && hits.length === 0) {
     return "No results found.";
   }
-  const parts: string[] = [];
-  for (const r of data) {
-    const title = r.title ?? "(no title)";
-    const url = r.url ?? "";
-    const description = r.description ?? "";
-    let section = `### ${title}\n${url}\n\n${description}`;
-    if (r.markdown) {
-      section += `\n\n${r.markdown}`;
-    }
-    parts.push(section);
+  const joined = hits.map(formatSearchHit).join("\n\n---\n\n");
+  if (!hasAnswer) {
+    return joined;
   }
-  return parts.join("\n\n---\n\n");
+  if (hits.length === 0) {
+    return answer;
+  }
+  return `${answer}\n\n---\n\n## Sources\n\n${joined}`;
 }
 
 /**

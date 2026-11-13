@@ -869,18 +869,17 @@ export interface NamedAgentSelectionSnapshot {
 /**
  * The global search-backend selection (`GET/PUT /search/config`) — which
  * engine backs the `web_search` tool's *search* mode. Decided entries:
- * `"firecrawl"` (the self-hosted instance, always configured), `"umans"`
- * (the Umans relay with the server-side Exa web-search tool), and `"none"`
- * (the explicit off state — search refuses cleanly while scrape/crawl keep
+ * `"claude"` (Claude native web search, the default), `"codex"` (Codex native
+ * web search), `"firecrawl"` (the self-hosted instance), and `"none"` (the
+ * explicit off state — search refuses cleanly while scrape/crawl keep
  * working). Future backends may add more ids.
  */
-export type SearchBackendId = "firecrawl" | "umans" | "none";
+export type SearchBackendId = "claude" | "codex" | "firecrawl" | "none";
 
 /**
  * One selectable backend as the Settings dropdown renders it. `configured` is
- * the availability gate (firecrawl: always true — keyless, self-hosted; umans:
- * only when `UMANS_API_KEY` resolves). An unconfigured backend is LISTED but
- * disabled in the UI — never an error.
+ * always `true` today (every registered backend is usable); the field is kept
+ * on the wire for frontend compatibility.
  */
 export interface SearchBackendAvailability {
   readonly id: string;

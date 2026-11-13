@@ -58,9 +58,9 @@ async function runMode(
     case "search": {
       const backend = resolveSearchBackend === undefined ? null : await resolveSearchBackend();
       if (backend === null) {
-        return "Error: search is disabled — no search backend is selected. Scrape and crawl modes remain available.";
+        return "Error: search is disabled — no search backend is selected or the selected backend is unavailable. Scrape and crawl modes remain available.";
       }
-      const hits = await backend.search(
+      const response = await backend.search(
         {
           query: validated.query,
           limit: validated.limit,
@@ -72,7 +72,7 @@ async function runMode(
         },
         signal,
       );
-      return formatSearchResults(hits);
+      return formatSearchResults(response);
     }
     case "scrape": {
       const result = await client.scrape(
@@ -103,9 +103,7 @@ export function createWebSearchTool(deps: WebSearchToolDeps): ToolContract {
   return {
     name: "web_search",
     description:
-      "Access the web via a self-hosted Firecrawl instance. Supports single-page " +
-      "scrape and site crawling (always available), plus search — search is backed " +
-      "by a selectable search backend and may be disabled by configuration.",
+      "Access the web. 'search' runs a web search through the configured search backend and returns a synthesized answer and/or a list of sources (search may be disabled by configuration). 'scrape' fetches one page and 'crawl' recursively fetches a site, both through a self-hosted Firecrawl instance (always available).",
     parameters: {
       type: "object",
       properties: {
@@ -124,15 +122,18 @@ export function createWebSearchTool(deps: WebSearchToolDeps): ToolContract {
         },
         scrape: {
           type: "boolean",
-          description: "When searching, also scrape full markdown content of each result page.",
+          description:
+            "When searching, also scrape full markdown content of each result page. Not every search backend supports this.",
         },
         lang: {
           type: "string",
-          description: 'Language code to filter search results (e.g. "en", "ja").',
+          description:
+            'Language code to filter search results (e.g. "en", "ja"). Not every search backend supports this.',
         },
         country: {
           type: "string",
-          description: 'Country code to filter search results (e.g. "us", "jp").',
+          description:
+            'Country code to filter search results (e.g. "us", "jp"). Not every search backend supports this.',
         },
         format: {
           type: "string",

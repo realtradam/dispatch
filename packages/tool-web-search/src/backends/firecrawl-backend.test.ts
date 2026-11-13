@@ -7,7 +7,7 @@ import {
 } from "./firecrawl-backend.js";
 
 describe("createFirecrawlSearchBackend", () => {
-  it("delegates search to the Firecrawl client and exposes the decided id + label", async () => {
+  it("delegates search to the Firecrawl client and returns { hits }", async () => {
     const seen: string[] = [];
     const client: FirecrawlClient = {
       search: async (params) => {
@@ -22,8 +22,8 @@ describe("createFirecrawlSearchBackend", () => {
     expect(backend.id).toBe("firecrawl");
     expect(backend.label).toBe(FIRECRAWL_BACKEND_LABEL);
     expect(backend.label).toBe("Firecrawl (self-hosted)");
-    const hits = await backend.search({ query: "q", limit: 7 }, new AbortController().signal);
-    expect(hits).toEqual([{ title: "T", url: "http://a" }]);
+    const response = await backend.search({ query: "q", limit: 7 }, new AbortController().signal);
+    expect(response).toEqual({ hits: [{ title: "T", url: "http://a" }] });
     expect(seen).toEqual(["q"]);
   });
 });

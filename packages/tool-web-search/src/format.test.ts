@@ -7,25 +7,55 @@ import {
 } from "./format.js";
 
 describe("formatSearchResults", () => {
-  it("formats title + url + description + optional markdown", () => {
-    const out = formatSearchResults([
-      { title: "T1", url: "http://a", description: "desc", markdown: "md-body" },
-    ]);
-    expect(out).toBe("### T1\nhttp://a\n\ndesc\n\nmd-body");
-  });
-
-  it("joins multiple results with ---", () => {
-    const out = formatSearchResults([
-      { title: "T1", url: "http://a", description: "d1" },
-      { title: "T2", url: "http://b", description: "d2" },
-    ]);
-    expect(out).toBe("### T1\nhttp://a\n\nd1\n\n---\n\n### T2\nhttp://b\n\nd2");
-  });
-
-  it("empty data returns 'No results found.'", () => {
-    expect(formatSearchResults([])).toBe("No results found.");
+  it("no answer and no hits → 'No results found.'", () => {
+    expect(formatSearchResults({ hits: [] })).toBe("No results found.");
     expect(formatSearchResults(null)).toBe("No results found.");
     expect(formatSearchResults(undefined)).toBe("No results found.");
+  });
+
+  it("no answer, hits → joined hits with title/url/description/markdown", () => {
+    const out = formatSearchResults({
+      hits: [
+        { title: "T1", url: "http://a", description: "desc", markdown: "md-body" },
+        { title: "T2", url: "http://b" },
+      ],
+    });
+    expect(out).toBe("### T1\nhttp://a\n\ndesc\n\nmd-body\n\n---\n\n### T2\nhttp://b");
+  });
+
+  it("omits an empty description (no trailing blank paragraph)", () => {
+    expect(formatSearchResults({ hits: [{ title: "T", url: "http://a", description: "" }] })).toBe(
+      "### T\nhttp://a",
+    );
+  });
+
+  it("omits empty markdown", () => {
+    expect(formatSearchResults({ hits: [{ title: "T", url: "http://a", markdown: "" }] })).toBe(
+      "### T\nhttp://a",
+    );
+  });
+
+  it("uses fallbacks for a missing title and url", () => {
+    expect(formatSearchResults({ hits: [{ description: "d" }] })).toBe("### (no title)\n\n\nd");
+  });
+
+  it("answer, no hits → trimmed answer", () => {
+    expect(formatSearchResults({ hits: [], answer: "  The answer.  " })).toBe("The answer.");
+  });
+
+  it("answer and hits → answer + a Sources section", () => {
+    const out = formatSearchResults({
+      hits: [{ title: "T", url: "http://a" }],
+      answer: " The answer. ",
+    });
+    expect(out).toBe("The answer.\n\n---\n\n## Sources\n\n### T\nhttp://a");
+  });
+
+  it("an answer that is empty after trimming counts as no answer", () => {
+    expect(formatSearchResults({ hits: [], answer: "   " })).toBe("No results found.");
+    expect(formatSearchResults({ hits: [{ title: "T", url: "http://a" }], answer: "  " })).toBe(
+      "### T\nhttp://a",
+    );
   });
 });
 

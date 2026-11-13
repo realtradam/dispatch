@@ -1,7 +1,9 @@
 import { createLogger, type HostAPI, type ToolExecuteContext } from "@dispatch/kernel";
+import type { SearchBackend, SearchBackendRegistry } from "@dispatch/search-backend-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
-import { activate, extension, manifest } from "./extension.js";
+import type { SearchConfigService } from "./config/index.js";
+import { activate, deactivate, extension, manifest } from "./extension.js";
 
 function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
   return {
@@ -17,17 +19,24 @@ function stubCtx(overrides?: Partial<ToolExecuteContext>): ToolExecuteContext {
   };
 }
 
-function makeFakeHost(overrides?: { configGet?: (key: string) => unknown }): {
+function makeFakeHost(): {
   host: HostAPI;
   defineTool: ReturnType<typeof vi.fn>;
   provided: Map<string, unknown>;
+  disposed: string[];
 } {
   const defineTool = vi.fn();
   const provided = new Map<string, unknown>();
+  const disposed: string[] = [];
   const host = {
     defineTool,
     provideService: vi.fn((handle: { id?: string }, service: unknown) => {
-      provided.set(String(handle.id ?? "unknown"), service);
+      const id = String(handle.id ?? "unknown");
+      provided.set(id, service);
+      return () => {
+        disposed.push(id);
+        provided.delete(id);
+      };
     }),
     storage: vi.fn(() => {
       const map = new Map<string, string>();
@@ -41,7 +50,7 @@ function makeFakeHost(overrides?: { configGet?: (key: string) => unknown }): {
       };
     }),
     config: {
-      get: overrides?.configGet ?? (() => undefined),
+      get: () => undefined,
     },
     logger: {
       debug: vi.fn(),
@@ -51,13 +60,11 @@ function makeFakeHost(overrides?: { configGet?: (key: string) => unknown }): {
       span: vi.fn(() => ({ end: vi.fn() })),
     },
   } as unknown as HostAPI;
-  return { host, defineTool, provided };
+  return { host, defineTool, provided, disposed };
 }
 
 const ORIG_FETCH = globalThis.fetch;
 const ORIG_ENV = process.env.FIRECRAWL_BASE_URL;
-const ORIG_UMANS_KEY = process.env.UMANS_API_KEY;
-const ORIG_UMANS_BASE = process.env.UMANS_BASE_URL;
 
 function restoreEnv(): void {
   if (ORIG_ENV === undefined) {
@@ -65,21 +72,12 @@ function restoreEnv(): void {
   } else {
     process.env.FIRECRAWL_BASE_URL = ORIG_ENV;
   }
-  if (ORIG_UMANS_KEY === undefined) {
-    delete process.env.UMANS_API_KEY;
-  } else {
-    process.env.UMANS_API_KEY = ORIG_UMANS_KEY;
-  }
-  if (ORIG_UMANS_BASE === undefined) {
-    delete process.env.UMANS_BASE_URL;
-  } else {
-    process.env.UMANS_BASE_URL = ORIG_UMANS_BASE;
-  }
 }
 
 afterEach(() => {
   globalThis.fetch = ORIG_FETCH;
   restoreEnv();
+  deactivate();
 });
 
 function stubFetchCapture(): { calls: Array<{ url: string }> } {
@@ -94,15 +92,24 @@ function stubFetchCapture(): { calls: Array<{ url: string }> } {
   return { calls };
 }
 
+function registeredTool(defineTool: ReturnType<typeof vi.fn>): {
+  execute: (
+    args: unknown,
+    ctx: ToolExecuteContext,
+  ) => Promise<{ content: string; isError?: boolean }>;
+} {
+  const tool = defineTool.mock.calls[0]?.[0];
+  if (!tool) throw new Error("no tool registered");
+  return tool;
+}
+
 describe("tool-web-search activation", () => {
   it("registers the 'web_search' tool (defineTool called)", () => {
     const { host, defineTool } = makeFakeHost();
     activate(host);
     expect(defineTool).toHaveBeenCalledTimes(1);
-    const registered = defineTool.mock.calls[0]?.[0];
-    if (!registered) throw new Error("no tool registered");
-    expect(registered.name).toBe("web_search");
-    expect(registered.concurrencySafe).toBe(true);
+    const registered = registeredTool(defineTool);
+    expect(registered).toMatchObject({ name: "web_search", concurrencySafe: true });
   });
 
   it("uses FIRECRAWL_BASE_URL from env", async () => {
@@ -110,10 +117,7 @@ describe("tool-web-search activation", () => {
     const { calls } = stubFetchCapture();
     const { host, defineTool } = makeFakeHost();
     activate(host);
-
-    const tool = defineTool.mock.calls[0]?.[0];
-    if (!tool) throw new Error("no tool registered");
-    await tool.execute({ query: "hello" }, stubCtx());
+    await registeredTool(defineTool).execute({ query: "hello" }, stubCtx());
     expect(calls.length).toBeGreaterThan(0);
     expect(calls[0]?.url).toContain("http://env-firecrawl.local/v1/search");
   });
@@ -123,125 +127,72 @@ describe("tool-web-search activation", () => {
     const { calls } = stubFetchCapture();
     const { host, defineTool } = makeFakeHost();
     activate(host);
-
-    const tool = defineTool.mock.calls[0]?.[0];
-    if (!tool) throw new Error("no tool registered");
-    await tool.execute({ query: "hello" }, stubCtx());
+    await registeredTool(defineTool).execute({ query: "hello" }, stubCtx());
     expect(calls.length).toBeGreaterThan(0);
     expect(calls[0]?.url).toContain("127.0.0.1:31329/v1/search");
   });
 });
 
-describe("tool-web-search search-backend selection wiring", () => {
-  it("provides the search-config service and defaults to firecrawl", async () => {
-    delete process.env.UMANS_API_KEY;
+describe("tool-web-search search-backend wiring", () => {
+  it("provides both the search-config and backend-registry services", () => {
     const { host, provided } = makeFakeHost();
     activate(host);
-    const svc = provided.get("search-config") as {
-      getConfig: () => Promise<{ backend: string; available: Array<{ id: string }> }>;
-    };
-    if (svc === undefined) throw new Error("search-config service not provided");
-    const config = await svc.getConfig();
+    expect(provided.has("search-config")).toBe(true);
+    expect(provided.has("search/backend-registry")).toBe(true);
+  });
+
+  it("defaults to firecrawl when only firecrawl is registered", async () => {
+    const { host, provided } = makeFakeHost();
+    activate(host);
+    const service = provided.get("search-config") as SearchConfigService;
+    const config = await service.getConfig();
     expect(config.backend).toBe("firecrawl");
     expect(config.available.map((b) => b.id)).toEqual(["firecrawl"]);
   });
 
-  it("lists umans as configured when UMANS_API_KEY is set", async () => {
-    process.env.UMANS_API_KEY = "test-key";
-    const { host, provided } = makeFakeHost();
+  it("a backend registered through the service handle becomes the active backend in automatic mode", async () => {
+    const { host, provided, defineTool } = makeFakeHost();
     activate(host);
-    const svc = provided.get("search-config") as {
-      getConfig: () => Promise<{
-        backend: string;
-        available: Array<{ id: string; configured: boolean }>;
-      }>;
+    const registry = provided.get("search/backend-registry") as SearchBackendRegistry;
+    const claude: SearchBackend = {
+      id: "claude",
+      label: "Claude (native web search)",
+      search: async () => ({ hits: [{ title: "C", url: "http://c" }] }),
     };
-    const config = await svc.getConfig();
-    expect(config.available.map((b) => b.id)).toEqual(["firecrawl", "umans"]);
-    expect(config.available[1]?.configured).toBe(true);
+    registry.register(claude);
+
+    const service = provided.get("search-config") as SearchConfigService;
+    expect((await service.getConfig()).backend).toBe("claude");
+    expect(await service.resolveBackend()).toBe(claude);
+
+    const result = await registeredTool(defineTool).execute({ query: "hello" }, stubCtx());
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("### C");
   });
 
-  it("search mode honors the selected backend; scrape routes to Firecrawl regardless", async () => {
-    process.env.UMANS_API_KEY = "test-key";
-    process.env.UMANS_BASE_URL = "http://umans-relay.local/v1";
-    const calls: Array<{ url: string; init?: RequestInit }> = [];
-    globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : String(input);
-      calls.push({ url, init });
-      if (url.includes("umans-relay.local")) {
-        return new Response(
-          JSON.stringify({
-            content: [
-              {
-                type: "web_search_tool_result",
-                content: [
-                  { type: "web_search_result", url: "http://a", title: "A", snippet: "sa" },
-                ],
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      return new Response(JSON.stringify({ success: true, data: [{ title: "F" }] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as unknown as typeof globalThis.fetch;
-
-    const { host, defineTool, provided } = makeFakeHost();
+  it("deactivate disposes both services", () => {
+    const { host, disposed } = makeFakeHost();
     activate(host);
-    const tool = defineTool.mock.calls[0]?.[0] as {
-      execute: (
-        args: unknown,
-        ctx: ToolExecuteContext,
-      ) => Promise<{ content: string; isError?: boolean }>;
-    };
-    const svc = provided.get("search-config") as {
-      updateConfig: (patch: { backend: string }) => Promise<unknown>;
-    };
-
-    // Default (firecrawl): search hits Firecrawl.
-    const viaFirecrawl = await tool.execute({ query: "hello" }, stubCtx());
-    expect(viaFirecrawl.isError).toBeFalsy();
-    expect(calls[0]?.url).toContain("/search");
-
-    // Switch to umans: search relays to Umans and returns hits-only output.
-    const updated = await svc.updateConfig({ backend: "umans" });
-    expect(updated).toMatchObject({ ok: true });
-    const viaUmans = await tool.execute({ query: "hello" }, stubCtx());
-    expect(viaUmans.isError).toBeFalsy();
-    expect(viaUmans.content).toContain("### A");
-    expect(calls.at(-1)?.url).toContain("umans-relay.local/v1/messages");
-
-    // Scrape ALWAYS routes to Firecrawl, even with umans selected.
-    calls.length = 0;
-    const scrape = await tool.execute({ url: "http://x", mode: "scrape" }, stubCtx());
-    expect(scrape.isError).toBeFalsy();
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.url).toContain("/scrape");
-
-    // "none": search refuses cleanly (isError), scrape still works.
-    await svc.updateConfig({ backend: "none" });
-    const none = await tool.execute({ query: "hello" }, stubCtx());
-    expect(none.isError).toBe(true);
-    expect(none.content).toContain("search is disabled");
-    const scrapeStillWorks = await tool.execute({ url: "http://x", mode: "scrape" }, stubCtx());
-    expect(scrapeStillWorks.isError).toBeFalsy();
+    deactivate();
+    expect(disposed.sort()).toEqual(["search-config", "search/backend-registry"]);
   });
 });
 
 describe("tool-web-search manifest", () => {
-  it("declares network capability + web_search contribution", () => {
+  it("declares network capability + both service contributions", () => {
     expect(manifest.id).toBe("tool-web-search");
     expect(manifest.capabilities).toEqual({ network: true });
-    expect(manifest.contributes).toEqual({ tools: ["web_search"], services: ["search-config"] });
+    expect(manifest.contributes).toEqual({
+      tools: ["web_search"],
+      services: ["search-config", "search/backend-registry"],
+    });
     expect(manifest.trust).toBe("bundled");
     expect(manifest.activation).toBe("eager");
   });
 
-  it("extension bundles the manifest + activate", () => {
+  it("extension bundles the manifest + activate + deactivate", () => {
     expect(extension.manifest).toBe(manifest);
     expect(typeof extension.activate).toBe("function");
+    expect(typeof extension.deactivate).toBe("function");
   });
 });

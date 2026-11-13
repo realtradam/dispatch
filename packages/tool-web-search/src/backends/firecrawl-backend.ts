@@ -4,7 +4,11 @@
  * (keyless), so this is the zero-migration default backend.
  */
 
-import type { SearchBackend, SearchHit, SearchParams } from "@dispatch/search-backend-contract";
+import type {
+  SearchBackend,
+  SearchParams,
+  SearchResponse,
+} from "@dispatch/search-backend-contract";
 import type { FirecrawlClient } from "../client.js";
 
 export const FIRECRAWL_BACKEND_ID = "firecrawl";
@@ -14,8 +18,8 @@ export function createFirecrawlSearchBackend(client: FirecrawlClient): SearchBac
   return {
     id: FIRECRAWL_BACKEND_ID,
     label: FIRECRAWL_BACKEND_LABEL,
-    async search(params: SearchParams, signal: AbortSignal): Promise<readonly SearchHit[]> {
-      return client.search(params, signal);
+    async search(params: SearchParams, signal: AbortSignal): Promise<SearchResponse> {
+      return { hits: await client.search(params, signal) };
     },
   };
 }
