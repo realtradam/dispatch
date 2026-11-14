@@ -179,6 +179,12 @@ export function createWindowKeeper(deps: WindowKeeperDeps): WindowKeeper {
       case "blocked":
         resetsAt = null;
         busy = false;
+        deps.logger.info("window-keeper: blocked by usage limit", {
+          provider: deps.provider,
+          limitId: verdict.limitId,
+          label: verdict.label,
+          until: new Date(verdict.until).toISOString(),
+        });
         sleepThen(
           Math.min(verdict.until + CHECK_DELAY_MS - currentServerNow, MAX_SLEEP_MS),
           evaluate,

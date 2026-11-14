@@ -210,7 +210,7 @@ describe("classifyReport", () => {
     });
   });
 
-  it("is blocked (with the latest reset) when the watched row is idle and another is exhausted", () => {
+  it("is blocked (with the latest reset among shared limits) when the watched row is idle", () => {
     const r = report({
       limits: [
         limit({
@@ -220,13 +220,80 @@ describe("classifyReport", () => {
           resetsAt: NOW + FIVE_HOURS,
         }),
         limit({ id: "claude:7d", resetsAt: NOW + 5_000, status: "exhausted" }),
-        limit({ id: "claude:7d:opus", resetsAt: NOW + 9_000, status: "exhausted" }),
+        limit({ id: "claude:30d", windowId: "30d", resetsAt: NOW + 9_000, status: "exhausted" }),
       ],
     });
     expect(classifyReport(r, "claude:5h", NOW, NOW)).toEqual({
       kind: "blocked",
       until: NOW + 9_000,
+      limitId: "claude:30d",
+      label: "claude:30d",
     });
+  });
+
+  it("is blocked by an exhausted account-wide (shared) limit", () => {
+    const r = report({
+      limits: [
+        limit({
+          id: "claude:5h",
+          usedFraction: 0,
+          durationMs: FIVE_HOURS,
+          resetsAt: NOW + FIVE_HOURS,
+        }),
+        limit({
+          id: "claude:7d",
+          windowId: "7d",
+          usedFraction: 1,
+          used: 100,
+          resetsAt: NOW + 60_000,
+          status: "exhausted",
+        }),
+      ],
+    });
+    expect(classifyReport(r, "claude:5h", NOW, NOW)).toEqual({
+      kind: "blocked",
+      until: NOW + 60_000,
+      limitId: "claude:7d",
+      label: "claude:7d",
+    });
+  });
+
+  it("ignores exhausted limits scoped to a model tier (non-shared or tiered)", () => {
+    const r = report({
+      limits: [
+        limit({
+          id: "claude:5h",
+          usedFraction: 0,
+          durationMs: FIVE_HOURS,
+          resetsAt: NOW + FIVE_HOURS,
+        }),
+        // The real-world offender: a non-shared, tier-scoped week-long meter.
+        limit({
+          id: "claude:7d:fable",
+          label: "7 Day (Fable)",
+          windowId: "7d",
+          shared: false,
+          tier: "fable",
+          usedFraction: 1,
+          used: 100,
+          resetsAt: NOW + 7 * 24 * 3_600_000,
+          status: "exhausted",
+        }),
+        // A tier-scoped meter marked shared still only applies to its tier.
+        limit({
+          id: "claude:7d:opus",
+          label: "7 Day (Opus)",
+          windowId: "7d",
+          shared: true,
+          tier: "opus",
+          usedFraction: 1,
+          used: 100,
+          resetsAt: NOW + 7 * 24 * 3_600_000,
+          status: "exhausted",
+        }),
+      ],
+    });
+    expect(classifyReport(r, "claude:5h", NOW, NOW)).toEqual({ kind: "idle" });
   });
 
   it("ignores exhausted rows without a future reset", () => {

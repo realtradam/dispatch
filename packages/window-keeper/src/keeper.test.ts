@@ -307,7 +307,7 @@ describe("createWindowKeeper — unknown and blocked", () => {
     expect(h.nextWakeAt()).toBe(h.now() + UNKNOWN_RECHECK_MS);
   });
 
-  it("a blocked report sends no kick and sleeps to the blocking reset", async () => {
+  it("a blocked report sends no kick, logs the decision, and sleeps to the blocking reset", async () => {
     const h = createHarness();
     const until = BASE + 10 * 60_000;
     h.setReportPlan((_call, now) => blockedReport(now, until));
@@ -317,6 +317,49 @@ describe("createWindowKeeper — unknown and blocked", () => {
     expect(h.stats.kicks).toBe(0);
     expect(h.stats.checks).toBe(1);
     expect(h.nextWakeAt()).toBe(until + CHECK_DELAY_MS);
+
+    const blocked = h.logs().find((line) => line.msg === "window-keeper: blocked by usage limit");
+    expect(blocked?.level).toBe("info");
+    expect(blocked?.attributes).toMatchObject({
+      provider: "claude",
+      limitId: "claude:7d",
+      label: "claude:7d",
+      until: new Date(until).toISOString(),
+    });
+  });
+
+  it("an exhausted model-tier limit does not block; the idle watched row kicks", async () => {
+    const h = createHarness();
+    const week = 7 * 24 * 3_600_000;
+    h.setReportPlan((_call, now) =>
+      reportWith(now, [
+        limit({
+          id: "claude:5h",
+          usedFraction: 0,
+          durationMs: FIVE_HOURS,
+          resetsAt: now + FIVE_HOURS,
+        }),
+        limit({
+          id: "claude:7d:fable",
+          label: "7 Day (Fable)",
+          windowId: "7d",
+          shared: false,
+          tier: "fable",
+          usedFraction: 1,
+          used: 100,
+          resetsAt: now + week,
+          status: "exhausted",
+        }),
+      ]),
+    );
+    h.keeper.start();
+    await h.advance(BOOT_DELAY_MS);
+
+    expect(h.stats.checks).toBe(1);
+    expect(h.stats.kicks).toBe(1);
+    expect(h.logs().some((line) => line.msg === "window-keeper: blocked by usage limit")).toBe(
+      false,
+    );
   });
 
   it("a far-off blocked reset caps the sleep at 30 minutes", async () => {

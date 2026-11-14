@@ -45,9 +45,26 @@ export function isFloatingIdle(row: AccountUsageLimit, serverNow: number): boole
 /** What a usage report says about the watched window right now. */
 export type ReportVerdict =
   | { readonly kind: "running"; readonly resetsAt: number }
-  | { readonly kind: "blocked"; readonly until: number }
+  | {
+      readonly kind: "blocked";
+      readonly until: number;
+      /** Id of the exhausted limit that gates the provider (for logging). */
+      readonly limitId: string;
+      /** Human label of that limit (for logging). */
+      readonly label: string;
+    }
   | { readonly kind: "idle" }
   | { readonly kind: "unknown" };
+
+/**
+ * True when an exhausted limit gates the whole provider. Model-tier-scoped
+ * limits (e.g. an exhausted "7 Day (Fable)" meter) do NOT: the keeper's kick
+ * uses a different model, so it must keep trying instead of sleeping until
+ * that tier's reset.
+ */
+function isAccountWideLimit(limit: AccountUsageLimit): boolean {
+  return limit.shared && limit.tier === null;
+}
 
 /** Classify a usage report; rule order is significant (running wins over blocked). */
 export function classifyReport(
@@ -73,13 +90,16 @@ export function classifyReport(
   ) {
     return { kind: "running", resetsAt: row.resetsAt };
   }
-  let blockedUntil: number | null = null;
+  let blocked: { until: number; limitId: string; label: string } | null = null;
   for (const limit of report.limits) {
     if (limit.status !== "exhausted") continue;
+    if (!isAccountWideLimit(limit)) continue;
     if (limit.resetsAt === null || limit.resetsAt <= serverNow) continue;
-    if (blockedUntil === null || limit.resetsAt > blockedUntil) blockedUntil = limit.resetsAt;
+    if (blocked === null || limit.resetsAt > blocked.until) {
+      blocked = { until: limit.resetsAt, limitId: limit.id, label: limit.label };
+    }
   }
-  if (blockedUntil !== null) return { kind: "blocked", until: blockedUntil };
+  if (blocked !== null) return { kind: "blocked", ...blocked };
   if (row !== undefined && isFloatingIdle(row, serverNow)) {
     return { kind: "idle" };
   }
