@@ -256,3 +256,17 @@ Node-backed results are historical and superseded by the Bun-native follow-up
 in notes/text-file-embeds-implementation.md. No feature tests were skipped to
 obtain green. External-Claude build-wrapper issue and manual visual validation
 remain documented. No main-checkout edits, install, service restart, merge/push.
+
+## feature/file-viewer — text-file version endpoint for the frontend file viewer
+
+Frontend feature (separate repo, same worktree task): a per-conversation tabbed file viewer above the
+chat with live reload. Backend side, orchestrated with one implementer per unit:
+- [x] `transport-contract@0.28.0` (additive): `TextFileResponse.version`, `TextFileVersionQuery`,
+      `TextFileVersionResponse`.
+- [x] `transport-http`: `GET /conversations/:id/text-file-version` (stat-only, same guards/statuses as
+      `/text-file`, no-store, route manifest); read path takes its version from the same descriptor
+      before reading.
+- [x] `system-prompt`: `TEXT_FILE_EMBED_GUIDANCE` mentions showing any text/code file and the embed's
+      "Open in file viewer" action.
+- [x] Typecheck/test/check green; Bun HTTP text-file boundary tests pass.
+Plan, decisions and report live at the worktree root (`PLAN.md`, `DECISIONS.md`, `REPORT.md`).
