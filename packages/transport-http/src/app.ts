@@ -67,7 +67,11 @@ export function createApp(opts: CreateServerOptions): Hono {
   // Outermost so even Host/Origin and conversation-ID rejection responses are
   // non-cacheable. No file content is ever served through the SPA fallback.
   app.use("/conversations/:id/*", async (c, next) => {
-    if (c.req.path.endsWith("/text-file") || c.req.path.endsWith("/text-file-context")) {
+    if (
+      c.req.path.endsWith("/text-file") ||
+      c.req.path.endsWith("/text-file-context") ||
+      c.req.path.endsWith("/text-file-version")
+    ) {
       c.header("Cache-Control", "no-store");
     }
     await next();

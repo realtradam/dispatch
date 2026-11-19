@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { appendTextFileGuidance, TEXT_FILE_EMBED_GUIDANCE } from "./guidance.js";
 
 describe("mandatory application guidance composition", () => {
+  it("tells the model about the file viewer without dropping any existing rule", () => {
+    expect(TEXT_FILE_EMBED_GUIDANCE).toContain("Open in file viewer");
+    expect(TEXT_FILE_EMBED_GUIDANCE).toContain("Use at most eight embeds per message.");
+    expect(TEXT_FILE_EMBED_GUIDANCE).toContain("Nested text-file embeds are disabled.");
+  });
+
   it("preserves resolved user content byte-for-byte before a separate guidance paragraph", () => {
     const custom = "  Custom instructions\r\n\r\n";
     expect(appendTextFileGuidance(custom)).toBe(`${custom}\n\n${TEXT_FILE_EMBED_GUIDANCE}`);

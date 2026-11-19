@@ -3,6 +3,19 @@ import type { TextFileQuery } from "@dispatch/transport-contract";
 
 export const TEXT_FILE_MAX_BYTES = 262144;
 
+/** Stat fields that define a text file's version (from a bigint `fstat`). */
+export interface TextFileStatVersion {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+}
+
+/** Opaque version string: `${dev}-${ino}-${size}-${mtimeNs}` in decimal. Pure. */
+export function textFileVersion(stat: TextFileStatVersion): string {
+  return `${stat.dev}-${stat.ino}-${stat.size}-${stat.mtimeNs}`;
+}
+
 export interface TextFileError {
   readonly error: string;
   readonly status: 400 | 403 | 404 | 409 | 413 | 422 | 500;

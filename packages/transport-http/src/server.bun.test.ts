@@ -1044,6 +1044,7 @@ describe("live text-file Bun HTTP boundary", () => {
         format: "markdown",
         bytes: Buffer.byteLength(fixture.text),
         maxBytes: 262144,
+        version: expect.any(String),
       });
       await writeFile(fixture.path, "# Changed plan\n");
       expect(await (await fetch(url)).json()).toMatchObject({ text: "# Changed plan\n" });

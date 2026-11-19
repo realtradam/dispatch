@@ -1,4 +1,8 @@
-import type { TextFileContextResponse, TextFileResponse } from "@dispatch/transport-contract";
+import type {
+  TextFileContextResponse,
+  TextFileResponse,
+  TextFileVersionResponse,
+} from "@dispatch/transport-contract";
 import type { Hono } from "hono";
 import type { RouteOptions } from "../route-options.js";
 import {
@@ -11,7 +15,7 @@ import {
   type TextFileError,
   textFileFormat,
 } from "../text-file-logic.js";
-import { readTextFileBytes } from "../text-file-reader.js";
+import { readTextFileBytes, statTextFileVersion } from "../text-file-reader.js";
 
 export function mount(app: Hono, { config }: RouteOptions): void {
   const store = config.conversationStore;
@@ -67,10 +71,34 @@ export function mount(app: Hono, { config }: RouteOptions): void {
         format: textFileFormat(request.path),
         bytes: result.bytes.byteLength,
         maxBytes: TEXT_FILE_MAX_BYTES,
+        version: result.version,
       };
       return c.json(body);
     } catch {
       return c.json({ error: "Failed to read text file" }, 500);
+    }
+  });
+
+  app.get("/conversations/:id/text-file-version", async (c) => {
+    try {
+      const query = parseTextFileQuery(new URL(c.req.url).searchParams);
+      if ("error" in query) return c.json({ error: query.error }, query.status);
+      const id = c.req.param("id");
+      const context = await contextFor(id);
+      if ("error" in context) return c.json({ error: context.error }, context.status);
+      const request = resolveTextFileRequest(query, context);
+      if ("error" in request) return c.json({ error: request.error }, request.status);
+      const result = await statTextFileVersion(request.path);
+      if ("error" in result) return c.json({ error: result.error }, result.status);
+      const latest = await contextFor(id);
+      if ("error" in latest) return c.json({ error: latest.error }, latest.status);
+      if (latest.cwd !== context.cwd || latest.computerId !== context.computerId) {
+        return c.json({ error: "Conversation file context changed; refresh and retry" }, 409);
+      }
+      const body: TextFileVersionResponse = { path: request.path, version: result.version };
+      return c.json(body);
+    } catch {
+      return c.json({ error: "Failed to read text file version" }, 500);
     }
   });
 }

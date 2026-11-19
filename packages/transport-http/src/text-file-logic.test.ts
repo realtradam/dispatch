@@ -7,9 +7,18 @@ import {
   resolveTextFileRequest,
   TEXT_FILE_MAX_BYTES,
   textFileFormat,
+  textFileVersion,
 } from "./text-file-logic.js";
 
 describe("text-file pure policy", () => {
+  it("formats a version and changes it when any stat field changes", () => {
+    const stat = { dev: 1n, ino: 2n, size: 3n, mtimeNs: 4n };
+    expect(textFileVersion(stat)).toBe("1-2-3-4");
+    for (const key of ["dev", "ino", "size", "mtimeNs"] as const) {
+      expect(textFileVersion({ ...stat, [key]: stat[key] + 1n })).not.toBe(textFileVersion(stat));
+    }
+  });
+
   it.each([
     "",
     "file:/tmp/plan.md",

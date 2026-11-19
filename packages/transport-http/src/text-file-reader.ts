@@ -1,11 +1,11 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { TEXT_FILE_MAX_BYTES, type TextFileError } from "./text-file-logic.js";
+import { TEXT_FILE_MAX_BYTES, type TextFileError, textFileVersion } from "./text-file-logic.js";
 
 /** One descriptor from open through fstat/read: never reopen after validation. */
 export async function readTextFileBytes(
   path: string,
-): Promise<{ readonly bytes: Uint8Array } | TextFileError> {
+): Promise<{ readonly bytes: Uint8Array; readonly version: string } | TextFileError> {
   try {
     // NONBLOCK avoids hanging on FIFOs; NOCTTY avoids claiming terminals.
     // Reject final-component symlinks rather than racing a lstat/open pair.
@@ -14,11 +14,12 @@ export async function readTextFileBytes(
       constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW | constants.O_NOCTTY,
     );
     try {
-      const info = await file.stat();
+      const info = await file.stat({ bigint: true });
       if (!info.isFile()) return { error: "Text file must be a regular file", status: 400 };
-      if (info.size > TEXT_FILE_MAX_BYTES) {
+      if (info.size > BigInt(TEXT_FILE_MAX_BYTES)) {
         return { error: "Text file exceeds the 256 KiB size limit", status: 413 };
       }
+      const version = textFileVersion(info);
       // Size is only an early check. Growth and size-zero pseudo-files still
       // cannot cause more than max+1 bytes of read work, allocation, or output.
       const bytes = new Uint8Array(TEXT_FILE_MAX_BYTES + 1);
@@ -31,23 +32,50 @@ export async function readTextFileBytes(
       if (length > TEXT_FILE_MAX_BYTES || (await file.stat()).size > TEXT_FILE_MAX_BYTES) {
         return { error: "Text file exceeds the 256 KiB size limit", status: 413 };
       }
-      return { bytes: bytes.subarray(0, length) };
+      return { bytes: bytes.subarray(0, length), version };
     } finally {
       await file.close();
     }
   } catch (error) {
-    const code =
-      error !== null && typeof error === "object" && "code" in error ? error.code : undefined;
-    if (code === "ENOENT" || code === "ENOTDIR") {
-      return { error: "Text file not found", status: 404 };
+    return mapTextFileError(error);
+  }
+}
+
+function mapTextFileError(error: unknown): TextFileError {
+  const code =
+    error !== null && typeof error === "object" && "code" in error ? error.code : undefined;
+  if (code === "ENOENT" || code === "ENOTDIR") {
+    return { error: "Text file not found", status: 404 };
+  }
+  if (code === "ELOOP") return { error: "Text-file symlinks are unsupported", status: 400 };
+  if (code === "EACCES" || code === "EPERM") {
+    return { error: "Text file is not readable", status: 403 };
+  }
+  if (code === "ENXIO" || code === "ENODEV") {
+    return { error: "Text file must be a regular file", status: 400 };
+  }
+  return { error: "Failed to read text file", status: 500 };
+}
+
+export async function statTextFileVersion(
+  path: string,
+): Promise<{ readonly version: string } | TextFileError> {
+  try {
+    const file = await open(
+      path,
+      constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW | constants.O_NOCTTY,
+    );
+    try {
+      const info = await file.stat({ bigint: true });
+      if (!info.isFile()) return { error: "Text file must be a regular file", status: 400 };
+      if (info.size > BigInt(TEXT_FILE_MAX_BYTES)) {
+        return { error: "Text file exceeds the 256 KiB size limit", status: 413 };
+      }
+      return { version: textFileVersion(info) };
+    } finally {
+      await file.close();
     }
-    if (code === "ELOOP") return { error: "Text-file symlinks are unsupported", status: 400 };
-    if (code === "EACCES" || code === "EPERM") {
-      return { error: "Text file is not readable", status: 403 };
-    }
-    if (code === "ENXIO" || code === "ENODEV") {
-      return { error: "Text file must be a regular file", status: 400 };
-    }
-    return { error: "Failed to read text file", status: 500 };
+  } catch (error) {
+    return mapTextFileError(error);
   }
 }

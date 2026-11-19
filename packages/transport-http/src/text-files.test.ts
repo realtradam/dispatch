@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, symlink, truncate, writeFile } from "node:fs/promises";
+import { mkdir, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createTextFileFixture } from "./text-file-fixture.js";
@@ -20,6 +20,11 @@ function read(fixture: Fixture, path: string, extra: Record<string, string> = {}
     `/conversations/${id}/text-file?${new URLSearchParams({ path, ...extra })}`,
   );
 }
+function version(fixture: Fixture, path: string, extra: Record<string, string> = {}, id = "local") {
+  return fixture.app.request(
+    `/conversations/${id}/text-file-version?${new URLSearchParams({ path, ...extra })}`,
+  );
+}
 async function assertError(response: Response, status: number) {
   expect(response.status).toBe(status);
   expect(response.headers.get("cache-control")).toBe("no-store");
@@ -28,6 +33,58 @@ async function assertError(response: Response, status: number) {
 }
 
 describe("live conversation text-file HTTP routes", () => {
+  it("polls stable versions and observes rewrites, deletion and recreation", async () => {
+    const f = await setup();
+    await utimes(f.path, 1000000000, 1000000000);
+    const absolute = await version(f, f.path);
+    expect(absolute.status).toBe(200);
+    expect(absolute.headers.get("cache-control")).toBe("no-store");
+    const initial = await absolute.json();
+    expect(initial).toEqual({ path: f.path, version: expect.any(String) });
+    const relativeResponse = await version(f, "plan 100%.md");
+    expect(relativeResponse.status).toBe(200);
+    expect(relativeResponse.headers.get("cache-control")).toBe("no-store");
+    expect(await relativeResponse.json()).toEqual(initial);
+    expect(await (await version(f, f.path)).json()).toEqual(initial);
+    expect((await (await read(f, f.path)).json()).version).toBe(initial.version);
+
+    await writeFile(f.path, "rewritten");
+    await utimes(f.path, 1000000001, 1000000001);
+    const changed = await (await version(f, f.path)).json();
+    expect(changed.version).not.toBe(initial.version);
+    expect((await (await read(f, f.path)).json()).version).toBe(changed.version);
+    await rm(f.path);
+    await assertError(await version(f, f.path), 404);
+    await writeFile(f.path, "recreated");
+    await utimes(f.path, 1000000002, 1000000002);
+    const recreatedResponse = await version(f, f.path);
+    expect(recreatedResponse.status).toBe(200);
+    expect((await recreatedResponse.json()).version).not.toBe(changed.version);
+  });
+
+  it("validates version requests without reading content", async () => {
+    const f = await setup();
+    const link = join(f.root, "link.md");
+    await symlink(f.path, link);
+    const large = join(f.root, "large");
+    await writeFile(large, "");
+    await truncate(large, TEXT_FILE_MAX_BYTES + 1);
+    await assertError(await version(f, f.root), 400);
+    await assertError(await version(f, link), 400);
+    await assertError(await version(f, large), 413);
+    await assertError(await version(f, f.path, {}, "unknown"), 404);
+    await assertError(await version(f, f.path, {}, "remote"), 422);
+    await assertError(await version(f, f.path, { expectedCwd: "/wrong" }), 409);
+    await assertError(await version(f, f.path, { unexpected: "x" }), 400);
+    for (const bytes of [new Uint8Array([255]), new Uint8Array([65, 0, 66])]) {
+      await writeFile(f.path, bytes);
+      const response = await version(f, f.path);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ path: f.path, version: expect.any(String) });
+      await assertError(await read(f, f.path), 400);
+    }
+  });
+
   it("preflights effective inherited context and reads absolute, relative, encoded-literal Markdown as JSON", async () => {
     const f = await setup();
     expect(await (await f.app.request("/conversations/local/text-file-context")).json()).toEqual({
@@ -45,6 +102,7 @@ describe("live conversation text-file HTTP routes", () => {
         format: "markdown",
         bytes: Buffer.byteLength(f.text),
         maxBytes: TEXT_FILE_MAX_BYTES,
+        version: expect.any(String),
       });
     }
     const literal = join(f.root, "literal%20%2F+?#.md");

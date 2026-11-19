@@ -412,6 +412,7 @@ export interface TextFileQuery {
 /**
  * Response body for `GET /conversations/:id/text-file` — a live file read, NOT a
  * persisted snapshot or attachment. Responses use `Cache-Control: no-store`.
+ * `version` matches `GET /conversations/:id/text-file-version` for the unchanged file.
  *
  * Only regular files containing strict UTF-8 without NUL or binary control
  * characters are accepted. Reads are bounded to 256 KiB (262144 bytes) under
@@ -430,6 +431,36 @@ export interface TextFileResponse {
   readonly bytes: number;
   /** Maximum accepted file size in bytes; currently 262144 (256 KiB). */
   readonly maxBytes: number;
+  /**
+   * Opaque version of the file content that was read: equal strings mean the same file
+   * identity, size and modification time. Taken from the SAME open descriptor BEFORE the bytes
+   * are read, so a concurrent write can only pair an older version with newer content (the next
+   * version poll then differs and triggers a re-read), never the reverse. Compare for equality
+   * only; do not parse.
+   */
+  readonly version: string;
+}
+
+/**
+ * Query parameters for `GET /conversations/:id/text-file-version` — identical to
+ * `TextFileQuery` (same literal-path rule, same guards).
+ */
+export type TextFileVersionQuery = TextFileQuery;
+
+/**
+ * Response body for `GET /conversations/:id/text-file-version` — a cheap, stat-only check of a
+ * text file's current version, for live-reload polling. Responses use `Cache-Control: no-store`.
+ *
+ * Same validation, context resolution, guards and error statuses as `/text-file` (invalid path
+ * or nonregular file → 400, unknown conversation or missing file → 404, guard mismatch or a
+ * context change during the check → 409, oversized → 413, remote computer → 422), except that it
+ * never reads file content, so content errors (invalid UTF-8, binary) surface only on the read.
+ * `version` equals the `TextFileResponse.version` a read of the unchanged file returns.
+ */
+export interface TextFileVersionResponse {
+  /** Resolved absolute POSIX file path (same resolution as `/text-file`). */
+  readonly path: string;
+  readonly version: string;
 }
 
 // ─── Per-conversation working directory (cwd) ─────────────────────────────────

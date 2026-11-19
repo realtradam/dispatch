@@ -1,5 +1,11 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { TextFileContextResponse, TextFileQuery, TextFileResponse } from "./index.js";
+import type {
+  TextFileContextResponse,
+  TextFileQuery,
+  TextFileResponse,
+  TextFileVersionQuery,
+  TextFileVersionResponse,
+} from "./index.js";
 
 describe("text-file transport type boundaries", () => {
   it("exports a readonly query with a required path and optional string guards", () => {
@@ -55,10 +61,19 @@ describe("text-file transport type boundaries", () => {
       readonly format: "markdown" | "text";
       readonly bytes: number;
       readonly maxBytes: number;
+      readonly version: string;
     }>();
     expectTypeOf<Omit<TextFileResponse, "maxBytes">>().not.toMatchTypeOf<TextFileResponse>();
     expectTypeOf<Omit<TextFileResponse, "bytes">>().not.toMatchTypeOf<TextFileResponse>();
     expectTypeOf<"html">().not.toMatchTypeOf<TextFileResponse["format"]>();
+  });
+
+  it("exports the version query and response types", () => {
+    expectTypeOf<TextFileVersionQuery>().toEqualTypeOf<TextFileQuery>();
+    expectTypeOf<TextFileVersionResponse>().toEqualTypeOf<{
+      readonly path: string;
+      readonly version: string;
+    }>();
   });
 
   it("carries markdown content and the current byte limit", () => {
@@ -68,6 +83,7 @@ describe("text-file transport type boundaries", () => {
       format: "markdown",
       bytes: 7,
       maxBytes: 262144,
+      version: "1-2-3-4",
     };
     expect(response.format).toBe("markdown");
     expect(response.bytes).toBe(7);
@@ -81,6 +97,7 @@ describe("text-file transport type boundaries", () => {
       format: "text",
       bytes: 3,
       maxBytes: 262144,
+      version: "1-2-3-4",
     };
     expect(response.format).toBe("text");
     expect(response.text).toHaveLength(2);
