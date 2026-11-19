@@ -90,16 +90,25 @@ interface StreamCall {
   readonly opts?: Record<string, unknown>;
 }
 
+/** A complete, normal reply: text, usage, then the finish. */
+const FULL_REPLY: readonly ProviderEvent[] = [
+  { type: "text-delta", delta: "Hello! " },
+  { type: "text-delta", delta: "How can I help?" },
+  { type: "usage", usage: { inputTokens: 8, outputTokens: 9 } },
+  { type: "finish", reason: "stop" },
+];
+
 function createFakeProvider(
   id: string,
   calls: StreamCall[],
   models?: readonly string[],
+  reply: readonly ProviderEvent[] = FULL_REPLY,
 ): ProviderContract {
   const provider: ProviderContract = {
     id,
     stream: async function* stream(messages, tools, opts): AsyncIterable<ProviderEvent> {
       calls.push({ messages, tools, opts: opts as unknown as Record<string, unknown> });
-      yield { type: "finish", reason: "stop" };
+      yield* reply;
     },
   };
   if (models !== undefined) {
@@ -191,6 +200,33 @@ function warnLogs(records: LogRecord[]): LogLineRecord[] {
   );
 }
 
+function kickResponses(records: LogRecord[]): LogLineRecord[] {
+  return records.filter(
+    (record): record is LogLineRecord =>
+      record.kind === "log" && record.msg === "window-keeper: kick response received",
+  );
+}
+
+/** Boot with the given Claude reply (Codex disabled) and return the kick-response logs. */
+async function kickClaudeWith(reply: readonly ProviderEvent[]): Promise<LogLineRecord[]> {
+  const providers = new Map<string, ProviderContract>([
+    ["anthropic", createFakeProvider("anthropic", [], ["claude-haiku-4-5"], reply)],
+  ]);
+  const storageData = new Map([
+    [WINDOW_KEEPER_SETTINGS_KEY, JSON.stringify({ claude: true, codex: false })],
+  ]);
+  const fake = createFakeHost({
+    providers,
+    accountUsage: createFakeAccountUsage([]),
+    storageData,
+  });
+  extension.activate(fake.host);
+  await flush();
+  await vi.advanceTimersByTimeAsync(BOOT_DELAY_MS);
+  await flush();
+  return kickResponses(fake.records).filter((line) => line.attributes?.provider === "claude");
+}
+
 function serviceOf(fake: FakeHost): WindowKeeperService {
   const service = fake.services.get(windowKeeperServiceHandle.id);
   if (service === undefined) throw new Error("window-keeper service not provided");
@@ -233,7 +269,9 @@ describe("window-keeper extension", () => {
     expect(claude.messages).toHaveLength(1);
     expect(claude.messages[0]).toEqual({ role: "user", chunks: [{ type: "text", text: "hi" }] });
     expect(claude.tools).toEqual([]);
-    expect(claude.opts).toMatchObject({ maxTokens: 1, model: "claude-haiku-4-5" });
+    expect(claude.opts).toMatchObject({ model: "claude-haiku-4-5" });
+    // A normal-sized request: no output-token cap (a 1-token kick does not start the window).
+    expect(claude.opts?.maxTokens).toBeUndefined();
     expect(claude.opts?.signal).toBeInstanceOf(AbortSignal);
 
     const codex = codexCalls[0];
@@ -321,6 +359,39 @@ describe("window-keeper extension", () => {
     await flush();
     expect(checks.filter((id) => id === "claude")).toHaveLength(1);
     expect(checks.filter((id) => id === "codex")).toHaveLength(2);
+  });
+
+  it("kick reads the model's whole reply back and reports ok", async () => {
+    const responses = await kickClaudeWith(FULL_REPLY);
+    expect(responses.length).toBeGreaterThanOrEqual(1);
+    expect(responses[0]?.attributes).toMatchObject({
+      provider: "claude",
+      outcome: "ok",
+      finishReason: "stop",
+      replyChars: "Hello! How can I help?".length,
+    });
+  });
+
+  it("kick is an error when the reply carries no text", async () => {
+    const responses = await kickClaudeWith([{ type: "finish", reason: "stop" }]);
+    expect(responses.length).toBeGreaterThanOrEqual(1);
+    expect(responses[0]?.attributes).toMatchObject({ outcome: "error", replyChars: 0 });
+  });
+
+  it("kick is an error when the reply never finishes", async () => {
+    const responses = await kickClaudeWith([{ type: "text-delta", delta: "Hel" }]);
+    expect(responses.length).toBeGreaterThanOrEqual(1);
+    expect(responses[0]?.attributes).toMatchObject({ outcome: "error", finishReason: null });
+  });
+
+  it("kick is an error when the provider streams an error", async () => {
+    const responses = await kickClaudeWith([
+      { type: "text-delta", delta: "Hello" },
+      { type: "error", message: "overloaded" },
+      { type: "finish", reason: "error" },
+    ]);
+    expect(responses.length).toBeGreaterThanOrEqual(1);
+    expect(responses[0]?.attributes).toMatchObject({ outcome: "error" });
   });
 
   it("kick returns unavailable without a provider", async () => {

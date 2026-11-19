@@ -75,10 +75,24 @@ export function activate(host: HostAPI): void {
           signal: controller.signal,
           ...(model ? { model } : {}),
         });
-        let outcome: KickOutcome = "ok";
+        // Read the WHOLE reply back, like a real conversation turn: a request that is
+        // abandoned or cut short does not reliably count as usage upstream.
+        let failed = false;
+        let finishReason: string | undefined;
+        let replyChars = 0;
         for await (const event of events) {
-          if (event.type === "error") outcome = "error";
+          if (event.type === "error") failed = true;
+          else if (event.type === "text-delta") replyChars += event.delta.length;
+          else if (event.type === "finish") finishReason = event.reason;
         }
+        const outcome: KickOutcome =
+          !failed && finishReason !== undefined && replyChars > 0 ? "ok" : "error";
+        logger.debug("window-keeper: kick response received", {
+          provider: profile.id,
+          outcome,
+          finishReason: finishReason ?? null,
+          replyChars,
+        });
         return outcome;
       } finally {
         clearTimeout(timeout);

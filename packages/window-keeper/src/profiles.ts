@@ -25,9 +25,12 @@ export interface KeeperProfile {
   ) => number | null;
   /** Model for the kick; undefined = the provider's default model. */
   readonly pickModel: (ids: readonly string[]) => string | undefined;
-  /** Stream options of the kick (model and signal are added by the shell). */
+  /**
+   * Stream options of the kick (model and signal are added by the shell). There is
+   * deliberately no output-token cap: a 1-token-capped request returns 200 but does
+   * not start the usage window, so the kick is a normal "hi" the model answers fully.
+   */
   readonly streamOptions: {
-    readonly maxTokens?: number;
     readonly reasoningEffort?: "low";
     readonly systemPrompt?: string;
   };
@@ -45,7 +48,7 @@ export const CLAUDE_PROFILE: KeeperProfile = {
     return Number.isFinite(ms) && ms > 0 ? ms : null;
   },
   pickModel: (ids) => ids.find((id) => id.includes("haiku")),
-  streamOptions: { maxTokens: 1 },
+  streamOptions: {},
 };
 
 /** Codex's placeholder for "no such window": a non-positive window length. */

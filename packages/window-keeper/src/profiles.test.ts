@@ -21,7 +21,7 @@ describe("CLAUDE_PROFILE", () => {
     expect(profile.providerId).toBe("anthropic");
     expect(profile.authId).toBe("claude-oauth");
     expect(profile.limitId).toBe("claude:5h");
-    expect(profile.streamOptions).toEqual({ maxTokens: 1 });
+    expect(profile.streamOptions).toEqual({});
   });
 
   describe("parseReset", () => {
