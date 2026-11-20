@@ -7,11 +7,12 @@ import type {
   ReasoningEndEvent,
   Usage,
 } from "../contracts/provider.js";
-import type {
-  EventEmitter,
-  RetryStrategy,
-  RunTurnInput,
-  RunTurnResult,
+import {
+  CONTENT_FILTER_ERROR_CODE,
+  type EventEmitter,
+  type RetryStrategy,
+  type RunTurnInput,
+  type RunTurnResult,
 } from "../contracts/runtime.js";
 import type { ToolCall, ToolContract } from "../contracts/tool.js";
 import { abortableIteration } from "./abortable-iteration.js";
@@ -29,6 +30,15 @@ import {
   turnStartEvent,
   usageEvent,
 } from "./events.js";
+
+/**
+ * User-facing notice appended when a step ends with `"content-filter"` — the
+ * provider's safeguard stopped generation, which would otherwise look like a
+ * silent normal stop in the chat.
+ */
+export const CONTENT_FILTER_NOTICE =
+  "Response stopped by the provider's safety filter: the model refused or its output was " +
+  "blocked by a safeguard, so the turn ended early.";
 
 /** Max steps per turn. 0 = unlimited (the loop runs until the model stops
  *  making tool calls or the abort signal fires). */
@@ -562,6 +572,18 @@ async function executeStep(ctx: StepContext): Promise<StepResult> {
     }
     stepSpan = undefined;
     break;
+  }
+
+  // Safeguard stop → make it visible. A provider refusal / content filter ends
+  // the step like a normal stop, so without a marker the chat just goes quiet.
+  // Append a display-only error chunk (reconcile strips it before any provider
+  // sees history) and emit the matching error event. Skipped on abort and when
+  // the step already failed (finishReason was overwritten to "error").
+  if (finishReason === "content-filter" && !ctx.signal.aborted) {
+    chunks.push({ type: "error", message: CONTENT_FILTER_NOTICE, code: CONTENT_FILTER_ERROR_CODE });
+    ctx.emit(
+      errorEvent(ctx.conversationId, ctx.turnId, CONTENT_FILTER_NOTICE, CONTENT_FILTER_ERROR_CODE),
+    );
   }
 
   // Close timing spans: if no first token was seen, end ttft with firstToken: false

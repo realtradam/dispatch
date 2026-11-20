@@ -24,6 +24,15 @@ export type EventEmitter = (event: AgentEvent) => void;
  * Why a turn ended. Known kernel/provider reasons are enumerated for ergonomics;
  * the trailing `(string & {})` keeps the type open for provider-specific reasons
  * passed through verbatim without losing autocomplete on the known values.
+ *
+ * `"content-filter"` means the provider's safety system (a safeguard / refusal,
+ * e.g. Anthropic `stop_reason: "refusal"`) stopped generation. Because that end
+ * is otherwise indistinguishable from a normal stop in the transcript, the
+ * runtime makes it visible: the step's assistant message gets a trailing
+ * `ErrorChunk` with `code: CONTENT_FILTER_ERROR_CODE` and a matching `error`
+ * AgentEvent is emitted (before `step-complete`). The turn still seals normally
+ * (`finishReason` stays `"content-filter"`); the chunk is a display-only marker
+ * that `reconcile` strips before history reaches a provider.
  */
 export type FinishReason =
   | "stop"
@@ -34,6 +43,13 @@ export type FinishReason =
   | "error"
   | "aborted"
   | (string & {});
+
+/**
+ * The `ErrorChunk.code` / `error` AgentEvent `code` the runtime uses for the
+ * visible notice it appends when a step finishes with `"content-filter"` (see
+ * `FinishReason`). Equal to the finish reason so clients can key on either.
+ */
+export const CONTENT_FILTER_ERROR_CODE = "content-filter";
 
 /**
  * Input to `runTurn` — everything the kernel needs to execute one turn.

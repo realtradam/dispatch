@@ -2,6 +2,18 @@
 
 > Owned by the orchestrator. Status is NOT in ORCHESTRATOR.md — it lives here.
 
+## feature/safeguard-stop-notice — visible notice when a safeguard stops a turn
+
+- Kernel `executeStep`: a step finishing with `"content-filter"` (e.g. Anthropic
+  `stop_reason: "refusal"`) now appends a display-only `ErrorChunk`
+  (`code: CONTENT_FILTER_ERROR_CODE` = `"content-filter"`) and emits a matching
+  `error` AgentEvent before `step-complete`. Turn still seals normally;
+  `reconcile` strips the chunk before history reaches a provider. Skipped on
+  abort / when the step already errored.
+- Contract: `CONTENT_FILTER_ERROR_CODE` exported from kernel contracts; behavior
+  documented on `FinishReason`. FE unchanged (already renders error chunks/events).
+- Verification: typecheck clean; `bun run test` **4,476 passed / 9 skipped**; check clean.
+
 ## feature/close-tab-cascade-subagents — explicit Close survives turn finalization
 
 - COMPLETE in this isolated feature worktree, based on backend `dev` at `4bf4dd9`.

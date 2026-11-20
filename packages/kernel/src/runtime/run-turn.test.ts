@@ -3,9 +3,10 @@ import type { ChatMessage, Chunk, ImageChunk, ImageInput } from "../contracts/co
 import type { AgentEvent } from "../contracts/events.js";
 import type { LogDeps, Logger, LogRecord, LogSink } from "../contracts/logging.js";
 import type { ProviderContract, ProviderEvent } from "../contracts/provider.js";
+import { CONTENT_FILTER_ERROR_CODE } from "../contracts/runtime.js";
 import type { ToolContract, ToolExecuteContext, ToolResult } from "../contracts/tool.js";
 import { createLogger } from "../logging/logger.js";
-import { runTurn } from "./run-turn.js";
+import { CONTENT_FILTER_NOTICE, runTurn } from "./run-turn.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -5204,6 +5205,133 @@ describe("runTurn", () => {
         m.chunks.filter((c) => c.type === "tool-call"),
       );
       expect(callChunks).toHaveLength(2);
+    });
+  });
+
+  describe("content-filter (safeguard) notice", () => {
+    const baseInput = {
+      messages: [userMessage],
+      tools: [],
+      dispatch: { maxConcurrent: 1, eager: false },
+      conversationId: "conv-1",
+      turnId: "turn-1",
+    } as const;
+
+    it("appends a visible error chunk and emits an error event on a refusal stop", async () => {
+      const provider = createFakeProvider([
+        [
+          { type: "text-delta", delta: "I can't" },
+          { type: "finish", reason: "content-filter" },
+        ],
+      ]);
+      const { events, emit } = createCollectingEmit();
+
+      const result = await runTurn({ ...baseInput, provider, emit });
+
+      expect(result.finishReason).toBe("content-filter");
+      expect(result.messages).toEqual([
+        {
+          role: "assistant",
+          chunks: [
+            { type: "text", text: "I can't" },
+            { type: "error", message: CONTENT_FILTER_NOTICE, code: CONTENT_FILTER_ERROR_CODE },
+          ],
+        },
+      ]);
+      const errors = events.filter((e) => e.type === "error");
+      expect(errors).toEqual([
+        {
+          type: "error",
+          conversationId: "conv-1",
+          turnId: "turn-1",
+          message: CONTENT_FILTER_NOTICE,
+          code: CONTENT_FILTER_ERROR_CODE,
+        },
+      ]);
+      // The notice precedes the step boundary and the done event keeps the reason.
+      const types = events.map((e) => e.type);
+      expect(types.indexOf("error")).toBeLessThan(types.indexOf("step-complete"));
+      const done = events.find((e) => e.type === "done");
+      expect(done?.type === "done" ? done.reason : undefined).toBe("content-filter");
+    });
+
+    it("still produces an assistant message (the notice) when the refusal had no content", async () => {
+      const provider = createFakeProvider([[{ type: "finish", reason: "content-filter" }]]);
+      const { events, emit } = createCollectingEmit();
+      const persisted: ChatMessage[][] = [];
+
+      const result = await runTurn({
+        ...baseInput,
+        provider,
+        emit,
+        onStepComplete: (msgs) => {
+          persisted.push([...msgs]);
+        },
+      });
+
+      expect(result.messages).toEqual([
+        {
+          role: "assistant",
+          chunks: [
+            { type: "error", message: CONTENT_FILTER_NOTICE, code: CONTENT_FILTER_ERROR_CODE },
+          ],
+        },
+      ]);
+      // Persisted incrementally like any other step output.
+      expect(persisted).toEqual([result.messages]);
+      expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+    });
+
+    it("adds no notice for a normal stop", async () => {
+      const provider = createFakeProvider([
+        [
+          { type: "text-delta", delta: "fine" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
+      const { events, emit } = createCollectingEmit();
+
+      const result = await runTurn({ ...baseInput, provider, emit });
+
+      expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+      expect(result.messages[0]?.chunks).toEqual([{ type: "text", text: "fine" }]);
+    });
+
+    it("does not double-report when the step also failed with a provider error", async () => {
+      const provider = createFakeProvider([
+        [
+          { type: "finish", reason: "content-filter" },
+          { type: "error", message: "boom" },
+        ],
+      ]);
+      const { events, emit } = createCollectingEmit();
+
+      const result = await runTurn({ ...baseInput, provider, emit });
+
+      expect(result.finishReason).toBe("error");
+      const errors = events.filter((e) => e.type === "error");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.type === "error" ? errors[0].message : undefined).toBe("boom");
+    });
+
+    it("adds no notice when the turn was aborted", async () => {
+      const controller = new AbortController();
+      const provider: ProviderContract = {
+        id: "fake",
+        stream() {
+          return (async function* () {
+            yield { type: "text-delta", delta: "x" } as ProviderEvent;
+            controller.abort();
+            yield { type: "finish", reason: "content-filter" } as ProviderEvent;
+          })();
+        },
+      };
+      const { events, emit } = createCollectingEmit();
+
+      const result = await runTurn({ ...baseInput, provider, emit, signal: controller.signal });
+
+      expect(result.finishReason).toBe("aborted");
+      expect(events.filter((e) => e.type === "error")).toHaveLength(0);
     });
   });
 });

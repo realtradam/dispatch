@@ -126,6 +126,7 @@ export type {
   RunTurnInput,
   RunTurnResult,
 } from "./runtime.js";
+export { CONTENT_FILTER_ERROR_CODE } from "./runtime.js";
 export type {
   JsonSchemaProperty,
   ToolCall,
