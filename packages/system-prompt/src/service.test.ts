@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { StorageNamespace } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import { storageFromMap } from "../../kernel/src/host/storage.test-support.js";
@@ -250,6 +251,29 @@ describe("system-prompt service", () => {
       });
     }
     expect(await service.getTemplate()).toBe(custom);
+  });
+
+  it("preserves a stored previous resolved prompt until constructing its copied template", async () => {
+    const previousGuidance = readFileSync(
+      new URL("./guidance-previous.fixture.txt", import.meta.url),
+      "utf8",
+    );
+    const storage = memoryStorage();
+    const service = createSystemPromptService({ storage, adapters: adapters(new Map()) });
+    const prefix = "Custom instructions\r\n\r\n";
+    const old = prefix + previousGuidance;
+    await storage.set("resolved:old", old);
+    await service.setTemplate(old);
+    expect(await service.get("old")).toBe(old);
+    expect(await storage.get("resolved:old")).toBe(old);
+    expect(await service.getTemplate()).toBe(old);
+    const rebuilt = await service.construct("old", "/proj");
+    expect(rebuilt).toBe(prefix + TEXT_FILE_EMBED_GUIDANCE);
+    expect(rebuilt.split("## Text-file embeds in chat")).toHaveLength(2);
+    expect(rebuilt).toContain("file-link:");
+    expect(await service.get("old")).toBe(rebuilt);
+    expect(await service.getTemplate()).toBe(old);
+    expect(await storage.get("template")).toBe(old);
   });
 
   it("repeated construction is byte-stable with one guidance suffix, including a copied resolved template", async () => {

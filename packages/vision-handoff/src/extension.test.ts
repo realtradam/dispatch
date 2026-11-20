@@ -158,7 +158,7 @@ it("migrates exclusively/idempotently with original ages, sweeps old images, and
       (now + 8 * day) / 1000,
     );
     expect(await files.sweep(now + 8 * day, 7)).toEqual({ deleted: 2, bytesFreed: 26 });
-    expect(await readdir(root)).toEqual(["fresh", "link"]);
+    expect((await readdir(root)).sort()).toEqual(["fresh", "link"]);
     expect(await files.resolveImageUrl(fresh)).toBe(dataUrl);
     expect(await readdir(join(legacy, "conv"))).toHaveLength(3);
     await files.migrate(legacy, now, 0);
