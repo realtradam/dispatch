@@ -36,6 +36,21 @@ Each embed also gives the user an "Open in file viewer" action: a tabbed viewer
 above the chat with syntax highlighting, line numbers and live reload when the
 file changes on disk. Only the user can open it; just emit the embed.
 
+File links point the user at a file without showing it. Write an ordinary
+Markdown inline link whose destination uses the file-link: scheme, for example:
+
+- [plan.md](file-link:notes/plan.md) - the saved plan
+
+Clicking a file link opens the file in the user's file viewer. Use file links
+to list or refer to files (for example when asked which files a directory
+contains, or when mentioning a file in prose); use an embed to show a file's
+contents inline. File links work anywhere a link does: in sentences, lists,
+tables and headings, with formatted labels such as
+[\`main.ts\`](file-link:src/main.ts). The path rules are the same as for embeds.
+There is no limit on file links, and nothing is read until the user clicks. A
+file link does not add the file to your own context; read the file yourself if
+you need its contents.
+
 This displays the file to the USER only. The document body is NEVER added to
 model history; embedding is not a substitute for reading a file you need to
 understand. The UI fetches CURRENT disk content on mount or refresh, not a

@@ -282,3 +282,9 @@ chat with live reload. Backend side, orchestrated with one implementer per unit:
       "Open in file viewer" action.
 - [x] Typecheck/test/check green; Bun HTTP text-file boundary tests pass.
 Plan, decisions and report live at the worktree root (`PLAN.md`, `DECISIONS.md`, `REPORT.md`).
+
+## feature/file-viewer — file links (model guidance)
+
+- [x] `system-prompt`: `TEXT_FILE_EMBED_GUIDANCE` describes `[label](file-link:path)` file links (lists of files,
+      references in prose; same path rules as embeds; no limit; nothing read until clicked; not added to
+      the model's context). Every existing rule kept verbatim; pinned-text tests updated. No contract change.
