@@ -408,6 +408,8 @@ export interface DeriveListInput {
   readonly engineDisabled: readonly { readonly manifest: Manifest; readonly reason: string }[];
   /** The current scan-and-reconcile pass (the manager just ran it). */
   readonly scan: PluginScanResult;
+  /** Built-in plugin manifests (engine `getBuiltinManifests()`). */
+  readonly builtins: readonly Manifest[];
   /**
    * Frontend-entry cache-bust values (entry mtimeMs) per loaded plugin id
    * (plan 03) — collected by the service shell (I/O); rows for plugins
@@ -482,7 +484,24 @@ export function deriveListView(input: DeriveListInput): PluginListResponse {
     discovered.push(toDiscoveredRow(d.manifest, d.dir, toOverrideInfo(d.record)));
   }
 
-  const missing = buckets.missing.map((m) => toMissingRow(m.id, m.record));
+  // Built-ins kept off by an override (engine `getBuiltinManifests()`): they
+  // have no plugin directory, so they surface as discovered rows with `dir: ""`.
+  // A loaded built-in is already in the loaded table; an engine/scan-disabled
+  // one belongs to disabledWithReason; a scanned directory plugin with the same
+  // id wins (a real directory shadows the built-in).
+  const builtinIds = new Set(input.builtins.map((m) => m.id));
+  for (const m of input.builtins) {
+    if (discoveredSeen.has(m.id) || disabledSeen.has(m.id)) continue;
+    if (input.scan.scanned.some((e) => e.manifest?.id === m.id)) continue;
+    const record = buckets.missing.find((x) => x.id === m.id)?.record;
+    discovered.push(toDiscoveredRow(m, "", record ? toOverrideInfo(record) : undefined));
+    discoveredSeen.add(m.id);
+  }
+
+  // A built-in never appears in `missing` — its row is `discovered` with `dir: ""`.
+  const missing = buckets.missing
+    .filter((m) => !builtinIds.has(m.id))
+    .map((m) => toMissingRow(m.id, m.record));
 
   return { loaded, disabledWithReason, discovered, missing };
 }

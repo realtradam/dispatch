@@ -1,10 +1,11 @@
-import type { Manifest } from "@dispatch/kernel";
+import type { Extension, Manifest } from "@dispatch/kernel";
 import { describe, expect, it } from "vitest";
 import {
   type DiscoveredPlugin,
   decodeOverrideRecord,
   encodeOverrideRecord,
   type PluginOverrideRecord,
+  partitionBuiltins,
   reconcilePlugins,
   resolvePluginsDir,
   validatePluginManifest,
@@ -320,6 +321,81 @@ describe("reconcilePlugins (scan mode — the consent gate)", () => {
       "bad-api",
       "dep-unmet",
     ]);
+  });
+});
+
+describe("partitionBuiltins (§6 — saved off records apply to built-ins)", () => {
+  function ext(manifest: Manifest): Extension {
+    return { manifest, activate: () => {} };
+  }
+
+  it("loads every built-in in order when there are no records", () => {
+    const builtins = [
+      ext(validManifest({ id: "a" })),
+      ext(validManifest({ id: "b" })),
+      ext(validManifest({ id: "c" })),
+    ];
+    const partition = partitionBuiltins(builtins, new Map());
+    expect(partition.load.map((e) => e.manifest.id)).toEqual(["a", "b", "c"]);
+    expect(partition.skipped).toEqual([]);
+    expect(partition.coreIgnored).toEqual([]);
+  });
+
+  it("skips a standard/providers built-in with a record, keeping the record", () => {
+    const record: PluginOverrideRecord = { disabled: true, reason: "user choice" };
+    const builtins = [
+      ext(validManifest({ id: "standard-one", tier: "standard" })),
+      ext(validManifest({ id: "provider-one", tier: "providers" })),
+    ];
+    const partition = partitionBuiltins(
+      builtins,
+      new Map([
+        ["standard-one", record],
+        ["provider-one", record],
+      ]),
+    );
+    expect(partition.load).toEqual([]);
+    expect(partition.skipped.map((s) => s.manifest.id)).toEqual(["standard-one", "provider-one"]);
+    expect(partition.skipped[0]?.record.reason).toBe("user choice");
+    expect(partition.coreIgnored).toEqual([]);
+  });
+
+  it("loads a core built-in anyway and reports it in coreIgnored", () => {
+    const record: PluginOverrideRecord = { disabled: true };
+    const builtins = [ext(validManifest({ id: "core-one", tier: "core" }))];
+    const partition = partitionBuiltins(builtins, new Map([["core-one", record]]));
+    expect(partition.load.map((e) => e.manifest.id)).toEqual(["core-one"]);
+    expect(partition.skipped).toEqual([]);
+    expect(partition.coreIgnored).toEqual(["core-one"]);
+  });
+
+  it("ignores records for ids that are not built-ins", () => {
+    const record: PluginOverrideRecord = { disabled: true };
+    const builtins = [ext(validManifest({ id: "builtin-one" }))];
+    const partition = partitionBuiltins(builtins, new Map([["not-a-builtin", record]]));
+    expect(partition.load.map((e) => e.manifest.id)).toEqual(["builtin-one"]);
+    expect(partition.skipped).toEqual([]);
+    expect(partition.coreIgnored).toEqual([]);
+  });
+
+  it("preserves input order across loaded and skipped built-ins", () => {
+    const record: PluginOverrideRecord = { disabled: true };
+    const builtins = [
+      ext(validManifest({ id: "first" })),
+      ext(validManifest({ id: "second" })),
+      ext(validManifest({ id: "third", tier: "core" })),
+      ext(validManifest({ id: "fourth" })),
+    ];
+    const partition = partitionBuiltins(
+      builtins,
+      new Map([
+        ["second", record],
+        ["third", record],
+      ]),
+    );
+    expect(partition.load.map((e) => e.manifest.id)).toEqual(["first", "third", "fourth"]);
+    expect(partition.skipped.map((s) => s.manifest.id)).toEqual(["second"]);
+    expect(partition.coreIgnored).toEqual(["third"]);
   });
 });
 

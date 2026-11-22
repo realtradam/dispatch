@@ -48,7 +48,12 @@ import {
   toReconciledBuckets,
   toScannedEntries,
 } from "./plugin-discovery.js";
-import { reconcilePlugins, resolvePluginsDir } from "./plugin-reconcile.js";
+import {
+  PLUGIN_OVERRIDES_NAMESPACE,
+  partitionBuiltins,
+  reconcilePlugins,
+  resolvePluginsDir,
+} from "./plugin-reconcile.js";
 import { createEnvSecrets } from "./secrets.js";
 import { createShutdownController, EXIT_CODES } from "./shutdown-controller.js";
 
@@ -239,7 +244,7 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
   // One order-independent bundled set + externally loaded extensions. Ordering
   // is manifest-declared: the host sorts by the dependsOn DAG and gates by
   // apiVersion (see bundled.ts — main.ts curates NOTHING).
-  const extensions: Extension[] = [
+  const builtins: Extension[] = [
     ...createBundledExtensions({ credentials }),
     ...externalExtensions,
   ];
@@ -259,7 +264,29 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     // Best effort — an uncreatable root scans as empty (scanPlugins logs it).
   }
 
-  const host = createHost(extensions, deps);
+  // Saved override records apply to BUILT-INS too (§6): read them ONCE, before
+  // createHost, so a user-unloaded built-in (e.g. ssh) stays off across a
+  // restart. `host.getHostAPI().storage(ns)` is exactly `storageFactory(ns)`,
+  // so this reads the same store the manager writes — no host needed yet.
+  const overrides = await readPluginOverrides(
+    storageFactory(PLUGIN_OVERRIDES_NAMESPACE),
+    pluginLogger,
+  );
+  const partition = partitionBuiltins(builtins, overrides);
+  for (const s of partition.skipped) {
+    pluginLogger.info(
+      `Built-in plugin "${s.manifest.id}" not loaded: disabled by saved override${s.record.reason ? `: ${s.record.reason}` : ""}`,
+    );
+  }
+  for (const id of partition.coreIgnored) {
+    pluginLogger.warn(`Ignoring saved override for core plugin "${id}" — core plugins always load`);
+  }
+  // Every built-in (loaded AND skipped) by manifest id — the manager needs it
+  // to list built-ins and to LOAD a skipped one on user enable (no plugin
+  // directory exists to import it from).
+  const builtinsById = new Map<string, Extension>(builtins.map((e) => [e.manifest.id, e]));
+
+  const host = createHost([...partition.load], deps);
 
   // Provide the plugin lifecycle ENGINE to the plugin-manager (the manager's
   // consumer-defined `PluginEngine` handle). Provided BEFORE activation so
@@ -277,6 +304,8 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     reloadExtension: host.reloadExtension,
     importPluginEntry: (entryPath) => loadPlugin(entryPath, pluginLogger),
     pluginsDir,
+    getBuiltinManifests: () => [...builtinsById.values()].map((e) => e.manifest),
+    getBuiltinExtension: (id) => builtinsById.get(id),
     scanPluginsDir: async (overrides) => {
       const scan = await scanPlugins(pluginsDir, pluginLogger);
       const plan = reconcilePlugins(toDiscoveredPlugins(scan), overrides, {
@@ -333,7 +362,6 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
       pluginLogger.warn(`Plugin "${p.status.manifest.id}" disabled: ${p.status.reason}`);
     }
   }
-  const overrides = await readPluginOverrides(host.getHostAPI(), pluginLogger);
   const plan = reconcilePlugins(toDiscoveredPlugins(scan), overrides, {
     kernelApiVersion: KERNEL_API_VERSION,
     loadedIds: host.getExtensions().map((m) => m.id),
@@ -354,6 +382,8 @@ export async function boot(opts: BootOptions = {}): Promise<void> {
     pluginLogger.warn(`Plugin "${d.manifest.id}" at "${d.dir}" disabled: ${d.reason}`);
   }
   for (const m of plan.missing) {
+    // A skipped built-in is not a missing plugin (it has no plugin directory).
+    if (builtinsById.has(m.id)) continue;
     // Greyed-out "missing" row (§6): the plugin is gone but its
     // disable-record survives so the user notices; clearing the record is
     // the manager's (plan 05) job.

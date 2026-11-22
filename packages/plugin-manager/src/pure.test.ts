@@ -250,6 +250,7 @@ describe("deriveListView", () => {
     const view = deriveListView({
       loaded: [manifest("live", { tier: "core" })],
       engineDisabled: [{ manifest: manifest("failed"), reason: "Activation failed: boom" }],
+      builtins: [],
       scan: scanOf({
         unchecked: [{ dir: "/plugins/fresh", manifest: manifest("fresh") }],
         disabledByOverride: [
@@ -301,6 +302,7 @@ describe("deriveListView", () => {
     const view = deriveListView({
       loaded: [],
       engineDisabled: [],
+      builtins: [],
       scan: scanOf({ unchecked: [] }, [
         {
           dir: "/plugins/old",
@@ -321,6 +323,7 @@ describe("deriveListView", () => {
     const view = deriveListView({
       loaded: [],
       engineDisabled: [{ manifest: manifest("dup"), reason: "engine reason" }],
+      builtins: [],
       scan: scanOf({
         disabledWithReason: [
           { dir: "/plugins/dup", manifest: manifest("dup"), reason: "scan reason" },
@@ -335,6 +338,7 @@ describe("deriveListView", () => {
     const view = deriveListView({
       loaded: [],
       engineDisabled: [],
+      builtins: [],
       scan: scanOf({ unchecked: [] }, [
         { dir: "/plugins/broken", kind: "invalid", errors: ["no manifest"] },
       ]),
@@ -347,12 +351,123 @@ describe("deriveListView", () => {
     const view = deriveListView({
       loaded: [manifest("live")],
       engineDisabled: [],
+      builtins: [],
       scan: scanOf({
         unchecked: [{ dir: "/plugins/live", manifest: manifest("live") }],
       }),
     });
     expect(view.discovered).toEqual([]);
     expect(view.loaded.map((r) => r.id)).toEqual(["live"]);
+  });
+});
+
+// ── deriveListView — built-in plugins kept off by an override ───────────────
+
+describe("deriveListView — built-ins", () => {
+  const scanWith = (
+    overrides: Partial<ReconciledScanBuckets> = {},
+    scanned: ScannedPluginEntry[] = [],
+  ) => ({
+    scanned,
+    buckets: { ...emptyBuckets, ...overrides },
+  });
+
+  it('surfaces a built-in with a missing-bucket record as a discovered row with dir ""', () => {
+    const view = deriveListView({
+      loaded: [],
+      engineDisabled: [],
+      builtins: [manifest("builtin-x")],
+      scan: scanWith({
+        missing: [{ id: "builtin-x", record: { disabled: true, kind: "unloaded" } }],
+      }),
+    });
+    expect(view.discovered).toEqual([
+      {
+        id: "builtin-x",
+        name: "Plugin builtin-x",
+        version: "1.0.0",
+        tier: "standard",
+        trust: "bundled",
+        dir: "",
+        override: { kind: "unloaded" },
+      },
+    ]);
+    expect(view.missing).toEqual([]);
+  });
+
+  it("does not list a LOADED built-in as discovered", () => {
+    const view = deriveListView({
+      loaded: [manifest("builtin-x")],
+      engineDisabled: [],
+      builtins: [manifest("builtin-x")],
+      scan: scanWith(),
+    });
+    expect(view.discovered).toEqual([]);
+    expect(view.loaded.map((r) => r.id)).toEqual(["builtin-x"]);
+  });
+
+  it("lists an engine-disabled built-in only in disabledWithReason", () => {
+    const view = deriveListView({
+      loaded: [],
+      engineDisabled: [{ manifest: manifest("builtin-x"), reason: "Activation failed: boom" }],
+      builtins: [manifest("builtin-x")],
+      scan: scanWith({ missing: [{ id: "builtin-x", record: { disabled: true } }] }),
+    });
+    expect(view.discovered).toEqual([]);
+    expect(view.missing).toEqual([]);
+    expect(view.disabledWithReason.map((r) => r.id)).toEqual(["builtin-x"]);
+  });
+
+  it("keeps a NON-built-in missing record in missing", () => {
+    const view = deriveListView({
+      loaded: [],
+      engineDisabled: [],
+      builtins: [manifest("builtin-x")],
+      scan: scanWith({ missing: [{ id: "gone", record: { disabled: true } }] }),
+    });
+    expect(view.missing).toEqual([{ id: "gone" }]);
+    expect(view.discovered.map((r) => r.id)).toEqual(["builtin-x"]);
+  });
+
+  it("a scanned directory plugin with the same id as a built-in wins (no extra row)", () => {
+    const view = deriveListView({
+      loaded: [],
+      engineDisabled: [],
+      builtins: [manifest("builtin-x")],
+      scan: scanWith(
+        { unchecked: [{ dir: "/plugins/builtin-x", manifest: manifest("builtin-x") }] },
+        [
+          {
+            dir: "/plugins/builtin-x",
+            kind: "loadable",
+            manifest: manifest("builtin-x"),
+            entryPath: "/plugins/builtin-x/index.ts",
+          },
+        ],
+      ),
+    });
+    expect(view.discovered).toEqual([
+      {
+        id: "builtin-x",
+        name: "Plugin builtin-x",
+        version: "1.0.0",
+        tier: "standard",
+        trust: "bundled",
+        dir: "/plugins/builtin-x",
+      },
+    ]);
+  });
+
+  it("surfaces a built-in with no record and not loaded without an override", () => {
+    const view = deriveListView({
+      loaded: [],
+      engineDisabled: [],
+      builtins: [manifest("builtin-x")],
+      scan: scanWith(),
+    });
+    expect(view.discovered).toHaveLength(1);
+    expect(view.discovered[0]).toMatchObject({ id: "builtin-x", dir: "" });
+    expect(view.discovered[0]?.override).toBeUndefined();
   });
 });
 
@@ -520,6 +635,7 @@ describe("deriveListView — frontend busts", () => {
         manifest("plain"),
       ],
       engineDisabled: [],
+      builtins: [],
       scan: { scanned: [], buckets: emptyBuckets },
       frontendBusts: new Map([["fe", "123"]]),
     });

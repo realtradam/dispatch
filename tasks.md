@@ -302,3 +302,15 @@ explicit briefs; frontend planned/built by Opus in `../frontend`.
 - [x] Frontend canvas (Opus; ../frontend `ef54104`, `7e856f4`) + live probe (2 pass ×2); FE suite
       2984 passed, build splits the lazy `excalidraw-editor` chunk. User browser checklist open
       (see plan §6).
+
+## feature/builtin-plugin-overrides — built-in plugins stay off across restarts
+
+Plan: `notes/builtin-plugin-overrides-plan.md`. Opus design; Flash implementers (host-bin, plugin-manager).
+- [x] `PluginEngine` + `getBuiltinManifests`/`getBuiltinExtension`; `transport-contract@0.30.0`
+      (`DiscoveredPluginRow.dir` = "" for built-ins).
+- [x] host-bin: overrides read before `createHost`; pure `partitionBuiltins` (core always loads).
+- [x] plugin-manager: kept-off built-ins listed as discovered (not missing); `load` falls back to the
+      built-in instance and clears the record.
+- [x] Typecheck/Biome clean; Vitest 4541 passed/9 skipped. Private boot on a live-DB copy: ssh off at
+      boot, listed discovered, load/unload/load cycle OK, stays off after restart.
+- [ ] Before deploying: decide on stale "unloaded" records for plugins that are on today (see plan).

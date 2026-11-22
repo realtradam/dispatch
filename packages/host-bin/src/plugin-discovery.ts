@@ -20,18 +20,17 @@ import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Extension,
-  type HostAPI,
   isApiVersionCompatible,
   KERNEL_API_VERSION,
   type Logger,
   type Manifest,
+  type StorageNamespace,
 } from "@dispatch/kernel";
 import type { ReconciledScanBuckets, ScannedPluginEntry } from "@dispatch/plugin-manager";
 import { isExtension } from "./load-external.js";
 import {
   type DiscoveredPlugin,
   decodeOverrideRecord,
-  PLUGIN_OVERRIDES_NAMESPACE,
   type PluginOverrideRecord,
   type ReconcilePlan,
   validatePluginManifest,
@@ -270,7 +269,7 @@ export async function ensurePluginsDir(pluginsDir: string): Promise<string> {
 // --- Override records (§4.5 — READ-ONLY in plan 04) ---
 
 /**
- * Read the persisted override records from the namespaced KV store.
+ * Read the persisted override records from the given namespaced KV store.
  *
  * **Plan 04 boot is READ-ONLY with respect to override records (§4.7):** the
  * override-store OWNER (the plugin-manager core extension) does not exist
@@ -278,18 +277,21 @@ export async function ensurePluginsDir(pluginsDir: string): Promise<string> {
  * (there will be none until plan 05 lands) so the reconcile plan can honor
  * them. It deliberately does NOT write. Record-writing arrives with plan 05.
  *
+ * The caller passes the `plugin-overrides` `StorageNamespace` directly
+ * (`storageFactory(PLUGIN_OVERRIDES_NAMESPACE)`) so the records can be read
+ * BEFORE the host exists — e.g. to honour a saved "off" for built-ins.
+ *
  * Fault-isolated: an unavailable or empty store yields no records (boot
  * proceeds; everything compatible loads — the §6 default).
  */
 export async function readPluginOverrides(
-  hostApi: HostAPI,
+  storage: StorageNamespace,
   logger: Logger,
 ): Promise<Map<string, PluginOverrideRecord>> {
   const overrides = new Map<string, PluginOverrideRecord>();
   try {
-    const ns = hostApi.storage(PLUGIN_OVERRIDES_NAMESPACE);
-    for (const key of await ns.keys()) {
-      const raw = await ns.get(key);
+    for (const key of await storage.keys()) {
+      const raw = await storage.get(key);
       if (raw === null) continue;
       const record = decodeOverrideRecord(raw);
       if (record !== undefined) {

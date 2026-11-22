@@ -207,6 +207,7 @@ export function createPluginManagerService(deps: PluginManagerServiceDeps): Plug
           .getDisabled()
           .map((d) => ({ manifest: d.manifest, reason: d.reason })),
         scan,
+        builtins: engine.getBuiltinManifests(),
         ...(await (async () => {
           const busts = await frontendBusts(engine.getExtensions(), scan);
           return busts.size > 0 ? { frontendBusts: busts } : {};
@@ -266,12 +267,38 @@ export function createPluginManagerService(deps: PluginManagerServiceDeps): Plug
       }
       const entry = findLoadableEntry(scan.scanned, id);
       if (entry === undefined || entry.manifest === undefined || entry.entryPath === undefined) {
-        return blocked(
-          "load",
+        // Not a scanned directory plugin — maybe a BUILT-IN kept off by an
+        // override (no directory exists to import it from; the engine holds
+        // the instance assembled at boot).
+        const builtin = engine.getBuiltinExtension(id);
+        if (builtin === undefined) {
+          return blocked(
+            "load",
+            id,
+            "not-found",
+            `No loadable plugin "${id}" found in ${engine.pluginsDir} — run a scan to discover plugins`,
+          );
+        }
+        // Consent (same as the directory path): the override record goes
+        // BEFORE the engine call, so a failed load persists the consent.
+        const clearedOverride = await clearOverride(id);
+        const result = await engine.loadExtension(builtin);
+        if (!result.ok) {
+          return blocked(
+            "load",
+            id,
+            "engine-refused",
+            result.reason ?? `Plugin "${id}" failed to load`,
+          );
+        }
+        logger.info(`plugin-manager: loaded "${id}"`);
+        deps.emitExtensionsChanged({ type: "extensions-changed", action: "load", pluginId: id });
+        return {
+          ok: true,
+          action: "load",
           id,
-          "not-found",
-          `No loadable plugin "${id}" found in ${engine.pluginsDir} — run a scan to discover plugins`,
-        );
+          ...(clearedOverride ? { clearedOverride } : {}),
+        };
       }
       // Consent: the override record goes BEFORE the engine call — a failed
       // load lands in disabled-with-reason (the real reason), and the user's

@@ -1288,7 +1288,12 @@ export interface DiscoveredPluginRow {
   readonly version: string;
   readonly tier: PluginTier;
   readonly trust: PluginTrustLevel;
-  /** Absolute plugin directory. */
+  /**
+   * Absolute plugin directory, or the empty string for a BUILT-IN plugin (bundled into the
+   * server or loaded from `DISPATCH_EXTERNAL_EXTENSIONS`), which has no plugin directory. A
+   * built-in plugin appears here when a saved override keeps it off; it stays off across restarts
+   * until loaded again (`POST /plugins/:id/load`, which clears the override).
+   */
   readonly dir: string;
   /**
    * The persisted user override, if any. Absent = a fresh discovery the

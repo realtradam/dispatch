@@ -125,6 +125,19 @@ export interface PluginEngine {
   readonly importPluginEntry: (entryPath: string) => Promise<Extension | undefined>;
   /** The resolved plugins root (boot-resolved by the composition root). */
   readonly pluginsDir: string;
+  /**
+   * Manifests of every BUILT-IN plugin: each extension the composition root assembled at boot
+   * that does not come from a plugin directory (the bundled set plus
+   * `DISPATCH_EXTERNAL_EXTENSIONS`), whether it was loaded at boot or skipped because a saved
+   * override record says it is off. Fixed for the process lifetime.
+   */
+  readonly getBuiltinManifests: () => readonly Manifest[];
+  /**
+   * The built-in `Extension` instance for `id` (the same instance assembled at boot), or
+   * `undefined` when `id` is not built-in. The manager uses it to load a built-in plugin that is
+   * not currently loaded (no plugin directory exists to import it from).
+   */
+  readonly getBuiltinExtension: (id: string) => Extension | undefined;
 }
 
 /** Typed service handle the composition root provides and the manager consumes. */

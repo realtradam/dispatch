@@ -96,6 +96,10 @@ interface FakeEngineOpts {
   readonly unloadResult?: (id: string) => UnloadResult;
   readonly reloadResult?: (id: string, ext: Extension) => ReloadResult;
   readonly importUndefined?: boolean;
+  /** Built-in plugin manifests (engine `getBuiltinManifests()`). */
+  readonly builtins?: readonly Manifest[];
+  /** Built-in extension instances keyed by id (engine `getBuiltinExtension()`). */
+  readonly builtinExtensions?: ReadonlyMap<string, Extension>;
   /** Active agent turns for the stopAllAgents fake to report stopping. */
   readonly activeTurns?: number;
 }
@@ -113,6 +117,7 @@ function fakeEngine(opts: FakeEngineOpts = {}) {
   const loaded = [...(opts.loaded ?? [])];
   const calls = {
     load: [] as string[],
+    loadExts: [] as Extension[],
     unload: [] as { id: string; force: boolean }[],
     reload: [] as { id: string; force: boolean }[],
     imports: [] as string[],
@@ -127,6 +132,7 @@ function fakeEngine(opts: FakeEngineOpts = {}) {
     },
     async loadExtension(ext) {
       calls.load.push(ext.manifest.id);
+      calls.loadExts.push(ext);
       loaded.push(ext.manifest);
       return opts.loadResult ? opts.loadResult(ext) : { ok: true, manifest: ext.manifest };
     },
@@ -156,9 +162,15 @@ function fakeEngine(opts: FakeEngineOpts = {}) {
       // Resolve the entry's manifest from the scan opts (a real import
       // evaluates the plugin's code; the fake reuses the scanned manifest).
       const entry = (opts.scanned ?? []).find((e) => e.entryPath === entryPath);
-      return { manifest: entry?.manifest ?? manifest("imported") };
+      return { manifest: entry?.manifest ?? manifest("imported"), activate() {} };
     },
     pluginsDir: "/plugins",
+    getBuiltinManifests() {
+      return [...(opts.builtins ?? [])];
+    },
+    getBuiltinExtension(id) {
+      return opts.builtinExtensions?.get(id);
+    },
   };
   return { engine, calls };
 }
@@ -244,6 +256,23 @@ describe("PluginManagerService.list", () => {
     expect(view.discovered.map((r) => r.id)).toEqual(["fresh", "disabled"]);
     expect(view.missing).toEqual([{ id: "gone", reason: "deleted" }]);
   });
+
+  it('lists a built-in kept off by an override as discovered with dir ""', async () => {
+    const h = harness({
+      builtins: [manifest("builtin-x")],
+      buckets: {
+        missing: [{ id: "builtin-x", record: { disabled: true, kind: "unloaded" } }],
+      },
+    });
+    const view = await h.svc.list();
+    expect(view.discovered).toHaveLength(1);
+    expect(view.discovered[0]).toMatchObject({
+      id: "builtin-x",
+      dir: "",
+      override: { kind: "unloaded" },
+    });
+    expect(view.missing).toEqual([]);
+  });
 });
 
 // ── scan ────────────────────────────────────────────────────────────────────
@@ -278,6 +307,9 @@ describe("PluginManagerService.scan", () => {
       now: () => "2026-09-02T00:00:00.000Z",
       emitExtensionsChanged: () => {},
       stopAllAgents: () => ({ stopped: 0 }),
+      isPluginEnabledInWorkspace: async () => true,
+      readTextFile: async () => null,
+      statMtimeMs: async () => null,
     });
     await svc.scan();
     expect(seen?.get("disabled-one")).toEqual({ disabled: true });
@@ -355,6 +387,60 @@ describe("PluginManagerService.load", () => {
     const result = await h.svc.load("new");
     expect(result).toMatchObject({ ok: false, reason: "engine-refused" });
     expect(h.engine.calls.load).toEqual([]);
+  });
+
+  it("loads a BUILT-IN kept off by an override: clears the record, loads the exact instance", async () => {
+    const builtinExt: Extension = { manifest: manifest("builtin-x"), activate() {} };
+    const h = harness({
+      builtins: [manifest("builtin-x")],
+      builtinExtensions: new Map([["builtin-x", builtinExt]]),
+      overrides: { "builtin-x": { disabled: true, kind: "unloaded", reason: "unloaded by user" } },
+    });
+    const result = await h.svc.load("builtin-x");
+    expect(result).toEqual({ ok: true, action: "load", id: "builtin-x", clearedOverride: true });
+    expect(h.storage.data.has("builtin-x")).toBe(false);
+    expect(h.engine.calls.loadExts).toEqual([builtinExt]);
+    expect(h.emits).toEqual([
+      { type: "extensions-changed", action: "load", pluginId: "builtin-x" },
+    ]);
+  });
+
+  it("blocks with engine-refused when the engine refuses a BUILT-IN load", async () => {
+    const h = harness({
+      builtins: [manifest("builtin-x")],
+      builtinExtensions: new Map([
+        ["builtin-x", { manifest: manifest("builtin-x"), activate() {} }],
+      ]),
+      overrides: { "builtin-x": { disabled: true } },
+      loadResult: () => ({ ok: false, reason: "unmet dependencies" }),
+    });
+    const result = await h.svc.load("builtin-x");
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "engine-refused",
+      message: "unmet dependencies",
+    });
+  });
+
+  it("blocks not-found for an id that is neither scanned nor built-in", async () => {
+    const h = harness({ builtins: [manifest("builtin-x")] });
+    const result = await h.svc.load("ghost");
+    expect(result).toMatchObject({ ok: false, reason: "not-found" });
+    expect(h.engine.calls.load).toEqual([]);
+  });
+
+  it("a scanned directory entry takes precedence over a built-in with the same id", async () => {
+    const builtinExt: Extension = { manifest: manifest("dup"), activate() {} };
+    const h = harness({
+      builtins: [manifest("dup")],
+      builtinExtensions: new Map([["dup", builtinExt]]),
+      scanned: [
+        { dir: "/plugins/dup", kind: "loadable", manifest: manifest("dup"), entryPath: "/dup/x" },
+      ],
+    });
+    await h.svc.load("dup");
+    expect(h.engine.calls.imports).toEqual(["/dup/x"]);
+    expect(h.engine.calls.loadExts).not.toContain(builtinExt);
   });
 });
 

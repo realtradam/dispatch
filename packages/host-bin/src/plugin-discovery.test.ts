@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { Logger } from "@dispatch/kernel";
+import type { Logger, StorageNamespace } from "@dispatch/kernel";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { scanPlugins } from "./plugin-discovery.js";
+import { readPluginOverrides, scanPlugins } from "./plugin-discovery.js";
+import { encodeOverrideRecord } from "./plugin-reconcile.js";
 
 /** Noop logger (scan tests assert on the RESULT, not the logs). */
 function makeLogger(): Logger {
@@ -229,5 +230,74 @@ describe("scanPlugins", () => {
     const dirs = result.plugins.map((p) => p.dir);
     expect(dirs.some((d) => d.endsWith("a-loose-file.txt"))).toBe(false);
     expect(dirs.some((d) => d.endsWith(".hidden"))).toBe(false);
+  });
+});
+
+/** Minimal in-memory `StorageNamespace` — the effect is injected, never mocked. */
+function memoryStorage(initial: Readonly<Record<string, string>> = {}): StorageNamespace {
+  const map = new Map<string, string>(Object.entries(initial));
+  const tx = {
+    get: (key: string) => map.get(key) ?? null,
+    set: (key: string, value: string) => {
+      map.set(key, value);
+    },
+    delete: (key: string) => {
+      map.delete(key);
+    },
+    entries: (prefix: string) =>
+      [...map.entries()].filter(([k]) => k.startsWith(prefix)) as ReadonlyArray<
+        readonly [string, string]
+      >,
+  };
+  return {
+    get: async (key) => map.get(key) ?? null,
+    set: async (key, value) => {
+      map.set(key, value);
+    },
+    delete: async (key) => {
+      map.delete(key);
+    },
+    has: async (key) => map.has(key),
+    keys: async (prefix) =>
+      [...map.keys()].filter((k) => prefix === undefined || k.startsWith(prefix)),
+    entries: async (prefix) =>
+      [...map.entries()].filter(([k]) => k.startsWith(prefix)) as ReadonlyArray<
+        readonly [string, string]
+      >,
+    count: async (prefix) => [...map.keys()].filter((k) => k.startsWith(prefix)).length,
+    transaction: async <T>(fn: (t: typeof tx) => T): Promise<T> => fn(tx),
+  };
+}
+
+describe("readPluginOverrides", () => {
+  it("reads valid records from the given namespace, keyed by id", async () => {
+    const record = { disabled: true as const, reason: "off" };
+    const store = memoryStorage({ ssh: encodeOverrideRecord(record) });
+    const overrides = await readPluginOverrides(store, makeLogger());
+    expect(overrides.get("ssh")).toEqual(record);
+    expect(overrides.size).toBe(1);
+  });
+
+  it("log-and-skips an unparsable record but keeps the valid ones", async () => {
+    const record = { disabled: true as const };
+    const store = memoryStorage({
+      good: encodeOverrideRecord(record),
+      broken: "not json {",
+    });
+    const overrides = await readPluginOverrides(store, makeLogger());
+    expect(overrides.get("good")).toEqual(record);
+    expect(overrides.has("broken")).toBe(false);
+    expect(overrides.size).toBe(1);
+  });
+
+  it("returns an empty map when the store throws (fault isolation)", async () => {
+    const store: StorageNamespace = {
+      ...memoryStorage(),
+      keys: async () => {
+        throw new Error("store down");
+      },
+    };
+    const overrides = await readPluginOverrides(store, makeLogger());
+    expect(overrides.size).toBe(0);
   });
 });

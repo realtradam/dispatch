@@ -14,6 +14,7 @@
  */
 
 import {
+  type Extension,
   isApiVersionCompatible,
   type Manifest,
   resolveActivationOrderSafe,
@@ -428,4 +429,62 @@ export function reconcilePlugins(
     disabledWithReason,
     missing,
   };
+}
+
+// --- Built-in partition (§6 — saved "off" records apply to built-ins too) ---
+
+/**
+ * The built-in split: which boot-assembled extensions to pass to `createHost`
+ * and which are withheld because a saved override record says they are off.
+ */
+export interface BuiltinPartition {
+  /** Built-ins to load, in input order. */
+  readonly load: readonly Extension[];
+  /** Built-ins withheld by a saved override record (with that record). */
+  readonly skipped: readonly {
+    readonly manifest: Manifest;
+    readonly record: PluginOverrideRecord;
+  }[];
+  /** Built-ins of tier "core" that had a record — loaded anyway (core cannot be off). */
+  readonly coreIgnored: readonly string[];
+}
+
+/**
+ * Partition the boot-assembled BUILT-INS against the persisted override
+ * records (§6: the DB records overrides, not full state — and a saved "off"
+ * survives a restart, including for built-ins). Pure input→output; the caller
+ * supplies the override map and applies the result at `createHost` time.
+ *
+ * Rule per extension, preserving input order in `load`:
+ * - no record for `manifest.id` → load (§5 default-on);
+ * - record and `manifest.tier === "core"` → load AND record the id in
+ *   `coreIgnored` (core is load-bearing infrastructure — it cannot be off);
+ * - record otherwise → withhold in `skipped` with its record.
+ *
+ * Records whose ids are not built-ins are ignored here — they belong to the
+ * plugin-directory reconcile (`reconcilePlugins`), which owns "missing" rows.
+ */
+export function partitionBuiltins(
+  builtins: readonly Extension[],
+  overrides: ReadonlyMap<string, PluginOverrideRecord>,
+): BuiltinPartition {
+  const load: Extension[] = [];
+  const skipped: { manifest: Manifest; record: PluginOverrideRecord }[] = [];
+  const coreIgnored: string[] = [];
+
+  for (const ext of builtins) {
+    const record = overrides.get(ext.manifest.id);
+    if (record === undefined) {
+      load.push(ext);
+      continue;
+    }
+    if (ext.manifest.tier === "core") {
+      load.push(ext);
+      coreIgnored.push(ext.manifest.id);
+      continue;
+    }
+    skipped.push({ manifest: ext.manifest, record });
+  }
+
+  return { load, skipped, coreIgnored };
 }
