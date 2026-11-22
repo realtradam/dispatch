@@ -2,22 +2,31 @@ import type {
   TextFileContextResponse,
   TextFileResponse,
   TextFileVersionResponse,
+  TextFileWriteConflictResponse,
+  TextFileWriteResponse,
 } from "@dispatch/transport-contract";
 import type { Hono } from "hono";
 import type { RouteOptions } from "../route-options.js";
 import {
   decodeTextFile,
+  isExcalidrawPath,
   parseTextFileQuery,
+  parseTextFileWriteRequest,
   resolveTextFileContext,
   resolveTextFileRequest,
-  TEXT_FILE_MAX_BYTES,
   type TextFileContext,
   type TextFileError,
   textFileFormat,
+  textFileMaxBytes,
+  validateExcalidrawText,
 } from "../text-file-logic.js";
-import { readTextFileBytes, statTextFileVersion } from "../text-file-reader.js";
+import {
+  readTextFileBytes,
+  statTextFileVersion,
+  writeTextFileAtomic,
+} from "../text-file-reader.js";
 
-export function mount(app: Hono, { config }: RouteOptions): void {
+export function mount(app: Hono, { config, log }: RouteOptions): void {
   const store = config.conversationStore;
   async function contextFor(id: string): Promise<TextFileContext | TextFileError> {
     const meta = await store.getConversationMeta(id);
@@ -55,9 +64,10 @@ export function mount(app: Hono, { config }: RouteOptions): void {
       if ("error" in context) return c.json({ error: context.error }, context.status);
       const request = resolveTextFileRequest(query, context);
       if ("error" in request) return c.json({ error: request.error }, request.status);
-      const result = await readTextFileBytes(request.path);
+      const maxBytes = textFileMaxBytes(request.path);
+      const result = await readTextFileBytes(request.path, maxBytes);
       if ("error" in result) return c.json({ error: result.error }, result.status);
-      const decoded = decodeTextFile(result.bytes);
+      const decoded = decodeTextFile(result.bytes, maxBytes);
       if ("error" in decoded) return c.json({ error: decoded.error }, decoded.status);
       // Do not deliver a completed read under a context that changed during I/O.
       const latest = await contextFor(id);
@@ -70,7 +80,7 @@ export function mount(app: Hono, { config }: RouteOptions): void {
         text: decoded.text,
         format: textFileFormat(request.path),
         bytes: result.bytes.byteLength,
-        maxBytes: TEXT_FILE_MAX_BYTES,
+        maxBytes,
         version: result.version,
       };
       return c.json(body);
@@ -88,7 +98,7 @@ export function mount(app: Hono, { config }: RouteOptions): void {
       if ("error" in context) return c.json({ error: context.error }, context.status);
       const request = resolveTextFileRequest(query, context);
       if ("error" in request) return c.json({ error: request.error }, request.status);
-      const result = await statTextFileVersion(request.path);
+      const result = await statTextFileVersion(request.path, textFileMaxBytes(request.path));
       if ("error" in result) return c.json({ error: result.error }, result.status);
       const latest = await contextFor(id);
       if ("error" in latest) return c.json({ error: latest.error }, latest.status);
@@ -99,6 +109,81 @@ export function mount(app: Hono, { config }: RouteOptions): void {
       return c.json(body);
     } catch {
       return c.json({ error: "Failed to read text file version" }, 500);
+    }
+  });
+
+  app.put("/conversations/:id/text-file", async (c) => {
+    const conversationId = c.req.param("id");
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Text-file write body must be a JSON object" }, 400);
+    }
+    const request = parseTextFileWriteRequest(body);
+    if ("error" in request) return c.json({ error: request.error }, request.status);
+    // Log target: falls back to the requested literal path until resolution succeeds.
+    let resolvedPath = request.path;
+    try {
+      const context = await contextFor(conversationId);
+      if ("error" in context) return c.json({ error: context.error }, context.status);
+      const resolved = resolveTextFileRequest(
+        {
+          path: request.path,
+          ...(request.expectedCwd !== undefined ? { expectedCwd: request.expectedCwd } : {}),
+          ...(request.expectedComputerId !== undefined
+            ? { expectedComputerId: request.expectedComputerId }
+            : {}),
+        },
+        context,
+      );
+      if ("error" in resolved) return c.json({ error: resolved.error }, resolved.status);
+      resolvedPath = resolved.path;
+      if (!isExcalidrawPath(resolvedPath)) {
+        return c.json({ error: "Only .excalidraw files are writable" }, 403);
+      }
+      const maxBytes = textFileMaxBytes(resolvedPath);
+      const validated = validateExcalidrawText(request.text, maxBytes);
+      if ("error" in validated) return c.json({ error: validated.error }, validated.status);
+      const bytes = validated.bytes.byteLength;
+      const written = await writeTextFileAtomic(
+        resolvedPath,
+        validated.bytes,
+        request.expectedVersion,
+      );
+      if ("conflict" in written) {
+        log.info("text-file: write conflict", { conversationId, path: resolvedPath });
+        const conflict: TextFileWriteConflictResponse = {
+          error: "Text file changed since it was loaded",
+          version: written.version,
+        };
+        return c.json(conflict, 412);
+      }
+      if ("error" in written) {
+        if (written.status === 500) {
+          log.warn("text-file: write failed", {
+            conversationId,
+            path: resolvedPath,
+            error: written.error,
+          });
+        }
+        return c.json({ error: written.error }, written.status);
+      }
+      log.info("text-file: write", { conversationId, path: resolvedPath, bytes });
+      const response: TextFileWriteResponse = {
+        path: resolvedPath,
+        version: written.version,
+        bytes,
+        maxBytes,
+      };
+      return c.json(response);
+    } catch (error) {
+      log.warn("text-file: write failed", {
+        conversationId,
+        path: resolvedPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return c.json({ error: "Failed to write text file" }, 500);
     }
   });
 }

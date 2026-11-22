@@ -113,6 +113,13 @@ except for the FE's final live probe (notified when the backend wave is green).
 ## 5. Progress log
 
 - [x] Research CLI + editor API; design; plan written.
-- [ ] Wave 0: contract 0.29.0 authored + typecheck.
-- [ ] Wave 1: transport-http (Flash) · system-prompt (Flash) · frontend (Opus).
+- [x] Wave 0: contract 0.29.0 authored + typecheck (commit ed841d2).
+- [x] Wave 1 backend: transport-http (Flash, conv 24a49cda) and system-prompt (Flash, conv 55ad19d2)
+      done to brief, no BLOCKED items. One Opus follow-up decision: drop the unused `maxBytes`
+      param of `writeTextFileAtomic`. Opus verified: guidance text byte-identical to the brief;
+      new fixture == pre-change guidance. Whole-repo: typecheck exit 0; Vitest 4522 passed/9
+      skipped; Biome 777 files clean; Bun server suite 19 pass. Private live probe (isolated
+      ports/DB): GET .excalidraw → maxBytes 16777216; PUT with version → 200 + no-store, new
+      version == /text-file-version; stale PUT → 412; content on disk correct.
+- [ ] Wave 1 frontend (Opus, conv 06f92e5a) — in progress. Briefs: `prompts/*.md` (gitignored).
 - [ ] Wave 2: verification, live probe, docs, commits (feature branches only; no merge/push).

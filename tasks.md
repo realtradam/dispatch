@@ -288,3 +288,15 @@ Plan, decisions and report live at the worktree root (`PLAN.md`, `DECISIONS.md`,
 - [x] `system-prompt`: `TEXT_FILE_EMBED_GUIDANCE` describes `[label](file-link:path)` file links (lists of files,
       references in prose; same path rules as embeds; no limit; nothing read until clicked; not added to
       the model's context). Every existing rule kept verbatim; pinned-text tests updated. No contract change.
+
+## feature/excalidraw-live-editor — live, editable .excalidraw files in the file viewer
+
+Plan + progress: `notes/excalidraw-live-editor-plan.md`. Opus lead; backend built by Flash to
+explicit briefs; frontend planned/built by Opus in `../frontend`.
+- [x] `transport-contract@0.29.0` (additive): conditional `PUT /conversations/:id/text-file`
+      (`TextFileWriteRequest`/`TextFileWriteResponse`/412 `TextFileWriteConflictResponse`),
+      `.excalidraw`-only, atomic replace; per-path cap 16 MiB for `.excalidraw`, 256 KiB otherwise.
+- [x] `transport-http`: PUT route + per-path cap on read/version/write; pure parse/validate logic.
+- [x] `system-prompt`: "Live Excalidraw drawings" guidance section + non-duplicating upgrade path.
+- [x] Typecheck/test/check green (Vitest 4522 passed/9 skipped); private live boundary probe OK.
+- [ ] Frontend canvas (Opus) + end-to-end live probe.

@@ -1,9 +1,19 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { appendTextFileGuidance, TEXT_FILE_EMBED_GUIDANCE } from "./guidance.js";
+import {
+  appendTextFileGuidance,
+  EXCALIDRAW_GUIDANCE,
+  PREVIOUS_WITH_FILE_LINKS,
+  TEXT_FILE_EMBED_GUIDANCE,
+} from "./guidance.js";
 
 const previousGuidance = readFileSync(
   new URL("./guidance-previous.fixture.txt", import.meta.url),
+  "utf8",
+);
+
+const previousWithFileLinks = readFileSync(
+  new URL("./guidance-previous-file-links.fixture.txt", import.meta.url),
   "utf8",
 );
 
@@ -65,7 +75,47 @@ This displays the file to the USER only. The document body is NEVER added to
 model history; embedding is not a substitute for reading a file you need to
 understand. The UI fetches CURRENT disk content on mount or refresh, not a
 snapshot: the file may change or disappear, including when revisiting old chat.
+
+## Live Excalidraw drawings
+
+Files ending in .excalidraw open in the file viewer as a live, editable
+Excalidraw canvas. After creating or changing a drawing, give the user a file
+link to it, for example [flow.excalidraw](file-link:diagrams/flow.excalidraw);
+prefer a file link over a text-file embed for .excalidraw files. The user's
+canvas edits autosave to the file, and your writes appear on the open canvas
+automatically within about a second, keeping the user's zoom and pan.
+
+Editing is turn-based, not merged: the latest completed write wins. Before
+changing an existing drawing, read the file again, because the user may have
+edited it since you last read it; then write the whole updated file in a single
+complete write. While the file is incomplete or invalid, the canvas keeps
+showing the last valid drawing.
+
+Write valid Excalidraw JSON: {"type": "excalidraw", "version": 2, "source":
+"dispatch", "elements": [...], "appState": {"viewBackgroundColor": "#ffffff"},
+"files": {}}. Each element needs a unique string id, a type (rectangle,
+ellipse, diamond, arrow, line, text, freedraw or image), x, y, width and
+height; missing style and bookkeeping fields are filled with defaults when the
+canvas loads. Give text elements text, fontSize and fontFamily. To label a
+shape, add a text element whose containerId is the shape's id and list it in
+the shape's boundElements as {"id": "<text id>", "type": "text"}. Arrows and
+lines need points relative to their x and y, such as [[0, 0], [200, 0]]; to
+attach an arrow, set startBinding and endBinding to {"elementId": "<shape id>",
+"focus": 0, "gap": 4} and list the arrow in each shape's boundElements as
+{"id": "<arrow id>", "type": "arrow"}. When you change an element, increase its
+version. To remove an element, delete it from the array. Drawings may be up to
+16 MiB; embedded images live in "files" as data URLs.
 `);
+  });
+
+  it("appends live Excalidraw guidance as the final section", () => {
+    expect(TEXT_FILE_EMBED_GUIDANCE.endsWith(`\n${EXCALIDRAW_GUIDANCE}`)).toBe(true);
+    expect(TEXT_FILE_EMBED_GUIDANCE.endsWith(EXCALIDRAW_GUIDANCE)).toBe(true);
+    expect(TEXT_FILE_EMBED_GUIDANCE).toContain(previousWithFileLinks);
+    expect(EXCALIDRAW_GUIDANCE.startsWith("## Live Excalidraw drawings\n")).toBe(true);
+    expect(
+      EXCALIDRAW_GUIDANCE.endsWith('16 MiB; embedded images live in "files" as data URLs.\n'),
+    ).toBe(true);
   });
 
   it("replaces only the exact previous suffix while preserving its prefix", () => {
@@ -79,6 +129,38 @@ snapshot: the file may change or disappear, including when revisiting old chat.
     );
     const lookalike = previousGuidance.slice(0, -1);
     expect(appendTextFileGuidance(lookalike)).toBe(`${lookalike}\n\n${TEXT_FILE_EMBED_GUIDANCE}`);
+  });
+
+  it("upgrades the with-file-links variant using pinned bytes", () => {
+    expect(previousWithFileLinks).toBe(PREVIOUS_WITH_FILE_LINKS);
+    expect(previousWithFileLinks.endsWith(`\n${EXCALIDRAW_GUIDANCE}`)).toBe(false);
+    const prefix = "  User rules\r\n\r\n";
+    expect(appendTextFileGuidance(previousWithFileLinks)).toBe(TEXT_FILE_EMBED_GUIDANCE);
+    expect(appendTextFileGuidance(prefix + previousWithFileLinks)).toBe(
+      prefix + TEXT_FILE_EMBED_GUIDANCE,
+    );
+    const upgraded = appendTextFileGuidance(prefix + previousWithFileLinks);
+    expect(upgraded.split("## Live Excalidraw drawings")).toHaveLength(2);
+    expect(appendTextFileGuidance(upgraded)).toBe(upgraded);
+  });
+
+  it("upgrades the without-file-links variant using pinned bytes", () => {
+    const prefix = "  User rules\r\n\r\n";
+    expect(appendTextFileGuidance(previousGuidance)).toBe(TEXT_FILE_EMBED_GUIDANCE);
+    const upgraded = appendTextFileGuidance(prefix + previousGuidance);
+    expect(upgraded).toBe(prefix + TEXT_FILE_EMBED_GUIDANCE);
+    expect(upgraded.split("## Live Excalidraw drawings")).toHaveLength(2);
+    expect(appendTextFileGuidance(upgraded)).toBe(upgraded);
+  });
+
+  it("appends to a custom template and to empty content idempotently", () => {
+    expect(appendTextFileGuidance("")).toBe(TEXT_FILE_EMBED_GUIDANCE);
+    const custom = "Custom instructions";
+    expect(appendTextFileGuidance(custom)).toBe(`${custom}\n\n${TEXT_FILE_EMBED_GUIDANCE}`);
+    for (const content of ["", custom, `preface\n\n${TEXT_FILE_EMBED_GUIDANCE}`])
+      expect(appendTextFileGuidance(appendTextFileGuidance(content))).toBe(
+        appendTextFileGuidance(content),
+      );
   });
 
   it("tells the model about the file viewer without dropping any existing rule", () => {
