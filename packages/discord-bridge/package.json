@@ -1,0 +1,20 @@
+{
+  "name": "@dispatch/discord-bridge",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@dispatch/conversation-store": "workspace:*",
+    "@dispatch/kernel": "workspace:*",
+    "@dispatch/session-orchestrator": "workspace:*",
+    "@dispatch/wire": "workspace:*"
+  },
+  "devDependencies": {
+    "@dispatch/plugin-verify": "workspace:*"
+  }
+}

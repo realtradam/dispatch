@@ -16,6 +16,9 @@
       "path": "../cache-warming"
     },
     {
+      "path": "../discord-bridge"
+    },
+    {
       "path": "../exec-backend"
     },
     {

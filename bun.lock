@@ -67,6 +67,19 @@
         "@dispatch/kernel": "workspace:*",
       },
     },
+    "packages/discord-bridge": {
+      "name": "@dispatch/discord-bridge",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dispatch/conversation-store": "workspace:*",
+        "@dispatch/kernel": "workspace:*",
+        "@dispatch/session-orchestrator": "workspace:*",
+        "@dispatch/wire": "workspace:*",
+      },
+      "devDependencies": {
+        "@dispatch/plugin-verify": "workspace:*",
+      },
+    },
     "packages/exec-backend": {
       "name": "@dispatch/exec-backend",
       "version": "0.0.0",
@@ -112,6 +125,7 @@
         "@dispatch/cache-warming": "workspace:*",
         "@dispatch/conversation-store": "workspace:*",
         "@dispatch/credential-store": "workspace:*",
+        "@dispatch/discord-bridge": "workspace:*",
         "@dispatch/exec-backend": "workspace:*",
         "@dispatch/heartbeat": "workspace:*",
         "@dispatch/home-tile-layout": "workspace:*",
@@ -682,6 +696,8 @@
     "@dispatch/conversation-store": ["@dispatch/conversation-store@workspace:packages/conversation-store"],
 
     "@dispatch/credential-store": ["@dispatch/credential-store@workspace:packages/credential-store"],
+
+    "@dispatch/discord-bridge": ["@dispatch/discord-bridge@workspace:packages/discord-bridge"],
 
     "@dispatch/exec-backend": ["@dispatch/exec-backend@workspace:packages/exec-backend"],
 
