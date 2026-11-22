@@ -16,7 +16,7 @@ const logger = createLogger(
 );
 
 const OWNER: ChatAuthor = {
-  id: "121809694691033089",
+  id: "100000000000000001",
   username: "owner",
   displayName: "Owner",
   isOwner: true,
