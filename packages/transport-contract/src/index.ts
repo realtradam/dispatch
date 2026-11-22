@@ -533,6 +533,112 @@ export interface TextFileWriteConflictResponse {
   readonly version: string;
 }
 
+// ─── Uncommitted git diff of a conversation text file ────────────────────────
+
+/**
+ * Query parameters for `GET /conversations/:id/text-file-diff` and
+ * `GET /conversations/:id/text-file-diff-version` — identical to `TextFileQuery` (same
+ * literal-path rule, resolution and guards).
+ */
+export type TextFileDiffQuery = TextFileQuery;
+
+/**
+ * Git state of the file relative to the repository's `HEAD` commit ("uncommitted work" = staged
+ * AND unstaged changes combined; the index is not a separate base).
+ *
+ * - `unmodified` — tracked; working content equals `HEAD`. `lines` are all `context`.
+ * - `modified` — tracked in `HEAD`; working content differs. Mixed `lines`.
+ * - `added` — not in `HEAD` but staged in the index (or the branch has no commits yet).
+ *   `lines` are all `added`.
+ * - `untracked` — not in `HEAD`, not in the index, not ignored. `lines` are all `added`.
+ * - `deleted` — in `HEAD` but missing from the working tree. `lines` are all `removed`
+ *   (the `HEAD` content). This is how a viewer keeps showing a file the agent deleted.
+ * - `ignored` — untracked and git-ignored. No git base: `lines` are all `context`.
+ * - `not-in-repo` — the file is not inside a git work tree (or git refuses the repo, e.g.
+ *   "dubious ownership"). No git base: `lines` are all `context`; `repoRoot` is null.
+ */
+export type TextFileDiffStatus =
+  | "unmodified"
+  | "modified"
+  | "added"
+  | "untracked"
+  | "deleted"
+  | "ignored"
+  | "not-in-repo";
+
+/**
+ * One line of the WHOLE-FILE diff, in display order (removed lines precede the added lines that
+ * replace them, exactly as git prints them).
+ */
+export interface TextFileDiffLine {
+  readonly kind: "context" | "added" | "removed";
+  /** Line content WITHOUT its trailing `\n` (a CR of a CRLF line is kept). */
+  readonly text: string;
+  /** 1-based line number in the `HEAD` version; null for `added` lines. */
+  readonly oldLine: number | null;
+  /** 1-based line number in the working file; null for `removed` lines. */
+  readonly newLine: number | null;
+}
+
+/**
+ * Response body for `GET /conversations/:id/text-file-diff` — a LIVE whole-file diff of the
+ * file's uncommitted changes against git `HEAD` (computed with full context, so `lines` covers
+ * every line of both versions; clients collapse unchanged runs themselves if they want hunks).
+ * Not a persisted snapshot; responses use `Cache-Control: no-store`.
+ *
+ * Same validation, context resolution, guards and error statuses as `/text-file` (invalid path,
+ * nonregular file, symlink or nontext content → 400; unknown conversation → 404; guard mismatch
+ * or a context change during the read → 409; oversized → 413; remote computer → 422), with these
+ * differences: a file missing from the working tree but present in `HEAD` is NOT a 404 — it is
+ * `status: "deleted"`; 404 only when the file exists in neither. The per-path size cap applies
+ * to BOTH the working file and the `HEAD` version (either over → 413). A file git treats as
+ * binary (including via `.gitattributes`) → 400. Content reflects git's view of the working
+ * file (after clean filters such as `core.autocrlf`). Git failure → 500.
+ *
+ * Never takes git locks (`GIT_OPTIONAL_LOCKS=0`), so it does not contend with an agent's own
+ * git commands.
+ */
+export interface TextFileDiffResponse {
+  /** Resolved absolute POSIX file path (same resolution as `/text-file`). */
+  readonly path: string;
+  /** Absolute git work-tree root as reported by git, or null when `not-in-repo`. */
+  readonly repoRoot: string | null;
+  readonly status: TextFileDiffStatus;
+  /** Whole-file diff lines in display order. Empty for an empty file. */
+  readonly lines: readonly TextFileDiffLine[];
+  /** Count of `added` lines. */
+  readonly added: number;
+  /** Count of `removed` lines. */
+  readonly removed: number;
+  /** Same classification as `TextFileResponse.format`. */
+  readonly format: "markdown" | "text";
+  /** Same per-path cap as `TextFileResponse.maxBytes`. */
+  readonly maxBytes: number;
+  /**
+   * Opaque DIFF version: changes whenever the working file (identity/size/mtime), the `HEAD`
+   * commit, or the file's git status entry changes. Equals `TextFileDiffVersionResponse.version`
+   * for the unchanged state. NOT comparable with `TextFileResponse.version`. Taken BEFORE the
+   * diff is computed, so a concurrent edit can only pair an older version with newer content
+   * (the next poll then differs and triggers a refetch), never the reverse.
+   */
+  readonly version: string;
+}
+
+/**
+ * Response body for `GET /conversations/:id/text-file-diff-version` — a cheap check (one stat +
+ * two short git commands, no content read, no diff) of the current DIFF version, for live-reload
+ * polling while a diff view is shown: poll it and refetch `/text-file-diff` when `version`
+ * changes. Same validation and error statuses as `/text-file-diff` (a deleted-but-in-`HEAD`
+ * file answers 200, not 404), except content errors (binary, invalid UTF-8, oversized `HEAD`
+ * version) surface only on the diff itself. Responses use `Cache-Control: no-store`.
+ */
+export interface TextFileDiffVersionResponse {
+  /** Resolved absolute POSIX file path. */
+  readonly path: string;
+  /** Same opaque DIFF version as `TextFileDiffResponse.version`. */
+  readonly version: string;
+}
+
 // ─── Per-conversation working directory (cwd) ─────────────────────────────────
 
 /** Response of `GET /conversations/:id/cwd`. `cwd` is null when never set. */

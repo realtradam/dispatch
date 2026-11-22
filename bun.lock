@@ -560,7 +560,7 @@
     },
     "packages/transport-contract": {
       "name": "@dispatch/transport-contract",
-      "version": "0.30.0",
+      "version": "0.31.0",
       "dependencies": {
         "@dispatch/layout-contract": "workspace:*",
         "@dispatch/tile-layout-contract": "workspace:*",

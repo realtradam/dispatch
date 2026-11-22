@@ -1,5 +1,7 @@
 import type {
   TextFileContextResponse,
+  TextFileDiffResponse,
+  TextFileDiffVersionResponse,
   TextFileResponse,
   TextFileVersionResponse,
   TextFileWriteConflictResponse,
@@ -7,6 +9,7 @@ import type {
 } from "@dispatch/transport-contract";
 import type { Hono } from "hono";
 import type { RouteOptions } from "../route-options.js";
+import { computeTextFileDiff, loadTextFileDiffState } from "../text-file-diff.js";
 import {
   decodeTextFile,
   isExcalidrawPath,
@@ -109,6 +112,78 @@ export function mount(app: Hono, { config, log }: RouteOptions): void {
       return c.json(body);
     } catch {
       return c.json({ error: "Failed to read text file version" }, 500);
+    }
+  });
+
+  /** Shared prologue of the diff routes: parse, resolve, guard. */
+  async function diffRequest(
+    url: string,
+    id: string,
+  ): Promise<{ readonly path: string; readonly context: TextFileContext } | TextFileError> {
+    const query = parseTextFileQuery(new URL(url).searchParams);
+    if ("error" in query) return query;
+    const context = await contextFor(id);
+    if ("error" in context) return context;
+    const request = resolveTextFileRequest(query, context);
+    if ("error" in request) return request;
+    return { path: request.path, context };
+  }
+
+  /** Do not deliver a completed git/file read under a context that changed during I/O. */
+  async function contextChanged(id: string, context: TextFileContext) {
+    const latest = await contextFor(id);
+    if ("error" in latest) return latest;
+    if (latest.cwd !== context.cwd || latest.computerId !== context.computerId) {
+      return {
+        error: "Conversation file context changed; refresh and retry",
+        status: 409 as const,
+      };
+    }
+    return null;
+  }
+
+  app.get("/conversations/:id/text-file-diff", async (c) => {
+    try {
+      const id = c.req.param("id");
+      const request = await diffRequest(c.req.url, id);
+      if ("error" in request) return c.json({ error: request.error }, request.status);
+      const maxBytes = textFileMaxBytes(request.path);
+      const state = await loadTextFileDiffState(request.path, maxBytes);
+      if ("error" in state) return c.json({ error: state.error }, state.status);
+      const diff = await computeTextFileDiff(request.path, maxBytes, state);
+      if ("error" in diff) return c.json({ error: diff.error }, diff.status);
+      const changed = await contextChanged(id, request.context);
+      if (changed !== null) return c.json({ error: changed.error }, changed.status);
+      const body: TextFileDiffResponse = {
+        path: request.path,
+        repoRoot: state.repoRoot,
+        status: diff.status,
+        lines: diff.lines,
+        added: diff.added,
+        removed: diff.removed,
+        format: textFileFormat(request.path),
+        maxBytes,
+        version: state.version,
+      };
+      return c.json(body);
+    } catch {
+      return c.json({ error: "Failed to read text file diff" }, 500);
+    }
+  });
+
+  app.get("/conversations/:id/text-file-diff-version", async (c) => {
+    try {
+      const id = c.req.param("id");
+      const request = await diffRequest(c.req.url, id);
+      if ("error" in request) return c.json({ error: request.error }, request.status);
+      const state = await loadTextFileDiffState(request.path, textFileMaxBytes(request.path));
+      if ("error" in state) return c.json({ error: state.error }, state.status);
+      const changed = await contextChanged(id, request.context);
+      if (changed !== null) return c.json({ error: changed.error }, changed.status);
+      const body: TextFileDiffVersionResponse = { path: request.path, version: state.version };
+      return c.json(body);
+    } catch {
+      return c.json({ error: "Failed to read text file diff version" }, 500);
     }
   });
 

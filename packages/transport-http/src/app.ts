@@ -70,7 +70,9 @@ export function createApp(opts: CreateServerOptions): Hono {
     if (
       c.req.path.endsWith("/text-file") ||
       c.req.path.endsWith("/text-file-context") ||
-      c.req.path.endsWith("/text-file-version")
+      c.req.path.endsWith("/text-file-version") ||
+      c.req.path.endsWith("/text-file-diff") ||
+      c.req.path.endsWith("/text-file-diff-version")
     ) {
       c.header("Cache-Control", "no-store");
     }

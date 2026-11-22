@@ -314,3 +314,18 @@ Plan: `notes/builtin-plugin-overrides-plan.md`. Opus design; Flash implementers 
 - [x] Typecheck/Biome clean; Vitest 4541 passed/9 skipped. Private boot on a live-DB copy: ssh off at
       boot, listed discovered, load/unload/load cycle OK, stays off after restart.
 - [ ] Before deploying: decide on stale "unloaded" records for plugins that are on today (see plan).
+
+## feature/file-viewer-git-diff — live uncommitted git diff in the file viewer
+
+User request: a toggle in the file viewer showing the uncommitted git diff (added/removed lines) that
+hot-reloads while the agent edits. Backend extends the existing text-file routes in `transport-http`.
+- [x] `transport-contract@0.31.0` (additive): `TextFileDiffQuery`, `TextFileDiffStatus`,
+      `TextFileDiffLine`, `TextFileDiffResponse`, `TextFileDiffVersionResponse`.
+- [x] `transport-http`: `GET /conversations/:id/text-file-diff` (whole-file diff vs `HEAD`, staged +
+      unstaged combined; deleted-in-worktree files answer `status: "deleted"`, not 404) and
+      `GET /conversations/:id/text-file-diff-version` (stat + `git rev-parse` + `git status`, for 1 s
+      polling). Same guards/statuses as `/text-file`; no-store; route manifest. Git runs with
+      `GIT_OPTIONAL_LOCKS=0` (never contends with the agent's git), bounded stdout, 15 s timeout.
+      Pure parsing/planning in `text-file-diff-logic.ts`; real-git integration tests.
+- [x] Typecheck/Biome clean; Vitest 4567+ passed/9 skipped; `test:bun` 190 pass.
+- [ ] Frontend diff toggle (../frontend, same branch).

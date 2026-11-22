@@ -76,6 +76,8 @@ export const manifest: Manifest = {
       "/conversations/:id/tab-group",
       "/conversations/:id/text-file",
       "/conversations/:id/text-file-context",
+      "/conversations/:id/text-file-diff",
+      "/conversations/:id/text-file-diff-version",
       "/conversations/:id/text-file-version",
       "/health",
       "/home/tile-layout/:mode",
