@@ -415,8 +415,10 @@ export interface TextFileQuery {
  * `version` matches `GET /conversations/:id/text-file-version` for the unchanged file.
  *
  * Only regular files containing strict UTF-8 without NUL or binary control
- * characters are accepted. Reads are bounded to 256 KiB (262144 bytes) under
- * the current policy, with no truncation. Invalid paths, nonregular files, or
+ * characters are accepted. Reads are bounded by a per-path size cap with no
+ * truncation: 16 MiB (16777216 bytes) for paths ending `.excalidraw`
+ * (case-insensitive; Excalidraw scenes embed images as data URLs), 256 KiB
+ * (262144 bytes) for every other path. Invalid paths, nonregular files, or
  * nontext content → HTTP 400; unknown conversations or missing files → HTTP
  * 404; context-guard mismatch → HTTP 409; oversized files → HTTP 413; remote
  * computer targets (unsupported) → HTTP 422.
@@ -429,7 +431,10 @@ export interface TextFileResponse {
   readonly format: "markdown" | "text";
   /** Original UTF-8 file size in bytes (not JavaScript string length). */
   readonly bytes: number;
-  /** Maximum accepted file size in bytes; currently 262144 (256 KiB). */
+  /**
+   * Maximum accepted file size in bytes for THIS path: 16777216 (16 MiB) for `.excalidraw`
+   * paths (case-insensitive), otherwise 262144 (256 KiB).
+   */
   readonly maxBytes: number;
   /**
    * Opaque version of the file content that was read: equal strings mean the same file
@@ -456,10 +461,75 @@ export type TextFileVersionQuery = TextFileQuery;
  * context change during the check → 409, oversized → 413, remote computer → 422), except that it
  * never reads file content, so content errors (invalid UTF-8, binary) surface only on the read.
  * `version` equals the `TextFileResponse.version` a read of the unchanged file returns.
+ * The 413 check uses the same per-path size cap as `/text-file`.
  */
 export interface TextFileVersionResponse {
   /** Resolved absolute POSIX file path (same resolution as `/text-file`). */
   readonly path: string;
+  readonly version: string;
+}
+
+/**
+ * JSON body of `PUT /conversations/:id/text-file` — a CONDITIONAL, atomic, whole-file replace of
+ * an EXISTING text file. Used by the file viewer's Excalidraw canvas to autosave.
+ *
+ * Writable files: ONLY paths ending `.excalidraw` (case-insensitive); any other path → HTTP 403.
+ * The file must already exist as a regular file (missing → 404, never created; nonregular or a
+ * final-component symlink → 400). `path` follows the same literal-path rule and resolution as
+ * `TextFileQuery.path` (it arrives in a JSON body, so it is never percent-decoded). Guards behave
+ * exactly as in `TextFileQuery` (mismatch → 409); remote computer targets → 422.
+ *
+ * Content: `text` must contain no NUL/binary control characters (400), must be at most the
+ * path's size cap in UTF-8 bytes (16 MiB for `.excalidraw`; over → 413), and must parse as a JSON
+ * object whose `type` is `"excalidraw"` and whose `elements` is an array (otherwise 400). A body
+ * that is not a JSON object with exactly these fields' types (unknown keys → 400) is rejected.
+ *
+ * Precondition: `expectedVersion` must equal the file's CURRENT version (the opaque string from
+ * `TextFileResponse.version` / `TextFileVersionResponse.version` / a previous
+ * `TextFileWriteResponse.version`); otherwise nothing is written and the server answers HTTP 412
+ * with `TextFileWriteConflictResponse`. The check-then-replace is best-effort (single-user tool),
+ * not a cross-process lock.
+ *
+ * Atomicity: content is written to a temporary file in the same directory, flushed, given the
+ * original file's permission bits, then renamed over the target — concurrent readers/pollers see
+ * either the old or the new complete file, never a partial one. (Hard links to the old inode are
+ * not preserved.) Responses use `Cache-Control: no-store`.
+ */
+export interface TextFileWriteRequest {
+  /** Literal absolute or cwd-relative POSIX file path ending `.excalidraw`. */
+  readonly path: string;
+  /** Complete new file content (UTF-8 text; a serialized Excalidraw scene). */
+  readonly text: string;
+  /** The version the client last loaded/saved; compare-and-swap precondition. */
+  readonly expectedVersion: string;
+  /** Expected effective cwd; empty string asserts unset, omitted skips guard. */
+  readonly expectedCwd?: string;
+  /** Expected effective computer; empty string asserts local, omitted skips guard. */
+  readonly expectedComputerId?: string;
+}
+
+/**
+ * Response body (HTTP 200) of `PUT /conversations/:id/text-file`. `version` is the version of the
+ * file now on disk — exactly what `/text-file-version` returns until the file changes again — so a
+ * client adopting it will not mistake its own save for an external change.
+ */
+export interface TextFileWriteResponse {
+  /** Resolved absolute POSIX file path. */
+  readonly path: string;
+  /** Version of the newly written file. */
+  readonly version: string;
+  /** UTF-8 size in bytes of the written content. */
+  readonly bytes: number;
+  /** The path's size cap in bytes (16777216 for `.excalidraw`). */
+  readonly maxBytes: number;
+}
+
+/**
+ * Response body of `PUT /conversations/:id/text-file` with HTTP 412: `expectedVersion` did not
+ * match, nothing was written. `version` is the file's current version at the time of the check.
+ */
+export interface TextFileWriteConflictResponse {
+  readonly error: string;
   readonly version: string;
 }
 

@@ -5,6 +5,9 @@ import type {
   TextFileResponse,
   TextFileVersionQuery,
   TextFileVersionResponse,
+  TextFileWriteConflictResponse,
+  TextFileWriteRequest,
+  TextFileWriteResponse,
 } from "./index.js";
 
 describe("text-file transport type boundaries", () => {
@@ -138,5 +141,47 @@ describe("text-file transport type boundaries", () => {
     expect(query.expectedComputerId).toBe("");
     expect(remote.cwd).toBe("/home/user/project");
     expect(remote.computerId).toBe("remote");
+  });
+
+  it("exports a readonly conditional write request with a required expectedVersion", () => {
+    expectTypeOf<TextFileWriteRequest>().toEqualTypeOf<{
+      readonly path: string;
+      readonly text: string;
+      readonly expectedVersion: string;
+      readonly expectedCwd?: string;
+      readonly expectedComputerId?: string;
+    }>();
+    expectTypeOf<
+      Omit<TextFileWriteRequest, "expectedVersion">
+    >().not.toMatchTypeOf<TextFileWriteRequest>();
+    expectTypeOf<Omit<TextFileWriteRequest, "text">>().not.toMatchTypeOf<TextFileWriteRequest>();
+    const request: TextFileWriteRequest = {
+      path: "diagrams/flow.excalidraw",
+      text: '{"type":"excalidraw","version":2,"elements":[]}',
+      expectedVersion: "1-2-3-4",
+      expectedCwd: "",
+      expectedComputerId: "",
+    };
+    expect(request.expectedVersion).toBe("1-2-3-4");
+  });
+
+  it("exports the write success and 412 conflict response types", () => {
+    expectTypeOf<TextFileWriteResponse>().toEqualTypeOf<{
+      readonly path: string;
+      readonly version: string;
+      readonly bytes: number;
+      readonly maxBytes: number;
+    }>();
+    expectTypeOf<TextFileWriteConflictResponse>().toEqualTypeOf<{
+      readonly error: string;
+      readonly version: string;
+    }>();
+    const saved: TextFileWriteResponse = {
+      path: "/home/user/project/diagrams/flow.excalidraw",
+      version: "1-9-48-5",
+      bytes: 48,
+      maxBytes: 16 * 1024 * 1024,
+    };
+    expect(saved.maxBytes).toBe(16777216);
   });
 });
