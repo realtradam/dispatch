@@ -2,7 +2,7 @@ import { createLogger } from "@dispatch/kernel";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FelicityError } from "./client.js";
 import { systemClock } from "./extension.js";
-import { combineContents, ThreadSender } from "./sender.js";
+import { combineContents, idempotencyKey, ThreadSender } from "./sender.js";
 import { FakeFelicity, serverError } from "./test-support.js";
 
 const logger = createLogger(
@@ -134,6 +134,20 @@ describe("ThreadSender", () => {
         content: "🔧 tool 0\n🔧 tool 1 ✅\n🔧 tool 2\n🔧 tool 3 ✅\n🔧 tool 4",
       },
     ]);
+  });
+
+  it("idempotency keys always satisfy Felicity's ^[A-Za-z0-9._:-]{1,128}$", () => {
+    const re = /^[A-Za-z0-9._:-]{1,128}$/;
+    expect(idempotencyKey("dsp-1234567890123456789-m3k2", "replay-m12")).toBe(
+      "dsp-1234567890123456789-m3k2-replay-m12",
+    );
+    const odd = idempotencyKey("dsp-th/1", "key with spaces");
+    const odd2 = idempotencyKey("dsp-th_1", "key_with_spaces");
+    expect(odd).toMatch(re);
+    expect(odd).not.toBe(odd2);
+    const long = idempotencyKey("dsp", "k".repeat(500));
+    expect(long).toMatch(re);
+    expect(long).not.toBe(idempotencyKey("dsp", `${"k".repeat(499)}j`));
   });
 
   it("combineContents falls back to compact forms, then cuts", () => {

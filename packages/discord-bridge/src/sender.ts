@@ -63,6 +63,37 @@ type Entry =
       readonly spacing: number;
     };
 
+const KEY_RE = /[^A-Za-z0-9._:-]/g;
+const MAX_KEY = 128;
+
+/** 32-bit FNV-1a, base36 — a short, stable digest for over-long keys. */
+function fnv1a(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
+/**
+ * Felicity's idempotency key (`^[A-Za-z0-9._:-]{1,128}$`): disallowed
+ * characters become `_`; an over-long key keeps its head plus a digest of
+ * the whole, so distinct keys stay distinct.
+ */
+export function idempotencyKey(prefix: string, key: string): string {
+  const raw = `${prefix}-${key}`;
+  const safe = raw.replace(KEY_RE, "_");
+  if (safe === raw && raw.length <= MAX_KEY) return raw;
+  // Sanitized or too long: add a digest of the ORIGINAL so keys stay distinct.
+  return withDigest(safe, raw);
+}
+
+function withDigest(safe: string, raw: string): string {
+  const digest = `.${fnv1a(raw)}`;
+  return `${safe.slice(0, MAX_KEY - digest.length)}${digest}`;
+}
+
 /** Join merged members: full content, else compact forms, else middle-cut. */
 export function combineContents(
   members: readonly { readonly content: string; readonly compact?: string | undefined }[],
@@ -230,7 +261,7 @@ export class ThreadSender {
       }
       const id = await this.attempt("post", () =>
         this.opts.client.postMessage(this.opts.channelId, this.mergedContent(mergedId), {
-          idempotencyKey: `${this.opts.idPrefix}-${mergedId}`,
+          idempotencyKey: idempotencyKey(this.opts.idPrefix, mergedId),
         }),
       );
       const group = this.merged.get(mergedId);
@@ -246,7 +277,7 @@ export class ThreadSender {
     }
     const id = await this.attempt("post", () =>
       this.opts.client.postMessage(this.opts.channelId, rec.content, {
-        idempotencyKey: `${this.opts.idPrefix}-${key}`,
+        idempotencyKey: idempotencyKey(this.opts.idPrefix, key),
       }),
     );
     rec.posted = true;
