@@ -121,5 +121,26 @@ except for the FE's final live probe (notified when the backend wave is green).
       skipped; Biome 777 files clean; Bun server suite 19 pass. Private live probe (isolated
       ports/DB): GET .excalidraw → maxBytes 16777216; PUT with version → 200 + no-store, new
       version == /text-file-version; stale PUT → 412; content on disk correct.
-- [ ] Wave 1 frontend (Opus, conv 06f92e5a) — in progress. Briefs: `prompts/*.md` (gitignored).
+- [x] Wave 1 frontend (Opus, conv 06f92e5a): FE commits `ef54104`, `7e856f4` on
+      ../frontend feature/excalidraw-live-editor. FE plan: ../frontend/notes/excalidraw-live-editor-plan.md;
+      report: ../frontend/reports/excalidraw-live-editor.md. Opus-lead re-verification: svelte-check
+      0/0; Biome 365 files clean; Vitest 2984 passed/4 skipped; build OK with a separate
+      `excalidraw-editor` chunk (main entry has no Excalidraw code); fonts self-hosted under
+      `/excalidraw-assets/fonts/`. Live probe (FE, opt-in `bun run test:excalidraw-live`) 2 pass ×2 against
+      this backend's PUT route: external write appears, own save no reload loop, stale save → 412.
+- [x] Wave 2: backend re-verified (typecheck 0; Vitest 4522 passed/9 skipped; Biome clean);
+      private probe processes cleaned up. No merge/push.
+
+## 6. Open items for the user
+
+- **Decision:** if the AI leaves the file permanently invalid, canvas saves stay suppressed (rule 5).
+  Optional v2: a non-blocking "Overwrite file with canvas" action (FE-only; uses the same PUT).
+- **Browser checks** (headless-verified only partly): dark theme/menus; drag a shape while the AI
+  writes (applies on release); edit text while the AI writes (applies after leaving the editor);
+  zoom/pan kept; typing in chat doesn't trigger Excalidraw shortcuts; closing the tab right after
+  an edit still saves.
+- Lead decisions made under the approved rules: 412 → disk wins + non-blocking notice; unsaved
+  canvas changes replaced by an applied external update get the same notice; extended existing
+  units (no new extension); 16 MiB `.excalidraw` cap; new system-prompt section (new conversations
+  only — persisted prompts stay byte-stable).
 - [ ] Wave 2: verification, live probe, docs, commits (feature branches only; no merge/push).

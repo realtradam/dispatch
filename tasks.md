@@ -299,4 +299,6 @@ explicit briefs; frontend planned/built by Opus in `../frontend`.
 - [x] `transport-http`: PUT route + per-path cap on read/version/write; pure parse/validate logic.
 - [x] `system-prompt`: "Live Excalidraw drawings" guidance section + non-duplicating upgrade path.
 - [x] Typecheck/test/check green (Vitest 4522 passed/9 skipped); private live boundary probe OK.
-- [ ] Frontend canvas (Opus) + end-to-end live probe.
+- [x] Frontend canvas (Opus; ../frontend `ef54104`, `7e856f4`) + live probe (2 pass ×2); FE suite
+      2984 passed, build splits the lazy `excalidraw-editor` chunk. User browser checklist open
+      (see plan §6).
