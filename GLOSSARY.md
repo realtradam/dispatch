@@ -78,6 +78,14 @@
 | **MCP server** | A process/service speaking MCP that exposes Tools, Resources, and/or Prompts. Spawned (stdio) or connected (HTTP) by Dispatch acting as `MCP host`. Configured per-cwd via `.dispatch/mcp.json` or `opencode.json`'s `mcp` key. | MCP provider (that's a Dispatch provider) |
 | **MCP host** | The application (Dispatch) that manages MCP clients, discovers server capabilities, and proxies tool calls. Dispatch is always the host. | — |
 
+| **Felicity** | The owner's Discord bot (separate repo, runs on xenifse1). Owns the bot token, Discord threads, owner checks, posting/editing/reactions, and the tailnet-only **agent API** (REST, contract owned by Felicity: `felicity/docs/agent-api.md`) that Dispatch calls. Felicity never calls Dispatch. | — |
+| **chat thread** | A public **Discord** thread (created by Felicity on `!dispatch open <id> [count]`) that is mirrored both ways with ONE existing Dispatch **conversation**. Always a Discord object — never a synonym for a conversation. One open chat thread per conversation. | Discord chat, channel (when meaning the thread) |
+| **relay** | The live two-way mirroring between a chat thread and its conversation, run by the `discord-bridge` extension: Discord messages → `enqueue`/`stopTurn`; every conversation event (including prompts typed in Dispatch, echoed) → Discord posts/edits. A relay ENDS (disconnect) on `!dispatch close`, the conversation being closed/deleted in Dispatch, or the conversation becoming unavailable; Dispatch being offline is NOT a disconnect. Ending a relay never touches the conversation. | bridge (when meaning one thread's mirroring), sync |
+| **discord-bridge** | The bundled standard extension (package `discord-bridge`) that runs relays: long-polls Felicity's chat-event feed, re-attaches open chat threads on boot, formats events into Discord messages, paces them per thread, and replays history. Inert unless `FELICITY_API_URL` + `FELICITY_API_TOKEN` are configured. Never creates conversations. | — |
+| **chat participant** | A Discord user the owner allowed (`!dispatch allow @user`) to prompt one specific chat thread besides the owner. Their prompts reach the conversation with an attribution line (`[Discord: Name (@user, id)]`) and are untrusted content. | guest, member |
+| **history replay (chat thread)** | On `!dispatch open … [count]`, the conversation's persisted history rendered through the SAME formatter as the live relay, of which the last `count` **Discord messages** (default 20, max 300 — not turns) are posted, paced ~1.5 s apart. | backfill |
+| **typing lease** | A time-limited (≤ 30 s) request that Felicity show Discord's typing indicator in a chat thread, renewed every ~10 s while the conversation is generating or the relay has output pending, released at the end; it expires on its own if Dispatch dies. | — |
+
 ## Known vocabulary drift
 
 - _None._ The former `tabId` drift in `AgentEvent`s and `RunTurnInput` was fully
@@ -96,3 +104,8 @@
   and **model preset** map back to **named agent** and must not be used. Does
   NOT change the meaning of the existing **model** / **model name** / **model
   catalog** terms — the raw provider catalog is preserved for configuration.
+- The Discord bridge (`notes/discord-felicity-integration-proposal.md`, approved
+  v3) introduced **Felicity**, **chat thread**, **relay**, **discord-bridge**,
+  **chat participant**, **history replay (chat thread)** and **typing lease**.
+  "thread" remains an alias to AVOID for a **conversation**: a chat thread is the
+  Discord-side object bound to one conversation, never the conversation itself.

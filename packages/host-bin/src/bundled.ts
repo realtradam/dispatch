@@ -21,6 +21,7 @@ import { extension as agentManagementExt } from "@dispatch/agent-management";
 import { extension as cacheWarmingExt } from "@dispatch/cache-warming";
 import { extension as conversationStoreExt } from "@dispatch/conversation-store";
 import { type Credential, createCredentialStoreExtension } from "@dispatch/credential-store";
+import { extension as discordBridgeExt } from "@dispatch/discord-bridge";
 import { createExecBackendExtension } from "@dispatch/exec-backend";
 import { extension as heartbeatExt } from "@dispatch/heartbeat";
 import { extension as homeTileLayoutExt } from "@dispatch/home-tile-layout";
@@ -134,6 +135,10 @@ export function createBundledExtensions(creds: {
     todoExt,
     skillsExt,
     cacheWarmingExt,
+    // Relays Discord chat threads (through the Felicity bot's agent API) with
+    // EXISTING conversations. Inert unless FELICITY_API_URL + FELICITY_API_TOKEN
+    // are configured (host.secrets allowlist in secrets.ts).
+    discordBridgeExt,
     loadedExtensionsSurface,
     // Plan-08 mechanism pilot (§12): lsp runs through the new system as a
     // bundled STANDARD plugin with a blank (undefined) per-workspace default —

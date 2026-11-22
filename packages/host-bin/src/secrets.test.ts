@@ -36,3 +36,17 @@ it("exposes only the allowlisted Inco environment key and rejects all mutations"
   );
   await expect(secrets.delete("INCO_API_KEY")).rejects.toThrow("secrets store not configured");
 });
+
+it("exposes the allowlisted Felicity bridge keys (blank = unset) and nothing else", async () => {
+  const { createEnvSecrets } = await import("./secrets.js");
+  const secrets = createEnvSecrets({
+    FELICITY_API_URL: "http://100.102.55.49:27431",
+    FELICITY_API_TOKEN: "fixture-token",
+    FELICITY_OTHER: "hidden",
+  });
+  expect(await secrets.get("FELICITY_API_URL")).toBe("http://100.102.55.49:27431");
+  expect(await secrets.get("FELICITY_API_TOKEN")).toBe("fixture-token");
+  expect(await secrets.get("FELICITY_OTHER")).toBeNull();
+  expect(await secrets.get("INCO_API_KEY")).toBeNull();
+  expect(await createEnvSecrets({ FELICITY_API_TOKEN: " " }).get("FELICITY_API_TOKEN")).toBeNull();
+});

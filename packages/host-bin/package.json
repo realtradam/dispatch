@@ -7,6 +7,7 @@
     "@dispatch/account-usage": "workspace:*",
     "@dispatch/agent-management": "workspace:*",
     "@dispatch/cache-warming": "workspace:*",
+    "@dispatch/discord-bridge": "workspace:*",
     "@dispatch/conversation-store": "workspace:*",
     "@dispatch/credential-store": "workspace:*",
     "@dispatch/exec-backend": "workspace:*",

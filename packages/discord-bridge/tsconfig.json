@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../conversation-store" },
+    { "path": "../kernel" },
+    { "path": "../session-orchestrator" },
+    { "path": "../wire" }
+  ]
+}

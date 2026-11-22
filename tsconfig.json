@@ -146,6 +146,9 @@
       "path": "./packages/cache-warming"
     },
     {
+      "path": "./packages/discord-bridge"
+    },
+    {
       "path": "./packages/message-queue"
     },
     {
